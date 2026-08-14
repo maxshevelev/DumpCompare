@@ -747,11 +747,60 @@ final class MainViewController: NSViewController {
         }
         return false
     }
+
+    // MARK: - Zoom-to-fit (§3.1)
+
+    /// Slack to leave around the hex grid so a legacy-style vertical scroller
+    /// does not cover the ASCII column: grid width + a small margin per pane.
+    static let paneSlack: CGFloat = 16
+
+    /// Ideal content width the window should be when zoomed (double-click on the
+    /// title bar / Window > Zoom): the hex grid width for a single pane, or
+    /// both grids plus the splitter divider for a left/right comparison. A
+    /// stacked comparison and the empty state keep a single pane's width.
+    private func standardContentWidth() -> CGFloat {
+        func paneWidth(_ pane: FilePaneView?) -> CGFloat {
+            guard let pane else { return 0 }
+            return pane.hexContentWidth + Self.paneSlack
+        }
+        switch mode {
+        case .singleFile:
+            return paneWidth(activeFilePane)
+        case .comparison:
+            guard let comparisonView else { return 0 }
+            let w1 = paneWidth(comparisonView.paneView1)
+            let w2 = paneWidth(comparisonView.paneView2)
+            // Same source of truth as ComparisonView's layout toggle (§3.3).
+            let isVertical = UserDefaults.standard.object(forKey: "ComparisonPaneLayoutIsVertical") as? Bool ?? true
+            return isVertical ? w1 + w2 + 1 : max(w1, w2)
+        case .empty:
+            return 0
+        }
+    }
 }
 
 // MARK: - Window closing (§3.6)
 
 extension MainViewController: NSWindowDelegate {
+    /// Double-click on the title bar / Window > Zoom sizes the window to the
+    /// hex content instead of the default zoom-to-max: width fits one or both
+    /// panes' hex grids (§3.1), height and top-left corner are kept. In the
+    /// empty state there is no hex content, so the default zoom frame is kept.
+    func windowWillUseStandardFrame(_ window: NSWindow, defaultFrame: NSRect) -> NSRect {
+        let width = standardContentWidth()
+        guard width > 0 else { return defaultFrame }
+
+        var frame = defaultFrame
+        frame.size.width = width
+        frame.size.height = window.frame.height
+        frame.origin = window.frame.origin
+        if let screen = window.screen ?? NSScreen.main {
+            frame.size.width = min(frame.size.width, screen.visibleFrame.width)
+            frame.origin.y = min(frame.origin.y, screen.visibleFrame.maxY - frame.height)
+        }
+        return frame
+    }
+
     /// Combined dirty prompt on window close: list every modified file, offer
     /// Save / Don't Save / Cancel. Aborts the close when a save fails so no
     /// change is ever lost silently.

@@ -13,6 +13,10 @@ final class FilePaneView: NSView {
     let scrollView: NSScrollView
 
     private let hexView: HexView
+
+    /// Ideal width of this pane's hex content, for zoom-to-fit (§3.1).
+    var hexContentWidth: CGFloat { hexView.hexContentWidth }
+
     private let titleLabel = NSTextField(labelWithString: "")
     private let lockLabel = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(labelWithString: "")

@@ -44,6 +44,10 @@ final class HexView: NSView {
     private let charWidth: CGFloat
     private var currentLayout: HexLayout
 
+    /// Ideal width of the hex grid (offset column + hex + ASCII). The window
+    /// delegate uses this to zoom-to-fit (§3.1) instead of zooming to max.
+    var hexContentWidth: CGFloat { currentLayout.contentWidth }
+
     // MARK: - Init
 
     init() {
