@@ -149,7 +149,14 @@ Requirement sections: §4.2, §5, §7.5, §10.1/10.2; tests §17.1/17.2/17.7.
 
 ---
 
-## 7. Milestone 3 — Diff, search, clipboard engines (pure Swift, test-first)
+## 7. Milestone 3 — Diff, search, clipboard engines (pure Swift, test-first) ✅ done
+
+> **Implementation findings (M3):**
+> - `DiffBlockIndex` is an immutable value type; `DiffEngine.apply` produces a new index per edit. `.overwrite` splices only the overwritten window back in (bytes before/after keep their old state), while `.insert`/`.delete` trim at the earliest affected offset and rescan to EOF — exactly the §8.3 invalidation rules.
+> - `DiffIndexBuilder` (an actor) hosts full scans and incremental applies with `progress` + `cancel()`; the engine itself takes `shouldCancel`/`progress` closures and is synchronous, so it is trivially unit-testable.
+> - `SearchEngine.find` forward finds the first match starting at/after `from`; backward finds the last match **ending** at/before `from`. Both directions use windows of `chunkSize + patternLength - 1` with `patternLength - 1` overlap so matches straddling a chunk boundary are found (caught by `testFindAcrossChunkBoundary`).
+> - Search reads the live storage (`EditOverlayStorage` over the base), so results always include unsaved edits — no separate index to keep in sync.
+> - Large files are handled by chunked streaming in both engines (verified with 64 MiB sparse files); the diff scan cancels between chunks and reports progress.
 
 Requirement sections: §8, §11, §12, §13; tests §17.4/17.5/17.6.
 

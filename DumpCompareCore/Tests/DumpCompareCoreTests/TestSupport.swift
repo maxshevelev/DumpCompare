@@ -37,3 +37,21 @@ enum TestSupport {
         return result
     }
 }
+
+/// Minimal in-memory `ByteStorage` for engine tests (diff/search).
+struct ArrayStorage: ByteStorage {
+    let bytes: [UInt8]
+
+    init(_ bytes: [UInt8]) {
+        self.bytes = bytes
+    }
+
+    var size: UInt64 { UInt64(bytes.count) }
+
+    func read(at offset: UInt64, length: Int) throws -> [UInt8] {
+        guard length > 0, offset < size else { return [] }
+        let start = Int(offset)
+        let end = min(start + length, bytes.count)
+        return Array(bytes[start..<end])
+    }
+}
