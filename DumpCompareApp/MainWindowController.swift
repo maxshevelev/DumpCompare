@@ -15,6 +15,7 @@ final class MainWindowController: NSWindowController {
         window.center()
         window.setFrameAutosaveName("MainWindow")
         window.contentViewController = controller
+        window.delegate = controller
         mainViewController = controller
         super.init(window: window)
         buildMainMenu()
@@ -58,7 +59,7 @@ final class MainWindowController: NSWindowController {
         fileMenu.addItem(withTitle: "Save As…", action: #selector(MainViewController.saveDocumentAs), keyEquivalent: "S")
         fileMenu.addItem(withTitle: "Revert to Saved", action: #selector(MainViewController.revertDocument), keyEquivalent: "")
         fileMenu.addItem(.separator())
-        fileMenu.addItem(withTitle: "Close File", action: #selector(MainViewController.closeCurrentFile), keyEquivalent: "")
+        fileMenu.addItem(withTitle: "Close Pane", action: #selector(MainViewController.closeCurrentFile), keyEquivalent: "")
         fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         fileItem.submenu = fileMenu
@@ -84,10 +85,26 @@ final class MainWindowController: NSWindowController {
         editMenu.addItem(withTitle: "Go To Position…", action: #selector(MainViewController.goToPosition), keyEquivalent: "g")
         editItem.submenu = editMenu
 
-        // View menu (placeholder until M5 layout options)
+        // View menu (§10.3 navigation, §3.3 layout)
         let viewItem = NSMenuItem()
         mainMenu.addItem(viewItem)
         let viewMenu = NSMenu(title: "View")
+        viewMenu.addItem(withTitle: "Toggle Pane Layout", action: #selector(MainViewController.togglePaneLayout), keyEquivalent: "l")
+        if let layoutItem = viewMenu.items.last {
+            layoutItem.keyEquivalentModifierMask = [.command, .option]
+        }
+        viewMenu.addItem(.separator())
+
+        func addNavigationItem(_ title: String, _ action: Selector, _ key: String, _ modifiers: NSEvent.ModifierFlags) {
+            let item = viewMenu.addItem(withTitle: title, action: action, keyEquivalent: key)
+            item.keyEquivalentModifierMask = modifiers
+        }
+        addNavigationItem("Next Difference", #selector(MainViewController.nextDifference), "\u{F703}", [.command, .option])
+        addNavigationItem("Previous Difference", #selector(MainViewController.previousDifference), "\u{F702}", [.command, .option])
+        addNavigationItem("Next Same Block", #selector(MainViewController.nextSameBlock), "\u{F703}", [.command, .option, .shift])
+        addNavigationItem("Previous Same Block", #selector(MainViewController.previousSameBlock), "\u{F702}", [.command, .option, .shift])
+
+        viewMenu.addItem(.separator())
         viewMenu.addItem(withTitle: "Enter Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
         if let fullScreenItem = viewMenu.items.last {
             fullScreenItem.keyEquivalentModifierMask = [.command, .control]

@@ -7,8 +7,8 @@ import Foundation
 /// view controller free of document logic.
 @MainActor
 final class WindowViewModel {
-    let pane1 = PaneViewModel()
-    let pane2 = PaneViewModel()
+    var pane1 = PaneViewModel()
+    var pane2 = PaneViewModel()
 
     private(set) var activePaneIndex = 0
 
@@ -26,5 +26,26 @@ final class WindowViewModel {
 
     func setActivePane(_ index: Int) {
         activePaneIndex = index
+    }
+
+    /// Closes the pane at `index`, handling the §3.5 promotion rule: when pane 1
+    /// is closed and pane 2 is open, pane 2 becomes pane 1. The caller is
+    /// responsible for the dirty save/discard/cancel prompt before calling.
+    /// After this, `apply(mode:)` re-renders the appropriate mode.
+    func closePane(_ index: Int) {
+        if index == 0 {
+            if pane2.isOpen {
+                // Promote pane 2 → pane 1, then close the old pane 1's document.
+                let closed = pane1
+                pane1 = pane2
+                pane2 = closed
+                pane2.close()
+            } else {
+                pane1.close()
+            }
+        } else {
+            pane2.close()
+        }
+        activePaneIndex = 0
     }
 }

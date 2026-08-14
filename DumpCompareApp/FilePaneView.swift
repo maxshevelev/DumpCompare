@@ -1,22 +1,37 @@
 import Cocoa
 
-/// One file pane (§3.4, §15): a header (file name, `*` dirty, read-only lock),
-/// the virtualized hex dump, and a status bar.
+/// One file pane (§3.4, §15): a header (file name, `*` dirty, read-only lock,
+/// comparison-mode close button), the virtualized hex dump, and a status bar.
 ///
 /// In single-file mode this fills the client area; in comparison mode (M5) two
 /// of these sit side by side. The pane owns no model logic — it binds a
 /// `PaneViewModel` to the hex view and mirrors its `onChange` into the chrome.
 final class FilePaneView: NSView {
     let viewModel: PaneViewModel
+    /// The scroll view hosting the hex view; ComparisonView uses its clip view
+    /// for synchronized scrolling (§9).
+    let scrollView: NSScrollView
 
     private let hexView: HexView
     private let titleLabel = NSTextField(labelWithString: "")
     private let lockLabel = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(labelWithString: "")
 
+    /// Extra status text appended on the right (e.g. "Indexing… 42%" or diff
+    /// counts in comparison mode). Set by ComparisonView/MainViewController.
+    var comparisonInfo: String = "" {
+        didSet { updateStatus() }
+    }
+
+    /// Fired when the user clicks anywhere in the pane (activates it).
+    var onActivate: (() -> Void)?
+    /// Fired when the comparison-mode close button is clicked.
+    var onClose: (() -> Void)?
+
     init(viewModel: PaneViewModel) {
         self.viewModel = viewModel
         self.hexView = HexView()
+        self.scrollView = NSScrollView()
         super.init(frame: .zero)
         setUp()
         bind()
@@ -37,18 +52,29 @@ final class FilePaneView: NSView {
         lockLabel.font = .systemFont(ofSize: 12)
         lockLabel.textColor = .secondaryLabelColor
 
+        let closeButton = NSButton(title: "✕", target: self, action: #selector(closeTapped))
+        closeButton.isBordered = false
+        closeButton.font = .systemFont(ofSize: 10)
+        closeButton.setButtonType(.momentaryChange)
+        closeButton.toolTip = "Close pane"
+        closeButton.contentTintColor = .secondaryLabelColor
+
         let header = NSView()
         header.translatesAutoresizingMaskIntoConstraints = false
         header.addSubview(titleLabel)
         header.addSubview(lockLabel)
+        header.addSubview(closeButton)
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         lockLabel.translatesAutoresizingMaskIntoConstraints = false
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             titleLabel.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 10),
             titleLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: lockLabel.leadingAnchor, constant: -6),
-            lockLabel.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -10),
+            lockLabel.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -6),
             lockLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            closeButton.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -6),
+            closeButton.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             header.heightAnchor.constraint(equalToConstant: 28),
         ])
 
@@ -68,7 +94,6 @@ final class FilePaneView: NSView {
         ])
 
         // Scrollable hex view.
-        let scrollView = NSScrollView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = true
@@ -109,6 +134,23 @@ final class FilePaneView: NSView {
         window?.makeFirstResponder(hexView)
     }
 
+    /// Highlights the header to mark this pane as active (§3.3).
+    func setActive(_ isActive: Bool) {
+        titleLabel.font = .systemFont(ofSize: 12, weight: isActive ? .bold : .semibold)
+        titleLabel.textColor = isActive ? .labelColor : .secondaryLabelColor
+    }
+
+    // MARK: - Actions
+
+    @objc private func closeTapped() {
+        onClose?()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onActivate?()
+        super.mouseDown(with: event)
+    }
+
     private func refresh() {
         hexView.reloadData()
         hexView.revealCaret()
@@ -120,7 +162,6 @@ final class FilePaneView: NSView {
         let status = viewModel.status
         let dirtyStar = status.isDirty ? "*" : ""
         titleLabel.stringValue = "\(status.fileName)\(dirtyStar)"
-        titleLabel.textColor = status.isDirty ? .labelColor : .secondaryLabelColor
         lockLabel.stringValue = status.isReadOnly ? "🔒 Read-Only" : ""
     }
 
@@ -137,6 +178,9 @@ final class FilePaneView: NSView {
         }
         if status.isReadOnly {
             parts.append("Read-Only")
+        }
+        if !comparisonInfo.isEmpty {
+            parts.append(comparisonInfo)
         }
         statusLabel.stringValue = parts.joined(separator: "  ·  ")
     }

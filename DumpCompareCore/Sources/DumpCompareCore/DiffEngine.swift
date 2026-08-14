@@ -86,6 +86,40 @@ public enum DiffEngine {
         return DiffBlockIndex(leftSize: left.size, rightSize: right.size, blocks: blocks)
     }
 
+    /// Finds the first block of `kind` in `direction` from `offset`, by
+    /// scanning storage. Used for on-demand navigation while a full index is
+    /// still building (§10.3): the result matches `DiffBlockIndex` semantics —
+    /// forward finds blocks starting strictly after `offset`, backward finds
+    /// blocks ending at or before `offset`. Chunked and cancellable so a
+    /// long scan never blocks the UI thread (the UI runs it off-main).
+    public static func findBlock(
+        kind: DiffBlock.Kind,
+        direction: SearchDirection,
+        from offset: UInt64,
+        left: ByteStorage,
+        right: ByteStorage,
+        chunkSize: Int = defaultChunkSize,
+        shouldCancel: () -> Bool = { false }
+    ) throws -> DiffBlock? {
+        let maxSize = max(left.size, right.size)
+        switch direction {
+        case .forward:
+            guard offset < maxSize else { return nil }
+            let blocks = try scanRange(
+                left: left, right: right, from: offset, to: maxSize,
+                chunkSize: chunkSize, shouldCancel: shouldCancel, progress: { _ in }
+            )
+            return blocks.first { $0.kind == kind && $0.range.lowerBound > offset }
+        case .backward:
+            guard maxSize > 0 else { return nil }
+            let blocks = try scanRange(
+                left: left, right: right, from: 0, to: maxSize,
+                chunkSize: chunkSize, shouldCancel: shouldCancel, progress: { _ in }
+            )
+            return blocks.last { $0.kind == kind && $0.range.upperBound <= offset }
+        }
+    }
+
     /// Applies `edit` to `index`, rebuilding only what the edit invalidates
     /// (§8.3):
     /// - `.overwrite` recomputes just `[s, e)` and splices it back, keeping the
@@ -226,11 +260,21 @@ public enum DiffEngine {
 /// sets a flag the engine observes between chunks, so closing a pane or
 /// changing inputs abandons the work promptly (§8.3, §14.4).
 public actor DiffIndexBuilder {
+    public init() {}
+
     public private(set) var progress: Double = 0
     private var isCancelled = false
 
     public func cancel() {
         isCancelled = true
+    }
+
+    /// Prepares the builder for a new scan after a `cancel()`. Actor isolation
+    /// guarantees this runs in order *after* the in-flight scan observes the
+    /// cancellation and throws, so a subsequent `build` starts with a clear flag.
+    public func reset() {
+        isCancelled = false
+        progress = 0
     }
 
     public func build(
@@ -256,6 +300,22 @@ public actor DiffIndexBuilder {
             edit, to: index, left: left, right: right, chunkSize: chunkSize,
             shouldCancel: { self.isCancelled },
             progress: { self.progress = $0 }
+        )
+    }
+
+    /// On-demand block search while a full index is still building (§10.3).
+    /// Chunked and cancellable; see `DiffEngine.findBlock`.
+    public func scanForBlock(
+        kind: DiffBlock.Kind,
+        direction: SearchDirection,
+        from offset: UInt64,
+        left: ByteStorage,
+        right: ByteStorage,
+        chunkSize: Int = DiffEngine.defaultChunkSize
+    ) throws -> DiffBlock? {
+        try DiffEngine.findBlock(
+            kind: kind, direction: direction, from: offset, left: left, right: right,
+            chunkSize: chunkSize, shouldCancel: { self.isCancelled }
         )
     }
 }

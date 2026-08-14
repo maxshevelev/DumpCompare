@@ -66,6 +66,24 @@ final class PaneViewModel: HexViewDataSource {
     /// into a single undo step; see `beginTypingGroup`/`endTypingGroup`).
     private var typingGroupOpen = false
 
+    /// The other pane in comparison mode. Selection/caret sync is forwarded
+    /// here; nil in single-file mode. Weak to avoid a retain cycle.
+    weak var companion: PaneViewModel?
+
+    /// Fired after a byte-mutating edit with the `DiffEdit` describing the
+    /// affected region, so the `ComparisonCoordinator` can update the index
+    /// (§8.3). Not fired for selection-only changes or undo/redo/revert (those
+    /// use `onFullInvalidation`).
+    var onEdit: ((DiffEdit) -> Void)?
+
+    /// Fired after an edit that the coordinator cannot represent as a
+    /// `DiffEdit` (undo/redo/revert replace the storage wholesale) so it can
+    /// rebuild the whole index.
+    var onFullInvalidation: (() -> Void)?
+
+    /// Suppresses echo when applying a selection synced from the companion.
+    private var isSynchronizingSelection = false
+
     /// Called after any change so the view can redraw and refresh the status bar.
     var onChange: (() -> Void)?
 
@@ -106,7 +124,13 @@ final class PaneViewModel: HexViewDataSource {
         try doc.revert()
         refreshSavedStorage()
         resetEditingState()
+        // Revert replaces the storage wholesale; the comparison must re-read.
+        onFullInvalidation?()
     }
+
+    /// The document's live byte storage — the same class instance across edits,
+    /// so a comparison coordinator can hold it and always read current bytes.
+    var byteStorage: (any ByteStorage)? { document?.storage }
 
     private func refreshSavedStorage() {
         guard let doc = document else { savedStorage = nil; return }
@@ -146,6 +170,11 @@ final class PaneViewModel: HexViewDataSource {
         let current = (try? doc.read(at: start, length: n)) ?? []
         let saved = (try? savedStorage?.read(at: start, length: n)) ?? []
         let savedSize = savedStorage?.size ?? 0
+        // Live visible diff (§8.3 rule 6): read the companion's bytes for the
+        // same absolute range. Immediate, exact, and self-consistent with the
+        // background block index (which only drives navigation).
+        let other = companionBytes(in: start..<start + UInt64(n))
+        let otherSize = companion?.fileSize ?? 0
 
         for i in 0..<n {
             let offset = start + UInt64(i)
@@ -156,11 +185,27 @@ final class PaneViewModel: HexViewDataSource {
             } else if saved.indices.contains(i) {
                 isModified = saved[i] != byte
             }
+            var isDifferent = false
+            if let other {
+                if offset >= otherSize {
+                    // Only this pane has a byte here — EOF-only difference (§8.1).
+                    isDifferent = true
+                } else if other.indices.contains(i) {
+                    isDifferent = other[i] != byte
+                }
+            }
             states[Int(offset - range.lowerBound)] = HexByteState(
-                byte: byte, isModified: isModified, isDifferent: false, isEOF: false
+                byte: byte, isModified: isModified, isDifferent: isDifferent, isEOF: false
             )
         }
         return states
+    }
+
+    /// The companion pane's bytes for `range`, or nil when not in comparison
+    /// mode. Reads fewer bytes than requested past the companion's EOF.
+    private func companionBytes(in range: Range<UInt64>) -> [UInt8]? {
+        guard let other = companion, let doc = other.document else { return nil }
+        return (try? doc.read(at: range.lowerBound, length: Int(range.count))) ?? []
     }
 
     func hexSelection() -> SelectionModel {
@@ -206,6 +251,7 @@ final class PaneViewModel: HexViewDataSource {
             beginTypingGroup()
             try? doc.overwrite(range: offset..<offset + 1, with: [(UInt8(digit) << 4) | (old & 0x0F)])
             nibble = 1
+            onEdit?(.overwrite(range: offset..<offset + 1))
         } else {
             let offset = typingOffset(doc)
             let old = byteAt(offset) ?? 0
@@ -213,6 +259,7 @@ final class PaneViewModel: HexViewDataSource {
             nibble = 0
             endTypingGroup()
             advanceAfterByte()
+            onEdit?(.overwrite(range: offset..<offset + 1))
         }
         notify()
     }
@@ -227,6 +274,7 @@ final class PaneViewModel: HexViewDataSource {
         try? doc.overwrite(range: offset..<offset + 1, with: [byte])
         nibble = 0
         advanceAfterByte()
+        onEdit?(.overwrite(range: offset..<offset + 1))
         notify()
     }
 
@@ -242,6 +290,7 @@ final class PaneViewModel: HexViewDataSource {
         guard caret < doc.size else { return }
         try? doc.fillZero(in: caret..<caret + 1)
         nibble = 0
+        onEdit?(.overwrite(range: caret..<caret + 1))
         notify()
     }
 
@@ -259,6 +308,7 @@ final class PaneViewModel: HexViewDataSource {
         try? doc.fillZero(in: (caret - 1)..<caret)
         doc.setSelection(SelectionModel.empty(at: caret - 1, fileSize: doc.size))
         nibble = 0
+        onEdit?(.overwrite(range: (caret - 1)..<caret))
         notify()
     }
 
@@ -278,6 +328,7 @@ final class PaneViewModel: HexViewDataSource {
         doc.setSelection(SelectionModel.empty(at: range.lowerBound, fileSize: doc.size))
         nibble = 0
         overwriteSelection = nil
+        onEdit?(.delete(range: range))
         notify()
     }
 
@@ -286,9 +337,13 @@ final class PaneViewModel: HexViewDataSource {
     func pasteWrite(_ bytes: [UInt8]) throws {
         guard let doc = document, !bytes.isEmpty else { return }
         let start = doc.selection.start
-        try doc.overwrite(range: start..<start + UInt64(bytes.count), with: bytes)
-        doc.setSelection(SelectionModel.empty(at: start + UInt64(bytes.count), fileSize: doc.size))
+        let range = start..<start + UInt64(bytes.count)
+        try doc.overwrite(range: range, with: bytes)
+        doc.setSelection(SelectionModel.empty(at: range.upperBound, fileSize: doc.size))
         resetEditingState()
+        // The engine's `.overwrite` recomputes `[start, end)`, which covers the
+        // paste even when it extends past EOF (the recompute reads current bytes).
+        onEdit?(.overwrite(range: range))
         notify()
     }
 
@@ -299,6 +354,7 @@ final class PaneViewModel: HexViewDataSource {
         try doc.insert(at: at, bytes: bytes)
         doc.setSelection(SelectionModel.empty(at: at + UInt64(bytes.count), fileSize: doc.size))
         resetEditingState()
+        onEdit?(.insert(at: at, length: UInt64(bytes.count)))
         notify()
     }
 
@@ -371,6 +427,9 @@ final class PaneViewModel: HexViewDataSource {
         guard let doc = document else { return false }
         let ok = try doc.undo()
         resetEditingState()
+        // Undo applies inverse ops directly to storage; the comparison must
+        // re-derive the whole index rather than apply a single DiffEdit.
+        if ok { onFullInvalidation?() }
         notify()
         return ok
     }
@@ -380,6 +439,7 @@ final class PaneViewModel: HexViewDataSource {
         guard let doc = document else { return false }
         let ok = try doc.redo()
         resetEditingState()
+        if ok { onFullInvalidation?() }
         notify()
         return ok
     }
@@ -452,10 +512,25 @@ final class PaneViewModel: HexViewDataSource {
         doc.setSelection(SelectionModel.empty(at: start, fileSize: doc.size))
         nibble = 0
         overwriteSelection = nil
+        onEdit?(.overwrite(range: start..<end))
+        notify()
+    }
+
+    /// Applies a selection synced from `other` (the active pane), clamped to
+    /// this pane's own file size (§9: shorter pane clamps to EOF/missing area).
+    func syncSelectionFromCompanion(_ other: PaneViewModel) {
+        guard let doc = document, !isSynchronizingSelection else { return }
+        isSynchronizingSelection = true
+        defer { isSynchronizingSelection = false }
+        let selection = other.hexSelection().clamped(to: doc.size)
+        doc.setSelection(selection)
         notify()
     }
 
     private func notify() {
+        if !isSynchronizingSelection {
+            companion?.syncSelectionFromCompanion(self)
+        }
         onChange?()
     }
 }

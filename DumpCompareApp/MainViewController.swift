@@ -5,6 +5,19 @@ final class MainViewController: NSViewController {
     private(set) var mode: WindowMode = .empty
     let windowModel = WindowViewModel()
     private weak var activeFilePane: FilePaneView?
+    private weak var comparisonView: ComparisonView?
+
+    /// Builds the background block index for comparison mode. The provider
+    /// returns the current storages on every start/rebuild, so a revert that
+    /// swaps a document's storage is always re-read.
+    private lazy var comparisonCoordinator: ComparisonCoordinator = {
+        ComparisonCoordinator { [weak self] in
+            guard let self, self.mode == .comparison else { return nil }
+            guard let left = self.windowModel.pane1.byteStorage,
+                  let right = self.windowModel.pane2.byteStorage else { return nil }
+            return (left, right)
+        }
+    }()
 
     override func loadView() {
         view = NSView()
@@ -18,22 +31,75 @@ final class MainViewController: NSViewController {
     /// Swaps the content area for the given window mode (§3 of REQUIREMENTS.md).
     func apply(mode: WindowMode) {
         self.mode = mode
+        unwireComparison()
+
         switch mode {
         case .empty:
             activeFilePane = nil
+            comparisonView = nil
+            comparisonCoordinator.stop()
             setContentView(EmptyStateView())
+
         case .singleFile:
             let pane = FilePaneView(viewModel: windowModel.pane1)
             activeFilePane = pane
+            comparisonView = nil
+            comparisonCoordinator.stop()
             setContentView(pane)
             pane.focusHexView()
+
         case .comparison:
-            // Implemented in Milestone 5 (see IMPLEMENTATION_PLAN.md).
-            let placeholder = NSTextField(labelWithString: "Comparison mode — arriving in Milestone 5")
-            placeholder.textColor = .secondaryLabelColor
-            placeholder.alignment = .center
-            setContentView(placeholder)
+            wireComparison()
+            let pane1View = FilePaneView(viewModel: windowModel.pane1)
+            let pane2View = FilePaneView(viewModel: windowModel.pane2)
+            let view = ComparisonView(
+                coordinator: comparisonCoordinator,
+                paneView1: pane1View,
+                paneView2: pane2View
+            )
+            view.onPaneActivated = { [weak self] index in
+                guard let self, let comparisonView = self.comparisonView else { return }
+                self.windowModel.setActivePane(index)
+                self.activeFilePane = index == 0 ? comparisonView.paneView1 : comparisonView.paneView2
+                comparisonView.setActive(index)
+            }
+            pane1View.onClose = { [weak self] in self?.closePane(at: 0) }
+            pane2View.onClose = { [weak self] in self?.closePane(at: 1) }
+
+            activeFilePane = windowModel.activePaneIndex == 0 ? pane1View : pane2View
+            comparisonView = view
+            setContentView(view)
+            view.setActive(windowModel.activePaneIndex)
+            comparisonCoordinator.start()
+            activeFilePane?.focusHexView()
         }
+    }
+
+    /// Wires companion panes and coordinator callbacks for comparison mode.
+    private func wireComparison() {
+        windowModel.pane1.companion = windowModel.pane2
+        windowModel.pane2.companion = windowModel.pane1
+        windowModel.pane1.onEdit = { [weak self] edit in
+            self?.comparisonCoordinator.record(edit: edit)
+        }
+        windowModel.pane2.onEdit = { [weak self] edit in
+            self?.comparisonCoordinator.record(edit: edit)
+        }
+        windowModel.pane1.onFullInvalidation = { [weak self] in
+            self?.comparisonCoordinator.rebuild()
+        }
+        windowModel.pane2.onFullInvalidation = { [weak self] in
+            self?.comparisonCoordinator.rebuild()
+        }
+    }
+
+    private func unwireComparison() {
+        windowModel.pane1.companion = nil
+        windowModel.pane2.companion = nil
+        windowModel.pane1.onEdit = nil
+        windowModel.pane2.onEdit = nil
+        windowModel.pane1.onFullInvalidation = nil
+        windowModel.pane2.onFullInvalidation = nil
     }
 
     private func setContentView(_ newView: NSView) {
@@ -56,6 +122,10 @@ final class MainViewController: NSViewController {
         activeFilePane?.focusHexView()
     }
 
+    private func refreshMode() {
+        apply(mode: windowModel.openPaneCount == 0 ? .empty : (windowModel.openPaneCount == 1 ? .singleFile : .comparison))
+    }
+
     // MARK: - File > Open (§4.1)
 
     @objc func presentOpenPanel() {
@@ -63,6 +133,7 @@ final class MainViewController: NSViewController {
         panel.allowsMultipleSelection = true
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
+        panel.treatsFilePackagesAsDirectories = false
         panel.begin { [weak self] response in
             guard response == .OK, let self else { return }
             self.openFiles(panel.urls)
@@ -70,19 +141,106 @@ final class MainViewController: NSViewController {
     }
 
     private func openFiles(_ urls: [URL]) {
-        guard let first = urls.first else { return }
+        let files = urls.filter(isOpenableFile)
+        if files.count < urls.count {
+            presentAlert(title: "Some files could not be opened",
+                         message: "Directories and packages are not supported.")
+        }
+        guard let first = files.first else { return }
+
+        switch (windowModel.pane1.isOpen, windowModel.pane2.isOpen) {
+        case (false, _):
+            // Rule 1: no panes occupied — first → pane 1, second → pane 2.
+            guard openIntoPane(index: 0, url: first) else { return }
+            if files.count >= 2 {
+                _ = openIntoPane(index: 1, url: files[1])
+            }
+            windowModel.setActivePane(0)
+
+        case (true, false):
+            // Rule 2: only pane 1 occupied — first file opens in pane 2.
+            guard openIntoPane(index: 1, url: first) else { return }
+            windowModel.setActivePane(1)
+
+        case (true, true):
+            // Rule 3: both occupied — replace the active pane.
+            guard openIntoPane(index: windowModel.activePaneIndex, url: first) else { return }
+        }
+
+        if files.count > 2 {
+            presentAlert(title: "Additional files ignored",
+                         message: "Only the first two selected files were opened.")
+        }
+        refreshMode()
+    }
+
+    /// Opens `url` into the pane at `index`, enforcing §4.1 rules 4–6 (dirty
+    /// replacement confirmation, same-file reload, no same file in both panes).
+    /// Returns false when the open was refused or failed.
+    private func openIntoPane(index: Int, url: URL) -> Bool {
+        let pane = index == 0 ? windowModel.pane1 : windowModel.pane2
+        let other = index == 0 ? windowModel.pane2 : windowModel.pane1
+
+        // Rule 6: same file already open in the other pane.
+        if other.isOpen, FileIdentity(url: url) == other.document?.identity {
+            presentAlert(title: "File already open",
+                         message: "“\(url.lastPathComponent)” is already open in the other pane and cannot be opened twice.")
+            return false
+        }
+
+        // Rule 5: same file already open in the target pane → reload/no-op.
+        if pane.isOpen, FileIdentity(url: url) == pane.document?.identity {
+            if pane.status.isDirty {
+                let response = confirmAlert(title: "Reload file?",
+                                            message: "“\(url.lastPathComponent)” has unsaved changes. Reload and discard them?",
+                                            confirmTitle: "Reload",
+                                            destructive: true)
+                guard response == .alertFirstButtonReturn else { return false }
+            }
+            do {
+                try pane.revert()
+                return true
+            } catch {
+                presentError("Could not reload file.", error)
+                return false
+            }
+        }
+
+        // Rule 4: replacing a dirty pane requires confirmation.
+        if pane.isOpen, pane.status.isDirty {
+            let alert = NSAlert()
+            alert.messageText = "Replace unsaved changes?"
+            alert.informativeText = "“\(pane.status.fileName)” has unsaved changes. Save and replace, or replace without saving?"
+            alert.addButton(withTitle: "Save and Replace")
+            alert.addButton(withTitle: "Replace Without Saving")
+            alert.addButton(withTitle: "Cancel")
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:  // Save and Replace
+                do {
+                    try pane.save()
+                } catch {
+                    presentError("Save failed.", error)
+                    return false
+                }
+            case .alertSecondButtonReturn:  // Replace Without Saving
+                break
+            default:
+                return false
+            }
+        }
+
         do {
-            try windowModel.pane1.open(url: first)
+            try pane.open(url: url)
+            return true
         } catch {
             presentError("Could not open file.", error)
-            return
+            return false
         }
-        if urls.count > 1 {
-            presentAlert(title: "Additional files ignored",
-                         message: "Only the first selected file was opened. Opening two files at once arrives in a later milestone.")
-        }
-        windowModel.setActivePane(0)
-        apply(mode: .singleFile)
+    }
+
+    private func isOpenableFile(_ url: URL) -> Bool {
+        let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
+        return values?.isDirectory == false
     }
 
     // MARK: - Save / Save As / Revert (§5)
@@ -135,12 +293,21 @@ final class MainViewController: NSViewController {
         }
     }
 
+    // MARK: - Pane / window closing (§3.5/3.6)
+
+    /// File > Close Pane: closes the active pane. In comparison mode this
+    /// returns to single-file mode (with pane 2 promoted when pane 1 closes);
+    /// closing the last pane returns to empty mode.
     @objc func closeCurrentFile() {
-        let pane = activePane
+        closePane(at: windowModel.activePaneIndex)
+    }
+
+    /// Closes the pane at `index` after the standard dirty prompt.
+    func closePane(at index: Int) {
+        let pane = index == 0 ? windowModel.pane1 : windowModel.pane2
         guard pane.isOpen else { return }
         if pane.status.isDirty {
-            let response = confirmSaveDiscardCancel()
-            switch response {
+            switch confirmSaveDiscardCancel() {
             case .alertFirstButtonReturn:  // Save
                 do {
                     try pane.save()
@@ -154,18 +321,21 @@ final class MainViewController: NSViewController {
                 return
             }
         }
-        pane.close()
-        apply(mode: .empty)
+        windowModel.closePane(index)
+        refreshMode()
+        if mode == .singleFile {
+            activeFilePane?.focusHexView()
+        }
     }
 
     // MARK: - Edit commands (§7, §12)
 
     @objc func undoEdit() {
-        try? activePane.undo()
+        _ = try? activePane.undo()
     }
 
     @objc func redoEdit() {
-        try? activePane.redo()
+        _ = try? activePane.redo()
     }
 
     @objc func selectAllBytes() {
@@ -245,22 +415,58 @@ final class MainViewController: NSViewController {
         }
     }
 
+    // MARK: - Comparison navigation (§10.3)
+
+    @objc func nextDifference() { navigateBlock(kind: .different, direction: .forward) }
+    @objc func previousDifference() { navigateBlock(kind: .different, direction: .backward) }
+    @objc func nextSameBlock() { navigateBlock(kind: .same, direction: .forward) }
+    @objc func previousSameBlock() { navigateBlock(kind: .same, direction: .backward) }
+
+    private func navigateBlock(kind: DiffBlock.Kind, direction: SearchDirection) {
+        guard mode == .comparison else { return }
+        let from = windowModel.activePane.caretOffset
+        Task {
+            guard let block = await comparisonCoordinator.findBlock(kind: kind, direction: direction, from: from) else {
+                let what = kind == .different ? "difference" : "same block"
+                NSSound.beep()
+                comparisonView?.showNavigationMessage("No more \(what)")
+                return
+            }
+            let target = block.range.lowerBound
+            windowModel.pane1.moveCaret(to: target)
+            windowModel.pane2.moveCaret(to: target)
+            comparisonView?.refreshComparisonInfo()
+            focusActiveHexView()
+        }
+    }
+
+    /// View > Toggle Pane Layout (§3.3).
+    @objc func togglePaneLayout() {
+        guard mode == .comparison else { return }
+        comparisonView?.toggleLayout()
+    }
+
     // MARK: - Dialogs (§10)
 
     @objc func goToPosition() {
         let pane = activePane
         guard pane.isOpen else { return }
-        let fileSize = pane.fileSize
-        let sheet = GoToSheetController(fileSize: fileSize) { [weak self] offset in
+        let largerSize = max(windowModel.pane1.fileSize, windowModel.pane2.fileSize)
+        let sheet = GoToSheetController(fileSize: largerSize) { [weak self] offset in
             guard let self else { return }
-            if offset > fileSize {
+            if offset > largerSize {
                 self.presentAlert(
                     title: "Offset beyond end of file",
-                    message: "Offset \(String(format: "0x%X", offset)) is beyond the end of the file (\(String(format: "0x%X", fileSize)) bytes). Moved to the end."
+                    message: "Offset \(String(format: "0x%X", offset)) is beyond the end of the file(s) (\(String(format: "0x%X", largerSize)) bytes). Moved to the end."
                 )
-                pane.moveCaret(to: fileSize)
+            }
+            let target = min(offset, largerSize)
+            if self.mode == .comparison {
+                // §10.1: move both panes; each clamps to its own EOF.
+                self.windowModel.pane1.moveCaret(to: target)
+                self.windowModel.pane2.moveCaret(to: target)
             } else {
-                pane.moveCaret(to: offset)
+                pane.moveCaret(to: target)
             }
             self.focusActiveHexView()
         }
@@ -282,12 +488,7 @@ final class MainViewController: NSViewController {
         let sheet = FindSheetController { [weak self] pattern, direction in
             guard let self else { return false }
             let selection = pane.hexSelection()
-            let from: UInt64
-            if direction == .forward {
-                from = selection.isEmpty ? selection.start : selection.end
-            } else {
-                from = selection.isEmpty ? selection.start : selection.start
-            }
+            let from = selection.isEmpty ? selection.start : selection.start
             guard let range = try? pane.find(pattern: pattern, from: from, direction: direction) else {
                 return false
             }
@@ -341,6 +542,43 @@ final class MainViewController: NSViewController {
     }
 }
 
+// MARK: - Window closing (§3.6)
+
+extension MainViewController: NSWindowDelegate {
+    /// Combined dirty prompt on window close: list every modified file, offer
+    /// Save / Don't Save / Cancel. Aborts the close when a save fails so no
+    /// change is ever lost silently.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        let panes = [windowModel.pane1, windowModel.pane2]
+        let dirty = panes.filter { $0.isOpen && $0.status.isDirty }
+        guard !dirty.isEmpty else { return true }
+
+        let names = dirty.map { "“\($0.status.fileName)”" }.joined(separator: ", ")
+        let alert = NSAlert()
+        alert.messageText = "Save changes before closing?"
+        alert.informativeText = "The following files have unsaved changes: \(names)."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Don't Save")
+        alert.addButton(withTitle: "Cancel")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            for pane in dirty {
+                do {
+                    try pane.save()
+                } catch {
+                    presentError("Could not save “\(pane.status.fileName)”.", error)
+                    return false
+                }
+            }
+            return true
+        case .alertSecondButtonReturn:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
 // MARK: - Menu validation
 
 extension MainViewController: NSMenuItemValidation {
@@ -364,6 +602,12 @@ extension MainViewController: NSMenuItemValidation {
         case #selector(copySelection):
             let pane = activePane
             return pane.isOpen && !pane.hexSelection().isEmpty
+        case #selector(nextDifference),
+             #selector(previousDifference),
+             #selector(nextSameBlock),
+             #selector(previousSameBlock),
+             #selector(togglePaneLayout):
+            return mode == .comparison
         default:
             return true
         }

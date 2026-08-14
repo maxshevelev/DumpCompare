@@ -213,7 +213,17 @@ Requirement sections: §3, §6, §7, §10.1, §10.2, §12, §15; acceptance §18
 
 ---
 
-## 9. Milestone 5 — Comparison mode
+## 9. Milestone 5 — Comparison mode ✅ done
+
+> **Implementation findings (M5):**
+> - `ComparisonCoordinator` (MainActor) owns one `DiffIndexBuilder` actor. `start()` does `cancel()` → `reset()` → build; actor FIFO guarantees the stale scan's `CancellationError` lands before the reset, and a `generation` counter drops any result from a superseded build. Edits that arrive while the first build is in flight are buffered in `pendingEdits` and applied in order once the index lands; afterwards they queue and drain in background batches. `stop()` drops the index and cancels.
+> - The visible-region diff is **derived live** in `hexByteStates` by reading the companion pane's bytes for the same absolute range — no separate visible index to keep in sync. EOF-only bytes in the longer pane highlight as differences, the shorter pane shows muted placeholders; the background block index only drives navigation. This stays self-consistent with the index because both use the same absolute-offset rule.
+> - The index must see live bytes, so the coordinator's provider reads `pane.byteStorage`. `EditOverlayStorage` is a class, so the captured `ByteStorage` references reflect subsequent edits; undo/redo/revert replace the storage and fire `onFullInvalidation` → `rebuild()`, which re-reads via the provider.
+> - Navigation uses the built index's `nextDifference/previousDifference/nextSame/previousSame` when available; while it is still building, `findBlock` falls back to an on-demand chunked `scanForBlock` so the UI never waits and never blocks (§10.3).
+> - Pane caret/selection sync uses a weak companion with an echo guard; scroll sync observes `NSView.boundsDidChangeNotification` on both clip views and clamps so a shorter pane can't scroll into blank space.
+> - Closing pane 1 with pane 2 open promotes pane2 → pane1 in `WindowViewModel` (swapping the pane instances) and `MainViewController` re-applies the mode with fresh views; window close shows a combined dirty prompt listing every modified file.
+> - Test gotcha worth keeping: pane companions are `weak`, so a test that destructures a helper tuple and drops one pane deallocates it and *silently* turns the companion diff off. Tests must keep both panes alive for the whole test.
+> - New tests: `ComparisonCoordinatorTests` (build + navigation, incremental overwrite/insert/delete reindexing, `stop()` drops the index) and `ComparisonPaneTests` (visible diff incl. EOF-only bytes, modified+different combined, immediate diff refresh after an edit, selection sync + clamping). App bundle now 50 tests green (`xcodebuild test`); core package 150 green.
 
 Requirement sections: §3, §6, §8, §9, §10.3, §15; acceptance §18.3–18.10.
 

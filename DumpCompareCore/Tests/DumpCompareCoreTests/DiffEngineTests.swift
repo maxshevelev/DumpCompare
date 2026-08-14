@@ -348,4 +348,103 @@ final class DiffEngineTests: XCTestCase {
             XCTAssertTrue(error is CancellationError)
         }
     }
+
+    // MARK: - On-demand block search (findBlock)
+
+    /// Blocks: same[0,2) diff[2,4) same[4,6) diff[6,8)
+    private func makeAlternating() -> (ArrayStorage, ArrayStorage) {
+        (ArrayStorage([0, 0, 1, 1, 2, 2, 3, 3]),
+         ArrayStorage([0, 0, 9, 9, 2, 2, 8, 8]))
+    }
+
+    func testFindBlockForward() throws {
+        let (left, right) = makeAlternating()
+        // Matches index.nextDifference semantics: strictly after.
+        XCTAssertEqual(try DiffEngine.findBlock(kind: .different, direction: .forward, from: 0, left: left, right: right)?.range, 2..<4)
+        XCTAssertEqual(try DiffEngine.findBlock(kind: .different, direction: .forward, from: 2, left: left, right: right)?.range, 6..<8)
+        XCTAssertNil(try DiffEngine.findBlock(kind: .different, direction: .forward, from: 7, left: left, right: right))
+        XCTAssertEqual(try DiffEngine.findBlock(kind: .same, direction: .forward, from: 1, left: left, right: right)?.range, 4..<6)
+        XCTAssertNil(try DiffEngine.findBlock(kind: .same, direction: .forward, from: 4, left: left, right: right))
+    }
+
+    func testFindBlockBackward() throws {
+        let (left, right) = makeAlternating()
+        XCTAssertEqual(try DiffEngine.findBlock(kind: .different, direction: .backward, from: 4, left: left, right: right)?.range, 2..<4)
+        XCTAssertEqual(try DiffEngine.findBlock(kind: .different, direction: .backward, from: 8, left: left, right: right)?.range, 6..<8)
+        XCTAssertNil(try DiffEngine.findBlock(kind: .different, direction: .backward, from: 1, left: left, right: right))
+        XCTAssertEqual(try DiffEngine.findBlock(kind: .same, direction: .backward, from: 7, left: left, right: right)?.range, 4..<6)
+    }
+
+    func testFindBlockMatchesIndexNavigation() throws {
+        let (left, right) = makeAlternating()
+        let index = try DiffEngine.scan(left: left, right: right)
+        let offsets: [UInt64] = [0, 1, 2, 3, 4, 5, 6, 7]
+        for offset in offsets {
+            for kind in [Kind.same, Kind.different] {
+                for direction in [SearchDirection.forward, SearchDirection.backward] {
+                    let viaIndex: DiffBlock? = {
+                        switch (kind, direction) {
+                        case (.different, .forward): return index.nextDifference(from: offset)
+                        case (.different, .backward): return index.previousDifference(from: offset)
+                        case (.same, .forward): return index.nextSame(from: offset)
+                        case (.same, .backward): return index.previousSame(from: offset)
+                        }
+                    }()
+                    let viaScan = try DiffEngine.findBlock(
+                        kind: kind, direction: direction, from: offset, left: left, right: right
+                    )
+                    XCTAssertEqual(viaScan?.range, viaIndex?.range,
+                                   "kind=\(kind) direction=\(direction) from=\(offset)")
+                }
+            }
+        }
+    }
+
+    func testFindBlockIncludesEOFOnlyTail() throws {
+        let left = ArrayStorage([0x00, 0x01])
+        let right = ArrayStorage([0x00, 0x01, 0xAA, 0xBB])
+        XCTAssertEqual(try DiffEngine.findBlock(kind: .different, direction: .forward, from: 0, left: left, right: right)?.range, 2..<4)
+        XCTAssertEqual(try DiffEngine.findBlock(kind: .different, direction: .backward, from: 4, left: left, right: right)?.range, 2..<4)
+        // An all-equal shorter pair still has the EOF-only tail as a diff block.
+        let eq = ArrayStorage([0x01, 0x02])
+        let longer = ArrayStorage([0x01, 0x02, 0x03])
+        XCTAssertEqual(try DiffEngine.findBlock(kind: .different, direction: .forward, from: 0, left: eq, right: longer)?.range, 2..<3)
+    }
+
+    func testFindBlockOnDemandScanAtActor() async throws {
+        let builder = DiffIndexBuilder()
+        let result = try await builder.scanForBlock(
+            kind: .different, direction: .forward, from: 0,
+            left: ArrayStorage([0, 1, 2]), right: ArrayStorage([0, 9, 9])
+        )
+        XCTAssertEqual(result?.range, 1..<3)
+    }
+
+    // MARK: - Builder cancel/reset lifecycle
+
+    func testCancelThenResetAllowsNewBuild() async throws {
+        let builder = DiffIndexBuilder()
+        await builder.cancel()
+        // A cancelled builder refuses to build…
+        do {
+            _ = try await builder.build(left: ArrayStorage([1]), right: ArrayStorage([2]))
+            XCTFail("expected CancellationError after cancel()")
+        } catch is CancellationError {
+            // expected
+        } catch {
+            XCTFail("unexpected error \(error)")
+        }
+        // …until reset() clears the flag.
+        await builder.reset()
+        let index = try await builder.build(left: ArrayStorage([1]), right: ArrayStorage([2]))
+        XCTAssertEqual(index.blocks.map(\.kind), [.different])
+    }
+
+    func testResetClearsProgress() async throws {
+        let builder = DiffIndexBuilder()
+        await builder.cancel()
+        await builder.reset()
+        let p = await builder.progress
+        XCTAssertEqual(p, 0)
+    }
 }
