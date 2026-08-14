@@ -651,16 +651,36 @@ final class MainViewController: NSViewController {
         guard pane.isOpen else { return }
         let sheet = FindSheetController { [weak self] pattern, direction in
             guard let self else { return false }
-            let selection = pane.hexSelection()
-            let from = selection.isEmpty ? selection.start : selection.start
-            guard let range = try? pane.find(pattern: pattern, from: from, direction: direction) else {
-                return false
-            }
-            pane.select(range: range)
-            self.focusActiveHexView()
-            return true
+            return await self.performFind(pattern: pattern, direction: direction)
         }
         presentAsSheet(sheet)
+    }
+
+    /// Runs a search off the main thread and, on a match, selects it in the
+    /// active pane. The sheet stays responsive (spinner) and the scan is
+    /// cancelled if the user presses Cancel/Esc (§13.8, §14.4, §18 #10).
+    private func performFind(pattern: [UInt8], direction: SearchDirection) async -> Bool {
+        let pane = activePane
+        guard pane.isOpen, let storage = pane.document?.storage else { return false }
+        let from = pane.caretOffset
+        let background = Task.detached(priority: .userInitiated) {
+            do {
+                return try SearchEngine.find(pattern: pattern, in: storage, from: from, direction: direction,
+                                             shouldCancel: { Task.isCancelled })
+            } catch is CancellationError {
+                return nil
+            } catch {
+                return nil
+            }
+        }
+        let range = await withTaskCancellationHandler(
+            operation: { await background.value },
+            onCancel: { background.cancel() }
+        )
+        guard !Task.isCancelled, let range, pane.isOpen else { return false }
+        pane.select(range: range)
+        focusActiveHexView()
+        return true
     }
 
     // MARK: - Alerts

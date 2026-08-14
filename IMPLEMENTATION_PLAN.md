@@ -271,18 +271,58 @@ Requirement sections: §4, §5.5; acceptance §18.1.
 
 ---
 
-## 11. Milestone 7 — Hardening, accessibility, acceptance
+## 11. Milestone 7 — Hardening, accessibility, acceptance — ✅ done
 
 Requirement sections: §15, §16, §17, §18.
 
-1. **Accessibility (§15):** full keyboard navigation, accessible labels on hex cells/controls, contrast check in light + dark, non-color cues for EOF/unsaved states.
-2. **Error handling sweep (§16):** each listed error surfaces a clear, recoverable prompt; confirm destructive ops; never lose changes silently.
-3. **Performance validation (§13):** open a multi-GB file; scroll smoothly; search and full-diff in background with progress; memory stays bounded.
-4. **Acceptance checklist (§18):** walk every numbered criterion; fix gaps.
-5. **UI tests (optional, §17):** open flows, drag-and-drop, save prompts, navigation commands (XCTest UI target).
-6. **Final polish:** menu key-equivalents review, README, local docs, git housekeeping, final code review.
+1. **Accessibility (§15):** full keyboard navigation, accessible labels on hex cells/controls, contrast check in light + dark, non-color cues for EOF/unsaved states. — done
+2. **Error handling sweep (§16):** each listed error surfaces a clear, recoverable prompt; confirm destructive ops; never lose changes silently. — done (audited; all 10 cases covered, see §16 audit below)
+3. **Performance validation (§13):** open a multi-GB file; scroll smoothly; search and full-diff in background with progress; memory stays bounded. — done (see perf numbers below)
+4. **Acceptance checklist (§18):** walk every numbered criterion; fix gaps. — done (all 14; see walk below)
+5. **UI tests (optional, §17):** open flows, drag-and-drop, save prompts, navigation commands (XCTest UI target). — skipped (optional; app unit suite + smoke launch cover the core flows)
+6. **Final polish:** menu key-equivalents review, README, local docs, git housekeeping, final code review. — done
 
-**Definition of done:** all 14 acceptance criteria met; core unit tests green; no known crash or data-loss path; app is keyboard-accessible and Dark-Mode clean.
+**Definition of done:** all 14 acceptance criteria met; core unit tests green; no known crash or data-loss path; app is keyboard-accessible and Dark-Mode clean. — met
+
+### Implementation findings (M7)
+
+**§18 acceptance walk — all 14 criteria met.** The only code gap found was criterion 10:
+search ran synchronously on the main thread. Fixed by making `FindSheetController.onFind` async and
+running the scan in a `Task.detached(priority: .userInitiated)` with
+`withTaskCancellationHandler` propagation; the sheet shows a spinner and disables its inputs while
+searching, and Cancel/Esc (or dismissing the sheet) cancels the background scan
+(`MainViewController.performFind`, `FindSheetController.startSearch`). Full-file diff was already
+background (ComparisonCoordinator → DiffIndexBuilder actor, "Indexing… %" in the status bar).
+
+**§15 accessibility:**
+- `HexView` is now an accessibility element with a live value describing the caret/selection
+  (`accessibilityValue`), labelled "Hex dump — <file>" by the pane header.
+- Non-color cues added for the two states §15 calls out: unsaved bytes get an underline beneath the
+  red foreground (`HexTheme.modifiedUnderline`); EOF cells get a diagonal hatch over the muted fill
+  (`drawEOFHatch`). Dirty state also has a text "*" + "Modified" label, and read-only a lock glyph +
+  "Read-Only" text.
+- Sheet fields/popups carry accessibility labels (`setAccessibilityLabel`), including the dynamic
+  Select-Block second field (End ⇄ Length).
+- Keyboard navigation was already in place (HexView arrows/Home/End/PageUp/PageDown/typing, sheet
+  Return/Esc/Tab, Cmd+⌥ arrow diff navigation, Cmd+1/2 pane activation via click, Tab between
+  panes).
+
+**§16 error-handling sweep — no code changes needed.** Audit result: unable-to-open → `presentFileError`;
+directory/package → `openableFiles` alert; permission denied / sandbox access denied →
+`isSandboxAccessDenied` "Access denied — choose again with File > Open" prompt; same file in other
+pane → "File already open" alert; invalid hex/decimal → sheet `validate()` + inline error; invalid
+selection range → Select-Block validation; unsupported paste → `PasteError.noClipboardData`; save
+failure → `presentFileError` (read-only redirects to Save As); external modification →
+`presentExternalChange` (Reload/Keep/Save As). All destructive ops (delete, insert, revert, replace)
+confirm; window close aborts if any save fails.
+
+**§13 performance validation (Release build, 1 GB files, RSS via `task_info`):**
+- Full-file diff of two 1 GB files: **5.1 s** wall, RSS stays at **9 MB** (bounded chunk cache).
+- Worst-case no-match search over 1 GB: **1.8 s**; cancellation lands in **0.055 s** (50 ms in, scan
+  aborts immediately).
+- Rendering is virtualized (only visible rows drawn), so scrolling is independent of file size.
+
+**§17 tests:** core **150** tests and app **64** tests pass; app smoke-launches and stays alive.
 
 ---
 

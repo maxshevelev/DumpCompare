@@ -152,6 +152,7 @@ class SheetViewController: NSViewController {
         field.action = #selector(submitPressed)
         field.translatesAutoresizingMaskIntoConstraints = false
         field.widthAnchor.constraint(equalToConstant: 240).isActive = true
+        field.setAccessibilityLabel(text)  // §15: VoiceOver names the field.
 
         let row = NSStackView()
         row.orientation = .horizontal
@@ -252,6 +253,7 @@ final class SelectBlockSheetController: SheetViewController {
         secondField.action = #selector(submitPressed)
         secondField.translatesAutoresizingMaskIntoConstraints = false
         secondField.widthAnchor.constraint(equalToConstant: 240).isActive = true
+        secondField.setAccessibilityLabel("End")  // §15; updated by modeChanged.
 
         let row = NSStackView()
         row.orientation = .horizontal
@@ -266,6 +268,7 @@ final class SelectBlockSheetController: SheetViewController {
 
     @objc private func modeChanged(_ sender: NSPopUpButton) {
         secondLabel.stringValue = sender.indexOfSelectedItem == Mode.startEnd.rawValue ? "End:" : "Length:"
+        secondField.setAccessibilityLabel(secondLabel.stringValue)  // §15
     }
 
     override func validate() -> String? {
@@ -312,19 +315,33 @@ final class SelectBlockSheetController: SheetViewController {
 // MARK: - Find (§11)
 
 /// Pattern + encoding + Find Next / Find Previous.
+///
+/// Search runs in the background (the `onFind` closure is async), so a large
+/// file is scanned without blocking the UI (§13.8, §14.4). While a search is in
+/// flight the sheet shows a spinner, disables its inputs, and can be aborted by
+/// pressing Cancel/Esc — which cancels the background scan.
 final class FindSheetController: SheetViewController {
-    private let onFind: ([UInt8], SearchDirection) -> Bool  // returns found
+    private let onFind: ([UInt8], SearchDirection) async -> Bool  // returns found
 
     private var patternField: NSTextField!
     private var encodingPopup: NSPopUpButton!
+    private var findNextButton: NSButton!
+    private var findPreviousButton: NSButton!
+    private let progressIndicator = NSProgressIndicator()
+    private let busyLabel = NSTextField(labelWithString: "Searching…")
+    private var searchTask: Task<Void, Never>?
 
-    init(onFind: @escaping ([UInt8], SearchDirection) -> Bool) {
+    init(onFind: @escaping ([UInt8], SearchDirection) async -> Bool) {
         self.onFind = onFind
         super.init(title: "Find", message: "Search the active file's current contents.")
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
+    }
+
+    deinit {
+        searchTask?.cancel()
     }
 
     override func loadView() {
@@ -334,6 +351,7 @@ final class FindSheetController: SheetViewController {
 
         encodingPopup = NSPopUpButton()
         encodingPopup.addItems(withTitles: SearchEncoding.allCases.map(Self.title(for:)))
+        encodingPopup.setAccessibilityLabel("Encoding")  // §15
         let label = NSTextField(labelWithString: "Encoding:")
         label.font = .systemFont(ofSize: 12)
         label.textColor = .secondaryLabelColor
@@ -356,9 +374,44 @@ final class FindSheetController: SheetViewController {
         let findPrevious = NSButton(title: "Find Previous", target: self, action: #selector(findPrevious))
         findPrevious.keyEquivalent = ""
         buttonRow.addArrangedSubview(findPrevious)
+        findNextButton = findNext
+        findPreviousButton = findPrevious
+
+        // Busy row (spinner + "Searching…"), hidden until a search starts.
+        progressIndicator.style = .spinning
+        progressIndicator.controlSize = .small
+        progressIndicator.translatesAutoresizingMaskIntoConstraints = false
+        busyLabel.font = .systemFont(ofSize: 12)
+        busyLabel.textColor = .secondaryLabelColor
+        let busyRow = NSStackView()
+        busyRow.orientation = .horizontal
+        busyRow.spacing = 6
+        busyRow.addArrangedSubview(progressIndicator)
+        busyRow.addArrangedSubview(busyLabel)
+        contentStack.addArrangedSubview(busyRow)
+        setBusy(false)
     }
 
     override func firstField() -> NSView? { patternField }
+
+    override func cancelPressed() {
+        searchTask?.cancel()
+        super.cancelPressed()
+    }
+
+    private func setBusy(_ busy: Bool) {
+        progressIndicator.isHidden = !busy
+        busyLabel.isHidden = !busy
+        if busy {
+            progressIndicator.startAnimation(nil)
+        } else {
+            progressIndicator.stopAnimation(nil)
+        }
+        findNextButton?.isEnabled = !busy
+        findPreviousButton?.isEnabled = !busy
+        patternField?.isEnabled = !busy
+        encodingPopup?.isEnabled = !busy
+    }
 
     private func currentEncoding() -> SearchEncoding {
         SearchEncoding.allCases[min(encodingPopup.indexOfSelectedItem, SearchEncoding.allCases.count - 1)]
@@ -374,20 +427,27 @@ final class FindSheetController: SheetViewController {
     }
 
     @objc func findNext() {
-        guard let pattern = parsedPattern() else { return }
-        if onFind(pattern.bytes, .forward) {
-            dismiss(self)
-        } else {
-            showError("No match found.")
-        }
+        startSearch(.forward)
     }
 
     @objc func findPrevious() {
-        guard let pattern = parsedPattern() else { return }
-        if onFind(pattern.bytes, .backward) {
-            dismiss(self)
-        } else {
-            showError("No match found.")
+        startSearch(.backward)
+    }
+
+    private func startSearch(_ direction: SearchDirection) {
+        guard searchTask == nil, let pattern = parsedPattern() else { return }
+        setBusy(true)
+        searchTask = Task { [weak self] in
+            guard let self else { return }
+            let found = await self.onFind(pattern.bytes, direction)
+            guard !Task.isCancelled else { return }
+            self.searchTask = nil
+            self.setBusy(false)
+            if found {
+                self.dismiss(self)
+            } else {
+                self.showError("No match found.")
+            }
         }
     }
 

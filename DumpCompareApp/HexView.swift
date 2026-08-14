@@ -33,6 +33,9 @@ final class HexView: NSView {
     weak var dataSource: HexViewDataSource?
     weak var delegate: HexEditorDelegate?
 
+    /// Accessible label for the grid, e.g. "Hex dump — File A" (§15).
+    var accessibilityTitle = "Hex dump"
+
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
 
@@ -49,6 +52,10 @@ final class HexView: NSView {
         rowHeight = ceil((font.ascender - font.descender)) + 4
         currentLayout = HexLayout(charWidth: charWidth, rowHeight: rowHeight)
         super.init(frame: .zero)
+        // Expose the grid to VoiceOver with a live value describing the caret
+        // and selection (§15 accessibility).
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
     }
 
     @available(*, unavailable)
@@ -86,6 +93,22 @@ final class HexView: NSView {
         if let scroll = enclosingScrollView {
             setFrameSize(NSSize(width: max(frame.width, scroll.contentSize.width), height: frame.height))
         }
+    }
+
+    // MARK: - Accessibility (§15)
+
+    override func accessibilityLabel() -> String? { accessibilityTitle }
+
+    override func accessibilityValue() -> Any? {
+        guard let dataSource else { return "" }
+        let selection = dataSource.hexSelection()
+        let size = dataSource.fileSize
+        let start = String(selection.start, radix: 16).uppercased()
+        if selection.isEmpty {
+            return "Offset 0x\(start). File size \(size) bytes."
+        }
+        let end = String(selection.end, radix: 16).uppercased()
+        return "Offset 0x\(start), \(selection.count) bytes selected through 0x\(end). File size \(size) bytes."
     }
 
     // MARK: - Focus
@@ -154,6 +177,9 @@ final class HexView: NSView {
                 HexTheme.eofFill.setFill()
                 NSBezierPath(rect: hexFrame).fill()
                 NSBezierPath(rect: asciiRect).fill()
+                // Style cue for EOF (§15): a fine diagonal hatch over the muted
+                // fill so the file's end reads without relying on color alone.
+                drawEOFHatch(in: [hexFrame, asciiRect])
                 continue
             }
 
@@ -175,6 +201,26 @@ final class HexView: NSView {
 
             let asciiChar = printableAscii(state.byte)
             draw(text: asciiChar, in: asciiRect, baseline: baseline, color: textColor)
+
+            if state.isModified {
+                // Style cue for unsaved bytes (§15): an underline beneath the red
+                // foreground, so modified bytes are identifiable by shape too.
+                HexTheme.modifiedUnderline.setFill()
+                NSBezierPath(rect: CGRect(x: hexFrame.minX, y: hexFrame.maxY - 1.5, width: hexFrame.width, height: 1.5)).fill()
+                NSBezierPath(rect: CGRect(x: asciiRect.minX, y: asciiRect.maxY - 1.5, width: asciiRect.width, height: 1.5)).fill()
+            }
+        }
+    }
+
+    /// Draws a fine diagonal hatch over the given rects to mark EOF cells.
+    private func drawEOFHatch(in rects: [CGRect]) {
+        HexTheme.eofHatch.setStroke()
+        for rect in rects {
+            let path = NSBezierPath()
+            path.move(to: NSPoint(x: rect.minX + 2, y: rect.maxY - 2))
+            path.line(to: NSPoint(x: rect.maxX - 2, y: rect.minY + 2))
+            path.lineWidth = 1
+            path.stroke()
         }
     }
 
@@ -370,6 +416,16 @@ enum HexTheme {
             ? NSColor(white: 0.22, alpha: 0.5)
             : NSColor(white: 0.80, alpha: 0.5)
     }
+
+    /// Hatch strokes over EOF cells (a non-color "end of file" cue, §15).
+    static let eofHatch = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(white: 0.55, alpha: 0.6)
+            : NSColor(white: 0.45, alpha: 0.6)
+    }
+
+    /// Underline beneath modified (unsaved) bytes (a non-color cue, §15).
+    static let modifiedUnderline = NSColor.systemRed
 }
 
 extension String {

@@ -185,6 +185,8 @@ final class FilePaneView: NSView {
         let dirtyStar = status.isDirty ? "*" : ""
         titleLabel.stringValue = "\(status.fileName)\(dirtyStar)"
         lockLabel.stringValue = status.isReadOnly ? "🔒 Read-Only" : ""
+        // VoiceOver names the grid after its file (§15).
+        hexView.accessibilityTitle = "Hex dump — \(status.fileName)"
     }
 
     private func updateStatus() {
