@@ -47,14 +47,35 @@ final class ComparisonView: NSView {
         splitView.autosaveName = Self.splitAutosaveName
         addSubview(splitView)
 
-        // Let the splitter distribute evenly on first layout.
+        // Let the splitter treat both panes as flexible.
         paneView1.setContentHuggingPriority(.defaultLow, for: .horizontal)
         paneView1.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         paneView2.setContentHuggingPriority(.defaultLow, for: .horizontal)
         paneView2.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
+        // The panes are created with a zero frame; their autoresizing-mask
+        // "width == 0" constraint would fight the split view's sizing (and the
+        // equal-size constraint below), so the split view takes full control.
+        paneView1.translatesAutoresizingMaskIntoConstraints = false
+        paneView2.translatesAutoresizingMaskIntoConstraints = false
         splitView.addArrangedSubview(paneView1)
         splitView.addArrangedSubview(paneView2)
+
+        // Always split 50/50 (§3.3): NSSplitView's default redistribution hands
+        // the whole resize delta to one pane and holds the other, and an
+        // autosaved divider can restore an uneven split. Equal-size constraints
+        // keep both panes identical on every window resize (width in side-by-side
+        // mode, height in stacked mode); the divider is therefore fixed and not
+        // draggable. In the opposite arrangement each constraint is trivially
+        // satisfied (both panes fill the split view).
+        let equalSizeConstraints = [
+            paneView1.widthAnchor.constraint(equalTo: paneView2.widthAnchor),
+            paneView1.heightAnchor.constraint(equalTo: paneView2.heightAnchor),
+        ]
+        for constraint in equalSizeConstraints {
+            constraint.priority = .required
+        }
+        NSLayoutConstraint.activate(equalSizeConstraints)
 
         paneView1.onActivate = { [weak self] in self?.onPaneActivated?(0) }
         paneView2.onActivate = { [weak self] in self?.onPaneActivated?(1) }
