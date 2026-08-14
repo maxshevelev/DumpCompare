@@ -16,12 +16,11 @@ final class ComparisonView: NSView {
     /// active pane (§3.3).
     var onPaneActivated: ((Int) -> Void)?
 
-    private let splitView = NSSplitView()
+    let splitView = ProportionalSplitView()
     private var scrollObservers: [NSObjectProtocol] = []
     private var isSynchronizingScroll = false
 
     private static let layoutKey = "ComparisonPaneLayoutIsVertical"
-    private static let splitAutosaveName = "ComparisonSplit"
 
     init(coordinator: ComparisonCoordinator, paneView1: FilePaneView, paneView2: FilePaneView) {
         self.coordinator = coordinator
@@ -44,7 +43,6 @@ final class ComparisonView: NSView {
         splitView.translatesAutoresizingMaskIntoConstraints = false
         splitView.dividerStyle = .thin
         splitView.isVertical = UserDefaults.standard.object(forKey: Self.layoutKey) as? Bool ?? true
-        splitView.autosaveName = Self.splitAutosaveName
         addSubview(splitView)
 
         // Let the splitter treat both panes as flexible.
@@ -53,29 +51,21 @@ final class ComparisonView: NSView {
         paneView2.setContentHuggingPriority(.defaultLow, for: .horizontal)
         paneView2.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        // The panes are created with a zero frame; their autoresizing-mask
-        // "width == 0" constraint would fight the split view's sizing (and the
-        // equal-size constraint below), so the split view takes full control.
+        // The panes are Auto Layout subviews of the splitter; Proportional-
+        // SplitView's `layout()` override positions them proportionally (§3.3).
+        // Keeping `translatesAutoresizingMaskIntoConstraints` off avoids the
+        // autoresizing "width == 0" constraint that NSSplitView otherwise adds
+        // to zero-frame subviews.
         paneView1.translatesAutoresizingMaskIntoConstraints = false
         paneView2.translatesAutoresizingMaskIntoConstraints = false
         splitView.addArrangedSubview(paneView1)
         splitView.addArrangedSubview(paneView2)
 
-        // Always split 50/50 (§3.3): NSSplitView's default redistribution hands
-        // the whole resize delta to one pane and holds the other, and an
-        // autosaved divider can restore an uneven split. Equal-size constraints
-        // keep both panes identical on every window resize (width in side-by-side
-        // mode, height in stacked mode); the divider is therefore fixed and not
-        // draggable. In the opposite arrangement each constraint is trivially
-        // satisfied (both panes fill the split view).
-        let equalSizeConstraints = [
-            paneView1.widthAnchor.constraint(equalTo: paneView2.widthAnchor),
-            paneView1.heightAnchor.constraint(equalTo: paneView2.heightAnchor),
-        ]
-        for constraint in equalSizeConstraints {
-            constraint.priority = .required
-        }
-        NSLayoutConstraint.activate(equalSizeConstraints)
+        // §3.3: the split defaults to 50/50 (a fresh ComparisonView — e.g. the
+        // one built when the second file opens), the divider can be dragged to
+        // any ratio, and window resizes keep that ratio proportionally.
+        // No autosaveName: opening a second file always starts at 50/50 rather
+        // than restoring a stale divider position.
 
         paneView1.onActivate = { [weak self] in self?.onPaneActivated?(0) }
         paneView2.onActivate = { [weak self] in self?.onPaneActivated?(1) }

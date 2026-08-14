@@ -58,6 +58,11 @@ final class FilePaneView: NSView {
         // Header
         titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
         titleLabel.lineBreakMode = .byTruncatingMiddle
+        // The labels truncate; low priorities let them shrink gracefully when
+        // the splitter makes a pane narrow (§3.3). The pane's width itself is
+        // owned by ProportionalSplitView, not by this content.
+        titleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         lockLabel.font = .systemFont(ofSize: 12)
         lockLabel.textColor = .secondaryLabelColor
 
@@ -70,6 +75,11 @@ final class FilePaneView: NSView {
 
         let header = NSView()
         header.translatesAutoresizingMaskIntoConstraints = false
+        // Low priorities keep this container flexible so a narrow pane
+        // (§3.3) can shrink it and truncate the title instead of forcing a
+        // minimum width.
+        header.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        header.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         header.addSubview(titleLabel)
         header.addSubview(lockLabel)
         header.addSubview(closeButton)
@@ -91,8 +101,13 @@ final class FilePaneView: NSView {
         statusLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.lineBreakMode = .byTruncatingTail
+        statusLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let statusBar = NSView()
         statusBar.translatesAutoresizingMaskIntoConstraints = false
+        // Same as the header: stay flexible so a narrow pane can shrink it.
+        statusBar.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        statusBar.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         statusBar.addSubview(statusLabel)
         statusLabel.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -115,6 +130,10 @@ final class FilePaneView: NSView {
         stack.alignment = .width
         stack.spacing = 0
         stack.translatesAutoresizingMaskIntoConstraints = false
+        // Same reason as the header/status bar: the pane's width is owned by
+        // the NSSplitView, never by this content (§3.3).
+        stack.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        stack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         stack.addArrangedSubview(header)
         stack.addArrangedSubview(scrollView)
         stack.addArrangedSubview(statusBar)

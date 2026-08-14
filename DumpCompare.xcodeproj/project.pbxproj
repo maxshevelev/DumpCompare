@@ -19,6 +19,7 @@
 		4DDAA235F5AFD6E9FF949A35 /* FileChangeWatcherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95A1ED616E5D1F9C56E212FA /* FileChangeWatcherTests.swift */; };
 		5B3F5E75CD647B8FBC63F2B0 /* FileChangeWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 443E56A308DC1D5D8E806F72 /* FileChangeWatcher.swift */; };
 		60337FD7B95B8887CE53DBBE /* DumpCompareCore in Frameworks */ = {isa = PBXBuildFile; productRef = DD998B4928A6EFDFADE20701 /* DumpCompareCore */; };
+		625490B568C7A868881A203F /* ProportionalSplitView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E15C35C761C86E6D393816E5 /* ProportionalSplitView.swift */; };
 		6347640F90EE6FCB2E6FF01A /* ZoomToFitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FB49BC2E9C7922B6194C285 /* ZoomToFitTests.swift */; };
 		6C4A2D07C512800E3647C334 /* SandboxBookmarkStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EF3302417C4C7338004CE67 /* SandboxBookmarkStore.swift */; };
 		72FE060ED1406764B2E18350 /* HexLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8F0ABAC4DEEBAE7DD9A62BB /* HexLayoutTests.swift */; };
@@ -77,6 +78,7 @@
 		95D1B66993C6EA8CDEE1ADD7 /* HexView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HexView.swift; sourceTree = "<group>"; };
 		9FB49BC2E9C7922B6194C285 /* ZoomToFitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZoomToFitTests.swift; sourceTree = "<group>"; };
 		C8F0ABAC4DEEBAE7DD9A62BB /* HexLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HexLayoutTests.swift; sourceTree = "<group>"; };
+		E15C35C761C86E6D393816E5 /* ProportionalSplitView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProportionalSplitView.swift; sourceTree = "<group>"; };
 		ED2076217EBD1ED10294D11A /* WindowViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowViewModel.swift; sourceTree = "<group>"; };
 		F4060AF0A96DD6E896717F3A /* DumpCompareTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DumpCompareTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		FB33DB1270B0F3AD9A668F5C /* AppMain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppMain.swift; sourceTree = "<group>"; };
@@ -138,6 +140,7 @@
 				956C3B15B666232F79A544C1 /* MainWindowController.swift */,
 				569D15C9837FF35B5622867D /* OpenPlacement.swift */,
 				6818FEF833F78019596D65BB /* PaneViewModel.swift */,
+				E15C35C761C86E6D393816E5 /* ProportionalSplitView.swift */,
 				4EF3302417C4C7338004CE67 /* SandboxBookmarkStore.swift */,
 				4B1D587B9291F026D4B00A15 /* SheetControllers.swift */,
 				843BDADF6DC010ED5707D0F2 /* SingleFileDropView.swift */,
@@ -269,6 +272,7 @@
 				84F0705E874653F3E5EE8B15 /* MainWindowController.swift in Sources */,
 				046DB0B0F51FAD7F7428CFEB /* OpenPlacement.swift in Sources */,
 				7868ABBF947C029B69867CA0 /* PaneViewModel.swift in Sources */,
+				625490B568C7A868881A203F /* ProportionalSplitView.swift in Sources */,
 				6C4A2D07C512800E3647C334 /* SandboxBookmarkStore.swift in Sources */,
 				E4B2D90C3A49F9CAA976DCEF /* SheetControllers.swift in Sources */,
 				C469DA232E32792EBE3B5607 /* SingleFileDropView.swift in Sources */,
