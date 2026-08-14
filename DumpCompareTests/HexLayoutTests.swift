@@ -78,9 +78,9 @@ final class HexLayoutTests: XCTestCase {
         let w4 = HexLayout(charWidth: 8, rowHeight: 17, wordSize: 4)
         let byte3 = CGPoint(x: w4.hexByteX(column: 3), y: 0)
         XCTAssertEqual(w4.hitTest(point: byte3, rowCount: 10), HexLayout.Hit(row: 0, column: .hex(3)))
-        // Inside the gap between words — no cell.
+        // Inside the gap between words → the following word's first byte.
         let gap = CGPoint(x: w4.hexByteX(column: 3) + w4.hexByteWidth + w4.hexByteGap / 2, y: 0)
-        XCTAssertNil(w4.hitTest(point: gap, rowCount: 10))
+        XCTAssertEqual(w4.hitTest(point: gap, rowCount: 10), HexLayout.Hit(row: 0, column: .hex(4)))
 
         let w8 = HexLayout(charWidth: 8, rowHeight: 17, wordSize: 8)
         let last = CGPoint(x: w8.hexByteX(column: 15), y: 0)
@@ -189,11 +189,27 @@ final class HexLayoutTests: XCTestCase {
 
     func testHitTestMisses() {
         let l = makeLayout()
-        // In the gap between group cells.
-        XCTAssertNil(l.hitTest(point: CGPoint(x: 108, y: 0), rowCount: 10))
+        // Beyond the row's content (right padding).
+        XCTAssertNil(l.hitTest(point: CGPoint(x: 700, y: 0), rowCount: 10))
         // Beyond the last row.
         XCTAssertNil(l.hitTest(point: CGPoint(x: 200, y: 170), rowCount: 1))
         // Negative coordinates.
         XCTAssertNil(l.hitTest(point: CGPoint(x: -1, y: 0), rowCount: 10))
+    }
+
+    /// A click in a gap never falls dead: between words it lands on the
+    /// following word, between the two 8-byte groups on the next group's first
+    /// byte, and past the last hex byte on the row's last byte (§6).
+    func testHitTestGapMapsToNextWord() {
+        let l = makeLayout()
+        // Gap between byte 0 and byte 1 → byte 1.
+        let wordGap = CGPoint(x: l.hexByteX(column: 0) + l.hexByteWidth + l.hexByteGap / 2, y: 0)
+        XCTAssertEqual(l.hitTest(point: wordGap, rowCount: 10), HexLayout.Hit(row: 0, column: .hex(1)))
+        // Between-groups gap → first byte of the second group.
+        let betweenGap = CGPoint(x: l.hexByteX(column: 7) + l.hexByteWidth + l.betweenGroupsGap / 2, y: 0)
+        XCTAssertEqual(l.hitTest(point: betweenGap, rowCount: 10), HexLayout.Hit(row: 0, column: .hex(8)))
+        // Gap before the ASCII column → last byte.
+        let trailingGap = CGPoint(x: l.hexByteX(column: 15) + l.hexByteWidth + l.hexByteGap / 2, y: 0)
+        XCTAssertEqual(l.hitTest(point: trailingGap, rowCount: 10), HexLayout.Hit(row: 0, column: .hex(15)))
     }
 }

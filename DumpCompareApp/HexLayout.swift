@@ -199,18 +199,28 @@ struct HexLayout: Equatable {
         let row = Int(floor(point.y / rowHeight))
         guard row >= 0, UInt64(row) < rowCount else { return nil }
 
+        // Every point in the hex region maps to a byte. A click between two
+        // words — or in the gap between the two 8-byte groups — places the caret
+        // on the following word (§6), so a click never falls dead between cells.
         let hexStart = leftPadding + offsetColumnWidth + gapAfterOffset
-        for group in 0..<2 {
-            let groupStart = hexStart + CGFloat(group) * (groupWidth + betweenGroupsGap)
-            for word in 0..<wordsPerGroup {
-                let wordStart = groupStart + CGFloat(word) * (wordWidth + hexByteGap)
-                for inWord in 0..<wordSize {
-                    let cellStart = wordStart + CGFloat(inWord) * hexByteWidth
-                    if point.x >= cellStart, point.x < cellStart + hexByteWidth {
+        let hexEnd = asciiX(column: 0)
+        if point.x >= hexStart, point.x < hexEnd {
+            for group in 0..<2 {
+                let groupStart = hexStart + CGFloat(group) * (groupWidth + betweenGroupsGap)
+                for word in 0..<wordsPerGroup {
+                    let wordStart = groupStart + CGFloat(word) * (wordWidth + hexByteGap)
+                    if point.x < wordStart + wordWidth {
+                        // Inside the word, or in the gap just before it (the
+                        // following word). A point past the last word clamps to
+                        // the row's last byte below.
+                        let inWord = point.x >= wordStart
+                            ? min(wordSize - 1, Int((point.x - wordStart) / hexByteWidth))
+                            : 0
                         return Hit(row: row, column: .hex(group * Self.groupSize + word * wordSize + inWord))
                     }
                 }
             }
+            return Hit(row: row, column: .hex(Self.bytesPerRow - 1))
         }
 
         let asciiStart = asciiX(column: 0)
