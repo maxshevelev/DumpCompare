@@ -26,6 +26,22 @@ final class MainWindowController: NSWindowController {
         fatalError("init(coder:) is not supported")
     }
 
+    /// The autosaved frame is restored when the window is first displayed, which
+    /// can yield a degenerate size (1×28) or an off-screen position (e.g. saved
+    /// during a headless launch, or a monitor disconnected since last run). Fall
+    /// back to the default centered frame so the empty-state window is always
+    /// visible at launch (§3.1). The corrected frame is then saved on close,
+    /// replacing the bad default.
+    override func showWindow(_ sender: Any?) {
+        super.showWindow(sender)
+        guard let window else { return }
+        if window.frame.width < 200 || window.frame.height < 200
+            || !NSScreen.screens.contains(where: { $0.visibleFrame.intersects(window.frame) }) {
+            window.setFrame(NSRect(x: 0, y: 0, width: 1080, height: 720), display: true)
+            window.center()
+        }
+    }
+
     // MARK: - Menu
 
     /// Builds the main menu programmatically (no nib). Menu commands target
