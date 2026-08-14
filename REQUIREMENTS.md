@@ -1,934 +1,901 @@
-PROMPT FOR LLM
-
-You are a senior macOS/Swift engineer. Design and implement a production-quality macOS GUI application for visually comparing and editing two binary files.
-
-If any requirement is ambiguous, use the explicit defaults in this document. If a requirement is impossible or contradictory, state the conflict and propose the closest safe alternative. Prefer correctness, data safety, testability, responsiveness, and macOS HIG compliance.
-
-====================================================================
-1. DELIVERABLES AND TECHNOLOGY CONSTRAINTS
-====================================================================
-
-1.1. Deliver an Xcode project written in Swift.
-1.2. Target macOS 14 or later. Use Swift 5.10+ language mode if practical.
-1.3. Include:
-    - macOS app target;
-    - unit test target for model/data-processing logic.
-1.4. Do not use third-party dependencies unless absolutely unavoidable. If unavoidable, justify and isolate them.
-1.5. SwiftUI may be used for app chrome, menus, dialogs, settings, and toolbars. The hex editor view should be implemented with a high-performance rendering approach; AppKit/CoreText/custom drawing is acceptable and encouraged where needed.
-1.6. Use Swift Concurrency:
-    - UI state on MainActor;
-    - file IO, search, diff scanning, save, and clipboard-heavy operations in background tasks/actors;
-    - long-running operations must be cancellable.
-1.7. Code should be modular, testable, and cleanly separated into layers.
+You are an expert macOS software engineer specializing in Swift, AppKit, large-file processing, and high-quality desktop UX.
 
-====================================================================
-2. APPLICATION MODEL AND WINDOW LIFECYCLE
-====================================================================
+Design and implement a macOS GUI application for visually comparing and editing two binary files.
 
-2.1. The app is centered around a single comparison window per app instance. Multiple comparison windows are out of scope for v1.
+The output must be a production-quality, maintainable, testable macOS app.
 
-2.2. The comparison window has two file slots:
-    - File A;
-    - File B.
+=====================================================================
+1. PRODUCT GOAL
+=====================================================================
 
-2.3. File B is optional.
+Create a macOS GUI tool that can:
 
-2.4. If only one file slot is occupied, the app is in single-file mode:
-    - the remaining file pane takes the whole window;
-    - hex editing functions are available;
-    - comparison functions are disabled;
-    - it must not matter whether the remaining file is File A or File B.
+1. Open one or two binary files.
+2. Display each file as a hex dump with ASCII representation.
+3. Allow hex editing of each file independently.
+4. When two files are open, compare them byte-by-byte by absolute zero-based offsets only.
+5. Highlight differing bytes and EOF-only regions.
+6. Support navigation to next/previous difference/same blocks.
+7. Support large files that do not fit fully into RAM.
 
-2.5. If both File A and File B are open, comparison mode is enabled in addition to hex editing in both panes.
+Do not implement structural diff, block matching, move detection, or sequence alignment. Comparison must always be by absolute offset only.
 
-2.6. Each opened file has an independent dirty state.
+=====================================================================
+2. PLATFORM AND PROJECT CONSTRAINTS
+=====================================================================
 
-2.7. Dirty state must be shown in the pane title:
-    - file name plus "*" when dirty;
-    - example: `file.bin *`;
-    - if the file has no path yet, use `Untitled` or similar;
-    - if the file is read-only or not writable, show a lock/read-only indicator.
+Platform:
+- macOS 14.0 minimum.
+- Native macOS app.
+- Swift + AppKit.
+- Xcode project.
+- Swift concurrency should be used for asynchronous work.
+- Avoid third-party dependencies unless absolutely necessary and explicitly justified.
 
-2.8. Closing a pane:
-    - if the pane has unsaved changes, prompt the user to Save, Don’t Save, or Cancel;
-    - if Cancel is chosen, the pane remains open;
-    - closing either File A or File B leaves the app in single-file mode with the remaining file.
+App model:
+- The app has a single main comparison window in MVP.
+- The main window supports three modes:
+  1. Empty mode: no file opened.
+  2. Single-file mode: one file opened.
+  3. Comparison mode: two files opened.
 
-2.9. Closing the window or quitting the app:
-    - if any open file has unsaved changes, prompt for each modified file;
-    - the user must be able to Save, Don’t Save, or Cancel;
-    - a sheet listing modified files is acceptable if equivalent choices are provided;
-    - if the user cancels, the close/quit operation is aborted;
-    - optionally provide Save All.
+The app must not require multiple windows in MVP, but architecture should not make future multi-window support impossible.
 
-====================================================================
-3. FILE OPENING AND DRAG & DROP
-====================================================================
-
-3.1. Files can be opened from the File menu and by drag & drop.
-
-3.2. Menu commands:
-    - File > Open Pane A…;
-    - File > Open Pane B…;
-    - File > Open… opens into the currently selected/active pane; if no pane is selected, use File A.
-
-3.3. Opening/replacing a dirty file:
-    - if the target pane contains unsaved changes, prompt the user to Save, Don’t Save, or Cancel;
-    - if Cancel is chosen, abort the open/replace operation.
-
-3.4. Drag & drop must accept file URLs only.
-
-3.5. Reject unsupported drops gracefully:
-    - directories;
-    - unreadable files;
-    - non-file URLs.
-    Show a user-facing alert for rejected items.
-
-3.6. Dragging over the comparison window should show visual drop targets.
-
-3.7. Single-file mode drag & drop:
-    - when dragging a file into a window with one open file, temporarily split the window into two visible drop zones:
-        a. Replace File A;
-        b. Open as File B.
-    - dropping one file into a zone performs the corresponding action;
-    - if the dragged set contains two files and the drop is not targeted at a specific pane, assign first file to File A and second file to File B, with dirty prompts if needed.
-
-3.8. Two-file mode drag & drop:
-    - dropping onto a specific pane replaces that pane;
-    - if the drop location is ambiguous, optionally show drop targets for Replace File A and Replace File B.
-
-3.9. Multiple-file drop rules:
-    - if the drop context targets a specific pane and multiple files are dragged, use only the first file for that pane and notify that additional files were ignored;
-    - if the drop context supports filling two slots and more than two files are dragged, use only the first two files and notify the user that only the first two files were opened;
-    - the order of dragged files should be preserved where the platform provides it.
-
-3.10. If replacing any dirty file, always prompt before replacement.
-
-====================================================================
-4. LAYOUT AND PANES
-====================================================================
-
-4.1. The two file panes can be arranged either:
-    - left/right;
-    - top/bottom.
-
-4.2. The arrangement is user-configurable and persisted.
+=====================================================================
+3. WINDOW, PANES, AND LAYOUT
+=====================================================================
 
-4.3. Provide View menu and/or toolbar controls to switch layout.
-
-4.4. If only one file is open, its pane takes the whole window.
-
-4.5. If two files are open, the split divider should be resizable.
-
-4.6. Each pane should have a clear title and close control.
-
-4.7. The app should remember layout preference between launches.
-
-====================================================================
-5. HEX VIEW RENDERING
-====================================================================
-
-5.1. Display each file as a hex dump with:
-    - 16 bytes per row;
-    - offset/address column;
-    - hex byte cells;
-    - ASCII representation on the right.
-
-5.2. Offsets:
-    - absolute zero-based offsets;
-    - displayed in hexadecimal;
-    - use 64-bit offset representation in the UI where practical;
-    - example: 16 hex digits for 64-bit offsets.
-
-5.3. ASCII column:
-    - printable ASCII bytes 0x20...0x7E are shown as characters;
-    - non-printable bytes are shown as "." or a similar placeholder.
-
-5.4. The ASCII pane is read-only in v1 unless the implementation can support full text-encoding-safe ASCII editing without breaking binary correctness.
-
-5.5. Rendering must be virtualized:
-    - render only visible rows plus a small prefetch margin;
-    - do not create UI rows for the whole file.
-
-5.6. Visual states to support:
-    - normal bytes;
-    - selected bytes;
-    - caret/active editing cell;
-    - difference bytes;
-    - EOF/missing region;
-    - modified unsaved bytes;
-    - bytes that are both different and modified unsaved.
-
-5.7. Colors and indicators:
-    - support light and dark mode;
-    - ensure sufficient contrast;
-    - do not rely on color alone; use gutter markers, borders, or text indicators where useful;
-    - difference state uses background color;
-    - modified unsaved state uses red foreground color;
-    - if a byte is both different and modified unsaved, show difference background plus red foreground;
-    - selection must remain legible over all states.
-
-5.8. EOF region in the shorter file:
-    - show empty cells;
-    - visually distinguish EOF/missing area;
-    - do not render fake bytes.
-
-====================================================================
-6. CARET AND SELECTION
-====================================================================
-
-6.1. Each pane has an active caret offset.
-
-6.2. Selection model for v1:
-    - single contiguous byte range per pane;
-    - architecture should not make future multi-selection impossible, but v1 may implement single selection.
-
-6.3. Selection can be created by:
-    - mouse drag;
-    - shift + click;
-    - keyboard navigation;
-    - Select Range dialog.
-
-6.4. Show selection information in a status bar or equivalent UI:
-    - start offset;
-    - length;
-    - current caret offset;
-    - file size.
-
-6.5. Internal ranges must use half-open representation:
-    - [start, end)
-    - length = end - start.
-
-6.6. User-facing range dialogs may present either:
-    - Start + Length;
-    - Start + End, where End is inclusive in the UI.
-    Convert inclusive end to internal half-open range.
-
-====================================================================
-7. HEX EDITING
-====================================================================
-
-7.1. Hex editing must be supported in both File A and File B when open.
-
-7.2. Editing operates on the current logical in-memory contents of the file, not necessarily the entire file loaded into RAM.
-
-7.3. Hex pane editing:
-    - typing hexadecimal digits edits bytes;
-    - support nibble-level editing;
-    - first hex digit edits the high nibble of the current byte;
-    - second hex digit edits the low nibble and advances the caret;
-    - typing at EOF extends the file by creating new byte(s);
-    - valid hex digits are 0-9, a-f, A-F.
-
-7.4. Overwrite behavior:
-    - keyboard hex input overwrites existing bytes by default;
-    - at EOF, it appends.
-
-7.5. Insert/delete behavior:
-    - provide an explicit Insert Byte command that inserts 0x00 at the caret;
-    - provide Delete commands;
-    - if a selection is active, Delete removes the selected bytes and reduces file length;
-    - if no selection is active:
-        - Delete removes the byte at the caret, if present;
-        - Backspace removes the byte before the caret, if caret > 0;
-    - insert/delete operations update file length.
-
-7.6. Paste operations are explicit:
-    - Paste Write;
-    - Paste Insert.
-
-7.7. Paste Write:
-    - default paste command, Cmd+V;
-    - overwrites bytes starting at the caret position;
-    - if caret is at EOF, it appends;
-    - if clipboard content extends beyond EOF, the file length is extended;
-    - if a write would begin beyond EOF for any reason, fill the gap with zero bytes.
-
-7.8. Paste Insert:
-    - available from Edit menu;
-    - inserts bytes before the caret position;
-    - shifts existing bytes forward;
-    - extends file length;
-    - if caret is at EOF, it appends.
-
-7.9. Paste and selection behavior:
-    - paste commands operate at the caret;
-    - if there is a non-empty selection, collapse the selection to the caret/start position before pasting;
-    - paste does not automatically delete the selection;
-    - users can use Delete/Cut to remove selection first.
-
-7.10. Cut:
-    - optional but recommended: Cut = Copy selected bytes + Delete selected bytes.
-
-7.11. Read-only / non-writable files:
-    - if a file cannot be written on disk, still allow in-memory editing if feasible;
-    - clearly indicate read-only/non-writable state;
-    - Save should be disabled or fail gracefully with a clear alert;
-    - Save As should remain available.
-
-====================================================================
-8. UNDO / REDO AND DIRTY STATE
-====================================================================
-
-8.1. Each file has an individual undo/redo history.
-
-8.2. Undo/redo must cover at least:
-    - overwrite edits;
-    - insert edits;
-    - delete edits;
-    - paste write;
-    - paste insert;
-    - cut/delete selection.
-
-8.3. Undo/redo should coalesce rapid consecutive typing where reasonable, but preserve predictable undo steps.
-
-8.4. A new edit clears that file’s redo stack.
-
-8.5. Undo/redo should restore content and dirty state correctly.
-
-8.6. Selection/caret restoration after undo/redo should be best-effort.
-
-8.7. Saving does not necessarily clear undo history.
-
-8.8. Dirty state:
-    - a file is dirty if its current logical content differs from its last saved or loaded on-disk snapshot;
-    - if undo returns the file exactly to the saved snapshot, dirty state becomes false;
-    - if undo/redo changes content away from the saved snapshot, dirty state becomes true.
-
-8.9. Modified bytes:
-    - a modified byte is any byte that differs from the file’s last saved/loaded snapshot;
-    - maximal contiguous modified bytes form modified blocks;
-    - modified unsaved bytes/blocks are highlighted with red foreground.
-
-8.10. If a byte is both:
-    - different due to comparison with the other file;
-    - modified unsaved;
-    then display both states unambiguously:
-    - background color for difference state;
-    - red foreground for unsaved modification.
-
-====================================================================
-9. SAVE BEHAVIOR
-====================================================================
-
-9.1. Save and Save As operate on the currently selected/active pane.
-
-9.2. If no pane is selected, Save commands should target the active pane or be disabled if no file is open.
-
-9.3. Save:
-    - writes the current logical content to the current file path;
-    - should be atomic where practical, e.g. write to temporary file then rename;
-    - should preserve file permissions best-effort;
-    - for large files, show progress and allow cancel if feasible;
-    - must not silently lose data on failure.
-
-9.4. Save As:
-    - prompts for a new file path;
-    - updates the pane’s file path and title;
-    - clears dirty state after successful save.
-
-9.5. If Save fails:
-    - keep the file dirty;
-    - show a user-facing error;
-    - offer Save As if appropriate.
-
-9.6. External modification detection:
-    - before saving, if the on-disk file appears to have changed since it was opened, warn the user;
-    - offer options such as Reload, Overwrite, Save As, or Cancel where practical.
-
-9.7. Optional but recommended:
-    - File > Save All when multiple files are dirty.
-
-====================================================================
-10. COMPARISON MODE
-====================================================================
-
-10.1. Comparison is enabled only when both File A and File B are open.
-
-10.2. Comparison works by absolute zero-based 64-bit offsets only.
-
-10.3. Do not attempt to find matching blocks at different offsets.
-    - no diff alignment;
-    - no sequence matching;
-    - no move detection.
-
-10.4. Comparison must always use the current logical in-memory contents of both files, including unsaved edits.
-    - “in-memory” means the logical model with cached pages/overlay edits, not necessarily the entire file resident in RAM.
-
-10.5. Any insert, delete, overwrite, or paste operation that changes byte contents or file length must immediately update comparison results in the visible region.
-
-10.6. For large files, comparison beyond the visible region may be computed lazily/in background.
-
-10.7. Byte comparison states:
-    - same: both files have a byte at this offset and bytes are equal;
-    - different: both files have a byte at this offset and bytes differ;
-    - missing in shorter file: offset exists only in the longer file.
-
-10.8. EOF-only bytes in the longer file:
-    - are treated as a special difference type: missing in shorter file;
-    - the longer file highlights these bytes as different;
-    - the shorter file shows an EOF/missing region as empty cells;
-    - navigation to next/previous difference must include these EOF differences.
-
-10.9. Block definitions:
-    - a different block is a maximal contiguous range of bytes where the two files differ at the same absolute offset;
-    - a same block is a maximal contiguous range of bytes where the two files are identical;
-    - EOF-only bytes in the longer file form a different block.
-
-10.10. Difference highlighting:
-    - different existing bytes are highlighted in both panes;
-    - difference state uses background color;
-    - EOF missing region is visually distinct;
-    - modified unsaved state overlays red foreground as specified earlier.
-
-====================================================================
-11. DIFF NAVIGATION
-====================================================================
-
-11.1. Provide commands:
-    - Next Difference Block;
-    - Previous Difference Block;
-    - Next Same Block;
-    - Previous Same Block.
-
-11.2. These commands are enabled only in comparison mode.
-
-11.3. Navigation starts from the active pane’s caret/viewport position.
-
-11.4. If the current position is inside a block:
-    - Next moves to the next block of the requested type;
-    - Previous moves to the previous block of the requested type.
-
-11.5. Navigation must include EOF-only difference blocks.
-
-11.6. Default behavior:
-    - no wrap-around;
-    - when no further block exists, show a status message or non-blocking indication.
-
-11.7. Optional setting:
-    - allow wrap-around navigation.
-
-11.8. When navigating:
-    - move the active pane to the target block;
-    - synchronized pane should scroll to the same absolute offset if sync is enabled;
-    - clamp to EOF for the shorter file where necessary.
-
-====================================================================
-12. PANE SYNCHRONIZATION
-====================================================================
-
-12.1. Scrolling or explicit repositioning in one pane should automatically position the other pane to the same absolute offset.
-
-12.2. Synchronization applies to viewport repositioning, including:
-    - scrolling;
-    - page up/down;
-    - Go To Offset;
-    - search match navigation;
-    - diff/same block navigation.
-
-12.3. Synchronization should be enabled by default.
-
-12.4. Provide a user-visible toggle, e.g. View > Synchronize Panes.
-
-12.5. When sync is enabled:
-    - the inactive pane scrolls to the same absolute top offset;
-    - if the inactive file is shorter, clamp to EOF;
-    - avoid recursive event loops when programmatically syncing panes.
-
-12.6. Selection/caret:
-    - ordinary selection and caret movement during editing need not be fully mirrored;
-    - explicit navigation commands should keep viewports synchronized;
-    - if feasible, mirror caret offset best-effort when it does not interfere with editing.
-
-====================================================================
-13. SEARCH
-====================================================================
-
-13.1. Search operates on the active pane only in v1.
-
-13.2. Provide a Find UI, e.g. find bar or sheet.
-
-13.3. Search modes:
-    - Hex bytes;
-    - Text ASCII;
-    - Text UTF-8;
-    - Text UTF-16 LE;
-    - Text UTF-16 BE.
-
-13.4. Hex search:
-    - input is a sequence of hex bytes;
-    - allow optional spaces between bytes;
-    - allow optional 0x prefixes if easy;
-    - case-insensitive;
-    - validate that the number of hex digits is even;
-    - show inline error for invalid input.
-
-13.5. Text search:
-    - convert the input string to raw bytes using the selected encoding;
-    - perform exact byte sequence matching;
-    - do not apply locale-sensitive normalization by default;
-    - UTF-16 must explicitly support LE and BE.
-
-13.6. Search operations:
-    - Find Next;
-    - Find Previous;
-    - forward/backward direction support.
-
-13.7. Search execution:
-    - must run in background for large files;
-    - must not block the UI thread;
-    - should show progress or spinner for long operations;
-    - must be cancellable.
-
-13.8. Search result behavior:
-    - when a match is found, select the matched range and scroll it into view;
-    - update caret position;
-    - if synchronized, update the other pane viewport;
-    - if no match is found, show a status message.
-
-====================================================================
-14. GO TO OFFSET AND SELECT RANGE
-====================================================================
-
-14.1. Go To Absolute Position:
-    - provide a Go To Offset command;
-    - accept hexadecimal input;
-    - optionally accept decimal input with clear syntax;
-    - offsets are zero-based;
-    - if offset is beyond EOF, clamp to EOF and show a status/hint;
-    - move caret and scroll into view;
-    - if sync is enabled, move the other pane viewport to the same offset.
-
-14.2. Select Range dialog:
-    - allow selecting a range by:
-        a. Start + Length;
-        b. Start + End.
-    - values are entered as hexadecimal.
-
-14.3. Range semantics:
-    - internal model uses half-open [start, end);
-    - if UI uses Start + End, End is inclusive and converted to end + 1 internally;
-    - Start must be valid and not greater than file length;
-    - if End/Length extends beyond EOF, clamp to EOF and notify the user;
-    - zero-length selection is allowed and may collapse to caret.
-
-14.4. Applying Select Range:
-    - sets selection in the active pane;
-    - scrolls selection into view;
-    - updates status bar.
-
-====================================================================
-15. CLIPBOARD COPY / PASTE
-====================================================================
-
-15.1. Copy selected bytes with Cmd+C.
-
-15.2. Clipboard writing:
-    - write raw bytes using a custom pasteboard type, e.g. com.example.binarydiffeditor.bytes;
-    - also write a hex text representation as public UTF-8 text for interoperability;
-    - if no selection, Copy is disabled.
-
-15.3. Paste:
-    - prefer raw bytes from the custom pasteboard type;
-    - if only plain text is available, attempt to parse it as hex bytes if it is valid hex;
-    - if pasteboard content cannot be parsed safely, show an alert;
-    - do not silently corrupt data.
-
-15.4. Large clipboard operations:
-    - paste of large data should be done asynchronously where practical;
-    - show progress if needed;
-    - allow cancel if practical;
-    - avoid excessive memory use where possible.
-
-15.5. All paste operations must be undoable and must update:
-    - file content;
-    - dirty state;
-    - modified blocks;
-    - comparison result for visible region;
-    - file length if applicable.
-
-====================================================================
-16. LARGE FILE SUPPORT
-====================================================================
-
-16.1. The app must support very large files that do not fit completely in memory.
-
-16.2. Do not read entire large files into RAM.
-
-16.3. Use a file-backed chunked storage model:
-    - page/chunk cache;
-    - bounded memory cache;
-    - read chunks on demand;
-    - prefetch visible/nearby regions where useful.
-
-16.4. Editing large files:
-    - edits must not require copying the entire file in memory;
-    - use an overlay, piece table, sparse edit log, temporary backing store, or equivalent;
-    - support insert/delete/overwrite operations efficiently enough for interactive editing.
-
-16.5. Comparison and search:
-    - operate lazily/chunkwise;
-    - visible region updates should be fast;
-    - full-file scans may run in background and be cancellable.
-
-16.6. Save:
-    - saving a large file may require rewriting the full file;
-    - show progress;
-    - allow cancel if feasible;
-    - keep dirty state if save fails.
-
-16.7. Offsets:
-    - use 64-bit offsets;
-    - use safe integer conversions;
-    - handle large file sizes gracefully;
-    - practical limits may be imposed by OS/disk, but app should not artificially limit to 32-bit.
-
-====================================================================
-17. INTERNAL ARCHITECTURE
-====================================================================
-
-17.1. Cleanly separate:
-    - data storage;
-    - data/domain model;
-    - presentation layer.
-
-17.2. Suggested layering:
-
-    Storage Layer:
-    - file access;
-    - chunk cache;
-    - temporary edit backing;
-    - atomic save support;
-    - no UI dependencies.
-
-    Domain/Model Layer:
-    - file buffer abstraction;
-    - editable buffer;
-    - undo/redo service;
-    - dirty state tracking;
-    - modified ranges;
-    - diff engine;
-    - search engine;
-    - range/selection model;
-    - clipboard parsing/serialization helpers;
-    - pure Swift where possible;
-    - no AppKit/SwiftUI dependencies.
-
-    ViewModel/Presentation State Layer:
-    - observable UI state;
-    - user intents;
-    - async task coordination;
-    - MainActor where appropriate.
-
-    View Layer:
-    - SwiftUI/AppKit views;
-    - drag & drop;
-    - menus, toolbars, dialogs;
-    - hex rendering.
-
-17.3. Use protocols and dependency injection to make layers modular, reusable, and testable.
-
-17.4. Avoid data races:
-    - isolate mutable state appropriately;
-    - use actors or MainActor where needed;
-    - make domain types Sendable where practical.
-
-17.5. Long-running operations:
-    - search;
-    - diff scanning;
-    - large save;
-    - large paste;
-    - file loading/prefetch;
-    must run off the main thread and must be cancellable.
-
-====================================================================
-18. PERFORMANCE AND RESPONSIVENESS
-====================================================================
-
-18.1. The UI must remain responsive.
-
-18.2. Time-consuming operations must not block the UI thread.
-
-18.3. Provide progress/cancel UI for operations that may take a long time:
-    - search;
-    - large save;
-    - large paste;
-    - diff scanning beyond visible region.
-
-18.4. Scrolling should be smooth for large files due to virtualization and bounded rendering.
-
-18.5. Visible diff updates after local edits should feel immediate.
-
-18.6. Memory usage should remain bounded even for very large files.
-
-====================================================================
-19. MENUS, SHORTCUTS, AND COMMANDS
-====================================================================
-
-19.1. Provide standard macOS menus and shortcuts where practical.
-
-19.2. Recommended File menu:
-    - Open Pane A…;
-    - Open Pane B…;
-    - Open…;
-    - Close Pane A;
-    - Close Pane B;
-    - Save;
-    - Save As…;
-    - Save All (optional);
-    - Revert to Saved (optional but recommended);
-    - Close Window;
-    - Quit.
-
-19.3. Recommended Edit menu:
-    - Undo;
-    - Redo;
-    - Cut (optional);
-    - Copy;
-    - Paste Write;
-    - Paste Insert;
-    - Delete;
-    - Insert Byte;
-    - Select Range…;
-    - Go To Offset…;
-    - Find…;
-    - Find Next;
-    - Find Previous.
-
-19.4. Recommended View menu:
-    - Layout Left/Right;
-    - Layout Top/Bottom;
-
-19.5. Recommended Compare menu:
-    - Next Difference Block (Cmd+]);
-    - Previous Difference Block (Cmd+[);
-    - Next Same Block;
-    - Previous Same Block.
-
-19.6. Use standard shortcuts where appropriate:
-    - Cmd+S Save;
-    - Shift+Cmd+S Save As;
-    - Cmd+C Copy;
-    - Cmd+V Paste Write;
-    - Cmd+Z Undo;
-    - Shift+Cmd+Z Redo;
-    - Cmd+F Find;
-    - Cmd+G Find Next / Shift+Cmd+G Find Previous, or platform-appropriate alternatives.
-
-====================================================================
-20. NON-FUNCTIONAL REQUIREMENTS
-====================================================================
-
-20.1. Accessibility:
-    - keyboard navigation should work;
-    - important controls should be accessible;
-    - provide meaningful labels;
-    - ensure sufficient contrast;
-    - do not rely on color alone for state indication.
-
-20.2. Appearance:
-    - support light and dark mode;
-    - use system colors/semantic colors where possible;
-    - hex view should remain readable in both modes.
-
-20.3. Localization:
-    - all user-facing strings should be localizable;
-    - base language can be English.
-
-20.4. Error handling:
-    - use user-friendly alerts for errors;
-    - do not crash on invalid input;
-    - handle:
-        - unreadable files;
-        - permission denied;
-        - directories dropped as files;
-        - invalid hex input;
-        - invalid range input;
-        - disk full/save failures;
-        - clipboard parse failures.
-
-20.5. Security:
-    - app should be sandbox-friendly;
-    - access files only through user selection, open panel, or drag & drop;
-    - no network access is required;
-    - do not execute external commands;
-    - validate file URLs and inputs.
-
-20.6. Logging:
-    - use OSLog or similar for diagnostics;
-    - avoid logging sensitive file contents.
-
-====================================================================
-21. UNIT TESTS
-====================================================================
-
-21.1. Unit tests are required for data processing logic of the data/model layer.
-
-21.2. Minimum test coverage should include:
-
-    Edit buffer:
-    - read/write bytes;
-    - overwrite at offset;
-    - insert at offset;
-    - delete range;
-    - length changes;
-    - edits at EOF;
-    - zero-fill gap when writing beyond EOF, if applicable.
-
-    Undo/Redo:
-    - undo restores previous content;
-    - redo reapplies change;
-    - new edit clears redo;
-    - dirty state changes correctly;
-    - undo after save can make file dirty again.
-
-    Dirty/modified tracking:
-    - modified bytes detected after edit;
-    - modified blocks are maximal contiguous ranges;
-    - save clears dirty state;
-    - undo to saved snapshot clears dirty state.
-
-    Diff engine:
-    - identical files produce same blocks only;
-    - single-byte difference produces one different block;
-    - multi-byte differences produce maximal contiguous blocks;
-    - same blocks are maximal contiguous identical ranges;
-    - EOF-only bytes in longer file are different block;
-    - shorter file missing offsets are handled;
-    - insert/delete length changes affect absolute-offset comparison correctly;
-    - no block matching/move detection is performed.
-
-    Search:
-    - hex parsing valid/invalid;
-    - ASCII encoding;
-    - UTF-8 encoding;
-    - UTF-16 LE encoding;
-    - UTF-16 BE encoding;
-    - search match offsets;
-    - no match behavior.
-
-    Range selection:
-    - Start + Length conversion;
-    - Start + End inclusive conversion to half-open;
-    - invalid ranges;
-    - clamping to EOF.
-
-    Clipboard parsing:
-    - raw bytes roundtrip if testable;
-    - hex text parsing valid/invalid.
-
-21.3. Model tests must not depend on UI.
-
-21.4. Use deterministic temporary files for storage tests where needed.
-
-21.5. UI tests are optional, not required.
-
-====================================================================
-22. ACCEPTANCE CRITERIA
-====================================================================
-
-22.1. The app opens files via menu and drag & drop.
-
-22.2. Dropping more than two files results in only the first two being used in two-slot drop contexts, with a user notification.
-
-22.3. Dropping onto a specific pane replaces that pane, with dirty prompt if needed.
-
-22.4. In single-file mode, dragging shows split drop targets allowing:
-    - replace File A;
-    - open as File B.
-
-22.5. With one file open:
-    - pane occupies the whole window;
-    - hex editing works;
-    - comparison commands are disabled.
-
-22.6. With two files open:
-    - comparison mode is enabled;
-    - both panes support hex editing.
-
-22.7. Closing either pane returns the app to single-file mode.
-
-22.8. Dirty state is independent per file and indicated by "*" in pane title.
-
-22.9. Closing window/quit with unsaved changes prompts correctly for each modified file and allows cancel.
-
-22.10. Layout can be switched left/right and top/bottom, and persists.
-
-22.11. Hex view shows 16 bytes per row plus ASCII representation.
-
-22.12. Scrolling/repositioning syncs panes by absolute offset when sync is enabled.
-
-22.13. Comparison:
-    - uses absolute offsets only;
-    - includes unsaved edits;
-    - updates visible region immediately after edits;
-    - treats EOF-only bytes in longer file as differences;
-    - highlights differences in both panes.
-
-22.14. Next/previous difference and next/previous same block navigation works and includes EOF differences.
-
-22.15. Editing supports undo/redo per file.
-
-22.16. Modified unsaved bytes use red foreground.
-
-22.17. Bytes that are both different and modified unsaved show both states unambiguously.
-
-22.18. Go To Offset works.
-
-22.19. Search works in active pane for:
-    - hex bytes;
-    - ASCII;
-    - UTF-8;
-    - UTF-16 LE;
-    - UTF-16 BE.
-
-22.20. Search runs in background and does not block UI.
-
-22.21. Select Range works with Start/Length and Start/End hex input.
-
-22.22. Copy copies selected bytes.
-
-22.23. Paste Write overwrites from caret and can extend file length.
-
-22.24. Paste Insert inserts before caret and extends file length.
-
-22.25. App can open and interact with very large files without loading entire files into memory.
-
-22.26. Architecture cleanly separates storage, model, and presentation.
-
-22.27. Required unit tests pass.
-
-====================================================================
-23. IMPLEMENTATION GUIDANCE
-====================================================================
-
-23.1. Start with core model types and protocols before UI.
-
-23.2. Suggested core protocols/classes:
-    - FileStorage / ChunkedFileStorage;
-    - EditableFileBuffer;
-    - FileDocumentModel;
-    - UndoService;
-    - DiffEngine;
-    - SearchEngine;
-    - SelectionModel;
-    - ClipboardService;
-    - HexViewModel or pane view model.
-
-23.3. Keep domain logic pure and deterministic where possible.
-
-23.4. Make diff and search engines operate on ranges/chunks so they can be tested without huge files.
-
-23.5. Use small value types for offsets and ranges:
-    - Offset64 or UInt64 wrapper;
-    - Range64 half-open range;
-    - validated constructors.
-
-23.6. Avoid force-unwraps and unchecked integer conversions in production code.
-
-23.7. Provide README or documentation describing:
-    - architecture;
-    - how to run tests;
-    - known limitations;
-    - assumptions made.
+The main window contains up to two file panes.
 
+Each file pane displays one opened binary file.
+
+Layout rules:
+
+1. In empty mode, show a placeholder area with:
+   - an “Open File” button;
+   - a hint that files can be dragged and dropped.
+
+2. In single-file mode:
+   - the only file pane occupies the entire client area.
+
+3. In comparison mode:
+   - two panes are visible.
+   - panes can be arranged either left/right or top/bottom.
+   - the arrangement is user-configurable.
+   - the selected arrangement must persist across app launches.
+   - a draggable splitter should allow adjusting pane size.
+   - the active pane must be visually distinguishable.
+
+4. Each pane should have a title/header showing:
+   - file name;
+   - dirty indicator as “*” when the file has unsaved changes;
+   - read-only/locked indicator if the file cannot be written back directly.
+
+5. Pane closing:
+   - the user can close either pane in comparison mode.
+   - closing a pane returns the app to single-file mode.
+   - if pane 1 is closed, pane 2 becomes pane 1.
+   - if the last pane is closed, the app returns to empty mode.
+   - closing a pane with unsaved changes must prompt the user to save/discard/cancel.
+
+6. Window closing:
+   - closing the window with unsaved changes must prompt for each modified file or present a combined dialog where every modified file can be saved or discarded.
+   - the user must never lose unsaved changes silently.
+
+=====================================================================
+4. FILE OPENING RULES
+=====================================================================
+
+Files can be opened by:
+
+- File > Open…
+- drag-and-drop from Finder or other file providers.
+
+Only regular files are supported. Directories and packages should be rejected with a clear alert unless future support is explicitly added.
+
+4.1 File > Open behavior
+
+The Open panel may allow multiple selection.
+
+Placement rules:
+
+1. If no panes are occupied:
+   - first selected file opens in pane 1;
+   - second selected file opens in pane 2;
+   - if more than two files are selected, open only the first two and notify the user that additional files were ignored.
+
+2. If only pane 1 is occupied:
+   - the first selected file opens in pane 2;
+   - additional selected files are ignored with notification.
+
+3. If both panes are occupied:
+   - the first selected file replaces the file in the currently selected/active pane;
+   - additional selected files are ignored with notification.
+
+4. Replacing a pane that has unsaved changes requires confirmation:
+   - offer “Save and Replace”, “Replace Without Saving”, and “Cancel”.
+   - if saving fails, the operation must be cancelled.
+
+5. If the file selected for opening is already open in the target pane:
+   - if the file has no unsaved changes, treat as reload/revert or no-op with unobtrusive feedback;
+   - if the file has unsaved changes, prompt whether to discard changes and reload, or cancel.
+
+6. If the file selected for opening is already open in the other pane:
+   - do not open it again;
+   - show a warning that the same file cannot be opened in both panes.
+
+4.2 Same-file identity
+
+The app must detect “same file” using a robust canonical identity:
+
+- prefer volume UUID + inode / URL resource identifier if available;
+- fallback to resolved standardized path after resolving symlinks;
+- hard links and symlinked paths pointing to the same underlying file must be considered the same file.
+
+4.3 Drag-and-drop behavior
+
+General:
+
+- The app must accept file URLs from drag-and-drop.
+- Dropping more files than can be opened must result in a notification.
+- Only the first two dropped files may be opened.
+
+Drop in empty mode:
+
+- first file opens pane 1;
+- second file opens pane 2;
+- extra files ignored with notification.
+
+Drop in comparison mode:
+
+- dropping onto a specific pane targets that pane;
+- if multiple files are dropped:
+  - first file targets the hovered pane;
+  - second file opens in the other pane only if that pane is empty;
+  - if the other pane is occupied, the second file is not opened automatically;
+  - extra files are ignored;
+  - the user is notified which files were ignored.
+
+Drop in single-file mode:
+
+- when a file drag enters the single pane window, visually split the window into two drop targets:
+  1. “Replace current file”;
+  2. “Open as second file”.
+- the split orientation should match the current or default pane layout:
+  - left/right layout: replace target on one side, add target on the other;
+  - top/bottom layout: replace target on one side, add target on the other.
+- if the user drops on “Replace current file”:
+  - the first dropped file replaces the current file;
+  - if a second dropped file exists, it opens as pane 2.
+- if the user drops on “Open as second file”:
+  - the first dropped file opens as pane 2;
+  - additional files are ignored with notification.
+- if the drag leaves the window or is cancelled, no change occurs.
+
+Dirty-state protection applies to drag-replacement too.
+
+=====================================================================
+5. FILE MODEL, DIRTY STATE, SAVE, AND SAVE AS
+=====================================================================
+
+Each opened file must have an independent document model.
+
+Per-file state includes:
+
+- canonical file identity;
+- display URL/path;
+- file size;
+- read/write status;
+- unsaved/dirty state;
+- undo/redo stack;
+- edit overlay or storage object;
+- selection/cursor state if UI-related.
+
+5.1 Dirty state
+
+- Each file has an independent dirty flag.
+- Dirty state is shown in the pane title using a leading or trailing “*” alongside the file name.
+- Undoing all modifications must clear dirty state if contents match the last saved state.
+- Saving clears dirty state.
+
+5.2 Save
+
+- Save operates on the currently selected/active pane.
+- Cmd+S must save the active pane.
+- If the file is writable and no length change requires a full rewrite, saving may patch modified bytes in place.
+- If in-place patching is unsafe or impossible, save via a temporary file and atomic replacement.
+- Save must preserve file contents integrity.
+- If save fails, the document must remain dirty and an error must be shown.
+
+5.3 Save As
+
+- Save As operates on the active pane.
+- Cmd+Shift+S must open Save As for the active pane.
+- Save As must not allow saving to the same canonical file already open in the other pane.
+- If the destination file exists, confirm overwrite.
+- After Save As:
+  - update pane URL/title;
+  - clear dirty state;
+  - refresh file permissions/read-only state;
+  - refresh comparison.
+
+5.4 Read-only files
+
+If a file cannot be written to its current location:
+
+- show a read-only/locked indicator;
+- allow in-memory editing if feasible;
+- Save should automatically become Save As or prompt the user to choose a writable location;
+- do not silently fail to save.
+
+5.5 External file changes
+
+If an opened file changes on disk while open:
+
+- if the document is not dirty, prompt to reload or keep current contents;
+- if the document is dirty, warn about conflict and offer:
+  - reload and discard local changes;
+  - keep local changes;
+  - save as.
+
+=====================================================================
+6. HEX VIEW AND VISUAL REPRESENTATION
+=====================================================================
+
+Each file pane displays the file as an industry-standard hex dump.
+
+Per row:
+
+- 16 bytes per row;
+- grouped as 8 bytes + space + 8 bytes;
+- offset column on the left;
+- hex byte values in two uppercase hexadecimal digits;
+- ASCII representation on the right.
+
+Display rules:
+
+- offsets are zero-based;
+- offset column should be hexadecimal by default;
+- printable ASCII bytes 0x20–0x7E are shown as characters;
+- non-printable bytes are shown as “.”;
+- use a monospaced font;
+- support Dark Mode;
+- ensure sufficient contrast and accessibility.
+
+EOF display:
+
+- when comparison mode is active and one file is shorter, the shorter file must show missing cells as empty/placeholder EOF cells;
+- EOF-only bytes in the longer file are highlighted as differences.
+
+Visual states:
+
+1. Difference state:
+   - bytes that differ between the two files at the same absolute offset are highlighted with a background color.
+
+2. Unsaved modification state:
+   - bytes modified relative to last saved state are shown with red foreground/text color.
+   - optionally add a subtle underline or marker, but red foreground must be the primary indicator.
+
+3. Difference + unsaved modification:
+   - if a byte is both different and unsaved-modified, display both states unambiguously:
+     - background color for difference;
+     - red foreground for unsaved modification.
+
+4. Selected state:
+   - selection must remain visible and must not completely hide difference/modification indication.
+   - use standard selection treatment adjusted for hex view.
+
+5. Missing EOF in shorter file:
+   - display empty cells with a distinct muted background or separator style.
+
+=====================================================================
+7. EDITING MODEL
+=====================================================================
+
+Editing must be supported in both panes.
+
+The hex dump contains two interactive regions per pane:
+
+1. Hex area:
+   - edit individual bytes via hexadecimal nibble input.
+   - typing a hex digit edits the current nibble.
+   - after second nibble, cursor advances to next byte.
+
+2. ASCII area:
+   - edit bytes via ASCII character input.
+   - printable ASCII characters map directly to bytes.
+   - non-ASCII input should be rejected or ignored with unobtrusive feedback.
+
+7.1 Overwrite-first policy
+
+The default editing model is overwrite.
+
+- Typing overwrites existing bytes.
+- Paste Write overwrites existing bytes.
+- No existing offsets are shifted by overwrite operations.
+- If typing or paste write occurs at EOF and extends the file, this is allowed without structural confirmation because existing offsets are not shifted.
+- Any length change must still update file size, comparison, undo, and dirty state.
+
+7.2 Length-changing operations
+
+Operations that insert or delete bytes and therefore shift existing offsets are potentially destructive for structured binary dumps.
+
+Such operations must be explicit and confirmed.
+
+Confirmed length-changing operations include:
+
+- Paste Insert;
+- Delete Bytes / Remove Bytes;
+- any explicit “Insert Bytes” operation if implemented.
+
+Confirmation dialog must explain:
+
+- operation type;
+- target offset;
+- number of bytes inserted/deleted;
+- that subsequent offsets will shift;
+- that the file structure may be affected.
+
+7.3 Delete/Backspace default behavior
+
+To avoid accidental structural damage:
+
+- Delete/Backspace must not change file length by default.
+- They should fill the selected bytes with 0x00.
+- If no selection:
+  - Delete fills current byte with 0x00;
+  - Backspace fills previous byte with 0x00 and moves cursor back.
+
+A separate explicit menu command, e.g. Edit > Delete Bytes, performs true length-changing deletion and requires confirmation.
+
+7.4 Selection editing
+
+- If a selection exists and the user types, the selected range is overwritten with typed bytes.
+- If paste write is invoked with a selection, paste starts at selection start and overwrites bytes; it does not shift existing bytes.
+- Selection can span multiple rows.
+- Cmd+A selects all bytes in the active file.
+
+7.5 Undo/Redo
+
+- Each file has an independent undo/redo stack.
+- Undo/Redo must support:
+  - byte overwrite;
+  - fill zero;
+  - paste write;
+  - paste insert;
+  - delete bytes;
+  - any other mutating operation.
+- Undo/Redo should group logically, e.g. one typing sequence, one paste, one delete command.
+- Undo must restore:
+  - byte contents;
+  - file length;
+  - dirty state where applicable;
+  - selection/cursor reasonably.
+- Redo must reapply the operation.
+- Undo history may be bounded by memory/disk resources, but must be sufficient for practical editing sessions.
+
+=====================================================================
+8. COMPARISON MODEL
+=====================================================================
+
+Comparison is enabled only when two files are open.
+
+Comparison rules:
+
+1. Compare by absolute zero-based 64-bit offsets only.
+2. Do not attempt to find matching blocks at different offsets.
+3. Do not perform structural diffing.
+4. Always compare current unsaved contents, including pending edits.
+5. If either file is edited, comparison must update.
+6. Visible region comparison updates must be immediate or near-immediate.
+7. Full-file comparison can be computed asynchronously.
+
+8.1 Difference semantics
+
+For each offset:
+
+- if both files have a byte and bytes are equal: Equal.
+- if both files have a byte and bytes differ: Different.
+- if only the longer file has a byte and the shorter file is past EOF: MissingInShorter / EOF-only difference.
+
+Block definitions:
+
+- A different block is a maximal contiguous range of offsets where the two files differ at the same absolute offset.
+- A same block is a maximal contiguous range of offsets where the two files are identical.
+- EOF-only bytes in the longer file are considered part of a different block.
+
+8.2 Highlighting
+
+- Different bytes must be highlighted in both panes where a byte exists.
+- In the shorter pane, EOF-only missing regions should be shown as empty/placeholder cells.
+- EOF-only bytes in the longer pane must be highlighted as differences.
+- Navigation to next/previous difference must include EOF-only different blocks.
+
+8.3 Comparison lifecycle
+
+When two files are open:
+
+- start comparison automatically;
+- compute visible-region differences synchronously or with very low latency;
+- compute a full-file block index in the background;
+- show progress if full comparison is long;
+- allow cancellation if a pane is closed or files change significantly.
+
+When edits occur:
+
+- invalidate affected comparison ranges;
+- update visible rows immediately;
+- update background diff index incrementally where possible;
+- insert/delete operations that shift offsets must invalidate from the earliest affected offset onward.
+
+When one file is closed:
+
+- clear comparison state;
+- return to single-file mode.
+
+=====================================================================
+9. SYNCHRONIZATION BETWEEN PANES
+=====================================================================
+
+In comparison mode, panes must be synchronized by absolute offset whenever possible.
+
+Synchronized state includes:
+
+1. Scroll position.
+2. Cursor/caret offset.
+3. Selection range.
+
+Behavior:
+
+- scrolling in the active pane scrolls the other pane to the same absolute offset;
+- moving the cursor in the active pane moves the other pane cursor to the same offset if that offset exists;
+- selecting a range in the active pane selects the same absolute range in the other pane where possible;
+- if the synchronized offset is beyond the shorter file’s EOF, the shorter pane shows EOF/missing area;
+- synchronization must not cause crashes for empty files or EOF positions.
+
+In single-file mode, synchronization is not applicable.
+
+Optional future enhancement: independent scroll mode. For MVP, synchronized behavior is required.
+
+=====================================================================
+10. NAVIGATION
+=====================================================================
+
+10.1 Go To Position
+
+- Cmd+G opens a Go To Position dialog.
+- The dialog accepts a single absolute offset.
+- Offset input must support:
+  - hexadecimal with `0x` or `0X` prefix;
+  - decimal without prefix.
+- The offset input field should be pre-filled with `0x` by default.
+- Offsets are zero-based.
+- Input parsing must be case-insensitive for hex.
+- Invalid input must show inline validation or alert.
+
+Go To behavior:
+
+- In single-file mode, move the active pane cursor to the requested offset if valid.
+- In comparison mode, move both panes to the same absolute offset.
+- If the offset is beyond the active file length but within the other file length:
+  - the shorter file shows EOF/blank region;
+  - the longer file shows the byte at that offset.
+- If the offset is beyond both files:
+  - clamp to the end of the longer file;
+  - show a warning or status message.
+
+10.2 Select Block
+
+Provide a Select Block dialog with two modes:
+
+1. Start and End offsets.
+2. Start and Length.
+
+Rules:
+
+- all offsets/lengths support hexadecimal with `0x` prefix and decimal without prefix;
+- fields should be pre-filled with `0x` where appropriate;
+- validate:
+  - numeric format;
+  - non-negative values;
+  - start/end relationship;
+  - length validity.
+- For start/end mode:
+  - if start > end, show error or optionally swap after confirmation; default: error.
+- Selection must be applied to the active pane and synchronized to the other pane where possible.
+- The status bar must show selection length and selected range.
+
+10.3 Next/Previous block navigation
+
+The app must support:
+
+- Next different block.
+- Previous different block.
+- Next same block.
+- Previous same block.
+
+Requirements:
+
+- Navigation includes EOF-only difference blocks.
+- Navigation should move the cursor to the start of the target block.
+- Both panes should synchronize to the resulting offset.
+- If no further block exists in the requested direction:
+  - show a status message or unobtrusive feedback;
+  - do not silently wrap by default.
+- If the full-file diff index is still being computed:
+  - navigation may perform on-demand scanning;
+  - show progress for long scans;
+  - keep UI responsive.
+
+Suggested shortcuts:
+
+- Next difference: Cmd+Option+Right Arrow.
+- Previous difference: Cmd+Option+Left Arrow.
+- Next same block: Cmd+Option+Shift+Right Arrow.
+- Previous same block: Cmd+Option+Shift+Left Arrow.
+
+Shortcuts may be adjusted, but must be discoverable in menus.
+
+=====================================================================
+11. SEARCH
+=====================================================================
+
+Search operates on the active pane.
+
+Requirements:
+
+- Search must use current unsaved contents, including edits.
+- Search must run in the background for large files.
+- Search must not block the UI thread.
+- Search must be cancellable.
+- Search progress/status should be visible.
+
+Search modes:
+
+1. Hex bytes:
+   - input as hexadecimal byte sequence;
+   - allow optional spaces between bytes;
+   - case-insensitive;
+   - examples:
+     - `DEADBEEF`
+     - `DE AD BE EF`
+     - `0xDE 0xAD` optional support.
+
+2. Text:
+   - ASCII;
+   - UTF-8;
+   - UTF-16 LE;
+   - UTF-16 BE.
+
+Text search semantics:
+
+- The text string is encoded into bytes using the selected encoding.
+- UTF-16 must explicitly support LE and BE.
+- Do not add BOM automatically unless the user explicitly includes it.
+- Search is binary-exact over encoded bytes.
+
+Search navigation:
+
+- Find Next.
+- Find Previous.
+- When a match is found:
+  - move cursor to match start;
+  - select the matched byte range;
+  - synchronize the other pane in comparison mode;
+  - ensure match is visible.
+- If no match is found, show status message.
+
+Optional but recommended:
+
+- highlight matches in visible region;
+- show match count if it can be computed efficiently.
+
+=====================================================================
+12. CLIPBOARD, COPY, PASTE
+=====================================================================
+
+12.1 Copy
+
+- Cmd+C copies the selected byte range from the active pane.
+- Copy must place raw bytes on the pasteboard as the primary representation.
+- Copy may also place a hex text representation for debugging or interop.
+
+If no selection exists:
+- Copy is disabled or no-op.
+
+12.2 Paste Write
+
+- Cmd+V performs Paste Write.
+- Paste Write inserts no structural offset shift.
+- It overwrites bytes starting at the cursor position.
+- If cursor + clipboard length exceeds current EOF, the file is extended.
+- Extending at EOF does not require structural confirmation.
+- Paste Write must support undo/redo.
+- Paste Write must update dirty state and comparison.
+
+12.3 Paste Insert
+
+- Paste Insert is available from Edit menu, not as default Cmd+V.
+- Paste Insert inserts clipboard bytes before the cursor position.
+- Paste Insert increases file length and shifts subsequent offsets.
+- Paste Insert must require explicit confirmation.
+- After confirmation, perform insert and update:
+  - comparison;
+  - selection;
+  - cursor;
+  - undo stack;
+  - dirty state.
+
+12.4 Clipboard parsing
+
+Preferred paste source:
+
+- raw bytes.
+
+If only text is available:
+
+- attempt to parse as hexadecimal byte pairs if the text clearly matches a hex byte pattern;
+- otherwise reject with a clear error or offer explicit paste-as-text only if unambiguous.
+- Avoid ambiguous implicit conversions.
+
+=====================================================================
+13. LARGE FILE SUPPORT
+=====================================================================
+
+The app must support very large files that do not fit completely in memory.
+
+Requirements:
+
+1. Do not load entire files into memory.
+2. Use chunked/block-based storage.
+3. Use a cache with bounded memory usage.
+4. Use lazy loading for visible regions and on-demand access.
+5. Use file-backed temporary storage for edits when necessary.
+6. Undo history may use memory plus temporary disk storage.
+7. Diff and search must process files incrementally.
+8. UI must remain responsive while processing large files.
+
+Recommended architecture:
+
+- Original file storage can be memory-mapped or read through chunk cache.
+- Edits are stored as an edit overlay or sparse change log.
+- Insert/delete may require copy-on-write or temporary file materialization.
+- Save can patch in-place for overwrite-only edits where safe.
+- Save may rewrite file for length-changing edits or Save As.
+
+Performance expectations:
+
+- Scrolling should remain responsive.
+- Visible row rendering should be fast.
+- Visible diff highlighting after edits should be near-instant.
+- Full-file diff/search may run in background with progress.
+
+=====================================================================
+14. INTERNAL ARCHITECTURE
+=====================================================================
+
+The architecture must cleanly separate:
+
+1. Data storage layer.
+2. Data/model layer.
+3. Presentation/UI layer.
+
+The layers must be modular, reusable, and testable.
+
+14.1 Storage layer
+
+Responsibilities:
+
+- reading bytes from file;
+- chunk cache;
+- edit overlay;
+- temporary file management;
+- saving changes;
+- handling large files efficiently.
+
+Suggested protocols:
+
+- `ByteStorage`
+- `EditableByteStorage`
+- `FileBackedStorage`
+- `EditOverlayStorage`
+
+The storage layer must not depend on AppKit.
+
+14.2 Model layer
+
+Responsibilities:
+
+- binary document state;
+- dirty state;
+- undo/redo;
+- selection model;
+- offset parsing/validation;
+- diff/comparison engine;
+- search engine;
+- clipboard data parsing/serialization;
+- block model: same/different/EOF blocks.
+
+The model layer should be pure Swift where practical and must not depend on AppKit.
+
+14.3 Presentation layer
+
+Responsibilities:
+
+- AppKit windows, panes, views;
+- hex rendering;
+- cursor/selection drawing;
+- drag-and-drop;
+- menus/toolbars/status bar;
+- dialogs and alerts;
+- view models/presenters coordinating UI state.
+
+Presentation must not contain core binary processing logic.
+
+14.4 Concurrency
+
+- Long-running operations must run off the main thread.
+- Use Swift concurrency, background tasks, or actors as appropriate.
+- UI state must be updated on MainActor/main thread.
+- Cancellable operations should support cancellation.
+- Diff/search tasks should be cancelable when files close or inputs change.
+
+=====================================================================
+15. USER INTERFACE DETAILS
+=====================================================================
+
+Menus and commands should include at least:
+
+File:
+- Open…
+- Close Pane or Close File
+- Save
+- Save As…
+- Revert (recommended)
+
+Edit:
+- Undo
+- Redo
+- Copy
+- Paste Write
+- Paste Insert
+- Fill Selection with Zero (recommended)
+- Delete Bytes…
+- Select Block…
+- Find…
+- Go To Position…
+
+View/Navigate:
+- Toggle Pane Layout Left/Right vs Top/Bottom
+- Next Difference
+- Previous Difference
+- Next Same Block
+- Previous Same Block
+
+Status bar or equivalent info area should show:
+
+- active file name/path;
+- file size;
+- cursor offset in hex and decimal;
+- selection length;
+- dirty state;
+- read-only state;
+- comparison status;
+- background task progress for diff/search when applicable.
+
+Accessibility:
+
+- keyboard navigation must work;
+- major controls must have accessible labels;
+- colors must have sufficient contrast;
+- Dark Mode must be supported;
+- do not rely on color alone where possible; consider text/style cues for EOF and unsaved changes.
+
+=====================================================================
+16. ERROR HANDLING
+=====================================================================
+
+Show clear, non-destructive errors for:
+
+- unable to open file;
+- file is directory/package;
+- permission denied;
+- sandbox access denied;
+- same file already open in other pane;
+- invalid hex/decimal input;
+- invalid selection range;
+- paste data unsupported/invalid;
+- save failure;
+- external modification conflict.
+
+Rules:
+
+- Never lose user changes silently.
+- Prefer recoverable prompts over fatal alerts.
+- Destructive operations require confirmation.
+
+=====================================================================
+17. TESTING REQUIREMENTS
+=====================================================================
+
+Unit tests are required for data processing logic in the model/storage layers.
+
+Minimum test coverage should include:
+
+1. Offset parsing:
+   - hex with `0x`;
+   - decimal;
+   - invalid input;
+   - large 64-bit values.
+
+2. Selection logic:
+   - start/end;
+   - start/length;
+   - out-of-range handling;
+   - empty selection.
+
+3. Edit overlay/storage:
+   - overwrite;
+   - append at EOF;
+   - insert;
+   - delete;
+   - read-back correctness;
+   - undo/redo interactions.
+
+4. Diff engine:
+   - identical files;
+   - completely different files;
+   - single-byte difference;
+   - multiple difference blocks;
+   - one empty file;
+   - shorter/longer files;
+   - EOF-only differences;
+   - edit invalidation;
+   - insert/delete offset shift invalidation.
+
+5. Search:
+   - hex sequence parsing;
+   - ASCII encoding;
+   - UTF-8 encoding;
+   - UTF-16 LE/BE encoding;
+   - match at start/middle/end;
+   - no match;
+   - current unsaved contents.
+
+6. Clipboard:
+   - raw bytes roundtrip;
+   - hex text parsing where supported;
+   - invalid clipboard content.
+
+7. Dirty state:
+   - edit sets dirty;
+   - save clears dirty;
+   - undo to saved state clears dirty;
+   - redo sets dirty again.
+
+UI tests are optional but valuable for:
+- file open flows;
+- drag-and-drop flows;
+- save prompts;
+- navigation commands.
+
+=====================================================================
+18. ACCEPTANCE CRITERIA
+=====================================================================
+
+The implementation is acceptable if:
+
+1. The app opens one or two files using menu and drag-and-drop.
+2. Single-file mode supports editing without comparison.
+3. Comparison mode highlights byte differences by absolute offset.
+4. EOF-only bytes are treated as differences and navigable.
+5. Editing updates comparison immediately in visible region.
+6. Insert/delete operations require confirmation and update comparison correctly.
+7. Undo/redo works independently per file.
+8. Save and Save As work per active pane and respect dirty state.
+9. Large files can be opened without loading entire contents into RAM.
+10. Search and full-file diff do not block the UI.
+11. Unit tests cover core model/storage logic and pass.
+12. The app follows a clean layered architecture.
+13. The UI is usable, keyboard-accessible, and supports Dark Mode.
+14. No operation silently destroys user data.
