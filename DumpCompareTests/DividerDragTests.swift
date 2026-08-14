@@ -53,11 +53,11 @@ final class DividerDragTests: XCTestCase {
         splitView.convert(point, to: nil)
     }
 
-    private func mouse(_ type: NSEvent.EventType, at p: NSPoint, window: NSWindow) -> NSEvent {
+    private func mouse(_ type: NSEvent.EventType, at p: NSPoint, window: NSWindow, clickCount: Int = 1) -> NSEvent {
         NSEvent.mouseEvent(with: type, location: p, modifierFlags: [],
                            timestamp: ProcessInfo.processInfo.systemUptime,
                            windowNumber: window.windowNumber, context: nil,
-                           eventNumber: 0, clickCount: 1, pressure: 1)!
+                           eventNumber: 0, clickCount: clickCount, pressure: 1)!
     }
 
     /// Drags the divider from its current spot to `target` (both in the split
@@ -155,5 +155,54 @@ final class DividerDragTests: XCTestCase {
         XCTAssertEqual(h1, 99.5, accuracy: 1)   // 299.5 − 200
         XCTAssertEqual(h2, 499.5, accuracy: 1)  // 299.5 + 200
         XCTAssertEqual(h1 + h2, 599, accuracy: 1)
+    }
+
+    /// A double-click on the divider resets it to a 50/50 split in both
+    /// orientations (§3.3), replacing NSSplitView's collapse behavior.
+    private func doubleClick(splitView sv: NSSplitView, at p: NSPoint, window: NSWindow) {
+        sv.mouseDown(with: mouse(.leftMouseDown, at: p, window: window, clickCount: 1))
+        sv.mouseUp(with: mouse(.leftMouseUp, at: p, window: window, clickCount: 1))
+        sv.mouseDown(with: mouse(.leftMouseDown, at: p, window: window, clickCount: 2))
+        sv.mouseUp(with: mouse(.leftMouseUp, at: p, window: window, clickCount: 2))
+        // Let the 0.2s reset animation finish before asserting.
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.35))
+    }
+
+    func testDoubleClickDividerResetsToHalfVertical() throws {
+        let (cv, window) = try makeComparisonView(vertical: true)
+        let sv = cv.splitView
+
+        drag(splitView: sv, to: NSPoint(x: 360, y: 300), window: window)
+        XCTAssertEqual(cv.paneView1.frame.width / (cv.paneView1.frame.width + cv.paneView2.frame.width), 0.3, accuracy: 0.01)
+
+        doubleClick(splitView: sv, at: windowPoint(sv, NSPoint(x: cv.paneView1.frame.maxX, y: 300)), window: window)
+
+        let w1 = cv.paneView1.frame.width
+        let w2 = cv.paneView2.frame.width
+        XCTAssertEqual(w1 / (w1 + w2), 0.5, accuracy: 0.01)
+        XCTAssertEqual(w1, 599.5, accuracy: 1)
+        XCTAssertEqual(w2, 599.5, accuracy: 1)
+    }
+
+    func testDoubleClickDividerResetsToHalfStacked() throws {
+        let (cv, window) = try makeComparisonView(vertical: false)
+        let sv = cv.splitView
+
+        // Drag downward (grows the top pane in flipped coordinates) to 0.75.
+        let dividerY = cv.paneView1.frame.maxY
+        let target = NSPoint(x: 400, y: dividerY + 150)
+        sv.mouseDown(with: mouse(.leftMouseDown, at: windowPoint(sv, NSPoint(x: 400, y: dividerY)), window: window))
+        sv.mouseDragged(with: mouse(.leftMouseDragged, at: windowPoint(sv, target), window: window))
+        sv.mouseUp(with: mouse(.leftMouseUp, at: windowPoint(sv, target), window: window))
+        let before = cv.paneView1.frame.height / (cv.paneView1.frame.height + cv.paneView2.frame.height)
+        XCTAssertEqual(before, 0.75, accuracy: 0.01)
+
+        doubleClick(splitView: sv, at: windowPoint(sv, NSPoint(x: 400, y: cv.paneView1.frame.maxY)), window: window)
+
+        let h1 = cv.paneView1.frame.height
+        let h2 = cv.paneView2.frame.height
+        XCTAssertEqual(h1 / (h1 + h2), 0.5, accuracy: 0.01)
+        XCTAssertEqual(h1, 299.5, accuracy: 1)
+        XCTAssertEqual(h2, 299.5, accuracy: 1)
     }
 }
