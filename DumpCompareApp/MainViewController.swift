@@ -610,6 +610,12 @@ final class MainViewController: NSViewController {
         comparisonView?.toggleLayout()
     }
 
+    /// View > Word Size (§6): re-groups the hex dump into words of this size.
+    @objc func setWordSize(_ sender: Any?) {
+        guard let size = (sender as? NSMenuItem).flatMap({ WordSize(rawValue: $0.tag) }) else { return }
+        WordSize.set(size)
+    }
+
     // MARK: - Dialogs (§10)
 
     @objc func goToPosition() {
@@ -866,6 +872,10 @@ extension MainViewController: NSMenuItemValidation {
              #selector(previousSameBlock),
              #selector(togglePaneLayout):
             return mode == .comparison
+        case #selector(setWordSize(_:)):
+            // Radio state: check the item matching the current word size (§6).
+            menuItem.state = menuItem.tag == WordSize.current.rawValue ? .on : .off
+            return true
         default:
             return true
         }

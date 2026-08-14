@@ -4,9 +4,13 @@ import CoreGraphics
 /// Pure geometry for the hex-dump grid (§6 of REQUIREMENTS.md).
 ///
 /// A row holds 16 bytes split into two groups of 8 (`8 bytes + space + 8
-/// bytes`), a hexadecimal offset column on the left, and an ASCII column on the
-/// right. All metrics are passed in (monospaced character width, row height) so
-/// the layout has no AppKit dependency and is unit-testable.
+/// bytes`). Within a group the bytes are packed into words of `wordSize` bytes
+/// (1, 2, 4, or 8): the word's bytes are drawn adjacent, and words are separated
+/// by a space. A word of one byte is today's byte-per-cell dump. The row also
+/// has a hexadecimal offset column on the left and an ASCII column on the right.
+/// All metrics are passed in (monospaced character width, row height, word size)
+/// so the layout has no AppKit dependency and is unit-testable. The full row
+/// width — `contentWidth` — is a computed quantity that depends on the word size.
 ///
 /// All y-coordinates are in a flipped coordinate space: row 0 is at y=0 and
 /// rows grow downward, matching how the hex view is drawn.
@@ -22,12 +26,18 @@ struct HexLayout: Equatable {
     let leftPadding: CGFloat
     /// Trailing whitespace after the ASCII column.
     let rightPadding: CGFloat
+    /// Number of bytes per word (1, 2, 4, or 8). Dump width depends on it.
+    let wordSize: Int
 
     /// Width of the two-digit hex cell of one byte.
     let hexByteWidth: CGFloat
-    /// Gap between adjacent byte cells within a group (one character).
+    /// Gap between adjacent words within a group (one character).
     let hexByteGap: CGFloat
-    /// Width of one 8-byte group including internal gaps.
+    /// Width of one word: its bytes are packed with no gap between them.
+    var wordWidth: CGFloat { CGFloat(wordSize) * hexByteWidth }
+    /// Number of words in one 8-byte group.
+    var wordsPerGroup: Int { Self.groupSize / wordSize }
+    /// Width of one 8-byte group including word gaps.
     let groupWidth: CGFloat
     /// Gap between the two 8-byte groups (two characters).
     let betweenGroupsGap: CGFloat
@@ -49,17 +59,22 @@ struct HexLayout: Equatable {
         rowHeight: CGFloat,
         leftPadding: CGFloat = 12,
         rightPadding: CGFloat = 12,
-        offsetColumnChars: Int = 8
+        offsetColumnChars: Int = 8,
+        wordSize: Int = 1
     ) {
         self.charWidth = charWidth
         self.rowHeight = rowHeight
         self.leftPadding = leftPadding
         self.rightPadding = rightPadding
         self.offsetColumnChars = max(8, offsetColumnChars)
+        // Words are 1, 2, 4, or 8 bytes; anything else falls back to one byte.
+        self.wordSize = (wordSize == 2 || wordSize == 4 || wordSize == 8) ? wordSize : 1
 
         hexByteWidth = 2 * charWidth
         hexByteGap = charWidth
-        groupWidth = CGFloat(Self.groupSize) * hexByteWidth + CGFloat(Self.groupSize - 1) * hexByteGap
+        let wordsPerGroup = Self.groupSize / self.wordSize
+        let wordWidth = CGFloat(self.wordSize) * hexByteWidth
+        groupWidth = CGFloat(wordsPerGroup) * wordWidth + CGFloat(wordsPerGroup - 1) * hexByteGap
         betweenGroupsGap = 2 * charWidth
         offsetColumnWidth = CGFloat(self.offsetColumnChars) * charWidth
         asciiColumnWidth = CGFloat(Self.bytesPerRow) * charWidth
@@ -119,12 +134,17 @@ struct HexLayout: Equatable {
         CGFloat(rowCount(fileSize: fileSize)) * rowHeight
     }
 
-    /// x-origin of byte `column`'s hex cell within the row.
+    /// x-origin of byte `column`'s hex cell within the row. Bytes inside a word
+    /// are packed together; words are separated by `hexByteGap`, and the two
+    /// 8-byte groups by `betweenGroupsGap`.
     func hexByteX(column: Int) -> CGFloat {
         let group = column / Self.groupSize
         let inGroup = column % Self.groupSize
+        let word = inGroup / wordSize
+        let inWord = inGroup % wordSize
         let hexX = CGFloat(group) * (groupWidth + betweenGroupsGap)
-            + CGFloat(inGroup) * (hexByteWidth + hexByteGap)
+            + CGFloat(word) * (wordWidth + hexByteGap)
+            + CGFloat(inWord) * hexByteWidth
         return leftPadding + offsetColumnWidth + gapAfterOffset + hexX
     }
 
@@ -182,10 +202,13 @@ struct HexLayout: Equatable {
         let hexStart = leftPadding + offsetColumnWidth + gapAfterOffset
         for group in 0..<2 {
             let groupStart = hexStart + CGFloat(group) * (groupWidth + betweenGroupsGap)
-            for i in 0..<Self.groupSize {
-                let cellStart = groupStart + CGFloat(i) * (hexByteWidth + hexByteGap)
-                if point.x >= cellStart, point.x < cellStart + hexByteWidth {
-                    return Hit(row: row, column: .hex(group * Self.groupSize + i))
+            for word in 0..<wordsPerGroup {
+                let wordStart = groupStart + CGFloat(word) * (wordWidth + hexByteGap)
+                for inWord in 0..<wordSize {
+                    let cellStart = wordStart + CGFloat(inWord) * hexByteWidth
+                    if point.x >= cellStart, point.x < cellStart + hexByteWidth {
+                        return Hit(row: row, column: .hex(group * Self.groupSize + word * wordSize + inWord))
+                    }
                 }
             }
         }

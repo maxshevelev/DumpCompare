@@ -29,6 +29,73 @@ final class HexLayoutTests: XCTestCase {
         XCTAssertEqual(l.offsetColumnChars, 8)
     }
 
+    // MARK: - Word size (§6)
+
+    func testWordSizeMetrics() {
+        // Word of 2: 4 words per group, 3 word gaps.
+        let w2 = HexLayout(charWidth: 8, rowHeight: 17, wordSize: 2)
+        XCTAssertEqual(w2.wordSize, 2)
+        XCTAssertEqual(w2.wordsPerGroup, 4)
+        XCTAssertEqual(w2.wordWidth, 32)
+        XCTAssertEqual(w2.groupWidth, 152)   // 8×16 + 3×8
+        XCTAssertEqual(w2.contentWidth, 568)
+
+        // Word of 4: 2 words per group, 1 word gap.
+        let w4 = HexLayout(charWidth: 8, rowHeight: 17, wordSize: 4)
+        XCTAssertEqual(w4.wordsPerGroup, 2)
+        XCTAssertEqual(w4.wordWidth, 64)
+        XCTAssertEqual(w4.groupWidth, 136)   // 8×16 + 1×8
+        XCTAssertEqual(w4.contentWidth, 536)
+
+        // Word of 8: one word fills a whole group — no word gap.
+        let w8 = HexLayout(charWidth: 8, rowHeight: 17, wordSize: 8)
+        XCTAssertEqual(w8.wordsPerGroup, 1)
+        XCTAssertEqual(w8.wordWidth, 128)
+        XCTAssertEqual(w8.groupWidth, 128)   // 8×16
+        XCTAssertEqual(w8.contentWidth, 520)
+    }
+
+    func testWordSizeInvalidFallsBackToOne() {
+        XCTAssertEqual(HexLayout(charWidth: 8, rowHeight: 17, wordSize: 3).wordSize, 1)
+        XCTAssertEqual(HexLayout(charWidth: 8, rowHeight: 17, wordSize: 16).wordSize, 1)
+        XCTAssertEqual(HexLayout(charWidth: 8, rowHeight: 17, wordSize: 0).wordSize, 1)
+    }
+
+    func testWordSizeGroupsBytesWithinAWord() {
+        let w4 = HexLayout(charWidth: 8, rowHeight: 17, wordSize: 4)
+        // Bytes of one word are packed: no gap between them.
+        XCTAssertEqual(w4.hexByteX(column: 1), w4.hexByteX(column: 0) + w4.hexByteWidth)
+        XCTAssertEqual(w4.hexByteX(column: 3), w4.hexByteX(column: 0) + 3 * w4.hexByteWidth)
+        // A word starts after its predecessor plus the word gap.
+        XCTAssertEqual(w4.hexByteX(column: 4), w4.hexByteX(column: 3) + w4.hexByteWidth + w4.hexByteGap)
+        // Same packing inside the group's second word.
+        XCTAssertEqual(w4.hexByteX(column: 7), w4.hexByteX(column: 4) + 3 * w4.hexByteWidth)
+        // The two 8-byte groups are still separated by betweenGroupsGap.
+        XCTAssertEqual(w4.hexByteX(column: 8), w4.hexByteX(column: 0) + w4.groupWidth + w4.betweenGroupsGap)
+    }
+
+    func testWordSizeHitTestTracksPackedWords() {
+        let w4 = HexLayout(charWidth: 8, rowHeight: 17, wordSize: 4)
+        let byte3 = CGPoint(x: w4.hexByteX(column: 3), y: 0)
+        XCTAssertEqual(w4.hitTest(point: byte3, rowCount: 10), HexLayout.Hit(row: 0, column: .hex(3)))
+        // Inside the gap between words — no cell.
+        let gap = CGPoint(x: w4.hexByteX(column: 3) + w4.hexByteWidth + w4.hexByteGap / 2, y: 0)
+        XCTAssertNil(w4.hitTest(point: gap, rowCount: 10))
+
+        let w8 = HexLayout(charWidth: 8, rowHeight: 17, wordSize: 8)
+        let last = CGPoint(x: w8.hexByteX(column: 15), y: 0)
+        XCTAssertEqual(w8.hitTest(point: last, rowCount: 10), HexLayout.Hit(row: 0, column: .hex(15)))
+    }
+
+    func testWordSizeKeepsRowsAndOffsets() {
+        // Word grouping is display-only: rows and offsets are unchanged.
+        let w4 = HexLayout(charWidth: 8, rowHeight: 17, wordSize: 4)
+        XCTAssertEqual(w4.rowCount(fileSize: 16), 2)
+        XCTAssertEqual(w4.byteOffset(row: 1, column: 0), 16)
+        XCTAssertEqual(w4.rowColumn(of: 19).row, 1)
+        XCTAssertEqual(w4.rowColumn(of: 19).column, 3)
+    }
+
     // MARK: - Rows
 
     func testRowCount() {

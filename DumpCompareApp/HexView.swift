@@ -43,6 +43,7 @@ final class HexView: NSView {
     private let rowHeight: CGFloat
     private let charWidth: CGFloat
     private var currentLayout: HexLayout
+    private var wordSizeObserver: NSObjectProtocol?
 
     /// Ideal width of the hex grid (offset column + hex + ASCII). The window
     /// delegate uses this to zoom-to-fit (§3.1) instead of zooming to max.
@@ -54,12 +55,26 @@ final class HexView: NSView {
         font = .monospacedSystemFont(ofSize: 13, weight: .regular)
         charWidth = Self.measureCharWidth(font)
         rowHeight = ceil((font.ascender - font.descender)) + 4
-        currentLayout = HexLayout(charWidth: charWidth, rowHeight: rowHeight)
+        currentLayout = HexLayout(charWidth: charWidth, rowHeight: rowHeight, wordSize: WordSize.current.rawValue)
         super.init(frame: .zero)
         // Expose the grid to VoiceOver with a live value describing the caret
         // and selection (§15 accessibility).
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
+        // Re-lay out when the word size changes (§6).
+        wordSizeObserver = NotificationCenter.default.addObserver(
+            forName: WordSize.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.reloadData()
+        }
+    }
+
+    deinit {
+        if let wordSizeObserver {
+            NotificationCenter.default.removeObserver(wordSizeObserver)
+        }
     }
 
     @available(*, unavailable)
@@ -88,7 +103,8 @@ final class HexView: NSView {
     private func makeLayout() -> HexLayout {
         let fileSize = dataSource?.fileSize ?? 0
         let digits = max(8, fileSize > 0 ? String(fileSize, radix: 16).count : 8)
-        return HexLayout(charWidth: charWidth, rowHeight: rowHeight, offsetColumnChars: digits)
+        return HexLayout(charWidth: charWidth, rowHeight: rowHeight,
+                         offsetColumnChars: digits, wordSize: WordSize.current.rawValue)
     }
 
     override func layout() {

@@ -120,6 +120,21 @@ final class MainWindowController: NSWindowController {
         addNavigationItem("Next Same Block", #selector(MainViewController.nextSameBlock), "\u{F703}", [.command, .option, .shift])
         addNavigationItem("Previous Same Block", #selector(MainViewController.previousSameBlock), "\u{F702}", [.command, .option, .shift])
 
+        // Word Size (§6): group the hex bytes into words of 1/2/4/8 bytes.
+        viewMenu.addItem(.separator())
+        let wordSizeItem = NSMenuItem(title: "Word Size", action: nil, keyEquivalent: "")
+        let wordSizeMenu = NSMenu(title: "Word Size")
+        for size in WordSize.allCases {
+            let item = wordSizeMenu.addItem(
+                withTitle: "\(size.rawValue) \(size.rawValue == 1 ? "Byte" : "Bytes")",
+                action: #selector(MainViewController.setWordSize(_:)),
+                keyEquivalent: ""
+            )
+            item.tag = size.rawValue
+        }
+        wordSizeItem.submenu = wordSizeMenu
+        viewMenu.addItem(wordSizeItem)
+
         viewMenu.addItem(.separator())
         viewMenu.addItem(withTitle: "Enter Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
         if let fullScreenItem = viewMenu.items.last {
