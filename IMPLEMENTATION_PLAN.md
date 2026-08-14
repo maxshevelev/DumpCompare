@@ -177,7 +177,16 @@ Requirement sections: §8, §11, §12, §13; tests §17.4/17.5/17.6.
 
 ---
 
-## 8. Milestone 4 — Single-file mode UI (AppKit)
+## 8. Milestone 4 — Single-file mode UI (AppKit) ✅ done
+
+> **Implementation findings (M4):**
+> - `HexLayout` is pure geometry (Foundation + CoreGraphics only, no AppKit), so column math, hit-testing, virtualization, and row↔offset mapping are unit-tested without a window.
+> - `PaneViewModel` is `@MainActor` but AppKit-free. Modified-byte detection compares live storage against a *fresh* `FileBackedStorage` of the saved URL at the same absolute offset; the snapshot is rebuilt on open/save/save-as/revert. This survives COW insert/delete, which would break overlay-range tracking.
+> - `HexView` is virtualized: `draw(_:)` iterates only `visibleRowRange`, and the frame height is `rowCount × rowHeight`, so multi-GB files scroll without materializing rows. `rowCount` appends a trailing placeholder row when the length is a multiple of 16 so the caret-at-EOF position is on the grid.
+> - A typed hex byte (two nibbles) coalesces into **one** undo step via `BinaryDocument.beginEditGroup`/`endEditGroup`. The group is closed on every path that leaves the mid-byte state (navigation, delete, ASCII, paste, …), so a half-typed byte never swallows a later unrelated edit.
+> - Menu commands target `MainViewController` directly (responder chain); AppKit routes key equivalents before `HexView.keyDown`, which returns early on command/control-modified keys so Cmd+Z/C/V/G/A/F work while the hex view has focus.
+> - Clipboard: raw bytes on a custom type `dev.maxik.DumpCompare.rawBytes` plus hex text on `.string`; Paste Write prefers raw bytes and falls back to decoding hex text (§12.1).
+> - Test bundle `DumpCompareTests` (unit-test, hosted by the app): 13 HexLayout + 23 PaneViewModel tests, all green via `xcodebuild test`.
 
 Requirement sections: §3, §6, §7, §10.1, §10.2, §12, §15; acceptance §18.1/18.2.
 

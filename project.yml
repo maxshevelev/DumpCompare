@@ -20,6 +20,10 @@ targets:
       - package: DumpCompareCore
     entitlements:
       path: DumpCompareApp/DumpCompare.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.files.user-selected.read-write: true
+        com.apple.security.files.bookmarks.app-scope: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.maxik.DumpCompare
@@ -34,3 +38,35 @@ targets:
         # Switch to Automatic + a team before distribution.
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "-"
+
+  DumpCompareTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: DumpCompareTests
+    dependencies:
+      - target: DumpCompare
+      - package: DumpCompareCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.maxik.DumpCompareTests
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.9"
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+
+schemes:
+  DumpCompare:
+    build:
+      targets:
+        DumpCompare: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - DumpCompareTests
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+

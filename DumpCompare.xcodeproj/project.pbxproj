@@ -7,28 +7,64 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0FA4395104B7881F63176151 /* DumpCompareCore in Frameworks */ = {isa = PBXBuildFile; productRef = ABC9FED3EFF91E300892FE20 /* DumpCompareCore */; };
+		1F891EE0D25A946BB63C2AEC /* HexView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95D1B66993C6EA8CDEE1ADD7 /* HexView.swift */; };
 		230C0980A700727CC7796F8B /* AppMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB33DB1270B0F3AD9A668F5C /* AppMain.swift */; };
 		2F76C0D1447064BB9D6C9B52 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 407514C243C2AD42122D02CD /* AppDelegate.swift */; };
+		340D0228EEA81EE50A1315ED /* WindowViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED2076217EBD1ED10294D11A /* WindowViewModel.swift */; };
+		34FC31F15593574D21ECD0D6 /* HexLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74D6E16E0CD10A2BA3DA5447 /* HexLayout.swift */; };
 		3B4F8F01DAD4F7BE904898CF /* EmptyStateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90019A1C55E04846EB502E49 /* EmptyStateView.swift */; };
 		60337FD7B95B8887CE53DBBE /* DumpCompareCore in Frameworks */ = {isa = PBXBuildFile; productRef = DD998B4928A6EFDFADE20701 /* DumpCompareCore */; };
+		72FE060ED1406764B2E18350 /* HexLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8F0ABAC4DEEBAE7DD9A62BB /* HexLayoutTests.swift */; };
+		7868ABBF947C029B69867CA0 /* PaneViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6818FEF833F78019596D65BB /* PaneViewModel.swift */; };
 		84F0705E874653F3E5EE8B15 /* MainWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 956C3B15B666232F79A544C1 /* MainWindowController.swift */; };
 		9798C9A69A858500B7AD3915 /* WindowMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0474573D1975ED1FEC349E67 /* WindowMode.swift */; };
 		A50B556671000ED5800F6FC0 /* MainViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2751D9902BBBD4771AFB0FD5 /* MainViewController.swift */; };
+		E48043200E726B8423B101CD /* PaneViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FC713959D9654C564AB34E0 /* PaneViewModelTests.swift */; };
+		E4B2D90C3A49F9CAA976DCEF /* SheetControllers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B1D587B9291F026D4B00A15 /* SheetControllers.swift */; };
+		EDF1898E3C6FDD20D11A403D /* FilePaneView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 657A55ADBC423B0B280972F3 /* FilePaneView.swift */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		63B3E0E88329BA9C902E7803 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 7A82BB8246188B3B74950BBC /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 33581551AB885AE2F9E833F1;
+			remoteInfo = DumpCompare;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		0474573D1975ED1FEC349E67 /* WindowMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowMode.swift; sourceTree = "<group>"; };
 		1D73B46350757B2E6D907D7F /* DumpCompare.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = DumpCompare.entitlements; sourceTree = "<group>"; };
 		2751D9902BBBD4771AFB0FD5 /* MainViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainViewController.swift; sourceTree = "<group>"; };
 		407514C243C2AD42122D02CD /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		4B1D587B9291F026D4B00A15 /* SheetControllers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SheetControllers.swift; sourceTree = "<group>"; };
+		657A55ADBC423B0B280972F3 /* FilePaneView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePaneView.swift; sourceTree = "<group>"; };
+		6818FEF833F78019596D65BB /* PaneViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneViewModel.swift; sourceTree = "<group>"; };
+		74D6E16E0CD10A2BA3DA5447 /* HexLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HexLayout.swift; sourceTree = "<group>"; };
+		7FC713959D9654C564AB34E0 /* PaneViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneViewModelTests.swift; sourceTree = "<group>"; };
 		82A34E0B2AAD3A720DCD4E59 /* DumpCompare.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DumpCompare.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		8CAF09895E331AB4FAD76F1B /* DumpCompareCore */ = {isa = PBXFileReference; lastKnownFileType = folder; name = DumpCompareCore; path = DumpCompareCore; sourceTree = SOURCE_ROOT; };
 		90019A1C55E04846EB502E49 /* EmptyStateView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmptyStateView.swift; sourceTree = "<group>"; };
 		956C3B15B666232F79A544C1 /* MainWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainWindowController.swift; sourceTree = "<group>"; };
+		95D1B66993C6EA8CDEE1ADD7 /* HexView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HexView.swift; sourceTree = "<group>"; };
+		C8F0ABAC4DEEBAE7DD9A62BB /* HexLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HexLayoutTests.swift; sourceTree = "<group>"; };
+		ED2076217EBD1ED10294D11A /* WindowViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowViewModel.swift; sourceTree = "<group>"; };
+		F4060AF0A96DD6E896717F3A /* DumpCompareTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DumpCompareTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		FB33DB1270B0F3AD9A668F5C /* AppMain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppMain.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		AE7BFA594D90F0920140467F /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0FA4395104B7881F63176151 /* DumpCompareCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		D81E08D7CBA312B9EAB238CA /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -52,6 +88,7 @@
 			isa = PBXGroup;
 			children = (
 				6F30AF8965E450B74DED1FEE /* DumpCompareApp */,
+				B7F573457885834014D587D4 /* DumpCompareTests */,
 				1652E8A2629CEC2F2EBBB5D4 /* Packages */,
 				8652620F0ECE7008C810D42F /* Products */,
 			);
@@ -64,9 +101,15 @@
 				FB33DB1270B0F3AD9A668F5C /* AppMain.swift */,
 				1D73B46350757B2E6D907D7F /* DumpCompare.entitlements */,
 				90019A1C55E04846EB502E49 /* EmptyStateView.swift */,
+				657A55ADBC423B0B280972F3 /* FilePaneView.swift */,
+				74D6E16E0CD10A2BA3DA5447 /* HexLayout.swift */,
+				95D1B66993C6EA8CDEE1ADD7 /* HexView.swift */,
 				2751D9902BBBD4771AFB0FD5 /* MainViewController.swift */,
 				956C3B15B666232F79A544C1 /* MainWindowController.swift */,
+				6818FEF833F78019596D65BB /* PaneViewModel.swift */,
+				4B1D587B9291F026D4B00A15 /* SheetControllers.swift */,
 				0474573D1975ED1FEC349E67 /* WindowMode.swift */,
+				ED2076217EBD1ED10294D11A /* WindowViewModel.swift */,
 			);
 			path = DumpCompareApp;
 			sourceTree = "<group>";
@@ -75,8 +118,18 @@
 			isa = PBXGroup;
 			children = (
 				82A34E0B2AAD3A720DCD4E59 /* DumpCompare.app */,
+				F4060AF0A96DD6E896717F3A /* DumpCompareTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		B7F573457885834014D587D4 /* DumpCompareTests */ = {
+			isa = PBXGroup;
+			children = (
+				C8F0ABAC4DEEBAE7DD9A62BB /* HexLayoutTests.swift */,
+				7FC713959D9654C564AB34E0 /* PaneViewModelTests.swift */,
+			);
+			path = DumpCompareTests;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -100,6 +153,26 @@
 			productName = DumpCompare;
 			productReference = 82A34E0B2AAD3A720DCD4E59 /* DumpCompare.app */;
 			productType = "com.apple.product-type.application";
+		};
+		FE9F9F9D8DB4A51C602993ED /* DumpCompareTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5E17292E46DDDC98E00748BC /* Build configuration list for PBXNativeTarget "DumpCompareTests" */;
+			buildPhases = (
+				9F02619B59704A97DCAD99E1 /* Sources */,
+				AE7BFA594D90F0920140467F /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				71CB252DAE692CFB6651CC42 /* PBXTargetDependency */,
+			);
+			name = DumpCompareTests;
+			packageProductDependencies = (
+				ABC9FED3EFF91E300892FE20 /* DumpCompareCore */,
+			);
+			productName = DumpCompareTests;
+			productReference = F4060AF0A96DD6E896717F3A /* DumpCompareTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
 		};
 /* End PBXNativeTarget section */
 
@@ -133,6 +206,7 @@
 			projectRoot = "";
 			targets = (
 				33581551AB885AE2F9E833F1 /* DumpCompare */,
+				FE9F9F9D8DB4A51C602993ED /* DumpCompareTests */,
 			);
 		};
 /* End PBXProject section */
@@ -145,15 +219,57 @@
 				2F76C0D1447064BB9D6C9B52 /* AppDelegate.swift in Sources */,
 				230C0980A700727CC7796F8B /* AppMain.swift in Sources */,
 				3B4F8F01DAD4F7BE904898CF /* EmptyStateView.swift in Sources */,
+				EDF1898E3C6FDD20D11A403D /* FilePaneView.swift in Sources */,
+				34FC31F15593574D21ECD0D6 /* HexLayout.swift in Sources */,
+				1F891EE0D25A946BB63C2AEC /* HexView.swift in Sources */,
 				A50B556671000ED5800F6FC0 /* MainViewController.swift in Sources */,
 				84F0705E874653F3E5EE8B15 /* MainWindowController.swift in Sources */,
+				7868ABBF947C029B69867CA0 /* PaneViewModel.swift in Sources */,
+				E4B2D90C3A49F9CAA976DCEF /* SheetControllers.swift in Sources */,
 				9798C9A69A858500B7AD3915 /* WindowMode.swift in Sources */,
+				340D0228EEA81EE50A1315ED /* WindowViewModel.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		9F02619B59704A97DCAD99E1 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				72FE060ED1406764B2E18350 /* HexLayoutTests.swift in Sources */,
+				E48043200E726B8423B101CD /* PaneViewModelTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		71CB252DAE692CFB6651CC42 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 33581551AB885AE2F9E833F1 /* DumpCompare */;
+			targetProxy = 63B3E0E88329BA9C902E7803 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		1A68A392C2C29EAA8E05ABE6 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.maxik.DumpCompareTests;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.9;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/DumpCompare.app/Contents/MacOS/DumpCompare";
+			};
+			name = Debug;
+		};
 		43395B3F077115B0684440B8 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -240,6 +356,25 @@
 				SWIFT_VERSION = 5.9;
 			};
 			name = Debug;
+		};
+		ADEF03975B405839AECD2486 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.maxik.DumpCompareTests;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.9;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/DumpCompare.app/Contents/MacOS/DumpCompare";
+			};
+			name = Release;
 		};
 		C93097C9056B87DBC2B49A4F /* Release */ = {
 			isa = XCBuildConfiguration;
@@ -333,6 +468,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
+		5E17292E46DDDC98E00748BC /* Build configuration list for PBXNativeTarget "DumpCompareTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1A68A392C2C29EAA8E05ABE6 /* Debug */,
+				ADEF03975B405839AECD2486 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		BC5DE31D208F3551000476A8 /* Build configuration list for PBXNativeTarget "DumpCompare" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -352,6 +496,10 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		ABC9FED3EFF91E300892FE20 /* DumpCompareCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = DumpCompareCore;
+		};
 		DD998B4928A6EFDFADE20701 /* DumpCompareCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = DumpCompareCore;
