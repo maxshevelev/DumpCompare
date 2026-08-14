@@ -234,4 +234,55 @@ struct HexLayout: Equatable {
         }
         return nil
     }
+
+    /// Exclusive end of a drag selection for a pointer position: the offset
+    /// just past the byte whose cell-centre the pointer has crossed (§6).
+    ///
+    /// Dragging extends the selection by the pointer's *centre-crossing* of a
+    /// byte, not by entering the next byte's cell: byte N joins the selection
+    /// the moment the pointer passes the middle of N's low-nibble character.
+    /// The boundary between byte N and N+1 therefore sits at the centre of
+    /// N+1's cell, so the row's last byte joins the selection while the pointer
+    /// is still over it — a byte never needs a following byte to be reachable.
+    /// A pointer past the last byte's centre returns one past the row.
+    /// Returns nil for points outside any row or column (padding, gaps past the
+    /// last byte, past the last row), mirroring `hitTest`.
+    func dragEndOffset(point: CGPoint, rowCount: UInt64) -> UInt64? {
+        guard point.x >= 0, point.y >= 0 else { return nil }
+        let row = Int(floor(point.y / rowHeight))
+        guard row >= 0, UInt64(row) < rowCount else { return nil }
+        let rowStart = byteOffset(row: row, column: 0)
+
+        let hexStart = leftPadding + offsetColumnWidth + gapAfterOffset
+        let hexEnd = asciiX(column: 0)
+        if point.x >= hexStart, point.x < hexEnd {
+            // First column whose centre is still ahead of the pointer: every
+            // byte before it has had its centre crossed and is included, so the
+            // selection end is that column's offset. When even the last byte's
+            // centre is behind the pointer the whole row is included.
+            let halfCell = hexByteWidth / 2
+            for column in 0..<Self.bytesPerRow {
+                if point.x < hexByteX(column: column) + halfCell {
+                    return rowStart + UInt64(column)
+                }
+            }
+            return rowStart + UInt64(Self.bytesPerRow)
+        }
+
+        let asciiStart = asciiX(column: 0)
+        if point.x >= asciiStart, point.x < asciiStart + asciiColumnWidth {
+            let halfChar = charWidth / 2
+            for column in 0..<Self.bytesPerRow {
+                if point.x < asciiX(column: column) + halfChar {
+                    return rowStart + UInt64(column)
+                }
+            }
+            return rowStart + UInt64(Self.bytesPerRow)
+        }
+
+        if point.x >= leftPadding, point.x < hexStart {
+            return rowStart
+        }
+        return nil
+    }
 }

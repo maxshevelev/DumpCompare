@@ -212,4 +212,78 @@ final class HexLayoutTests: XCTestCase {
         let trailingGap = CGPoint(x: l.hexByteX(column: 15) + l.hexByteWidth + l.hexByteGap / 2, y: 0)
         XCTAssertEqual(l.hitTest(point: trailingGap, rowCount: 10), HexLayout.Hit(row: 0, column: .hex(15)))
     }
+
+    // MARK: - Drag selection (§6)
+
+    /// A byte joins a drag selection when the pointer passes its cell-centre
+    /// (the middle of its low-nibble character), not when it enters the next
+    /// byte's cell. The returned offset is the exclusive end of the selection.
+    func testDragEndOffsetTracksByteCentres() {
+        let l = makeLayout()
+        // Before byte 0's centre (hexByteX(0)+8 = 100) the end is the row start.
+        XCTAssertEqual(l.dragEndOffset(point: CGPoint(x: 92, y: 0), rowCount: 10), 0)
+        XCTAssertEqual(l.dragEndOffset(point: CGPoint(x: 99, y: 0), rowCount: 10), 0)
+        // At/past byte 0's centre → byte 0 joins, end moves to 1.
+        XCTAssertEqual(l.dragEndOffset(point: CGPoint(x: 100, y: 0), rowCount: 10), 1)
+        XCTAssertEqual(l.dragEndOffset(point: CGPoint(x: 110, y: 0), rowCount: 10), 1)
+        // Byte 4's centre is at hexByteX(4)+8 = 196.
+        XCTAssertEqual(l.dragEndOffset(point: CGPoint(x: 195, y: 0), rowCount: 10), 4)
+        XCTAssertEqual(l.dragEndOffset(point: CGPoint(x: 196, y: 0), rowCount: 10), 5)
+        // The same rule holds across the between-groups gap: mid(8) = 300.
+        XCTAssertEqual(l.dragEndOffset(point: CGPoint(x: 300, y: 0), rowCount: 10), 9)
+    }
+
+    /// The row's last byte joins the selection while the pointer is still over
+    /// it — no following byte is needed, which is the point of the centre rule.
+    func testDragEndOffsetSelectsLastByteOfRow() {
+        let l = makeLayout()
+        // mid(15) = hexByteX(15)+8 = 468. Before it byte 15 is not yet in the
+        // selection; at/after it the selection runs through the whole row (16).
+        XCTAssertEqual(l.dragEndOffset(point: CGPoint(x: 460, y: 0), rowCount: 10), 15)
+        XCTAssertEqual(l.dragEndOffset(point: CGPoint(x: 467, y: 0), rowCount: 10), 15)
+        XCTAssertEqual(l.dragEndOffset(point: CGPoint(x: 468, y: 0), rowCount: 10), 16)
+        XCTAssertEqual(l.dragEndOffset(point: CGPoint(x: 491, y: 0), rowCount: 10), 16)
+    }
+
+    func testDragEndOffsetMovesToNextRow() {
+        let l = makeLayout()
+        // Row 1 starts at byte offset 16.
+        XCTAssertEqual(l.dragEndOffset(point: CGPoint(x: 100, y: 17), rowCount: 10), 17)
+        XCTAssertEqual(l.dragEndOffset(point: CGPoint(x: 468, y: 17), rowCount: 10), 32)
+    }
+
+    func testDragEndOffsetAsciiRegion() {
+        let l = makeLayout()
+        // asciiX(0) = 492; the boundary for char N is its centre (asciiX(N)+4).
+        XCTAssertEqual(l.dragEndOffset(point: CGPoint(x: 492, y: 0), rowCount: 10), 0)
+        XCTAssertEqual(l.dragEndOffset(point: CGPoint(x: 495, y: 0), rowCount: 10), 0)
+        XCTAssertEqual(l.dragEndOffset(point: CGPoint(x: 496, y: 0), rowCount: 10), 1)
+        // Last char's centre at asciiX(15)+4 = 616 → end 16.
+        XCTAssertEqual(l.dragEndOffset(point: CGPoint(x: 615, y: 0), rowCount: 10), 15)
+        XCTAssertEqual(l.dragEndOffset(point: CGPoint(x: 616, y: 0), rowCount: 10), 16)
+        XCTAssertEqual(l.dragEndOffset(point: CGPoint(x: 619, y: 0), rowCount: 10), 16)
+    }
+
+    func testDragEndOffsetOffsetColumnAndMisses() {
+        let l = makeLayout()
+        // Offset column → start of the row.
+        XCTAssertEqual(l.dragEndOffset(point: CGPoint(x: 20, y: 0), rowCount: 10), 0)
+        XCTAssertEqual(l.dragEndOffset(point: CGPoint(x: 20, y: 17), rowCount: 10), 16)
+        // Right padding, past the last row, and negative coordinates → nil.
+        XCTAssertNil(l.dragEndOffset(point: CGPoint(x: 700, y: 0), rowCount: 10))
+        XCTAssertNil(l.dragEndOffset(point: CGPoint(x: 200, y: 170), rowCount: 1))
+        XCTAssertNil(l.dragEndOffset(point: CGPoint(x: -1, y: 0), rowCount: 10))
+    }
+
+    /// The centre rule holds for packed words: inside a 4-byte word the
+    /// boundaries are the bytes' own centres, not the word's edge.
+    func testDragEndOffsetTracksPackedWords() {
+        let w4 = HexLayout(charWidth: 8, rowHeight: 17, wordSize: 4)
+        // mid(3) = 148 → end 4; mid(4) = 172 → end 5.
+        XCTAssertEqual(w4.dragEndOffset(point: CGPoint(x: 147, y: 0), rowCount: 10), 3)
+        XCTAssertEqual(w4.dragEndOffset(point: CGPoint(x: 148, y: 0), rowCount: 10), 4)
+        XCTAssertEqual(w4.dragEndOffset(point: CGPoint(x: 172, y: 0), rowCount: 10), 5)
+        // The row's last byte is still selectable at its centre.
+        XCTAssertEqual(w4.dragEndOffset(point: CGPoint(x: w4.hexByteX(column: 15) + 8, y: 0), rowCount: 10), 16)
+    }
 }

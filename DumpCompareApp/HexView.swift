@@ -49,6 +49,10 @@ final class HexView: NSView {
     /// delegate uses this to zoom-to-fit (§3.1) instead of zooming to max.
     var hexContentWidth: CGFloat { currentLayout.contentWidth }
 
+    /// Geometry of the current dump, used internally for hit-testing and
+    /// exposed (internal) for tests. (`layout` itself is NSView's method.)
+    var hexLayout: HexLayout { currentLayout }
+
     // MARK: - Init
 
     init() {
@@ -319,6 +323,20 @@ final class HexView: NSView {
         let point = convert(event.locationInWindow, from: nil)
         let layout = currentLayout
         let rowCount = layout.rowCount(fileSize: dataSource.fileSize)
+
+        // Dragging (or shift-click) extends the selection. The pointer maps to
+        // the byte whose cell-centre it has crossed (§6), so the byte under the
+        // pointer joins the selection — including the row's last byte, which
+        // needs no following byte to be reachable.
+        if extendSelection {
+            guard let end = layout.dragEndOffset(point: point, rowCount: rowCount) else { return }
+            let asciiStart = layout.asciiX(column: 0)
+            let region: HexInputRegion = (point.x >= asciiStart && point.x < asciiStart + layout.asciiColumnWidth)
+                ? .ascii : .hex
+            delegate.hexEditor(self, didClickAt: end, region: region, extendSelection: true)
+            return
+        }
+
         guard let hit = layout.hitTest(point: point, rowCount: rowCount) else { return }
 
         let offset: UInt64
