@@ -752,7 +752,9 @@ final class MainViewController: NSViewController {
 
     /// Slack to leave around the hex grid so a legacy-style vertical scroller
     /// does not cover the ASCII column: grid width + a small margin per pane.
-    static let paneSlack: CGFloat = 16
+    /// Single source of truth shared with the header double-click
+    /// fit-to-content-width (§3.3).
+    static let paneSlack: CGFloat = FilePaneView.contentFitSlack
 
     /// Ideal content width the window should be when zoomed (double-click on the
     /// title bar / Window > Zoom): the hex grid width for a single pane, or

@@ -30,6 +30,7 @@
 		9798C9A69A858500B7AD3915 /* WindowMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0474573D1975ED1FEC349E67 /* WindowMode.swift */; };
 		9BACD1885C8A876AEBC95150 /* OpenPlacementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CC40FA3295CB53000898E26 /* OpenPlacementTests.swift */; };
 		A50B556671000ED5800F6FC0 /* MainViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2751D9902BBBD4771AFB0FD5 /* MainViewController.swift */; };
+		AF01C87A6FBE7F66CB095636 /* HeaderFitWidthTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20D9603C698CA61F9D4A641B /* HeaderFitWidthTests.swift */; };
 		AF59EBD1B601A04F936643D0 /* DragDrop.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B8427CB107B2BDD59342ACC /* DragDrop.swift */; };
 		B850A1E58666F6DAA621C071 /* ComparisonView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F74A1CF742DE4185F34E53D /* ComparisonView.swift */; };
 		C469DA232E32792EBE3B5607 /* SingleFileDropView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 843BDADF6DC010ED5707D0F2 /* SingleFileDropView.swift */; };
@@ -56,6 +57,7 @@
 		0B8427CB107B2BDD59342ACC /* DragDrop.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DragDrop.swift; sourceTree = "<group>"; };
 		0F74A1CF742DE4185F34E53D /* ComparisonView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComparisonView.swift; sourceTree = "<group>"; };
 		1D73B46350757B2E6D907D7F /* DumpCompare.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = DumpCompare.entitlements; sourceTree = "<group>"; };
+		20D9603C698CA61F9D4A641B /* HeaderFitWidthTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeaderFitWidthTests.swift; sourceTree = "<group>"; };
 		2581320A3453C01FF111B29B /* ComparisonPaneTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComparisonPaneTests.swift; sourceTree = "<group>"; };
 		2751D9902BBBD4771AFB0FD5 /* MainViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainViewController.swift; sourceTree = "<group>"; };
 		2B6700D9C2E00D1370AB090A /* ComparisonResizeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComparisonResizeTests.swift; sourceTree = "<group>"; };
@@ -171,6 +173,7 @@
 				2B6700D9C2E00D1370AB090A /* ComparisonResizeTests.swift */,
 				5A61B0AA7755933DD1B3D4F8 /* DividerDragTests.swift */,
 				95A1ED616E5D1F9C56E212FA /* FileChangeWatcherTests.swift */,
+				20D9603C698CA61F9D4A641B /* HeaderFitWidthTests.swift */,
 				C8F0ABAC4DEEBAE7DD9A62BB /* HexLayoutTests.swift */,
 				39D2A05C7DA0DE400C947364 /* LayoutToggleTests.swift */,
 				7CC40FA3295CB53000898E26 /* OpenPlacementTests.swift */,
@@ -296,6 +299,7 @@
 				EE2CE9F01E1A980B7DB7B5FF /* ComparisonResizeTests.swift in Sources */,
 				5C277503D272939847E4FF3A /* DividerDragTests.swift in Sources */,
 				4DDAA235F5AFD6E9FF949A35 /* FileChangeWatcherTests.swift in Sources */,
+				AF01C87A6FBE7F66CB095636 /* HeaderFitWidthTests.swift in Sources */,
 				72FE060ED1406764B2E18350 /* HexLayoutTests.swift in Sources */,
 				24FDE8550B83BC61EAC8F3BB /* LayoutToggleTests.swift in Sources */,
 				9BACD1885C8A876AEBC95150 /* OpenPlacementTests.swift in Sources */,

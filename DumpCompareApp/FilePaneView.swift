@@ -1,5 +1,33 @@
 import Cocoa
 
+/// The pane's title bar (file name, dirty/read-only state, close button).
+///
+/// Besides showing the title it recognizes a double-click anywhere on the bar —
+/// except on the close button — and reports it via `onDoubleClick`. In
+/// side-by-side mode that tells ComparisonView to expand this pane so its hex
+/// content fits by width (§3.3).
+final class PaneHeaderView: NSView {
+    /// Fired on a double-click in the header (not on the close button).
+    var onDoubleClick: (() -> Void)?
+
+    /// Routes every click in the bar to the bar itself — the title/lock labels
+    /// are plain text and must not swallow the gesture. The close button keeps
+    /// its clicks. Points outside the bar pass through untouched.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let hit = super.hitTest(point) else { return nil }
+        if hit is NSButton { return hit }
+        return self
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2 {
+            onDoubleClick?()
+            return
+        }
+        super.mouseDown(with: event)
+    }
+}
+
 /// One file pane (§3.4, §15): a header (file name, `*` dirty, read-only lock,
 /// comparison-mode close button), the virtualized hex dump, and a status bar.
 ///
@@ -17,6 +45,15 @@ final class FilePaneView: NSView {
     /// Ideal width of this pane's hex content, for zoom-to-fit (§3.1).
     var hexContentWidth: CGFloat { hexView.hexContentWidth }
 
+    /// Margin added to `hexContentWidth` so the grid doesn't sit flush against
+    /// the pane edge / scroller. Shared by zoom-to-fit and the header
+    /// double-click fit-to-content-width (§3.3).
+    static let contentFitSlack: CGFloat = 16
+
+    /// Width this pane needs to show its hex content without a horizontal
+    /// scroller: content plus slack (§3.3).
+    var contentFitWidth: CGFloat { hexContentWidth + Self.contentFitSlack }
+
     private let titleLabel = NSTextField(labelWithString: "")
     private let lockLabel = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(labelWithString: "")
@@ -29,6 +66,9 @@ final class FilePaneView: NSView {
 
     /// Fired when the user clicks anywhere in the pane (activates it).
     var onActivate: (() -> Void)?
+    /// Fired when the user double-clicks the header: expand this pane so its
+    /// hex content fits by width (§3.3).
+    var onHeaderDoubleClick: (() -> Void)?
     /// Fired when the comparison-mode close button is clicked.
     var onClose: (() -> Void)?
     /// Fired with the dropped file URLs (comparison-mode drops target this pane,
@@ -73,8 +113,11 @@ final class FilePaneView: NSView {
         closeButton.toolTip = "Close pane"
         closeButton.contentTintColor = .secondaryLabelColor
 
-        let header = NSView()
+        let header = PaneHeaderView()
         header.translatesAutoresizingMaskIntoConstraints = false
+        header.onDoubleClick = { [weak self] in
+            self?.onHeaderDoubleClick?()
+        }
         // Low priorities keep this container flexible so a narrow pane
         // (§3.3) can shrink it and truncate the title instead of forcing a
         // minimum width.

@@ -70,6 +70,11 @@ final class ComparisonView: NSView {
         paneView1.onActivate = { [weak self] in self?.onPaneActivated?(0) }
         paneView2.onActivate = { [weak self] in self?.onPaneActivated?(1) }
 
+        // §3.3: double-clicking a header in side-by-side mode expands that pane
+        // so its hex content fits by width.
+        paneView1.onHeaderDoubleClick = { [weak self] in self?.fitContentWidth(of: 0) }
+        paneView2.onHeaderDoubleClick = { [weak self] in self?.fitContentWidth(of: 1) }
+
         NSLayoutConstraint.activate([
             splitView.topAnchor.constraint(equalTo: topAnchor),
             splitView.bottomAnchor.constraint(equalTo: bottomAnchor),
@@ -84,6 +89,15 @@ final class ComparisonView: NSView {
     func toggleLayout() {
         splitView.isVertical.toggle()
         UserDefaults.standard.set(splitView.isVertical, forKey: Self.layoutKey)
+    }
+
+    /// Expands pane `index` so its hex content fits by width, animating the
+    /// divider there if the pane is currently too narrow. No-op in stacked mode,
+    /// where the panes are already full-width (§3.3).
+    func fitContentWidth(of index: Int) {
+        let pane = index == 0 ? paneView1 : paneView2
+        guard pane.frame.width < pane.contentFitWidth else { return }
+        splitView.fitPane(index, minimumWidth: pane.contentFitWidth)
     }
 
     /// Highlights `index` as the active pane.

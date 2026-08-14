@@ -207,9 +207,9 @@ final class ProportionalSplitView: NSSplitView {
             return
         }
         guard event.clickCount == 1 else { return }
-        // The user is grabbing the divider: cancel any running reset animation.
-        resetTimer?.invalidate()
-        resetTimer = nil
+        // The user is grabbing the divider: cancel any running fraction animation.
+        fractionTimer?.invalidate()
+        fractionTimer = nil
         isDraggingDivider = true
         dragStartMouseAxis = axisValue(point)
         dragStartThickness = firstPaneThickness()
@@ -242,8 +242,8 @@ final class ProportionalSplitView: NSSplitView {
 
     /// Programmatic divider moves (used by tests) update the ratio too.
     override func setPosition(_ position: CGFloat, ofDividerAt dividerIndex: Int) {
-        resetTimer?.invalidate()
-        resetTimer = nil
+        fractionTimer?.invalidate()
+        fractionTimer = nil
         let available = axisAvailable()
         guard available > 0 else {
             super.setPosition(position, ofDividerAt: dividerIndex)
@@ -252,54 +252,77 @@ final class ProportionalSplitView: NSSplitView {
         setFraction(min(max(position / available, 0), 1))
     }
 
-    // MARK: - Reset to 50/50 (§3.3)
+    // MARK: - Fraction animation (§3.3)
 
-    /// Duration of the animated 50/50 reset triggered by a divider double-click.
-    private static let resetDuration: TimeInterval = 0.2
-    /// Drives the reset animation; invalidated if the user grabs the divider
-    /// again before it finishes.
-    private var resetTimer: Timer?
-    /// Fraction at the moment the reset animation started.
-    private var resetStartFraction: CGFloat = 0.5
-    /// Wall-clock time the reset animation started.
-    private var resetStartTime: TimeInterval = 0
+    /// Duration of an animated divider move: the 50/50 reset on a divider
+    /// double-click and the fit-content-width move on a header double-click.
+    private static let fractionAnimationDuration: TimeInterval = 0.2
+    /// Drives the animation; invalidated if the user grabs the divider again
+    /// before it finishes.
+    private var fractionTimer: Timer?
+    /// Fraction at the moment the animation started.
+    private var fractionStartValue: CGFloat = 0.5
+    /// Wall-clock time the animation started.
+    private var fractionStartTime: TimeInterval = 0
 
-    /// Resets the divider to a 50/50 split. Animates the fraction over
-    /// `resetDuration` unless the user prefers reduced motion, in which case it
-    /// snaps instantly.
+    /// Resets the divider to a 50/50 split (divider double-click).
     private func resetToHalf() {
-        guard fraction != 0.5 else { return }
+        animateFraction(to: 0.5)
+    }
+
+    /// Animates the split fraction to `target` (clamped to 0...1) unless the
+    /// user prefers reduced motion, in which case it snaps instantly. A running
+    /// animation is superseded; grabbing the divider cancels it.
+    func animateFraction(to target: CGFloat) {
+        let target = min(max(target, 0), 1)
+        guard fraction != target else { return }
         if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-            setFraction(0.5)
+            setFraction(target)
             return
         }
-        resetTimer?.invalidate()
-        resetStartFraction = fraction
-        resetStartTime = ProcessInfo.processInfo.systemUptime
+        fractionTimer?.invalidate()
+        fractionStartValue = fraction
+        fractionStartTime = ProcessInfo.processInfo.systemUptime
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] timer in
             guard let self else {
                 timer.invalidate()
                 return
             }
-            self.tickResetAnimation()
+            self.tickFractionAnimation(to: target)
         }
         RunLoop.main.add(timer, forMode: .common)
-        resetTimer = timer
-        tickResetAnimation()
+        fractionTimer = timer
+        tickFractionAnimation(to: target)
     }
 
-    private func tickResetAnimation() {
-        let elapsed = ProcessInfo.processInfo.systemUptime - resetStartTime
-        let t = min(1, elapsed / Self.resetDuration)
+    private func tickFractionAnimation(to target: CGFloat) {
+        let elapsed = ProcessInfo.processInfo.systemUptime - fractionStartTime
+        let t = min(1, elapsed / Self.fractionAnimationDuration)
         // Cubic ease-out: quick start, soft landing.
         let u = 1 - t
         let eased = 1 - u * u * u
-        setFraction(resetStartFraction + (0.5 - resetStartFraction) * eased)
+        setFraction(fractionStartValue + (target - fractionStartValue) * eased)
         if t >= 1 {
-            setFraction(0.5)
-            resetTimer?.invalidate()
-            resetTimer = nil
+            setFraction(target)
+            fractionTimer?.invalidate()
+            fractionTimer = nil
         }
+    }
+
+    /// Moves the divider so pane `index` (0 or 1) gets at least `minimumWidth`
+    /// along the split axis, if the available space allows. Only meaningful in
+    /// side-by-side mode; a stacked split's panes are already full-width (§3.3).
+    func fitPane(_ index: Int, minimumWidth: CGFloat) {
+        guard isVertical, minimumWidth > 0 else { return }
+        let available = axisAvailable()
+        guard available > 0 else { return }
+        let target: CGFloat
+        if index == 0 {
+            target = min(max(minimumWidth / available, 0), 1)
+        } else {
+            target = min(max((available - minimumWidth) / available, 0), 1)
+        }
+        animateFraction(to: target)
     }
 
     /// Sets the split fraction and re-lays the panes out immediately.
