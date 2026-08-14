@@ -27,6 +27,11 @@ final class FilePaneView: NSView {
     var onActivate: (() -> Void)?
     /// Fired when the comparison-mode close button is clicked.
     var onClose: (() -> Void)?
+    /// Fired with the dropped file URLs (comparison-mode drops target this pane,
+    /// §4.3). Only active after `enableFileDrop()`.
+    var onDropFiles: (([URL]) -> Void)?
+
+    private var dropEnabled = false
 
     init(viewModel: PaneViewModel) {
         self.viewModel = viewModel
@@ -140,6 +145,23 @@ final class FilePaneView: NSView {
         titleLabel.textColor = isActive ? .labelColor : .secondaryLabelColor
     }
 
+    /// Registers the pane as a drag destination (comparison mode only, §4.3).
+    /// Single-file mode must NOT call this — the outer `SingleFileDropView`
+    /// owns the drop there, and the deepest registered view would win and steal
+    /// the drag.
+    func enableFileDrop() {
+        guard !dropEnabled else { return }
+        dropEnabled = true
+        wantsLayer = true
+        layer?.cornerRadius = 4
+        registerForDraggedTypes([.fileURL, .fileNames])
+    }
+
+    private func setDropHighlighted(_ highlighted: Bool) {
+        layer?.borderColor = NSColor.controlAccentColor.cgColor
+        layer?.borderWidth = highlighted ? 3 : 0
+    }
+
     // MARK: - Actions
 
     @objc private func closeTapped() {
@@ -197,5 +219,36 @@ final class FilePaneView: NSView {
             return "\(bytes) B"
         }
         return String(format: "%.1f %@", value, units[index])
+    }
+}
+
+// MARK: - Drag-and-drop (§4.3)
+
+extension FilePaneView {
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard dropEnabled, !sender.draggingPasteboard.droppedFileURLs.isEmpty else { return [] }
+        setDropHighlighted(true)
+        return .copy
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        setDropHighlighted(false)
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        setDropHighlighted(false)
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        true
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        setDropHighlighted(false)
+        let urls = sender.draggingPasteboard.droppedFileURLs
+        if !urls.isEmpty {
+            onDropFiles?(urls)
+        }
+        return true
     }
 }

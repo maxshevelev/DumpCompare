@@ -281,4 +281,36 @@ final class PaneViewModelTests: XCTestCase {
         let range = try pane.find(pattern: [0x99], from: 0, direction: .forward)
         XCTAssertNil(range)
     }
+
+    // MARK: - External change detection (§5.5)
+
+    func testExternalWriteSurfacesExternalChange() async throws {
+        let (pane, url) = try openPane([0x00])
+        defer { try? FileManager.default.removeItem(at: url) }
+        var fired = false
+        pane.onExternalChange = { fired = true }
+        try await Task.sleep(nanoseconds: 300_000_000)  // watcher registration
+
+        try Data([0x01]).write(to: url)
+
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline, !fired {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        XCTAssertTrue(fired, "external write never surfaced")
+    }
+
+    func testOwnSaveDoesNotTriggerExternalChange() async throws {
+        let (pane, url) = try openPane([0x00])
+        defer { try? FileManager.default.removeItem(at: url) }
+        var fired = false
+        pane.onExternalChange = { fired = true }
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        pane.typeASCII(0x41)  // dirty the doc, then save → own write
+        try pane.save()
+        try await Task.sleep(nanoseconds: 1_200_000_000)  // past the suppression window
+
+        XCTAssertFalse(fired, "own save triggered an external-change prompt")
+    }
 }

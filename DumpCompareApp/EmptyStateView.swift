@@ -1,7 +1,11 @@
 import Cocoa
 
-/// Placeholder shown in empty mode (§3.1): an Open File button and a drag hint.
+/// Placeholder shown in empty mode (§3.1): an Open File button, a drag hint,
+/// and drag-and-drop support (§4.3 empty mode).
 final class EmptyStateView: NSView {
+    /// Fired with the dropped file URLs; the view controller applies §4.3 rules.
+    var onOpenFiles: (([URL]) -> Void)?
+
     init() {
         super.init(frame: .zero)
         setUp()
@@ -13,6 +17,9 @@ final class EmptyStateView: NSView {
     }
 
     private func setUp() {
+        wantsLayer = true
+        layer?.cornerRadius = 4
+
         let openButton = NSButton(
             title: "Open File",
             target: nil,
@@ -40,5 +47,43 @@ final class EmptyStateView: NSView {
             stackView.centerXAnchor.constraint(equalTo: centerXAnchor),
             stackView.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
+
+        registerForDraggedTypes([.fileURL, .fileNames])
+    }
+
+    private func setDropHighlighted(_ highlighted: Bool) {
+        layer?.borderColor = NSColor.controlAccentColor.cgColor
+        layer?.borderWidth = highlighted ? 3 : 0
+    }
+}
+
+// NSView already conforms to NSDraggingDestination (empty defaults); we override
+// the members. Only registered destination views receive drag callbacks.
+extension EmptyStateView {
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard !sender.draggingPasteboard.droppedFileURLs.isEmpty else { return [] }
+        setDropHighlighted(true)
+        return .copy
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        setDropHighlighted(false)
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        setDropHighlighted(false)
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        true
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        setDropHighlighted(false)
+        let urls = sender.draggingPasteboard.droppedFileURLs
+        if !urls.isEmpty {
+            onOpenFiles?(urls)
+        }
+        return true
     }
 }

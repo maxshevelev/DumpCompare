@@ -245,7 +245,7 @@ Requirement sections: §3, §6, §8, §9, §10.3, §15; acceptance §18.3–18.1
 
 ---
 
-## 10. Milestone 6 — Drag-and-drop & file lifecycle
+## 10. Milestone 6 — Drag-and-drop & file lifecycle — ✅ done
 
 Requirement sections: §4, §5.5; acceptance §18.1.
 
@@ -259,6 +259,15 @@ Requirement sections: §4, §5.5; acceptance §18.1.
 5. **Sandbox access management (D9)** — security-scoped bookmarks so opened files stay accessible across launches; refresh permissions after Save As; wire the "sandbox access denied" error path (§16).
 
 **Definition of done:** all open/drop/close rules behave per §4; same-file identity prevents double-open; external changes produce correct prompts; no data loss paths.
+
+**Implementation findings (M6):**
+
+> - **Open placement is pure logic.** `OpenPlacement.plan(activePaneIndex:pane1Open:pane2Open:fileCount:)` returns a `Result` (target pane, whether a second file opens, ignored count) so all three §4.1 rules — including replace-the-active-pane when both are occupied — are unit-tested without AppKit. `openFiles` and the drop handlers share it; every rule now notifies when files are ignored (rules 2/3 previously only notified when >2 files were selected).
+> - **Drop targets are per-mode views.** Empty mode drops on `EmptyStateView` itself; single-file mode wraps the pane in `SingleFileDropView`, which on drag-enter overlays "Replace Current File" / "Open as Second File" split along the current layout (`ComparisonPaneLayoutIsVertical`); comparison mode registers each `FilePaneView` (via `enableFileDrop()` — deliberately NOT called in single-file mode, where the deepest registered view would steal the drag from the outer split view).
+> - **`NSView` already conforms to `NSDraggingDestination`** (empty defaults) in modern AppKit — implement the members as `override` in an extension; declaring the protocol is a "redundant conformance" error.
+> - **External changes.** `FileChangeWatcher` (DispatchSource, `O_EVTONLY`, 0.4 s debounce, main-actor delivery) is owned by `PaneViewModel`. Own saves/save-as/revert call `rearmWatcher()`: a 1 s suppression window swallows the app's own write events, and the descriptor is rebound because atomic saves replace the inode. Clean doc → Reload / Keep; dirty doc → Reload-and-Discard / Keep / Save As. Prompts capture the specific pane object (weakly) — pane indices are invalid because closing pane 1 swaps the pane1/pane2 objects in `WindowViewModel`.
+> - **Sandbox bookmarks.** `SandboxBookmarkStore` persists security-scoped bookmarks in UserDefaults keyed by standardized path; recorded on every open and Save As. No UI consumer exists yet (no window restore / recent-files), so `resolveAndStartAccess` is a helper for a future milestone. Sandbox/permission denials (Cocoa 257, POSIX EACCES) surface a targeted "grant access by choosing the file in File > Open" alert.
+> - **New tests:** `OpenPlacementTests` (9), `FileChangeWatcherTests` (3, real FS events + inverted stop), plus 2 `PaneViewModel` suppression tests (external write fires; own save does not). App suite: **64 tests** (was 50). Core unchanged: **150 tests**. Clean build (0 warnings), smoke launch alive.
 
 ---
 

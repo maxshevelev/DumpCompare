@@ -25,6 +25,7 @@ final class MainViewController: NSViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        wireExternalChangeDetection()
         apply(mode: .empty)
     }
 
@@ -38,20 +39,39 @@ final class MainViewController: NSViewController {
             activeFilePane = nil
             comparisonView = nil
             comparisonCoordinator.stop()
-            setContentView(EmptyStateView())
+            let emptyView = EmptyStateView()
+            emptyView.onOpenFiles = { [weak self] urls in
+                self?.handleEmptyDrop(urls)
+            }
+            setContentView(emptyView)
 
         case .singleFile:
             let pane = FilePaneView(viewModel: windowModel.pane1)
+            // Wrap in the drop-target split view (§4.3 single-file mode). The
+            // pane itself is NOT drop-registered here so the outer view wins.
+            let dropView = SingleFileDropView(paneView: pane)
+            dropView.onDrop = { [weak self] target, urls in
+                self?.handleSingleFileDrop(target: target, urls: urls)
+            }
             activeFilePane = pane
             comparisonView = nil
             comparisonCoordinator.stop()
-            setContentView(pane)
+            setContentView(dropView)
             pane.focusHexView()
 
         case .comparison:
             wireComparison()
             let pane1View = FilePaneView(viewModel: windowModel.pane1)
             let pane2View = FilePaneView(viewModel: windowModel.pane2)
+            // Comparison-mode drops target the hovered pane (§4.3).
+            pane1View.enableFileDrop()
+            pane2View.enableFileDrop()
+            pane1View.onDropFiles = { [weak self] urls in
+                self?.handleComparisonDrop(targetPane: 0, urls: urls)
+            }
+            pane2View.onDropFiles = { [weak self] urls in
+                self?.handleComparisonDrop(targetPane: 1, urls: urls)
+            }
             let view = ComparisonView(
                 coordinator: comparisonCoordinator,
                 paneView1: pane1View,
@@ -141,37 +161,114 @@ final class MainViewController: NSViewController {
     }
 
     private func openFiles(_ urls: [URL]) {
-        let files = urls.filter(isOpenableFile)
-        if files.count < urls.count {
-            presentAlert(title: "Some files could not be opened",
-                         message: "Directories and packages are not supported.")
-        }
+        let files = openableFiles(from: urls)
         guard let first = files.first else { return }
 
-        switch (windowModel.pane1.isOpen, windowModel.pane2.isOpen) {
-        case (false, _):
-            // Rule 1: no panes occupied — first → pane 1, second → pane 2.
+        // §4.1 rules 1–3, decided against the pre-open occupancy.
+        let pane1WasOpen = windowModel.pane1.isOpen
+        let pane2WasOpen = windowModel.pane2.isOpen
+        let plan = OpenPlacement.plan(
+            activePaneIndex: windowModel.activePaneIndex,
+            pane1Open: pane1WasOpen,
+            pane2Open: pane2WasOpen,
+            fileCount: files.count
+        )
+
+        if let target = plan.firstFilePane {
+            guard openIntoPane(index: target, url: first) else { return }
+        }
+        if plan.openSecond, files.count >= 2 {
+            _ = openIntoPane(index: 1, url: files[1])
+        }
+
+        // Active pane follows the rule that decided placement.
+        if !pane1WasOpen {
+            windowModel.setActivePane(0)
+        } else if !pane2WasOpen {
+            windowModel.setActivePane(1)
+        }
+
+        if plan.ignoredCount > 0 {
+            notifyIgnored(count: plan.ignoredCount)
+        }
+        refreshMode()
+    }
+
+    // MARK: - Drop handlers (§4.3)
+
+    /// Empty-mode drop: first two files → panes 1/2, extras ignored (§4.3).
+    private func handleEmptyDrop(_ urls: [URL]) {
+        let files = openableFiles(from: urls)
+        guard let first = files.first else { return }
+        guard openIntoPane(index: 0, url: first) else { return }
+        if files.count >= 2 {
+            _ = openIntoPane(index: 1, url: files[1])
+        }
+        windowModel.setActivePane(0)
+        let ignored = max(0, files.count - 2)
+        if ignored > 0 { notifyIgnored(count: ignored) }
+        refreshMode()
+    }
+
+    /// Comparison-mode drop: first file → hovered pane; second file → other pane
+    /// only if that pane is empty; extras (and an unplaceable second) ignored.
+    private func handleComparisonDrop(targetPane: Int, urls: [URL]) {
+        let files = openableFiles(from: urls)
+        guard let first = files.first else { return }
+        guard openIntoPane(index: targetPane, url: first) else { return }
+
+        let otherIndex = 1 - targetPane
+        let otherPane = otherIndex == 0 ? windowModel.pane1 : windowModel.pane2
+        var ignored = max(0, files.count - 2)
+        if files.count >= 2 {
+            if otherPane.isOpen {
+                ignored += 1  // the second file can't open — treated as ignored
+            } else {
+                _ = openIntoPane(index: otherIndex, url: files[1])
+            }
+        }
+        windowModel.setActivePane(targetPane)
+        if ignored > 0 { notifyIgnored(count: ignored) }
+        refreshMode()
+    }
+
+    /// Single-file-mode drop onto one of the two visual targets (§4.3).
+    private func handleSingleFileDrop(target: SingleFileDropTarget, urls: [URL]) {
+        let files = openableFiles(from: urls)
+        guard let first = files.first else { return }
+        switch target {
+        case .replace:
+            // First replaces the current file; a second (if any) opens as pane 2.
             guard openIntoPane(index: 0, url: first) else { return }
             if files.count >= 2 {
                 _ = openIntoPane(index: 1, url: files[1])
             }
             windowModel.setActivePane(0)
-
-        case (true, false):
-            // Rule 2: only pane 1 occupied — first file opens in pane 2.
+            let ignored = max(0, files.count - 2)
+            if ignored > 0 { notifyIgnored(count: ignored) }
+        case .addSecond:
+            // First opens as pane 2; all additional files are ignored.
             guard openIntoPane(index: 1, url: first) else { return }
             windowModel.setActivePane(1)
-
-        case (true, true):
-            // Rule 3: both occupied — replace the active pane.
-            guard openIntoPane(index: windowModel.activePaneIndex, url: first) else { return }
-        }
-
-        if files.count > 2 {
-            presentAlert(title: "Additional files ignored",
-                         message: "Only the first two selected files were opened.")
+            let ignored = max(0, files.count - 1)
+            if ignored > 0 { notifyIgnored(count: ignored) }
         }
         refreshMode()
+    }
+
+    private func openableFiles(from urls: [URL]) -> [URL] {
+        let files = urls.filter(isOpenableFile)
+        if files.count < urls.count {
+            presentAlert(title: "Some files could not be opened",
+                         message: "Directories and packages are not supported.")
+        }
+        return files
+    }
+
+    private func notifyIgnored(count: Int) {
+        let noun = count == 1 ? "file was" : "files were"
+        presentAlert(title: "Additional files ignored",
+                     message: "\(count) \(noun) not opened because only two files can be compared at once.")
     }
 
     /// Opens `url` into the pane at `index`, enforcing §4.1 rules 4–6 (dirty
@@ -231,16 +328,17 @@ final class MainViewController: NSViewController {
 
         do {
             try pane.open(url: url)
+            SandboxBookmarkStore.shared.record(url)
             return true
         } catch {
-            presentError("Could not open file.", error)
+            presentFileError("Could not open file.", error, url: url)
             return false
         }
     }
 
     private func isOpenableFile(_ url: URL) -> Bool {
-        let values = try? url.resourceValues(forKeys: [.isDirectoryKey])
-        return values?.isDirectory == false
+        let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey])
+        return values?.isDirectory == false && values?.isPackage != true
     }
 
     // MARK: - Save / Save As / Revert (§5)
@@ -251,14 +349,19 @@ final class MainViewController: NSViewController {
         do {
             try pane.save()
         } catch DocumentError.fileIsReadOnly {
-            saveDocumentAs()  // §5.4: read-only file auto-redirects to Save As
+            presentSaveAs(for: pane)  // §5.4: read-only file auto-redirects to Save As
         } catch {
-            presentError("Save failed.", error)
+            presentFileError("Save failed.", error, url: pane.document?.url)
         }
     }
 
     @objc func saveDocumentAs() {
-        let pane = activePane
+        presentSaveAs(for: activePane)
+    }
+
+    /// Runs a Save As sheet for the given pane (active pane, or a specific pane
+    /// from an external-change conflict, §5.5).
+    private func presentSaveAs(for pane: PaneViewModel) {
         guard pane.isOpen else { return }
         let panel = NSSavePanel()
         panel.nameFieldStringValue = pane.status.fileName
@@ -268,8 +371,9 @@ final class MainViewController: NSViewController {
             guard response == .OK, let url = panel.url, let self else { return }
             do {
                 try pane.saveAs(to: url)
+                SandboxBookmarkStore.shared.record(url)
             } catch {
-                self.presentError("Save As failed.", error)
+                self.presentFileError("Save As failed.", error, url: url)
             }
         }
     }
@@ -289,7 +393,67 @@ final class MainViewController: NSViewController {
         do {
             try pane.revert()
         } catch {
-            presentError("Revert failed.", error)
+            presentFileError("Revert failed.", error, url: pane.document?.url)
+        }
+    }
+
+    // MARK: - External change detection (§5.5)
+
+    /// Wires each pane's watcher to the conflict prompt. Closures capture the
+    /// specific pane objects, not indices, because closing pane 1 swaps the
+    /// pane1/pane2 objects in WindowViewModel.
+    private func wireExternalChangeDetection() {
+        let pane1 = windowModel.pane1
+        let pane2 = windowModel.pane2
+        // Capture the pane objects weakly: the closures live on the panes, so a
+        // strong capture would be a retain cycle. Weak keeps them equal-lifetime.
+        pane1.onExternalChange = { [weak self, weak pane1] in
+            guard let pane1 else { return }
+            self?.presentExternalChange(for: pane1)
+        }
+        pane2.onExternalChange = { [weak self, weak pane2] in
+            guard let pane2 else { return }
+            self?.presentExternalChange(for: pane2)
+        }
+    }
+
+    /// Prompt for a file that changed on disk (§5.5): reload/keep when clean;
+    /// reload-and-discard / keep / save-as when dirty.
+    private func presentExternalChange(for pane: PaneViewModel) {
+        guard pane.isOpen else { return }
+        let name = pane.status.fileName
+        if pane.status.isDirty {
+            let alert = NSAlert()
+            alert.messageText = "File changed on disk"
+            alert.informativeText = "“\(name)” has been changed by another program and has unsaved local changes."
+            alert.addButton(withTitle: "Reload and Discard Changes")
+            alert.addButton(withTitle: "Keep Local Changes")
+            alert.addButton(withTitle: "Save As…")
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                do {
+                    try pane.revert()
+                } catch {
+                    presentFileError("Reload failed.", error, url: pane.document?.url)
+                }
+            case .alertThirdButtonReturn:
+                presentSaveAs(for: pane)
+            default:
+                break  // keep local changes
+            }
+        } else {
+            let alert = NSAlert()
+            alert.messageText = "File changed on disk"
+            alert.informativeText = "“\(name)” has been changed by another program. Reload to see the latest version?"
+            alert.addButton(withTitle: "Reload")
+            alert.addButton(withTitle: "Keep Current Contents")
+            if alert.runModal() == .alertFirstButtonReturn {
+                do {
+                    try pane.revert()
+                } catch {
+                    presentFileError("Reload failed.", error, url: pane.document?.url)
+                }
+            }
         }
     }
 
@@ -312,7 +476,7 @@ final class MainViewController: NSViewController {
                 do {
                     try pane.save()
                 } catch {
-                    presentError("Save failed.", error)
+                    presentFileError("Save failed.", error, url: pane.document?.url)
                     return
                 }
             case .alertSecondButtonReturn:  // Don't Save
@@ -540,6 +704,29 @@ final class MainViewController: NSViewController {
         alert.alertStyle = .critical
         alert.runModal()
     }
+
+    /// Shows a file-operation error, upgrading sandbox/permission denials to a
+    /// clear "grant access" prompt (§16 sandbox access denied).
+    private func presentFileError(_ title: String, _ error: Error, url: URL?) {
+        if isSandboxAccessDenied(error) {
+            let name = url?.lastPathComponent ?? "the file"
+            presentAlert(title: "Access denied",
+                         message: "DumpCompare cannot access “\(name)”. Choose it again with File > Open to grant access.")
+        } else {
+            presentError(title, error)
+        }
+    }
+
+    private func isSandboxAccessDenied(_ error: Error) -> Bool {
+        let ns = error as NSError
+        if ns.domain == NSCocoaErrorDomain, ns.code == NSFileReadNoPermissionError {
+            return true
+        }
+        if ns.domain == NSPOSIXErrorDomain, ns.code == EACCES {
+            return true
+        }
+        return false
+    }
 }
 
 // MARK: - Window closing (§3.6)
@@ -566,7 +753,7 @@ extension MainViewController: NSWindowDelegate {
                 do {
                     try pane.save()
                 } catch {
-                    presentError("Could not save “\(pane.status.fileName)”.", error)
+                    presentFileError("Could not save “\(pane.status.fileName)”.", error, url: pane.document?.url)
                     return false
                 }
             }

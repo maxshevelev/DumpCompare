@@ -90,6 +90,17 @@ final class PaneViewModel: HexViewDataSource {
     /// Whether a document is currently open in this pane.
     var isOpen: Bool { document != nil }
 
+    // MARK: - External change detection (§5.5)
+
+    private var changeWatcher: FileChangeWatcher?
+    /// Own writes (save/save-as/revert) also trip the watcher; events within
+    /// this window are the app's own and are suppressed.
+    private var externalChangeSuppressedUntil = Date.distantPast
+
+    /// Fired (on the main actor) when the file changed on disk from outside the
+    /// app. The view controller decides what to prompt.
+    var onExternalChange: (() -> Void)?
+
     // MARK: - Document lifecycle
 
     func open(url: URL) throws {
@@ -97,11 +108,14 @@ final class PaneViewModel: HexViewDataSource {
         document = doc
         refreshSavedStorage()
         resetEditingState()
+        startWatching(url)
     }
 
     func close() {
         document = nil
         savedStorage = nil
+        changeWatcher?.stop()
+        changeWatcher = nil
         resetEditingState()
     }
 
@@ -110,6 +124,7 @@ final class PaneViewModel: HexViewDataSource {
         try doc.save()
         refreshSavedStorage()
         resetEditingState()
+        rearmWatcher()
     }
 
     func saveAs(to url: URL) throws {
@@ -117,6 +132,7 @@ final class PaneViewModel: HexViewDataSource {
         try doc.save(to: url)
         refreshSavedStorage()
         resetEditingState()
+        rearmWatcher()
     }
 
     func revert() throws {
@@ -124,6 +140,7 @@ final class PaneViewModel: HexViewDataSource {
         try doc.revert()
         refreshSavedStorage()
         resetEditingState()
+        rearmWatcher()
         // Revert replaces the storage wholesale; the comparison must re-read.
         onFullInvalidation?()
     }
@@ -135,6 +152,29 @@ final class PaneViewModel: HexViewDataSource {
     private func refreshSavedStorage() {
         guard let doc = document else { savedStorage = nil; return }
         savedStorage = try? FileBackedStorage(url: doc.url)
+    }
+
+    private func startWatching(_ url: URL) {
+        changeWatcher?.stop()
+        let watcher = FileChangeWatcher(url: url)
+        changeWatcher = watcher
+        watcher.onChange = { [weak self] in
+            self?.handleExternalChange()
+        }
+    }
+
+    private func handleExternalChange() {
+        guard isOpen else { return }
+        if Date() < externalChangeSuppressedUntil { return }
+        onExternalChange?()
+    }
+
+    /// Re-arms the watcher after the app itself wrote the file: its own write
+    /// events are suppressed for a moment, and the descriptor is rebound because
+    /// an atomic save may have replaced the inode.
+    private func rearmWatcher() {
+        externalChangeSuppressedUntil = Date().addingTimeInterval(1.0)
+        changeWatcher?.rebind(to: document?.url)
     }
 
     private func resetEditingState() {
