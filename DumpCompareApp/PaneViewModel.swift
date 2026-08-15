@@ -606,8 +606,14 @@ extension PaneViewModel: HexEditorDelegate {
         selectAll()
     }
 
-    func hexEditor(_ editor: HexView, didClickAt offset: UInt64, region: HexInputRegion, extendSelection: Bool) {
+    func hexEditor(_ editor: HexView, didClickAt offset: UInt64, region: HexInputRegion, extendSelection: Bool, nibble: Int) {
         moveCaret(to: offset, extendSelection: extendSelection)
+        // A click can place the caret mid-byte (before the low nibble). Arrow
+        // movement always lands on a byte's left boundary (`moveCaret` resets
+        // the nibble), so only a direct click sets it (§3.3).
+        if !extendSelection {
+            self.nibble = nibble
+        }
         setInputRegion(region)
     }
 }

@@ -212,10 +212,13 @@ final class FilePaneView: NSView {
         window?.makeFirstResponder(hexView)
     }
 
-    /// Highlights the header to mark this pane as active (§3.3).
+    /// Highlights the header to mark this pane as active (§3.3). The hex view
+    /// uses the same flag to show the caret only on the active pane and draw the
+    /// mirror frame on the inactive one.
     func setActive(_ isActive: Bool) {
         titleLabel.font = .systemFont(ofSize: 12, weight: isActive ? .bold : .semibold)
         titleLabel.textColor = isActive ? .labelColor : .secondaryLabelColor
+        hexView.isActive = isActive
     }
 
     /// Registers the pane as a drag destination (comparison mode only, §4.3).

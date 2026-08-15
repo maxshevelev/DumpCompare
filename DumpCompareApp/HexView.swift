@@ -22,7 +22,7 @@ protocol HexEditorDelegate: AnyObject {
     func hexEditor(_ editor: HexView, moveCaretBy delta: Int64, extendSelection: Bool)
     func hexEditor(_ editor: HexView, moveCaretTo offset: UInt64, extendSelection: Bool)
     func hexEditorSelectAll(_ editor: HexView)
-    func hexEditor(_ editor: HexView, didClickAt offset: UInt64, region: HexInputRegion, extendSelection: Bool)
+    func hexEditor(_ editor: HexView, didClickAt offset: UInt64, region: HexInputRegion, extendSelection: Bool, nibble: Int)
 }
 
 /// A virtualized hex dump: only rows intersecting the visible rect are drawn,
@@ -190,9 +190,16 @@ final class HexView: NSView {
             )
         }
 
-        // Caret (only when there is no selection).
-        if selection.isEmpty {
+        // Caret: only on the active pane, and only when there is no selection.
+        if isActive && selection.isEmpty {
             drawCaret(offset: selection.start, layout: layout, nibble: nibble, region: region, rowCount: rowCount)
+        }
+
+        // Mirror: on the inactive pane, frame the byte the active pane's caret
+        // points at. Selections are synced between panes (§9), so this pane's
+        // selection start already is that offset.
+        if !isActive {
+            drawMirrorFrame()
         }
     }
 
@@ -261,6 +268,38 @@ final class HexView: NSView {
             let path = NSBezierPath()
             path.move(to: NSPoint(x: rect.minX + 2, y: rect.maxY - 2))
             path.line(to: NSPoint(x: rect.maxX - 2, y: rect.minY + 2))
+            path.lineWidth = 1
+            path.stroke()
+        }
+    }
+
+    /// Frames the mirror caret draws on an inactive pane: the hex cell and ASCII
+    /// char of the byte the active pane's caret points at (this pane's synced
+    /// selection start). Empty when this pane is active, has no data, or the
+    /// caret is at EOF. Exposed (internal) for tests.
+    func mirrorFrameRects() -> [CGRect] {
+        guard !isActive, let dataSource else { return [] }
+        let fileSize = dataSource.fileSize
+        let offset = dataSource.hexSelection().start
+        guard offset < fileSize else { return [] }
+        let layout = currentLayout
+        let (row, column) = layout.rowColumn(of: offset)
+        let hexFrame = layout.hexByteFrame(row: row, column: column)
+        let asciiRect = CGRect(x: layout.asciiX(column: column), y: hexFrame.minY,
+                               width: layout.charWidth, height: layout.rowHeight)
+        return [hexFrame, asciiRect]
+    }
+
+    /// Draws the thin frame around the byte the active pane's caret points at
+    /// on the inactive pane (§3.3).
+    private func drawMirrorFrame() {
+        let rects = mirrorFrameRects()
+        guard !rects.isEmpty else { return }
+        HexTheme.mirrorFrame.setStroke()
+        for rect in rects {
+            // 1px frame inset by half a point so the stroke sits on the pixel
+            // grid rather than straddling the cell edge.
+            let path = NSBezierPath(rect: rect.insetBy(dx: 0.5, dy: 0.5))
             path.lineWidth = 1
             path.stroke()
         }
@@ -351,7 +390,7 @@ final class HexView: NSView {
             let asciiStart = layout.asciiX(column: 0)
             let region: HexInputRegion = (point.x >= asciiStart && point.x < asciiStart + layout.asciiColumnWidth)
                 ? .ascii : .hex
-            delegate.hexEditor(self, didClickAt: end, region: region, extendSelection: true)
+            delegate.hexEditor(self, didClickAt: end, region: region, extendSelection: true, nibble: 0)
             return
         }
 
@@ -359,6 +398,7 @@ final class HexView: NSView {
 
         let offset: UInt64
         let region: HexInputRegion
+        var nibble = 0
         switch hit.column {
         case .offset:
             offset = layout.byteOffset(row: hit.row, column: 0)
@@ -366,11 +406,14 @@ final class HexView: NSView {
         case .hex(let column):
             offset = layout.byteOffset(row: hit.row, column: column)
             region = .hex
+            // A click on the byte's high nibble places the caret before the
+            // first char; on the low nibble, between the two chars (§3.3).
+            nibble = (point.x - layout.hexByteX(column: column)) >= layout.charWidth ? 1 : 0
         case .ascii(let column):
             offset = layout.byteOffset(row: hit.row, column: column)
             region = .ascii
         }
-        delegate.hexEditor(self, didClickAt: offset, region: region, extendSelection: extendSelection)
+        delegate.hexEditor(self, didClickAt: offset, region: region, extendSelection: extendSelection, nibble: nibble)
     }
 
     override func keyDown(with event: NSEvent) {
@@ -482,6 +525,10 @@ enum HexTheme {
 
     /// Underline beneath modified (unsaved) bytes (a non-color cue, §15).
     static let modifiedUnderline = NSColor.systemRed
+
+    /// Thin frame around the byte the active pane's caret points at, drawn on
+    /// the inactive pane (§3.3). The accent color ties it to the caret itself.
+    static let mirrorFrame = NSColor.controlAccentColor
 }
 
 extension String {
