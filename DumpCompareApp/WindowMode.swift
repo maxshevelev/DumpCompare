@@ -2,7 +2,7 @@ import Foundation
 
 /// Operating mode of the main comparison window (§2, §3 of REQUIREMENTS.md).
 enum WindowMode {
-    /// No file open — placeholder with an Open File button and drag hint.
+    /// No file open — placeholder with a clickable icon and drop hint.
     case empty
 
     /// One file open — a single file pane fills the client area.
