@@ -53,12 +53,13 @@ final class HexView: NSView {
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
 
-    private let font: NSFont
-    private let rowHeight: CGFloat
-    private let charWidth: CGFloat
-    private let baseline: CGFloat
+    private var font: NSFont
+    private var rowHeight: CGFloat
+    private var charWidth: CGFloat
+    private var baseline: CGFloat
     private var currentLayout: HexLayout
     private var wordSizeObserver: NSObjectProtocol?
+    private var appearanceObserver: NSObjectProtocol?
 
     /// The window point where the current mouse-down landed; the drag-selection
     /// dead zone is anchored to it (§3.3).
@@ -87,9 +88,9 @@ final class HexView: NSView {
     // MARK: - Init
 
     init() {
-        font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        font = AppearanceSettings.font(size: 13)
         charWidth = Self.measureCharWidth(font)
-        rowHeight = ceil((font.ascender - font.descender)) + 4
+        rowHeight = Self.rowHeight(for: font)
         baseline = Self.centeredBaseline(font: font, rowHeight: rowHeight)
         currentLayout = HexLayout(charWidth: charWidth, rowHeight: rowHeight, wordSize: WordSize.current.rawValue)
         super.init(frame: .zero)
@@ -105,11 +106,22 @@ final class HexView: NSView {
         ) { [weak self] _ in
             self?.reloadData()
         }
+        // Re-lay out when the font or row-height factor changes (§3.2).
+        appearanceObserver = NotificationCenter.default.addObserver(
+            forName: AppearanceSettings.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.applyAppearance()
+        }
     }
 
     deinit {
         if let wordSizeObserver {
             NotificationCenter.default.removeObserver(wordSizeObserver)
+        }
+        if let appearanceObserver {
+            NotificationCenter.default.removeObserver(appearanceObserver)
         }
     }
 
@@ -120,6 +132,27 @@ final class HexView: NSView {
 
     private static func measureCharWidth(_ font: NSFont) -> CGFloat {
         ("0" as NSString).size(withAttributes: [.font: font]).width
+    }
+
+    /// The vertical pitch of one row. The font's natural line height (glyph
+    /// ascender→descender, padded by 4pt for breathing room) is scaled down by
+    /// the user's row-height factor so more information fits on screen. The
+    /// baseline is recomputed from the resulting height, so the glyph ink stays
+    /// vertically centred in the tighter row (§3.2).
+    private static func rowHeight(for font: NSFont) -> CGFloat {
+        let natural = ceil(font.ascender - font.descender) + 4
+        return ceil(natural * AppearanceSettings.rowHeightScale)
+    }
+
+    /// Re-derives the font metrics and re-lays out after an Appearance change
+    /// (§3.2). The frame grows or shrinks with the new row height, so the
+    /// enclosing scroll view picks up the new content size.
+    private func applyAppearance() {
+        font = AppearanceSettings.font(size: 13)
+        charWidth = Self.measureCharWidth(font)
+        rowHeight = Self.rowHeight(for: font)
+        baseline = Self.centeredBaseline(font: font, rowHeight: rowHeight)
+        reloadData()
     }
 
     /// The baseline that places the glyph ink vertically centered in the row.

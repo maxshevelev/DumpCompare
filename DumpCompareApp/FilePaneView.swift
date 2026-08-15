@@ -78,6 +78,10 @@ final class FilePaneView: NSView {
     /// and mirrors the horizontal scroll to stay aligned with the columns (§6).
     private let columnHeader = HexColumnHeaderView()
     private var columnHeaderScrollObserver: NSObjectProtocol?
+    /// Pins the header to one hex row; its constant is updated when the
+    /// appearance (row height) changes (§3.2).
+    private var columnHeaderHeightConstraint: NSLayoutConstraint?
+    private var appearanceObserver: NSObjectProtocol?
     /// The status-bar strip for the running background operation (name +
     /// progress bar + ×), hidden while idle (§14.4). Internal so tests can
     /// assert the debounced reveal / hide.
@@ -207,13 +211,25 @@ final class FilePaneView: NSView {
         // mirroring the horizontal scroll, so the labels track their columns.
         columnHeader.hexView = hexView
         columnHeader.translatesAutoresizingMaskIntoConstraints = false
-        columnHeader.heightAnchor.constraint(equalToConstant: columnHeader.headerHeight).isActive = true
+        columnHeaderHeightConstraint = columnHeader.heightAnchor.constraint(equalToConstant: columnHeader.headerHeight)
+        columnHeaderHeightConstraint?.isActive = true
         columnHeaderScrollObserver = NotificationCenter.default.addObserver(
             forName: NSView.boundsDidChangeNotification,
             object: scrollView.contentView,
             queue: .main
         ) { [weak self] _ in
             self?.columnHeader.horizontalOffset = self?.scrollView.contentView.bounds.origin.x ?? 0
+        }
+        // When the font or row-height factor changes, the header grows or
+        // shrinks with the rows and redraws its labels (§3.2).
+        appearanceObserver = NotificationCenter.default.addObserver(
+            forName: AppearanceSettings.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            self.columnHeaderHeightConstraint?.constant = self.columnHeader.headerHeight
+            self.columnHeader.needsDisplay = true
         }
 
         // Scrollable hex view.
@@ -250,6 +266,9 @@ final class FilePaneView: NSView {
     deinit {
         if let columnHeaderScrollObserver {
             NotificationCenter.default.removeObserver(columnHeaderScrollObserver)
+        }
+        if let appearanceObserver {
+            NotificationCenter.default.removeObserver(appearanceObserver)
         }
     }
 

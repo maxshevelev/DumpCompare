@@ -21,6 +21,13 @@ final class MainWindowController: NSWindowController {
         buildMainMenu()
     }
 
+    /// Owned lazily so the settings window isn't instantiated until first use.
+    private lazy var settingsWindowController = SettingsWindowController()
+
+    @objc private func showSettings(_ sender: Any?) {
+        settingsWindowController.showWindow(sender)
+    }
+
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
@@ -59,6 +66,16 @@ final class MainWindowController: NSWindowController {
             action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
             keyEquivalent: ""
         )
+        appMenu.addItem(.separator())
+        // Standard macOS placement: Settings… between About and the Hide/Quit
+        // group. Explicit target keeps ⌘, working even when the hex view (which
+        // swallows unmodified keystrokes) is first responder.
+        let settingsItem = appMenu.addItem(
+            withTitle: "Settings…",
+            action: #selector(showSettings(_:)),
+            keyEquivalent: ","
+        )
+        settingsItem.target = self
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Hide DumpCompare", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         appMenu.addItem(.separator())
