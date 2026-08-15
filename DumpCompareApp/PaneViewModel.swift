@@ -125,6 +125,9 @@ final class PaneViewModel: HexViewDataSource {
         refreshSavedStorage()
         resetEditingState()
         rearmWatcher()
+        // The dirty state just cleared — the header glyph and status bar must
+        // flip back immediately, not on the next user action.
+        notify()
     }
 
     func saveAs(to url: URL) throws {
@@ -133,6 +136,7 @@ final class PaneViewModel: HexViewDataSource {
         refreshSavedStorage()
         resetEditingState()
         rearmWatcher()
+        notify()
     }
 
     func revert() throws {
@@ -143,6 +147,7 @@ final class PaneViewModel: HexViewDataSource {
         rearmWatcher()
         // Revert replaces the storage wholesale; the comparison must re-read.
         onFullInvalidation?()
+        notify()
     }
 
     /// The document's live byte storage — the same class instance across edits,

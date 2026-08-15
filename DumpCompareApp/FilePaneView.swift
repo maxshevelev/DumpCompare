@@ -71,6 +71,14 @@ final class FilePaneView: NSView {
     }
 
     private let titleLabel = NSTextField(labelWithString: "")
+    /// The document glyph before the file name: "document" while the file is
+    /// clean, "document.fill" once there are unsaved changes (§3.4). Tinted to
+    /// match the title so it reads as part of the header, not as a button.
+    private let documentIcon = NSImageView()
+    /// The SF Symbol the header glyph is currently showing ("document" or
+    /// "document.fill"). NSImage doesn't report a system symbol's name, so the
+    /// pane tracks it for tests and VoiceOver.
+    private(set) var documentSymbolName = "document"
     private let lockLabel = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(labelWithString: "")
     /// The pinned column header above the dump ("Offset" / "Hex" / "Decoded
@@ -135,6 +143,12 @@ final class FilePaneView: NSView {
         // owned by ProportionalSplitView, not by this content.
         titleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
         titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // A 12 pt outline document in front of the title; the symbol swaps to
+        // "document.fill" in `updateHeader` when the file becomes dirty.
+        documentIcon.image = NSImage(systemSymbolName: "document", accessibilityDescription: "File document")
+        documentIcon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 12, weight: .medium)
+        documentIcon.contentTintColor = .secondaryLabelColor
+        documentIcon.imageScaling = .scaleProportionallyUpOrDown
         lockLabel.font = .systemFont(ofSize: 12)
         lockLabel.textColor = .secondaryLabelColor
 
@@ -155,14 +169,18 @@ final class FilePaneView: NSView {
         // minimum width.
         header.setContentHuggingPriority(.defaultLow, for: .horizontal)
         header.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        header.addSubview(documentIcon)
         header.addSubview(titleLabel)
         header.addSubview(lockLabel)
         header.addSubview(closeButton)
+        documentIcon.translatesAutoresizingMaskIntoConstraints = false
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         lockLabel.translatesAutoresizingMaskIntoConstraints = false
         closeButton.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            titleLabel.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 10),
+            documentIcon.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 10),
+            documentIcon.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            titleLabel.leadingAnchor.constraint(equalTo: documentIcon.trailingAnchor, constant: 6),
             titleLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: lockLabel.leadingAnchor, constant: -6),
             lockLabel.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -6),
@@ -321,6 +339,7 @@ final class FilePaneView: NSView {
         self.isActive = isActive
         titleLabel.font = .systemFont(ofSize: 12, weight: isActive ? .bold : .semibold)
         titleLabel.textColor = isActive ? .labelColor : .secondaryLabelColor
+        documentIcon.contentTintColor = isActive ? .labelColor : .secondaryLabelColor
         hexView.isActive = isActive
     }
 
@@ -421,8 +440,15 @@ final class FilePaneView: NSView {
 
     private func updateHeader() {
         let status = viewModel.status
-        let dirtyStar = status.isDirty ? "*" : ""
-        titleLabel.stringValue = "\(status.fileName)\(dirtyStar)"
+        titleLabel.stringValue = status.fileName
+        // The header's document glyph doubles as the modified marker (§3.4):
+        // outline for a clean file, filled once there are unsaved changes —
+        // replacing the "*" the title used to append. The status bar still
+        // spells out "Modified" textually alongside (§15).
+        let symbol = status.isDirty ? "document.fill" : "document"
+        documentSymbolName = symbol
+        documentIcon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        documentIcon.setAccessibilityLabel(status.isDirty ? "Modified file" : "File document")
         lockLabel.stringValue = status.isReadOnly ? "🔒 Read-Only" : ""
         // VoiceOver names the grid after its file (§15).
         hexView.accessibilityTitle = "Hex dump — \(status.fileName)"
