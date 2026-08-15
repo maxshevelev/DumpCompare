@@ -661,6 +661,9 @@ final class MainViewController: NSViewController {
             windowModel.pane1.moveCaret(to: target)
             windowModel.pane2.moveCaret(to: target)
             comparisonView?.refreshComparisonInfo()
+            // Show the block start mid-pane, the way the Find bar centres a
+            // match; the panes' synchronized scroll (§9) centres both (§10.3).
+            activeFilePane?.revealSelectionCentered()
             focusActiveHexView()
         }
     }
