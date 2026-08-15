@@ -195,6 +195,13 @@ final class FilePaneView: NSView {
     private func bind() {
         hexView.dataSource = viewModel
         hexView.delegate = viewModel
+        // Focus is the single source of truth for the active pane (§3.3):
+        // clicking the dump makes the hex view first responder, which fires
+        // `onActivate`, so the highlighted pane and the typing target never
+        // diverge.
+        hexView.onFocus = { [weak self] in
+            self?.onActivate?()
+        }
         viewModel.onChange = { [weak self] in
             self?.refresh()
         }
@@ -235,7 +242,11 @@ final class FilePaneView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        onActivate?()
+        // Chrome clicks (e.g. the header, reached here via the responder chain)
+        // activate the pane through the same path as dump clicks: focus the hex
+        // view, and `onFocus` fires `onActivate`. Focus stays the single source
+        // of truth for the active pane (§3.3).
+        focusHexView()
         super.mouseDown(with: event)
     }
 

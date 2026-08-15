@@ -33,6 +33,20 @@ final class HexView: NSView {
     weak var dataSource: HexViewDataSource?
     weak var delegate: HexEditorDelegate?
 
+    /// Fired when this hex view becomes the window's first responder, i.e. the
+    /// pane the user is actually editing in. The pane uses it to make the
+    /// active-pane pointer follow keyboard focus (§3.3), so clicking a dump and
+    /// typing into it always target the same pane.
+    var onFocus: (() -> Void)?
+
+    /// Whether this hex view is the active pane. The caret is drawn only on the
+    /// active pane; inactive panes draw a thin mirror frame around the byte the
+    /// active pane's caret points at instead (§3.3). Defaults to true
+    /// (single-file mode).
+    var isActive = true {
+        didSet { needsDisplay = true }
+    }
+
     /// Accessible label for the grid, e.g. "Hex dump — File A" (§15).
     var accessibilityTitle = "Hex dump"
 
@@ -139,7 +153,11 @@ final class HexView: NSView {
 
     override func becomeFirstResponder() -> Bool {
         needsDisplay = true
-        return super.becomeFirstResponder()
+        let ok = super.becomeFirstResponder()
+        if ok {
+            onFocus?()
+        }
+        return ok
     }
 
     override func resignFirstResponder() -> Bool {

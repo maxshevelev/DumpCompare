@@ -82,6 +82,9 @@ final class MainViewController: NSViewController {
                 self.windowModel.setActivePane(index)
                 self.activeFilePane = index == 0 ? comparisonView.paneView1 : comparisonView.paneView2
                 comparisonView.setActive(index)
+                // Focus follows activation (e.g. a header click), so typing and
+                // the active-pane pointer stay aligned (§3.3).
+                self.activeFilePane?.focusHexView()
             }
             pane1View.onClose = { [weak self] in self?.closePane(at: 0) }
             pane2View.onClose = { [weak self] in self?.closePane(at: 1) }
