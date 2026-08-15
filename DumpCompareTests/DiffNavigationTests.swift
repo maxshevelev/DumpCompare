@@ -2,10 +2,11 @@ import DumpCompareCore
 import XCTest
 @testable import DumpCompare
 
-/// §10.3 navigation: Next/Previous Difference and Same Block move the caret to
-/// the block start and vertically centre it in the pane — the same centring
-/// the Find bar applies to a match (§11). The companion pane follows through
-/// the synchronized scroll (§9).
+/// §10.3 navigation: Next/Previous Difference and Same Block vertically centre
+/// the target row in the pane — the same centring the Find bar applies to a
+/// match (§11). Forward navigation lands the caret on the block start; backward
+/// navigation lands it on the block end (§10.3). The companion pane follows
+/// through the synchronized scroll (§9).
 @MainActor
 final class DiffNavigationTests: XCTestCase {
     private func tempFile(_ bytes: [UInt8]) throws -> URL {
@@ -60,11 +61,23 @@ final class DiffNavigationTests: XCTestCase {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.contentViewController = controller
+        // Assigning the contentViewController re-fits the window to the view's
+        // fitting size (a tiny pane-sized frame); force the content back to the
+        // real size so the split view gives the panes actual heights (§3.3).
+        window.setContentSize(NSSize(width: 900, height: 600))
         window.makeKeyAndOrderFront(nil)
         try controller.windowModel.pane1.open(url: urlA)
         try controller.windowModel.pane2.open(url: urlB)
         controller.apply(mode: .comparison)
-        window.layoutIfNeeded()
+        // Drive the split view through a few display + runloop turns so the
+        // panes get real heights (the same settling LayoutToggleTests uses);
+        // otherwise the scroll views sit at zero height and the synchronized
+        // scroll (§9) clamps through stale geometry.
+        for _ in 0..<4 {
+            window.displayIfNeeded()
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.03))
+            window.layoutIfNeeded()
+        }
         return (controller, window, urlA, urlB)
     }
 
@@ -120,8 +133,9 @@ final class DiffNavigationTests: XCTestCase {
         try assertRowCentered(window, offset: target)
     }
 
-    /// Previous Difference, from the file end, lands on the second difference
-    /// (row 250) and centres it.
+    /// Previous Difference, from the file end, lands on the LAST byte of the
+    /// second difference (row 250) — not the byte past it, which would make a
+    /// repeated previous press re-find the same block — and centres that row.
     func testPreviousDifferenceCentersTheBlockInView() throws {
         let (left, right) = makeLayout()
         let (controller, window, urlA, urlB) = try makeComparison(left, right)
@@ -133,7 +147,7 @@ final class DiffNavigationTests: XCTestCase {
         controller.previousDifference()
         let target = UInt64(250 * 16)
         XCTAssertTrue(pumpUntil(5) { controller.windowModel.pane1.caretOffset == target },
-                      "previousDifference must land the caret on the previous difference")
+                      "previousDifference must land the caret on the previous difference's LAST byte")
         try assertRowCentered(window, offset: target)
     }
 
@@ -152,8 +166,8 @@ final class DiffNavigationTests: XCTestCase {
         try assertRowCentered(window, offset: target)
     }
 
-    /// Previous Same Block, from the file end, lands on the trailing same block
-    /// (starting row 250) and centres it.
+    /// Previous Same Block, from the file end, lands on the LAST byte of the
+    /// trailing same block (row 299, the last data row) and centres it.
     func testPreviousSameBlockCentersTheBlockInView() throws {
         let (left, right) = makeLayout()
         let (controller, window, urlA, urlB) = try makeComparison(left, right)
@@ -163,9 +177,46 @@ final class DiffNavigationTests: XCTestCase {
         controller.windowModel.pane2.moveCaret(to: UInt64(left.count))
 
         controller.previousSameBlock()
-        let target = UInt64(250 * 16 + 1)
+        let target = UInt64(left.count - 1)
         XCTAssertTrue(pumpUntil(5) { controller.windowModel.pane1.caretOffset == target },
-                      "previousSameBlock must land the caret on the trailing same block")
+                      "previousSameBlock must land the caret on the trailing same block's LAST byte")
         try assertRowCentered(window, offset: target)
+    }
+
+    /// Pressing Previous Difference twice must step past the first-found block
+    /// to the one before it — landing past the block's last byte would re-find
+    /// the same block instead of moving on.
+    func testRepeatedPreviousDifferenceSkipsTheFoundBlock() throws {
+        let (left, right) = makeLayout()
+        let (controller, window, urlA, urlB) = try makeComparison(left, right)
+        defer { cleanup(controller, urlA, urlB) }
+        XCTAssertTrue(waitForIndex(window), "the index must finish building before navigation")
+        controller.windowModel.pane1.moveCaret(to: UInt64(left.count))
+        controller.windowModel.pane2.moveCaret(to: UInt64(left.count))
+
+        controller.previousDifference()   // second difference [4000, 4001), last byte 4000
+        XCTAssertTrue(pumpUntil(5) { controller.windowModel.pane1.caretOffset == UInt64(250 * 16) },
+                      "first previousDifference must land on the second difference")
+        controller.previousDifference()   // must skip it and find the first difference
+        XCTAssertTrue(pumpUntil(5) { controller.windowModel.pane1.caretOffset == UInt64(100 * 16) },
+                      "a repeated previousDifference must find the block before the current one")
+    }
+
+    /// Same for Previous Same Block: repeated presses walk backward through the
+    /// same blocks instead of re-finding the one the caret already sits on.
+    func testRepeatedPreviousSameBlockSkipsTheFoundBlock() throws {
+        let (left, right) = makeLayout()
+        let (controller, window, urlA, urlB) = try makeComparison(left, right)
+        defer { cleanup(controller, urlA, urlB) }
+        XCTAssertTrue(waitForIndex(window), "the index must finish building before navigation")
+        controller.windowModel.pane1.moveCaret(to: UInt64(left.count))
+        controller.windowModel.pane2.moveCaret(to: UInt64(left.count))
+
+        controller.previousSameBlock()   // trailing same [4001, 4800), last byte 4799
+        XCTAssertTrue(pumpUntil(5) { controller.windowModel.pane1.caretOffset == UInt64(left.count - 1) },
+                      "first previousSameBlock must land on the trailing same block's last byte")
+        controller.previousSameBlock()   // must skip it and find the middle same block [1601, 4000)
+        XCTAssertTrue(pumpUntil(5) { controller.windowModel.pane1.caretOffset == UInt64(4000 - 1) },
+                      "a repeated previousSameBlock must find the block before the current one")
     }
 }

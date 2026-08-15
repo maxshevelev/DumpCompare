@@ -651,13 +651,17 @@ final class MainViewController: NSViewController {
         guard mode == .comparison else { return }
         let from = windowModel.activePane.caretOffset
         Task {
-            guard let block = await comparisonCoordinator.findBlock(kind: kind, direction: direction, from: from) else {
+            guard let block = comparisonCoordinator.findBlock(kind: kind, direction: direction, from: from) else {
                 let what = kind == .different ? "difference" : "same block"
                 NSSound.beep()
                 comparisonView?.showNavigationMessage("No more \(what)")
                 return
             }
-            let target = block.range.lowerBound
+            // Forward navigation lands on the block start; backward navigation
+            // lands on the block's LAST byte (not the byte past it), so a
+            // repeated previous press skips the current block and finds the one
+            // before it — landing past the block would re-find it (§10.3).
+            let target = direction == .backward ? block.range.upperBound - 1 : block.range.lowerBound
             windowModel.pane1.moveCaret(to: target)
             windowModel.pane2.moveCaret(to: target)
             comparisonView?.refreshComparisonInfo()

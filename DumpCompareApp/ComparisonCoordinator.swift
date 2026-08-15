@@ -180,29 +180,20 @@ final class ComparisonCoordinator {
 
     /// Finds the next/previous block of `kind` from `offset`, matching
     /// `DiffBlockIndex` semantics (forward: `lowerBound > offset`; backward:
-    /// `upperBound <= offset`). Uses the built index when available; while the
-    /// index is still building, performs an on-demand chunked scan so the UI
-    /// never blocks and never waits for the full build (§10.3).
+    /// `upperBound <= offset`). Requires the built index: while the index is
+    /// still building (`index == nil`) it returns nil, so navigation reports
+    /// "not found" instead of racing the build with a scan (§10.3).
     func findBlock(
         kind: DiffBlock.Kind,
         direction: SearchDirection,
         from offset: UInt64
-    ) async -> DiffBlock? {
-        if let index {
-            switch (kind, direction) {
-            case (.different, .forward): return index.nextDifference(from: offset)
-            case (.different, .backward): return index.previousDifference(from: offset)
-            case (.same, .forward): return index.nextSame(from: offset)
-            case (.same, .backward): return index.previousSame(from: offset)
-            }
-        }
-        guard let left = currentLeft, let right = currentRight else { return nil }
-        do {
-            return try await builder.scanForBlock(
-                kind: kind, direction: direction, from: offset, left: left, right: right
-            )
-        } catch {
-            return nil
+    ) -> DiffBlock? {
+        guard let index else { return nil }
+        switch (kind, direction) {
+        case (.different, .forward): return index.nextDifference(from: offset)
+        case (.different, .backward): return index.previousDifference(from: offset)
+        case (.same, .forward): return index.nextSame(from: offset)
+        case (.same, .backward): return index.previousSame(from: offset)
         }
     }
 

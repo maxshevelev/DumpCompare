@@ -67,15 +67,36 @@ final class ComparisonCoordinatorTests: XCTestCase {
         XCTAssertEqual(index.blocks[1].range, 2..<4)
 
         // Navigation against the built index.
-        let nextDiff = await coordinator.findBlock(kind: .different, direction: .forward, from: 0)
+        let nextDiff = coordinator.findBlock(kind: .different, direction: .forward, from: 0)
         XCTAssertEqual(nextDiff?.range, 2..<4)
         // `same` block at 0..<2 starts exactly at the search offset → not strictly after.
-        let nextSame = await coordinator.findBlock(kind: .same, direction: .forward, from: 0)
+        let nextSame = coordinator.findBlock(kind: .same, direction: .forward, from: 0)
         XCTAssertEqual(nextSame?.range, 4..<6)
-        let prevDiff = await coordinator.findBlock(kind: .different, direction: .backward, from: index.maxSize)
+        let prevDiff = coordinator.findBlock(kind: .different, direction: .backward, from: index.maxSize)
         XCTAssertEqual(prevDiff?.range, 6..<8)
-        let noneAfterEOF = await coordinator.findBlock(kind: .different, direction: .forward, from: index.maxSize)
+        let noneAfterEOF = coordinator.findBlock(kind: .different, direction: .forward, from: index.maxSize)
         XCTAssertNil(noneAfterEOF)
+    }
+
+    /// While the index is building, navigation must not fire: `findBlock` has
+    /// no live-scan fallback and returns nil, so the UI reports "not found"
+    /// (beep + message) instead of racing the build (§10.3).
+    func testFindBlockReturnsNilWhileIndexBuilding() throws {
+        let (coordinator, _, _, urlA, urlB) = try makeCoordinator(
+            [0x00, 0x00, 0x01, 0x01, 0x02, 0x02, 0x03, 0x03],
+            [0x00, 0x00, 0x09, 0x09, 0x02, 0x02, 0x08, 0x08]
+        )
+        defer {
+            coordinator.stop()
+            try? FileManager.default.removeItem(at: urlA)
+            try? FileManager.default.removeItem(at: urlB)
+        }
+        coordinator.start()
+        // Right after start() the index is nil and the build is in flight;
+        // nothing between the two calls lets the build land.
+        XCTAssertTrue(coordinator.isBuilding)
+        let result = coordinator.findBlock(kind: .different, direction: .forward, from: 0)
+        XCTAssertNil(result, "findBlock must not fire while the index is building")
     }
 
     // MARK: - Incremental edit application (§8.3)
