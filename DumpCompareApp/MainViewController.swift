@@ -81,6 +81,9 @@ final class MainViewController: NSViewController {
             activeFilePane = nil
             comparisonView = nil
             comparisonCoordinator.stop()
+            // Returning to the launch state must also dismiss the find bar —
+            // nothing is left to search (§11).
+            hideFindBar()
             let emptyView = EmptyStateView()
             emptyView.onOpenFiles = { [weak self] urls in
                 self?.handleEmptyDrop(urls)
@@ -89,6 +92,8 @@ final class MainViewController: NSViewController {
 
         case .singleFile:
             let pane = FilePaneView(viewModel: windowModel.pane1)
+            // Close button: closing the last file returns to empty mode (§3.5).
+            pane.onClose = { [weak self] in self?.closePane(at: 0) }
             // Wrap in the drop-target split view (§4.3 single-file mode). The
             // pane itself is NOT drop-registered here so the outer view wins.
             let dropView = SingleFileDropView(paneView: pane)
