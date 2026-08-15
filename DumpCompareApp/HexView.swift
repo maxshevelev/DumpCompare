@@ -522,16 +522,51 @@ final class HexView: NSView {
         return deduplicated(points)
     }
 
-    /// Drops consecutive coincident vertices, so a selection that spans whole
-    /// rows degenerates cleanly to a rectangle instead of carrying zero-length
-    /// edges.
+    /// Drops vertices that aren't corners, so the polygon stays the minimal
+    /// outline of the selection. A selection that starts at column 0 or ends at
+    /// column 15 leaves a zero-length "step" edge in the staircase: a pair of
+    /// coincident vertices that collapses into one straight-through vertex.
+    /// Without removing that too, the rounding pass would treat its 0° turn as
+    /// a corner and sweep a 180° semicircle — a "beak" bulging out of the
+    /// outline near the bottom-right corner (§3.3).
     private func deduplicated(_ points: [CGPoint]) -> [CGPoint] {
-        var result: [CGPoint] = []
+        // Coincident vertices: a zero-length step edge collapses to one vertex.
+        var compact: [CGPoint] = []
         for point in points {
-            if let last = result.last, last == point { continue }
-            result.append(point)
+            if let last = compact.last, last == point { continue }
+            compact.append(point)
+        }
+        // Straight-through vertices: once the coincident pair is gone, the
+        // surviving step vertex has collinear incoming/outgoing edges, so it
+        // marks no corner and must go too.
+        let n = compact.count
+        guard n > 2 else { return compact }
+        var result: [CGPoint] = []
+        for i in 0..<n {
+            let prev = compact[(i - 1 + n) % n]
+            let cur = compact[i]
+            let next = compact[(i + 1) % n]
+            if !Self.isStraightThrough(prev, cur, next) {
+                result.append(cur)
+            }
         }
         return result
+    }
+
+    /// True when `mid` lies on a straight run between `prev` and `next` — the
+    /// two edges point the same way, so `mid` marks no corner.
+    private static func isStraightThrough(_ prev: CGPoint, _ mid: CGPoint,
+                                          _ next: CGPoint) -> Bool {
+        let dIn = CGPoint(x: mid.x - prev.x, y: mid.y - prev.y)
+        let dOut = CGPoint(x: next.x - mid.x, y: next.y - mid.y)
+        let lenIn = hypot(dIn.x, dIn.y)
+        let lenOut = hypot(dOut.x, dOut.y)
+        guard lenIn > 0, lenOut > 0 else { return false }
+        // Same unit direction → collinear same-way; perpendicular or reversed
+        // edges are real corners. The staircase's edges are exactly
+        // horizontal/vertical, so the dot is exactly 1 for a straight run.
+        let dot = (dIn.x * dOut.x + dIn.y * dOut.y) / (lenIn * lenOut)
+        return dot > 0.999
     }
 
     /// The active pane's cross-column link as one closed contour: the byte the

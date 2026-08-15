@@ -326,6 +326,90 @@ final class ActivePaneTests: XCTestCase {
         ])
     }
 
+    /// A selection that ends exactly at the row's last column has no right step
+    /// to make: the right edge runs straight down to the bottom, and the left
+    /// edge steps in on the first row only. A leftover zero-length step would
+    /// collapse into a collinear vertex whose 0° "corner" rounds into a
+    /// semicircular beak bulging out of the outline near the bottom-right
+    /// corner (§3.3).
+    func testMirrorContourEndingAtRowEndHasNoStepBeak() throws {
+        let (cv, _, url1, url2) = try makeComparisonView()
+        defer { try? FileManager.default.removeItem(at: url1); try? FileManager.default.removeItem(at: url2) }
+
+        let vm1 = cv.paneView1.viewModel
+        let vm2 = cv.paneView2.viewModel
+        vm1.companion = vm2
+        vm2.companion = vm1
+
+        // Rows 0 (cols 4–15), 1 (all), and 2 (cols 0…15): the selection ends at
+        // the row's last column, so the right edge has no step to make.
+        vm2.setSelection(SelectionModel(start: 4, end: 48, fileSize: 1024))
+
+        let hex1 = try hexView(of: cv.paneView1)
+        let loops = hex1.mirrorContours()
+        XCTAssertEqual(loops.count, 2)
+        let layout = hex1.hexLayout
+        let pad = HexView.mirrorContourPadding
+        // Six corners — no straight-through vertex on the right edge.
+        XCTAssertEqual(loops[0], [
+            CGPoint(x: layout.hexByteX(column: 4) - pad, y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.hexByteX(column: 15) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.hexByteX(column: 15) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 2).maxY),
+            CGPoint(x: layout.hexByteX(column: 0) - pad, y: layout.rowFrame(row: 2).maxY),
+            CGPoint(x: layout.hexByteX(column: 0) - pad, y: layout.rowFrame(row: 0).maxY),
+            CGPoint(x: layout.hexByteX(column: 4) - pad, y: layout.rowFrame(row: 0).maxY),
+        ])
+        // The ASCII loop collapses the same way: right edge pads (outer edge),
+        // left edge at column 4 is flush (mid-column).
+        XCTAssertEqual(loops[1], [
+            CGPoint(x: layout.asciiX(column: 4), y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.asciiX(column: 15) + layout.charWidth + pad, y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.asciiX(column: 15) + layout.charWidth + pad, y: layout.rowFrame(row: 2).maxY),
+            CGPoint(x: layout.asciiX(column: 0) - pad, y: layout.rowFrame(row: 2).maxY),
+            CGPoint(x: layout.asciiX(column: 0) - pad, y: layout.rowFrame(row: 0).maxY),
+            CGPoint(x: layout.asciiX(column: 4), y: layout.rowFrame(row: 0).maxY),
+        ])
+    }
+
+    /// The mirror image of the end-of-row case: a selection that starts exactly
+    /// at the row's first column has no left step to make, so the left edge runs
+    /// straight down and only the right edge steps in on the last row (§3.3).
+    func testMirrorContourStartingAtRowStartHasNoStepBeak() throws {
+        let (cv, _, url1, url2) = try makeComparisonView()
+        defer { try? FileManager.default.removeItem(at: url1); try? FileManager.default.removeItem(at: url2) }
+
+        let vm1 = cv.paneView1.viewModel
+        let vm2 = cv.paneView2.viewModel
+        vm1.companion = vm2
+        vm2.companion = vm1
+
+        // Rows 0 (all) and 1 (cols 0…5): the selection starts at the row's first
+        // column, so the left edge has no step to make.
+        vm2.setSelection(SelectionModel(start: 0, end: 22, fileSize: 1024))
+
+        let hex1 = try hexView(of: cv.paneView1)
+        let loops = hex1.mirrorContours()
+        XCTAssertEqual(loops.count, 2)
+        let layout = hex1.hexLayout
+        let pad = HexView.mirrorContourPadding
+        XCTAssertEqual(loops[0], [
+            CGPoint(x: layout.hexByteX(column: 0) - pad, y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.hexByteX(column: 15) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.hexByteX(column: 15) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 1).minY),
+            CGPoint(x: layout.hexByteX(column: 5) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 1).minY),
+            CGPoint(x: layout.hexByteX(column: 5) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 1).maxY),
+            CGPoint(x: layout.hexByteX(column: 0) - pad, y: layout.rowFrame(row: 1).maxY),
+        ])
+        XCTAssertEqual(loops[1], [
+            CGPoint(x: layout.asciiX(column: 0) - pad, y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.asciiX(column: 15) + layout.charWidth + pad, y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.asciiX(column: 15) + layout.charWidth + pad, y: layout.rowFrame(row: 1).minY),
+            CGPoint(x: layout.asciiX(column: 5) + layout.charWidth, y: layout.rowFrame(row: 1).minY),
+            CGPoint(x: layout.asciiX(column: 5) + layout.charWidth, y: layout.rowFrame(row: 1).maxY),
+            CGPoint(x: layout.asciiX(column: 0) - pad, y: layout.rowFrame(row: 1).maxY),
+        ])
+    }
+
     /// With words larger than one byte, the hex contour pads only at word
     /// boundaries (where a spacer already exists): a selection starting or
     /// ending mid-word stays flush there, since padding would push the line
