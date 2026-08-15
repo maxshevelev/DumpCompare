@@ -304,6 +304,60 @@ final class DiffEngineTests: XCTestCase {
         }
     }
 
+    // MARK: - Progress (§8.3, §14.4)
+
+    /// `scanAsync` reports progress per chunk, so the UI's progress bar can move
+    /// as the scan covers the file. Deterministic: the `progress` callback fires
+    /// on every chunk regardless of timing, so intermediate values are always
+    /// present — never just 0 followed by a jump to 1.
+    func testScanAsyncReportsProgressIncrementally() async throws {
+        let count = 1024 * 1024
+        let left = ArrayStorage([UInt8](repeating: 0, count: count))
+        let right = ArrayStorage([UInt8](repeating: 1, count: count))
+
+        var seen: [Double] = []
+        let index = try await DiffEngine.scanAsync(
+            left: left, right: right, chunkSize: 4096,
+            progress: { seen.append($0) }
+        )
+        // Same blocks as the synchronous scan.
+        XCTAssertEqual(index, try DiffEngine.scan(left: left, right: right, chunkSize: 4096))
+        XCTAssertEqual(seen.last, 1.0, "final progress must be 1.0")
+        XCTAssertTrue(seen.contains { $0 > 0 && $0 < 1 },
+                      "expected intermediate progress, got \(seen)")
+        XCTAssertEqual(seen, seen.sorted(), "progress must be monotonic")
+    }
+
+    /// The point of `scanAsync`'s per-chunk yield: a `progress` read issued from
+    /// another task is serviced *during* a long build, not only after it. Before
+    /// the yield was added, `build` was synchronous, so the actor starved every
+    /// pending read until the scan returned — progress was unobservable.
+    func testActorProgressIsObservableDuringBuild() async throws {
+        let builder = DiffIndexBuilder()
+        // 8 MiB in 4 KiB chunks → 2048 chunk boundaries to yield at, so the
+        // build spans many sampling reads rather than finishing in one slice.
+        let count = 8 * 1024 * 1024
+        let left = ArrayStorage([UInt8](repeating: 0, count: count))
+        let right = ArrayStorage([UInt8](repeating: 1, count: count))
+
+        let buildTask = Task {
+            try await builder.build(left: left, right: right, chunkSize: 4 * 1024)
+        }
+
+        var samples: [Double] = []
+        for _ in 0..<100_000 {
+            let p = await builder.progress
+            samples.append(p)
+            if p >= 1 { break }
+            try? await Task.sleep(nanoseconds: 50_000)
+        }
+        _ = try await buildTask.value
+
+        XCTAssertEqual(samples.last, 1.0, "a completed build must report 1.0")
+        XCTAssertTrue(samples.contains { $0 > 0 && $0 < 1 },
+                      "expected an intermediate progress sample mid-build, got \(samples)")
+    }
+
     // MARK: - Large files (§13.7)
 
     private func makeSparseFile(_ size: UInt64) throws -> URL {

@@ -86,6 +86,25 @@ public enum DiffEngine {
         return DiffBlockIndex(leftSize: left.size, rightSize: right.size, blocks: blocks)
     }
 
+    /// Async variant of `scan` for use inside an actor: yields to the
+    /// cooperative pool between chunks so a long build keeps the hosting actor
+    /// responsive to `progress` reads and new cancellation requests (§8.3,
+    /// §14.4). Same loop and result as `scan` — the shared per-chunk work lives
+    /// in `appendChunk`.
+    public static func scanAsync(
+        left: ByteStorage,
+        right: ByteStorage,
+        chunkSize: Int = defaultChunkSize,
+        shouldCancel: () -> Bool = { false },
+        progress: (Double) -> Void = { _ in }
+    ) async throws -> DiffBlockIndex {
+        let blocks = try await scanRangeAsync(
+            left: left, right: right, from: 0, to: max(left.size, right.size),
+            chunkSize: chunkSize, shouldCancel: shouldCancel, progress: progress
+        )
+        return DiffBlockIndex(leftSize: left.size, rightSize: right.size, blocks: blocks)
+    }
+
     /// Finds the first block of `kind` in `direction` from `offset`, by
     /// scanning storage. Used for on-demand navigation while a full index is
     /// still building (§10.3): the result matches `DiffBlockIndex` semantics —
@@ -219,30 +238,82 @@ public enum DiffEngine {
         while offset < comparedEnd {
             if shouldCancel() { throw CancellationError() }
             let length = Int(min(UInt64(chunkSize), comparedEnd - offset))
-            let a = try left.read(at: offset, length: length)
-            let b = try right.read(at: offset, length: length)
-            let n = min(a.count, b.count)
-
-            var runStart: Int?
-            var runKind: DiffBlock.Kind?
-            for j in 0..<n {
-                let kind: DiffBlock.Kind = a[j] == b[j] ? .same : .different
-                if runKind == nil {
-                    runKind = kind
-                    runStart = j
-                } else if runKind != kind {
-                    builder.appendRun(runKind!, range: (offset + UInt64(runStart!))..<(offset + UInt64(j)))
-                    runKind = kind
-                    runStart = j
-                }
-            }
-            if let kind = runKind, let start = runStart {
-                builder.appendRun(kind, range: (offset + UInt64(start))..<(offset + UInt64(n)))
-            }
-
+            let n = try appendChunk(left: left, right: right, offset: offset, length: length, into: &builder)
             offset += UInt64(n)
             processed += UInt64(n)
             if total > 0 { progress(Double(processed) / Double(total)) }
+        }
+
+        let tailStart = max(from, common)
+        if to > tailStart {
+            builder.appendRun(.different, range: tailStart..<to)
+        }
+        if total > 0 { progress(1) }
+        return builder.finish()
+    }
+
+    /// Compares the bytes at `[offset, offset+length)` in both storages and
+    /// appends the runs to `builder`. Returns the number of bytes actually
+    /// compared (a storage may return fewer than requested at EOF).
+    private static func appendChunk(
+        left: ByteStorage,
+        right: ByteStorage,
+        offset: UInt64,
+        length: Int,
+        into builder: inout BlockBuilder
+    ) throws -> Int {
+        let a = try left.read(at: offset, length: length)
+        let b = try right.read(at: offset, length: length)
+        let n = min(a.count, b.count)
+
+        var runStart: Int?
+        var runKind: DiffBlock.Kind?
+        for j in 0..<n {
+            let kind: DiffBlock.Kind = a[j] == b[j] ? .same : .different
+            if runKind == nil {
+                runKind = kind
+                runStart = j
+            } else if runKind != kind {
+                builder.appendRun(runKind!, range: (offset + UInt64(runStart!))..<(offset + UInt64(j)))
+                runKind = kind
+                runStart = j
+            }
+        }
+        if let kind = runKind, let start = runStart {
+            builder.appendRun(kind, range: (offset + UInt64(start))..<(offset + UInt64(n)))
+        }
+        return n
+    }
+
+    /// Async twin of `scanRange`: same per-chunk work, but yields after each
+    /// chunk so a hosting actor can service `progress` reads and new
+    /// cancellation requests while a long build is in flight.
+    private static func scanRangeAsync(
+        left: ByteStorage,
+        right: ByteStorage,
+        from: UInt64,
+        to: UInt64,
+        chunkSize: Int,
+        shouldCancel: () -> Bool,
+        progress: (Double) -> Void
+    ) async throws -> [DiffBlock] {
+        var builder = BlockBuilder()
+        let common = min(left.size, right.size)
+        let comparedEnd = min(to, common)
+        let total = to > from ? to - from : 0
+
+        var offset = from
+        var processed: UInt64 = 0
+        while offset < comparedEnd {
+            if shouldCancel() { throw CancellationError() }
+            let length = Int(min(UInt64(chunkSize), comparedEnd - offset))
+            let n = try appendChunk(left: left, right: right, offset: offset, length: length, into: &builder)
+            offset += UInt64(n)
+            processed += UInt64(n)
+            if total > 0 { progress(Double(processed) / Double(total)) }
+            // Let the hosting actor service `progress` reads (and new
+            // cancellation requests) between chunks (§8.3, §14.4).
+            await Task.yield()
         }
 
         let tailStart = max(from, common)
@@ -258,7 +329,9 @@ public enum DiffEngine {
 ///
 /// Runs on its own actor: `progress` is updated during a scan and `cancel()`
 /// sets a flag the engine observes between chunks, so closing a pane or
-/// changing inputs abandons the work promptly (§8.3, §14.4).
+/// changing inputs abandons the work promptly (§8.3, §14.4). `build` uses the
+/// async engine scan and yields between chunks, so the UI's progress reads are
+/// serviced mid-build instead of only after the scan completes.
 public actor DiffIndexBuilder {
     public init() {}
 
@@ -281,8 +354,12 @@ public actor DiffIndexBuilder {
         left: ByteStorage,
         right: ByteStorage,
         chunkSize: Int = DiffEngine.defaultChunkSize
-    ) throws -> DiffBlockIndex {
-        try DiffEngine.scan(
+    ) async throws -> DiffBlockIndex {
+        // The async scan yields between chunks so the actor can service the UI's
+        // `progress` reads while the build is in flight. A synchronous scan would
+        // starve the actor for the whole build, leaving the progress bar frozen
+        // at 0 until it finishes.
+        try await DiffEngine.scanAsync(
             left: left, right: right, chunkSize: chunkSize,
             shouldCancel: { self.isCancelled },
             progress: { self.progress = $0 }
