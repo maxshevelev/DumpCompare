@@ -5,8 +5,8 @@ import DumpCompareCore
 /// draggable `NSSplitView`, with:
 /// - a left/right ⇄ top/bottom toggle (View menu) persisted in `UserDefaults`;
 /// - synchronized scrolling by absolute offset (same row layout ⇒ same y);
-/// - the comparison coordinator's progress and diff counts mirrored into the
-///   panes' status bars.
+/// - the comparison coordinator's diff counts mirrored into the panes' status
+///   bars, and its build operation shown in the ACTIVE pane's status bar.
 final class ComparisonView: NSView {
     let coordinator: ComparisonCoordinator
     let paneView1: FilePaneView
@@ -19,6 +19,10 @@ final class ComparisonView: NSView {
     let splitView = ProportionalSplitView()
     private var scrollObservers: [NSObjectProtocol] = []
     private var isSynchronizingScroll = false
+
+    /// The coordinator operation currently presented; moved between panes as
+    /// the active pane changes (§14.4).
+    private var currentOperation: BackgroundOperation?
 
     private static let layoutKey = "ComparisonPaneLayoutIsVertical"
 
@@ -100,10 +104,18 @@ final class ComparisonView: NSView {
         splitView.fitPane(index, minimumWidth: pane.contentFitWidth)
     }
 
-    /// Highlights `index` as the active pane.
+    /// Highlights `index` as the active pane. The operation indicator follows
+    /// the active pane: if an operation is running it is moved onto the pane
+    /// that just became active (revealed immediately — it is already past the
+    /// debounce, so re-debouncing would blink it off and on).
     func setActive(_ index: Int) {
         paneView1.setActive(index == 0)
         paneView2.setActive(index == 1)
+        if let currentOperation, currentOperation.isActive {
+            paneView1.endOperation()
+            paneView2.endOperation()
+            activePaneView().beginOperation(currentOperation, revealImmediately: true)
+        }
     }
 
     // MARK: - Scroll synchronization (§9)
@@ -147,19 +159,32 @@ final class ComparisonView: NSView {
     // MARK: - Coordinator → status bar
 
     private func bindCoordinator() {
-        coordinator.onProgress = { [weak self] _ in
-            self?.refreshComparisonInfo()
+        coordinator.onOperation = { [weak self] op in
+            self?.presentOperation(op)
         }
         coordinator.onIndexChanged = { [weak self] _ in
             self?.refreshComparisonInfo()
         }
     }
 
+    /// Shows a coordinator build operation in the ACTIVE pane's status bar,
+    /// replacing whatever operation was shown before (in both panes). The
+    /// indicator is a single instance presented on the pane the user is
+    /// looking at; switching the active pane moves it (see `setActive`).
+    func presentOperation(_ op: BackgroundOperation) {
+        paneView1.endOperation()
+        paneView2.endOperation()
+        currentOperation = op
+        activePaneView().beginOperation(op)
+    }
+
+    private func activePaneView() -> FilePaneView {
+        paneView1.isActive ? paneView1 : paneView2
+    }
+
     func refreshComparisonInfo() {
         let text: String
-        if coordinator.isBuilding {
-            text = "Indexing… \(Int(coordinator.progress * 100))%"
-        } else if let index = coordinator.index {
+        if let index = coordinator.index {
             var diffBytes: UInt64 = 0
             var sameBytes: UInt64 = 0
             for block in index.blocks {
@@ -167,6 +192,8 @@ final class ComparisonView: NSView {
             }
             text = "\(diffBytes) differing · \(sameBytes) same"
         } else {
+            // While building, the progress bar (not text) shows the status; the
+            // summary only appears once the index is ready (§14.4).
             text = ""
         }
         paneView1.comparisonInfo = text

@@ -16,6 +16,9 @@ final class MainViewController: NSViewController {
     private var contentTopToView: NSLayoutConstraint!
     private var contentTopToFindBar: NSLayoutConstraint!
     private var findTask: Task<Void, Never>?
+    /// The active search operation, surfaced in the active pane's status bar
+    /// while a search runs (§14.4).
+    private var findOperation: BackgroundOperation?
 
     /// Builds the background block index for comparison mode. The provider
     /// returns the current storages on every start/rebuild, so a revert that
@@ -720,17 +723,28 @@ final class MainViewController: NSViewController {
         contentTopToFindBar.isActive = false
         contentTopToView.isActive = true
         findTask?.cancel()
+        findOperation?.finish()
         focusActiveHexView()
     }
 
     /// Launches a background search from the find bar. A new search cancels any
     /// in-flight one (rapid < > presses), and the bar stays open — only the
-    /// selection moves (§11).
+    /// selection moves (§11). The search runs as a `BackgroundOperation`, so
+    /// its name, progress and (×) appear in the active pane's status bar while
+    /// it runs and it can be cancelled (§14.4).
     private func runSearch(pattern: SearchPattern, direction: SearchDirection, caseSensitive: Bool) {
         findTask?.cancel()
+        findOperation?.finish()
+        let operation = BackgroundOperation(name: "Searching…") { [weak self] in
+            self?.findTask?.cancel()
+        }
+        findOperation = operation
+        activeFilePane?.beginOperation(operation)
         findTask = Task { [weak self] in
             guard let self else { return }
-            let found = await self.performFind(pattern: pattern, direction: direction, caseSensitive: caseSensitive)
+            let found = await self.performFind(pattern: pattern, direction: direction,
+                                               caseSensitive: caseSensitive, operation: operation)
+            operation.finish()
             guard !Task.isCancelled else { return }
             if !found {
                 self.showFindMessage("No match found.")
@@ -739,8 +753,10 @@ final class MainViewController: NSViewController {
     }
 
     /// Runs a search off the main thread and, on a match, selects it in the
-    /// active pane (§13.8, §14.4, §18 #10).
-    private func performFind(pattern: SearchPattern, direction: SearchDirection, caseSensitive: Bool) async -> Bool {
+    /// active pane (§13.8, §14.4, §18 #10). `operation` receives the search's
+    /// progress so the status bar advances as the scan covers the file.
+    private func performFind(pattern: SearchPattern, direction: SearchDirection, caseSensitive: Bool,
+                             operation: BackgroundOperation) async -> Bool {
         let pane = activePane
         guard pane.isOpen, let storage = pane.document?.storage else { return false }
         // Find Next starts after the current selection (so it never re-selects
@@ -753,7 +769,8 @@ final class MainViewController: NSViewController {
             do {
                 return try SearchEngine.find(pattern: pattern.bytes, in: storage, from: from, direction: direction,
                                              caseSensitive: caseSensitive,
-                                             shouldCancel: { Task.isCancelled })
+                                             shouldCancel: { Task.isCancelled },
+                                             progress: { operation.report($0) })
             } catch is CancellationError {
                 return nil
             } catch {

@@ -620,4 +620,52 @@ final class FindFlowTests: XCTestCase {
         XCTAssertEqual(caseToggle.state, .on, "the case toggle must persist across reopen")
     }
 
+    // MARK: - Background operation (§14.4)
+
+    /// An instant search must not flash the operation strip in the status bar:
+    /// the reveal is debounced (~0.3 s), and the search finishing first cancels
+    /// it.
+    func testFastSearchDoesNotFlashOperationIndicator() throws {
+        let bytes: [UInt8] = [0xDE, 0xAD, 0xBE, 0x41, 0x42]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "DE AD BE"
+        try clickFindNext(window)
+        // start == 0 is trivially true pre-search, so wait for the full match.
+        XCTAssertTrue(pumpUntil(3) { let s = controller.windowModel.pane1.hexSelection(); return s.start == 0 && s.end == 3 },
+                      "the search must complete")
+
+        // Let the debounce window elapse; the strip must stay hidden because the
+        // operation already finished.
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
+        XCTAssertTrue(paneView.operationView.isHidden,
+                      "an instant search must not flash the operation indicator")
+    }
+
+    /// A running operation shows its strip (name + progress) after the debounce
+    /// and the (×) button routes to the operation's cancel action.
+    func testRunningOperationShowsIndicatorAndCancels() throws {
+        let (controller, window, url) = try makeController([0x41, 0x42, 0x43])
+        defer { cleanup(controller, url) }
+        let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
+
+        var cancelled = false
+        let op = BackgroundOperation(name: "Indexing…") { cancelled = true }
+        paneView.beginOperation(op)
+        XCTAssertTrue(paneView.operationView.isHidden,
+                      "the strip must wait for the debounce before appearing")
+
+        XCTAssertTrue(pumpUntil(2) { !paneView.operationView.isHidden },
+                      "the strip must appear after the debounce")
+        XCTAssertEqual(paneView.operationView.nameLabel.stringValue, "Indexing…")
+
+        // The (×) button asks the operation to cancel its owner's work.
+        paneView.operationView.cancelButton.performClick(nil)
+        XCTAssertTrue(cancelled, "the × button must route to the operation's cancel action")
+    }
+
 }

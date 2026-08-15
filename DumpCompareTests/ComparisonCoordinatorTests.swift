@@ -195,4 +195,39 @@ final class ComparisonCoordinatorTests: XCTestCase {
         coordinator.record(edit: .overwrite(range: 0..<1))
         XCTAssertNil(coordinator.index)
     }
+
+    // MARK: - Background operation (§14.4)
+
+    /// `cancelBuild()` (the operation's × button) stops the build without
+    /// restarting: the index stays nil, the operation finishes, and a fresh
+    /// `start()` builds normally afterwards.
+    func testCancelBuildStopsIndexingAndDropsResult() async throws {
+        let (coordinator, _, _, urlA, urlB) = try makeCoordinator([0x00], [0x00])
+        defer {
+            try? FileManager.default.removeItem(at: urlA)
+            try? FileManager.default.removeItem(at: urlB)
+        }
+        var presented: BackgroundOperation?
+        coordinator.onOperation = { presented = $0 }
+        coordinator.start()
+        XCTAssertTrue(coordinator.isBuilding)
+        let op = try XCTUnwrap(coordinator.operation, "start() must surface a build operation")
+        XCTAssertTrue(presented === op, "the surfaced operation must be the coordinator's")
+
+        // Cancel before the build's first background task even starts: the
+        // generation guard drops the stale result, so no index is published.
+        coordinator.cancelBuild()
+        XCTAssertFalse(coordinator.isBuilding)
+        XCTAssertNil(coordinator.operation, "cancel must clear the operation")
+
+        let settled = await waitUntil { !op.isActive }
+        XCTAssertTrue(settled, "the operation must finish on cancel")
+        XCTAssertNil(coordinator.index, "a cancelled build must not publish an index")
+
+        // A fresh start() builds normally.
+        coordinator.start()
+        let rebuilt = await awaitBuild(coordinator)
+        XCTAssertTrue(rebuilt, "a fresh start must build after a cancel")
+        XCTAssertNotNil(coordinator.index)
+    }
 }

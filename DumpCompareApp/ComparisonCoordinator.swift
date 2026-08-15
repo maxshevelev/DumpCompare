@@ -7,14 +7,16 @@ import DumpCompareCore
 /// Owns a single `DiffIndexBuilder` actor. The lifecycle:
 /// - `start()` begins a full-file scan of the two current storages (fetched
 ///   through `provider`, so reverts that swap the document storage are seen).
-///   `progress` is published for the status bar and `onIndexChanged` fires
-///   when the index completes.
+///   The scan is surfaced as a `BackgroundOperation` ("Indexing…") via
+///   `onOperation`, and `onIndexChanged` fires when the index completes.
 /// - Edits reported via `record(edit:)` are buffered while the first build is
 ///   in flight, then applied in order once it lands; afterwards they are applied
 ///   incrementally in background batches.
 /// - `rebuild()` (undo/redo/revert, or a pane being replaced) cancels the
 ///   in-flight work and restarts from the current storages.
 /// - `stop()` (a pane closed) drops the index and cancels.
+/// - `cancelBuild()` (the operation's × button) cancels without restarting;
+///   the index stays nil until the next `start()`/`rebuild()`.
 ///
 /// A `generation` counter discards results from superseded builds. Cancelling
 /// then resetting the shared builder keeps every background task from a stale
@@ -34,15 +36,19 @@ final class ComparisonCoordinator {
 
     /// Latest completed index, or nil while building/after `stop`.
     private(set) var index: DiffBlockIndex?
-    /// Build progress in [0, 1]; only meaningful while `isBuilding`.
-    private(set) var progress: Double = 0
     /// True while a full-file index is not yet available.
     private(set) var isBuilding = false
 
+    /// The active build operation ("Indexing…"), or nil when idle. Its
+    /// progress is fed from the builder's actor; `finish()` hides the status
+    /// bar indicator on every completion path.
+    private(set) var operation: BackgroundOperation?
+
     /// Fired when `index` is replaced (initial build completed, or edits applied).
     var onIndexChanged: ((DiffBlockIndex) -> Void)?
-    /// Fired with [0, 1] as the initial scan makes progress.
-    var onProgress: ((Double) -> Void)?
+    /// Fired from `start()` with the new build operation; the view presents it
+    /// in the active pane's status bar.
+    var onOperation: ((BackgroundOperation) -> Void)?
 
     /// Bumped on every start/rebuild/stop so stale background results are dropped.
     private var generation = 0
@@ -72,8 +78,12 @@ final class ComparisonCoordinator {
         queuedEdits = []
         applying = false
         isBuilding = true
-        progress = 0
-        onProgress?(0)
+        endBuildOperation()
+        let op = BackgroundOperation(name: "Indexing…") { [weak self] in
+            self?.cancelBuild()
+        }
+        operation = op
+        onOperation?(op)
 
         let gen = generation
         Task {
@@ -81,7 +91,7 @@ final class ComparisonCoordinator {
             // ordering guarantees reset() runs after the old scan throws.
             await builder.cancel()
             await builder.reset()
-            await runInitialBuild(left: left, right: right, generation: gen)
+            await runInitialBuild(left: left, right: right, generation: gen, operation: op)
         }
     }
 
@@ -102,7 +112,17 @@ final class ComparisonCoordinator {
         queuedEdits = []
         applying = false
         isBuilding = false
-        progress = 0
+        endBuildOperation()
+        Task { await builder.cancel() }
+    }
+
+    /// Cancels the in-flight build without starting a new one (the operation's
+    /// × button). The index stays nil until the next `start()`/`rebuild()`; the
+    /// generation guard drops the cancelled build's result when it surfaces.
+    func cancelBuild() {
+        generation += 1
+        isBuilding = false
+        endBuildOperation()
         Task { await builder.cancel() }
     }
 
@@ -188,15 +208,16 @@ final class ComparisonCoordinator {
 
     // MARK: - Internals
 
-    private func runInitialBuild(left: ByteStorage, right: ByteStorage, generation gen: Int) async {
-        // Poll the actor's progress so the status bar can show "Indexing… %".
+    private func runInitialBuild(left: ByteStorage, right: ByteStorage, generation gen: Int, operation op: BackgroundOperation) async {
+        // Poll the actor's progress so the status bar's operation indicator
+        // advances as the scan covers the file. Report to THIS build's op (not
+        // `self.operation`, which a newer start/cancel may have replaced): a
+        // stale poll then no-ops against a finished op instead of leaking a
+        // stale value into the new build's bar.
         let progressTask = Task {
             while self.isBuilding && gen == self.generation {
                 let p = await self.builder.progress
-                if p != self.progress {
-                    self.progress = p
-                    self.onProgress?(p)
-                }
+                op.report(p)
                 try? await Task.sleep(nanoseconds: 100_000_000)
             }
         }
@@ -204,11 +225,12 @@ final class ComparisonCoordinator {
         do {
             let built = try await builder.build(left: left, right: right)
             progressTask.cancel()
+            // A stale build (superseded by start/rebuild/cancel) belongs to an
+            // operation this coordinator no longer owns — leave it untouched.
             guard gen == self.generation else { return }
             self.index = built
             self.isBuilding = false
-            self.progress = 1
-            self.onProgress?(1)
+            self.endBuildOperation()
             if !self.pendingEdits.isEmpty {
                 self.queuedEdits = self.pendingEdits + self.queuedEdits
                 self.pendingEdits.removeAll()
@@ -220,12 +242,23 @@ final class ComparisonCoordinator {
             progressTask.cancel()
             guard gen == self.generation else { return }
             self.isBuilding = false
+            self.endBuildOperation()
         } catch {
             progressTask.cancel()
             guard gen == self.generation else { return }
             self.isBuilding = false
+            self.endBuildOperation()
             self.onError?(error)
         }
+    }
+
+    /// Finishes the active build operation (if any) and clears it. Only called
+    /// on paths where the coordinator still owns the operation — a stale build
+    /// that lost the generation race returns before reaching here, so it never
+    /// hides a newer build's indicator.
+    private func endBuildOperation() {
+        operation?.finish()
+        operation = nil
     }
 
     /// Surface for build failures (e.g. a storage read error mid-scan).

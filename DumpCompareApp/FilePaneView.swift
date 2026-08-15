@@ -57,6 +57,10 @@ final class FilePaneView: NSView {
     private let titleLabel = NSTextField(labelWithString: "")
     private let lockLabel = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(labelWithString: "")
+    /// The status-bar strip for the running background operation (name +
+    /// progress bar + ×), hidden while idle (§14.4). Internal so tests can
+    /// assert the debounced reveal / hide.
+    let operationView = OperationStatusView()
 
     /// Extra status text appended on the right (e.g. "Indexing… 42%" or diff
     /// counts in comparison mode). Set by ComparisonView/MainViewController.
@@ -76,6 +80,9 @@ final class FilePaneView: NSView {
     var onDropFiles: (([URL]) -> Void)?
 
     private var dropEnabled = false
+    /// Whether this pane is the active one. The operation indicator shows only
+    /// in the active pane's status bar (§14.4).
+    private(set) var isActive = false
 
     init(viewModel: PaneViewModel) {
         self.viewModel = viewModel
@@ -140,23 +147,38 @@ final class FilePaneView: NSView {
             header.heightAnchor.constraint(equalToConstant: 28),
         ])
 
-        // Status bar
+        // Status bar: the regular status text on the left, the background
+        // operation strip (name + progress + ×) to its right. An NSStackView
+        // collapses a hidden arranged subview, so hiding the strip frees its
+        // width and the label can stretch across the whole bar (§14.4).
         statusLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.lineBreakMode = .byTruncatingTail
         statusLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
         statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // The strip keeps its size; a narrow pane shrinks the status text.
+        operationView.isHidden = true
+        operationView.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        operationView.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+
+        let statusStack = NSStackView()
+        statusStack.orientation = .horizontal
+        statusStack.alignment = .centerY
+        statusStack.spacing = 10
+        statusStack.translatesAutoresizingMaskIntoConstraints = false
+        statusStack.addArrangedSubview(statusLabel)
+        statusStack.addArrangedSubview(operationView)
+
         let statusBar = NSView()
         statusBar.translatesAutoresizingMaskIntoConstraints = false
         // Same as the header: stay flexible so a narrow pane can shrink it.
         statusBar.setContentHuggingPriority(.defaultLow, for: .horizontal)
         statusBar.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        statusBar.addSubview(statusLabel)
-        statusLabel.translatesAutoresizingMaskIntoConstraints = false
+        statusBar.addSubview(statusStack)
         NSLayoutConstraint.activate([
-            statusLabel.leadingAnchor.constraint(equalTo: statusBar.leadingAnchor, constant: 10),
-            statusLabel.trailingAnchor.constraint(lessThanOrEqualTo: statusBar.trailingAnchor, constant: -10),
-            statusLabel.centerYAnchor.constraint(equalTo: statusBar.centerYAnchor),
+            statusStack.leadingAnchor.constraint(equalTo: statusBar.leadingAnchor, constant: 10),
+            statusStack.trailingAnchor.constraint(lessThanOrEqualTo: statusBar.trailingAnchor, constant: -10),
+            statusStack.centerYAnchor.constraint(equalTo: statusBar.centerYAnchor),
             statusBar.heightAnchor.constraint(equalToConstant: 24),
         ])
 
@@ -236,9 +258,63 @@ final class FilePaneView: NSView {
     /// uses the same flag to show the caret only on the active pane and draw the
     /// mirror frame on the inactive one.
     func setActive(_ isActive: Bool) {
+        self.isActive = isActive
         titleLabel.font = .systemFont(ofSize: 12, weight: isActive ? .bold : .semibold)
         titleLabel.textColor = isActive ? .labelColor : .secondaryLabelColor
         hexView.isActive = isActive
+    }
+
+    // MARK: - Background operation (§14.4)
+
+    /// The operation currently shown in this pane's status bar, or nil.
+    private var currentOperation: BackgroundOperation?
+    /// Token cancelling a delayed `beginOperation` reveal, so an operation that
+    /// finishes before the debounce elapses never shows its bar.
+    private var operationShowWorkItem: DispatchWorkItem?
+    /// Debounce before the operation strip appears — a search on a small file
+    /// finishes in a few milliseconds and must not flash a bar.
+    private static let operationDebounce: TimeInterval = 0.3
+
+    /// Shows `op` in the status bar, replacing any previous operation. The
+    /// reveal is debounced by `operationDebounce`, so an operation that
+    /// finishes before then never appears; `endOperation()` cancels a pending
+    /// reveal. Pass `revealImmediately` when moving an already-running
+    /// operation onto this pane (the active pane changed) — skipping the
+    /// debounce keeps the bar from blinking off and on.
+    func beginOperation(_ op: BackgroundOperation, revealImmediately: Bool = false) {
+        endOperation()
+        currentOperation = op
+        operationView.nameLabel.stringValue = op.name
+        operationView.progressBar.doubleValue = op.progress
+        operationView.onCancel = { [weak op] in op?.cancel() }
+        // Progress and completion follow the op wherever it is presented; only
+        // the pane that currently holds the op updates its bar.
+        op.onProgress = { [weak self] fraction in
+            self?.operationView.progressBar.doubleValue = fraction
+        }
+        op.onFinish = { [weak self] in
+            guard let self, self.currentOperation === op else { return }
+            self.endOperation()
+        }
+        if revealImmediately {
+            operationView.isHidden = false
+        } else {
+            let token = DispatchWorkItem { [weak self, weak op] in
+                guard let self, let op, self.currentOperation === op, op.isActive else { return }
+                self.operationView.isHidden = false
+            }
+            operationShowWorkItem = token
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.operationDebounce, execute: token)
+        }
+    }
+
+    /// Hides the operation strip and forgets the current operation (cancelling
+    /// a pending debounced reveal).
+    func endOperation() {
+        operationShowWorkItem?.cancel()
+        operationShowWorkItem = nil
+        operationView.isHidden = true
+        currentOperation = nil
     }
 
     /// Registers the pane as a drag destination (comparison mode only, §4.3).
@@ -352,5 +428,74 @@ extension FilePaneView {
             onDropFiles?(urls)
         }
         return true
+    }
+}
+
+// MARK: - Background operation strip (§14.4)
+
+/// The status-bar strip for one background operation: a name label, a
+/// bar-style determinate progress indicator, and a (×) cancel button. Shown by
+/// `FilePaneView.beginOperation(_:)`, hidden by `endOperation()`.
+final class OperationStatusView: NSView {
+    let nameLabel = NSTextField(labelWithString: "")
+    let progressBar = NSProgressIndicator()
+    /// The (×) button. Tests drive cancellation through it.
+    let cancelButton = NSButton()
+    /// Fired when the user clicks (×); wired to `BackgroundOperation.cancel()`.
+    var onCancel: (() -> Void)?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setUp()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    private func setUp() {
+        nameLabel.font = .systemFont(ofSize: 11)
+        nameLabel.textColor = .secondaryLabelColor
+        nameLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        progressBar.style = .bar
+        progressBar.isIndeterminate = false
+        progressBar.minValue = 0
+        progressBar.maxValue = 1
+        progressBar.doubleValue = 0
+        progressBar.controlSize = .small
+        progressBar.translatesAutoresizingMaskIntoConstraints = false
+        progressBar.widthAnchor.constraint(equalToConstant: 120).isActive = true
+
+        cancelButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Cancel operation")
+        cancelButton.isBordered = false
+        cancelButton.imagePosition = .imageOnly
+        cancelButton.contentTintColor = .secondaryLabelColor
+        cancelButton.setAccessibilityLabel("Cancel operation")  // §15
+        cancelButton.toolTip = "Cancel operation"
+        cancelButton.target = self
+        cancelButton.action = #selector(cancelPressed)
+
+        let stack = NSStackView()
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 6
+        stack.addArrangedSubview(nameLabel)
+        stack.addArrangedSubview(progressBar)
+        stack.addArrangedSubview(cancelButton)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: topAnchor),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+        ])
+    }
+
+    @objc private func cancelPressed() {
+        onCancel?()
     }
 }
