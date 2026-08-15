@@ -62,8 +62,10 @@ final class HexColumnHeaderTests: XCTestCase {
         XCTAssertEqual(frames.columns[1].minX - frames.columns[0].minX,
                        layout.hexByteWidth + layout.hexByteGap, accuracy: 0.01)
         XCTAssertEqual(frames.ascii.minX, layout.asciiX(column: 0), accuracy: 0.01)
-        // The labels sit in the header's own row-high strip.
-        XCTAssertEqual(frames.offset.height, layout.rowHeight, accuracy: 0.01)
+        // The labels sit in the header's strip: one hex row plus symmetric
+        // top/bottom padding (§6).
+        XCTAssertEqual(frames.offset.height,
+                       layout.rowHeight + 2 * HexColumnHeaderView.verticalPadding, accuracy: 0.01)
     }
 
     /// Mirrors the scroll view's horizontal offset: every label shifts left by
@@ -82,9 +84,9 @@ final class HexColumnHeaderTests: XCTestCase {
         XCTAssertEqual(before.ascii.minX - after.ascii.minX, 47, accuracy: 0.01)
     }
 
-    /// The header is one hex row tall and sits in the pane stack above the
-    /// scroll view, so it is pinned (never scrolls vertically) and counts toward
-    /// the window's zoom-to-fit height.
+    /// The header is one hex row tall plus vertical padding and sits in the pane
+    /// stack above the scroll view, so it is pinned (never scrolls vertically)
+    /// and counts toward the window's zoom-to-fit height.
     func testHeaderIsAPinnedStripAboveTheScrollViewCountingTowardFitHeight() throws {
         let (pane, header, hexView, url) = try makePane([UInt8](repeating: 0x55, count: 64))
         defer { try? FileManager.default.removeItem(at: url) }
@@ -94,12 +96,34 @@ final class HexColumnHeaderTests: XCTestCase {
         XCTAssertTrue(stack.arrangedSubviews[1] is HexColumnHeaderView)
         XCTAssertTrue(stack.arrangedSubviews[2] === pane.scrollView)
 
-        XCTAssertEqual(header.headerHeight, hexView.hexLayout.rowHeight, accuracy: 0.01)
+        XCTAssertEqual(header.headerHeight,
+                       hexView.hexLayout.rowHeight + 2 * HexColumnHeaderView.verticalPadding, accuracy: 0.01)
         XCTAssertEqual(
             pane.contentFitHeight,
             pane.hexContentHeight + FilePaneView.headerHeight + FilePaneView.statusBarHeight + header.headerHeight,
             accuracy: 0.01
         )
+    }
+
+    /// Changing the word size must make the pane ask the header to rebuild
+    /// (§6): the grid regroups, so the labels have to be redrawn at the new
+    /// column positions instead of lingering at the old ones. (The request is
+    /// observed via `gridRefreshCount` — `needsDisplay` isn't readable in a
+    /// headless test host.)
+    func testWordSizeChangeRebuildsHeader() throws {
+        // The pane must stay alive for the test's lifetime: it owns the
+        // observer that asks the header to rebuild, and dropping it would
+        // deallocate it and remove the observer.
+        let (pane, header, _, url) = try makePane([UInt8](repeating: 0x55, count: 64))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let before = header.gridRefreshCount
+
+        UserDefaults.standard.set(4, forKey: WordSize.userDefaultsKey)
+        WordSize.set(.four)
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
+
+        XCTAssertEqual(header.gridRefreshCount, before + 1,
+                       "the pane must ask the header to rebuild when the word size changes")
     }
 
     /// The offset column and the header share the ink-blue color, and it

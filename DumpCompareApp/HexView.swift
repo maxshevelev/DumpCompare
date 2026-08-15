@@ -72,6 +72,12 @@ final class HexView: NSView {
     private var wordSizeObserver: NSObjectProtocol?
     private var appearanceObserver: NSObjectProtocol?
     private var textDecodingObserver: NSObjectProtocol?
+    /// Observes the enclosing scroll view's clip frame so the document width
+    /// tracks the viewport; `layout()` alone isn't called on a frame-based
+    /// document view when the scroll view resizes (§6). The clip posts
+    /// `frameDidChange` on resize and `boundsDidChange` on scroll — the width
+    /// only depends on the former.
+    private var clipFrameObserver: NSObjectProtocol?
 
     /// The window point where the current mouse-down landed; the drag-selection
     /// dead zone is anchored to it (§3.3).
@@ -148,6 +154,9 @@ final class HexView: NSView {
         if let textDecodingObserver {
             NotificationCenter.default.removeObserver(textDecodingObserver)
         }
+        if let clipFrameObserver {
+            NotificationCenter.default.removeObserver(clipFrameObserver)
+        }
     }
 
     @available(*, unavailable)
@@ -206,9 +215,36 @@ final class HexView: NSView {
 
     override func layout() {
         super.layout()
-        // Keep the content width at least the scroll view's width.
-        if let scroll = enclosingScrollView {
-            setFrameSize(NSSize(width: max(frame.width, scroll.contentSize.width), height: frame.height))
+        refreshContentWidth()
+    }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        // Track the enclosing scroll view's viewport: when the pane or window
+        // is resized (window zoom-to-fit, splitter drag), the clip's frame
+        // changes and the document width must be recomputed — not left at a
+        // stale width that would let the pane scroll horizontally into empty
+        // space (§6).
+        guard let clip = enclosingScrollView?.contentView, clipFrameObserver == nil else { return }
+        clipFrameObserver = NotificationCenter.default.addObserver(
+            forName: NSView.frameDidChangeNotification,
+            object: clip,
+            queue: .main
+        ) { [weak self] _ in
+            self?.refreshContentWidth()
+        }
+    }
+
+    /// Recomputes the document width to `max(contentWidth, viewport width)`.
+    /// `reloadData()` does this for content and word-size changes; this covers
+    /// the viewport changing, where the document frame would otherwise stay at
+    /// the pre-resize width. The frame is never wider than the content unless
+    /// it has to fill a wider viewport, so there is no empty scrollable space.
+    private func refreshContentWidth() {
+        guard let scroll = enclosingScrollView else { return }
+        let width = max(currentLayout.contentWidth, scroll.contentSize.width)
+        if width != frame.width {
+            setFrameSize(NSSize(width: width, height: frame.height))
         }
     }
 

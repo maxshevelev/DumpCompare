@@ -86,10 +86,13 @@ final class FilePaneView: NSView {
     /// and mirrors the horizontal scroll to stay aligned with the columns (§6).
     private let columnHeader = HexColumnHeaderView()
     private var columnHeaderScrollObserver: NSObjectProtocol?
-    /// Pins the header to one hex row; its constant is updated when the
-    /// appearance (row height) changes (§3.2).
+    /// Pins the header to one hex row plus its vertical padding; the constant
+    /// is updated when the appearance (row height) changes (§3.2).
     private var columnHeaderHeightConstraint: NSLayoutConstraint?
     private var appearanceObserver: NSObjectProtocol?
+    /// Redraws the column header when the word size changes (§6): the grid
+    /// regroups, so the labels must track the new column positions.
+    private var wordSizeObserver: NSObjectProtocol?
     /// The status-bar strip for the running background operation (name +
     /// progress bar + ×), hidden while idle (§14.4). Internal so tests can
     /// assert the debounced reveal / hide.
@@ -247,7 +250,17 @@ final class FilePaneView: NSView {
         ) { [weak self] _ in
             guard let self else { return }
             self.columnHeaderHeightConstraint?.constant = self.columnHeader.headerHeight
-            self.columnHeader.needsDisplay = true
+            self.columnHeader.refreshForGridChange()
+        }
+        // The word size regroups the hex cells, so the header redraws its
+        // labels at the new column positions (§6). The row height is unchanged,
+        // so the height constraint is left alone.
+        wordSizeObserver = NotificationCenter.default.addObserver(
+            forName: WordSize.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.columnHeader.refreshForGridChange()
         }
 
         // Scrollable hex view.
@@ -287,6 +300,9 @@ final class FilePaneView: NSView {
         }
         if let appearanceObserver {
             NotificationCenter.default.removeObserver(appearanceObserver)
+        }
+        if let wordSizeObserver {
+            NotificationCenter.default.removeObserver(wordSizeObserver)
         }
     }
 
@@ -570,8 +586,27 @@ final class HexColumnHeaderView: NSView {
         String(format: "%02X", column)
     }
 
-    /// Height: one hex row, so the header reads as a pinned first row.
-    var headerHeight: CGFloat { hexView?.hexLayout.rowHeight ?? 17 }
+    /// Vertical padding above and below the labels. Without it the strip is one
+    /// hex row tall and the ink — drawn at the row baseline — nearly touches the
+    /// top and bottom edges (§6).
+    static let verticalPadding: CGFloat = 4
+
+    /// Height: one hex row plus symmetric top/bottom padding, so the labels
+    /// have breathing room instead of hugging the strip's edges.
+    var headerHeight: CGFloat { (hexView?.hexLayout.rowHeight ?? 17) + 2 * Self.verticalPadding }
+
+    /// How many times the pane has told the header the grid geometry changed
+    /// (word size / appearance). A test hook: `needsDisplay` isn't reliably
+    /// readable in a headless test host, so tests assert this instead.
+    private(set) var gridRefreshCount = 0
+
+    /// Redraws the header because the underlying grid geometry changed (word
+    /// size, appearance). The label positions are re-derived from
+    /// `hexView.hexLayout` in `draw`, so a plain redraw is enough.
+    func refreshForGridChange() {
+        gridRefreshCount += 1
+        needsDisplay = true
+    }
 
     override var isFlipped: Bool { true }
 
@@ -585,7 +620,9 @@ final class HexColumnHeaderView: NSView {
         defer { NSGraphicsContext.restoreGraphicsState() }
         NSGraphicsContext.current?.cgContext.translateBy(x: -horizontalOffset, y: 0)
 
-        let baseline = hexView.hexBaseline
+        // The row baseline shifted down by the header's vertical padding, so
+        // the ink stays centered in the taller strip.
+        let baseline = hexView.hexBaseline + Self.verticalPadding
         draw(Self.offsetTitle, x: layout.offsetColumnFrame(row: 0).minX, baseline: baseline)
         for column in 0..<HexLayout.bytesPerRow {
             draw(Self.columnIndex(column), x: layout.hexByteX(column: column), baseline: baseline)
