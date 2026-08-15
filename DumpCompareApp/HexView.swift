@@ -195,12 +195,11 @@ final class HexView: NSView {
             drawCaret(offset: selection.start, layout: layout, nibble: nibble, region: region, rowCount: rowCount)
         }
 
-        // Mirror: on the inactive pane, frame the byte the active pane's caret
-        // points at. Selections are synced between panes (§9), so this pane's
-        // selection start already is that offset.
-        if !isActive {
-            drawMirrorFrame()
-        }
+        // Frame the byte the caret points at. On the inactive pane that is the
+        // whole byte (hex cell + ASCII char), mirroring the active caret across
+        // panes; on the active pane it is the byte in the column the caret is
+        // not in, linking the hex and ASCII views of the same byte (§3.3).
+        drawFrames(isActive ? activeCrossFrameRects() : mirrorFrameRects())
     }
 
     private func drawRow(row: Int, layout: HexLayout, fileSize: UInt64,
@@ -250,14 +249,6 @@ final class HexView: NSView {
 
             let asciiChar = printableAscii(state.byte)
             draw(text: asciiChar, in: asciiRect, baseline: baseline, color: textColor)
-
-            if state.isModified {
-                // Style cue for unsaved bytes (§15): an underline beneath the red
-                // foreground, so modified bytes are identifiable by shape too.
-                HexTheme.modifiedUnderline.setFill()
-                NSBezierPath(rect: CGRect(x: hexFrame.minX, y: hexFrame.maxY - 1.5, width: hexFrame.width, height: 1.5)).fill()
-                NSBezierPath(rect: CGRect(x: asciiRect.minX, y: asciiRect.maxY - 1.5, width: asciiRect.width, height: 1.5)).fill()
-            }
         }
     }
 
@@ -290,10 +281,29 @@ final class HexView: NSView {
         return [hexFrame, asciiRect]
     }
 
-    /// Draws the thin frame around the byte the active pane's caret points at
-    /// on the inactive pane (§3.3).
-    private func drawMirrorFrame() {
-        let rects = mirrorFrameRects()
+    /// Frames the cross-column link drawn on the active pane: the byte's hex
+    /// cell when the caret is in the ASCII region, or its ASCII char when the
+    /// caret is in the hex region — so the same byte is highlighted in both
+    /// columns. Empty when this pane is inactive, has no data, or the caret is
+    /// at EOF. Exposed (internal) for tests.
+    func activeCrossFrameRects() -> [CGRect] {
+        guard isActive, let dataSource else { return [] }
+        let fileSize = dataSource.fileSize
+        let offset = dataSource.hexSelection().start
+        guard offset < fileSize else { return [] }
+        let layout = currentLayout
+        let (row, column) = layout.rowColumn(of: offset)
+        if dataSource.hexInputRegion() == .ascii {
+            return [layout.hexByteFrame(row: row, column: column)]
+        }
+        let hexFrame = layout.hexByteFrame(row: row, column: column)
+        let asciiRect = CGRect(x: layout.asciiX(column: column), y: hexFrame.minY,
+                               width: layout.charWidth, height: layout.rowHeight)
+        return [asciiRect]
+    }
+
+    /// Draws 1px accent frames around the given rects.
+    private func drawFrames(_ rects: [CGRect]) {
         guard !rects.isEmpty else { return }
         HexTheme.mirrorFrame.setStroke()
         for rect in rects {
@@ -406,9 +416,11 @@ final class HexView: NSView {
         case .hex(let column):
             offset = layout.byteOffset(row: hit.row, column: column)
             region = .hex
-            // A click on the byte's high nibble places the caret before the
-            // first char; on the low nibble, between the two chars (§3.3).
-            nibble = (point.x - layout.hexByteX(column: column)) >= layout.charWidth ? 1 : 0
+            // A click on the first half of the byte's high-nibble char places
+            // the caret before it; anywhere from the second half of that char
+            // onward places it between the two chars — a large target, so the
+            // mid-byte caret is easy to reach without aiming at the gap (§3.3).
+            nibble = (point.x - layout.hexByteX(column: column)) >= layout.charWidth / 2 ? 1 : 0
         case .ascii(let column):
             offset = layout.byteOffset(row: hit.row, column: column)
             region = .ascii
@@ -522,9 +534,6 @@ enum HexTheme {
             ? NSColor(white: 0.55, alpha: 0.6)
             : NSColor(white: 0.45, alpha: 0.6)
     }
-
-    /// Underline beneath modified (unsaved) bytes (a non-color cue, §15).
-    static let modifiedUnderline = NSColor.systemRed
 
     /// Thin frame around the byte the active pane's caret points at, drawn on
     /// the inactive pane (§3.3). The accent color ties it to the caret itself.

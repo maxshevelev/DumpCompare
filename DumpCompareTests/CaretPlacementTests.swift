@@ -2,10 +2,12 @@ import DumpCompareCore
 import XCTest
 @testable import DumpCompare
 
-/// §3.3 caret placement: a click on a byte's low nibble places the caret
-/// between the byte's two hex characters, a click on the high nibble before
-/// them. Arrow navigation is byte-wise — it always lands on a byte's left
-/// boundary (nibble 0), even when the caret was mid-byte.
+/// §3.3 caret placement: a click in the second half of a byte's high-nibble
+/// character — or anywhere on its low-nibble character — places the caret
+/// between the byte's two hex characters; a click in the first half of the
+/// high-nibble character places it before them. Arrow navigation is byte-wise —
+/// it always lands on a byte's left boundary (nibble 0), even when the caret
+/// was mid-byte.
 ///
 /// Driven through the real `HexView` with synthesized mouse and key events (same
 /// pattern as `MouseSelectionTests`), so the full path — point → `hitTest` →
@@ -52,10 +54,23 @@ final class CaretPlacementTests: XCTestCase {
                            eventNumber: 0, clickCount: 1, pressure: 1)!
     }
 
-    /// Centre of the byte's `nibble`th hex character (0 = high, 1 = low).
+    /// Click point inside the byte's hex cell. Nibble 0 is the first half of
+    /// the high-nibble character (caret before the byte); nibble 1 is the
+    /// second half of that character (caret between the two chars) — the
+    /// threshold the user asked for: the mid-byte caret is placed from the
+    /// second half of the first character onward.
     private func nibblePoint(_ hexView: HexView, row: Int, column: Int, nibble: Int) -> NSPoint {
         let layout = hexView.hexLayout
-        let local = CGPoint(x: layout.hexByteX(column: column) + layout.charWidth * (CGFloat(nibble) + 0.5),
+        let fraction = nibble == 0 ? 0.25 : 0.75
+        let local = CGPoint(x: layout.hexByteX(column: column) + layout.charWidth * fraction,
+                            y: CGFloat(row) * layout.rowHeight)
+        return hexView.convert(local, to: nil)
+    }
+
+    /// Centre of the byte's low-nibble (second) character.
+    private func secondCharPoint(_ hexView: HexView, row: Int, column: Int) -> NSPoint {
+        let layout = hexView.hexLayout
+        let local = CGPoint(x: layout.hexByteX(column: column) + layout.charWidth * 1.5,
                             y: CGFloat(row) * layout.rowHeight)
         return hexView.convert(local, to: nil)
     }
@@ -82,7 +97,9 @@ final class CaretPlacementTests: XCTestCase {
         hexView.keyDown(with: event)
     }
 
-    func testClickHighNibblePlacesCaretBeforeFirstChar() throws {
+    /// A click in the first half of the byte's high-nibble character places
+    /// the caret before the byte.
+    func testClickFirstHalfOfHighNibblePlacesCaretBeforeByte() throws {
         let (pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 32))
         defer { try? FileManager.default.removeItem(at: url) }
 
@@ -92,7 +109,9 @@ final class CaretPlacementTests: XCTestCase {
         XCTAssertEqual(pane.hexCaretNibble(), 0)
     }
 
-    func testClickLowNibblePlacesCaretMidByte() throws {
+    /// A click in the second half of the byte's high-nibble character places
+    /// the caret between the two chars — a large target for the mid-byte caret.
+    func testClickSecondHalfOfHighNibblePlacesCaretMidByte() throws {
         let (pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 32))
         defer { try? FileManager.default.removeItem(at: url) }
 
@@ -100,6 +119,52 @@ final class CaretPlacementTests: XCTestCase {
 
         XCTAssertEqual(pane.hexSelection().start, 5)
         XCTAssertEqual(pane.hexCaretNibble(), 1)
+    }
+
+    /// Clicking the byte's low-nibble (second) character also places the caret
+    /// between the chars — the pre-existing behavior is preserved.
+    func testClickSecondCharPlacesCaretMidByte() throws {
+        let (pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 32))
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        click(hexView, at: secondCharPoint(hexView, row: 0, column: 5), window: window)
+
+        XCTAssertEqual(pane.hexSelection().start, 5)
+        XCTAssertEqual(pane.hexCaretNibble(), 1)
+    }
+
+    // MARK: - Hex ⇄ ASCII cross-link (§3.3)
+
+    /// On the active pane a hex caret frames the byte's ASCII char, linking the
+    /// two columns of the same byte.
+    func testActivePaneHexCaretFramesAsciiChar() throws {
+        let (pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 32))
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        click(hexView, at: nibblePoint(hexView, row: 0, column: 5, nibble: 0), window: window)
+        XCTAssertEqual(pane.hexInputRegion(), .hex)
+
+        let frames = hexView.activeCrossFrameRects()
+        XCTAssertEqual(frames.count, 1)
+        let layout = hexView.hexLayout
+        XCTAssertEqual(frames[0].minX, layout.asciiX(column: 5))
+        XCTAssertEqual(frames[0].minY, layout.hexByteFrame(row: 0, column: 5).minY)
+
+        // The active pane draws no whole-byte pane mirror.
+        XCTAssertTrue(hexView.mirrorFrameRects().isEmpty)
+    }
+
+    /// On the active pane an ASCII caret frames the byte's hex cell.
+    func testActivePaneAsciiCaretFramesHexCell() throws {
+        let (pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 32))
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        click(hexView, at: asciiPoint(hexView, row: 0, column: 5), window: window)
+        XCTAssertEqual(pane.hexInputRegion(), .ascii)
+
+        let frames = hexView.activeCrossFrameRects()
+        XCTAssertEqual(frames.count, 1)
+        XCTAssertEqual(frames[0], hexView.hexLayout.hexByteFrame(row: 0, column: 5))
     }
 
     /// Typing from a mid-byte caret edits the low nibble first, then advances
