@@ -75,9 +75,9 @@ final class MainWindowController: NSWindowController {
         fileMenu.addItem(withTitle: "Save As…", action: #selector(MainViewController.saveDocumentAs), keyEquivalent: "S")
         fileMenu.addItem(withTitle: "Revert to Saved", action: #selector(MainViewController.revertDocument), keyEquivalent: "")
         fileMenu.addItem(.separator())
-        fileMenu.addItem(withTitle: "Close Pane", action: #selector(MainViewController.closeCurrentFile), keyEquivalent: "")
-        fileMenu.addItem(.separator())
-        fileMenu.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        // Cmd+W closes the active pane ("close document"); with no panes open
+        // it falls back to closing the window (§3.5).
+        fileMenu.addItem(withTitle: "Close", action: #selector(MainViewController.closeDocument), keyEquivalent: "w")
         fileItem.submenu = fileMenu
 
         // Edit menu (§7, §11, §12)

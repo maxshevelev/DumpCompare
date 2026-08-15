@@ -89,19 +89,56 @@ final class CloseFileTests: XCTestCase {
                       "closing the last file must hide the find bar (launch state)")
     }
 
-    /// File > Close Pane (the menu path) keeps working for the single pane and
-    /// lands in the same empty state.
-    func testClosePaneMenuItemReturnsToEmpty() throws {
+    /// File > Close (Cmd+W) with a pane open closes the pane and lands in the
+    /// same empty state.
+    func testCloseMenuItemReturnsToEmpty() throws {
         let (controller, window, url) = try makeController([0x41, 0x42, 0x43])
         defer { cleanup(controller, url) }
 
-        let item = NSMenuItem(title: "Close Pane", action: #selector(MainViewController.closeCurrentFile),
-                              keyEquivalent: "")
+        let item = NSMenuItem(title: "Close", action: #selector(MainViewController.closeDocument),
+                              keyEquivalent: "w")
         item.target = nil  // responder-chain, exactly as the app builds it
         let dispatched = window.contentView?.tryToPerform(item.action!, with: item) ?? false
-        XCTAssertTrue(dispatched, "Close Pane must resolve to a responder")
+        XCTAssertTrue(dispatched, "Close must resolve to a responder")
 
         XCTAssertEqual(controller.mode, .empty)
         XCTAssertTrue(emptyState(window).contains { !$0.isHidden })
+    }
+
+    /// File > Close (Cmd+W) with no panes open falls back to closing the
+    /// window. The close is asserted through a spy delegate rather than letting
+    /// the window really close: tearing down a closed window trips XCTest's
+    /// memory checker and crashes the runner.
+    func testCloseMenuItemClosesWindowWhenNoPanes() throws {
+        let controller = MainViewController()
+        // `.closable` matters: `performClose` (the empty-mode fallback) is a
+        // no-op on a window without a close button.
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+                              styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        let spy = CloseRoutingSpy()
+        window.delegate = spy
+        window.contentViewController = controller
+        window.makeKeyAndOrderFront(nil)
+        controller.apply(mode: .empty)
+        window.layoutIfNeeded()
+
+        let item = NSMenuItem(title: "Close", action: #selector(MainViewController.closeDocument),
+                              keyEquivalent: "w")
+        item.target = nil  // responder-chain, exactly as the app builds it
+        let dispatched = window.contentView?.tryToPerform(item.action!, with: item) ?? false
+        XCTAssertTrue(dispatched, "Close must resolve to a responder")
+        XCTAssertTrue(spy.windowShouldCloseCalled,
+                      "with no panes open, Cmd+W must route to closing the window")
+    }
+}
+
+/// A window delegate that records being asked to close but declines (returns
+/// false), so the test can assert Cmd+W reached the window-close path without
+/// actually closing — and tearing down — a real window.
+private final class CloseRoutingSpy: NSObject, NSWindowDelegate {
+    private(set) var windowShouldCloseCalled = false
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        windowShouldCloseCalled = true
+        return false
     }
 }

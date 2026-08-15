@@ -509,10 +509,16 @@ final class MainViewController: NSViewController {
 
     // MARK: - Pane / window closing (§3.5/3.6)
 
-    /// File > Close Pane: closes the active pane. In comparison mode this
-    /// returns to single-file mode (with pane 2 promoted when pane 1 closes);
-    /// closing the last pane returns to empty mode.
-    @objc func closeCurrentFile() {
+    /// File > Close (Cmd+W, "close document"): the active pane is the
+    /// document, so it closes — in comparison mode this returns to single-file
+    /// mode (with pane 2 promoted when pane 1 closes); closing the last pane
+    /// returns to empty mode. With no panes open there is nothing to close, so
+    /// the window closes instead.
+    @objc func closeDocument() {
+        guard windowModel.hasOpenFile else {
+            view.window?.performClose(nil)
+            return
+        }
         closePane(at: windowModel.activePaneIndex)
     }
 
@@ -989,7 +995,6 @@ extension MainViewController: NSMenuItemValidation {
         case #selector(saveDocument),
              #selector(saveDocumentAs),
              #selector(revertDocument),
-             #selector(closeCurrentFile),
              #selector(undoEdit),
              #selector(redoEdit),
              #selector(pasteWrite),
