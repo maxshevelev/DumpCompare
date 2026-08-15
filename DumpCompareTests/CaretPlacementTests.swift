@@ -135,8 +135,10 @@ final class CaretPlacementTests: XCTestCase {
 
     // MARK: - Hex ⇄ ASCII cross-link (§3.3)
 
-    /// On the active pane a hex caret frames the byte's ASCII char, linking the
-    /// two columns of the same byte.
+    /// On the active pane a hex caret outlines the byte's ASCII char with the
+    /// same rounded contour the mirrors use, linking the two columns of the
+    /// same byte (§3.3). The ASCII column packs its chars, so a mid-column
+    /// byte sits flush on both sides.
     func testActivePaneHexCaretFramesAsciiChar() throws {
         let (pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 32))
         defer { try? FileManager.default.removeItem(at: url) }
@@ -144,17 +146,22 @@ final class CaretPlacementTests: XCTestCase {
         click(hexView, at: nibblePoint(hexView, row: 0, column: 5, nibble: 0), window: window)
         XCTAssertEqual(pane.hexInputRegion(), .hex)
 
-        let frames = hexView.activeCrossFrameRects()
-        XCTAssertEqual(frames.count, 1)
+        let contour = hexView.crossLinkContour()
+        XCTAssertEqual(contour.count, 4)
         let layout = hexView.hexLayout
-        XCTAssertEqual(frames[0].minX, layout.asciiX(column: 5))
-        XCTAssertEqual(frames[0].minY, layout.hexByteFrame(row: 0, column: 5).minY)
+        XCTAssertEqual(contour, [
+            CGPoint(x: layout.asciiX(column: 5), y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.asciiX(column: 5) + layout.charWidth, y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.asciiX(column: 5) + layout.charWidth, y: layout.rowFrame(row: 0).maxY),
+            CGPoint(x: layout.asciiX(column: 5), y: layout.rowFrame(row: 0).maxY),
+        ])
 
         // The active pane draws no whole-byte pane mirror.
-        XCTAssertTrue(hexView.mirrorFrameRects().isEmpty)
+        XCTAssertTrue(hexView.mirrorContours().isEmpty)
     }
 
-    /// On the active pane an ASCII caret frames the byte's hex cell.
+    /// On the active pane an ASCII caret outlines the byte's hex cell as a
+    /// padded contour — word size 1 makes both edges word boundaries.
     func testActivePaneAsciiCaretFramesHexCell() throws {
         let (pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 32))
         defer { try? FileManager.default.removeItem(at: url) }
@@ -162,9 +169,16 @@ final class CaretPlacementTests: XCTestCase {
         click(hexView, at: asciiPoint(hexView, row: 0, column: 5), window: window)
         XCTAssertEqual(pane.hexInputRegion(), .ascii)
 
-        let frames = hexView.activeCrossFrameRects()
-        XCTAssertEqual(frames.count, 1)
-        XCTAssertEqual(frames[0], hexView.hexLayout.hexByteFrame(row: 0, column: 5))
+        let contour = hexView.crossLinkContour()
+        XCTAssertEqual(contour.count, 4)
+        let layout = hexView.hexLayout
+        let pad = HexView.mirrorContourPadding
+        XCTAssertEqual(contour, [
+            CGPoint(x: layout.hexByteX(column: 5) - pad, y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.hexByteX(column: 5) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.hexByteX(column: 5) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 0).maxY),
+            CGPoint(x: layout.hexByteX(column: 5) - pad, y: layout.rowFrame(row: 0).maxY),
+        ])
     }
 
     /// Typing from a mid-byte caret edits the low nibble first, then advances

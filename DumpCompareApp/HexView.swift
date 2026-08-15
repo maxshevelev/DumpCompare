@@ -9,6 +9,10 @@ protocol HexViewDataSource: AnyObject {
     func hexSelection() -> SelectionModel
     func hexCaretNibble() -> Int
     func hexInputRegion() -> HexInputRegion
+    /// The opposite pane's selection, clamped to this pane's file size — what
+    /// this pane frames to mirror the other pane (§3.3). Nil in single-file
+    /// mode (no companion).
+    func hexMirroredSelection() -> SelectionModel?
 }
 
 /// Receives editing input from the hex view (§7). The view-model owns caret,
@@ -40,9 +44,10 @@ final class HexView: NSView {
     var onFocus: (() -> Void)?
 
     /// Whether this hex view is the active pane. The caret is drawn only on the
-    /// active pane; inactive panes draw a thin mirror frame around the byte the
-    /// active pane's caret points at instead (§3.3). Defaults to true
-    /// (single-file mode).
+    /// active pane, and only when there is no selection (§3.3); both panes draw
+    /// closed contours mirroring the *other* pane's selection, and the inactive
+    /// pane additionally traces the active pane's bare caret as a single-byte
+    /// contour. Defaults to true (single-file mode).
     var isActive = true {
         didSet { needsDisplay = true }
     }
@@ -268,28 +273,52 @@ final class HexView: NSView {
             drawCaret(offset: selection.start, layout: layout, nibble: nibble, region: region, rowCount: rowCount)
         }
 
-        // Frame the byte the caret points at. On the inactive pane that is the
-        // whole byte (hex cell + ASCII char), mirroring the active caret across
-        // panes; on the active pane it is the byte in the column the caret is
-        // not in, linking the hex and ASCII views of the same byte (§3.3).
-        drawFrames(isActive ? activeCrossFrameRects() : mirrorFrameRects())
+        // Cross-column link: with no selection, the active caret outlines the
+        // byte in the column it is not in, linking the hex and ASCII views of
+        // the same byte — the same rounded contour the mirrors use (§3.3).
+        if isActive && selection.isEmpty {
+            drawCrossColumnLink()
+        }
+
+        // Mirror the opposite pane: a selection is traced with one closed
+        // contour on both panes, and a bare caret on the opposite pane is
+        // traced onto the inactive pane only (§3.3). `drawMirrorContour`
+        // guards internally when there is nothing to mirror.
+        drawMirrorContour()
     }
 
     private func drawRow(row: Int, layout: HexLayout, fileSize: UInt64,
                          selection: SelectionModel, baseline: CGFloat) {
         let rowStart = layout.byteOffset(row: row, column: 0)
+        let rowEnd = rowStart + UInt64(HexLayout.bytesPerRow)
 
         // Offset column.
         let offsetText = String(rowStart, radix: 16, uppercase: true).leftPadded(to: layout.offsetColumnChars, with: "0")
         draw(text: offsetText, in: layout.offsetColumnFrame(row: row),
              baseline: baseline, color: HexTheme.inkBlue)
 
-        let states = dataSource?.hexByteStates(in: rowStart..<rowStart + 16) ?? []
-        for column in 0..<HexLayout.bytesPerRow {
-            let offset = layout.byteOffset(row: row, column: column)
-            let state = states.indices.contains(column) ? states[column] : HexByteState(isEOF: true)
-            let isSelected = offset >= selection.start && offset < selection.end
+        let states = dataSource?.hexByteStates(in: rowStart..<rowEnd) ?? []
 
+        // Backgrounds: EOF cells and the comparison difference stay per-byte;
+        // the selection is one continuous fill across the whole selected span
+        // of the row (§6), through the word and group gaps.
+        for column in 0..<HexLayout.bytesPerRow {
+            let state = states.indices.contains(column) ? states[column] : HexByteState(isEOF: true)
+            guard !state.isEOF else { continue }
+            let hexFrame = layout.hexByteFrame(row: row, column: column)
+            if state.isDifferent {
+                HexTheme.differenceFill.setFill()
+                NSBezierPath(rect: hexFrame).fill()
+                NSBezierPath(rect: CGRect(x: layout.asciiX(column: column), y: hexFrame.minY,
+                                          width: layout.charWidth, height: layout.rowHeight)).fill()
+            }
+        }
+        drawSelectionFill(row: row, rowStart: rowStart, rowEnd: rowEnd,
+                          selection: selection, layout: layout)
+
+        // Cell content: EOF placeholder styling and the per-byte glyphs.
+        for column in 0..<HexLayout.bytesPerRow {
+            let state = states.indices.contains(column) ? states[column] : HexByteState(isEOF: true)
             let hexFrame = layout.hexByteFrame(row: row, column: column)
             let asciiRect = CGRect(x: layout.asciiX(column: column),
                                    y: hexFrame.minY, width: layout.charWidth, height: layout.rowHeight)
@@ -304,27 +333,36 @@ final class HexView: NSView {
                 continue
             }
 
-            // Difference (comparison, M5) and selection backgrounds.
-            if state.isDifferent {
-                HexTheme.differenceFill.setFill()
-                NSBezierPath(rect: hexFrame).fill()
-                NSBezierPath(rect: asciiRect).fill()
-            }
-            if isSelected {
-                HexTheme.selectionFill.setFill()
-                NSBezierPath(rect: hexFrame).fill()
-                NSBezierPath(rect: asciiRect).fill()
-            }
-
             let textColor = HexTheme.textColor(for: state)
-            let digits = hexDigits(state.byte)
-            draw(text: digits, in: hexFrame, baseline: baseline, color: textColor)
+            draw(text: hexDigits(state.byte), in: hexFrame, baseline: baseline, color: textColor)
 
             let asciiChar = textDecoder.decode(state.byte)
             let isDisplayable = textDecoder.isDisplayable(state.byte)
             let asciiColor = isDisplayable ? textColor : HexTheme.mutedTextColor
             draw(text: String(asciiChar), in: asciiRect, baseline: baseline, color: asciiColor)
         }
+    }
+
+    /// Fills the selection's span of `row` as one continuous rectangle through
+    /// the hex column and one through the ASCII column — no gaps between words
+    /// or byte cells, and no gap between the two 8-byte groups (§6).
+    private func drawSelectionFill(row: Int, rowStart: UInt64, rowEnd: UInt64,
+                                   selection: SelectionModel, layout: HexLayout) {
+        let selStart = max(selection.start, rowStart)
+        let selEnd = min(selection.end, rowEnd)
+        guard selStart < selEnd else { return }
+        let firstColumn = Int(selStart - rowStart)
+        let lastColumn = Int(selEnd - rowStart) - 1
+        let rowFrame = layout.rowFrame(row: row)
+        let hexLeft = layout.hexByteX(column: firstColumn)
+        let hexRight = layout.hexByteX(column: lastColumn) + layout.hexByteWidth
+        let asciiLeft = layout.asciiX(column: firstColumn)
+        let asciiRight = layout.asciiX(column: lastColumn) + layout.charWidth
+        HexTheme.selectionFill.setFill()
+        NSBezierPath(rect: CGRect(x: hexLeft, y: rowFrame.minY,
+                                  width: hexRight - hexLeft, height: layout.rowHeight)).fill()
+        NSBezierPath(rect: CGRect(x: asciiLeft, y: rowFrame.minY,
+                                  width: asciiRight - asciiLeft, height: layout.rowHeight)).fill()
     }
 
     /// Draws a fine diagonal hatch over the given rects to mark EOF cells.
@@ -339,54 +377,263 @@ final class HexView: NSView {
         }
     }
 
-    /// Frames the mirror caret draws on an inactive pane: the hex cell and ASCII
-    /// char of the byte the active pane's caret points at (this pane's synced
-    /// selection start). Empty when this pane is active, has no data, or the
-    /// caret is at EOF. Exposed (internal) for tests.
-    func mirrorFrameRects() -> [CGRect] {
-        guard !isActive, let dataSource else { return [] }
-        let fileSize = dataSource.fileSize
-        let offset = dataSource.hexSelection().start
-        guard offset < fileSize else { return [] }
+    /// Closed contours that mirror the opposite pane — one loop around the span
+    /// in the hex column and one around it in the ASCII column (the companion's
+    /// selection, clamped to this pane's file size). A non-empty selection is
+    /// traced on both panes; a bare caret on the companion is traced as a
+    /// single byte, but only onto the opposite (inactive) pane, because the
+    /// pane that owns the caret already draws it as a bar. Each loop is the
+    /// perimeter of the span traced with line segments and padded outward
+    /// horizontally so the stroke clears the glyphs — but only where the
+    /// boundary is a word boundary, where a spacer already exists. Padding a
+    /// boundary that runs through the middle of a word (or between ASCII
+    /// characters) would push the line onto the neighbor glyph, so those edges
+    /// stay flush. A selection covering several rows reads as one continuous
+    /// outline rather than per-row frames. Empty when there is no companion
+    /// selection (or nothing to mirror). Exposed (internal) for tests.
+    func mirrorContours() -> [[CGPoint]] {
+        guard let dataSource,
+              let mirrored = dataSource.hexMirroredSelection() else { return [] }
+        // A caret-only companion selection mirrors as a single byte onto this
+        // pane only when this pane is inactive — the pane that owns the caret
+        // would otherwise get a box around its own caret on top of the caret
+        // bar and cross-column link.
+        let span: SelectionModel
+        if mirrored.isEmpty {
+            guard !isActive, mirrored.start < dataSource.fileSize else { return [] }
+            span = SelectionModel(start: mirrored.start, end: mirrored.start + 1,
+                                  fileSize: dataSource.fileSize)
+        } else {
+            span = mirrored
+        }
         let layout = currentLayout
-        let (row, column) = layout.rowColumn(of: offset)
-        let hexFrame = layout.hexByteFrame(row: row, column: column)
-        let asciiRect = CGRect(x: layout.asciiX(column: column), y: hexFrame.minY,
-                               width: layout.charWidth, height: layout.rowHeight)
-        return [hexFrame, asciiRect]
+        return [
+            contour(of: span, layout: layout, region: .hex),
+            contour(of: span, layout: layout, region: .ascii),
+        ]
     }
 
-    /// Frames the cross-column link drawn on the active pane: the byte's hex
-    /// cell when the caret is in the ASCII region, or its ASCII char when the
-    /// caret is in the hex region — so the same byte is highlighted in both
-    /// columns. Empty when this pane is inactive, has no data, or the caret is
-    /// at EOF. Exposed (internal) for tests.
-    func activeCrossFrameRects() -> [CGRect] {
+    /// The closed contour of `span` in one column region. The hex column pads
+    /// its edges only where a spacer exists — at word boundaries — and the
+    /// ASCII column only at its outer edges, so the stroke never lands on a
+    /// neighbor glyph. The single source of contour geometry for both the
+    /// opposite-pane mirror and the active pane's cross-column link.
+    private func contour(of span: SelectionModel, layout: HexLayout,
+                         region: HexInputRegion) -> [CGPoint] {
+        switch region {
+        case .hex:
+            let wordSize = layout.wordSize
+            return contour(of: span, layout: layout, x: layout.hexByteX, width: layout.hexByteWidth,
+                           padLeft: { c in c % wordSize == 0 },
+                           padRight: { c in (c + 1) % wordSize == 0 })
+        case .ascii:
+            return contour(of: span, layout: layout, x: layout.asciiX, width: layout.charWidth,
+                           padLeft: { c in c == 0 },
+                           padRight: { c in c == HexLayout.bytesPerRow - 1 })
+        }
+    }
+
+    /// The closed perimeter of `selection` in one column region: a clockwise
+    /// polygon tracing the outline of the whole span from its top-left corner.
+    /// Steps inward on the first row's left and the last row's right when the
+    /// selection starts or ends mid-row; coincident vertices are dropped.
+    /// A vertical edge sits `Self.mirrorContourPadding` outside the cells only
+    /// when the corresponding `padLeft`/`padRight` permits it (word boundary or
+    /// column edge); otherwise it stays flush so the stroke never overlaps a
+    /// neighbor glyph.
+    private func contour(of selection: SelectionModel, layout: HexLayout,
+                         x: @escaping (Int) -> CGFloat, width: CGFloat,
+                         padLeft: @escaping (Int) -> Bool,
+                         padRight: @escaping (Int) -> Bool) -> [CGPoint] {
+        let pad = Self.mirrorContourPadding
+        // Left edge of a selected column, padded outward when a spacer precedes
+        // the cell.
+        let left = { (c: Int) -> CGFloat in x(c) - (padLeft(c) ? pad : 0) }
+        // Right edge of a selected column (past its cell), padded outward when
+        // a spacer follows the cell.
+        let right = { (c: Int) -> CGFloat in x(c) + width + (padRight(c) ? pad : 0) }
+        let firstRow = Int(selection.start / UInt64(HexLayout.bytesPerRow))
+        let lastRow = Int((selection.end - 1) / UInt64(HexLayout.bytesPerRow))
+        let firstCol = Int(selection.start % UInt64(HexLayout.bytesPerRow))
+        let lastCol = Int((selection.end - 1) % UInt64(HexLayout.bytesPerRow))
+        let topY = layout.rowFrame(row: firstRow).minY
+        let bottomY = layout.rowFrame(row: lastRow).maxY
+        var points: [CGPoint]
+        if firstRow == lastRow || (firstCol == 0 && lastCol == HexLayout.bytesPerRow - 1) {
+            // A single row, or several full-width rows: a plain rectangle.
+            points = [
+                CGPoint(x: left(firstCol), y: topY),
+                CGPoint(x: right(lastCol), y: topY),
+                CGPoint(x: right(lastCol), y: bottomY),
+                CGPoint(x: left(firstCol), y: bottomY),
+            ]
+        } else {
+            // Several rows with a partial first/last row: the right edge steps
+            // in at the last row and the left edge steps in at the first row.
+            let firstBottomY = layout.rowFrame(row: firstRow).maxY
+            let lastTopY = layout.rowFrame(row: lastRow).minY
+            points = [
+                CGPoint(x: left(firstCol), y: topY),
+                CGPoint(x: right(HexLayout.bytesPerRow - 1), y: topY),
+                CGPoint(x: right(HexLayout.bytesPerRow - 1), y: lastTopY),
+                CGPoint(x: right(lastCol), y: lastTopY),
+                CGPoint(x: right(lastCol), y: bottomY),
+                CGPoint(x: left(0), y: bottomY),
+                CGPoint(x: left(0), y: firstBottomY),
+                CGPoint(x: left(firstCol), y: firstBottomY),
+            ]
+        }
+        return deduplicated(points)
+    }
+
+    /// Drops consecutive coincident vertices, so a selection that spans whole
+    /// rows degenerates cleanly to a rectangle instead of carrying zero-length
+    /// edges.
+    private func deduplicated(_ points: [CGPoint]) -> [CGPoint] {
+        var result: [CGPoint] = []
+        for point in points {
+            if let last = result.last, last == point { continue }
+            result.append(point)
+        }
+        return result
+    }
+
+    /// The active pane's cross-column link as one closed contour: the byte the
+    /// caret sits on, outlined in the column it is not in — the hex cell when
+    /// the caret is in the ASCII region, or the ASCII char when it is in the
+    /// hex region — so the same byte is highlighted in both columns. Uses the
+    /// same contour rules (and therefore the same drawing code) as the
+    /// opposite-pane mirror. Empty when this pane is inactive, has no data, or
+    /// the caret is at EOF. Exposed (internal) for tests.
+    func crossLinkContour() -> [CGPoint] {
         guard isActive, let dataSource else { return [] }
         let fileSize = dataSource.fileSize
         let offset = dataSource.hexSelection().start
         guard offset < fileSize else { return [] }
-        let layout = currentLayout
-        let (row, column) = layout.rowColumn(of: offset)
-        if dataSource.hexInputRegion() == .ascii {
-            return [layout.hexByteFrame(row: row, column: column)]
-        }
-        let hexFrame = layout.hexByteFrame(row: row, column: column)
-        let asciiRect = CGRect(x: layout.asciiX(column: column), y: hexFrame.minY,
-                               width: layout.charWidth, height: layout.rowHeight)
-        return [asciiRect]
+        let span = SelectionModel(start: offset, end: offset + 1, fileSize: fileSize)
+        let region: HexInputRegion = dataSource.hexInputRegion() == .ascii ? .hex : .ascii
+        return contour(of: span, layout: currentLayout, region: region)
     }
 
-    /// Draws 1px accent frames around the given rects.
-    private func drawFrames(_ rects: [CGRect]) {
-        guard !rects.isEmpty else { return }
-        HexTheme.mirrorFrame.setStroke()
-        for rect in rects {
-            // 1px frame inset by half a point so the stroke sits on the pixel
-            // grid rather than straddling the cell edge.
-            let path = NSBezierPath(rect: rect.insetBy(dx: 0.5, dy: 0.5))
-            path.lineWidth = 1
-            path.stroke()
+    /// Draws the active pane's cross-column link (§3.3).
+    private func drawCrossColumnLink() {
+        drawContours([crossLinkContour()])
+    }
+
+    /// Strokes a set of closed contour loops with the shared mirror rendering:
+    /// rounded corners and the configured line width and opacity. One code path
+    /// for the opposite-pane mirror and the active pane's cross-column link, so
+    /// all the accent outlines in the app look the same.
+    private func drawContours(_ loops: [[CGPoint]]) {
+        guard !loops.isEmpty else { return }
+        HexTheme.mirrorFrame.withAlphaComponent(Self.mirrorContourAlpha).setStroke()
+        let path = roundedContourPath(loops: loops, radius: Self.mirrorContourRadius)
+        path.lineWidth = Self.mirrorContourLineWidth
+        path.stroke()
+    }
+
+    /// How far the mirrored-selection contour sits outside the cells on the
+    /// left and right, so the stroke doesn't overlap the characters.
+    static let mirrorContourPadding: CGFloat = 2
+
+    /// Corner radius of the mirrored-selection contour's rounded corners.
+    static let mirrorContourRadius: CGFloat = 3
+
+    /// Stroke width of the mirrored-selection contour.
+    static let mirrorContourLineWidth: CGFloat = 2
+
+    /// Opacity of the mirrored-selection contour's stroke.
+    static let mirrorContourAlpha: CGFloat = 0.6
+
+    /// Strokes the mirrored selection as a single closed contour: the hex and
+    /// ASCII loops from `mirrorContours()` are appended to one path and stroked
+    /// once, so the outline around the whole selection reads as a single shape
+    /// (§3.3). The stroke is padded off the glyphs horizontally, its corners
+    /// are rounded, and it is drawn at `mirrorContourAlpha` opacity so it
+    /// doesn't fight with the byte highlighting underneath.
+    private func drawMirrorContour() {
+        drawContours(mirrorContours())
+    }
+
+    /// Builds one `NSBezierPath` from the closed contour loops, rounding every
+    /// corner of each rectilinear polygon with a `radius`-pt quarter-circle arc
+    /// instead of a sharp `line(to:)` join. This has to be done by hand because
+    /// `lineJoinStyle = .round` only rounds to `lineWidth / 2` (1px for our 2px
+    /// stroke), not the requested 3px.
+    ///
+    /// For a corner at `points[i]` with unit edge directions `in` (from the
+    /// previous vertex) and `out` (to the next), the arc's centre sits on the
+    /// corner's inward diagonal — `centre = corner + (out − in) × radius` — and
+    /// the arc runs from the tangent point on the incoming edge to the one on
+    /// the outgoing edge. The radius is clamped to half the shortest edge so a
+    /// narrow step in the staircase can't produce an inverted arc.
+    private func roundedContourPath(loops: [[CGPoint]], radius: CGFloat) -> NSBezierPath {
+        let path = NSBezierPath()
+        for points in loops {
+            guard points.count >= 3 else { continue }
+            let n = points.count
+            var shortestEdge = CGFloat.greatestFiniteMagnitude
+            for i in 0..<n {
+                let a = points[i]
+                let b = points[(i + 1) % n]
+                shortestEdge = min(shortestEdge, hypot(b.x - a.x, b.y - a.y))
+            }
+            let r = min(radius, shortestEdge / 2)
+
+            // Where the arc leaves the incoming edge, per corner — the anchor
+            // for the straight runs between arcs.
+            var tangentsIn = [CGPoint](repeating: .zero, count: n)
+            for i in 0..<n {
+                let dIn = Self.edgeDirection(from: points[(i - 1 + n) % n], to: points[i])
+                tangentsIn[i] = CGPoint(x: points[i].x - dIn.x * r,
+                                        y: points[i].y - dIn.y * r)
+            }
+
+            path.move(to: tangentsIn[0])
+            for i in 0..<n {
+                let cur = points[i]
+                let prev = points[(i - 1 + n) % n]
+                let next = points[(i + 1) % n]
+                let dIn = Self.edgeDirection(from: prev, to: cur)
+                let dOut = Self.edgeDirection(from: cur, to: next)
+                let centre = CGPoint(x: cur.x + (dOut.x - dIn.x) * r,
+                                     y: cur.y + (dOut.y - dIn.y) * r)
+                let tangentOut = CGPoint(x: cur.x + dOut.x * r, y: cur.y + dOut.y * r)
+                Self.appendCornerArc(to: path, centre: centre, radius: r,
+                                     from: tangentsIn[i], to: tangentOut)
+                path.line(to: tangentsIn[(i + 1) % n])
+            }
+            path.close()
+        }
+        return path
+    }
+
+    /// Unit vector along the edge `from → to`. Consecutive contour vertices are
+    /// always distinct, so the edge can't be zero-length here.
+    private static func edgeDirection(from: CGPoint, to: CGPoint) -> CGPoint {
+        let dx = to.x - from.x
+        let dy = to.y - from.y
+        let length = hypot(dx, dy)
+        return CGPoint(x: dx / length, y: dy / length)
+    }
+
+    /// Appends the quarter-circle arc that rounds one corner: from the tangent
+    /// point on the incoming edge to the one on the outgoing edge, centred on
+    /// the corner's inward diagonal. Emitted as short line segments — the sweep
+    /// is the ±90° turn the rectilinear polygon makes.
+    private static func appendCornerArc(to path: NSBezierPath, centre: CGPoint,
+                                        radius: CGFloat, from start: CGPoint,
+                                        to end: CGPoint, segments: Int = 6) {
+        let startAngle = atan2(start.y - centre.y, start.x - centre.x)
+        let endAngle = atan2(end.y - centre.y, end.x - centre.x)
+        var sweep = endAngle - startAngle
+        while sweep > .pi { sweep -= 2 * .pi }
+        while sweep < -.pi { sweep += 2 * .pi }
+        for k in 1...segments {
+            let t = CGFloat(k) / CGFloat(segments)
+            let angle = startAngle + sweep * t
+            path.line(to: CGPoint(x: centre.x + radius * cos(angle),
+                                  y: centre.y + radius * sin(angle)))
         }
     }
 
@@ -715,8 +962,8 @@ enum HexTheme {
             : NSColor(white: 0.45, alpha: 0.6)
     }
 
-    /// Thin frame around the byte the active pane's caret points at, drawn on
-    /// the inactive pane (§3.3). The accent color ties it to the caret itself.
+    /// Thin frame mirroring the opposite pane's selection onto this pane
+    /// (§3.3). The accent color ties the two panes' views of the same range.
     static let mirrorFrame = NSColor.controlAccentColor
 }
 

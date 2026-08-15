@@ -306,6 +306,12 @@ final class FilePaneView: NSView {
         viewModel.onChange = { [weak self] in
             self?.refresh()
         }
+        // When the companion's selection changes, redraw this pane's hex view
+        // so its mirror frames track the opposite pane (§3.3). A redraw only —
+        // this pane's own content, status, and scroll did not change.
+        viewModel.onMirroredSelectionChanged = { [weak self] in
+            self?.hexView.needsDisplay = true
+        }
     }
 
     /// Makes the hex view first responder (e.g. when the pane becomes active).

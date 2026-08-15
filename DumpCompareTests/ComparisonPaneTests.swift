@@ -108,43 +108,68 @@ final class ComparisonPaneTests: XCTestCase {
         XCTAssertFalse(state.isDifferent)
     }
 
-    // MARK: - Selection sync (§9)
+    // MARK: - Selection mirroring (§9)
 
-    func testCaretSyncsToCompanion() throws {
+    /// Each pane mirrors the companion's selection (clamped to its own file
+    /// size) through `hexMirroredSelection`; the panes' own selections stay
+    /// independent.
+    func testMirrorReflectsCompanionSelection() throws {
         let pair = try openPair(Array(repeating: 0x00, count: 10), Array(repeating: 0x00, count: 20))
         defer {
             try? FileManager.default.removeItem(at: pair.2)
             try? FileManager.default.removeItem(at: pair.3)
         }
-        pair.0.moveCaret(to: 7)
-        XCTAssertEqual(pair.0.caretOffset, 7)
-        XCTAssertEqual(pair.1.caretOffset, 7)
+        pair.0.setSelection(SelectionModel(start: 3, end: 7, fileSize: 10))
+        XCTAssertEqual(pair.1.hexMirroredSelection(), SelectionModel(start: 3, end: 7, fileSize: 20))
+        // …and the mirror is symmetric.
+        XCTAssertEqual(pair.0.hexMirroredSelection(), pair.1.hexSelection().clamped(to: 10))
     }
 
-    func testSelectionSyncClampsToShorterPane() throws {
+    func testMirrorClampsToShorterPane() throws {
         let pair = try openPair(Array(repeating: 0x00, count: 10), Array(repeating: 0x00, count: 20))
         defer {
             try? FileManager.default.removeItem(at: pair.2)
             try? FileManager.default.removeItem(at: pair.3)
         }
-        pair.1.moveCaret(to: 15)
-        // The longer pane's caret lives at 15 (within its own 20 bytes)…
-        XCTAssertEqual(pair.1.caretOffset, 15)
-        // …and syncs into the shorter pane clamped to its EOF.
-        XCTAssertEqual(pair.0.caretOffset, 10)
+        pair.1.setSelection(SelectionModel(start: 5, end: 15, fileSize: 20))
+        // The longer pane's selection (5…15) mirrors into the shorter pane
+        // clamped to its EOF.
+        XCTAssertEqual(pair.0.hexMirroredSelection(), SelectionModel(start: 5, end: 10, fileSize: 10))
     }
 
-    func testNoInfiniteSyncLoop() throws {
+    func testSelectionsAreIndependent() throws {
         let pair = try openPair(Array(repeating: 0x00, count: 5), Array(repeating: 0x00, count: 5))
         defer {
             try? FileManager.default.removeItem(at: pair.2)
             try? FileManager.default.removeItem(at: pair.3)
         }
-        // Moving either caret must not bounce between panes forever.
+        // Moving either caret must not touch the other pane's selection…
         pair.0.moveCaret(to: 3)
-        XCTAssertEqual(pair.1.caretOffset, 3)
+        XCTAssertEqual(pair.0.caretOffset, 3)
+        XCTAssertEqual(pair.1.caretOffset, 0)
         pair.1.moveCaret(to: 1)
-        XCTAssertEqual(pair.0.caretOffset, 1)
+        XCTAssertEqual(pair.0.caretOffset, 3)
         XCTAssertEqual(pair.1.caretOffset, 1)
+        // …but each pane still mirrors the other's selection.
+        XCTAssertEqual(pair.1.hexMirroredSelection(), pair.0.hexSelection())
+        XCTAssertEqual(pair.0.hexMirroredSelection(), pair.1.hexSelection())
+    }
+
+    /// A bare caret (empty selection) mirrors as an empty selection, which the
+    /// view traces as a single-byte contour on the opposite pane; a standalone
+    /// pane has no companion and mirrors nothing at all.
+    func testEmptyAndNoCompanionMirrorNothing() throws {
+        let pair = try openPair([0x00, 0x00], [0x00, 0x00])
+        defer {
+            try? FileManager.default.removeItem(at: pair.2)
+            try? FileManager.default.removeItem(at: pair.3)
+        }
+        // Empty selection on the companion → empty mirrored selection.
+        pair.0.moveCaret(to: 1)
+        XCTAssertEqual(pair.1.hexMirroredSelection(), SelectionModel.empty(at: 1, fileSize: 2))
+
+        // A lone pane has no companion to mirror.
+        let lone = PaneViewModel()
+        XCTAssertNil(lone.hexMirroredSelection())
     }
 }

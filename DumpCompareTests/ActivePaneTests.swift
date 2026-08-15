@@ -17,6 +17,9 @@ final class ActivePaneTests: XCTestCase {
     override func setUp() {
         super.setUp()
         UserDefaults.standard.set(true, forKey: "ComparisonPaneLayoutIsVertical")
+        // The contour-padding rules depend on the word size; pin it so the
+        // suite isn't at the mercy of whatever the shared defaults hold.
+        UserDefaults.standard.set(1, forKey: WordSize.userDefaultsKey)
     }
 
     private func tempFile(_ bytes: [UInt8]) throws -> URL {
@@ -26,9 +29,9 @@ final class ActivePaneTests: XCTestCase {
         return url
     }
 
-    private func makeComparisonView() throws -> (ComparisonView, NSWindow, URL, URL) {
-        let url1 = try tempFile([UInt8](repeating: 0x41, count: 1024))
-        let url2 = try tempFile([UInt8](repeating: 0x42, count: 1024))
+    private func makeComparisonView(bytes1: [UInt8]? = nil, bytes2: [UInt8]? = nil) throws -> (ComparisonView, NSWindow, URL, URL) {
+        let url1 = try tempFile(bytes1 ?? [UInt8](repeating: 0x41, count: 1024))
+        let url2 = try tempFile(bytes2 ?? [UInt8](repeating: 0x42, count: 1024))
         let p1 = PaneViewModel()
         let p2 = PaneViewModel()
         try p1.open(url: url1)
@@ -163,52 +166,13 @@ final class ActivePaneTests: XCTestCase {
         XCTAssertTrue(window.firstResponder === hex1)
     }
 
-    // MARK: - Caret visibility & mirror (§3.3)
+    // MARK: - Selection independence & mirror (§3.3)
 
-    /// The caret is drawn only on the active pane; the inactive pane mirrors it
-    /// with a thin frame around the byte at that offset. Selections are synced
-    /// between panes, so the inactive pane's own selection start is the offset
-    /// to frame.
-    func testInactivePaneMirrorsActiveCaret() throws {
-        let (cv, window, url1, url2) = try makeComparisonView()
-        defer { try? FileManager.default.removeItem(at: url1); try? FileManager.default.removeItem(at: url2) }
-
-        let hex1 = try hexView(of: cv.paneView1)
-        let hex2 = try hexView(of: cv.paneView2)
-
-        // Wire the companion pair the way MainViewController does (§9), so
-        // selections stay in sync across panes.
-        let vm1 = cv.paneView1.viewModel
-        let vm2 = cv.paneView2.viewModel
-        vm1.companion = vm2
-        vm2.companion = vm1
-
-        // Pane 2 becomes active; pane 1 must stop showing its own caret and
-        // start mirroring instead.
-        cv.setActive(1)
-        XCTAssertFalse(hex1.isActive)
-        XCTAssertTrue(hex2.isActive)
-
-        // Move the active pane's caret to byte 7 of row 0.
-        click(hex2, at: byteCentre(hex2, row: 0, column: 7), window: window)
-
-        // The selection synced to pane 1 (same absolute offset).
-        XCTAssertEqual(cv.paneView1.viewModel.hexSelection().start, 7)
-
-        let rects = hex1.mirrorFrameRects()
-        XCTAssertEqual(rects.count, 2, "mirror frames the hex cell and the ASCII char")
-        let layout = hex1.hexLayout
-        XCTAssertEqual(rects[0], layout.hexByteFrame(row: 0, column: 7))
-        XCTAssertEqual(rects[1].minX, layout.asciiX(column: 7))
-        XCTAssertEqual(rects[1].minY, layout.hexByteFrame(row: 0, column: 7).minY)
-
-        // The active pane draws no mirror frame.
-        XCTAssertTrue(hex2.mirrorFrameRects().isEmpty)
-    }
-
-    /// When the active pane's caret is at EOF there is no byte to mirror, so the
-    /// inactive pane draws no frame.
-    func testMirrorAbsentAtEOF() throws {
+    /// Selections are independent per pane: moving one pane's selection leaves
+    /// the other pane's selection untouched. The opposite pane's selection is
+    /// *mirrored* as a single closed contour — one loop of line segments around
+    /// the whole selected span in the hex column, one in the ASCII column.
+    func testOppositePaneMirrorsSelectionWithContour() throws {
         let (cv, _, url1, url2) = try makeComparisonView()
         defer { try? FileManager.default.removeItem(at: url1); try? FileManager.default.removeItem(at: url2) }
 
@@ -217,11 +181,249 @@ final class ActivePaneTests: XCTestCase {
         vm1.companion = vm2
         vm2.companion = vm1
 
-        cv.setActive(1)
-        vm2.moveCaret(to: 1024)  // EOF of both 1024-byte files
+        // Pane 2 selects bytes 4…9 (range end exclusive).
+        vm2.setSelection(SelectionModel(start: 4, end: 10, fileSize: 1024))
+
+        // Pane 1 mirrors pane 2's selection as one closed loop around the hex
+        // span and one around the ASCII span, padded off the glyphs.
+        let hex1 = try hexView(of: cv.paneView1)
+        let loops = hex1.mirrorContours()
+        XCTAssertEqual(loops.count, 2, "one loop around the hex span, one around the ASCII span")
+        let layout = hex1.hexLayout
+        let pad = HexView.mirrorContourPadding
+        XCTAssertEqual(loops[0], [
+            CGPoint(x: layout.hexByteX(column: 4) - pad, y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.hexByteX(column: 9) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.hexByteX(column: 9) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 0).maxY),
+            CGPoint(x: layout.hexByteX(column: 4) - pad, y: layout.rowFrame(row: 0).maxY),
+        ])
+        // The ASCII loop hugs the characters: no word gaps in the ASCII column,
+        // so only its outer edges (column 0, column 15) get padding — a
+        // mid-column selection sits flush against the neighbor chars.
+        XCTAssertEqual(loops[1], [
+            CGPoint(x: layout.asciiX(column: 4), y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.asciiX(column: 9) + layout.charWidth, y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.asciiX(column: 9) + layout.charWidth, y: layout.rowFrame(row: 0).maxY),
+            CGPoint(x: layout.asciiX(column: 4), y: layout.rowFrame(row: 0).maxY),
+        ])
+
+        // The panes' selections are independent: pane 1's own selection is
+        // still a caret at 0.
+        XCTAssertTrue(vm1.hexSelection().isEmpty)
+        XCTAssertEqual(vm1.hexSelection().start, 0)
+
+        // Mirroring is symmetric — pane 2 mirrors pane 1's selection too. Pane
+        // 1 is at a bare caret; a caret mirror lands only on the opposite
+        // (inactive) pane, and pane 2 is the active one here, so nothing is
+        // drawn.
+        let hex2 = try hexView(of: cv.paneView2)
+        XCTAssertTrue(hex2.mirrorContours().isEmpty)
+    }
+
+    /// A mirrored selection is clamped to this pane's file size: the contour
+    /// stops at this pane's EOF, never past it (§9: shorter pane clamps to EOF).
+    func testMirrorClampsToPaneFileSize() throws {
+        let (cv, _, url1, url2) = try makeComparisonView(
+            bytes1: [UInt8](repeating: 0x41, count: 8),   // pane 1 is shorter
+            bytes2: [UInt8](repeating: 0x42, count: 1024)
+        )
+        defer { try? FileManager.default.removeItem(at: url1); try? FileManager.default.removeItem(at: url2) }
+
+        let vm1 = cv.paneView1.viewModel
+        let vm2 = cv.paneView2.viewModel
+        vm1.companion = vm2
+        vm2.companion = vm1
+
+        // Pane 2 selects bytes 0…15; pane 1 has only 8 bytes, so its mirror
+        // contour stops at byte 7 (the hex loop covers columns 0…7).
+        vm2.setSelection(SelectionModel(start: 0, end: 16, fileSize: 1024))
 
         let hex1 = try hexView(of: cv.paneView1)
+        let loops = hex1.mirrorContours()
+        XCTAssertEqual(loops.count, 2, "hex loop + ASCII loop")
+        let layout = hex1.hexLayout
+        let pad = HexView.mirrorContourPadding
+        XCTAssertEqual(loops[0], [
+            CGPoint(x: layout.hexByteX(column: 0) - pad, y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.hexByteX(column: 7) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.hexByteX(column: 7) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 0).maxY),
+            CGPoint(x: layout.hexByteX(column: 0) - pad, y: layout.rowFrame(row: 0).maxY),
+        ])
+        // Left edge at column 0 pads into the gap before the ASCII column; the
+        // right edge at column 7 is not the column's outer edge, so it stays
+        // flush against column 8's neighbor (nothing selected there).
+        XCTAssertEqual(loops[1], [
+            CGPoint(x: layout.asciiX(column: 0) - pad, y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.asciiX(column: 7) + layout.charWidth, y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.asciiX(column: 7) + layout.charWidth, y: layout.rowFrame(row: 0).maxY),
+            CGPoint(x: layout.asciiX(column: 0) - pad, y: layout.rowFrame(row: 0).maxY),
+        ])
+    }
+
+    /// A mirrored selection spanning several rows becomes one closed loop per
+    /// column — a rectangle around the whole span with no seam at the row
+    /// boundary.
+    func testMirrorContourSpansFullRows() throws {
+        let (cv, _, url1, url2) = try makeComparisonView()
+        defer { try? FileManager.default.removeItem(at: url1); try? FileManager.default.removeItem(at: url2) }
+
+        let vm1 = cv.paneView1.viewModel
+        let vm2 = cv.paneView2.viewModel
+        vm1.companion = vm2
+        vm2.companion = vm1
+
+        // Pane 2 selects rows 1 and 2 in full (bytes 16…47, end exclusive).
+        vm2.setSelection(SelectionModel(start: 16, end: 48, fileSize: 1024))
+
+        let hex1 = try hexView(of: cv.paneView1)
+        let loops = hex1.mirrorContours()
+        XCTAssertEqual(loops.count, 2, "one loop around the whole hex span, one around the whole ASCII span")
+        let layout = hex1.hexLayout
+        let pad = HexView.mirrorContourPadding
+        XCTAssertEqual(loops[0], [
+            CGPoint(x: layout.hexByteX(column: 0) - pad, y: layout.rowFrame(row: 1).minY),
+            CGPoint(x: layout.hexByteX(column: 15) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 1).minY),
+            CGPoint(x: layout.hexByteX(column: 15) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 2).maxY),
+            CGPoint(x: layout.hexByteX(column: 0) - pad, y: layout.rowFrame(row: 2).maxY),
+        ])
+        XCTAssertEqual(loops[1], [
+            CGPoint(x: layout.asciiX(column: 0) - pad, y: layout.rowFrame(row: 1).minY),
+            CGPoint(x: layout.asciiX(column: 15) + layout.charWidth + pad, y: layout.rowFrame(row: 1).minY),
+            CGPoint(x: layout.asciiX(column: 15) + layout.charWidth + pad, y: layout.rowFrame(row: 2).maxY),
+            CGPoint(x: layout.asciiX(column: 0) - pad, y: layout.rowFrame(row: 2).maxY),
+        ])
+    }
+
+    /// A selection that starts and ends mid-row steps the contour inward on the
+    /// first row's left and the last row's right — one closed outline tracing
+    /// the whole selection, not per-row frames.
+    func testMirrorContourStepsAroundPartialRows() throws {
+        let (cv, _, url1, url2) = try makeComparisonView()
+        defer { try? FileManager.default.removeItem(at: url1); try? FileManager.default.removeItem(at: url2) }
+
+        let vm1 = cv.paneView1.viewModel
+        let vm2 = cv.paneView2.viewModel
+        vm1.companion = vm2
+        vm2.companion = vm1
+
+        // Rows 0 (cols 4–15), 1 (all), and 2 (cols 0–5).
+        vm2.setSelection(SelectionModel(start: 4, end: 38, fileSize: 1024))
+
+        let hex1 = try hexView(of: cv.paneView1)
+        let loops = hex1.mirrorContours()
+        XCTAssertEqual(loops.count, 2)
+        let layout = hex1.hexLayout
+        let pad = HexView.mirrorContourPadding
+        XCTAssertEqual(loops[0], [
+            CGPoint(x: layout.hexByteX(column: 4) - pad, y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.hexByteX(column: 15) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.hexByteX(column: 15) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 2).minY),
+            CGPoint(x: layout.hexByteX(column: 5) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 2).minY),
+            CGPoint(x: layout.hexByteX(column: 5) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 2).maxY),
+            CGPoint(x: layout.hexByteX(column: 0) - pad, y: layout.rowFrame(row: 2).maxY),
+            CGPoint(x: layout.hexByteX(column: 0) - pad, y: layout.rowFrame(row: 0).maxY),
+            CGPoint(x: layout.hexByteX(column: 4) - pad, y: layout.rowFrame(row: 0).maxY),
+        ])
+    }
+
+    /// With words larger than one byte, the hex contour pads only at word
+    /// boundaries (where a spacer already exists): a selection starting or
+    /// ending mid-word stays flush there, since padding would push the line
+    /// onto the neighbor glyph. The ASCII column pads only at its outer edges.
+    func testMirrorContourPadsOnlyAtWordBoundaries() throws {
+        let previousWordSize = UserDefaults.standard.integer(forKey: WordSize.userDefaultsKey)
+        UserDefaults.standard.set(2, forKey: WordSize.userDefaultsKey)
+        defer { UserDefaults.standard.set(previousWordSize, forKey: WordSize.userDefaultsKey) }
+
+        let (cv, _, url1, url2) = try makeComparisonView()
+        defer { try? FileManager.default.removeItem(at: url1); try? FileManager.default.removeItem(at: url2) }
+
+        let vm1 = cv.paneView1.viewModel
+        let vm2 = cv.paneView2.viewModel
+        vm1.companion = vm2
+        vm2.companion = vm1
+
+        let hex1 = try hexView(of: cv.paneView1)
+        let layout = hex1.hexLayout
+        XCTAssertEqual(layout.wordSize, 2, "test expects 2-byte words")
+
+        // Selection over columns 1…3 (bytes 1…3). Column 1 is mid-word (the
+        // word 0–1 runs across it) and column 3 ends a word, so only the right
+        // edge pads into the word spacer; the left edge stays flush.
+        vm2.setSelection(SelectionModel(start: 1, end: 4, fileSize: 1024))
+        let loops = hex1.mirrorContours()
+        XCTAssertEqual(loops.count, 2)
+        let pad = HexView.mirrorContourPadding
+        XCTAssertEqual(loops[0], [
+            CGPoint(x: layout.hexByteX(column: 1), y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.hexByteX(column: 3) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.hexByteX(column: 3) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 0).maxY),
+            CGPoint(x: layout.hexByteX(column: 1), y: layout.rowFrame(row: 0).maxY),
+        ])
+        // The ASCII column packs characters with no spacers, so a mid-column
+        // selection is flush on both sides.
+        XCTAssertEqual(loops[1], [
+            CGPoint(x: layout.asciiX(column: 1), y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.asciiX(column: 3) + layout.charWidth, y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.asciiX(column: 3) + layout.charWidth, y: layout.rowFrame(row: 0).maxY),
+            CGPoint(x: layout.asciiX(column: 1), y: layout.rowFrame(row: 0).maxY),
+        ])
+
+        // Word-aligned edges (columns 0…3, both on word boundaries) pad fully.
+        vm2.setSelection(SelectionModel(start: 0, end: 4, fileSize: 1024))
+        XCTAssertEqual(hex1.mirrorContours()[0], [
+            CGPoint(x: layout.hexByteX(column: 0) - pad, y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.hexByteX(column: 3) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.hexByteX(column: 3) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 0).maxY),
+            CGPoint(x: layout.hexByteX(column: 0) - pad, y: layout.rowFrame(row: 0).maxY),
+        ])
+    }
+
+    /// A bare caret on the active pane mirrors onto the inactive pane as a
+    /// single-byte contour — the same closed-contour treatment a selection
+    /// gets, so the byte under the caret stays visible in the other file
+    /// (§3.3). The active pane itself draws no caret contour: its own caret
+    /// bar and cross-column link already mark the byte.
+    func testBareCaretMirrorsOnInactivePane() throws {
+        let (cv, _, url1, url2) = try makeComparisonView()
+        defer { try? FileManager.default.removeItem(at: url1); try? FileManager.default.removeItem(at: url2) }
+
+        let vm1 = cv.paneView1.viewModel
+        let vm2 = cv.paneView2.viewModel
+        vm1.companion = vm2
+        vm2.companion = vm1
+
+        // Pane 2 becomes active and its caret moves to byte 7; pane 1 mirrors
+        // it as one loop around the hex byte and one around the ASCII char.
+        cv.setActive(1)
+        vm2.moveCaret(to: 7)
+
+        XCTAssertEqual(vm1.caretOffset, 0, "selections are independent")
+        let hex1 = try hexView(of: cv.paneView1)
         XCTAssertFalse(hex1.isActive)
-        XCTAssertTrue(hex1.mirrorFrameRects().isEmpty)
+        let loops = hex1.mirrorContours()
+        XCTAssertEqual(loops.count, 2, "one loop around the hex byte, one around the ASCII char")
+        let layout = hex1.hexLayout
+        let pad = HexView.mirrorContourPadding
+        // Word size 1: both edges of byte 7 are word boundaries, so they pad.
+        XCTAssertEqual(loops[0], [
+            CGPoint(x: layout.hexByteX(column: 7) - pad, y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.hexByteX(column: 7) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.hexByteX(column: 7) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 0).maxY),
+            CGPoint(x: layout.hexByteX(column: 7) - pad, y: layout.rowFrame(row: 0).maxY),
+        ])
+        // ASCII packs its chars with no spacers: a mid-column byte is flush.
+        XCTAssertEqual(loops[1], [
+            CGPoint(x: layout.asciiX(column: 7), y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.asciiX(column: 7) + layout.charWidth, y: layout.rowFrame(row: 0).minY),
+            CGPoint(x: layout.asciiX(column: 7) + layout.charWidth, y: layout.rowFrame(row: 0).maxY),
+            CGPoint(x: layout.asciiX(column: 7), y: layout.rowFrame(row: 0).maxY),
+        ])
+
+        // The active pane does not mirror the inactive pane's caret: a box on
+        // the pane that owns the caret would double up on its own caret bar.
+        let hex2 = try hexView(of: cv.paneView2)
+        XCTAssertTrue(hex2.isActive)
+        XCTAssertTrue(hex2.mirrorContours().isEmpty)
     }
 }

@@ -81,8 +81,10 @@ final class PaneViewModel: HexViewDataSource {
     /// into a single undo step; see `beginTypingGroup`/`endTypingGroup`).
     private var typingGroupOpen = false
 
-    /// The other pane in comparison mode. Selection/caret sync is forwarded
-    /// here; nil in single-file mode. Weak to avoid a retain cycle.
+    /// The other pane in comparison mode. Selections are independent per pane
+    /// (§3.3): this pane reads the companion's selection only to mirror it with
+    /// frames, and tells the companion when its own selection changed so the
+    /// mirror redraws. Nil in single-file mode. Weak to avoid a retain cycle.
     weak var companion: PaneViewModel?
 
     /// Fired after a byte-mutating edit with the `DiffEdit` describing the
@@ -96,8 +98,10 @@ final class PaneViewModel: HexViewDataSource {
     /// rebuild the whole index.
     var onFullInvalidation: (() -> Void)?
 
-    /// Suppresses echo when applying a selection synced from the companion.
-    private var isSynchronizingSelection = false
+    /// Fired when the companion's selection changed, so this pane can redraw
+    /// the frames mirroring it (§3.3). A hex-view redraw only — this pane's own
+    /// content, status, and scroll are untouched. Set by `FilePaneView.bind`.
+    var onMirroredSelectionChanged: (() -> Void)?
 
     /// Called after any change so the view can redraw and refresh the status bar.
     var onChange: (() -> Void)?
@@ -346,6 +350,14 @@ final class PaneViewModel: HexViewDataSource {
     func hexCaretNibble() -> Int { nibble }
 
     func hexInputRegion() -> HexInputRegion { inputRegion }
+
+    /// The companion pane's selection, clamped to this pane's file size — what
+    /// this pane's hex view frames to mirror the opposite pane (§3.3). Nil in
+    /// single-file mode (no companion).
+    func hexMirroredSelection() -> SelectionModel? {
+        guard let doc = document, let other = companion else { return nil }
+        return other.hexSelection().clamped(to: doc.size)
+    }
 
     // MARK: - Status
 
@@ -655,21 +667,11 @@ final class PaneViewModel: HexViewDataSource {
         notify()
     }
 
-    /// Applies a selection synced from `other` (the active pane), clamped to
-    /// this pane's own file size (§9: shorter pane clamps to EOF/missing area).
-    func syncSelectionFromCompanion(_ other: PaneViewModel) {
-        guard let doc = document, !isSynchronizingSelection else { return }
-        isSynchronizingSelection = true
-        defer { isSynchronizingSelection = false }
-        let selection = other.hexSelection().clamped(to: doc.size)
-        doc.setSelection(selection)
-        notify()
-    }
-
     private func notify() {
-        if !isSynchronizingSelection {
-            companion?.syncSelectionFromCompanion(self)
-        }
+        // Selections are independent per pane (§3.3): the companion must not
+        // adopt this pane's selection — its hex view only redraws the frames
+        // mirroring it.
+        companion?.onMirroredSelectionChanged?()
         onChange?()
     }
 }
