@@ -72,14 +72,18 @@ final class PaneViewModelTests: XCTestCase {
         XCTAssertEqual(pane.hexByteStates(in: 0..<1)[0].byte, 0x41)
     }
 
-    func testTypeASCIIIgnoresNonPrintable() throws {
-        let (pane, url) = try openPane([0x00])
+    func testTypeASCIIWritesGivenByte() throws {
+        let (pane, url) = try openPane([0x00, 0x00])
         defer { try? FileManager.default.removeItem(at: url) }
-        pane.typeASCII(0x00)
-        pane.typeASCII(0x7F)
+        // Representability is decided in the view via the decoder's encode()
+        // (§3.2); the VM writes whatever byte it is handed. 0xFF is ÿ in the
+        // default cp1252 table; 0x00 is written verbatim (the view never
+        // forwards non-encodable characters, so control bytes only reach here
+        // from direct callers).
         pane.typeASCII(0xFF)
-        XCTAssertEqual(pane.caretOffset, 0)
-        XCTAssertEqual(pane.hexByteStates(in: 0..<1)[0].byte, 0x00)
+        pane.typeASCII(0x00)
+        XCTAssertEqual(pane.caretOffset, 2)
+        XCTAssertEqual(pane.hexByteStates(in: 0..<2).map(\.byte), [0xFF, 0x00])
     }
 
     // MARK: - Delete / Backspace fill zero (§7.3)

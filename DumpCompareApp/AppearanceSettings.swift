@@ -65,6 +65,25 @@ enum AppearanceSettings {
         return .monospacedSystemFont(ofSize: size, weight: .regular)
     }
 
+    /// Width of one monospaced glyph cell — the horizontal pitch shared by the
+    /// hex view and the Settings text-decoding preview.
+    static func charWidth(for font: NSFont) -> CGFloat {
+        ("0" as NSString).size(withAttributes: [.font: font]).width
+    }
+
+    /// The baseline that places the glyph ink vertically centered in a row.
+    /// `NSString.draw(at:)` anchors the text's ascent line at the point in a
+    /// flipped view, so centering the ascent box alone would push the ink low in
+    /// the row (a font's ascender far exceeds its cap height). Measure the ink
+    /// bounds of a representative glyph and solve for the point that centers
+    /// those bounds in `rowHeight` (§3.2).
+    static func centeredBaseline(font: NSFont, rowHeight: CGFloat) -> CGFloat {
+        let line = CTLineCreateWithAttributedString(NSAttributedString(string: "0A", attributes: [.font: font]))
+        let ink = CTLineGetImageBounds(line, nil)
+        // ink.minY sits below the baseline (negative), ink.maxY above it.
+        return rowHeight / 2 - (font.ascender + font.leading) + (ink.minY + ink.maxY) / 2
+    }
+
     /// The monospaced font families available to the Settings font popup, in
     /// alphabetical order. A family counts when its regular-weight member
     /// reports `isFixedPitch`.

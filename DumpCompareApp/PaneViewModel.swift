@@ -102,8 +102,41 @@ final class PaneViewModel: HexViewDataSource {
     /// Called after any change so the view can redraw and refresh the status bar.
     var onChange: (() -> Void)?
 
+    /// The active text decoder, rebuilt whenever decoding settings change.
+    private(set) var textDecoder: any TextDecoder
+
+    private var textDecodingObserver: NSObjectProtocol?
+
     /// Whether a document is currently open in this pane.
     var isOpen: Bool { document != nil }
+
+    /// Creates a new pane view model with the current decoding settings.
+    init() {
+        let currentSettings = TextDecodingSettingsStore().settings
+        textDecoder = TextDecoderRegistry.make(identifier: currentSettings.identifier, placeholder: currentSettings.placeholder)
+        // Rebuild the decoder when text-decoding settings change.
+        textDecodingObserver = NotificationCenter.default.addObserver(
+            forName: TextDecodingSettingsStore.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            // The .main queue posts on the main actor; this view model is
+            // MainActor-confined, so the mutation is safe to assume isolated.
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let store = TextDecodingSettingsStore()
+                let settings = store.settings
+                self.textDecoder = TextDecoderRegistry.make(identifier: settings.identifier, placeholder: settings.placeholder)
+                self.onChange?()
+            }
+        }
+    }
+
+    deinit {
+        if let textDecodingObserver {
+            NotificationCenter.default.removeObserver(textDecodingObserver)
+        }
+    }
 
     // MARK: - External change detection (§5.5)
 
@@ -363,10 +396,12 @@ final class PaneViewModel: HexViewDataSource {
         notify()
     }
 
-    /// Types one ASCII character (only printable 0x20…0x7E are accepted; the
-    /// rest are ignored with no effect, §7). A whole-byte edit: one undo step.
+    /// Types one decoded-text character. The HexView validates the character
+    /// through `textDecoder.encode(_)` before calling this, so any byte that
+    /// arrives here is representable in the current code page. A whole-byte
+    /// edit: one undo step.
     func typeASCII(_ byte: UInt8) {
-        guard (0x20...0x7E).contains(byte), let doc = document else { return }
+        guard let doc = document else { return }
         endTypingGroup()
         prepareForTyping()
         let offset = typingOffset(doc)

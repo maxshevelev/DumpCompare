@@ -124,12 +124,14 @@ final class AppearanceSettingsViewController: NSViewController {
 }
 
 /// The app's Settings window — a standard toolbar-tabbed preference dialog,
-/// currently with a single Appearance tab (§3.2). Owned by
+/// with an Appearance tab (§3.2) and a Text Decoding tab (§3.4). Owned by
 /// `MainWindowController`; the App menu's "Settings…" item shows it.
 final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     private let appearanceController = AppearanceSettingsViewController()
+    private let textDecodingController = TextDecodingSettingsViewController()
 
     private static let appearanceItemID = NSToolbarItem.Identifier("Appearance")
+    private static let textDecodingItemID = NSToolbarItem.Identifier("TextDecoding")
 
     init() {
         let window = NSWindow(
@@ -170,27 +172,40 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     // MARK: - NSToolbarDelegate
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.appearanceItemID]
+        [Self.appearanceItemID, Self.textDecodingItemID]
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.appearanceItemID]
+        [Self.appearanceItemID, Self.textDecodingItemID]
     }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        guard itemIdentifier == Self.appearanceItemID else { return nil }
         let item = NSToolbarItem(itemIdentifier: itemIdentifier)
-        item.label = "Appearance"
-        item.paletteLabel = "Appearance"
-        item.image = NSImage(systemSymbolName: "paintbrush", accessibilityDescription: "Appearance")
-        item.target = self
-        item.action = #selector(appearanceTabTapped)
+        switch itemIdentifier {
+        case Self.appearanceItemID:
+            item.label = "Appearance"
+            item.paletteLabel = "Appearance"
+            item.image = NSImage(systemSymbolName: "paintbrush", accessibilityDescription: "Appearance")
+            item.target = self
+            item.action = #selector(appearanceTabTapped)
+        case Self.textDecodingItemID:
+            item.label = "Text Decoding"
+            item.paletteLabel = "Text Decoding"
+            item.image = NSImage(systemSymbolName: "textformat.abc", accessibilityDescription: "Text Decoding")
+            item.target = self
+            item.action = #selector(textDecodingTabTapped)
+        default:
+            return nil
+        }
         return item
     }
 
     @objc private func appearanceTabTapped() {
-        // Single tab; re-selecting it just keeps the Appearance view frontmost.
         window?.contentViewController = appearanceController
+    }
+
+    @objc private func textDecodingTabTapped() {
+        window?.contentViewController = textDecodingController
     }
 }

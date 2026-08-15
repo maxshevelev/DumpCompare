@@ -50,6 +50,12 @@ final class HexView: NSView {
     /// Accessible label for the grid, e.g. "Hex dump — File A" (§15).
     var accessibilityTitle = "Hex dump"
 
+    /// The active text decoder for the decoded-text column. The view model
+    /// rebuilds this whenever the user changes the decoding settings.
+    var textDecoder: any TextDecoder {
+        didSet { needsDisplay = true }
+    }
+
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
 
@@ -60,6 +66,7 @@ final class HexView: NSView {
     private var currentLayout: HexLayout
     private var wordSizeObserver: NSObjectProtocol?
     private var appearanceObserver: NSObjectProtocol?
+    private var textDecodingObserver: NSObjectProtocol?
 
     /// The window point where the current mouse-down landed; the drag-selection
     /// dead zone is anchored to it (§3.3).
@@ -89,10 +96,12 @@ final class HexView: NSView {
 
     init() {
         font = AppearanceSettings.font(size: 13)
-        charWidth = Self.measureCharWidth(font)
+        charWidth = AppearanceSettings.charWidth(for: font)
         rowHeight = Self.rowHeight(for: font)
-        baseline = Self.centeredBaseline(font: font, rowHeight: rowHeight)
+        baseline = AppearanceSettings.centeredBaseline(font: font, rowHeight: rowHeight)
         currentLayout = HexLayout(charWidth: charWidth, rowHeight: rowHeight, wordSize: WordSize.current.rawValue)
+        let currentSettings = TextDecodingSettingsStore().settings
+        textDecoder = TextDecoderRegistry.make(identifier: currentSettings.identifier, placeholder: currentSettings.placeholder)
         super.init(frame: .zero)
         // Expose the grid to VoiceOver with a live value describing the caret
         // and selection (§15 accessibility).
@@ -114,6 +123,14 @@ final class HexView: NSView {
         ) { [weak self] _ in
             self?.applyAppearance()
         }
+        // Rebuild the decoder when text-decoding settings change.
+        textDecodingObserver = NotificationCenter.default.addObserver(
+            forName: TextDecodingSettingsStore.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.applyTextDecodingSettings()
+        }
     }
 
     deinit {
@@ -123,15 +140,14 @@ final class HexView: NSView {
         if let appearanceObserver {
             NotificationCenter.default.removeObserver(appearanceObserver)
         }
+        if let textDecodingObserver {
+            NotificationCenter.default.removeObserver(textDecodingObserver)
+        }
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
-    }
-
-    private static func measureCharWidth(_ font: NSFont) -> CGFloat {
-        ("0" as NSString).size(withAttributes: [.font: font]).width
     }
 
     /// The vertical pitch of one row. The font's natural line height (glyph
@@ -149,23 +165,17 @@ final class HexView: NSView {
     /// enclosing scroll view picks up the new content size.
     private func applyAppearance() {
         font = AppearanceSettings.font(size: 13)
-        charWidth = Self.measureCharWidth(font)
+        charWidth = AppearanceSettings.charWidth(for: font)
         rowHeight = Self.rowHeight(for: font)
-        baseline = Self.centeredBaseline(font: font, rowHeight: rowHeight)
+        baseline = AppearanceSettings.centeredBaseline(font: font, rowHeight: rowHeight)
         reloadData()
     }
 
-    /// The baseline that places the glyph ink vertically centered in the row.
-    /// `NSString.draw(at:)` anchors the text's ascent line at the point in a
-    /// flipped view, so centering the ascent box alone would push the ink low in
-    /// the row (a font's ascender far exceeds its cap height). Measure the ink
-    /// bounds of a representative glyph and solve for the point that centers
-    /// those bounds in `rowHeight` (§3.2).
-    private static func centeredBaseline(font: NSFont, rowHeight: CGFloat) -> CGFloat {
-        let line = CTLineCreateWithAttributedString(NSAttributedString(string: "0A", attributes: [.font: font]))
-        let ink = CTLineGetImageBounds(line, nil)
-        // ink.minY sits below the baseline (negative), ink.maxY above it.
-        return rowHeight / 2 - (font.ascender + font.leading) + (ink.minY + ink.maxY) / 2
+    /// Rebuilds the active text decoder from the current settings.
+    private func applyTextDecodingSettings() {
+        let store = TextDecodingSettingsStore()
+        let currentSettings = store.settings
+        textDecoder = TextDecoderRegistry.make(identifier: currentSettings.identifier, placeholder: currentSettings.placeholder)
     }
 
     // MARK: - Data refresh
@@ -310,8 +320,10 @@ final class HexView: NSView {
             let digits = hexDigits(state.byte)
             draw(text: digits, in: hexFrame, baseline: baseline, color: textColor)
 
-            let asciiChar = printableAscii(state.byte)
-            draw(text: asciiChar, in: asciiRect, baseline: baseline, color: textColor)
+            let asciiChar = textDecoder.decode(state.byte)
+            let isDisplayable = textDecoder.isDisplayable(state.byte)
+            let asciiColor = isDisplayable ? textColor : HexTheme.mutedTextColor
+            draw(text: String(asciiChar), in: asciiRect, baseline: baseline, color: asciiColor)
         }
     }
 
@@ -404,10 +416,6 @@ final class HexView: NSView {
     }
 
     private static let hexTable = Array("0123456789ABCDEF")
-
-    private func printableAscii(_ byte: UInt8) -> String {
-        (0x20...0x7E).contains(byte) ? String(UnicodeScalar(byte)) : "."
-    }
 
     private func draw(text: String, in frame: CGRect, baseline: CGFloat, color: NSColor) {
         let attributes: [NSAttributedString.Key: Any] = [
@@ -600,18 +608,31 @@ final class HexView: NSView {
         case 0x1B:  // Escape
             super.keyDown(with: event)
         default:
-            guard value >= 0x20, value <= 0x7E else {
-                super.keyDown(with: event)
-                return
-            }
             if dataSource.hexInputRegion() == .hex {
+                // Hex column: only printable ASCII digits are meaningful.
+                guard value >= 0x20, value <= 0x7E else {
+                    super.keyDown(with: event)
+                    return
+                }
                 if let digit = Self.hexDigitValue(value) {
                     delegate.hexEditor(self, typeHexNibble: digit)
                 } else {
                     NSSound.beep()
                 }
             } else {
-                delegate.hexEditor(self, typeASCIIByte: UInt8(value))
+                // Decoded text column: any non-control key is tried against the
+                // active decoding table; characters it can't encode are rejected
+                // with a beep (§3.2).
+                guard value >= 0x20 else {
+                    super.keyDown(with: event)
+                    return
+                }
+                let character = Character(UnicodeScalar(value)!)
+                if let byte = textDecoder.encode(character) {
+                    delegate.hexEditor(self, typeASCIIByte: byte)
+                } else {
+                    NSSound.beep()
+                }
             }
         }
     }
@@ -640,6 +661,11 @@ enum HexTheme {
     /// and stays legible over selection and difference fills.
     static let mutedByteText = NSColor(name: nil) { _ in
         NSColor.labelColor.withAlphaComponent(0.40)
+    }
+
+    /// Muted color for placeholder characters in the decoded text column.
+    static let mutedTextColor = NSColor(name: nil) { _ in
+        NSColor.labelColor.withAlphaComponent(0.35)
     }
 
     static let modifiedText = NSColor.systemRed

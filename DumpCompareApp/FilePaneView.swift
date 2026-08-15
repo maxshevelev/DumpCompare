@@ -295,6 +295,7 @@ final class FilePaneView: NSView {
     private func bind() {
         hexView.dataSource = viewModel
         hexView.delegate = viewModel
+        hexView.textDecoder = viewModel.textDecoder
         // Focus is the single source of truth for the active pane (§3.3):
         // clicking the dump makes the hex view first responder, which fires
         // `onActivate`, so the highlighted pane and the typing target never
@@ -429,6 +430,7 @@ final class FilePaneView: NSView {
     }
 
     private func refresh() {
+        hexView.textDecoder = viewModel.textDecoder
         hexView.reloadData()
         // The layout may have changed (offset digits, word size) — redraw the
         // header so its labels track the columns.
