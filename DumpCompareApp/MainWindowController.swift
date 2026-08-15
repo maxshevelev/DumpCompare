@@ -93,11 +93,11 @@ final class MainWindowController: NSWindowController {
         editMenu.addItem(withTitle: "Paste Insert…", action: #selector(MainViewController.pasteInsert), keyEquivalent: "")
         editMenu.addItem(withTitle: "Delete Bytes…", action: #selector(MainViewController.deleteBytes), keyEquivalent: "")
         editMenu.addItem(.separator())
-        editMenu.addItem(withTitle: "Fill Selection with Zero", action: #selector(MainViewController.fillSelectionWithZero), keyEquivalent: "")
+        editMenu.addItem(withTitle: "Fill Selection with…", action: #selector(MainViewController.fillSelectionWithBytes), keyEquivalent: "")
         editMenu.addItem(withTitle: "Select All", action: #selector(MainViewController.selectAllBytes), keyEquivalent: "a")
         editMenu.addItem(.separator())
         editMenu.addItem(withTitle: "Select Block…", action: #selector(MainViewController.selectBlock), keyEquivalent: "")
-        editMenu.addItem(withTitle: "Find…", action: #selector(MainViewController.findPattern), keyEquivalent: "f")
+        editMenu.addItem(withTitle: "Find", action: #selector(MainViewController.findPattern), keyEquivalent: "f")
         editMenu.addItem(withTitle: "Go To Position…", action: #selector(MainViewController.goToPosition), keyEquivalent: "g")
         editItem.submenu = editMenu
 

@@ -67,6 +67,12 @@ public enum SearchEngine {
     /// - Forward: the first match whose start is `>= from`.
     /// - Backward: the last match whose end is `<= from`.
     ///
+    /// When `caseSensitive` is false, ASCII letters compare equal regardless of
+    /// case (a file "Hi" matches a pattern "HI"). This is exactly right for the
+    /// text encodings — ASCII, UTF-8's ASCII subset, and the ASCII letters of
+    /// UTF-16 — and never affects hex patterns or non-ASCII letters (é, ж, …),
+    /// whose bytes are always matched exactly.
+    ///
     /// Returns `nil` when there is no match (or the pattern cannot fit). Throws
     /// `CancellationError` when `shouldCancel` returns true between chunks.
     public static func find(
@@ -74,6 +80,7 @@ public enum SearchEngine {
         in storage: ByteStorage,
         from offset: UInt64 = 0,
         direction: SearchDirection = .forward,
+        caseSensitive: Bool = true,
         chunkSize: Int = defaultChunkSize,
         shouldCancel: () -> Bool = { false },
         progress: (Double) -> Void = { _ in }
@@ -83,19 +90,23 @@ public enum SearchEngine {
         let size = storage.size
         guard patternLength <= size else { return nil }
 
-        let patternData = Data(pattern)
+        // Folding is idempotent per byte, so pattern and data can both be
+        // folded and compared with the fast Data.range(of:) path (§11).
+        let patternData = caseSensitive ? Data(pattern) : Data(pattern.map(Self.foldByte))
         switch direction {
         case .forward:
             return try findForward(
                 pattern: patternData, patternLength: patternLength,
                 storage: storage, from: offset, size: size,
-                chunkSize: chunkSize, shouldCancel: shouldCancel, progress: progress
+                chunkSize: chunkSize, caseSensitive: caseSensitive,
+                shouldCancel: shouldCancel, progress: progress
             )
         case .backward:
             return try findBackward(
                 pattern: patternData, patternLength: patternLength,
                 storage: storage, from: offset, size: size,
-                chunkSize: chunkSize, shouldCancel: shouldCancel, progress: progress
+                chunkSize: chunkSize, caseSensitive: caseSensitive,
+                shouldCancel: shouldCancel, progress: progress
             )
         }
     }
@@ -135,6 +146,15 @@ public enum SearchEngine {
         return Array(data)
     }
 
+    /// Maps an ASCII letter to its lowercase form and leaves every other byte
+    /// unchanged. Two bytes compare equal case-insensitively exactly when their
+    /// folded forms are equal, so folding both sides lets the case-insensitive
+    /// scan reuse `Data.range(of:)` instead of a byte-by-byte comparison.
+    static func foldByte(_ b: UInt8) -> UInt8 {
+        let lower = b | 0x20
+        return (lower >= 0x61 && lower <= 0x7A) ? lower : b
+    }
+
     // MARK: - Scanning
 
     /// Scans forward from `from`; each chunk is `chunkSize + patternLength - 1`
@@ -142,7 +162,7 @@ public enum SearchEngine {
     /// advances `chunkSize` (overlap keeps the window gap-free).
     private static func findForward(
         pattern: Data, patternLength: UInt64, storage: ByteStorage,
-        from: UInt64, size: UInt64, chunkSize: Int,
+        from: UInt64, size: UInt64, chunkSize: Int, caseSensitive: Bool,
         shouldCancel: () -> Bool, progress: (Double) -> Void
     ) throws -> Range<UInt64>? {
         // Last valid match start satisfies `m + patternLength <= size`.
@@ -156,7 +176,7 @@ public enum SearchEngine {
             let bytes = try storage.read(at: cursor, length: length)
             guard !bytes.isEmpty else { break }
 
-            let data = Data(bytes)
+            let data = caseSensitive ? Data(bytes) : Data(bytes.map(Self.foldByte))
             if let match = data.range(of: pattern) {
                 let start = cursor + UInt64(match.lowerBound)
                 return start..<(start + patternLength)
@@ -178,11 +198,14 @@ public enum SearchEngine {
     /// window boundary is still found (mirror of `findForward`).
     private static func findBackward(
         pattern: Data, patternLength: UInt64, storage: ByteStorage,
-        from: UInt64, size: UInt64, chunkSize: Int,
+        from: UInt64, size: UInt64, chunkSize: Int, caseSensitive: Bool,
         shouldCancel: () -> Bool, progress: (Double) -> Void
     ) throws -> Range<UInt64>? {
-        // Window end: the offset one past the last allowed match end.
-        let end = from >= size ? size : min(size, from + 1)
+        // Window end: the offset one past the last allowed match end. A match
+        // must end at or before the caret, so a match *starting* exactly at the
+        // caret is excluded — otherwise Find Previous from a caret sitting on a
+        // match would keep re-finding that same match instead of moving back.
+        let end = min(from, size)
         let windowLength = UInt64(chunkSize) + patternLength - 1
         var endExclusive = end
 
@@ -193,7 +216,7 @@ public enum SearchEngine {
             let bytes = try storage.read(at: windowStart, length: length)
             guard !bytes.isEmpty else { break }
 
-            let data = Data(bytes)
+            let data = caseSensitive ? Data(bytes) : Data(bytes.map(Self.foldByte))
             if let match = data.range(of: pattern, options: [.backwards]) {
                 let start = windowStart + UInt64(match.lowerBound)
                 return start..<(start + patternLength)

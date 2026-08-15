@@ -78,6 +78,43 @@ final class BinaryDocumentTests: XCTestCase {
         XCTAssertEqual(try readAll(doc), [0x00, 0x01, 0x02, 0x03])
     }
 
+    func testFillPatternRepeatsAcrossRange() throws {
+        let (doc, _) = try makeDocument([0x01, 0x02, 0x03, 0x04, 0x05, 0x06])
+        try doc.fill(pattern: [0xDE, 0xAD], in: 1..<6)
+        XCTAssertEqual(try readAll(doc), [0x01, 0xDE, 0xAD, 0xDE, 0xAD, 0xDE])
+    }
+
+    func testFillPatternLongerThanRangeTruncates() throws {
+        let (doc, _) = try makeDocument([0x01, 0x02, 0x03])
+        try doc.fill(pattern: [0xAA, 0xBB, 0xCC, 0xDD], in: 1..<3)
+        XCTAssertEqual(try readAll(doc), [0x01, 0xAA, 0xBB])
+    }
+
+    func testFillPatternUndoRedo() throws {
+        let (doc, _) = try makeDocument([0x01, 0x02, 0x03, 0x04])
+        try doc.fill(pattern: [0xDE, 0xAD], in: 0..<4)
+        XCTAssertEqual(try readAll(doc), [0xDE, 0xAD, 0xDE, 0xAD])
+
+        try doc.undo()
+        XCTAssertEqual(try readAll(doc), [0x01, 0x02, 0x03, 0x04])
+
+        try doc.redo()
+        XCTAssertEqual(try readAll(doc), [0xDE, 0xAD, 0xDE, 0xAD])
+    }
+
+    func testFillEmptyPatternIsNoOp() throws {
+        let (doc, _) = try makeDocument([0x01, 0x02, 0x03])
+        try doc.fill(pattern: [], in: 0..<2)
+        XCTAssertEqual(try readAll(doc), [0x01, 0x02, 0x03])
+        XCTAssertFalse(doc.isDirty)
+    }
+
+    func testFillClampsToEndOfFile() throws {
+        let (doc, _) = try makeDocument([0x01, 0x02, 0x03])
+        try doc.fill(pattern: [0xFF], in: 1..<10)
+        XCTAssertEqual(try readAll(doc), [0x01, 0xFF, 0xFF])
+    }
+
     func testOverwritePastEOFUndoShrinks() throws {
         let (doc, _) = try makeDocument([0x00, 0x01])
         try doc.overwrite(range: 1..<1, with: [0xAA, 0xBB])
@@ -212,7 +249,7 @@ final class BinaryDocumentTests: XCTestCase {
 
     func testSelectionClampedAfterSizeChange() throws {
         let (doc, _) = try makeDocument([0x00, 0x01, 0x02, 0x03])
-        try doc.setSelection(SelectionModel(start: 1, length: 3, fileSize: doc.size))
+        doc.setSelection(SelectionModel(start: 1, length: 3, fileSize: doc.size))
         XCTAssertEqual(doc.selection, SelectionModel(start: 1, end: 4, fileSize: 4))
 
         try doc.delete(range: 1..<3)

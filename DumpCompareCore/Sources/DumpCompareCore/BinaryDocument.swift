@@ -82,12 +82,27 @@ public final class BinaryDocument: @unchecked Sendable {
 
     /// Overwrites `range` with zero bytes (§7.3: Delete/Backspace fill 0x00).
     public func fillZero(in range: Range<UInt64>) throws {
+        try fill(pattern: [0], in: range)
+    }
+
+    /// Overwrites `range` by repeating `pattern` to cover it (§7.3 fill dialog).
+    /// The final repetition is truncated when the range length isn't a multiple
+    /// of the pattern length; a pattern longer than the range writes only its
+    /// prefix. Recorded as an `.overwrite` so undo restores the original bytes.
+    public func fill(pattern: [UInt8], in range: Range<UInt64>) throws {
+        guard !pattern.isEmpty else { return }
         let start = min(range.lowerBound, storage.size)
         let end = min(range.upperBound, storage.size)
         guard end > start else { return }
-        let before = try storage.read(at: start, length: Int(end - start))
-        try storage.overwrite(range: start..<end, with: [UInt8](repeating: 0, count: before.count))
-        record([.fillZero(range: start..<end, before: before)])
+        let count = Int(end - start)
+        let before = try storage.read(at: start, length: count)
+        var after = [UInt8]()
+        after.reserveCapacity(count)
+        for i in 0..<count {
+            after.append(pattern[i % pattern.count])
+        }
+        try storage.overwrite(range: start..<end, with: after)
+        record([.overwrite(range: start..<end, before: before, after: after)])
         clampSelection()
     }
 
@@ -229,8 +244,6 @@ public final class BinaryDocument: @unchecked Sendable {
             try storage.insert(at: at, bytes: bytes)
         case .delete(let range, _):
             try storage.delete(range: range)
-        case .fillZero(let range, _):
-            try storage.overwrite(range: range, with: [UInt8](repeating: 0, count: Int(range.count)))
         }
     }
 
@@ -242,8 +255,6 @@ public final class BinaryDocument: @unchecked Sendable {
             try storage.delete(range: at..<(at + UInt64(bytes.count)))
         case .delete(let range, let bytes):
             try storage.insert(at: range.lowerBound, bytes: bytes)
-        case .fillZero(let range, let before):
-            try storage.overwrite(range: range, with: before)
         }
     }
 }

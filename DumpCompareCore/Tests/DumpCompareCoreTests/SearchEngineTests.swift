@@ -98,7 +98,16 @@ final class SearchEngineTests: XCTestCase {
         let bytes: [UInt8] = [0xAA, 0x00, 0xAA, 0x00]
         XCTAssertEqual(try find([0xAA], in: bytes, from: 4, direction: .backward), 2..<3)
         XCTAssertEqual(try find([0xAA], in: bytes, from: 1, direction: .backward), 0..<1)
-        XCTAssertEqual(try find([0xAA], in: bytes, from: 0, direction: .backward), 0..<1)
+        // A caret at 0 has nothing before it, so there is no previous match.
+        XCTAssertNil(try find([0xAA], in: bytes, from: 0, direction: .backward))
+    }
+
+    func testFindBackwardExcludesMatchStartingAtCaret() throws {
+        // [AA] at index 4 starts exactly at the caret; it must NOT be returned.
+        // Otherwise Find Previous from a caret sitting on a match would re-find
+        // that same match instead of moving backward.
+        let bytes: [UInt8] = [0xAA, 0x00, 0xAA, 0x00, 0xAA]
+        XCTAssertEqual(try find([0xAA], in: bytes, from: 4, direction: .backward), 2..<3)
     }
 
     func testFindMatchAtEOF() throws {
@@ -145,5 +154,78 @@ final class SearchEngineTests: XCTestCase {
         )
         XCTAssertNil(result)
         XCTAssertEqual(last, 1.0)
+    }
+
+    // MARK: - Case-insensitive find (§11)
+
+    private func findCI(_ pattern: [UInt8], in bytes: [UInt8], from: UInt64 = 0,
+                        direction: SearchDirection = .forward, chunkSize: Int = 7,
+                        caseSensitive: Bool = false) throws -> Range<UInt64>? {
+        try SearchEngine.find(pattern: pattern, in: ArrayStorage(bytes), from: from,
+                              direction: direction, caseSensitive: caseSensitive,
+                              chunkSize: chunkSize)
+    }
+
+    func testFindCaseInsensitiveAscii() throws {
+        // "Hi there" — pattern "HI" matches the lowercase 'i' at 0..<2.
+        let bytes = Array("Hi there".utf8)
+        XCTAssertEqual(try findCI(Array("HI".utf8), in: bytes), 0..<2)
+        XCTAssertEqual(try findCI(Array("hi".utf8), in: bytes), 0..<2)
+        XCTAssertEqual(try findCI(Array("THE".utf8), in: bytes), 3..<6)
+        // Case-sensitive is exact: uppercase "HI" does not match "Hi".
+        XCTAssertNil(try findCI(Array("HI".utf8), in: bytes, caseSensitive: true))
+        XCTAssertEqual(try findCI(Array("Hi".utf8), in: bytes, caseSensitive: true), 0..<2)
+    }
+
+    func testFindCaseInsensitiveUtf8() throws {
+        // "Café" = C a f é (5 bytes). The ASCII 'C' folds to 'c', so a lowercase
+        // pattern matches; but É (0xC3 0x89) never folds to é (0xC3 0xA9), so a
+        // case-swapped pattern with the accent does not.
+        let bytes = Array("Café".utf8)
+        XCTAssertEqual(try findCI(Array("café".utf8), in: bytes), 0..<5)
+        // Case-sensitive: only the exact bytes match ("Café"), not "café" or "CAFÉ".
+        XCTAssertEqual(try findCI(Array("Café".utf8), in: bytes, caseSensitive: true), 0..<5)
+        XCTAssertNil(try findCI(Array("café".utf8), in: bytes, caseSensitive: true))
+        XCTAssertNil(try findCI(Array("CAFÉ".utf8), in: bytes))
+        XCTAssertNil(try findCI(Array("CAFÉ".utf8), in: bytes, caseSensitive: true))
+    }
+
+    func testFindCaseInsensitiveUtf16() throws {
+        let bytes = Array("Hi there".data(using: .utf16LittleEndian)!)
+        // "HI" UTF-16LE = 48 00 49 00; folds 'I' against the 'i' in "Hi".
+        XCTAssertEqual(try findCI(Array("HI".data(using: .utf16LittleEndian)!), in: bytes), 0..<4)
+        XCTAssertNil(try findCI(Array("HI".data(using: .utf16LittleEndian)!), in: bytes, caseSensitive: true))
+    }
+
+    func testFindCaseInsensitiveBackward() throws {
+        let bytes = Array("ab AB ab".utf8)
+        // Last case-insensitive "ab" is at 6..<8; a case-sensitive search from
+        // the end still finds the exact "ab" at 6..<8, and the earlier "AB"
+        // (3..<5) is only reachable case-insensitively.
+        XCTAssertEqual(try findCI(Array("AB".utf8), in: bytes, from: 8, direction: .backward), 6..<8)
+        XCTAssertEqual(try findCI(Array("ab".utf8), in: bytes, from: 5, direction: .backward, caseSensitive: true), 0..<2)
+        XCTAssertEqual(try findCI(Array("AB".utf8), in: bytes, from: 8, direction: .backward, caseSensitive: false), 6..<8)
+        // Case-insensitive backward from the end must skip the exact "ab" and
+        // land on "AB" when asked to go earlier.
+        XCTAssertEqual(try findCI(Array("ab".utf8), in: bytes, from: 6, direction: .backward), 3..<5)
+    }
+
+    func testFindCaseInsensitiveAcrossChunkBoundary() throws {
+        // Chunk size 3; "AbC" straddles offsets 2..<5 (boundary at 3) and is
+        // matched by lowercase "abc" across the boundary.
+        var bytes = [UInt8](repeating: 0, count: 8)
+        bytes.replaceSubrange(2..<5, with: Array("AbC".utf8))
+        XCTAssertEqual(try findCI(Array("abc".utf8), in: bytes, chunkSize: 3), 2..<5)
+        XCTAssertEqual(try findCI(Array("abc".utf8), in: bytes, from: 8, direction: .backward, chunkSize: 3), 2..<5)
+    }
+
+    func testFindExactSearchDistinguishesRawBytes() throws {
+        // Case-sensitivity lives in the byte domain: folding only rewrites ASCII
+        // letters, so an exact (case-sensitive) search treats 0x41 'A' and
+        // 0x61 'a' as different bytes. The Find bar keeps this for hex patterns
+        // (its Aa toggle is disabled when the encoding is hex).
+        let bytes: [UInt8] = [0x41, 0x62, 0x63]
+        XCTAssertEqual(try findCI([0x41, 0x62, 0x63], in: bytes, caseSensitive: true), 0..<3)
+        XCTAssertNil(try findCI([0x61, 0x62, 0x63], in: bytes, caseSensitive: true))
     }
 }

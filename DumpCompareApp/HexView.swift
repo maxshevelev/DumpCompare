@@ -388,6 +388,32 @@ final class HexView: NSView {
         scrollToVisible(rect)
     }
 
+    /// Scrolls the row containing `offset` to the vertical centre of the visible
+    /// area (clamped to the document's edges), so the byte is shown mid-pane
+    /// instead of at its top or bottom edge. Used after a search result lands
+    /// (§11).
+    func revealOffsetCentered(_ offset: UInt64) {
+        guard let scroll = enclosingScrollView else { return }
+        let layout = currentLayout
+        let (row, _) = layout.rowColumn(of: offset)
+        let rowFrame = layout.rowFrame(row: row)
+        let clip = scroll.contentView
+        let maxOriginY = max(0, bounds.height - clip.bounds.height)
+        let originY = min(max(0, rowFrame.midY - clip.bounds.height / 2), maxOriginY)
+        guard abs(originY - clip.bounds.origin.y) > 0.5 else { return }
+        clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: originY))
+        scroll.reflectScrolledClipView(clip)
+    }
+
+    /// Scrolls the current selection (or the caret when there is none) to the
+    /// vertical centre of the visible area.
+    func revealSelectionCentered() {
+        guard let dataSource else { return }
+        let selection = dataSource.hexSelection()
+        let offset = selection.isEmpty ? selection.start : selection.start + selection.count / 2
+        revealOffsetCentered(offset)
+    }
+
     // MARK: - Input
 
     override func mouseDown(with event: NSEvent) {

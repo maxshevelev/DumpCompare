@@ -1,0 +1,623 @@
+import DumpCompareCore
+import XCTest
+@testable import DumpCompare
+
+/// §11 Find: drives the whole flow through the real `MainViewController` —
+/// Cmd+F shows the non-modal find bar, typing a pattern + Find Next runs a
+/// background search and selects the match, the bar stays open (only Esc/Done
+/// close it), and history + case sensitivity behave like TextEdit.
+@MainActor
+final class FindFlowTests: XCTestCase {
+    /// A throwaway defaults domain, one per test run, so the tests never read or
+    /// pollute the real app's `UserDefaults.standard` (e.g. patterns the user
+    /// typed while trying the app by hand).
+    private var isolatedSuiteName = ""
+    private var isolatedDefaults: UserDefaults!
+
+    override func setUp() {
+        super.setUp()
+        isolatedSuiteName = "FindFlowTests-\(UUID().uuidString)"
+        isolatedDefaults = UserDefaults(suiteName: isolatedSuiteName)
+        // Route the find feature's persistence (history + Aa toggle) at the
+        // isolated store; restored to .standard in tearDown.
+        FindHistoryStore.defaults = isolatedDefaults
+        FindBarView.defaults = isolatedDefaults
+    }
+
+    override func tearDown() {
+        isolatedDefaults.removePersistentDomain(forName: isolatedSuiteName)
+        FindHistoryStore.defaults = .standard
+        FindBarView.defaults = .standard
+        isolatedDefaults = nil
+        super.tearDown()
+    }
+
+    private func tempFile(_ bytes: [UInt8]) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("find-\(UUID().uuidString).bin")
+        try Data(bytes).write(to: url)
+        return url
+    }
+
+    /// A real controller in a real window with one file open (single-file mode).
+    private func makeController(_ bytes: [UInt8]) throws -> (MainViewController, NSWindow, URL) {
+        let url = try tempFile(bytes)
+        let controller = MainViewController()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.contentViewController = controller
+        window.makeKeyAndOrderFront(nil)
+        try controller.windowModel.pane1.open(url: url)
+        controller.apply(mode: .singleFile)
+        window.layoutIfNeeded()
+        return (controller, window, url)
+    }
+
+    private func descendants<T: NSView>(of view: NSView, _ type: T.Type) -> [T] {
+        var result: [T] = []
+        for sub in view.subviews {
+            if let match = sub as? T { result.append(match) }
+            result.append(contentsOf: descendants(of: sub, type))
+        }
+        return result
+    }
+
+    /// Pumps the main runloop until `condition` holds or the deadline passes.
+    @discardableResult
+    private func pumpUntil(_ timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        return condition()
+    }
+
+    /// Close the pane and delete the temp file. Closing stops the file watcher:
+    /// deleting the file first would fire the external-change prompt, and that
+    /// `NSAlert.runModal()` would block the test's main thread forever.
+    private func cleanup(_ controller: MainViewController, _ url: URL) {
+        controller.windowModel.pane1.close()
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    /// The visible find bar in the window.
+    private func findBar(_ window: NSWindow) throws -> FindBarView {
+        try XCTUnwrap(descendants(of: window.contentView!, FindBarView.self).first { !$0.isHidden },
+                      "the find bar must be visible")
+    }
+
+    /// The bar's controls: (pattern combo, encoding popup, Done, Aa case toggle).
+    /// Navigation is two joined buttons, driven via `clickFindNext` /
+    /// `clickFindPrevious`.
+    private func barControls(_ window: NSWindow)
+        throws -> (NSComboBox, NSPopUpButton, NSButton, NSButton) {
+        let bar = try findBar(window)
+        let combo = try XCTUnwrap(descendants(of: bar, NSComboBox.self).first, "pattern combo")
+        let encoding = try XCTUnwrap(descendants(of: bar, NSPopUpButton.self).first, "encoding popup")
+        let buttons = descendants(of: bar, NSButton.self)
+        func button(_ label: String) throws -> NSButton {
+            try XCTUnwrap(buttons.first { $0.accessibilityLabel() == label }, "button \(label)")
+        }
+        return (combo, encoding, try button("Done"), try button("Case Sensitive"))
+    }
+
+    /// Simulates the user picking an item from the combo's popup list. A real
+    /// pick posts `selectionDidChangeNotification` (which the bar observes); the
+    /// combo's action does NOT fire for a popup pick on an editable combo. The
+    /// bar applies the load on the next runloop turn, so pump until the field
+    /// holds the bare pattern and the pick's selection has been cleared.
+    @discardableResult
+    private func pickFromHistory(_ combo: NSComboBox, at index: Int,
+                                 expecting pattern: String) -> Bool {
+        combo.selectItem(at: index)
+        NotificationCenter.default.post(name: NSComboBox.selectionDidChangeNotification, object: combo)
+        return pumpUntil(2) { combo.indexOfSelectedItem < 0 && combo.stringValue == pattern }
+    }
+
+    /// Clicks the Find Next (`>`) button.
+    private func clickFindNext(_ window: NSWindow) throws {
+        try navButton(window, label: "Find Next").performClick(nil)
+    }
+
+    /// Clicks the Find Previous (`<`) button.
+    private func clickFindPrevious(_ window: NSWindow) throws {
+        try navButton(window, label: "Find Previous").performClick(nil)
+    }
+
+    /// A `<` `>` navigation button inside the find bar's joined block.
+    private func navButton(_ window: NSWindow, label: String) throws -> NSButton {
+        let bar = try findBar(window)
+        return try XCTUnwrap(descendants(of: bar, NSButton.self).first { $0.accessibilityLabel() == label },
+                             "nav button \(label)")
+    }
+
+    /// Whether any text field in the window shows `text` (e.g. a transient
+    /// "No match found." in the pane's status bar).
+    private func hasStatus(_ text: String, in window: NSWindow) -> Bool {
+        descendants(of: window.contentView!, NSTextField.self).contains { $0.stringValue == text }
+    }
+
+    // MARK: - Flow
+
+    /// The full happy path: Cmd+F → type a hex pattern → Find Next → the match
+    /// is selected in the pane and the bar stays open.
+    func testFindNextSelectsTheMatch() throws {
+        let bytes: [UInt8] = [0x41, 0x42, 0x43, 0xDE, 0xAD, 0xBE, 0x44, 0x45, 0x46, 0x47]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "DE AD BE"
+        try clickFindNext(window)
+
+        XCTAssertTrue(pumpUntil(3) { controller.windowModel.pane1.hexSelection().start == 3 },
+                      "Find Next must select the match")
+        XCTAssertEqual(controller.windowModel.pane1.hexSelection().end, 6)
+        XCTAssertFalse(try findBar(window).isHidden,
+                       "the find bar must stay open after a successful search")
+    }
+
+    /// Find Previous from the caret finds the last match ending at/before the
+    /// caret instead of the first one after it.
+    func testFindPreviousFindsLastMatchBeforeCaret() throws {
+        let bytes: [UInt8] = [0xAA, 0xAA, 0xAA, 0xAA, 0xAA]  // matches at 0,1,2,3
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+        controller.windowModel.pane1.moveCaret(to: 4)
+
+        controller.findPattern()
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "AA"
+        try clickFindPrevious(window)
+
+        XCTAssertTrue(pumpUntil(3) { controller.windowModel.pane1.hexSelection().start == 3 })
+    }
+
+    /// A pattern with no match reports it in the pane's status bar and keeps
+    /// the find bar open.
+    func testFindNoMatchShowsMessageAndKeepsBarOpen() throws {
+        let bytes: [UInt8] = [0x41, 0x42, 0x43, 0x44]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "FF FF FF FF FF"
+        try clickFindNext(window)
+
+        XCTAssertTrue(pumpUntil(2) { self.hasStatus("No match found.", in: window) },
+                      "the status bar must show No match found.")
+        XCTAssertFalse(try findBar(window).isHidden,
+                       "the find bar must stay open when there is no match")
+    }
+
+    /// After a Return search the focus stays in the pattern field, so a second
+    /// Return re-searches instead of landing on the hex view (§11).
+    func testEnterKeepsFocusForRepeatedSearch() throws {
+        let bytes: [UInt8] = [0xDE, 0xAD, 0xBE, 0x00, 0xDE, 0xAD, 0xBE]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "DE AD BE"
+        // Focus the pattern field as the user would.
+        window.makeFirstResponder(combo)
+
+        // First Return searches and selects the first match. Wait for the full
+        // selection (start == 0 is trivially true when nothing has happened),
+        // so the second Return searches from a known completed state.
+        combo.sendAction(combo.action!, to: combo.target)
+        XCTAssertTrue(pumpUntil(3) { let s = controller.windowModel.pane1.hexSelection(); return s.start == 0 && s.end == 3 },
+                      "first Return must run a search and select the match")
+        // Focus must stay in the pattern field — a later Enter lands here, not
+        // in the hex view.
+        let responder = window.firstResponder
+        XCTAssertTrue(responder === combo || responder === combo.currentEditor(),
+                      "focus must stay in the pattern field after a Return search")
+
+        // Second Return re-searches and finds the next match.
+        combo.sendAction(combo.action!, to: combo.target)
+        XCTAssertTrue(pumpUntil(3) { controller.windowModel.pane1.hexSelection().start == 4 },
+                      "a subsequent Return must run the search again")
+    }
+
+    /// Pressing Return in the pattern field runs a forward search — the natural
+    /// way to submit a find (§11).
+    func testReturnInPatternFieldSearchesForward() throws {
+        let bytes: [UInt8] = [0x41, 0x42, 0x43, 0xDE, 0xAD, 0xBE, 0x44]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "DE AD BE"
+
+        // Return in the field triggers its action — the same path a user takes.
+        combo.sendAction(combo.action!, to: combo.target)
+
+        XCTAssertTrue(pumpUntil(3) { controller.windowModel.pane1.hexSelection().start == 3 },
+                      "Return must run the search")
+    }
+
+    /// The Edit > Find menu item's action must reach the controller through the
+    /// responder chain (nil target, exactly as the app builds it) and show the
+    /// find bar — the full menu path, not a direct call. The test host has no
+    /// key window (`NSApp.sendAction` with nil target starts from the key window
+    /// and always fails headless), so dispatch through the window's own
+    /// responder chain instead — same nil-target semantics, window-scoped.
+    func testFindMenuItemDispatchesThroughResponderChain() throws {
+        let (controller, window, url) = try makeController([0x41, 0x42, 0x43])
+        defer { cleanup(controller, url) }
+
+        let item = NSMenuItem(title: "Find", action: #selector(MainViewController.findPattern), keyEquivalent: "f")
+        item.target = nil  // responder-chain, exactly as the app builds it
+
+        window.makeFirstResponder(window.contentView)
+        // NSWindow has no sendAction(_:to:from:) — dispatch manually through the
+        // window's responder chain (contentView → MainViewController) instead.
+        let dispatched = window.contentView?.tryToPerform(item.action!, with: item) ?? false
+        XCTAssertTrue(dispatched, "Find must resolve to a responder")
+        XCTAssertTrue(pumpUntil(2) { descendants(of: window.contentView!, FindBarView.self).first?.isHidden == false },
+                      "Find must show the find bar")
+    }
+
+    /// Done closes the bar; Esc is wired as Done's key equivalent and closes it
+    /// too (§11).
+    func testEscAndDoneCloseTheBar() throws {
+        let (controller, window, url) = try makeController([0x41, 0x42, 0x43])
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        _ = try barControls(window)
+
+        let esc = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                                   timestamp: 0, windowNumber: window.windowNumber,
+                                   context: nil, characters: "\u{1B}",
+                                   charactersIgnoringModifiers: "\u{1B}",
+                                   isARepeat: false, keyCode: 53)!
+        _ = window.performKeyEquivalent(with: esc)
+
+        XCTAssertTrue(pumpUntil(2) { descendants(of: window.contentView!, FindBarView.self).first?.isHidden == true },
+                      "Esc must close the find bar")
+
+        // Reopen and close with the Done button.
+        controller.findPattern()
+        let (_, _, done, _) = try barControls(window)
+        done.performClick(nil)
+        XCTAssertTrue(pumpUntil(2) { descendants(of: window.contentView!, FindBarView.self).first?.isHidden == true },
+                      "Done must close the find bar")
+    }
+
+    // MARK: - History (§11)
+
+    /// A successful search is remembered; reopening the bar offers the same
+    /// pattern (and encoding) as the default.
+    func testFindHistoryDefaultsToLastSearch() throws {
+        let bytes: [UInt8] = [0x41, 0x42, 0x43, 0xDE, 0xAD, 0xBE, 0x44]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        var (combo, _, done, _) = try barControls(window)
+        combo.stringValue = "DE AD BE"
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(3) { controller.windowModel.pane1.hexSelection().start == 3 })
+        XCTAssertEqual(FindHistoryStore.mostRecent?.pattern, "DE AD BE")
+
+        // Reopen: the last search is offered by default.
+        done.performClick(nil)
+        controller.findPattern()
+        (combo, _, _, _) = try barControls(window)
+        XCTAssertEqual(combo.stringValue, "DE AD BE")
+    }
+
+    /// The encoding used for a search is stored with it and restored on reopen.
+    func testFindHistoryStoresAndRestoresEncoding() throws {
+        let bytes: [UInt8] = Array("Hi there, how are you?".utf8)
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        var (combo, encoding, done, _) = try barControls(window)
+        encoding.selectItem(at: SearchEncoding.allCases.firstIndex(of: .utf8)!)
+        encoding.sendAction(encoding.action, to: encoding.target)
+        combo.stringValue = "Hi"
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(3) { controller.windowModel.pane1.hexSelection().start == 0 })
+
+        XCTAssertEqual(FindHistoryStore.mostRecent?.encoding, .utf8)
+
+        // Reopen: the encoding popup is restored to UTF-8.
+        done.performClick(nil)
+        controller.findPattern()
+        (_, encoding, _, _) = try barControls(window)
+        XCTAssertEqual(encoding.titleOfSelectedItem, "Text — UTF-8")
+    }
+
+    /// Picking an older search from the pattern combo's list loads its pattern
+    /// and encoding into the fields — and must NOT run a search.
+    func testFindRecentDropdownLoadsSearchWithoutSearching() throws {
+        // Seed history: most recent first, so "DE AD" is the default and
+        // "AA BB" is the older entry the dropdown will load.
+        FindHistoryStore.record(pattern: "AA BB", encoding: .ascii)
+        FindHistoryStore.record(pattern: "DE AD", encoding: .hex)
+
+        let bytes: [UInt8] = [0xDE, 0xAD, 0x41, 0x41, 0x20, 0x42, 0x42]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let (combo, encoding, _, _) = try barControls(window)
+        XCTAssertEqual(combo.stringValue, "DE AD", "most recent search must be the default")
+
+        let index = combo.indexOfItem(withObjectValue: "AA BB — ASCII")
+        XCTAssertGreaterThanOrEqual(index, 0, "the combo must list the AA BB search")
+        XCTAssertTrue(pickFromHistory(combo, at: index, expecting: "AA BB"),
+                      "the picked search must load into the field")
+
+        // The field gets the bare pattern — never the "— encoding" suffix that
+        // labels the dropdown item — and the popup carries the encoding.
+        XCTAssertEqual(combo.stringValue, "AA BB", "only the pattern must reach the field")
+        XCTAssertEqual(encoding.titleOfSelectedItem, "Text — ASCII")
+        XCTAssertTrue(controller.windowModel.pane1.hexSelection().isEmpty,
+                      "picking a recent search must load it, not run it")
+    }
+
+    /// The history is capped at 10 entries, most recent first.
+    func testFindHistoryCapsAtTen() throws {
+        for i in 0..<12 {
+            FindHistoryStore.record(pattern: String(format: "%02X", i), encoding: .hex)
+        }
+        let recent = FindHistoryStore.recent
+        XCTAssertEqual(recent.count, 10)
+        XCTAssertEqual(recent.first?.pattern, "0B", "most recent must be first")
+        XCTAssertEqual(recent.last?.pattern, "02", "oldest kept is 02; 00 and 01 dropped")
+        XCTAssertFalse(recent.contains { $0.pattern == "00" })
+    }
+
+    /// One entry per (pattern, encoding) pair: the same pattern under two
+    /// encodings stays as two items; reusing an exact pair moves it to the
+    /// front instead of duplicating it.
+    func testFindHistoryDedupesByPair() throws {
+        FindHistoryStore.record(pattern: "AA", encoding: .hex)
+        FindHistoryStore.record(pattern: "AA", encoding: .utf8)
+        var recent = FindHistoryStore.recent
+        XCTAssertEqual(recent.count, 2, "different encodings of one pattern are separate items")
+        XCTAssertEqual(recent.first?.pattern, "AA")
+        XCTAssertEqual(recent.first?.encoding, .utf8, "newest pair must be first")
+
+        // Reusing the same pair moves it to the front without duplicating.
+        FindHistoryStore.record(pattern: "AA", encoding: .hex)
+        recent = FindHistoryStore.recent
+        XCTAssertEqual(recent.count, 2, "reusing a pair must not add a duplicate")
+        XCTAssertEqual(recent.first?.encoding, .hex, "the reused pair moves to the top")
+
+        // Re-recording a pair with a different case flag replaces the stored
+        // flag rather than adding a second entry (latest search wins).
+        FindHistoryStore.record(pattern: "AA", encoding: .utf8, caseSensitive: true)
+        recent = FindHistoryStore.recent
+        XCTAssertEqual(recent.count, 2, "the pair is still one entry")
+        XCTAssertEqual(recent.first?.caseSensitive, true,
+                       "re-recording the pair carries the new case flag")
+    }
+
+    /// The same pattern saved under two encodings appears as two labelled items
+    /// in the dropdown; picking one restores its own encoding without running a
+    /// search.
+    func testFindHistorySamePatternDifferentEncodingsLoadIndependently() throws {
+        FindHistoryStore.record(pattern: "ABCD", encoding: .ascii)
+        FindHistoryStore.record(pattern: "ABCD", encoding: .hex)
+
+        let bytes: [UInt8] = Array("ABCD".utf8)
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let (combo, encoding, _, _) = try barControls(window)
+
+        // The most recent pair (hex) is offered by default.
+        XCTAssertEqual(combo.stringValue, "ABCD")
+        XCTAssertEqual(encoding.titleOfSelectedItem, "Hex bytes")
+
+        // Both pairs are listed as distinct, encoding-labelled items.
+        let asciiIndex = combo.indexOfItem(withObjectValue: "ABCD — ASCII")
+        let hexIndex = combo.indexOfItem(withObjectValue: "ABCD — Hex")
+        XCTAssertGreaterThanOrEqual(asciiIndex, 0, "the ASCII pair must be listed")
+        XCTAssertGreaterThanOrEqual(hexIndex, 0, "the Hex pair must be listed")
+        XCTAssertNotEqual(asciiIndex, hexIndex, "the two pairs are distinct items")
+
+        // Pick the ASCII pair: field keeps the pattern, popup switches to ASCII.
+        XCTAssertTrue(pickFromHistory(combo, at: asciiIndex, expecting: "ABCD"),
+                      "the picked search must load into the field")
+        XCTAssertEqual(combo.stringValue, "ABCD")
+        XCTAssertEqual(encoding.titleOfSelectedItem, "Text — ASCII")
+        XCTAssertTrue(controller.windowModel.pane1.hexSelection().isEmpty,
+                      "picking a recent search must load it, not run it")
+    }
+
+    /// Reopening Find with a remembered pattern must not search on its own.
+    func testReopenFindDoesNotAutoSearch() throws {
+        // Two occurrences so a stray auto-search finds the next one and moves
+        // the selection.
+        let bytes: [UInt8] = [0xDE, 0xAD, 0xBE, 0xDE, 0xAD, 0xBE]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+
+        // First search finds the first match.
+        controller.findPattern()
+        let (combo, _, done, _) = try barControls(window)
+        combo.stringValue = "DE AD BE"
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(3) { controller.windowModel.pane1.hexSelection().start == 0 })
+
+        // Reopen: the last pattern is pre-filled, but the bar must stay open and
+        // the selection must not move until the user explicitly searches.
+        done.performClick(nil)
+        controller.findPattern()
+        XCTAssertTrue(pumpUntil(2) { descendants(of: window.contentView!, FindBarView.self).first?.isHidden == false })
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))  // let any stray focus-time action fire
+        XCTAssertFalse(try findBar(window).isHidden, "reopening Find must not auto-search and dismiss itself")
+        XCTAssertEqual(controller.windowModel.pane1.hexSelection().start, 0,
+                       "the selection must not move on reopen")
+    }
+
+    /// A match far below the viewport is scrolled to the vertical centre of the
+    /// pane — not left at the bottom edge (Find Next) or top edge (Find Previous).
+    func testFindCentersMatchInView() throws {
+        // 300 rows; the match at row 250 is far below the initial viewport.
+        var bytes = [UInt8](repeating: 0x11, count: 300 * 16)
+        bytes[250 * 16] = 0xDE
+        bytes[250 * 16 + 1] = 0xAD
+        bytes[250 * 16 + 2] = 0xBE
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "DE AD BE"
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(3) { controller.windowModel.pane1.hexSelection().start == UInt64(250 * 16) })
+
+        // The match is selected, and the pane scrolled so it sits mid-view.
+        let matchStart = controller.windowModel.pane1.hexSelection().start
+        XCTAssertEqual(matchStart, UInt64(250 * 16))
+        let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
+        let hexView = try XCTUnwrap(paneView.scrollView.documentView as? HexView)
+        let clip = paneView.scrollView.contentView
+        let rowFrame = hexView.hexLayout.rowFrame(row: Int(matchStart / 16))
+        let maxY = max(0, hexView.bounds.height - clip.bounds.height)
+        let expected = min(max(0, rowFrame.midY - clip.bounds.height / 2), maxY)
+        XCTAssertEqual(clip.bounds.origin.y, expected, accuracy: 1.0,
+                       "the match row must be vertically centred in the pane")
+    }
+
+    // MARK: - Case sensitivity (§11)
+
+    /// The Aa toggle is off by default (case-insensitive, like TextEdit) and is
+    /// disabled for hex patterns, where it is meaningless.
+    func testCaseToggleDefaultsOffAndDisabledForHex() throws {
+        let (controller, window, url) = try makeController([0x41, 0x42, 0x43])
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let (_, encoding, _, caseToggle) = try barControls(window)
+        XCTAssertEqual(encoding.titleOfSelectedItem, "Hex bytes")
+        XCTAssertEqual(caseToggle.state, .off, "case-insensitive must be the default")
+        XCTAssertFalse(caseToggle.isEnabled, "case sensitivity is meaningless for hex")
+
+        // Switching to a text encoding enables the toggle.
+        encoding.selectItem(at: SearchEncoding.allCases.firstIndex(of: .utf8)!)
+        encoding.sendAction(encoding.action, to: encoding.target)
+        XCTAssertTrue(caseToggle.isEnabled, "text encodings can be searched case-sensitively")
+    }
+
+    /// The toggle actually changes matching: "hi" finds "Hi" by default,
+    /// finds only exact "hi" with the toggle on, and "hI" has no match then.
+    func testCaseSensitiveToggleControlsMatching() throws {
+        let bytes: [UInt8] = Array("Hi hi HI".utf8)  // "hi" at 0 and 3; "HI" at 6
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let (combo, encoding, _, caseToggle) = try barControls(window)
+        encoding.selectItem(at: SearchEncoding.allCases.firstIndex(of: .utf8)!)
+        encoding.sendAction(encoding.action, to: encoding.target)
+
+        // Default (off): "hi" matches "Hi" at the very start.
+        combo.stringValue = "hi"
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(3) { controller.windowModel.pane1.hexSelection().start == 0 },
+                      "case-insensitive search must find the first hi-like match")
+
+        // Toggle on: "hi" now matches only the exact lowercase one at 3.
+        caseToggle.performClick(nil)
+        XCTAssertTrue(caseToggle.state == .on)
+        combo.stringValue = "hi"
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(3) { controller.windowModel.pane1.hexSelection().start == 3 },
+                      "case-sensitive search must skip Hi")
+
+        // Case-sensitive "hI" exists nowhere → No match found.
+        combo.stringValue = "hI"
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(2) { self.hasStatus("No match found.", in: window) },
+                      "case-sensitive search must not match mixed case")
+    }
+
+    /// Hex patterns are always byte-exact: the Aa toggle's default "case
+    /// insensitive" state must NOT fold hex bytes (0x45 = 'E'). "4545" (= EE)
+    /// must match only the exact byte pair 45 45 — never "Ee" (45 65) or
+    /// "eE" (65 45), which fold to "ee".
+    func testHexSearchIsAlwaysByteExact() throws {
+        // Bytes: "Ee" (45 65), "EE" (45 45) at offset 2, "eE" (65 45).
+        let bytes: [UInt8] = [0x45, 0x65, 0x45, 0x45, 0x65, 0x45]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let (combo, encoding, _, caseToggle) = try barControls(window)
+        XCTAssertEqual(encoding.titleOfSelectedItem, "Hex bytes")
+        XCTAssertEqual(caseToggle.state, .off, "case-insensitive is the default for text — but hex must ignore it")
+
+        combo.stringValue = "4545"
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(3) { controller.windowModel.pane1.hexSelection().start == 2 },
+                      "hex search must match the exact bytes 45 45, not a folded Ee/eE")
+    }
+
+    /// The case-sensitive flag is stored with each history entry for text
+    /// encodings, shown as a "(CS)" suffix in the dropdown, and restored into
+    /// the form when the item is picked — while hex never shows it.
+    func testFindHistoryStoresAndRestoresCaseSensitivity() throws {
+        // Seed: an ASCII search recorded case-sensitively, plus a hex one
+        // (always byte-exact — its forced flag must not display a suffix).
+        FindHistoryStore.record(pattern: "ABCD", encoding: .ascii, caseSensitive: true)
+        FindHistoryStore.record(pattern: "4545", encoding: .hex, caseSensitive: true)
+
+        let bytes: [UInt8] = Array("ABCD".utf8)
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let (combo, encoding, _, caseToggle) = try barControls(window)
+
+        // The dropdown labels the case-sensitive entry with "(CS)".
+        let csIndex = combo.indexOfItem(withObjectValue: "ABCD — ASCII (CS)")
+        XCTAssertGreaterThanOrEqual(csIndex, 0,
+                                    "a case-sensitive search must show the (CS) suffix")
+        XCTAssertGreaterThanOrEqual(combo.indexOfItem(withObjectValue: "4545 — Hex"), 0,
+                                    "hex is always exact — no (CS) suffix")
+
+        // Pick the case-sensitive entry: the form's toggle follows it.
+        XCTAssertTrue(pickFromHistory(combo, at: csIndex, expecting: "ABCD"),
+                      "the picked search must load into the field")
+        XCTAssertEqual(combo.stringValue, "ABCD")
+        XCTAssertEqual(encoding.titleOfSelectedItem, "Text — ASCII")
+        XCTAssertEqual(caseToggle.state, .on,
+                       "picking a case-sensitive entry restores the toggle")
+        XCTAssertTrue(controller.windowModel.pane1.hexSelection().isEmpty,
+                      "picking a recent search must load it, not run it")
+    }
+
+    /// The persisted toggle survives closing and reopening the bar.
+    func testCaseTogglePersistsAcrossReopen() throws {
+        let (controller, window, url) = try makeController([0x41, 0x42, 0x43])
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        var (_, encoding, done, caseToggle) = try barControls(window)
+        encoding.selectItem(at: SearchEncoding.allCases.firstIndex(of: .utf8)!)
+        encoding.sendAction(encoding.action, to: encoding.target)
+        caseToggle.performClick(nil)
+        XCTAssertTrue(caseToggle.state == .on)
+
+        done.performClick(nil)
+        controller.findPattern()
+        (_, encoding, _, caseToggle) = try barControls(window)
+        XCTAssertEqual(caseToggle.state, .on, "the case toggle must persist across reopen")
+    }
+
+}

@@ -173,7 +173,7 @@ final class PaneViewModelTests: XCTestCase {
         let (pane, url) = try openPane([0x01, 0x02, 0x03])
         defer { try? FileManager.default.removeItem(at: url) }
         pane.setSelection(SelectionModel(start: 0, end: 2, fileSize: 3))
-        pane.fillSelectionWithZero()
+        pane.fillSelection(with: [0])
         XCTAssertEqual(pane.hexByteStates(in: 0..<2).map(\.byte), [0x00, 0x00])
         XCTAssertEqual(pane.fileSize, 3)   // length unchanged
     }
@@ -271,8 +271,11 @@ final class PaneViewModelTests: XCTestCase {
     func testFindPatternBackward() throws {
         let (pane, url) = try openPane([0x01, 0x02, 0x01, 0x02])
         defer { try? FileManager.default.removeItem(at: url) }
+        // The match at 2..<4 spans the caret (offset 3), so it is skipped —
+        // backward must return the last match ending at or before `from` (the
+        // same way forward returns the first match starting at or after `from`).
         let range = try pane.find(pattern: [0x01, 0x02], from: 3, direction: .backward)
-        XCTAssertEqual(range, 2..<4)
+        XCTAssertEqual(range, 0..<2)
     }
 
     func testFindReturnsNilWhenAbsent() throws {

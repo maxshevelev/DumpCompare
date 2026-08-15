@@ -4,8 +4,8 @@ import Foundation
 ///
 /// Each case carries everything needed to apply and revert it without re-reading
 /// the storage:
-/// - `.overwrite` / `.fillZero` carry the bytes before and after, so reverting
-///   simply writes `before` back.
+/// - `.overwrite` carries the bytes before and after (a fill is an overwrite
+///   with a repeated pattern), so reverting simply writes `before` back.
 /// - `.insert` is reverted by deleting its bytes; `.delete` is reverted by
 ///   re-inserting the removed bytes at the original offset.
 ///
@@ -17,7 +17,6 @@ public enum UndoOperation: Equatable, Sendable {
     case overwrite(range: Range<UInt64>, before: [UInt8], after: [UInt8])
     case insert(at: UInt64, bytes: [UInt8])
     case delete(range: Range<UInt64>, bytes: [UInt8])
-    case fillZero(range: Range<UInt64>, before: [UInt8])
 }
 
 /// Linear undo/redo history with a dirty checkpoint (decision D4).

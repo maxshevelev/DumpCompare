@@ -7,6 +7,16 @@ final class MainViewController: NSViewController {
     private weak var activeFilePane: FilePaneView?
     private weak var comparisonView: ComparisonView?
 
+    /// The non-modal Find bar shown at the top on Cmd+F (§11). It lives above
+    /// the content area and pushes it down while visible; when hidden the
+    /// content fills the window again.
+    private let findBar = FindBarView()
+    /// Host for the mode content (`setContentView` swaps what's inside).
+    private let contentContainer = NSView()
+    private var contentTopToView: NSLayoutConstraint!
+    private var contentTopToFindBar: NSLayoutConstraint!
+    private var findTask: Task<Void, Never>?
+
     /// Builds the background block index for comparison mode. The provider
     /// returns the current storages on every start/rebuild, so a revert that
     /// swaps a document's storage is always re-read.
@@ -26,6 +36,35 @@ final class MainViewController: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         wireExternalChangeDetection()
+
+        findBar.translatesAutoresizingMaskIntoConstraints = false
+        findBar.isHidden = true  // shown by Cmd+F (§11)
+        findBar.onSearch = { [weak self] pattern, direction, caseSensitive in
+            self?.runSearch(pattern: pattern, direction: direction, caseSensitive: caseSensitive)
+        }
+        findBar.onError = { [weak self] message in
+            self?.showFindMessage(message)
+        }
+        findBar.onClose = { [weak self] in
+            self?.hideFindBar()
+        }
+        view.addSubview(findBar)
+
+        contentContainer.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(contentContainer)
+
+        contentTopToView = contentContainer.topAnchor.constraint(equalTo: view.topAnchor)
+        contentTopToFindBar = contentContainer.topAnchor.constraint(equalTo: findBar.bottomAnchor)
+        NSLayoutConstraint.activate([
+            findBar.topAnchor.constraint(equalTo: view.topAnchor),
+            findBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            findBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            contentContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            contentContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            contentContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            contentTopToView,
+        ])
+
         apply(mode: .empty)
     }
 
@@ -126,14 +165,14 @@ final class MainViewController: NSViewController {
     }
 
     private func setContentView(_ newView: NSView) {
-        view.subviews.forEach { $0.removeFromSuperview() }
+        contentContainer.subviews.forEach { $0.removeFromSuperview() }
         newView.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(newView)
+        contentContainer.addSubview(newView)
         NSLayoutConstraint.activate([
-            newView.topAnchor.constraint(equalTo: view.topAnchor),
-            newView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            newView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            newView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            newView.topAnchor.constraint(equalTo: contentContainer.topAnchor),
+            newView.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor),
+            newView.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor),
+            newView.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
         ])
     }
 
@@ -558,8 +597,13 @@ final class MainViewController: NSViewController {
         }
     }
 
-    @objc func fillSelectionWithZero() {
-        activePane.fillSelectionWithZero()
+    @objc func fillSelectionWithBytes() {
+        let pane = activePane
+        guard pane.isOpen, !pane.hexSelection().isEmpty else { return }
+        let sheet = FillSheetController(selectionCount: pane.hexSelection().count) { [weak self] pattern in
+            self?.activePane.fillSelection(with: pattern)
+        }
+        presentAsSheet(sheet)
     }
 
     @objc func deleteBytes() {
@@ -655,26 +699,60 @@ final class MainViewController: NSViewController {
         presentAsSheet(sheet)
     }
 
+    /// Edit > Find (Cmd+F): shows the non-modal Find bar at the top of the
+    /// window (§11).
     @objc func findPattern() {
         let pane = activePane
         guard pane.isOpen else { return }
-        let sheet = FindSheetController { [weak self] pattern, direction in
-            guard let self else { return false }
-            return await self.performFind(pattern: pattern, direction: direction)
+        showFindBar()
+    }
+
+    private func showFindBar() {
+        contentTopToView.isActive = false
+        contentTopToFindBar.isActive = true
+        findBar.isHidden = false
+        view.layoutSubtreeIfNeeded()
+        findBar.prepareForShow()
+    }
+
+    private func hideFindBar() {
+        findBar.isHidden = true
+        contentTopToFindBar.isActive = false
+        contentTopToView.isActive = true
+        findTask?.cancel()
+        focusActiveHexView()
+    }
+
+    /// Launches a background search from the find bar. A new search cancels any
+    /// in-flight one (rapid < > presses), and the bar stays open — only the
+    /// selection moves (§11).
+    private func runSearch(pattern: SearchPattern, direction: SearchDirection, caseSensitive: Bool) {
+        findTask?.cancel()
+        findTask = Task { [weak self] in
+            guard let self else { return }
+            let found = await self.performFind(pattern: pattern, direction: direction, caseSensitive: caseSensitive)
+            guard !Task.isCancelled else { return }
+            if !found {
+                self.showFindMessage("No match found.")
+            }
         }
-        presentAsSheet(sheet)
     }
 
     /// Runs a search off the main thread and, on a match, selects it in the
-    /// active pane. The sheet stays responsive (spinner) and the scan is
-    /// cancelled if the user presses Cancel/Esc (§13.8, §14.4, §18 #10).
-    private func performFind(pattern: [UInt8], direction: SearchDirection) async -> Bool {
+    /// active pane (§13.8, §14.4, §18 #10).
+    private func performFind(pattern: SearchPattern, direction: SearchDirection, caseSensitive: Bool) async -> Bool {
         let pane = activePane
         guard pane.isOpen, let storage = pane.document?.storage else { return false }
-        let from = pane.caretOffset
+        // Find Next starts after the current selection (so it never re-selects
+        // the match just found); Find Previous starts at the selection's start
+        // (so it moves back). With no selection both anchor on the caret.
+        let selection = pane.hexSelection()
+        let from = selection.isEmpty ? pane.caretOffset
+            : direction == .forward ? selection.end : selection.start
         let background = Task.detached(priority: .userInitiated) {
             do {
-                return try SearchEngine.find(pattern: pattern, in: storage, from: from, direction: direction,
+                return try SearchEngine.find(pattern: pattern.bytes, in: storage, from: from, direction: direction,
+                                             caseSensitive: caseSensitive,
                                              shouldCancel: { Task.isCancelled })
             } catch is CancellationError {
                 return nil
@@ -688,8 +766,25 @@ final class MainViewController: NSViewController {
         )
         guard !Task.isCancelled, let range, pane.isOpen else { return false }
         pane.select(range: range)
-        focusActiveHexView()
+        // Show the match mid-pane: a plain reveal only scrolls the found row to
+        // the nearest edge (bottom after Find Next, top after Find Previous) (§11).
+        activeFilePane?.revealSelectionCentered()
+        // A search launched from the find bar must leave focus in the pattern
+        // field so a subsequent Enter re-searches; only when the bar is hidden
+        // does the search hand focus to the hex view.
+        if findBar.isHidden {
+            focusActiveHexView()
+        } else {
+            findBar.focusPatternField()
+        }
         return true
+    }
+
+    /// Beeps and flashes `message` in the active pane's status bar (used for
+    /// parse errors and empty search results from the Find bar, §11).
+    private func showFindMessage(_ message: String) {
+        NSSound.beep()
+        activeFilePane?.showTransientMessage(message)
     }
 
     // MARK: - Alerts
@@ -859,13 +954,15 @@ extension MainViewController: NSMenuItemValidation {
              #selector(redoEdit),
              #selector(pasteWrite),
              #selector(pasteInsert),
-             #selector(fillSelectionWithZero),
              #selector(deleteBytes),
              #selector(selectBlock),
              #selector(goToPosition),
              #selector(findPattern),
              #selector(selectAllBytes):
             return activePane.isOpen
+        case #selector(fillSelectionWithBytes):
+            let pane = activePane
+            return pane.isOpen && !pane.hexSelection().isEmpty
         case #selector(copySelection):
             let pane = activePane
             return pane.isOpen && !pane.hexSelection().isEmpty

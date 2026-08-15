@@ -352,11 +352,12 @@ final class PaneViewModel: HexViewDataSource {
         notify()
     }
 
-    /// Fill Selection with Zero (menu command, §7.3).
-    func fillSelectionWithZero() {
-        guard let doc = document, !doc.selection.isEmpty else { return }
+    /// Fill Selection with… (menu command, §7.3): repeats `pattern` across the
+    /// selection.
+    func fillSelection(with pattern: [UInt8]) {
+        guard let doc = document, !doc.selection.isEmpty, !pattern.isEmpty else { return }
         endTypingGroup()
-        fillSelection()
+        fillSelection(pattern: pattern)
     }
 
     /// True length-changing delete (Edit > Delete Bytes…, §7.2, confirmed by
@@ -545,10 +546,14 @@ final class PaneViewModel: HexViewDataSource {
     }
 
     private func fillSelection() {
+        fillSelection(pattern: [0])
+    }
+
+    private func fillSelection(pattern: [UInt8]) {
         guard let doc = document else { return }
         let start = doc.selection.start
         let end = doc.selection.end
-        try? doc.fillZero(in: start..<end)
+        try? doc.fill(pattern: pattern, in: start..<end)
         doc.setSelection(SelectionModel.empty(at: start, fileSize: doc.size))
         nibble = 0
         overwriteSelection = nil

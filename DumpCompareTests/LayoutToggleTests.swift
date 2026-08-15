@@ -44,6 +44,18 @@ final class LayoutToggleTests: XCTestCase {
         splitView.convert(point, to: nil)
     }
 
+    /// All `type` views anywhere under `view`. The comparison view no longer sits
+    /// directly in the controller's root view — it lives inside a content
+    /// container below the find bar — so a direct-subviews lookup would miss it.
+    private func descendants<T: NSView>(of view: NSView, _ type: T.Type) -> [T] {
+        var result: [T] = []
+        for sub in view.subviews {
+            if let match = sub as? T { result.append(match) }
+            result.append(contentsOf: descendants(of: sub, type))
+        }
+        return result
+    }
+
     private func mouse(_ type: NSEvent.EventType, at p: NSPoint, window: NSWindow) -> NSEvent {
         NSEvent.mouseEvent(with: type, location: p, modifierFlags: [],
                            timestamp: ProcessInfo.processInfo.systemUptime,
@@ -66,7 +78,7 @@ final class LayoutToggleTests: XCTestCase {
         wc.mainViewController.apply(mode: .comparison)
         settle(window)
 
-        guard let cv = wc.mainViewController.view.subviews.compactMap({ $0 as? ComparisonView }).first else {
+        guard let cv = descendants(of: wc.mainViewController.view, ComparisonView.self).first else {
             XCTFail("no comparisonView"); return
         }
         let sv = cv.splitView

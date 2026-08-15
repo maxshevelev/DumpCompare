@@ -3,7 +3,7 @@ import DumpCompareCore
 
 // MARK: - Shared sheet chrome
 
-/// Base class for the input dialogs (Go To Position, Select Block, Find).
+/// Base class for the input dialogs (Go To Position, Select Block).
 /// Builds a titled sheet with a field stack, an inline error label, and a
 /// Cancel/Submit button row; subclasses add fields and validation (§10).
 class SheetViewController: NSViewController {
@@ -16,6 +16,13 @@ class SheetViewController: NSViewController {
 
     var onSubmit: (() -> Void)?
     var onCancel: (() -> Void)?
+
+    /// Set synchronously around the `makeFirstResponder` call in `viewDidAppear`.
+    /// AppKit fires the field's action (`submitPressed`) as a side effect of
+    /// `makeFirstResponder` ending the field-editing session that the sheet's
+    /// initial focus started; suppressing it keeps the sheet from dismissing
+    /// itself before it ever attaches.
+    private var presentationInProgress = false
 
     init(title: String, message: String?) {
         self.titleText = title
@@ -91,14 +98,27 @@ class SheetViewController: NSViewController {
             root.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             root.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             contentView.widthAnchor.constraint(greaterThanOrEqualToConstant: 400),
+            contentView.heightAnchor.constraint(greaterThanOrEqualToConstant: 200),
         ])
+        // A concrete, generous default frame lets `presentAsSheet` size the
+        // sheet window even before auto layout runs (the view arrives with a
+        // zero frame); it is wide/tall enough to hold any of the subclasses.
+        contentView.frame = NSRect(x: 0, y: 0, width: 420, height: 220)
         view = contentView
     }
 
     override func viewDidAppear() {
         super.viewDidAppear()
         if let field = firstField() {
+            // The sheet's initial focus already made the field's field editor
+            // first responder; calling makeFirstResponder again ends that
+            // editing session synchronously, and `textDidEndEditing` sends the
+            // field's action (`submitPressed`). Suppress that transient event —
+            // a real submit from the OK button / Return happens later, after the
+            // sheet is attached and this flag is clear again.
+            presentationInProgress = true
             view.window?.makeFirstResponder(field)
+            presentationInProgress = false
         }
     }
 
@@ -119,6 +139,9 @@ class SheetViewController: NSViewController {
     // MARK: - Actions
 
     @objc func submitPressed() {
+        // Ignore the action fired by the sheet's initial focus setup (see
+        // `presentationInProgress`); the user cannot have submitted yet.
+        guard !presentationInProgress else { return }
         if let error = validate() {
             showError(error)
             return
@@ -312,163 +335,133 @@ final class SelectBlockSheetController: SheetViewController {
     }
 }
 
-// MARK: - Find (§11)
+// MARK: - Fill Selection (§7.3)
 
-/// Pattern + encoding + Find Next / Find Previous.
-///
-/// Search runs in the background (the `onFind` closure is async), so a large
-/// file is scanned without blocking the UI (§13.8, §14.4). While a search is in
-/// flight the sheet shows a spinner, disables its inputs, and can be aborted by
-/// pressing Cancel/Esc — which cancels the background scan.
-final class FindSheetController: SheetViewController {
-    private let onFind: ([UInt8], SearchDirection) async -> Bool  // returns found
+/// Remembers the last byte pattern used in Edit > Fill Selection with… so the
+/// next fill starts from it instead of always defaulting to `FF`. Persisted in
+/// `UserDefaults` (same pattern as `WordSize`), so it survives app restarts.
+enum FillPatternStore {
+    static let userDefaultsKey = "LastFillPattern"
+    static let defaultPattern = "FF"
 
-    private var patternField: NSTextField!
-    private var encodingPopup: NSPopUpButton!
-    private var findNextButton: NSButton!
-    private var findPreviousButton: NSButton!
-    private let progressIndicator = NSProgressIndicator()
-    private let busyLabel = NSTextField(labelWithString: "Searching…")
-    private var searchTask: Task<Void, Never>?
+    /// The last pattern the user filled with, or `defaultPattern` when none is
+    /// saved yet.
+    static var last: String {
+        UserDefaults.standard.string(forKey: userDefaultsKey) ?? defaultPattern
+    }
 
-    init(onFind: @escaping ([UInt8], SearchDirection) async -> Bool) {
-        self.onFind = onFind
-        super.init(title: "Find", message: "Search the active file's current contents.")
+    /// Persists `pattern` as the value to offer next time.
+    static func save(_ pattern: String) {
+        UserDefaults.standard.set(pattern, forKey: userDefaultsKey)
+    }
+}
+
+/// Edit > Fill Selection with…: a hex byte sequence repeated across the
+/// selection, defaulting to the last used pattern (or `FF`). Uses the same hex
+/// parsing as Find.
+final class FillSheetController: SheetViewController {
+    private var bytesField: NSTextField!
+    private let onFill: ([UInt8]) -> Void
+
+    init(selectionCount: UInt64, onFill: @escaping ([UInt8]) -> Void) {
+        self.onFill = onFill
+        super.init(title: "Fill Selection with…",
+                   message: "Fill the selected \(selectionCount) byte(s) by repeating the byte sequence.")
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
     }
 
-    deinit {
-        searchTask?.cancel()
-    }
-
     override func loadView() {
         super.loadView()
-
-        patternField = addFieldRow(label: "Pattern:", initial: "")
-
-        encodingPopup = NSPopUpButton()
-        encodingPopup.addItems(withTitles: SearchEncoding.allCases.map(Self.title(for:)))
-        encodingPopup.setAccessibilityLabel("Encoding")  // §15
-        let label = NSTextField(labelWithString: "Encoding:")
-        label.font = .systemFont(ofSize: 12)
-        label.textColor = .secondaryLabelColor
-        label.alignment = .right
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.widthAnchor.constraint(equalToConstant: 110).isActive = true
-        let row = NSStackView()
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 8
-        row.addArrangedSubview(label)
-        row.addArrangedSubview(encodingPopup)
-        contentStack.addArrangedSubview(row)
-
-        // Replace the base OK button with Find Next / Find Previous.
-        submitButton.removeFromSuperview()
-        let findNext = NSButton(title: "Find Next", target: self, action: #selector(findNext))
-        findNext.keyEquivalent = "\r"
-        buttonRow.addArrangedSubview(findNext)
-        let findPrevious = NSButton(title: "Find Previous", target: self, action: #selector(findPrevious))
-        findPrevious.keyEquivalent = ""
-        buttonRow.addArrangedSubview(findPrevious)
-        findNextButton = findNext
-        findPreviousButton = findPrevious
-
-        // Busy row (spinner + "Searching…"), hidden until a search starts.
-        progressIndicator.style = .spinning
-        progressIndicator.controlSize = .small
-        progressIndicator.translatesAutoresizingMaskIntoConstraints = false
-        busyLabel.font = .systemFont(ofSize: 12)
-        busyLabel.textColor = .secondaryLabelColor
-        let busyRow = NSStackView()
-        busyRow.orientation = .horizontal
-        busyRow.spacing = 6
-        busyRow.addArrangedSubview(progressIndicator)
-        busyRow.addArrangedSubview(busyLabel)
-        contentStack.addArrangedSubview(busyRow)
-        setBusy(false)
+        bytesField = addFieldRow(label: "Bytes:", initial: FillPatternStore.last)
     }
 
-    override func firstField() -> NSView? { patternField }
+    override func firstField() -> NSView? { bytesField }
 
-    override func cancelPressed() {
-        searchTask?.cancel()
-        super.cancelPressed()
-    }
-
-    private func setBusy(_ busy: Bool) {
-        progressIndicator.isHidden = !busy
-        busyLabel.isHidden = !busy
-        if busy {
-            progressIndicator.startAnimation(nil)
-        } else {
-            progressIndicator.stopAnimation(nil)
-        }
-        findNextButton?.isEnabled = !busy
-        findPreviousButton?.isEnabled = !busy
-        patternField?.isEnabled = !busy
-        encodingPopup?.isEnabled = !busy
-    }
-
-    private func currentEncoding() -> SearchEncoding {
-        SearchEncoding.allCases[min(encodingPopup.indexOfSelectedItem, SearchEncoding.allCases.count - 1)]
-    }
-
-    private func parsedPattern() -> SearchPattern? {
+    override func validate() -> String? {
+        let text = bytesField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty { return "Enter at least one byte (e.g. FF)." }
         do {
-            return try SearchEngine.parsePattern(patternField.stringValue, encoding: currentEncoding())
-        } catch {
-            showError(Self.errorText(for: error))
+            _ = try SearchEngine.parsePattern(text, encoding: .hex)
             return nil
+        } catch {
+            return "Invalid hex — use pairs like DE AD BE EF."
         }
     }
 
-    @objc func findNext() {
-        startSearch(.forward)
-    }
-
-    @objc func findPrevious() {
-        startSearch(.backward)
-    }
-
-    private func startSearch(_ direction: SearchDirection) {
-        guard searchTask == nil, let pattern = parsedPattern() else { return }
-        setBusy(true)
-        searchTask = Task { [weak self] in
-            guard let self else { return }
-            let found = await self.onFind(pattern.bytes, direction)
-            guard !Task.isCancelled else { return }
-            self.searchTask = nil
-            self.setBusy(false)
-            if found {
-                self.dismiss(self)
-            } else {
-                self.showError("No match found.")
-            }
-        }
-    }
-
-    private static func errorText(for error: Error) -> String {
-        if let searchError = error as? SearchError {
-            switch searchError {
-            case .emptyPattern: return "Enter a non-empty pattern."
-            case .invalidHexPattern: return "Invalid hex — use pairs like DE AD BE EF."
-            case .undecodableText: return "Text cannot be encoded in the selected encoding."
-            }
-        }
-        return "Invalid pattern."
-    }
-
-    private static func title(for encoding: SearchEncoding) -> String {
-        switch encoding {
-        case .hex: return "Hex bytes"
-        case .ascii: return "Text — ASCII"
-        case .utf8: return "Text — UTF-8"
-        case .utf16LE: return "Text — UTF-16 LE"
-        case .utf16BE: return "Text — UTF-16 BE"
-        }
+    override func handleSubmit() {
+        guard let pattern = try? SearchEngine.parsePattern(bytesField.stringValue, encoding: .hex) else { return }
+        // Remember the raw text as typed (trimmed of surrounding whitespace), so
+        // the next fill offers the same pattern (§7.3).
+        FillPatternStore.save(bytesField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines))
+        onFill(pattern.bytes)
     }
 }
+
+// MARK: - Find history (§11)
+
+/// Remembers the last searches (pattern + encoding + case-sensitivity) so the
+/// Find bar can offer them in the pattern combo and default to the most recent
+/// one. Persisted in `UserDefaults` (same pattern as `WordSize`); capped at 10
+/// entries, most recent first, one entry per (pattern, encoding) pair.
+enum FindHistoryStore {
+    static let userDefaultsKey = "FindHistory"
+    static let limit = 10
+
+    /// The defaults domain the history lives in. Swappable so tests run against
+    /// an isolated store instead of the real app's `UserDefaults.standard`
+    /// (which would otherwise pick up and pollute the user's own searches §11).
+    static var defaults: UserDefaults = .standard
+
+    struct Entry: Equatable {
+        let pattern: String
+        let encoding: SearchEncoding
+        /// Whether the search was run case-sensitively. Meaningful only for text
+        /// encodings — hex is always byte-exact, so its recorded flag (true)
+        /// never shows in the dropdown and is never restored.
+        let caseSensitive: Bool
+    }
+
+    /// The saved searches, most recent first.
+    static var recent: [Entry] {
+        // The stored rows now mix Strings and a Bool, so the array casts to
+        // [[String: Any]] (a [[String: String]] cast would fail and wipe the
+        // whole history).
+        guard let raw = defaults.array(forKey: userDefaultsKey) as? [[String: Any]] else { return [] }
+        return raw.compactMap { dict in
+            guard let pattern = dict["pattern"] as? String,
+                  let encodingName = dict["encoding"] as? String,
+                  let encoding = SearchEncoding(rawValue: encodingName) else { return nil }
+            return Entry(pattern: pattern, encoding: encoding,
+                         caseSensitive: dict["caseSensitive"] as? Bool ?? false)
+        }
+    }
+
+    /// The most recent search — the default the sheet offers on open.
+    static var mostRecent: Entry? { recent.first }
+
+    /// Records a search: moves the (pattern, encoding) pair to the front,
+    /// dropping any older entry with the SAME pair, and capping the list at
+    /// `limit`. The same pattern under a different encoding is a separate item
+    /// — "abcd" as ASCII and "abcd" as hex both stay in the history (§11).
+    /// The `caseSensitive` flag rides along with the pair: re-recording the same
+    /// pair with a different flag replaces the entry (latest search wins), and
+    /// the flag is what the dropdown's "(CS)" suffix reflects.
+    static func record(pattern: String, encoding: SearchEncoding, caseSensitive: Bool = false) {
+        let trimmed = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        var entries = recent.filter { !($0.pattern == trimmed && $0.encoding == encoding) }
+        entries.insert(Entry(pattern: trimmed, encoding: encoding, caseSensitive: caseSensitive), at: 0)
+        defaults.set(
+            Array(entries.prefix(limit)).map {
+                ["pattern": $0.pattern,
+                 "encoding": $0.encoding.rawValue,
+                 "caseSensitive": $0.caseSensitive]
+            },
+            forKey: userDefaultsKey
+        )
+    }
+}
+

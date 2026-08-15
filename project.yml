@@ -53,6 +53,11 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: "5.9"
         MACOSX_DEPLOYMENT_TARGET: "14.0"
+        # Match the app's local ad-hoc signing so the test bundle is actually
+        # signed; the host app's codesign validates its embedded xctest plugin
+        # and fails ("code object is not signed at all") if it is not.
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
 
 schemes:
   DumpCompare:

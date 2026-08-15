@@ -212,6 +212,26 @@ final class FilePaneView: NSView {
         window?.makeFirstResponder(hexView)
     }
 
+    /// Scrolls the hex view so the current selection sits in the vertical centre
+    /// of the visible area — used after a Find result lands, so the match is
+    /// shown mid-pane instead of at its edge (§11).
+    func revealSelectionCentered() {
+        hexView.revealSelectionCentered()
+    }
+
+    /// Shows a transient message (e.g. "No match found.") in the status bar,
+    /// replacing the regular status for a couple of seconds, then restoring it.
+    /// Used by the Find bar for errors and empty results (§11).
+    func showTransientMessage(_ message: String) {
+        statusLabel.stringValue = message
+        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(restoreStatus), object: nil)
+        perform(#selector(restoreStatus), with: nil, afterDelay: 2.0)
+    }
+
+    @objc private func restoreStatus() {
+        updateStatus()
+    }
+
     /// Highlights the header to mark this pane as active (§3.3). The hex view
     /// uses the same flag to show the caret only on the active pane and draw the
     /// mirror frame on the inactive one.
