@@ -268,7 +268,7 @@ final class HexView: NSView {
                 NSBezierPath(rect: asciiRect).fill()
             }
 
-            let textColor = state.isModified ? HexTheme.modifiedText : HexTheme.byteText
+            let textColor = HexTheme.textColor(for: state)
             let digits = hexDigits(state.byte)
             draw(text: digits, in: hexFrame, baseline: baseline, color: textColor)
 
@@ -596,8 +596,25 @@ final class HexView: NSView {
 /// unsaved modification = red foreground, selection stays legible).
 enum HexTheme {
     static let byteText = NSColor.labelColor
+
+    /// Text for "fill" bytes (0x00, 0xFF) — the label dimmed so significant
+    /// bytes stand out (§6). A translucent label keeps the colour mode-correct
+    /// and stays legible over selection and difference fills.
+    static let mutedByteText = NSColor(name: nil) { _ in
+        NSColor.labelColor.withAlphaComponent(0.40)
+    }
+
     static let modifiedText = NSColor.systemRed
     static let caretColor = NSColor.controlAccentColor
+
+    /// Text colour for a byte. A modified byte keeps its red warning; otherwise
+    /// a fill byte (0x00, 0xFF) is drawn muted so the significant bytes read
+    /// more contrasty than the padding around them (§6).
+    static func textColor(for state: HexByteState) -> NSColor {
+        if state.isModified { return modifiedText }
+        if state.byte == 0x00 || state.byte == 0xFF { return mutedByteText }
+        return byteText
+    }
 
     static let differenceFill = NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
