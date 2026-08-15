@@ -64,6 +64,10 @@ final class HexView: NSView {
     /// delegate uses this to zoom-to-fit (§3.1) instead of zooming to max.
     var hexContentWidth: CGFloat { currentLayout.contentWidth }
 
+    /// Ideal height of the hex grid — all rows for the current file size. The
+    /// window delegate uses this to zoom-to-fit the window height (§3.1).
+    var hexContentHeight: CGFloat { currentLayout.totalHeight(fileSize: dataSource?.fileSize ?? 0) }
+
     /// Geometry of the current dump, used internally for hit-testing and
     /// exposed (internal) for tests. (`layout` itself is NSView's method.)
     var hexLayout: HexLayout { currentLayout }

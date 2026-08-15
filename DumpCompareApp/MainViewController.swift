@@ -876,31 +876,39 @@ final class MainViewController: NSViewController {
 
     // MARK: - Zoom-to-fit (§3.1)
 
-    /// Slack to leave around the hex grid so a legacy-style vertical scroller
-    /// does not cover the ASCII column: grid width + a small margin per pane.
-    /// Single source of truth shared with the header double-click
-    /// fit-to-content-width (§3.3).
-    static let paneSlack: CGFloat = FilePaneView.contentFitSlack
-
     /// Ideal content width the window should be when zoomed (double-click on the
     /// title bar / Window > Zoom): the hex grid width for a single pane, or
     /// both grids plus the splitter divider for a left/right comparison. A
-    /// stacked comparison and the empty state keep a single pane's width.
+    /// stacked comparison keeps the wider of the two panes' grids.
     private func standardContentWidth() -> CGFloat {
-        func paneWidth(_ pane: FilePaneView?) -> CGFloat {
-            guard let pane else { return 0 }
-            return pane.hexContentWidth + Self.paneSlack
-        }
         switch mode {
         case .singleFile:
-            return paneWidth(activeFilePane)
+            return activeFilePane?.contentFitWidth ?? 0
         case .comparison:
             guard let comparisonView else { return 0 }
-            let w1 = paneWidth(comparisonView.paneView1)
-            let w2 = paneWidth(comparisonView.paneView2)
+            let w1 = comparisonView.paneView1.contentFitWidth
+            let w2 = comparisonView.paneView2.contentFitWidth
             // Same source of truth as ComparisonView's layout toggle (§3.3).
             let isVertical = UserDefaults.standard.object(forKey: "ComparisonPaneLayoutIsVertical") as? Bool ?? true
             return isVertical ? w1 + w2 + 1 : max(w1, w2)
+        case .empty:
+            return 0
+        }
+    }
+
+    /// Ideal content height the window should be when zoomed (double-click on
+    /// the title bar / Window > Zoom): the taller pane's full hex content plus
+    /// its header and status bar — the height needed to show the biggest loaded
+    /// file without scrolling. The empty state has no content, so the default
+    /// zoom frame is kept.
+    private func standardContentHeight() -> CGFloat {
+        switch mode {
+        case .singleFile:
+            return activeFilePane?.contentFitHeight ?? 0
+        case .comparison:
+            guard let comparisonView else { return 0 }
+            return max(comparisonView.paneView1.contentFitHeight,
+                       comparisonView.paneView2.contentFitHeight)
         case .empty:
             return 0
         }
@@ -911,20 +919,30 @@ final class MainViewController: NSViewController {
 
 extension MainViewController: NSWindowDelegate {
     /// Double-click on the title bar / Window > Zoom sizes the window to the
-    /// hex content instead of the default zoom-to-max: width fits one or both
-    /// panes' hex grids (§3.1), height and top-left corner are kept. In the
-    /// empty state there is no hex content, so the default zoom frame is kept.
+    /// hex content instead of the default zoom-to-max: the width fits the hex
+    /// grid(s), and the height stretches to show the taller loaded file's hex
+    /// grid without scrolling — both capped at the screen's visible size when
+    /// the content is larger (§3.1). The top edge stays put so the window grows
+    /// or shrinks from the bottom. In the empty state there is no hex content,
+    /// so the default zoom frame is kept.
     func windowWillUseStandardFrame(_ window: NSWindow, defaultFrame: NSRect) -> NSRect {
-        let width = standardContentWidth()
-        guard width > 0 else { return defaultFrame }
+        let contentWidth = standardContentWidth()
+        let contentHeight = standardContentHeight()
+        guard contentWidth > 0, contentHeight > 0 else { return defaultFrame }
 
-        var frame = defaultFrame
-        frame.size.width = width
-        frame.size.height = window.frame.height
-        frame.origin = window.frame.origin
-        if let screen = window.screen ?? NSScreen.main {
-            frame.size.width = min(frame.size.width, screen.visibleFrame.width)
-            frame.origin.y = min(frame.origin.y, screen.visibleFrame.maxY - frame.height)
+        var frame = window.frame
+        let oldTop = frame.origin.y + frame.height
+        let screen = window.screen ?? NSScreen.main
+        // Convert the needed content height to a window-frame height (adds the
+        // title bar, the only chrome outside the pane itself).
+        let frameHeight = window.frameRect(forContentRect: NSRect(x: 0, y: 0, width: 0, height: contentHeight)).height
+        frame.size.width = min(contentWidth, screen?.visibleFrame.width ?? contentWidth)
+        frame.size.height = min(frameHeight, screen?.visibleFrame.height ?? frameHeight)
+        // Anchor the top edge and keep the window fully on the visible screen.
+        frame.origin.y = oldTop - frame.size.height
+        if let screen {
+            frame.origin.y = min(max(frame.origin.y, screen.visibleFrame.minY),
+                                 screen.visibleFrame.maxY - frame.size.height)
         }
         return frame
     }

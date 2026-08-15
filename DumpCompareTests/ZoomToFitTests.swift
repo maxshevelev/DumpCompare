@@ -1,9 +1,11 @@
-import DumpCompareCore
 import XCTest
 @testable import DumpCompare
 
 /// Tests for window zoom-to-fit (§3.1): double-clicking the title bar / Window
-/// > Zoom sizes the window to the hex content width instead of zooming to max.
+/// > Zoom sizes the window to the loaded files' real content — the width to
+/// the hex grid(s) plus the taller pane's content height (header/status chrome
+/// included) — both capped at the screen's visible size. The top edge stays
+/// put; only the bottom edge moves.
 @MainActor
 final class ZoomToFitTests: XCTestCase {
     private func tempFile(_ bytes: [UInt8]) throws -> URL {
@@ -34,6 +36,36 @@ final class ZoomToFitTests: XCTestCase {
         return controller
     }
 
+    /// The uncapped window-frame height for `contentHeight` of content (adds
+    /// the title bar). Mirrors `windowWillUseStandardFrame`'s conversion.
+    private func rawFrameHeight(for contentHeight: CGFloat, window: NSWindow) -> CGFloat {
+        window.frameRect(forContentRect: NSRect(x: 0, y: 0, width: 0, height: contentHeight)).height
+    }
+
+    /// The frame height `windowWillUseStandardFrame` picks for `contentHeight`:
+    /// the content height capped at the screen's visible height.
+    private func expectedFrameHeight(for contentHeight: CGFloat, window: NSWindow) -> CGFloat {
+        let raw = rawFrameHeight(for: contentHeight, window: window)
+        let screen = window.screen ?? NSScreen.main
+        return min(raw, screen?.visibleFrame.height ?? raw)
+    }
+
+    /// The frame width `windowWillUseStandardFrame` picks for `contentWidth`:
+    /// the content width capped at the screen's visible width.
+    private func expectedFrameWidth(for contentWidth: CGFloat, window: NSWindow) -> CGFloat {
+        let screen = window.screen ?? NSScreen.main
+        return min(contentWidth, screen?.visibleFrame.width ?? contentWidth)
+    }
+
+    /// Close the panes and delete the temp files. Closing stops the file
+    /// watchers: deleting first would fire the external-change prompt, and that
+    /// `NSAlert.runModal()` would block the test's main thread forever.
+    private func cleanup(_ mainVC: MainViewController, _ urls: URL...) {
+        mainVC.windowModel.pane1.close()
+        mainVC.windowModel.pane2.close()
+        for url in urls { try? FileManager.default.removeItem(at: url) }
+    }
+
     func testEmptyModeKeepsPreferredFrame() {
         let controller = makeController()
         let window = controller.window!
@@ -44,31 +76,40 @@ final class ZoomToFitTests: XCTestCase {
         XCTAssertEqual(frame, preferred)
     }
 
-    func testSingleFileWidthsToHexContent() throws {
-        let url = try tempFile([UInt8](repeating: 0x41, count: 4096))
+    func testSingleFileFitsContentWidthAndHeight() throws {
+        let url = try tempFile([UInt8](repeating: 0x41, count: 256))
         let controller = makeController()
         let window = controller.window!
         let mainVC = controller.mainViewController
+        defer { cleanup(mainVC, url) }
+        window.setFrame(NSRect(x: 100, y: 100, width: 1200, height: 700), display: false)
+        let before = window.frame
 
         try mainVC.windowModel.pane1.open(url: url)
         mainVC.apply(mode: .singleFile)
         let pane = try XCTUnwrap(findPane(in: mainVC.view))
-        let expected = pane.hexContentWidth + MainViewController.paneSlack
 
         let frame = mainVC.windowWillUseStandardFrame(window, defaultFrame: NSRect(x: 0, y: 0, width: 3000, height: 2000))
 
-        XCTAssertEqual(frame.width, expected, accuracy: 1)
-        XCTAssertEqual(frame.height, window.frame.height, accuracy: 0.5)
-        XCTAssertEqual(frame.origin, window.frame.origin)
-        // Zoom-to-fit must be much narrower than the preferred (max) frame.
+        XCTAssertEqual(frame.width, expectedFrameWidth(for: pane.contentFitWidth, window: window),
+                       accuracy: 1, "width must fit the hex grid")
+        XCTAssertEqual(frame.height, expectedFrameHeight(for: pane.contentFitHeight, window: window),
+                       accuracy: 1, "height must fit the hex content")
+        XCTAssertEqual(frame.origin.x, before.origin.x, accuracy: 0.5, "x must be kept")
+        // The top edge stays put — the window grows/shrinks from the bottom.
+        XCTAssertEqual(frame.origin.y + frame.height, before.origin.y + before.height, accuracy: 0.5)
+        // Zoom-to-fit must be much smaller than the preferred (max) frame.
         XCTAssertLessThan(frame.width, 1000)
+        XCTAssertLessThan(frame.height, 1000)
     }
 
-    func testPerformZoomUsesContentWidth() throws {
+    func testPerformZoomUsesContentWidthAndHeight() throws {
         let controller = makeController()
         let window = controller.window!
         let mainVC = controller.mainViewController
-        try mainVC.windowModel.pane1.open(url: try tempFile([UInt8](repeating: 0x41, count: 4096)))
+        let url = try tempFile([UInt8](repeating: 0x41, count: 256))
+        defer { cleanup(mainVC, url) }
+        try mainVC.windowModel.pane1.open(url: url)
         mainVC.apply(mode: .singleFile)
         window.setFrame(NSRect(x: 100, y: 100, width: 1200, height: 700), display: false)
         let before = window.frame
@@ -78,51 +119,95 @@ final class ZoomToFitTests: XCTestCase {
         // The window is not on screen here, so zoom applies the standard frame
         // synchronously instead of animating.
         let pane = try XCTUnwrap(findPane(in: mainVC.view))
-        let expected = pane.hexContentWidth + MainViewController.paneSlack
-        XCTAssertEqual(window.frame.width, expected, accuracy: 1)
-        XCTAssertEqual(window.frame.height, before.height, accuracy: 0.5)
-        XCTAssertEqual(window.frame.origin, before.origin)
+        XCTAssertEqual(window.frame.width, expectedFrameWidth(for: pane.contentFitWidth, window: window),
+                       accuracy: 1)
+        XCTAssertEqual(window.frame.height, expectedFrameHeight(for: pane.contentFitHeight, window: window),
+                       accuracy: 1)
+        XCTAssertEqual(window.frame.origin.x, before.origin.x, accuracy: 0.5, "x must be kept")
     }
 
-    func testComparisonVerticalSumsPanes() throws {
+    /// Side-by-side: the width must fit both grids plus the divider, the height
+    /// the taller of the two files.
+    func testComparisonVerticalFitsBothPanes() throws {
         UserDefaults.standard.set(true, forKey: "ComparisonPaneLayoutIsVertical")
         let url1 = try tempFile([UInt8](repeating: 0x41, count: 4096))
         let url2 = try tempFile([UInt8](repeating: 0x42, count: 512))
         let controller = makeController()
         let window = controller.window!
         let mainVC = controller.mainViewController
+        defer { cleanup(mainVC, url1, url2) }
+        window.setFrame(NSRect(x: 100, y: 100, width: 1200, height: 700), display: false)
 
         try mainVC.windowModel.pane1.open(url: url1)
         try mainVC.windowModel.pane2.open(url: url2)
         mainVC.apply(mode: .comparison)
         let panes = findPanes(in: mainVC.view)
         XCTAssertEqual(panes.count, 2)
-        let paneWidth = try XCTUnwrap(panes.first).hexContentWidth
-        let expected = 2 * (paneWidth + MainViewController.paneSlack) + 1
+        let expectedWidth = panes[0].contentFitWidth + panes[1].contentFitWidth + 1
+        let expectedHeight = max(panes[0].contentFitHeight, panes[1].contentFitHeight)
 
         let frame = mainVC.windowWillUseStandardFrame(window, defaultFrame: NSRect(x: 0, y: 0, width: 3000, height: 2000))
 
-        XCTAssertEqual(frame.width, expected, accuracy: 1)
+        XCTAssertEqual(frame.width, expectedFrameWidth(for: expectedWidth, window: window),
+                       accuracy: 1, "width must fit both grids plus the divider")
+        XCTAssertEqual(frame.height, expectedFrameHeight(for: expectedHeight, window: window),
+                       accuracy: 1, "height must fit the taller of the two files")
     }
 
-    func testComparisonStackedUsesMaxPaneWidth() throws {
+    /// Stacked: both panes share the full width, so the width fits the wider
+    /// grid; the height still targets the taller file's content.
+    func testComparisonStackedFitsBothPanes() throws {
         UserDefaults.standard.set(false, forKey: "ComparisonPaneLayoutIsVertical")
         let url1 = try tempFile([UInt8](repeating: 0x41, count: 4096))
         let url2 = try tempFile([UInt8](repeating: 0x42, count: 512))
         let controller = makeController()
         let window = controller.window!
         let mainVC = controller.mainViewController
+        defer { cleanup(mainVC, url1, url2) }
+        window.setFrame(NSRect(x: 100, y: 100, width: 1200, height: 700), display: false)
 
         try mainVC.windowModel.pane1.open(url: url1)
         try mainVC.windowModel.pane2.open(url: url2)
         mainVC.apply(mode: .comparison)
         let panes = findPanes(in: mainVC.view)
         XCTAssertEqual(panes.count, 2)
-        let paneWidth = try XCTUnwrap(panes.first).hexContentWidth
-        let expected = paneWidth + MainViewController.paneSlack
+        let expectedWidth = max(panes[0].contentFitWidth, panes[1].contentFitWidth)
+        let expectedHeight = max(panes[0].contentFitHeight, panes[1].contentFitHeight)
 
         let frame = mainVC.windowWillUseStandardFrame(window, defaultFrame: NSRect(x: 0, y: 0, width: 3000, height: 2000))
 
-        XCTAssertEqual(frame.width, expected, accuracy: 1)
+        XCTAssertEqual(frame.width, expectedFrameWidth(for: expectedWidth, window: window),
+                       accuracy: 1, "width must fit the wider grid")
+        XCTAssertEqual(frame.height, expectedFrameHeight(for: expectedHeight, window: window),
+                       accuracy: 1, "height must fit the taller of the two files")
+    }
+
+    /// When the content is taller than the screen, the height caps at the
+    /// screen's visible height instead of growing off-screen.
+    func testTallContentCapsAtScreenHeight() throws {
+        let url = try tempFile([UInt8](repeating: 0x41, count: 256 * 1024))
+        let controller = makeController()
+        let window = controller.window!
+        let mainVC = controller.mainViewController
+        defer { cleanup(mainVC, url) }
+        window.setFrame(NSRect(x: 100, y: 100, width: 1200, height: 700), display: false)
+
+        try mainVC.windowModel.pane1.open(url: url)
+        mainVC.apply(mode: .singleFile)
+        let pane = try XCTUnwrap(findPane(in: mainVC.view))
+        let uncapped = rawFrameHeight(for: pane.contentFitHeight, window: window)
+
+        let frame = mainVC.windowWillUseStandardFrame(window, defaultFrame: NSRect(x: 0, y: 0, width: 3000, height: 2000))
+
+        let screen = window.screen ?? NSScreen.main
+        if let screen {
+            XCTAssertGreaterThan(uncapped, screen.visibleFrame.height,
+                                 "precondition: the content must exceed the screen")
+            XCTAssertEqual(frame.height, screen.visibleFrame.height, accuracy: 1,
+                           "the height must cap at the screen's visible height")
+        } else {
+            XCTAssertEqual(frame.height, uncapped, accuracy: 1,
+                           "no screen to cap at — the content height is used")
+        }
     }
 }

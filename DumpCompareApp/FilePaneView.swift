@@ -45,6 +45,10 @@ final class FilePaneView: NSView {
     /// Ideal width of this pane's hex content, for zoom-to-fit (§3.1).
     var hexContentWidth: CGFloat { hexView.hexContentWidth }
 
+    /// Ideal height of this pane's hex content — all rows of the current file.
+    /// Used by window zoom-to-fit (§3.1).
+    var hexContentHeight: CGFloat { hexView.hexContentHeight }
+
     /// Margin added to `hexContentWidth` so the grid doesn't sit flush against
     /// the pane edge / scroller. Shared by zoom-to-fit and the header
     /// double-click fit-to-content-width (§3.3).
@@ -53,6 +57,15 @@ final class FilePaneView: NSView {
     /// Width this pane needs to show its hex content without a horizontal
     /// scroller: content plus slack (§3.3).
     var contentFitWidth: CGFloat { hexContentWidth + Self.contentFitSlack }
+
+    /// Fixed pane chrome above and below the scroll view (§3.4): the header and
+    /// the status bar. Sizing constants shared with window zoom-to-fit (§3.1).
+    static let headerHeight: CGFloat = 28
+    static let statusBarHeight: CGFloat = 24
+
+    /// Height this pane needs to show its hex content without a vertical
+    /// scroller: all rows plus the header and status bar (§3.1).
+    var contentFitHeight: CGFloat { hexContentHeight + Self.headerHeight + Self.statusBarHeight }
 
     private let titleLabel = NSTextField(labelWithString: "")
     private let lockLabel = NSTextField(labelWithString: "")
@@ -144,7 +157,7 @@ final class FilePaneView: NSView {
             lockLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             closeButton.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -6),
             closeButton.centerYAnchor.constraint(equalTo: header.centerYAnchor),
-            header.heightAnchor.constraint(equalToConstant: 28),
+            header.heightAnchor.constraint(equalToConstant: Self.headerHeight),
         ])
 
         // Status bar: the regular status text on the left, the background
@@ -179,7 +192,7 @@ final class FilePaneView: NSView {
             statusStack.leadingAnchor.constraint(equalTo: statusBar.leadingAnchor, constant: 10),
             statusStack.trailingAnchor.constraint(lessThanOrEqualTo: statusBar.trailingAnchor, constant: -10),
             statusStack.centerYAnchor.constraint(equalTo: statusBar.centerYAnchor),
-            statusBar.heightAnchor.constraint(equalToConstant: 24),
+            statusBar.heightAnchor.constraint(equalToConstant: Self.statusBarHeight),
         ])
 
         // Scrollable hex view.
