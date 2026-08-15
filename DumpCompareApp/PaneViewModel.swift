@@ -30,8 +30,18 @@ struct PaneStatus: Equatable {
     var selectionLength: UInt64 = 0
     var isDirty = false
     var isReadOnly = false
+    /// True for an untitled in-memory document (File > New File) that has never
+    /// been saved — the header shows "Untitled" with a plus-badge glyph.
+    var isUntitled = false
     var canUndo = false
     var canRedo = false
+}
+
+/// Pane-level save error: an untitled document has no file yet, so it needs a
+/// Save As location before it can be written to disk. The view controller
+/// routes untitled panes to Save As before calling `save()`.
+enum PaneSaveError: Error {
+    case requiresSaveAs
 }
 
 /// View-model for one file pane (single-file mode; comparison lands in M5).
@@ -53,6 +63,11 @@ final class PaneViewModel: HexViewDataSource {
     /// to have changed (save, save as, revert) so a stale chunk cache can't
     /// misreport.
     private var savedStorage: FileBackedStorage?
+    /// True while the pane holds an untitled in-memory document (File > New
+    /// File) that has never been saved to disk. Such a document has no URL to
+    /// watch and no on-disk reference for modified-byte detection; the header
+    /// shows "Untitled" with a plus-badge glyph until it is saved.
+    private(set) var isUntitled = false
 
     /// Hex caret: 0 = high nibble, 1 = low nibble of the current byte.
     private(set) var nibble = 0
@@ -111,9 +126,30 @@ final class PaneViewModel: HexViewDataSource {
         startWatching(url)
     }
 
+    /// Opens a brand-new empty document in memory (File > New File). Nothing is
+    /// written to disk until the first Save As; until then the pane reports
+    /// `isUntitled` so the UI can show "Untitled" and route Save to Save As.
+    /// The placeholder URL never has a file behind it — it exists only to give
+    /// the document an identity until a real location is chosen.
+    func openUntitled() {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Untitled")
+        document = BinaryDocument(
+            storage: EditOverlayStorage(base: MemoryBackedStorage()),
+            url: url,
+            readOnly: false
+        )
+        savedStorage = nil
+        isUntitled = true
+        resetEditingState()
+        changeWatcher?.stop()
+        changeWatcher = nil
+        notify()
+    }
+
     func close() {
         document = nil
         savedStorage = nil
+        isUntitled = false
         changeWatcher?.stop()
         changeWatcher = nil
         resetEditingState()
@@ -121,6 +157,10 @@ final class PaneViewModel: HexViewDataSource {
 
     func save() throws {
         guard let doc = document else { return }
+        // An untitled document must pick a location first; the controller
+        // routes through Save As, but throwing here makes a stray call safe
+        // (it can never silently write to the placeholder URL).
+        guard !isUntitled else { throw PaneSaveError.requiresSaveAs }
         try doc.save()
         refreshSavedStorage()
         resetEditingState()
@@ -133,9 +173,17 @@ final class PaneViewModel: HexViewDataSource {
     func saveAs(to url: URL) throws {
         guard let doc = document else { return }
         try doc.save(to: url)
+        // A Save As of an untitled document turns it into a real file: it gains
+        // a watcher (none was needed while nothing existed on disk) and a saved
+        // reference for modified-byte detection.
+        isUntitled = false
         refreshSavedStorage()
         resetEditingState()
-        rearmWatcher()
+        if changeWatcher == nil {
+            startWatching(url)
+        } else {
+            rearmWatcher()
+        }
         notify()
     }
 
@@ -225,10 +273,15 @@ final class PaneViewModel: HexViewDataSource {
             let offset = start + UInt64(i)
             let byte = current.indices.contains(i) ? current[i] : 0
             var isModified = false
-            if offset >= savedSize {
-                isModified = true
-            } else if saved.indices.contains(i) {
-                isModified = saved[i] != byte
+            if !isUntitled {
+                // Untitled documents have no on-disk reference — every byte
+                // would compare "modified". The dirty marker in the header and
+                // status bar already conveys "unsaved", so no red foreground.
+                if offset >= savedSize {
+                    isModified = true
+                } else if saved.indices.contains(i) {
+                    isModified = saved[i] != byte
+                }
             }
             var isDifferent = false
             if let other {
@@ -267,13 +320,14 @@ final class PaneViewModel: HexViewDataSource {
         guard let doc = document else { return PaneStatus() }
         let caret = doc.selection.start
         return PaneStatus(
-            fileName: doc.url.lastPathComponent,
+            fileName: isUntitled ? "Untitled" : doc.url.lastPathComponent,
             fileSize: doc.size,
             cursorHex: String(format: "0x%X", caret),
             cursorDecimal: "\(caret)",
             selectionLength: doc.selection.count,
             isDirty: doc.isDirty,
             isReadOnly: doc.readOnly,
+            isUntitled: isUntitled,
             canUndo: doc.canUndo,
             canRedo: doc.canRedo
         )

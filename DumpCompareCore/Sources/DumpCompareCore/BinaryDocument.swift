@@ -36,11 +36,14 @@ public final class BinaryDocument: @unchecked Sendable {
     }
 
     /// Wraps an existing editable storage (used by tests and alternate backings).
-    public init(storage: any EditableByteStorage, url: URL) {
+    /// `readOnly` overrides the automatic on-disk check — needed for untitled
+    /// in-memory documents, whose placeholder URL has no file yet (and would
+    /// therefore look unwritable), but which must be saveable.
+    public init(storage: any EditableByteStorage, url: URL, readOnly: Bool? = nil) {
         self.storage = storage
         self.url = url
         self.identity = FileIdentity(url: url)
-        self.readOnly = !FileManager.default.isWritableFile(atPath: url.path)
+        self.readOnly = readOnly ?? !FileManager.default.isWritableFile(atPath: url.path)
         self.selection = SelectionModel.empty(at: 0, fileSize: storage.size)
     }
 

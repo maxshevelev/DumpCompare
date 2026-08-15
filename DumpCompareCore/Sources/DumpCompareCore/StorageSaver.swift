@@ -6,9 +6,11 @@ import Foundation
 /// - **Patch in place** when the storage holds only overwrites (no offset-shift):
 ///   the changed ranges are written straight into the file with `pwrite(2)`,
 ///   preserving every untouched byte and the file identity.
-/// - **Atomic rewrite** otherwise: the full current content is streamed to a
+/// - **Full rewrite** otherwise: the full current content is streamed to a
 ///   temporary file next to the target and atomically swapped over it, so a
-///   failed save never corrupts the original.
+///   failed save never corrupts the original. The sandboxed app has no access
+///   to the target's directory, so when the sibling temp file cannot be created
+///   the content is written straight into the user-selected file instead.
 public enum StorageSaver {
     public static func save(_ storage: EditOverlayStorage, to url: URL) throws {
         // Patching in place is safe only when the target is the very file the
@@ -45,9 +47,28 @@ public enum StorageSaver {
         }
     }
 
-    // MARK: - Atomic rewrite
+    // MARK: - Full rewrite
 
+    /// Writes the full current content to `url`, atomically when the environment
+    /// allows. The primary path materializes the content in a temp file next to
+    /// the target and swaps it over, so a failed save never corrupts the
+    /// original. The sandboxed app has access only to the user-selected file,
+    /// not to its directory, so it cannot create the sibling temp file — in that
+    /// case the content is written straight into the file the user chose, which
+    /// the sandbox does cover.
     private static func rewriteAtomically(_ storage: EditOverlayStorage, to url: URL) throws {
+        do {
+            try rewriteViaSiblingTemp(storage, to: url)
+        } catch let error as StorageError where error == .writeFailed {
+            // The sibling temp file could not be created (sandboxed app, or the
+            // directory is otherwise not writable). Fall back to a direct write.
+            try rewriteDirectly(storage, to: url)
+        }
+    }
+
+    /// Materializes the content in a temp file next to `url` and swaps it into
+    /// place, so a failed save leaves the original untouched.
+    private static func rewriteViaSiblingTemp(_ storage: EditOverlayStorage, to url: URL) throws {
         let directory = url.deletingLastPathComponent()
         let temporaryURL = directory.appendingPathComponent(
             ".\(url.lastPathComponent).dc-\(UUID().uuidString).tmp"
@@ -59,16 +80,7 @@ public enum StorageSaver {
                 throw StorageError.writeFailed
             }
             let handle = try FileHandle(forWritingTo: temporaryURL)
-
-            var offset: UInt64 = 0
-            let size = storage.size
-            while offset < size {
-                let step = min(UInt64(1024 * 1024), size - offset)
-                let bytes = try storage.read(at: offset, length: Int(step))
-                guard !bytes.isEmpty else { break }
-                try handle.write(contentsOf: Data(bytes))
-                offset += UInt64(bytes.count)
-            }
+            try writeContent(of: storage, to: handle)
             try handle.synchronize()
             try handle.close()
 
@@ -83,7 +95,45 @@ public enum StorageSaver {
         }
     }
 
+    /// Writes the full content directly into `url`, streaming in bounded chunks
+    /// via `pwrite(2)`. Used when the atomic swap is impossible because the
+    /// target directory is not writable (sandbox): the app owns the user-selected
+    /// file, so `open(2)` with write access succeeds even though no sibling file
+    /// could be created. Not atomic — a failed save can leave a partial file —
+    /// but it is the only option the sandbox permits.
+    private static func rewriteDirectly(_ storage: EditOverlayStorage, to url: URL) throws {
+        let fd = Darwin.open(url.path, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
+        guard fd >= 0 else { throw StorageError.fromOpenError(errno) }
+        defer { Darwin.close(fd) }
+
+        var offset: UInt64 = 0
+        let size = storage.size
+        while offset < size {
+            let step = min(UInt64(1024 * 1024), size - offset)
+            let bytes = try storage.read(at: offset, length: Int(step))
+            guard !bytes.isEmpty else { break }
+            try pwriteAll(fd, bytes: bytes, at: off_t(offset))
+            offset += UInt64(bytes.count)
+        }
+        if Darwin.fsync(fd) != 0 {
+            throw StorageError.writeFailed
+        }
+    }
+
     // MARK: - Helpers
+
+    /// Streams the storage's full content to `handle` in bounded chunks.
+    private static func writeContent(of storage: EditOverlayStorage, to handle: FileHandle) throws {
+        var offset: UInt64 = 0
+        let size = storage.size
+        while offset < size {
+            let step = min(UInt64(1024 * 1024), size - offset)
+            let bytes = try storage.read(at: offset, length: Int(step))
+            guard !bytes.isEmpty else { break }
+            try handle.write(contentsOf: Data(bytes))
+            offset += UInt64(bytes.count)
+        }
+    }
 
     /// Loops `pwrite(2)` until all bytes are written, retrying on EINTR.
     private static func pwriteAll(_ fd: Int32, bytes: [UInt8], at offset: off_t) throws {

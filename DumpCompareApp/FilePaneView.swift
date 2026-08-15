@@ -443,12 +443,24 @@ final class FilePaneView: NSView {
         titleLabel.stringValue = status.fileName
         // The header's document glyph doubles as the modified marker (§3.4):
         // outline for a clean file, filled once there are unsaved changes —
-        // replacing the "*" the title used to append. The status bar still
-        // spells out "Modified" textually alongside (§15).
-        let symbol = status.isDirty ? "document.fill" : "document"
+        // replacing the "*" the title used to append. An untitled document
+        // (File > New File, never saved) carries a plus badge to mark it as
+        // new; it follows the same outline/fill convention, so the badge fills
+        // once the buffer is edited. The status bar still spells out
+        // "Modified" textually alongside (§15).
+        let symbol: String
+        if status.isUntitled {
+            symbol = status.isDirty ? "document.badge.plus.fill" : "document.badge.plus"
+        } else {
+            symbol = status.isDirty ? "document.fill" : "document"
+        }
         documentSymbolName = symbol
         documentIcon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
-        documentIcon.setAccessibilityLabel(status.isDirty ? "Modified file" : "File document")
+        if status.isUntitled {
+            documentIcon.setAccessibilityLabel(status.isDirty ? "Modified new file" : "New file")
+        } else {
+            documentIcon.setAccessibilityLabel(status.isDirty ? "Modified file" : "File document")
+        }
         lockLabel.stringValue = status.isReadOnly ? "🔒 Read-Only" : ""
         // VoiceOver names the grid after its file (§15).
         hexView.accessibilityTitle = "Hex dump — \(status.fileName)"

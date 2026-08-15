@@ -69,6 +69,30 @@ final class StorageSaverTests: XCTestCase {
         XCTAssertEqual(try TestSupport.readAll(target), Data([0x00, 0x01, 0x02, 0x03]))
     }
 
+    func testSaveInMemoryStorageToNewLocation() throws {
+        // Untitled document: an in-memory base has no on-disk original, so a
+        // save to a new location must fully rewrite (no patch-in-place).
+        let s = EditOverlayStorage(base: MemoryBackedStorage())
+        try s.overwrite(range: 0..<2, with: [0xAB, 0xCD])
+        let target = FileManager.default.temporaryDirectory
+            .appendingPathComponent("untitled-saved-\(UUID().uuidString).bin")
+        defer { try? FileManager.default.removeItem(at: target) }
+
+        try StorageSaver.save(s, to: target)
+        XCTAssertEqual(try TestSupport.readAll(target), Data([0xAB, 0xCD]))
+    }
+
+    func testSaveEmptyInMemoryStorageToNewLocation() throws {
+        // An empty untitled document saved without typing anything.
+        let s = EditOverlayStorage(base: MemoryBackedStorage())
+        let target = FileManager.default.temporaryDirectory
+            .appendingPathComponent("untitled-empty-\(UUID().uuidString).bin")
+        defer { try? FileManager.default.removeItem(at: target) }
+
+        try StorageSaver.save(s, to: target)
+        XCTAssertEqual(try TestSupport.readAll(target), Data())
+    }
+
     func testSaveFailureThrowsAndLeavesOriginalIntact() throws {
         let (s, url) = try makeEditable(Data([0x01]))
         try s.overwrite(range: 0..<1, with: [0xAA])

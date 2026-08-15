@@ -353,28 +353,12 @@ final class MainViewController: NSViewController {
             }
         }
 
-        // Rule 4: replacing a dirty pane requires confirmation.
-        if pane.isOpen, pane.status.isDirty {
-            let alert = NSAlert()
-            alert.messageText = "Replace unsaved changes?"
-            alert.informativeText = "“\(pane.status.fileName)” has unsaved changes. Save and replace, or replace without saving?"
-            alert.addButton(withTitle: "Save and Replace")
-            alert.addButton(withTitle: "Replace Without Saving")
-            alert.addButton(withTitle: "Cancel")
-            switch alert.runModal() {
-            case .alertFirstButtonReturn:  // Save and Replace
-                do {
-                    try pane.save()
-                } catch {
-                    presentError("Save failed.", error)
-                    return false
-                }
-            case .alertSecondButtonReturn:  // Replace Without Saving
-                break
-            default:
-                return false
-            }
-        }
+        // Rule 4: replacing a dirty pane requires confirmation. A dirty
+        // untitled pane has no file yet, so Save As runs first and the open
+        // re-continues once it completes.
+        guard confirmReplaceDirtyPane(pane, onSaved: { [weak self] in
+            _ = self?.openIntoPane(index: index, url: url)
+        }) else { return false }
 
         do {
             try pane.open(url: url)
@@ -386,9 +370,88 @@ final class MainViewController: NSViewController {
         }
     }
 
+    /// §4.1 rule 4: replacing a dirty pane requires confirmation. Returns true
+    /// when the replacement may proceed (the pane was saved or its changes were
+    /// discarded). A dirty untitled pane cannot save inline — Save As runs as a
+    /// sheet and `onSaved` is called when it completes, with false returned so
+    /// the pending replacement re-runs via the callback.
+    private func confirmReplaceDirtyPane(_ pane: PaneViewModel, onSaved: (() -> Void)? = nil) -> Bool {
+        guard pane.isOpen, pane.status.isDirty else { return true }
+        let alert = NSAlert()
+        alert.messageText = "Replace unsaved changes?"
+        alert.informativeText = "“\(pane.status.fileName)” has unsaved changes. Save and replace, or replace without saving?"
+        alert.addButton(withTitle: "Save and Replace")
+        alert.addButton(withTitle: "Replace Without Saving")
+        alert.addButton(withTitle: "Cancel")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:  // Save and Replace
+            if pane.isUntitled {
+                presentSaveAs(for: pane, onSaved: onSaved)
+                return false
+            }
+            do {
+                try pane.save()
+                return true
+            } catch {
+                presentError("Save failed.", error)
+                return false
+            }
+        case .alertSecondButtonReturn:  // Replace Without Saving
+            return true
+        default:
+            return false
+        }
+    }
+
     private func isOpenableFile(_ url: URL) -> Bool {
         let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey])
         return values?.isDirectory == false && values?.isPackage != true
+    }
+
+    // MARK: - File > New File
+
+    /// File > New File (Cmd+N): opens a brand-new, empty document in memory into
+    /// a pane, using the same placement rules as Open (§4.1) — an empty pane
+    /// first, otherwise the active pane, with the standard dirty-replacement
+    /// confirmation. Nothing is written to disk until the first Save / Save As;
+    /// the pane header shows "Untitled" with a plus-badge glyph until then.
+    @objc func newDocument() {
+        newUntitledDocument()
+    }
+
+    /// Creates an untitled in-memory document and places it into a pane
+    /// following the Open placement rules (§4.1). Split from `newDocument()` so
+    /// tests can drive the whole flow without the menu.
+    func newUntitledDocument() {
+        let pane1WasOpen = windowModel.pane1.isOpen
+        let pane2WasOpen = windowModel.pane2.isOpen
+        let plan = OpenPlacement.plan(
+            activePaneIndex: windowModel.activePaneIndex,
+            pane1Open: pane1WasOpen,
+            pane2Open: pane2WasOpen,
+            fileCount: 1
+        )
+        guard let target = plan.firstFilePane else { return }
+        guard newUntitledIntoPane(index: target) else { return }
+
+        // Active pane follows the rule that decided placement.
+        if !pane1WasOpen {
+            windowModel.setActivePane(0)
+        } else if !pane2WasOpen {
+            windowModel.setActivePane(1)
+        }
+        refreshMode()
+    }
+
+    /// Opens an untitled document into the pane at `index`, applying §4.1 rule 4
+    /// (dirty-replacement confirmation). Returns false when refused.
+    private func newUntitledIntoPane(index: Int) -> Bool {
+        let pane = index == 0 ? windowModel.pane1 : windowModel.pane2
+        guard confirmReplaceDirtyPane(pane, onSaved: { [weak self] in
+            _ = self?.newUntitledIntoPane(index: index)
+        }) else { return false }
+        pane.openUntitled()
+        return true
     }
 
     // MARK: - Save / Save As / Revert (§5)
@@ -396,6 +459,11 @@ final class MainViewController: NSViewController {
     @objc func saveDocument() {
         let pane = activePane
         guard pane.isOpen else { return }
+        // An untitled document has no file to save to — Cmd+S is a Save As.
+        if pane.isUntitled {
+            presentSaveAs(for: pane)
+            return
+        }
         do {
             try pane.save()
         } catch DocumentError.fileIsReadOnly {
@@ -410,8 +478,10 @@ final class MainViewController: NSViewController {
     }
 
     /// Runs a Save As sheet for the given pane (active pane, or a specific pane
-    /// from an external-change conflict, §5.5).
-    private func presentSaveAs(for pane: PaneViewModel) {
+    /// from an external-change conflict or a deferred untitled save, §5.5).
+    /// `onSaved` fires after a successful save — it continues a flow that had
+    /// to wait for the untitled document to get a location.
+    private func presentSaveAs(for pane: PaneViewModel, onSaved: (() -> Void)? = nil) {
         guard pane.isOpen else { return }
         let panel = NSSavePanel()
         panel.nameFieldStringValue = pane.status.fileName
@@ -422,15 +492,47 @@ final class MainViewController: NSViewController {
             do {
                 try pane.saveAs(to: url)
                 SandboxBookmarkStore.shared.record(url)
+                onSaved?()
             } catch {
                 self.presentFileError("Save As failed.", error, url: url)
             }
         }
     }
 
+    /// Saves `pane` to disk, routing untitled documents (which have no file
+    /// yet) through a Save As sheet. Returns true when the save happened inline
+    /// (and `onSaved` has run); false when it is deferred to a sheet (the
+    /// completion will call `onSaved`) or failed (error already shown).
+    @discardableResult
+    private func savePane(_ pane: PaneViewModel, onSaved: @escaping () -> Void) -> Bool {
+        if pane.isUntitled {
+            presentSaveAs(for: pane, onSaved: onSaved)
+            return false
+        }
+        do {
+            try pane.save()
+            onSaved()
+            return true
+        } catch {
+            presentFileError("Save failed.", error, url: pane.document?.url)
+            return false
+        }
+    }
+
+    /// Saves `panes` one at a time; each untitled pane goes through its own Save
+    /// As sheet, then the next saves, then `then` runs. Stops on the first
+    /// failure (the error has already been shown).
+    private func saveAllThen(_ panes: [PaneViewModel], then: @escaping () -> Void) {
+        guard let first = panes.first else { then(); return }
+        savePane(first, onSaved: { [weak self] in
+            self?.saveAllThen(Array(panes.dropFirst()), then: then)
+        })
+    }
+
     @objc func revertDocument() {
         let pane = activePane
         guard pane.isOpen else { return }
+        guard !pane.isUntitled else { return }  // nothing on disk to revert to
         if pane.status.isDirty {
             let response = confirmAlert(
                 title: "Revert to saved version?",
@@ -522,25 +624,30 @@ final class MainViewController: NSViewController {
         closePane(at: windowModel.activePaneIndex)
     }
 
-    /// Closes the pane at `index` after the standard dirty prompt.
+    /// Closes the pane at `index` after the standard dirty prompt. An untitled
+    /// pane's "Save" picks a location first (Save As sheet); the pane closes
+    /// once that completes.
     func closePane(at index: Int) {
         let pane = index == 0 ? windowModel.pane1 : windowModel.pane2
         guard pane.isOpen else { return }
         if pane.status.isDirty {
             switch confirmSaveDiscardCancel() {
             case .alertFirstButtonReturn:  // Save
-                do {
-                    try pane.save()
-                } catch {
-                    presentFileError("Save failed.", error, url: pane.document?.url)
-                    return
-                }
+                savePane(pane, onSaved: { [weak self] in
+                    self?.performClosePane(at: index)
+                })
+                return  // closes now or after the Save As sheet
             case .alertSecondButtonReturn:  // Don't Save
                 break
             default:  // Cancel
                 return
             }
         }
+        performClosePane(at: index)
+    }
+
+    /// Performs the pane close after the dirty prompt succeeded.
+    private func performClosePane(at index: Int) {
         windowModel.closePane(index)
         refreshMode()
         if mode == .singleFile {
@@ -676,6 +783,16 @@ final class MainViewController: NSViewController {
     @objc func togglePaneLayout() {
         guard mode == .comparison else { return }
         comparisonView?.toggleLayout()
+    }
+
+    /// View > Swap Panels: exchanges pane 1 and pane 2 (comparison mode). The
+    /// active pane follows its document, so the file the user was working on
+    /// stays active. Re-applying the mode rebuilds both panes and the diff
+    /// index against the swapped storages.
+    @objc func swapPanes() {
+        guard mode == .comparison else { return }
+        windowModel.swapPanes()
+        refreshMode()
     }
 
     /// View > Word Size (§6): re-groups the hex dump into words of this size.
@@ -977,6 +1094,13 @@ extension MainViewController: NSWindowDelegate {
         alert.addButton(withTitle: "Cancel")
         switch alert.runModal() {
         case .alertFirstButtonReturn:
+            // Untitled panes have no file yet, so their "Save" runs a Save As
+            // sheet; the window closes once every pane is on disk. When every
+            // save can happen inline, close right away.
+            if dirty.contains(where: { $0.isUntitled }) {
+                saveAllThen(dirty, then: { [weak sender] in sender?.close() })
+                return false
+            }
             for pane in dirty {
                 do {
                     try pane.save()
@@ -1001,7 +1125,6 @@ extension MainViewController: NSMenuItemValidation {
         switch menuItem.action {
         case #selector(saveDocument),
              #selector(saveDocumentAs),
-             #selector(revertDocument),
              #selector(undoEdit),
              #selector(redoEdit),
              #selector(pasteWrite),
@@ -1012,6 +1135,9 @@ extension MainViewController: NSMenuItemValidation {
              #selector(findPattern),
              #selector(selectAllBytes):
             return activePane.isOpen
+        case #selector(revertDocument):
+            // Nothing on disk to revert an untitled document to.
+            return activePane.isOpen && !activePane.isUntitled
         case #selector(fillSelectionWithBytes):
             let pane = activePane
             return pane.isOpen && !pane.hexSelection().isEmpty
@@ -1022,7 +1148,8 @@ extension MainViewController: NSMenuItemValidation {
              #selector(previousDifference),
              #selector(nextSameBlock),
              #selector(previousSameBlock),
-             #selector(togglePaneLayout):
+             #selector(togglePaneLayout),
+             #selector(swapPanes):
             return mode == .comparison
         case #selector(setWordSize(_:)):
             // Radio state: check the item matching the current word size (§6).

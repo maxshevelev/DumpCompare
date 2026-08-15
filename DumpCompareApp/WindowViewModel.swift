@@ -28,6 +28,15 @@ final class WindowViewModel {
         activePaneIndex = index
     }
 
+    /// Swaps the two panes' documents (the "Swap Panels" command): pane 1 and
+    /// pane 2 exchange contents. The active pane follows its document, so the
+    /// pane the user was working on stays active after the swap. Non-destructive
+    /// — pure reference swap, so no confirmation is needed.
+    func swapPanes() {
+        swap(&pane1, &pane2)
+        activePaneIndex = activePaneIndex == 0 ? 1 : 0
+    }
+
     /// Closes the pane at `index`, handling the §3.5 promotion rule: when pane 1
     /// is closed and pane 2 is open, pane 2 becomes pane 1. The caller is
     /// responsible for the dirty save/discard/cancel prompt before calling.

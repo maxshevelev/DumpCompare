@@ -86,6 +86,9 @@ final class MainWindowController: NSWindowController {
         let fileItem = NSMenuItem()
         mainMenu.addItem(fileItem)
         let fileMenu = NSMenu(title: "File")
+        // File > New File: no dialog — a brand-new untitled in-memory document
+        // opens into a pane; it is written to disk on the first Save / Save As.
+        fileMenu.addItem(withTitle: "New File", action: #selector(MainViewController.newDocument), keyEquivalent: "n")
         fileMenu.addItem(withTitle: "Open…", action: #selector(MainViewController.presentOpenPanel), keyEquivalent: "o")
         fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: "Save", action: #selector(MainViewController.saveDocument), keyEquivalent: "s")
@@ -126,6 +129,7 @@ final class MainWindowController: NSWindowController {
         if let layoutItem = viewMenu.items.last {
             layoutItem.keyEquivalentModifierMask = [.command, .option]
         }
+        viewMenu.addItem(withTitle: "Swap Panels", action: #selector(MainViewController.swapPanes), keyEquivalent: "")
         viewMenu.addItem(.separator())
 
         func addNavigationItem(_ title: String, _ action: Selector, _ key: String, _ modifiers: NSEvent.ModifierFlags) {

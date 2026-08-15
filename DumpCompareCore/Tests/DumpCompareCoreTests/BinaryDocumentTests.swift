@@ -247,6 +247,30 @@ final class BinaryDocumentTests: XCTestCase {
         XCTAssertEqual(doc.url, target)
     }
 
+    func testInMemoryDocumentWithReadOnlyOverrideCanSave() throws {
+        // The untitled "New File" pattern: a placeholder URL with no file on
+        // disk, an in-memory base, and an explicit writable override.
+        let doc = BinaryDocument(
+            storage: EditOverlayStorage(base: MemoryBackedStorage()),
+            url: FileManager.default.temporaryDirectory.appendingPathComponent("placeholder-\(UUID().uuidString).bin"),
+            readOnly: false
+        )
+        XCTAssertFalse(doc.readOnly)
+        XCTAssertFalse(doc.isDirty)
+        XCTAssertEqual(doc.size, 0)
+
+        try doc.overwrite(range: 0..<0, with: [0xCA, 0xFE])
+        XCTAssertEqual(doc.size, 2)
+        XCTAssertTrue(doc.isDirty)
+
+        let target = FileManager.default.temporaryDirectory
+            .appendingPathComponent("untitled-saved-\(UUID().uuidString).bin")
+        try doc.save(to: target)
+        XCTAssertEqual(try TestSupport.readAll(target), Data([0xCA, 0xFE]))
+        XCTAssertFalse(doc.isDirty)
+        XCTAssertEqual(doc.url, target)
+    }
+
     func testSelectionClampedAfterSizeChange() throws {
         let (doc, _) = try makeDocument([0x00, 0x01, 0x02, 0x03])
         doc.setSelection(SelectionModel(start: 1, length: 3, fileSize: doc.size))
