@@ -61,6 +61,16 @@ final class MouseSelectionTests: XCTestCase {
         return hexView.convert(local, to: nil)
     }
 
+    /// Window point `dx` px right of byte `column`'s nibble boundary (the byte's
+    /// centre). `dx == 0` is the gap between the two nibble characters; a
+    /// `|dx|` up to `charWidth / 2` stays inside the byte's dead zone (§3.3).
+    private func pointInByte(_ hexView: HexView, row: Int, column: Int, dx: CGFloat) -> NSPoint {
+        let layout = hexView.hexLayout
+        let local = CGPoint(x: layout.hexByteX(column: column) + layout.charWidth + dx,
+                            y: CGFloat(row) * layout.rowHeight)
+        return hexView.convert(local, to: nil)
+    }
+
     private func drag(_ hexView: HexView, window: NSWindow,
                       from start: (row: Int, column: Int), to end: (row: Int, column: Int)) {
         hexView.mouseDown(with: mouse(.leftMouseDown, at: byteCentre(hexView, row: start.row, column: start.column), window: window))
@@ -134,5 +144,54 @@ final class MouseSelectionTests: XCTestCase {
         let sel = pane.hexSelection()
         XCTAssertEqual(sel.start, 5)
         XCTAssertEqual(sel.end, 5)
+    }
+
+    // MARK: - Dead zone (§3.3)
+
+    /// A click between a byte's nibbles places the mid-byte caret; a drag that
+    /// stays inside the byte's dead zone — from the middle of the high-nibble
+    /// character to the middle of the low-nibble one — is mouse jitter, not a
+    /// selection. The old behaviour selected the byte on a 1 px move, because
+    /// the drag boundary sat exactly on the byte's centre.
+    func testJitterInDeadZoneDoesNotSelect() throws {
+        let (_, pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 32))
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        // Click on byte 0's nibble boundary, drag a quarter of a character right
+        // — well inside the dead zone (charWidth / 2 on either side of the gap).
+        let jitter = hexView.hexLayout.charWidth * 0.25
+        hexView.mouseDown(with: mouse(.leftMouseDown, at: pointInByte(hexView, row: 0, column: 0, dx: 0), window: window))
+        hexView.mouseDragged(with: mouse(.leftMouseDragged, at: pointInByte(hexView, row: 0, column: 0, dx: jitter), window: window))
+
+        let sel = pane.hexSelection()
+        XCTAssertEqual(sel.start, 0)
+        XCTAssertEqual(sel.end, 0, "jitter inside the dead zone must not select the byte")
+        XCTAssertEqual(pane.hexCaretNibble(), 1, "the mid-byte caret is kept")
+    }
+
+    /// A drag that leaves the dead zone selects from the click byte onward.
+    func testDragOutOfDeadZoneSelectsFromClick() throws {
+        let (_, pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 32))
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        hexView.mouseDown(with: mouse(.leftMouseDown, at: pointInByte(hexView, row: 0, column: 0, dx: 0), window: window))
+        hexView.mouseDragged(with: mouse(.leftMouseDragged, at: byteCentre(hexView, row: 0, column: 2), window: window))
+
+        let sel = pane.hexSelection()
+        XCTAssertEqual(sel.start, 0)
+        XCTAssertEqual(sel.end, 3, "bytes 0…2 are selected once the drag leaves the dead zone")
+    }
+
+    /// Dragging left from a mid-byte caret selects the byte before it.
+    func testDragLeftFromNibbleGapSelectsPreviousByte() throws {
+        let (_, pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 32))
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        hexView.mouseDown(with: mouse(.leftMouseDown, at: pointInByte(hexView, row: 0, column: 2, dx: 0), window: window))
+        hexView.mouseDragged(with: mouse(.leftMouseDragged, at: pointInByte(hexView, row: 0, column: 1, dx: -1), window: window))
+
+        let sel = pane.hexSelection()
+        XCTAssertEqual(sel.start, 1)
+        XCTAssertEqual(sel.end, 2, "byte 1 is selected by dragging left past its centre")
     }
 }

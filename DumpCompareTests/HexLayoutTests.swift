@@ -151,6 +151,21 @@ final class HexLayoutTests: XCTestCase {
         XCTAssertEqual(l.caretX(row: 0, column: 2, nibble: 1), frame.minX + l.charWidth)
     }
 
+    /// The dead zone around the mid-byte caret spans from the middle of the
+    /// high-nibble character to the middle of the low-nibble one (§3.3) — a
+    /// one-character band centred on the byte's centre (the nibble gap).
+    func testDeadZoneMidlines() {
+        let l = makeLayout()
+        let cell = l.hexByteX(column: 2)
+        XCTAssertEqual(l.highNibbleMidX(column: 2), cell + l.charWidth / 2)
+        XCTAssertEqual(l.lowNibbleMidX(column: 2), cell + 3 * l.charWidth / 2)
+        // The zone straddles the byte's centre symmetrically.
+        XCTAssertEqual(l.lowNibbleMidX(column: 2) - l.highNibbleMidX(column: 2),
+                       l.charWidth)
+        XCTAssertEqual(l.highNibbleMidX(column: 2) + l.charWidth,
+                       l.lowNibbleMidX(column: 2))
+    }
+
     // MARK: - Virtualization
 
     func testVisibleRowRange() {

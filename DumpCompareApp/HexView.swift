@@ -60,6 +60,13 @@ final class HexView: NSView {
     private var currentLayout: HexLayout
     private var wordSizeObserver: NSObjectProtocol?
 
+    /// The window point where the current mouse-down landed; the drag-selection
+    /// dead zone is anchored to it (§3.3).
+    private var mouseDownLocation: CGPoint?
+    /// Whether the current click has become a drag. Once the pointer leaves the
+    /// dead zone the flag sticks, so later `mouseDragged` events keep extending.
+    private var dragEngaged = false
+
     /// Ideal width of the hex grid (offset column + hex + ASCII). The window
     /// delegate uses this to zoom-to-fit (§3.1) instead of zooming to max.
     var hexContentWidth: CGFloat { currentLayout.contentWidth }
@@ -422,11 +429,49 @@ final class HexView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
+        mouseDownLocation = convert(event.locationInWindow, from: nil)
+        // A shift-click extends immediately; an unmodified click needs to leave
+        // the dead zone before the selection engages.
+        dragEngaged = event.modifierFlags.contains(.shift)
         handleMouse(event, extendSelection: event.modifierFlags.contains(.shift))
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if !dragEngaged {
+            let point = convert(event.locationInWindow, from: nil)
+            if let origin = mouseDownLocation, !dragHasLeftDeadZone(from: origin, to: point) {
+                return  // still a click — the pointer has not left the dead zone
+            }
+            dragEngaged = true
+        }
         handleMouse(event, extendSelection: true)
+    }
+
+    /// Whether a drag started at `origin` has moved far enough at `point` to
+    /// extend the selection. A hex click that lands inside a byte's dead zone —
+    /// from the middle of the high-nibble character to the middle of the
+    /// low-nibble one (§3.3) — is a mid-byte caret placement, so it must leave
+    /// the zone before a drag selects: the zone's boundary sits on the byte's
+    /// centre, where a 1 px jitter would otherwise flip the selection end and
+    /// select the byte by accident. Clicks outside the zone (a byte's outer
+    /// quarters, or the offset/ASCII columns) are clear positions and any drag
+    /// engages immediately. The zone spans the click's row, so vertical
+    /// movement engages too.
+    private func dragHasLeftDeadZone(from origin: CGPoint, to point: CGPoint) -> Bool {
+        let layout = currentLayout
+        guard let dataSource else { return true }
+        let rowCount = layout.rowCount(fileSize: dataSource.fileSize)
+        guard let hit = layout.hitTest(point: origin, rowCount: rowCount),
+              case .hex(let column) = hit.column else { return true }
+        let rowFrame = layout.rowFrame(row: hit.row)
+        let zoneMinX = layout.highNibbleMidX(column: column)
+        let zoneMaxX = layout.lowNibbleMidX(column: column)
+        let originInZone = origin.x >= zoneMinX && origin.x <= zoneMaxX
+            && origin.y >= rowFrame.minY && origin.y <= rowFrame.maxY
+        guard originInZone else { return true }
+        let pointInZone = point.x >= zoneMinX && point.x <= zoneMaxX
+            && point.y >= rowFrame.minY && point.y <= rowFrame.maxY
+        return !pointInZone
     }
 
     private func handleMouse(_ event: NSEvent, extendSelection: Bool) {

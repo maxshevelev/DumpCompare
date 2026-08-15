@@ -179,6 +179,18 @@ struct HexLayout: Equatable {
         hexByteFrame(row: row, column: column).minX + CGFloat(nibble) * charWidth
     }
 
+    /// x-origin of the middle of byte `column`'s high-nibble character — the
+    /// left edge of the dead zone around the mid-byte caret (§3.3).
+    func highNibbleMidX(column: Int) -> CGFloat {
+        hexByteX(column: column) + charWidth / 2
+    }
+
+    /// x-origin of the middle of byte `column`'s low-nibble character — the
+    /// right edge of the dead zone around the mid-byte caret (§3.3).
+    func lowNibbleMidX(column: Int) -> CGFloat {
+        hexByteX(column: column) + 3 * charWidth / 2
+    }
+
     // MARK: - Hit testing
 
     enum ColumnKind: Equatable {
