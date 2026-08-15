@@ -92,6 +92,8 @@ final class MainViewController: NSViewController {
 
         case .singleFile:
             let pane = FilePaneView(viewModel: windowModel.pane1)
+            // Header right-click menu: acts on THIS pane (§4/§5).
+            pane.paneMenu = makePaneMenu(for: windowModel.pane1)
             // Close button: closing the last file returns to empty mode (§3.5).
             pane.onClose = { [weak self] in self?.closePane(at: 0) }
             // Wrap in the drop-target split view (§4.3 single-file mode). The
@@ -110,6 +112,9 @@ final class MainViewController: NSViewController {
             wireComparison()
             let pane1View = FilePaneView(viewModel: windowModel.pane1)
             let pane2View = FilePaneView(viewModel: windowModel.pane2)
+            // Header right-click menus act on their own pane (§4/§5).
+            pane1View.paneMenu = makePaneMenu(for: windowModel.pane1)
+            pane2View.paneMenu = makePaneMenu(for: windowModel.pane2)
             // Comparison-mode drops target the hovered pane (§4.3).
             pane1View.enableFileDrop()
             pane2View.enableFileDrop()
@@ -457,7 +462,19 @@ final class MainViewController: NSViewController {
     // MARK: - Save / Save As / Revert (§5)
 
     @objc func saveDocument() {
-        let pane = activePane
+        saveDocumentOfPane(activePane)
+    }
+
+    /// Saves the pane that owns the menu item — the header context menu's Save
+    /// routes here so it always targets its own pane, never the active one
+    /// (§4/§5). Both the menu bar and the context menu share
+    /// `saveDocumentOfPane(_:)`.
+    @objc func savePaneDocument(_ sender: Any?) {
+        guard let pane = pane(from: sender) else { return }
+        saveDocumentOfPane(pane)
+    }
+
+    private func saveDocumentOfPane(_ pane: PaneViewModel) {
         guard pane.isOpen else { return }
         // An untitled document has no file to save to — Cmd+S is a Save As.
         if pane.isUntitled {
@@ -475,6 +492,11 @@ final class MainViewController: NSViewController {
 
     @objc func saveDocumentAs() {
         presentSaveAs(for: activePane)
+    }
+
+    @objc func savePaneDocumentAs(_ sender: Any?) {
+        guard let pane = pane(from: sender) else { return }
+        presentSaveAs(for: pane)
     }
 
     /// Runs a Save As sheet for the given pane (active pane, or a specific pane
@@ -530,9 +552,19 @@ final class MainViewController: NSViewController {
     }
 
     @objc func revertDocument() {
-        let pane = activePane
-        guard pane.isOpen else { return }
-        guard !pane.isUntitled else { return }  // nothing on disk to revert to
+        revertDocumentOfPane(activePane)
+    }
+
+    /// Reverts the pane that owns the menu item — the header context menu's
+    /// Revert routes here so it always targets its own pane (§4/§5). Both the
+    /// menu bar and the context menu share `revertDocumentOfPane(_:)`.
+    @objc func revertPaneDocument(_ sender: Any?) {
+        guard let pane = pane(from: sender) else { return }
+        revertDocumentOfPane(pane)
+    }
+
+    private func revertDocumentOfPane(_ pane: PaneViewModel) {
+        guard pane.isOpen, !pane.isUntitled else { return }  // nothing on disk to revert to
         if pane.status.isDirty {
             let response = confirmAlert(
                 title: "Revert to saved version?",
@@ -653,6 +685,112 @@ final class MainViewController: NSViewController {
         if mode == .singleFile {
             activeFilePane?.focusHexView()
         }
+    }
+
+    // MARK: - Pane header context menu (§4/§5)
+
+    /// Builds the right-click menu for a pane's header. It carries the same
+    /// items as the menu bar's File submenu, but every item's action resolves
+    /// the pane captured here (via `representedObject`) — so New, Open, Save and
+    /// Close always act on the header that was right-clicked, even when another
+    /// pane is active or only one pane is open. A final separate block holds
+    /// Swap Panels, which is mode-scoped (comparison only) and so carries no
+    /// `representedObject`.
+    func makePaneMenu(for pane: PaneViewModel) -> NSMenu {
+        let menu = NSMenu(title: "File")
+        func add(_ title: String, _ action: Selector, _ key: String) {
+            let item = menu.addItem(withTitle: title, action: action, keyEquivalent: key)
+            item.target = self
+            item.representedObject = pane
+        }
+        add("New File", #selector(newDocumentInPane(_:)), "n")
+        add("Open…", #selector(openInPane(_:)), "o")
+        menu.addItem(.separator())
+        add("Save", #selector(savePaneDocument(_:)), "s")
+        add("Save As…", #selector(savePaneDocumentAs(_:)), "S")
+        add("Revert to Saved", #selector(revertPaneDocument(_:)), "")
+        menu.addItem(.separator())
+        add("Close", #selector(closePaneDocument(_:)), "w")
+        // Swap Panels is a comparison-mode command, not a per-pane File action,
+        // so it gets its own block and targets `swapPanes` directly.
+        menu.addItem(.separator())
+        let swapItem = menu.addItem(withTitle: "Swap Panels",
+                                    action: #selector(swapPanes),
+                                    keyEquivalent: "")
+        swapItem.target = self
+        return menu
+    }
+
+    /// The pane carried by a context-menu item (`representedObject`), or nil for
+    /// menu-bar items, which act on the active pane instead.
+    private func pane(from sender: Any?) -> PaneViewModel? {
+        (sender as? NSMenuItem)?.representedObject as? PaneViewModel
+    }
+
+    /// The window-model index of `pane` (0 or 1). The pane objects are swapped
+    /// by Swap Panels / pane-1 close promotion, so the comparison is by identity
+    /// at action time, never a captured index.
+    private func paneIndex(_ pane: PaneViewModel) -> Int {
+        pane === windowModel.pane1 ? 0 : 1
+    }
+
+    /// Header context menu > New File: a brand-new untitled document lands in
+    /// THIS pane — not a placement-chosen one — and the pane becomes active.
+    @objc func newDocumentInPane(_ sender: Any?) {
+        guard let pane = pane(from: sender) else { return }
+        let index = paneIndex(pane)
+        guard newUntitledIntoPane(index: index) else { return }
+        // The pane that received the new file becomes active, so focus follows
+        // (§3.3). A dirty pane defers through its Save As sheet and re-enters
+        // `newUntitledIntoPane` once that completes.
+        windowModel.setActivePane(index)
+        refreshMode()
+    }
+
+    /// Header context menu > Open…: opens into THIS pane, even when only one
+    /// pane is open (single-file mode replaces the current file).
+    @objc func openInPane(_ sender: Any?) {
+        guard let pane = pane(from: sender) else { return }
+        let index = paneIndex(pane)
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.treatsFilePackagesAsDirectories = false
+        panel.begin { [weak self] response in
+            guard response == .OK, let self else { return }
+            self.openFiles(into: index, urls: panel.urls)
+        }
+    }
+
+    /// Opens the first chosen file into the pane at `index` (its header's pane),
+    /// a second into the other pane only when that one is empty; extras (and an
+    /// unplaceable second) are ignored. Mirrors the drop rules of §4.3.
+    private func openFiles(into index: Int, urls: [URL]) {
+        let files = openableFiles(from: urls)
+        guard let first = files.first else { return }
+        guard openIntoPane(index: index, url: first) else { return }
+
+        let otherIndex = 1 - index
+        let otherPane = otherIndex == 0 ? windowModel.pane1 : windowModel.pane2
+        var ignored = max(0, files.count - 2)
+        if files.count >= 2 {
+            if otherPane.isOpen {
+                ignored += 1  // the second file can't open — treated as ignored
+            } else {
+                _ = openIntoPane(index: otherIndex, url: files[1])
+            }
+        }
+        windowModel.setActivePane(index)
+        if ignored > 0 { notifyIgnored(count: ignored) }
+        refreshMode()
+    }
+
+    /// Header context menu > Close: closes THIS pane (the active-pane Close in
+    /// the menu bar keeps its own behavior).
+    @objc func closePaneDocument(_ sender: Any?) {
+        guard let pane = pane(from: sender), pane.isOpen else { return }
+        closePane(at: paneIndex(pane))
     }
 
     // MARK: - Edit commands (§7, §12)
@@ -1138,6 +1276,13 @@ extension MainViewController: NSMenuItemValidation {
         case #selector(revertDocument):
             // Nothing on disk to revert an untitled document to.
             return activePane.isOpen && !activePane.isUntitled
+        case #selector(savePaneDocument(_:)),
+             #selector(savePaneDocumentAs(_:)):
+            // Context-menu items act on the pane they were built for.
+            return pane(from: menuItem)?.isOpen ?? false
+        case #selector(revertPaneDocument(_:)):
+            guard let pane = pane(from: menuItem) else { return false }
+            return pane.isOpen && !pane.isUntitled
         case #selector(fillSelectionWithBytes):
             let pane = activePane
             return pane.isOpen && !pane.hexSelection().isEmpty

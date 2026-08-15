@@ -26,6 +26,16 @@ final class PaneHeaderView: NSView {
         }
         super.mouseDown(with: event)
     }
+
+    /// Right-click pops the pane's File menu (assigned via `menu`), acting on
+    /// this pane — not the active pane. The close button keeps its own clicks.
+    override func rightMouseDown(with event: NSEvent) {
+        if let menu {
+            NSMenu.popUpContextMenu(menu, with: event, for: self)
+        } else {
+            super.rightMouseDown(with: event)
+        }
+    }
 }
 
 /// One file pane (§3.4, §15): a header (file name, `*` dirty, read-only lock,
@@ -41,6 +51,10 @@ final class FilePaneView: NSView {
     let scrollView: NSScrollView
 
     private let hexView: HexView
+    /// The title bar at the top of the pane (file name, dirty/read-only state,
+    /// close button). Stored so the pane's right-click File menu can be attached
+    /// to it via `paneMenu` (§4/§5).
+    private let header = PaneHeaderView()
 
     /// Ideal width of this pane's hex content, for zoom-to-fit (§3.1).
     var hexContentWidth: CGFloat { hexView.hexContentWidth }
@@ -104,6 +118,14 @@ final class FilePaneView: NSView {
         didSet { updateStatus() }
     }
 
+    /// The pane header's right-click File menu, built by MainViewController so
+    /// every item resolves THIS pane (§4, §5). Set before the pane is shown;
+    /// `PaneHeaderView.rightMouseDown` pops it. The menu bar's File submenu is a
+    /// separate menu acting on the active pane.
+    var paneMenu: NSMenu? {
+        didSet { header.menu = paneMenu }
+    }
+
     /// Fired when the user clicks anywhere in the pane (activates it).
     var onActivate: (() -> Void)?
     /// Fired when the user double-clicks the header: expand this pane so its
@@ -162,7 +184,6 @@ final class FilePaneView: NSView {
         closeButton.toolTip = "Close pane"
         closeButton.contentTintColor = .secondaryLabelColor
 
-        let header = PaneHeaderView()
         header.translatesAutoresizingMaskIntoConstraints = false
         header.onDoubleClick = { [weak self] in
             self?.onHeaderDoubleClick?()

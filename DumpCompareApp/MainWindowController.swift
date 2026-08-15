@@ -82,23 +82,10 @@ final class MainWindowController: NSWindowController {
         appMenu.addItem(withTitle: "Quit DumpCompare", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
 
-        // File menu (§4, §5)
+        // File menu (§4, §5).
         let fileItem = NSMenuItem()
         mainMenu.addItem(fileItem)
-        let fileMenu = NSMenu(title: "File")
-        // File > New File: no dialog — a brand-new untitled in-memory document
-        // opens into a pane; it is written to disk on the first Save / Save As.
-        fileMenu.addItem(withTitle: "New File", action: #selector(MainViewController.newDocument), keyEquivalent: "n")
-        fileMenu.addItem(withTitle: "Open…", action: #selector(MainViewController.presentOpenPanel), keyEquivalent: "o")
-        fileMenu.addItem(.separator())
-        fileMenu.addItem(withTitle: "Save", action: #selector(MainViewController.saveDocument), keyEquivalent: "s")
-        fileMenu.addItem(withTitle: "Save As…", action: #selector(MainViewController.saveDocumentAs), keyEquivalent: "S")
-        fileMenu.addItem(withTitle: "Revert to Saved", action: #selector(MainViewController.revertDocument), keyEquivalent: "")
-        fileMenu.addItem(.separator())
-        // Cmd+W closes the active pane ("close document"); with no panes open
-        // it falls back to closing the window (§3.5).
-        fileMenu.addItem(withTitle: "Close", action: #selector(MainViewController.closeDocument), keyEquivalent: "w")
-        fileItem.submenu = fileMenu
+        fileItem.submenu = makeFileMenu()
 
         // Edit menu (§7, §11, §12)
         let editItem = NSMenuItem()
@@ -178,4 +165,28 @@ final class MainWindowController: NSWindowController {
 
         NSApp.mainMenu = mainMenu
     }
+
+    /// Builds the app menu bar's File submenu (§4, §5). Every item targets
+    /// `mainViewController` explicitly, which resolves the active pane.
+    func makeFileMenu() -> NSMenu {
+        let fileMenu = NSMenu(title: "File")
+        func add(_ title: String, _ action: Selector, _ key: String) {
+            let item = fileMenu.addItem(withTitle: title, action: action, keyEquivalent: key)
+            item.target = mainViewController
+        }
+        // New File: no dialog — a brand-new untitled in-memory document opens
+        // into a pane; it is written to disk on the first Save / Save As.
+        add("New File", #selector(MainViewController.newDocument), "n")
+        add("Open…", #selector(MainViewController.presentOpenPanel), "o")
+        fileMenu.addItem(.separator())
+        add("Save", #selector(MainViewController.saveDocument), "s")
+        add("Save As…", #selector(MainViewController.saveDocumentAs), "S")
+        add("Revert to Saved", #selector(MainViewController.revertDocument), "")
+        fileMenu.addItem(.separator())
+        // Close (⌘W) closes the active pane ("close document"); with no panes
+        // open it falls back to closing the window (§3.5).
+        add("Close", #selector(MainViewController.closeDocument), "w")
+        return fileMenu
+    }
+
 }
