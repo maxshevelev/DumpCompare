@@ -56,6 +56,7 @@ final class HexView: NSView {
     private let font: NSFont
     private let rowHeight: CGFloat
     private let charWidth: CGFloat
+    private let baseline: CGFloat
     private var currentLayout: HexLayout
     private var wordSizeObserver: NSObjectProtocol?
 
@@ -73,6 +74,7 @@ final class HexView: NSView {
         font = .monospacedSystemFont(ofSize: 13, weight: .regular)
         charWidth = Self.measureCharWidth(font)
         rowHeight = ceil((font.ascender - font.descender)) + 4
+        baseline = Self.centeredBaseline(font: font, rowHeight: rowHeight)
         currentLayout = HexLayout(charWidth: charWidth, rowHeight: rowHeight, wordSize: WordSize.current.rawValue)
         super.init(frame: .zero)
         // Expose the grid to VoiceOver with a live value describing the caret
@@ -102,6 +104,19 @@ final class HexView: NSView {
 
     private static func measureCharWidth(_ font: NSFont) -> CGFloat {
         ("0" as NSString).size(withAttributes: [.font: font]).width
+    }
+
+    /// The baseline that places the glyph ink vertically centered in the row.
+    /// `NSString.draw(at:)` anchors the text's ascent line at the point in a
+    /// flipped view, so centering the ascent box alone would push the ink low in
+    /// the row (a font's ascender far exceeds its cap height). Measure the ink
+    /// bounds of a representative glyph and solve for the point that centers
+    /// those bounds in `rowHeight` (§3.2).
+    private static func centeredBaseline(font: NSFont, rowHeight: CGFloat) -> CGFloat {
+        let line = CTLineCreateWithAttributedString(NSAttributedString(string: "0A", attributes: [.font: font]))
+        let ink = CTLineGetImageBounds(line, nil)
+        // ink.minY sits below the baseline (negative), ink.maxY above it.
+        return rowHeight / 2 - (font.ascender + font.leading) + (ink.minY + ink.maxY) / 2
     }
 
     // MARK: - Data refresh
@@ -180,7 +195,6 @@ final class HexView: NSView {
         let region = dataSource.hexInputRegion()
 
         let rows = layout.visibleRowRange(in: dirtyRect)
-        let baseline = (rowHeight - (font.ascender - font.descender)) / 2 - font.descender
 
         for row in rows {
             guard UInt64(row) < rowCount else { break }
