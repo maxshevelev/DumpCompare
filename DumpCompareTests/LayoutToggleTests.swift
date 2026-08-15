@@ -87,7 +87,7 @@ final class LayoutToggleTests: XCTestCase {
         XCTAssertEqual(window.frame.size.width, 1080, accuracy: 1)
         XCTAssertEqual(cv.paneView1.frame.height, 692, accuracy: 1)  // 720 − titlebar
         XCTAssertEqual(cv.paneView2.frame.height, 692, accuracy: 1)
-        XCTAssertEqual(cv.paneView1.frame.width + cv.paneView2.frame.width + 1, 1080, accuracy: 1)
+        XCTAssertEqual(cv.paneView1.frame.width + cv.paneView2.frame.width + cv.splitView.dividerThickness, 1080, accuracy: 1)
 
         // Toggle to stacked: window MUST keep its size, panes full-width stacked.
         wc.mainViewController.togglePaneLayout()
@@ -95,8 +95,9 @@ final class LayoutToggleTests: XCTestCase {
         XCTAssertEqual(window.frame.size.width, 1080, accuracy: 1)
         XCTAssertEqual(cv.paneView1.frame.width, 1080, accuracy: 1)
         XCTAssertEqual(cv.paneView2.frame.width, 1080, accuracy: 1)
-        XCTAssertEqual(cv.paneView1.frame.height, 345.5, accuracy: 1)
-        XCTAssertEqual(cv.paneView2.frame.height, 345.5, accuracy: 1)
+        let stackedHalf = (692 - cv.splitView.dividerThickness) / 2
+        XCTAssertEqual(cv.paneView1.frame.height, stackedHalf, accuracy: 1)
+        XCTAssertEqual(cv.paneView2.frame.height, stackedHalf, accuracy: 1)
 
         // Divider still draggable in stacked mode (first pane sits on top, so
         // its bottom edge — maxY in the flipped split view — is the divider).
@@ -105,14 +106,14 @@ final class LayoutToggleTests: XCTestCase {
         sv.mouseDown(with: mouse(.leftMouseDown, at: windowPoint(sv, NSPoint(x: 400, y: dividerY)), window: window))
         sv.mouseDragged(with: mouse(.leftMouseDragged, at: windowPoint(sv, down), window: window))
         sv.mouseUp(with: mouse(.leftMouseUp, at: windowPoint(sv, down), window: window))
-        XCTAssertEqual(cv.paneView1.frame.height, 245.5, accuracy: 1)
-        XCTAssertEqual(cv.paneView2.frame.height, 445.5, accuracy: 1)
+        XCTAssertEqual(cv.paneView1.frame.height, stackedHalf - 100, accuracy: 1)
+        XCTAssertEqual(cv.paneView2.frame.height, stackedHalf + 100, accuracy: 1)
 
         // Toggle back to vertical: window still unchanged, side-by-side returns.
         wc.mainViewController.togglePaneLayout()
         settle(window)
         XCTAssertEqual(window.frame.size.width, 1080, accuracy: 1)
         XCTAssertEqual(cv.paneView1.frame.height, 692, accuracy: 1)
-        XCTAssertEqual(cv.paneView1.frame.width + cv.paneView2.frame.width + 1, 1080, accuracy: 1)
+        XCTAssertEqual(cv.paneView1.frame.width + cv.paneView2.frame.width + cv.splitView.dividerThickness, 1080, accuracy: 1)
     }
 }

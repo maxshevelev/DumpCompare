@@ -56,7 +56,7 @@ final class ComparisonResizeTests: XCTestCase {
         let w1 = cv.paneView1.frame.width
         let w2 = cv.paneView2.frame.width
         XCTAssertEqual(w1 / (w1 + w2), 0.7, accuracy: 0.01)
-        XCTAssertEqual(w1 + w2, 1199, accuracy: 1)  // 1200 − 1 pt divider
+        XCTAssertEqual(w1 + w2, 1200 - cv.splitView.dividerThickness, accuracy: 1)  // 1200 − divider
     }
 
     func testResizeKeepsDraggedRatio() throws {
@@ -73,8 +73,9 @@ final class ComparisonResizeTests: XCTestCase {
         let w1 = cv.paneView1.frame.width
         let w2 = cv.paneView2.frame.width
         XCTAssertEqual(w1 / (w1 + w2), ratioBefore, accuracy: 0.01)
-        XCTAssertEqual(w1, 1050, accuracy: 1)   // 70% of 1499
-        XCTAssertEqual(w2, 449, accuracy: 1)    // 30% of 1499
+        let available = 1500 - cv.splitView.dividerThickness
+        XCTAssertEqual(w1, ratioBefore * available, accuracy: 1)
+        XCTAssertEqual(w2, (1 - ratioBefore) * available, accuracy: 1)
     }
 
     func testStackedResizeKeepsHeightRatio() throws {
@@ -93,7 +94,8 @@ final class ComparisonResizeTests: XCTestCase {
         let h1 = cv.paneView1.frame.height
         let h2 = cv.paneView2.frame.height
         XCTAssertEqual(h1 / (h1 + h2), ratioBefore, accuracy: 0.01)
-        XCTAssertEqual(h1, ratioBefore * 1499, accuracy: 1)
-        XCTAssertEqual(h2, (1 - ratioBefore) * 1499, accuracy: 1)
+        let available = 1500 - cv.splitView.dividerThickness
+        XCTAssertEqual(h1, ratioBefore * available, accuracy: 1)
+        XCTAssertEqual(h2, (1 - ratioBefore) * available, accuracy: 1)
     }
 }

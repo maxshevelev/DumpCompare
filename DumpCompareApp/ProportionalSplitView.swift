@@ -76,6 +76,28 @@ final class ProportionalSplitView: NSSplitView {
     /// grab. NSSplitView's thin divider needs a more generous hit target.
     private static let dividerHitSlop: CGFloat = 6
 
+    /// The divider is drawn as a solid strip at this thickness (§3.3): a 1pt
+    /// hairline is too faint next to a dense hex grid. The value feeds the
+    /// pane layout (frames skip the divider) and the divider drawing.
+    private static let dividerThicknessValue: CGFloat = 6
+
+    /// A pale grey that reads against the panes' `textBackgroundColor` (white
+    /// in light, near-black in dark) without stealing attention from the hex
+    /// content — just enough to mark the pane split.
+    private static let dividerFill = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(white: 0.32, alpha: 1)
+            : NSColor(white: 0.80, alpha: 1)
+    }
+
+    override var dividerThickness: CGFloat { Self.dividerThicknessValue }
+
+    /// Replaces NSSplitView's hairline with a solid strip of `dividerFill`.
+    override func drawDivider(in rect: NSRect) {
+        Self.dividerFill.setFill()
+        rect.fill()
+    }
+
     override var isVertical: Bool {
         didSet {
             guard isVertical != oldValue else { return }
@@ -98,6 +120,14 @@ final class ProportionalSplitView: NSSplitView {
         }
 
         let available = axisAvailable()
+
+        // Capture the divider's current strip before the panes move, so the
+        // vacated region can be repainted afterwards. Nothing else invalidates
+        // it: the panes' frames are set directly here, bypassing NSSplitView's
+        // own divider bookkeeping, and the panes' headers/status bars are
+        // transparent — so without this the old strip's pixels would linger on
+        // them after a drag (§3.3).
+        let previousDividerRect = dividerRect(forDividerAt: firstPaneThickness())
 
         // Rebuild the divider binding when the axis flips (View > Toggle Pane
         // Layout) or on the first pass, then point it at the current divider.
@@ -125,6 +155,13 @@ final class ProportionalSplitView: NSSplitView {
             arranged[0].frame = NSRect(x: 0, y: 0, width: width, height: first)
             arranged[1].frame = NSRect(x: 0, y: first + dividerThickness, width: width, height: second)
         }
+
+        // Repaint the vacated strip (old divider position) and the new strip.
+        // The panes have moved over both, so without the explicit invalidation
+        // the old divider's pixels show through the panes' transparent header
+        // and status bar (§3.3).
+        setNeedsDisplay(previousDividerRect)
+        setNeedsDisplay(dividerRect(forDividerAt: first))
 
         // Divider positions moved; refresh the resize-cursor hover rects.
         window?.invalidateCursorRects(for: self)
@@ -380,6 +417,20 @@ final class ProportionalSplitView: NSSplitView {
 
     private func axisValue(_ point: NSPoint) -> CGFloat {
         isVertical ? point.x : point.y
+    }
+
+    /// The strip this split view paints for a divider at `position` — the
+    /// first pane's thickness along the split axis. Runs the full cross-axis
+    /// extent (the whole pane height when side-by-side), so the region includes
+    /// the panes' header and status bar.
+    private func dividerRect(forDividerAt position: CGFloat) -> NSRect {
+        if isVertical {
+            return NSRect(x: position, y: 0, width: dividerThickness, height: bounds.height)
+        } else {
+            // Stacked, flipped coordinates: the divider's y is the first
+            // (top) pane's height.
+            return NSRect(x: 0, y: position, width: bounds.width, height: dividerThickness)
+        }
     }
 
     private func axisAvailable() -> CGFloat {

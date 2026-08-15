@@ -890,7 +890,7 @@ final class MainViewController: NSViewController {
             let w2 = comparisonView.paneView2.contentFitWidth
             // Same source of truth as ComparisonView's layout toggle (§3.3).
             let isVertical = UserDefaults.standard.object(forKey: "ComparisonPaneLayoutIsVertical") as? Bool ?? true
-            return isVertical ? w1 + w2 + 1 : max(w1, w2)
+            return isVertical ? w1 + w2 + comparisonView.splitView.dividerThickness : max(w1, w2)
         case .empty:
             return 0
         }

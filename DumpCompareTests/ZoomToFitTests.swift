@@ -30,6 +30,14 @@ final class ZoomToFitTests: XCTestCase {
         findPanes(in: view).first
     }
 
+    private func findSplitView(in view: NSView) -> ProportionalSplitView? {
+        if let split = view as? ProportionalSplitView { return split }
+        for sub in view.subviews {
+            if let found = findSplitView(in: sub) { return found }
+        }
+        return nil
+    }
+
     private func makeController() -> MainWindowController {
         let controller = MainWindowController()
         _ = controller.mainViewController.view  // loadView + viewDidLoad → empty mode
@@ -143,7 +151,8 @@ final class ZoomToFitTests: XCTestCase {
         mainVC.apply(mode: .comparison)
         let panes = findPanes(in: mainVC.view)
         XCTAssertEqual(panes.count, 2)
-        let expectedWidth = panes[0].contentFitWidth + panes[1].contentFitWidth + 1
+        let divider = try XCTUnwrap(findSplitView(in: mainVC.view))
+        let expectedWidth = panes[0].contentFitWidth + panes[1].contentFitWidth + divider.dividerThickness
         let expectedHeight = max(panes[0].contentFitHeight, panes[1].contentFitHeight)
 
         let frame = mainVC.windowWillUseStandardFrame(window, defaultFrame: NSRect(x: 0, y: 0, width: 3000, height: 2000))

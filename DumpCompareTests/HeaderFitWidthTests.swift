@@ -89,7 +89,7 @@ final class HeaderFitWidthTests: XCTestCase {
 
         XCTAssertEqual(cv.paneView1.frame.width, cv.paneView1.contentFitWidth, accuracy: 1)
         // The panes still tile the split view; the second pane takes the rest.
-        XCTAssertEqual(cv.paneView1.frame.width + cv.paneView2.frame.width + 1,
+        XCTAssertEqual(cv.paneView1.frame.width + cv.paneView2.frame.width + cv.splitView.dividerThickness,
                        cv.splitView.bounds.width, accuracy: 1)
     }
 
@@ -100,7 +100,7 @@ final class HeaderFitWidthTests: XCTestCase {
         doubleClick(header: try header(of: cv.paneView2), window: window)
 
         XCTAssertEqual(cv.paneView2.frame.width, cv.paneView2.contentFitWidth, accuracy: 1)
-        XCTAssertEqual(cv.paneView1.frame.width + cv.paneView2.frame.width + 1,
+        XCTAssertEqual(cv.paneView1.frame.width + cv.paneView2.frame.width + cv.splitView.dividerThickness,
                        cv.splitView.bounds.width, accuracy: 1)
     }
 
