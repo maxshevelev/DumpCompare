@@ -79,6 +79,11 @@ final class HexView: NSView {
     /// exposed (internal) for tests. (`layout` itself is NSView's method.)
     var hexLayout: HexLayout { currentLayout }
 
+    /// Font and baseline shared with the pane's column header, so its labels
+    /// align with the rows they name.
+    var hexFont: NSFont { font }
+    var hexBaseline: CGFloat { baseline }
+
     // MARK: - Init
 
     init() {
@@ -234,7 +239,7 @@ final class HexView: NSView {
         // Offset column.
         let offsetText = String(rowStart, radix: 16, uppercase: true).leftPadded(to: layout.offsetColumnChars, with: "0")
         draw(text: offsetText, in: layout.offsetColumnFrame(row: row),
-             baseline: baseline, color: .secondaryLabelColor)
+             baseline: baseline, color: HexTheme.inkBlue)
 
         let states = dataSource?.hexByteStates(in: rowStart..<rowStart + 16) ?? []
         for column in 0..<HexLayout.bytesPerRow {
@@ -606,6 +611,16 @@ enum HexTheme {
 
     static let modifiedText = NSColor.systemRed
     static let caretColor = NSColor.controlAccentColor
+
+    /// Ink blue for the column header and the offset column (§6): a pale,
+    /// slightly desaturated blue that reads as a quiet secondary element next
+    /// to the dump's byte content, lighter on dark backgrounds so it stays
+    /// legible without competing with the bytes.
+    static let inkBlue = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(srgbRed: 0.58, green: 0.73, blue: 0.92, alpha: 1)
+            : NSColor(srgbRed: 0.33, green: 0.54, blue: 0.78, alpha: 1)
+    }
 
     /// Text colour for a byte. A modified byte keeps its red warning; otherwise
     /// a fill byte (0x00, 0xFF) is drawn muted so the significant bytes read

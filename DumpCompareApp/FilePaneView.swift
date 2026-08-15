@@ -64,12 +64,20 @@ final class FilePaneView: NSView {
     static let statusBarHeight: CGFloat = 24
 
     /// Height this pane needs to show its hex content without a vertical
-    /// scroller: all rows plus the header and status bar (§3.1).
-    var contentFitHeight: CGFloat { hexContentHeight + Self.headerHeight + Self.statusBarHeight }
+    /// scroller: all rows plus the title header, column header, and status bar
+    /// (§3.1).
+    var contentFitHeight: CGFloat {
+        hexContentHeight + Self.headerHeight + Self.statusBarHeight + columnHeader.headerHeight
+    }
 
     private let titleLabel = NSTextField(labelWithString: "")
     private let lockLabel = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(labelWithString: "")
+    /// The pinned column header above the dump ("Offset" / "Hex" / "Decoded
+    /// text"). It sits outside the scroll view, so it never scrolls vertically,
+    /// and mirrors the horizontal scroll to stay aligned with the columns (§6).
+    private let columnHeader = HexColumnHeaderView()
+    private var columnHeaderScrollObserver: NSObjectProtocol?
     /// The status-bar strip for the running background operation (name +
     /// progress bar + ×), hidden while idle (§14.4). Internal so tests can
     /// assert the debounced reveal / hide.
@@ -195,6 +203,19 @@ final class FilePaneView: NSView {
             statusBar.heightAnchor.constraint(equalToConstant: Self.statusBarHeight),
         ])
 
+        // Column header: pinned above the dump (so it never scrolls) and
+        // mirroring the horizontal scroll, so the labels track their columns.
+        columnHeader.hexView = hexView
+        columnHeader.translatesAutoresizingMaskIntoConstraints = false
+        columnHeader.heightAnchor.constraint(equalToConstant: columnHeader.headerHeight).isActive = true
+        columnHeaderScrollObserver = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: scrollView.contentView,
+            queue: .main
+        ) { [weak self] _ in
+            self?.columnHeader.horizontalOffset = self?.scrollView.contentView.bounds.origin.x ?? 0
+        }
+
         // Scrollable hex view.
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.hasVerticalScroller = true
@@ -213,6 +234,7 @@ final class FilePaneView: NSView {
         stack.setContentHuggingPriority(.defaultLow, for: .horizontal)
         stack.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         stack.addArrangedSubview(header)
+        stack.addArrangedSubview(columnHeader)
         stack.addArrangedSubview(scrollView)
         stack.addArrangedSubview(statusBar)
         addSubview(stack)
@@ -223,6 +245,12 @@ final class FilePaneView: NSView {
             stack.leadingAnchor.constraint(equalTo: leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
+    }
+
+    deinit {
+        if let columnHeaderScrollObserver {
+            NotificationCenter.default.removeObserver(columnHeaderScrollObserver)
+        }
     }
 
     // MARK: - Binding
@@ -364,6 +392,9 @@ final class FilePaneView: NSView {
 
     private func refresh() {
         hexView.reloadData()
+        // The layout may have changed (offset digits, word size) — redraw the
+        // header so its labels track the columns.
+        columnHeader.needsDisplay = true
         hexView.revealCaret()
         updateHeader()
         updateStatus()
@@ -441,6 +472,98 @@ extension FilePaneView {
             onDropFiles?(urls)
         }
         return true
+    }
+}
+
+// MARK: - Column header (§6)
+
+/// The pinned column header above the hex dump: the column names — "Offset",
+/// the sequential byte offsets "00".."0F" over the hex cells, and "Decoded
+/// text" — in ink blue, separated from the rows by a thin rule.
+///
+/// Sits in the pane chrome above the scroll view, so it never scrolls
+/// vertically; it mirrors the scroll view's horizontal offset so the labels
+/// stay aligned with the columns as the dump scrolls sideways.
+final class HexColumnHeaderView: NSView {
+    /// The hex view supplying the grid geometry. The label positions come from
+    /// `hexLayout`, the glyph ink from the same font/baseline as the rows.
+    weak var hexView: HexView?
+
+    /// The clip view's horizontal scroll offset; the drawing shifts left by it
+    /// so each label tracks the column it names.
+    var horizontalOffset: CGFloat = 0 {
+        didSet { needsDisplay = true }
+    }
+
+    /// The column names at the row's edges.
+    private static let offsetTitle = "Offset"
+    private static let asciiTitle = "Decoded text"
+
+    /// The sequential byte offset shown above a hex cell: "00".."0F", one
+    /// two-digit index per byte, aligned with the byte's cell (§6).
+    private static func columnIndex(_ column: Int) -> String {
+        String(format: "%02X", column)
+    }
+
+    /// Height: one hex row, so the header reads as a pinned first row.
+    var headerHeight: CGFloat { hexView?.hexLayout.rowHeight ?? 17 }
+
+    override var isFlipped: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.textBackgroundColor.setFill()
+        NSBezierPath(rect: bounds).fill()
+        guard let hexView else { return }
+        let layout = hexView.hexLayout
+
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSGraphicsContext.current?.cgContext.translateBy(x: -horizontalOffset, y: 0)
+
+        let baseline = hexView.hexBaseline
+        draw(Self.offsetTitle, x: layout.offsetColumnFrame(row: 0).minX, baseline: baseline)
+        for column in 0..<HexLayout.bytesPerRow {
+            draw(Self.columnIndex(column), x: layout.hexByteX(column: column), baseline: baseline)
+        }
+        draw(Self.asciiTitle, x: layout.asciiX(column: 0), baseline: baseline)
+
+        // Thin ink-blue rule separating the header from the dump.
+        HexTheme.inkBlue.withAlphaComponent(0.35).setStroke()
+        let rule = NSBezierPath()
+        rule.move(to: NSPoint(x: 0, y: bounds.height - 0.5))
+        rule.line(to: NSPoint(x: layout.contentWidth, y: bounds.height - 0.5))
+        rule.lineWidth = 1
+        rule.stroke()
+    }
+
+    private func draw(_ text: String, x: CGFloat, baseline: CGFloat) {
+        guard let font = hexView?.hexFont else { return }
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: HexTheme.inkBlue,
+        ]
+        (text as NSString).draw(at: NSPoint(x: x, y: baseline), withAttributes: attributes)
+    }
+
+    /// The frames the labels are drawn into (view coordinates, already shifted
+    /// by `horizontalOffset`): the offset title, one frame per byte-offset
+    /// index (each as wide as a byte cell), and the ASCII title. Exposed
+    /// (internal) for tests.
+    func labelFrames() -> (offset: CGRect, columns: [CGRect], ascii: CGRect) {
+        let layout = hexView?.hexLayout ?? HexLayout(charWidth: 8, rowHeight: 17)
+        let shift = -horizontalOffset
+        let height = headerHeight
+        let columns = (0..<HexLayout.bytesPerRow).map { column in
+            CGRect(x: layout.hexByteX(column: column) + shift, y: 0,
+                   width: layout.hexByteWidth, height: height)
+        }
+        return (
+            CGRect(x: layout.offsetColumnFrame(row: 0).minX + shift, y: 0,
+                   width: layout.offsetColumnWidth, height: height),
+            columns,
+            CGRect(x: layout.asciiX(column: 0) + shift, y: 0,
+                   width: layout.asciiColumnWidth, height: height)
+        )
     }
 }
 
