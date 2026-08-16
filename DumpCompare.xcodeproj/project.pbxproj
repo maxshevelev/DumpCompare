@@ -72,6 +72,7 @@
 		FD51EAC14BECCAC66D3AC19F /* ComparisonCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7338140948096ABDADE950FE /* ComparisonCoordinatorTests.swift */; };
 		FE72BF847B03FAA82DA321EE /* CaretPlacementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70B7EBE980B4A83830DD34D6 /* CaretPlacementTests.swift */; };
 		6A7B8C9D0E1F2A3B4C5D6E7F /* LayoutSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B2C3D4E5F60718293A4B5C6 /* LayoutSettingsViewController.swift */; };
+		4E5F60718293A4B5C6D7E8F9 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 3D4E5F60718293A4B5C6D7E8 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -152,6 +153,7 @@
 		2C3D4E5F60718293A4B5C6D7 /* SelectionRedrawTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionRedrawTests.swift; sourceTree = "<group>"; };
 		F1E2D3C4B5A6978877665544 /* ContentRedrawTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentRedrawTests.swift; sourceTree = "<group>"; };
 		1B2C3D4E5F60718293A4B5C6 /* LayoutSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LayoutSettingsViewController.swift; sourceTree = "<group>"; };
+		3D4E5F60718293A4B5C6D7E8 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -198,6 +200,7 @@
 				407514C243C2AD42122D02CD /* AppDelegate.swift */,
 				C93800C61BCBEC68735E074A /* AppearanceSettings.swift */,
 				FB33DB1270B0F3AD9A668F5C /* AppMain.swift */,
+				3D4E5F60718293A4B5C6D7E8 /* Assets.xcassets */,
 				9363D4D72C799796A209C938 /* BackgroundOperation.swift */,
 				378C3560FF1F826E450CB91D /* ComparisonCoordinator.swift */,
 				0F74A1CF742DE4185F34E53D /* ComparisonView.swift */,
@@ -287,6 +290,7 @@
 			buildConfigurationList = BC5DE31D208F3551000476A8 /* Build configuration list for PBXNativeTarget "DumpCompare" */;
 			buildPhases = (
 				81370AF3D44DEA058BFB8BAD /* Sources */,
+				5F60718293A4B5C6D7E8F90A /* Resources */,
 				D81E08D7CBA312B9EAB238CA /* Frameworks */,
 			);
 			buildRules = (
@@ -360,6 +364,17 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		5F60718293A4B5C6D7E8F90A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				4E5F60718293A4B5C6D7E8F9 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		81370AF3D44DEA058BFB8BAD /* Sources */ = {
