@@ -72,6 +72,9 @@ final class HexView: NSView {
     /// rebuilds this whenever the user changes the decoding settings.
     var textDecoder: any TextDecoder {
         didSet {
+            // The decoded-text column's one-string path depends on the new
+            // decoder's characters, so its monospacing verdict is re-derived.
+            asciiColumnMonospacedCheck = nil
             // Only the decoded-text column is drawn from the decoder — the hex
             // glyphs are decoder-independent. Invalidate just that band, so a
             // decoding change repaints the ASCII column instead of the whole
@@ -97,6 +100,19 @@ final class HexView: NSView {
     /// `frameDidChange` on resize and `boundsDidChange` on scroll — the width
     /// only depends on the former.
     private var clipFrameObserver: NSObjectProtocol?
+
+    /// Attribute dictionaries shared by every glyph in the row (§ Option B): the
+    /// hex, offset, and decoded-text columns draw with the same handful of
+    /// colours, so one dictionary per colour replaces a fresh dictionary per
+    /// glyph. Built with the current `font`, so it is cleared when the font
+    /// changes.
+    private var textAttributesCache: [ObjectIdentifier: [NSAttributedString.Key: Any]] = [:]
+
+    /// Cached verdict on whether the decoded-text column can be drawn as one
+    /// string (every character the decoder can emit is exactly one cell wide in
+    /// the current font). `nil` before the first draw or after the font/decoder
+    /// changes.
+    private var asciiColumnMonospacedCheck: Bool?
 
     /// The window point where the current mouse-down landed; the drag-selection
     /// dead zone is anchored to it (§3.3).
@@ -233,6 +249,10 @@ final class HexView: NSView {
         charWidth = AppearanceSettings.charWidth(for: font)
         rowHeight = Self.rowHeight(for: font)
         baseline = AppearanceSettings.centeredBaseline(font: font, rowHeight: rowHeight)
+        // The cached attribute dictionaries carry the old font, and the
+        // decoded-text column's monospacing verdict was measured in it.
+        textAttributesCache.removeAll()
+        asciiColumnMonospacedCheck = nil
         reloadData()
     }
 
@@ -569,13 +589,14 @@ final class HexView: NSView {
     /// (`drawsOffset`/`drawsHex`/`drawsAscii`). A full-width dirty rect draws all
     /// three in exactly the previous order and output; a column-band-only dirty
     /// rect (the decoded-text column after a decoding change) draws just that
-    /// band's fills and glyphs, skipping the ~33 hex/offset glyphs (§3.3
+    /// band's fills and glyphs, skipping the other bands' strings (§3.3
     /// extension).
     private func drawRow(row: Int, layout: HexLayout, fileSize: UInt64,
                          selection: SelectionModel, baseline: CGFloat,
                          drawsOffset: Bool, drawsHex: Bool, drawsAscii: Bool) {
         let rowStart = layout.byteOffset(row: row, column: 0)
         let rowEnd = rowStart + UInt64(HexLayout.bytesPerRow)
+        let rowY = layout.rowFrame(row: row).minY
 
         // Offset column.
         if drawsOffset {
@@ -608,17 +629,20 @@ final class HexView: NSView {
                               drawsHex: drawsHex, drawsAscii: drawsAscii)
         }
 
-        // Cell content: EOF placeholder styling and the per-byte glyphs.
-        for column in 0..<HexLayout.bytesPerRow {
-            let state = states.indices.contains(column) ? states[column] : HexByteState(isEOF: true)
-            let hexFrame = layout.hexByteFrame(row: row, column: column)
-            let asciiRect = CGRect(x: layout.asciiX(column: column),
-                                   y: hexFrame.minY, width: layout.charWidth, height: layout.rowHeight)
-
-            if state.isEOF {
+        // EOF placeholder styling, per cell: the muted fill and hatch mark the
+        // file's end (§15). A file is a prefix, so EOF cells always trail — the
+        // glyph strings below simply end at the first one.
+        if drawsHex || drawsAscii {
+            for column in 0..<HexLayout.bytesPerRow {
+                let state = states.indices.contains(column) ? states[column] : HexByteState(isEOF: true)
+                guard state.isEOF else { continue }
                 var eofRects: [CGRect] = []
+                let hexFrame = layout.hexByteFrame(row: row, column: column)
                 if drawsHex { eofRects.append(hexFrame) }
-                if drawsAscii { eofRects.append(asciiRect) }
+                if drawsAscii {
+                    eofRects.append(CGRect(x: layout.asciiX(column: column), y: hexFrame.minY,
+                                           width: layout.charWidth, height: layout.rowHeight))
+                }
                 if !eofRects.isEmpty {
                     HexTheme.eofFill.setFill()
                     for rect in eofRects { NSBezierPath(rect: rect).fill() }
@@ -627,19 +651,107 @@ final class HexView: NSView {
                     // color alone.
                     drawEOFHatch(in: eofRects)
                 }
-                continue
             }
+        }
 
-            let textColor = HexTheme.textColor(for: state)
-            if drawsHex {
-                draw(text: hexDigits(state.byte), in: hexFrame, baseline: baseline, color: textColor)
+        // Cell content: the hex column and the decoded-text column, each drawn
+        // as one attributed string of colour runs (§ Option B) — a handful of
+        // draw calls per row instead of one per glyph. The hex digits (0-9A-F)
+        // and gap spaces are all exactly `charWidth` wide, so the single string
+        // lands every glyph on the same cell grid the per-glyph draws did. The
+        // decoded-text column is combined only when its characters are
+        // monospaced too; otherwise it falls back to per-cell drawing so a wide
+        // glyph (a substitute font) never drifts its neighbours.
+        if drawsHex {
+            let hexString = hexColumnAttributedString(states: states, layout: layout)
+            if hexString.length > 0 {
+                hexString.draw(at: NSPoint(x: layout.hexByteX(column: 0), y: rowY + baseline))
             }
-            if drawsAscii {
-                let asciiChar = textDecoder.decode(state.byte)
-                let isDisplayable = textDecoder.isDisplayable(state.byte)
-                let asciiColor = isDisplayable ? textColor : HexTheme.mutedTextColor
-                draw(text: String(asciiChar), in: asciiRect, baseline: baseline, color: asciiColor)
+        }
+        if drawsAscii {
+            if asciiColumnIsMonospaced {
+                let asciiString = asciiColumnAttributedString(states: states)
+                if asciiString.length > 0 {
+                    asciiString.draw(at: NSPoint(x: layout.asciiX(column: 0), y: rowY + baseline))
+                }
+            } else {
+                drawAsciiCells(states: states, layout: layout, rowY: rowY, baseline: baseline)
             }
+        }
+    }
+
+    /// The hex column of `states` as one attributed string, colour runs per
+    /// byte: each byte's two digits, then the grid spacing between cells — none
+    /// inside a word, one space between words, two between the two 8-byte
+    /// groups. Drawn at the column's origin, the fixed `charWidth` advance lands
+    /// every digit on the same cell the per-glyph code used. EOF cells draw
+    /// nothing, so the string ends at the first one. Exposed (internal) so tests
+    /// can pin the spacing against the layout's own geometry.
+    func hexColumnAttributedString(states: [HexByteState], layout: HexLayout) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        var currentColor: NSColor?
+        var pending = ""
+        for column in 0..<HexLayout.bytesPerRow {
+            guard column < states.count, !states[column].isEOF else { break }
+            let color = HexTheme.textColor(for: states[column])
+            if color !== currentColor {
+                appendRun(&pending, to: result, color: currentColor)
+                currentColor = color
+            }
+            pending += hexDigits(states[column].byte)
+            if column < HexLayout.bytesPerRow - 1 {
+                let inWord = (column % HexLayout.groupSize) % layout.wordSize
+                if inWord == layout.wordSize - 1 {
+                    // End of a word: one space (two between the two groups).
+                    pending += (column == HexLayout.groupSize - 1) ? "  " : " "
+                }
+            }
+        }
+        appendRun(&pending, to: result, color: currentColor)
+        return result
+    }
+
+    /// The decoded-text column of `states` as one attributed string: sixteen
+    /// contiguous characters (the ASCII column has no word or group gaps),
+    /// colour per byte — dimmed for non-displayable placeholders, the byte's
+    /// text colour otherwise. Drawn in one call only when every emitted
+    /// character is one cell wide (`asciiColumnIsMonospaced`).
+    private func asciiColumnAttributedString(states: [HexByteState]) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        var currentColor: NSColor?
+        var pending = ""
+        for column in 0..<HexLayout.bytesPerRow {
+            guard column < states.count, !states[column].isEOF else { break }
+            let state = states[column]
+            let char = textDecoder.decode(state.byte)
+            let color = textDecoder.isDisplayable(state.byte)
+                ? HexTheme.textColor(for: state)
+                : HexTheme.mutedTextColor
+            if color !== currentColor {
+                appendRun(&pending, to: result, color: currentColor)
+                currentColor = color
+            }
+            pending.append(char)
+        }
+        appendRun(&pending, to: result, color: currentColor)
+        return result
+    }
+
+    /// Per-cell fallback for the decoded-text column, used when a character the
+    /// decoder can emit is wider than one cell (a glyph missing from the font
+    /// falls back to a substitute). Each character draws at its own cell's
+    /// origin, so a wide glyph never pushes its neighbours off the grid.
+    private func drawAsciiCells(states: [HexByteState], layout: HexLayout, rowY: CGFloat, baseline: CGFloat) {
+        for column in 0..<HexLayout.bytesPerRow {
+            guard column < states.count, !states[column].isEOF else { break }
+            let state = states[column]
+            let asciiRect = CGRect(x: layout.asciiX(column: column), y: rowY,
+                                   width: layout.charWidth, height: layout.rowHeight)
+            let char = textDecoder.decode(state.byte)
+            let color = textDecoder.isDisplayable(state.byte)
+                ? HexTheme.textColor(for: state)
+                : HexTheme.mutedTextColor
+            draw(text: String(char), in: asciiRect, baseline: baseline, color: color)
         }
     }
 
@@ -1006,11 +1118,63 @@ final class HexView: NSView {
     private static let hexTable = Array("0123456789ABCDEF")
 
     private func draw(text: String, in frame: CGRect, baseline: CGFloat, color: NSColor) {
+        (text as NSString).draw(at: NSPoint(x: frame.minX, y: frame.minY + baseline),
+                                withAttributes: attributes(for: color))
+    }
+
+    /// Attribute dictionary for a text colour: the shared font plus the colour,
+    /// with kerning pinned off so a row drawn as one string never shifts a glyph
+    /// off its cell (the monospaced fonts already don't kern; this makes it
+    /// explicit). Built once per colour and cached (`textAttributesCache`).
+    private func attributes(for color: NSColor) -> [NSAttributedString.Key: Any] {
+        let key = ObjectIdentifier(color)
+        if let cached = textAttributesCache[key] {
+            return cached
+        }
         let attributes: [NSAttributedString.Key: Any] = [
             .font: font,
             .foregroundColor: color,
+            .kern: 0,
         ]
-        (text as NSString).draw(at: NSPoint(x: frame.minX, y: frame.minY + baseline), withAttributes: attributes)
+        textAttributesCache[key] = attributes
+        return attributes
+    }
+
+    /// Whether the decoded-text column can be drawn as one string, re-derived
+    /// after the font or decoder changes (the verdict is cached in
+    /// `asciiColumnMonospacedCheck`).
+    private var asciiColumnIsMonospaced: Bool {
+        if asciiColumnMonospacedCheck == nil {
+            asciiColumnMonospacedCheck = verifyAsciiColumnIsMonospaced()
+        }
+        return asciiColumnMonospacedCheck == true
+    }
+
+    /// Every character the decoder can emit for a row must be exactly one cell
+    /// wide in the current font. A glyph missing from the font falls back to a
+    /// substitute whose advance can differ — a single string would then drift
+    /// every cell after it, so the combined decoded-text column is gated on this
+    /// check. The placeholder is already covered: `decode` returns it for every
+    /// non-displayable byte.
+    private func verifyAsciiColumnIsMonospaced() -> Bool {
+        var distinct = Set<Character>()
+        for byte in UInt8.min...UInt8.max {
+            distinct.insert(textDecoder.decode(byte))
+        }
+        for char in distinct {
+            let width = (String(char) as NSString).size(withAttributes: [.font: font]).width
+            if abs(width - charWidth) > 0.001 {
+                return false
+            }
+        }
+        return true
+    }
+
+    /// Appends the accumulated colour run to a column string, starting a new run.
+    private func appendRun(_ pending: inout String, to result: NSMutableAttributedString, color: NSColor?) {
+        guard !pending.isEmpty, let color else { return }
+        result.append(NSAttributedString(string: pending, attributes: attributes(for: color)))
+        pending = ""
     }
 
     /// The frame around the right-clicked address while its context menu is up

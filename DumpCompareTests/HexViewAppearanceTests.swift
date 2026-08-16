@@ -93,4 +93,59 @@ final class HexViewAppearanceTests: XCTestCase {
 
         XCTAssertGreaterThan(pane.hexContentHeight, defaultHeight)
     }
+
+    // MARK: - Hex-column string shape (§ Option B)
+
+    private func state(_ byte: UInt8, modified: Bool = false) -> HexByteState {
+        HexByteState(byte: byte, isModified: modified)
+    }
+
+    /// The hex column is drawn as one attributed string whose fixed-width
+    /// characters land on the same cell grid as the layout's per-byte geometry.
+    /// Its length encodes the inter-cell spacing, so pin it against every word
+    /// size: 16 bytes × 2 digits, plus the 1-character word gaps and the
+    /// 2-character gap between the two 8-byte groups.
+    func testHexColumnStringGapCountsForAllWordSizes() throws {
+        let hexView = HexView()
+        let states = [HexByteState](repeating: state(0x55), count: 16)
+        let expected = [1: 48, 2: 40, 4: 36, 8: 34]  // 32 digits + gaps
+        for (wordSize, count) in expected {
+            let layout = HexLayout(charWidth: 8, rowHeight: 17, wordSize: wordSize)
+            let s = hexView.hexColumnAttributedString(states: states, layout: layout)
+            XCTAssertEqual(s.length, count, "wordSize \(wordSize)")
+        }
+    }
+
+    /// EOF cells draw nothing and always trail (a file is a prefix), so the
+    /// string simply ends at the first one.
+    func testHexColumnStringStopsAtFirstEOF() throws {
+        let hexView = HexView()
+        var states = [HexByteState](repeating: state(0x55), count: 4)
+        states += [HexByteState](repeating: HexByteState(isEOF: true), count: 12)
+        let layout = HexLayout(charWidth: 8, rowHeight: 17, wordSize: 1)
+        let s = hexView.hexColumnAttributedString(states: states, layout: layout)
+        // 4 bytes × 2 digits, with the four single spaces that follow columns
+        // 0–3 in the byte-per-cell layout.
+        XCTAssertEqual(s.length, 8 + 4)
+    }
+
+    /// Adjacent bytes of the same colour merge into one run; a modified byte
+    /// opens a red run. The string must split exactly at colour boundaries.
+    func testHexColumnStringSplitsRunsPerColor() throws {
+        let hexView = HexView()
+        let states = (0..<16).map { state(0x55, modified: $0 == 5) }
+        let layout = HexLayout(charWidth: 8, rowHeight: 17, wordSize: 1)
+        let s = hexView.hexColumnAttributedString(states: states, layout: layout)
+
+        var runs = 0
+        var last: NSColor?
+        for i in 0..<s.length {
+            let c = s.attribute(.foregroundColor, at: i, effectiveRange: nil) as? NSColor
+            if c !== last {
+                runs += 1
+                last = c
+            }
+        }
+        XCTAssertEqual(runs, 3, "label run, the red run, label run")
+    }
 }
