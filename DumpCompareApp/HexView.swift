@@ -85,6 +85,17 @@ final class HexView: NSView {
     /// Whether the current click has become a drag. Once the pointer leaves the
     /// dead zone the flag sticks, so later `mouseDragged` events keep extending.
     private var dragEngaged = false
+    /// The last drag pointer's window location. The drag-autoscroll timer
+    /// converts it back to view coordinates on every tick: the pointer sits at a
+    /// fixed spot on screen while the document scrolls under it, so re-deriving
+    /// the view position each tick keeps the pointer beyond the visible edge and
+    /// the scroll continuous (§6).
+    private var lastDragPoint: CGPoint?
+    /// Drives continuous scrolling while a drag-selection pointer is held
+    /// beyond the visible top or bottom edge (§6): each tick scrolls a step and
+    /// extends the selection to the row at the edge. Invalidated when the
+    /// pointer re-enters the pane or the drag ends.
+    private var autoscrollTimer: Timer?
 
     /// The offset whose address is framed while its context menu is up — the
     /// row's start address for a right-click on the Offset column, or the
@@ -177,6 +188,7 @@ final class HexView: NSView {
         if let clipFrameObserver {
             NotificationCenter.default.removeObserver(clipFrameObserver)
         }
+        stopDragAutoscroll()
     }
 
     @available(*, unavailable)
@@ -792,8 +804,13 @@ final class HexView: NSView {
     // MARK: - Scrolling
 
     /// Scrolls the caret into view within the enclosing scroll view.
+    ///
+    /// While a mouse drag is in progress the pane is driven by the pointer, not
+    /// the caret: the drag anchor may legitimately scroll out of view, and
+    /// yanking it back would fight the drag-selection autoscroll (§6). So the
+    /// caret is revealed only outside a drag.
     func revealCaret() {
-        guard let dataSource else { return }
+        guard !dragEngaged, let dataSource else { return }
         let layout = currentLayout
         let selection = dataSource.hexSelection()
         let (row, column) = layout.rowColumn(of: selection.start)
@@ -835,6 +852,121 @@ final class HexView: NSView {
         revealOffsetCentered(offset)
     }
 
+    // MARK: - Drag autoscroll (§6)
+
+    /// The furthest the document can scroll down: content height minus the
+    /// viewport, or zero when the content fits the viewport.
+    private var maxVerticalScroll: CGFloat {
+        guard let scroll = enclosingScrollView else { return 0 }
+        return max(0, bounds.height - scroll.contentView.bounds.height)
+    }
+
+    /// Whether a drag pointer is beyond the visible top or bottom edge.
+    private func isBeyondVisibleEdge(_ point: CGPoint) -> Bool {
+        guard let scroll = enclosingScrollView else { return false }
+        let visible = scroll.contentView.bounds
+        return point.y < visible.minY || point.y > visible.maxY
+    }
+
+    /// Whether the pane has room to keep scrolling toward a pointer beyond the
+    /// visible edge: the document still has rows in that direction.
+    private func canAutoscrollToward(_ point: CGPoint) -> Bool {
+        guard let scroll = enclosingScrollView else { return false }
+        let visible = scroll.contentView.bounds
+        if point.y < visible.minY { return visible.origin.y > 0 }
+        if point.y > visible.maxY { return visible.origin.y < maxVerticalScroll }
+        return false
+    }
+
+    /// One drag-autoscroll step. When the pointer is beyond the visible top or
+    /// bottom edge, scrolls the pane toward it — the scroll speed ramps
+    /// smoothly with how far past the edge the pointer is, from a gentle creep
+    /// just past the boundary to a fast glide far out (§6) — and returns the
+    /// pointer position that should drive the selection: clamped to the visible
+    /// edge, so the selection keeps extending to the row at the edge while the
+    /// pane scrolls. The point is clamped even when nothing scrolls (the
+    /// document edge), so the selection settles at the edge row instead of
+    /// stalling where the last scroll step happened to land.
+    private func dragAutoscrollStep(at point: CGPoint) -> CGPoint {
+        guard let scroll = enclosingScrollView else { return point }
+        let clip = scroll.contentView
+        let visible = clip.bounds
+        let overshoot = point.y < visible.minY ? point.y - visible.minY
+            : point.y > visible.maxY ? point.y - visible.maxY
+            : 0
+        guard overshoot != 0 else { return point }
+        // Exponential ramp: 1 - e^(-d/ramp) grows continuously from 0 at the
+        // edge toward 1 far out, so the speed increases smoothly with the
+        // overshoot instead of stepping through fixed bands. The constants
+        // keep the rise visible: from a gentle ~15 px/tick just past the edge
+        // to ~5× that around 120 px out, saturating near maxStep.
+        let maxStep: CGFloat = 80
+        let step = maxStep * (1 - exp(-abs(overshoot) / 50))
+        let originY = min(max(0, visible.origin.y + (overshoot > 0 ? step : -step)), maxVerticalScroll)
+        if abs(originY - visible.origin.y) > 0.5 {
+            clip.setBoundsOrigin(NSPoint(x: visible.origin.x, y: originY))
+            scroll.reflectScrolledClipView(clip)
+        }
+        let current = clip.bounds
+        return CGPoint(x: point.x, y: min(max(point.y, current.minY), current.maxY))
+    }
+
+    /// Arms the repeating timer that keeps scrolling while a drag pointer is
+    /// held beyond the visible top or bottom edge; stops it once the pointer
+    /// re-enters the pane or the document runs out. Called from `mouseDragged`.
+    private func updateDragAutoscrollTimer(at point: CGPoint) {
+        guard isBeyondVisibleEdge(point), canAutoscrollToward(point) else {
+            stopDragAutoscroll()
+            return
+        }
+        guard autoscrollTimer == nil else { return }
+        // The timer must fire while the mouse button is held with the pointer
+        // still. A live probe under NSApplication.run showed the real drag loop
+        // runs in the default/common mode (currentMode == nil during
+        // mouseDragged) and that .common timers fire there ~30/s, so scheduling
+        // in the common modes alone is what keeps the scroll going between drag
+        // events. The event-tracking mode is added as well to cover any lap in
+        // which AppKit does switch into it — a timer registered for both modes
+        // fires in whichever the loop happens to be in.
+        let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            self?.performDragAutoscrollTick()
+        }
+        autoscrollTimer = timer
+        RunLoop.main.add(timer, forMode: RunLoop.Mode(rawValue: "kCFRunLoopEventTrackingMode"))
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    /// One autoscroll timer tick: scroll toward the held pointer and extend the
+    /// selection to the edge row. Stops once the document edge is reached or
+    /// the pointer is no longer beyond the edge. The pointer is re-converted
+    /// from the fixed window location every tick, so the scroll keeps going
+    /// while the pointer is held beyond the edge and only stops when the
+    /// document runs out (§6). Internal (not private) so tests can drive a tick
+    /// synchronously without spinning the run loop.
+    func performDragAutoscrollTick() {
+        guard let last = lastDragPoint, dragEngaged else {
+            stopDragAutoscroll()
+            return
+        }
+        let point = convert(last, from: nil)
+        let effective = dragAutoscrollStep(at: point)
+        extendDragSelection(at: effective)
+        // Re-convert after the scroll step: a held pointer's document
+        // coordinate advances with the scroll (its screen position stays put,
+        // so the content scrolls past it), keeping the overshoot constant. The
+        // pre-scroll point would already be inside the post-scroll viewport, so
+        // checking it would stop the scroll after the very first step (§6).
+        let continuedPoint = convert(last, from: nil)
+        if !canAutoscrollToward(continuedPoint) {
+            stopDragAutoscroll()
+        }
+    }
+
+    private func stopDragAutoscroll() {
+        autoscrollTimer?.invalidate()
+        autoscrollTimer = nil
+    }
+
     // MARK: - Input
 
     override func mouseDown(with event: NSEvent) {
@@ -854,7 +986,24 @@ final class HexView: NSView {
             }
             dragEngaged = true
         }
-        handleMouse(event, extendSelection: true)
+        lastDragPoint = event.locationInWindow
+        // When the pointer is pushed past the visible top or bottom edge the
+        // pane scrolls so the selection can keep extending (§6); while the
+        // pointer is held there, `updateDragAutoscrollTimer` keeps the scroll
+        // going between drag events. The point is re-derived after the scroll,
+        // so a pointer the scroll has already brought inside doesn't re-arm.
+        let viewPoint = convert(event.locationInWindow, from: nil)
+        let effective = dragAutoscrollStep(at: viewPoint)
+        extendDragSelection(at: effective)
+        updateDragAutoscrollTimer(at: convert(event.locationInWindow, from: nil))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        stopDragAutoscroll()
+        mouseDownLocation = nil
+        lastDragPoint = nil
+        dragEngaged = false
+        super.mouseUp(with: event)
     }
 
     /// What a right-click in the dump anchors the context menu to (§10.2).
@@ -951,25 +1100,46 @@ final class HexView: NSView {
         return !pointInZone
     }
 
+    /// Extends the drag selection to the byte whose cell-centre the pointer has
+    /// crossed (§6): the byte under the pointer joins the selection — including
+    /// the row's last byte, which needs no following byte to be reachable. This
+    /// is the drag branch of `handleMouse`, shared with the drag-autoscroll
+    /// timer so a pointer held beyond the visible edge keeps selecting as the
+    /// pane scrolls.
+    private func extendDragSelection(at point: CGPoint) {
+        guard let dataSource, let delegate else { return }
+        let layout = currentLayout
+        let rowCount = layout.rowCount(fileSize: dataSource.fileSize)
+        let end: UInt64
+        if let mapped = layout.dragEndOffset(point: point, rowCount: rowCount) {
+            end = mapped
+        } else if point.y >= CGFloat(rowCount) * layout.rowHeight {
+            // The pointer is below the last row — past EOF, or the pane is
+            // scrolled to its bottom edge. A pointer there selects through the
+            // end of the file (§6).
+            end = dataSource.fileSize
+        } else {
+            return
+        }
+        let asciiStart = layout.asciiX(column: 0)
+        let region: HexInputRegion = (point.x >= asciiStart && point.x < asciiStart + layout.asciiColumnWidth)
+            ? .ascii : .hex
+        delegate.hexEditor(self, didClickAt: end, region: region, extendSelection: true, nibble: 0)
+    }
+
     private func handleMouse(_ event: NSEvent, extendSelection: Bool) {
         guard let dataSource, let delegate else { return }
         let point = convert(event.locationInWindow, from: nil)
-        let layout = currentLayout
-        let rowCount = layout.rowCount(fileSize: dataSource.fileSize)
 
-        // Dragging (or shift-click) extends the selection. The pointer maps to
-        // the byte whose cell-centre it has crossed (§6), so the byte under the
-        // pointer joins the selection — including the row's last byte, which
-        // needs no following byte to be reachable.
+        // Dragging (or shift-click) extends the selection — see
+        // `extendDragSelection`; a plain click places the caret.
         if extendSelection {
-            guard let end = layout.dragEndOffset(point: point, rowCount: rowCount) else { return }
-            let asciiStart = layout.asciiX(column: 0)
-            let region: HexInputRegion = (point.x >= asciiStart && point.x < asciiStart + layout.asciiColumnWidth)
-                ? .ascii : .hex
-            delegate.hexEditor(self, didClickAt: end, region: region, extendSelection: true, nibble: 0)
+            extendDragSelection(at: point)
             return
         }
 
+        let layout = currentLayout
+        let rowCount = layout.rowCount(fileSize: dataSource.fileSize)
         guard let hit = layout.hitTest(point: point, rowCount: rowCount) else { return }
 
         let offset: UInt64
