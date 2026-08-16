@@ -61,6 +61,13 @@ final class MinimapView: NSView {
     /// after a background rebuild; readable so tests can inspect the stripes.
     private(set) var maps: [Map] = []
 
+    /// The byte range each map's pane currently has visible, by map index —
+    /// what the grey viewport rectangle mirrors. A nil entry (or an empty
+    /// range) means that pane's scroll viewport is empty (no file, or the pane
+    /// shows no bytes). Kept separate from the maps so a scroll only moves the
+    /// overlay and never rebuilds the stripes.
+    private(set) var viewports: [Range<UInt64>?] = []
+
     /// Adopts a new map split, redrawing the divider lines only when the split
     /// actually changed (a stacked fraction can move by a hair on every pane
     /// divider tick, so compare with tolerance).
@@ -93,6 +100,21 @@ final class MinimapView: NSView {
         return maps[index].selection
     }
 
+    /// The visible byte range currently mirrored on a map (for tests).
+    func viewport(forMapAt index: Int) -> Range<UInt64>? {
+        guard viewports.indices.contains(index) else { return nil }
+        return viewports[index]
+    }
+
+    /// Moves the maps' viewport rectangles. A scroll reports the visible byte
+    /// range of each pane; the panel redraws only the overlay — no stripe
+    /// rebuild, no file read — so it is cheap enough for live scrolling.
+    func setViewports(_ viewports: [Range<UInt64>?]) {
+        guard viewports != self.viewports else { return }
+        self.viewports = viewports
+        needsDisplay = true
+    }
+
     /// The panel's quiet background — the same paper the hex dumps sit on, so
     /// the panel reads as part of the content area while idle.
     private static let background = NSColor.textBackgroundColor
@@ -104,6 +126,20 @@ final class MinimapView: NSView {
             ? NSColor(white: 0.32, alpha: 1)
             : NSColor(white: 0.80, alpha: 1)
     }
+
+    /// The viewport rectangle's fill — a translucent grey that reads as a
+    /// "you are here" band over the stripes without hiding them. Lightened in
+    /// dark appearance so it lifts off the near-black paper.
+    private static let viewportFill = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(white: 0.95, alpha: 0.16)
+            : NSColor(white: 0.15, alpha: 0.14)
+    }
+
+    /// How far the viewport rectangle pokes out beyond the map's lines on
+    /// every side, so the band reads as an overlay sitting on top of the
+    /// stripes rather than a stripe of its own.
+    private static let viewportOverhang: CGFloat = 2
 
     /// The maps draw top-down, matching the stacked panes' flipped coordinates
     /// (first pane on top), so a stacked divider lands at the same y as the
@@ -133,6 +169,8 @@ final class MinimapView: NSView {
         for (index, map) in maps.enumerated() {
             let area = area(forMapAt: index)
             drawStripes(of: map, in: area, dirtyRect: dirtyRect)
+            drawViewport(viewport: viewport(forMapAt: index), fileSize: map.fileSize,
+                         in: area, dirtyRect: dirtyRect)
             drawSelection(map.selection, fileSize: map.fileSize, in: area, dirtyRect: dirtyRect)
         }
         switch mapLayout {
@@ -193,6 +231,27 @@ final class MinimapView: NSView {
                    width: area.width,
                    height: stripeHeight).fill()
         }
+    }
+
+    /// Draws the pane's visible slice as a grey band over the map's stripes —
+    /// the minimap's "you are here" rectangle. The band is the fraction of the
+    /// file the pane has scrolled to, poking `viewportOverhang` pt past the
+    /// map's lines on each side. Drawn under the selection overlay so a
+    /// selection inside the viewport stays readable.
+    private func drawViewport(viewport: Range<UInt64>?, fileSize: UInt64,
+                              in area: NSRect, dirtyRect: NSRect) {
+        guard let viewport, !viewport.isEmpty, fileSize > 0 else { return }
+        let startFraction = CGFloat(min(viewport.lowerBound, fileSize)) / CGFloat(fileSize)
+        let endFraction = CGFloat(min(viewport.upperBound, fileSize)) / CGFloat(fileSize)
+        guard endFraction > startFraction else { return }
+        let y0 = area.minY + startFraction * area.height
+        let y1 = area.minY + endFraction * area.height
+        let overhang = Self.viewportOverhang
+        let rect = NSRect(x: area.minX - overhang, y: y0 - overhang,
+                          width: area.width + overhang * 2, height: y1 - y0 + overhang * 2)
+        guard rect.maxY >= dirtyRect.minY, rect.minY <= dirtyRect.maxY else { return }
+        Self.viewportFill.setFill()
+        rect.fill()
     }
 
     private func drawSelection(_ selection: Range<UInt64>?, fileSize: UInt64,

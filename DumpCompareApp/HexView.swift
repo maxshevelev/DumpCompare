@@ -56,6 +56,11 @@ final class HexView: NSView {
     /// typing into it always target the same pane.
     var onFocus: (() -> Void)?
 
+    /// Fired whenever the rows visible in the scroll viewport change — a scroll,
+    /// a resize, a content-size change. The minimap uses the reported byte range
+    /// to draw its viewport rectangle over the map (§ N).
+    var onVisibleRangeChanged: ((Range<UInt64>) -> Void)?
+
     /// Whether this hex view is the active pane. The caret is drawn only on the
     /// active pane, and only when there is no selection (§3.3); both panes draw
     /// closed contours mirroring the *other* pane's selection, and the inactive
@@ -100,6 +105,10 @@ final class HexView: NSView {
     /// `frameDidChange` on resize and `boundsDidChange` on scroll — the width
     /// only depends on the former.
     private var clipFrameObserver: NSObjectProtocol?
+    /// Observes the clip's bounds for scrolling, so the minimap's viewport
+    /// rectangle tracks the visible rows. The clip posts `boundsDidChange` on
+    /// scroll (and `frameDidChange` on resize — both feed the same callback).
+    private var clipBoundsObserver: NSObjectProtocol?
 
     /// Attribute dictionaries shared by every glyph in the row (§ Option B): the
     /// hex, offset, and decoded-text columns draw with the same handful of
@@ -222,6 +231,9 @@ final class HexView: NSView {
         }
         if let clipFrameObserver {
             NotificationCenter.default.removeObserver(clipFrameObserver)
+        }
+        if let clipBoundsObserver {
+            NotificationCenter.default.removeObserver(clipBoundsObserver)
         }
         stopDragAutoscroll()
     }
@@ -492,7 +504,19 @@ final class HexView: NSView {
             queue: .main
         ) { [weak self] _ in
             self?.refreshContentWidth()
+            self?.notifyVisibleRangeChanged()
         }
+        // A scroll moves the clip's bounds, not its frame, so the viewport
+        // rectangle needs a separate observer (§ N). frameDidChange covers
+        // resizes; boundsDidChange covers scrolling.
+        clipBoundsObserver = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: clip,
+            queue: .main
+        ) { [weak self] _ in
+            self?.notifyVisibleRangeChanged()
+        }
+        notifyVisibleRangeChanged()
     }
 
     /// Recomputes the document width to `max(contentWidth, viewport width)`.
@@ -506,6 +530,33 @@ final class HexView: NSView {
         if width != frame.width {
             setFrameSize(NSSize(width: width, height: frame.height))
         }
+    }
+
+    // MARK: - Visible range (§ N)
+
+    /// The byte range covered by the rows currently visible in the scroll
+    /// viewport — the file slice the minimap's viewport rectangle mirrors.
+    /// Rows map to bytes row-granular (`[firstRow*16, lastRow*16)`), clamped to
+    /// the file size so a viewport past the end never reports bytes that do not
+    /// exist. Empty when the file is empty or the view is not in a scroll view.
+    func visibleByteRange() -> Range<UInt64> {
+        guard let dataSource, let clip = enclosingScrollView?.contentView else {
+            return 0..<0
+        }
+        let fileSize = dataSource.fileSize
+        let viewport = clip.bounds
+        guard viewport.height > 0, fileSize > 0 else { return 0..<0 }
+        let rows = currentLayout.visibleRowRange(in: viewport)
+        guard !rows.isEmpty else { return 0..<0 }
+        let start = min(UInt64(rows.lowerBound) * UInt64(HexLayout.bytesPerRow), fileSize)
+        let end = min(UInt64(rows.upperBound) * UInt64(HexLayout.bytesPerRow), fileSize)
+        guard end > start else { return 0..<0 }
+        return start..<end
+    }
+
+    /// Reports the current visible byte range to `onVisibleRangeChanged`.
+    private func notifyVisibleRangeChanged() {
+        onVisibleRangeChanged?(visibleByteRange())
     }
 
     // MARK: - Accessibility (§15)

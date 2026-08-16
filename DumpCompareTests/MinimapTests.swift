@@ -401,4 +401,82 @@ final class MinimapTests: XCTestCase {
         _ = pumpUntil(1.0) { panel.selection(forMapAt: 0) == nil }
         XCTAssertNil(panel.selection(forMapAt: 0))
     }
+
+    // MARK: - Stage 4: viewport rectangle
+
+    /// The hex view's clip view (scrollable region) inside the window.
+    private func hexClip(_ window: NSWindow) throws -> NSClipView {
+        let hexView = try XCTUnwrap(descendants(of: window.contentView!, HexView.self).first)
+        return try XCTUnwrap(hexView.enclosingScrollView?.contentView)
+    }
+
+    func testViewportShowsTopOfLargeFileAndFollowsScroll() throws {
+        // 100k bytes = 6250 hex rows, far more than the ~600 pt window shows.
+        let bytes = [UInt8](repeating: 0x41, count: 100_000)
+        let (_, window, panel) = try makeSingleFileWindow(bytes)
+        let clip = try hexClip(window)
+
+        // The pane opens scrolled to the top: the visible slice starts at byte 0
+        // and covers fewer rows than the whole file.
+        _ = pumpUntil(2.0) { panel.viewport(forMapAt: 0) != nil }
+        let initial = try XCTUnwrap(panel.viewport(forMapAt: 0))
+        XCTAssertEqual(initial.lowerBound, 0, "the top of the file is visible first")
+        XCTAssertLessThan(initial.upperBound, UInt64(bytes.count),
+                          "a file taller than the viewport shows only a slice")
+
+        // Scroll to the bottom: the visible slice moves to the file's tail.
+        let hexView = try XCTUnwrap(descendants(of: window.contentView!, HexView.self).first)
+        let maxY = hexView.hexContentHeight - clip.bounds.height
+        clip.setBoundsOrigin(NSPoint(x: 0, y: max(maxY, 0)))
+        window.layoutIfNeeded()
+        _ = pumpUntil(2.0) {
+            guard let vp = panel.viewport(forMapAt: 0) else { return false }
+            return vp.upperBound >= UInt64(bytes.count)
+        }
+        let bottom = try XCTUnwrap(panel.viewport(forMapAt: 0))
+        XCTAssertEqual(bottom.upperBound, UInt64(bytes.count),
+                       "scrolling to the end shows the file's last bytes")
+        XCTAssertGreaterThan(bottom.lowerBound, initial.upperBound,
+                             "the rectangle moved down the map")
+    }
+
+    func testComparisonTracksEachPaneIndependently() throws {
+        // Pane 1 holds a file too big for the viewport; pane 2 holds 64 bytes.
+        let url1 = try tempFile([UInt8](repeating: 0x41, count: 100_000))
+        let url2 = try tempFile([UInt8](repeating: 0x42, count: 64))
+        let (controller, window) = try makeController()
+        try controller.windowModel.pane1.open(url: url1)
+        try controller.windowModel.pane2.open(url: url2)
+        controller.apply(mode: .comparison)
+        window.layoutIfNeeded()
+        let (split, panel) = try minimapViews(window)
+        split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+
+        // Both panes report a viewport: pane 2's whole file is visible, pane 1
+        // shows only its top.
+        _ = pumpUntil(2.0) {
+            panel.viewport(forMapAt: 0) != nil && panel.viewport(forMapAt: 1) != nil
+        }
+        let pane1Top = try XCTUnwrap(panel.viewport(forMapAt: 0))
+        let pane2Top = try XCTUnwrap(panel.viewport(forMapAt: 1))
+        XCTAssertEqual(pane1Top.lowerBound, 0)
+        XCTAssertLessThan(pane1Top.upperBound, 100_000, "pane 1's file is taller than the viewport")
+        XCTAssertEqual(pane2Top, 0..<64, "pane 2's tiny file is fully visible")
+
+        // Scroll pane 1 to its tail; pane 2's viewport must not move.
+        let hexViews = descendants(of: window.contentView!, HexView.self)
+        let pane1Hex = try XCTUnwrap(hexViews.first)
+        let clip1 = try XCTUnwrap(pane1Hex.enclosingScrollView?.contentView)
+        clip1.setBoundsOrigin(NSPoint(x: 0, y: max(pane1Hex.hexContentHeight - clip1.bounds.height, 0)))
+        window.layoutIfNeeded()
+        _ = pumpUntil(2.0) {
+            guard let vp = panel.viewport(forMapAt: 0) else { return false }
+            return vp.upperBound >= 100_000
+        }
+        let pane1Bottom = try XCTUnwrap(panel.viewport(forMapAt: 0))
+        XCTAssertEqual(pane1Bottom.upperBound, 100_000)
+        XCTAssertEqual(panel.viewport(forMapAt: 1), 0..<64,
+                       "scrolling one pane leaves the other pane's rectangle alone")
+    }
 }

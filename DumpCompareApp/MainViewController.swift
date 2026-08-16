@@ -156,6 +156,10 @@ final class MainViewController: NSViewController {
     func apply(mode: WindowMode) {
         self.mode = mode
         unwireComparison()
+        // Panes are rebuilt on every apply, so the viewport mirrors must start
+        // empty and fill in as the new panes report their visible ranges (§ N).
+        minimapViewports.removeAll()
+        minimapView.setViewports([])
 
         switch mode {
         case .empty:
@@ -187,7 +191,9 @@ final class MainViewController: NSViewController {
                 self?.cancelSearchAll(from: pane)
             }
             // The minimap's single map mirrors this pane: edits rebuild its
-            // stripes, a moved caret moves the selection overlay (§ N).
+            // stripes, a moved caret moves the selection overlay, and scrolling
+            // moves the viewport rectangle (§ N).
+            trackMinimapViewport(for: pane)
             paneModel.onEdit = { [weak self] _ in
                 self?.rebuildMinimap(full: true)
             }
@@ -234,6 +240,9 @@ final class MainViewController: NSViewController {
             pane2View.onDropFiles = { [weak self] urls in
                 self?.handleComparisonDrop(targetPane: 1, urls: urls)
             }
+            // Each map's viewport rectangle mirrors its pane's visible slice (§ N).
+            trackMinimapViewport(for: pane1View)
+            trackMinimapViewport(for: pane2View)
             let view = ComparisonView(
                 coordinator: comparisonCoordinator,
                 paneView1: pane1View,
@@ -443,6 +452,45 @@ final class MainViewController: NSViewController {
         let selection = pane.hexSelection()
         guard !selection.isEmpty else { return nil }
         return selection.start..<selection.end
+    }
+
+    /// The panes' latest visible byte ranges, keyed by pane identity, so a
+    /// scroll in either pane rebuilds the minimap's viewport array without
+    /// waiting for the other pane to re-report. Cleared on every apply(mode:) —
+    /// panes are rebuilt and re-keyed.
+    private var minimapViewports: [ObjectIdentifier: Range<UInt64>] = [:]
+
+    /// Wires a pane's viewport scrolls into the minimap: every visible-range
+    /// change moves that map's grey viewport rectangle (§ N).
+    private func trackMinimapViewport(for pane: FilePaneView) {
+        pane.onHexViewportChanged = { [weak self, weak pane] range in
+            guard let self, let pane else { return }
+            self.minimapViewports[ObjectIdentifier(pane)] = range
+            self.updateMinimapViewports()
+        }
+    }
+
+    /// Moves each map's viewport rectangle to its pane's visible byte range.
+    /// Cheap (an overlay repaint, no stripe rebuild), so it rides the scroll
+    /// and resize notifications.
+    private func updateMinimapViewports() {
+        let viewports: [Range<UInt64>?]
+        switch mode {
+        case .singleFile:
+            if let pane = activeFilePane {
+                viewports = [minimapViewports[ObjectIdentifier(pane)]]
+            } else {
+                viewports = []
+            }
+        case .comparison:
+            let pane1 = comparisonView?.paneView1
+            let pane2 = comparisonView?.paneView2
+            viewports = [pane1.flatMap { minimapViewports[ObjectIdentifier($0)] },
+                         pane2.flatMap { minimapViewports[ObjectIdentifier($0)] }]
+        case .empty:
+            viewports = []
+        }
+        minimapView.setViewports(viewports)
     }
 
     /// Builds a file's significance stripes: a stripe is significant when any

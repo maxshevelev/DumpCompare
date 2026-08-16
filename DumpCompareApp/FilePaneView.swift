@@ -171,6 +171,9 @@ final class FilePaneView: NSView {
     /// Fired with the dropped file URLs (comparison-mode drops target this pane,
     /// §4.3). Only active after `enableFileDrop()`.
     var onDropFiles: (([URL]) -> Void)?
+    /// Fired with the hex view's visible byte range whenever it changes (scroll,
+    /// resize). The minimap draws its viewport rectangle from it (§ N).
+    var onHexViewportChanged: ((Range<UInt64>) -> Void)?
 
     private var dropEnabled = false
     /// Whether this pane is the active one. The operation indicator shows only
@@ -416,6 +419,9 @@ final class FilePaneView: NSView {
         // diverge.
         hexView.onFocus = { [weak self] in
             self?.onActivate?()
+        }
+        hexView.onVisibleRangeChanged = { [weak self] range in
+            self?.onHexViewportChanged?(range)
         }
         viewModel.onChange = { [weak self] in
             self?.refresh()
