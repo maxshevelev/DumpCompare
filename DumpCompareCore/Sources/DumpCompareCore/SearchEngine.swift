@@ -141,48 +141,79 @@ public enum SearchEngine {
         guard patternLength <= size else { return [] }
 
         let patternData = caseSensitive ? Data(pattern) : Data(pattern.map(Self.foldByte))
-        let windowLength = UInt64(chunkSize) + patternLength - 1
         var matches: [Range<UInt64>] = []
-        // The first offset at which the next match may start. Carried across
-        // windows so a match found in one window's overlap is not re-reported by
-        // the next window (non-overlapping matches, §11).
-        var nextSearchStart: UInt64 = 0
-        var cursor: UInt64 = 0
-        var processed: UInt64 = 0
-
-        while cursor < size {
-            if shouldCancel() { throw CancellationError() }
-            let length = Int(min(windowLength, size - cursor))
-            let bytes = try storage.read(at: cursor, length: length)
-            guard !bytes.isEmpty else { break }
-            let data = caseSensitive ? Data(bytes) : Data(bytes.map(Self.foldByte))
-
-            // Record a match only while it starts in the fresh portion
-            // `[cursor, cursor + chunkSize)`; one starting in the overlap is
-            // found again by the next window, and recording it here would count
-            // it twice. Resuming just past each match keeps the results
-            // non-overlapping. `nextSearchStart` may already lie before this
-            // window's cursor (a match's tail), so clamp the skip to 0.
-            var searchStart = nextSearchStart > cursor ? Int(nextSearchStart - cursor) : 0
-            while searchStart < chunkSize, searchStart < length {
-                // `Data` slices keep their parent's indices, so a match's
-                // `lowerBound` is already a global index — no offset by
-                // `searchStart` (the search starts at `searchStart`).
-                guard let match = data[searchStart..<length].range(of: patternData) else { break }
-                let windowIndex = match.lowerBound
-                let start = cursor + UInt64(windowIndex)
-                guard start < cursor + UInt64(chunkSize) else { break }  // starts in the overlap
-                matches.append(start..<(start + patternLength))
-                nextSearchStart = start + patternLength
-                searchStart = windowIndex + patternData.count
-            }
-
-            cursor += UInt64(chunkSize)
-            processed += UInt64(bytes.count)
-            if size > 0 { progress(min(Double(processed) / Double(size), 1)) }
-        }
-        if size > 0 { progress(1) }
+        try scanAll(
+            pattern: patternData, patternLength: patternLength, storage: storage, size: size,
+            caseSensitive: caseSensitive, chunkSize: chunkSize,
+            shouldCancel: shouldCancel, progress: progress
+        ) { matches.append($0) }
         return matches
+    }
+
+    /// The default cap on how many matches a Search All reports (§11). A pattern
+    /// that occurs more often stops the scan at the cap: searching for a single
+    /// byte in a large file must not scan for, or report, millions of rows.
+    public static let defaultMaxResults = 1000
+
+    /// Streaming variant of `findAll`: yields every non-overlapping match as the
+    /// scan finds it — one `Range` per occurrence, in file order, delivered the
+    /// moment it is found, so a results table can grow a row at a time while a
+    /// large file is still being scanned. The scan runs on a detached task and
+    /// reports `progress` exactly like `findAll` (§11).
+    ///
+    /// The stream yields at most `maxResults` matches: once the cap is reached
+    /// the scan stops early and the stream finishes normally, so the caller sees
+    /// a capped search as `count == maxResults` rather than an error. Cancelling
+    /// the consuming task (or abandoning the stream) stops the scan promptly,
+    /// though on this platform a cancelled task's `next()` returns `nil` rather
+    /// than throwing `CancellationError` — the caller tells a cancelled run from
+    /// a completed one by checking `Task.isCancelled` after the loop. Scan errors
+    /// are forwarded as the stream's failure.
+    public static func findAllStream(
+        pattern: [UInt8],
+        in storage: ByteStorage,
+        caseSensitive: Bool = true,
+        chunkSize: Int = defaultChunkSize,
+        maxResults: Int = defaultMaxResults,
+        // By default the scan observes the detached task's own cancellation, so
+        // `onTermination` (a cancelled consumer) actually stops it mid-flight.
+        shouldCancel: @escaping @Sendable () -> Bool = { Task.isCancelled },
+        progress: @escaping @Sendable (Double) -> Void = { _ in }
+    ) -> AsyncThrowingStream<Range<UInt64>, any Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task.detached(priority: .userInitiated) {
+                do {
+                    guard !pattern.isEmpty else { throw SearchError.emptyPattern }
+                    let patternLength = UInt64(pattern.count)
+                    let size = storage.size
+                    guard patternLength <= size, maxResults > 0 else {
+                        continuation.finish()
+                        return
+                    }
+                    let patternData = caseSensitive ? Data(pattern) : Data(pattern.map(Self.foldByte))
+                    var found = 0
+                    var capped = false
+                    try scanAll(
+                        pattern: patternData, patternLength: patternLength, storage: storage, size: size,
+                        caseSensitive: caseSensitive, chunkSize: chunkSize,
+                        shouldCancel: shouldCancel, progress: progress, shouldStop: { capped }
+                    ) { match in
+                        // Past the cap, report nothing more; `shouldStop` then
+                        // ends the scan at the next chunk boundary.
+                        guard found < maxResults else { return }
+                        continuation.yield(match)
+                        found += 1
+                        if found >= maxResults { capped = true }
+                    }
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
     }
 
     // MARK: - Parsing
@@ -230,6 +261,69 @@ public enum SearchEngine {
     }
 
     // MARK: - Scanning
+
+    /// The shared Search All scan: walks `storage` in `chunkSize`-sized windows
+    /// (with `patternLength - 1` bytes of overlap) and reports every match that
+    /// starts in a window's fresh portion through `matchFound`, in file order.
+    /// `findAll` collects the matches; `findAllStream` yields them one at a time.
+    /// Both share the non-overlap rule (resume just past each match) and the
+    /// `shouldCancel`/`progress` behavior, so the two APIs stay byte-for-byte
+    /// identical in their results. `shouldStop` — checked like `shouldCancel` but
+    /// ending the scan early without an error — lets `findAllStream` cap the
+    /// result count (§11).
+    private static func scanAll(
+        pattern: Data, patternLength: UInt64, storage: ByteStorage, size: UInt64,
+        caseSensitive: Bool, chunkSize: Int,
+        shouldCancel: () -> Bool, progress: (Double) -> Void,
+        shouldStop: () -> Bool = { false },
+        matchFound: (Range<UInt64>) -> Void
+    ) throws {
+        let windowLength = UInt64(chunkSize) + patternLength - 1
+        // The first offset at which the next match may start. Carried across
+        // windows so a match found in one window's overlap is not re-reported by
+        // the next window (non-overlapping matches, §11).
+        var nextSearchStart: UInt64 = 0
+        var cursor: UInt64 = 0
+        var processed: UInt64 = 0
+        var stoppedEarly = false
+
+        while cursor < size {
+            if shouldCancel() { throw CancellationError() }
+            if shouldStop() { stoppedEarly = true; break }
+            let length = Int(min(windowLength, size - cursor))
+            let bytes = try storage.read(at: cursor, length: length)
+            guard !bytes.isEmpty else { break }
+            let data = caseSensitive ? Data(bytes) : Data(bytes.map(Self.foldByte))
+
+            // Record a match only while it starts in the fresh portion
+            // `[cursor, cursor + chunkSize)`; one starting in the overlap is
+            // found again by the next window, and recording it here would count
+            // it twice. Resuming just past each match keeps the results
+            // non-overlapping. `nextSearchStart` may already lie before this
+            // window's cursor (a match's tail), so clamp the skip to 0.
+            var searchStart = nextSearchStart > cursor ? Int(nextSearchStart - cursor) : 0
+            while searchStart < chunkSize, searchStart < length {
+                if shouldStop() { stoppedEarly = true; break }
+                // `Data` slices keep their parent's indices, so a match's
+                // `lowerBound` is already a global index — no offset by
+                // `searchStart` (the search starts at `searchStart`).
+                guard let match = data[searchStart..<length].range(of: pattern) else { break }
+                let windowIndex = match.lowerBound
+                let start = cursor + UInt64(windowIndex)
+                guard start < cursor + UInt64(chunkSize) else { break }  // starts in the overlap
+                matchFound(start..<(start + patternLength))
+                nextSearchStart = start + patternLength
+                searchStart = windowIndex + pattern.count
+            }
+
+            cursor += UInt64(chunkSize)
+            processed += UInt64(bytes.count)
+            if size > 0 { progress(min(Double(processed) / Double(size), 1)) }
+        }
+        // A scan stopped by the match cap covered only part of the file, so it
+        // must not report 100% — the caller keeps the partial progress instead.
+        if size > 0, !stoppedEarly { progress(1) }
+    }
 
     /// Scans forward from `from`; each chunk is `chunkSize + patternLength - 1`
     /// bytes so matches crossing a boundary are still found, and the cursor

@@ -29,6 +29,14 @@ final class SearchResultsView: NSView {
 
     /// The matches to show, in file order.
     private var matches: [Range<UInt64>] = []
+    /// Whether a Search All is still scanning; while true the header's count
+    /// gains a trailing "…" so a running search reads differently from a
+    /// completed one (§11).
+    private(set) var isSearching = false
+    /// Whether the last Search All stopped at the match cap (the scan found
+    /// `maxResults` occurrences and halted); the header then says so instead of
+    /// presenting the count as final (§11).
+    private(set) var isTruncated = false
     /// Reads `length` bytes at `offset` from the pane's live storage (clamped
     /// to EOF) for the row excerpts.
     private var byteProvider: ((UInt64, Int) -> [UInt8])?
@@ -191,8 +199,49 @@ final class SearchResultsView: NSView {
         self.byteProvider = byteProvider
         self.textDecoder = textDecoder
         self.fileSize = fileSize
-        headerLabel.stringValue = "Search results (\(matches.count))"
+        isSearching = false
+        isTruncated = false
+        updateHeader()
         tableView.reloadData()
+    }
+
+    /// Appends a freshly found batch of matches to the table and updates the
+    /// header's count. Called repeatedly as a background Search All streams its
+    /// results, so the table fills while the scan is still running (§11).
+    func append(matches newMatches: [Range<UInt64>]) {
+        guard !newMatches.isEmpty else { return }
+        matches.append(contentsOf: newMatches)
+        updateHeader()
+        tableView.reloadData()
+    }
+
+    /// Marks whether a Search All is still scanning. While true the header's
+    /// count keeps its trailing "…"; a completed search drops it, so the count
+    /// reads as final (§11).
+    func setSearching(_ searching: Bool) {
+        guard isSearching != searching else { return }
+        isSearching = searching
+        updateHeader()
+    }
+
+    /// Marks whether the last Search All stopped at the match cap (the scan
+    /// found `maxResults` occurrences and halted instead of completing). The
+    /// header then reports the search returned too many results (§11).
+    func setTruncated(_ truncated: Bool) {
+        guard isTruncated != truncated else { return }
+        isTruncated = truncated
+        updateHeader()
+    }
+
+    private func updateHeader() {
+        let count = matches.count
+        if isSearching {
+            headerLabel.stringValue = "Search results (\(count)…)"
+        } else if isTruncated {
+            headerLabel.stringValue = "Search results (\(count)) — too many results"
+        } else {
+            headerLabel.stringValue = "Search results (\(count))"
+        }
     }
 
     /// Forgets the current results (used when hiding the panel).
@@ -200,6 +249,9 @@ final class SearchResultsView: NSView {
         matches = []
         byteProvider = nil
         textDecoder = nil
+        isSearching = false
+        isTruncated = false
+        updateHeader()
         tableView.reloadData()
     }
 

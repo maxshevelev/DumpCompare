@@ -342,4 +342,134 @@ final class SearchEngineTests: XCTestCase {
             XCTAssertEqual(error as? SearchError, .emptyPattern)
         }
     }
+
+    // MARK: - findAllStream
+
+    /// The streaming API yields the same matches as `findAll`, one `Range` per
+    /// occurrence and in file order, so a caller can add a result row the moment
+    /// each match is found — not only once the scan completes.
+    func testFindAllStreamYieldsEachMatchLive() async throws {
+        let bytes: [UInt8] = [0xDE, 0xAD, 0xBE, 0x00, 0xDE, 0xAD, 0xBE, 0xDE, 0xAD]
+        let expected: [Range<UInt64>] = [0..<2, 4..<6, 7..<9]
+        let stream = SearchEngine.findAllStream(pattern: [0xDE, 0xAD], in: ArrayStorage(bytes))
+
+        var all: [Range<UInt64>] = []
+        for try await match in stream { all.append(match) }
+        XCTAssertEqual(all, expected, "each match is delivered individually, in file order")
+    }
+
+    /// Streamed matches respect chunk boundaries exactly like `findAll` — a
+    /// match straddling a boundary is found once, not dropped or doubled.
+    func testFindAllStreamMatchesFindAllAcrossChunkBoundary() async throws {
+        let bytes: [UInt8] = [0x00, 0x01, 0xAA, 0xBB, 0xCC, 0x00, 0x00, 0x00]
+        let expected = try SearchEngine.findAll(pattern: [0xAA, 0xBB, 0xCC], in: ArrayStorage(bytes), chunkSize: 3)
+        XCTAssertEqual(expected, [2..<5])
+
+        let stream = SearchEngine.findAllStream(pattern: [0xAA, 0xBB, 0xCC], in: ArrayStorage(bytes), chunkSize: 3)
+        var all: [Range<UInt64>] = []
+        for try await match in stream { all.append(match) }
+        XCTAssertEqual(all, expected, "streamed matches match findAll across a chunk boundary")
+    }
+
+    func testFindAllStreamEmptyPatternThrows() async {
+        let stream = SearchEngine.findAllStream(pattern: [], in: ArrayStorage([1, 2, 3]))
+        do {
+            for try await _ in stream {}
+            XCTFail("an empty pattern must fail the stream")
+        } catch {
+            XCTAssertEqual(error as? SearchError, .emptyPattern)
+        }
+    }
+
+    /// A `shouldCancel` stop is not an error: matches found before the stop are
+    /// delivered, the stream finishes normally, and the scan never covers the
+    /// rest of the file.
+    func testFindAllStreamStopsMidScanOnShouldCancel() async throws {
+        let counter = CancellationCounter()
+        let stream = SearchEngine.findAllStream(
+            pattern: [0xAA], in: ArrayStorage([UInt8](repeating: 0xAA, count: 16)),
+            chunkSize: 4,
+            shouldCancel: { counter.bump() > 1 })
+
+        var received: [Range<UInt64>] = []
+        do {
+            for try await match in stream { received.append(match) }
+        } catch {
+            XCTFail("a shouldCancel stop must finish the stream normally, got \(error)")
+        }
+        XCTAssertEqual(received, [0..<1, 1..<2, 2..<3, 3..<4],
+                       "the matches found before the stop are delivered, the rest are not")
+    }
+
+    /// Cancelling the task iterating the stream ends the loop well short of the
+    /// full result — the app's × button and a newer Search All both rely on
+    /// this. Note that on this platform a cancelled task's `next()` returns
+    /// `nil` (a normal end) rather than throwing `CancellationError`; the caller
+    /// distinguishes the two itself (the app checks `Task.isCancelled` after the
+    /// loop). Here we assert the loop actually ends before the scan could
+    /// possibly finish.
+    func testFindAllStreamCancellationStopsIteration() async throws {
+        // 32 MB where every byte matches. The scan physically cannot produce all
+        // ~33M matches in the cancel delay, so a result far short of that proves
+        // the consumer was interrupted rather than draining to the end. The
+        // `maxResults` is set to the whole file so the match cap cannot stop the
+        // scan before the cancel does.
+        let bytes = [UInt8](repeating: 0xAA, count: 1 << 25)
+        let stream = SearchEngine.findAllStream(pattern: [0xAA], in: ArrayStorage(bytes), maxResults: bytes.count)
+        let task = Task { () -> Int in
+            var count = 0
+            for try await _ in stream { count += 1 }
+            return count
+        }
+        // Let a match or two stream in, then cancel; the suspended loop ends.
+        try await Task.sleep(nanoseconds: 20_000_000)
+        task.cancel()
+        let count = try await task.value
+        XCTAssertGreaterThan(count, 0, "some matches must have streamed before the cancel")
+        XCTAssertLessThan(count, bytes.count,
+                          "cancelling the consumer must stop the iteration short of the full result")
+    }
+
+    /// A Search All stops once the match cap is reached: the stream delivers the
+    /// first `maxResults` matches and finishes normally (no error), and because
+    /// the scan stops early it must not report full progress.
+    func testFindAllStreamStopsAtMaxResults() async throws {
+        // 4 KiB of matching bytes: the cap is hit inside the first 64-byte
+        // chunk, well before the file is covered.
+        let bytes = [UInt8](repeating: 0xAA, count: 4096)
+        let sawFullProgress = Flag()
+        let stream = SearchEngine.findAllStream(
+            pattern: [0xAA], in: ArrayStorage(bytes), chunkSize: 64, maxResults: 3,
+            progress: { if $0 >= 1 { sawFullProgress.set() } })
+
+        var all: [Range<UInt64>] = []
+        do {
+            for try await match in stream { all.append(match) }
+        } catch {
+            XCTFail("a capped scan must finish the stream normally, got \(error)")
+        }
+        XCTAssertEqual(all, [0..<1, 1..<2, 2..<3],
+                       "the first maxResults matches are delivered, then the scan stops")
+        XCTAssertFalse(sawFullProgress.value,
+                       "a scan stopped by the cap must not report full coverage")
+    }
+}
+
+/// A thread-safe counter for driving `shouldCancel` in tests: the closure runs
+/// on the scan's detached task, so a plain captured `var` would not compile
+/// cleanly.
+private final class CancellationCounter: @unchecked Sendable {
+    private var value = 0
+    func bump() -> Int {
+        value += 1
+        return value
+    }
+}
+
+/// A thread-safe one-shot boolean for assertions from `progress` closures,
+/// which run on the scan's detached task (see `CancellationCounter`).
+private final class Flag: @unchecked Sendable {
+    private var _value = false
+    var value: Bool { _value }
+    func set() { _value = true }
 }

@@ -158,6 +158,10 @@ final class FilePaneView: NSView {
     var onHeaderDoubleClick: (() -> Void)?
     /// Fired when the comparison-mode close button is clicked.
     var onClose: (() -> Void)?
+    /// Fired when the user closes the Search All results panel (the ×), with
+    /// this pane. The panel is hidden and cleared by `hideSearchResults()`
+    /// regardless; the owner uses the hook to stop the in-flight search (§11).
+    var onSearchResultsClose: ((FilePaneView) -> Void)?
     /// Fired with the dropped file URLs (comparison-mode drops target this pane,
     /// §4.3). Only active after `enableFileDrop()`.
     var onDropFiles: (([URL]) -> Void)?
@@ -323,7 +327,11 @@ final class FilePaneView: NSView {
         // panel is hidden (collapsed natively by NSSplitView) while no results
         // are shown and revealed with the user's stored height on a Search All.
         searchResultsView.onClose = { [weak self] in
-            self?.hideSearchResults()
+            guard let self else { return }
+            // Stop the owner's in-flight search first, then hide and forget the
+            // results — a closed panel must not keep receiving matches (§11).
+            self.onSearchResultsClose?(self)
+            self.hideSearchResults()
         }
         searchResultsView.onSelect = { [weak self] range in
             guard let self else { return }
