@@ -32,6 +32,9 @@ final class MainViewController: NSViewController {
     /// The active search operation, surfaced in the active pane's status bar
     /// while a search runs (§14.4).
     private var findOperation: BackgroundOperation?
+    /// Reacts to the Layout settings tab changing the default direction: an open
+    /// comparison re-lays out live, like the Word Size/Appearance settings (§6).
+    private var layoutSettingsObserver: NSObjectProtocol?
 
     /// Builds the background block index for comparison mode. The provider
     /// returns the current storages on every start/rebuild, so a revert that
@@ -52,6 +55,17 @@ final class MainViewController: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         wireExternalChangeDetection()
+        // Apply the Layout settings tab's direction change to an open comparison
+        // immediately; outside comparison mode the value is stored and the next
+        // comparison opens with it (§6).
+        layoutSettingsObserver = NotificationCenter.default.addObserver(
+            forName: LayoutSettings.layoutDirectionDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self, self.mode == .comparison else { return }
+            self.comparisonView?.setLayout(vertical: LayoutSettings.isVertical)
+        }
         // Re-evaluate navigation availability on every index-state transition
         // (build starts/completes/cancels/stops, edits applied) (§10.3).
         comparisonCoordinator.onStateChanged = { [weak self] in
@@ -1366,7 +1380,7 @@ final class MainViewController: NSViewController {
             let w1 = comparisonView.paneView1.contentFitWidth
             let w2 = comparisonView.paneView2.contentFitWidth
             // Same source of truth as ComparisonView's layout toggle (§3.3).
-            let isVertical = UserDefaults.standard.object(forKey: "ComparisonPaneLayoutIsVertical") as? Bool ?? true
+            let isVertical = LayoutSettings.isVertical
             return isVertical ? w1 + w2 + comparisonView.splitView.dividerThickness : max(w1, w2)
         case .empty:
             return 0

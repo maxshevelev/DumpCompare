@@ -69,6 +69,7 @@
 		FC15B3B76A3DB244F7A1BBEE /* ActivePaneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0947EB3C44A8B0879C9B66A /* ActivePaneTests.swift */; };
 		FD51EAC14BECCAC66D3AC19F /* ComparisonCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7338140948096ABDADE950FE /* ComparisonCoordinatorTests.swift */; };
 		FE72BF847B03FAA82DA321EE /* CaretPlacementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70B7EBE980B4A83830DD34D6 /* CaretPlacementTests.swift */; };
+		6A7B8C9D0E1F2A3B4C5D6E7F /* LayoutSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B2C3D4E5F60718293A4B5C6 /* LayoutSettingsViewController.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -146,6 +147,7 @@
 		F89CB4F9C9E2803C941A2288 /* WordSize.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WordSize.swift; sourceTree = "<group>"; };
 		FB33DB1270B0F3AD9A668F5C /* AppMain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppMain.swift; sourceTree = "<group>"; };
 		FCD886DB1AFE9BF9F1C08F95 /* MouseSelectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MouseSelectionTests.swift; sourceTree = "<group>"; };
+		1B2C3D4E5F60718293A4B5C6 /* LayoutSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LayoutSettingsViewController.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -203,6 +205,7 @@
 				9CFFEE3A09573CD5106182E9 /* FindBarView.swift */,
 				74D6E16E0CD10A2BA3DA5447 /* HexLayout.swift */,
 				95D1B66993C6EA8CDEE1ADD7 /* HexView.swift */,
+				1B2C3D4E5F60718293A4B5C6 /* LayoutSettingsViewController.swift */,
 				2751D9902BBBD4771AFB0FD5 /* MainViewController.swift */,
 				956C3B15B666232F79A544C1 /* MainWindowController.swift */,
 				569D15C9837FF35B5622867D /* OpenPlacement.swift */,
@@ -370,6 +373,7 @@
 				26D5FD5ACF1831847A92FF79 /* FindBarView.swift in Sources */,
 				34FC31F15593574D21ECD0D6 /* HexLayout.swift in Sources */,
 				1F891EE0D25A946BB63C2AEC /* HexView.swift in Sources */,
+				6A7B8C9D0E1F2A3B4C5D6E7F /* LayoutSettingsViewController.swift in Sources */,
 				A50B556671000ED5800F6FC0 /* MainViewController.swift in Sources */,
 				84F0705E874653F3E5EE8B15 /* MainWindowController.swift in Sources */,
 				046DB0B0F51FAD7F7428CFEB /* OpenPlacement.swift in Sources */,

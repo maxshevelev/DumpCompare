@@ -24,8 +24,6 @@ final class ComparisonView: NSView {
     /// the active pane changes (§14.4).
     private var currentOperation: BackgroundOperation?
 
-    private static let layoutKey = "ComparisonPaneLayoutIsVertical"
-
     init(coordinator: ComparisonCoordinator, paneView1: FilePaneView, paneView2: FilePaneView) {
         self.coordinator = coordinator
         self.paneView1 = paneView1
@@ -46,7 +44,7 @@ final class ComparisonView: NSView {
     private func setUp() {
         splitView.translatesAutoresizingMaskIntoConstraints = false
         splitView.dividerStyle = .thin
-        splitView.isVertical = UserDefaults.standard.object(forKey: Self.layoutKey) as? Bool ?? true
+        splitView.isVertical = LayoutSettings.isVertical
         addSubview(splitView)
 
         // Let the splitter treat both panes as flexible.
@@ -89,10 +87,20 @@ final class ComparisonView: NSView {
         observeScroll()
     }
 
+    /// Sets the pane arrangement (§3.3: left/right ⇄ top/bottom), persisting it
+    /// as the default a new comparison opens with (§6 Layout settings). A no-op
+    /// when the orientation already matches — `setLayout` is also the re-entry
+    /// point for the Layout settings tab's live-apply, so this guard also stops
+    /// the persist→notify→apply loop.
+    func setLayout(vertical: Bool) {
+        guard splitView.isVertical != vertical else { return }
+        splitView.isVertical = vertical
+        LayoutSettings.set(isVertical: vertical)
+    }
+
     /// Toggles the pane arrangement (§3.3: left/right ⇄ top/bottom).
     func toggleLayout() {
-        splitView.isVertical.toggle()
-        UserDefaults.standard.set(splitView.isVertical, forKey: Self.layoutKey)
+        setLayout(vertical: !splitView.isVertical)
     }
 
     /// Expands pane `index` so its hex content fits by width, animating the

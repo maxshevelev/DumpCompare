@@ -124,13 +124,16 @@ final class AppearanceSettingsViewController: NSViewController {
 }
 
 /// The app's Settings window — a standard toolbar-tabbed preference dialog,
-/// with an Appearance tab (§3.2) and a Text Decoding tab (§3.4). Owned by
-/// `MainWindowController`; the App menu's "Settings…" item shows it.
+/// with an Appearance tab (§3.2), a Layout tab (§6) and a Text Decoding tab
+/// (§3.4). Owned by `MainWindowController`; the App menu's "Settings…" item
+/// shows it.
 final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     private let appearanceController = AppearanceSettingsViewController()
+    private let layoutController = LayoutSettingsViewController()
     private let textDecodingController = TextDecodingSettingsViewController()
 
     private static let appearanceItemID = NSToolbarItem.Identifier("Appearance")
+    private static let layoutItemID = NSToolbarItem.Identifier("Layout")
     private static let textDecodingItemID = NSToolbarItem.Identifier("TextDecoding")
 
     init() {
@@ -172,11 +175,11 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     // MARK: - NSToolbarDelegate
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.appearanceItemID, Self.textDecodingItemID]
+        [Self.appearanceItemID, Self.layoutItemID, Self.textDecodingItemID]
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.appearanceItemID, Self.textDecodingItemID]
+        [Self.appearanceItemID, Self.layoutItemID, Self.textDecodingItemID]
     }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
@@ -189,6 +192,12 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
             item.image = NSImage(systemSymbolName: "paintbrush", accessibilityDescription: "Appearance")
             item.target = self
             item.action = #selector(appearanceTabTapped)
+        case Self.layoutItemID:
+            item.label = "Layout"
+            item.paletteLabel = "Layout"
+            item.image = NSImage(systemSymbolName: "rectangle.split.2x1", accessibilityDescription: "Layout")
+            item.target = self
+            item.action = #selector(layoutTabTapped)
         case Self.textDecodingItemID:
             item.label = "Text Decoding"
             item.paletteLabel = "Text Decoding"
@@ -203,6 +212,10 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
 
     @objc private func appearanceTabTapped() {
         window?.contentViewController = appearanceController
+    }
+
+    @objc private func layoutTabTapped() {
+        window?.contentViewController = layoutController
     }
 
     @objc private func textDecodingTabTapped() {
