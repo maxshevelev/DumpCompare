@@ -1367,6 +1367,21 @@ final class MainViewController: NSViewController {
 
     // MARK: - Zoom-to-fit (§3.1)
 
+    /// The content width the launch window fits to (§3.1): one hex grid at the
+    /// saved word size, doubled plus the divider for a side-by-side (vertical)
+    /// comparison. No file is open yet at launch, so the offset column uses its
+    /// default width; once a file opens, Window > Zoom recomputes the fit from
+    /// the real content. The window controller uses this for the launch frame.
+    static func launchContentWidth() -> CGFloat {
+        let font = AppearanceSettings.font(size: 13)
+        let charWidth = AppearanceSettings.charWidth(for: font)
+        let layout = HexLayout(charWidth: charWidth, rowHeight: 0, wordSize: WordSize.current.rawValue)
+        let paneWidth = layout.contentWidth + FilePaneView.contentFitSlack
+        return LayoutSettings.isVertical
+            ? paneWidth * 2 + ProportionalSplitView.dividerThicknessValue
+            : paneWidth
+    }
+
     /// Ideal content width the window should be when zoomed (double-click on the
     /// title bar / Window > Zoom): the hex grid width for a single pane, or
     /// both grids plus the splitter divider for a left/right comparison. A

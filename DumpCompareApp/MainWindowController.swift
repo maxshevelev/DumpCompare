@@ -10,8 +10,12 @@ final class MainWindowController: NSWindowController {
 
     init() {
         let controller = MainViewController()
+        // The launch width fits the hex-grid geometry implied by the saved
+        // layout settings (§3.1); the height is the standard default. The frame
+        // is autosaved, so a subsequent launch restores the user's latest size
+        // and position — but `showWindow` re-fits the width to the settings.
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1080, height: 720),
+            contentRect: NSRect(x: 0, y: 0, width: MainViewController.launchContentWidth(), height: 720),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
@@ -43,19 +47,43 @@ final class MainWindowController: NSWindowController {
         fatalError("init(coder:) is not supported")
     }
 
+    /// The launch width: the hex-grid fit for the saved layout settings (§3.1),
+    /// capped at the screen's visible width so the window never opens wider
+    /// than its screen.
+    private var launchWidth: CGFloat {
+        min(MainViewController.launchContentWidth(),
+            (window?.screen ?? NSScreen.main)?.visibleFrame.width ?? MainViewController.launchContentWidth())
+    }
+
     /// The autosaved frame is restored when the window is first displayed, which
     /// can yield a degenerate size (1×28) or an off-screen position (e.g. saved
     /// during a headless launch, or a monitor disconnected since last run). Fall
     /// back to the default centered frame so the empty-state window is always
     /// visible at launch (§3.1). The corrected frame is then saved on close,
     /// replacing the bad default.
+    ///
+    /// On top of that, the launch width always re-fits the hex-grid geometry of
+    /// the saved layout settings (word size + direction), so a new word size or
+    /// layout choice is reflected on the next launch even when the autosaved
+    /// frame kept an older width (§3.1). The height and the vertical position
+    /// are left untouched.
     override func showWindow(_ sender: Any?) {
         super.showWindow(sender)
         guard let window else { return }
         if window.frame.width < 200 || window.frame.height < 200
             || !NSScreen.screens.contains(where: { $0.visibleFrame.intersects(window.frame) }) {
-            window.setFrame(NSRect(x: 0, y: 0, width: 1080, height: 720), display: true)
+            window.setFrame(NSRect(x: 0, y: 0, width: launchWidth, height: 720), display: true)
             window.center()
+        } else {
+            var frame = window.frame
+            frame.size.width = launchWidth
+            // Keep the window on the visible screen when the fitted width is
+            // wider than the restored one (the left edge would stay put and the
+            // right edge could run off-screen).
+            if let visible = window.screen?.visibleFrame {
+                frame.origin.x = min(max(frame.origin.x, visible.minX), visible.maxX - frame.width)
+            }
+            window.setFrame(frame, display: true)
         }
     }
 

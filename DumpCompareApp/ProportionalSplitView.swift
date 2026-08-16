@@ -78,8 +78,9 @@ final class ProportionalSplitView: NSSplitView {
 
     /// The divider is drawn as a solid strip at this thickness (§3.3): a 1pt
     /// hairline is too faint next to a dense hex grid. The value feeds the
-    /// pane layout (frames skip the divider) and the divider drawing.
-    private static let dividerThicknessValue: CGFloat = 6
+    /// pane layout (frames skip the divider) and the divider drawing, and is
+    /// reused by the launch-frame width calculation (§3.1).
+    static let dividerThicknessValue: CGFloat = 6
 
     /// A pale grey that reads against the panes' `textBackgroundColor` (white
     /// in light, near-black in dark) without stealing attention from the hex
