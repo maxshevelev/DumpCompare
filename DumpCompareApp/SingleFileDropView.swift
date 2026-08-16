@@ -145,27 +145,57 @@ extension SingleFileDropView {
 
 /// One of the two targeted drop zones shown during a drag.
 private final class DropTargetView: NSView {
+    /// The caption's frosted-glass plate — like an Xcode message bubble — so
+    /// the label stays readable wherever the zone's blue fill and the file
+    /// content behind it are busy (§4.3).
+    private let plate = NSVisualEffectView()
     private let label = NSTextField(labelWithString: "")
 
     init(title: String) {
         super.init(frame: .zero)
         wantsLayer = true
+        // While idle the zone is a quiet milky plate; the blue fill appears on
+        // hover only (§4.3). The caption sits on its own frosted plate, so
+        // neither fill ever bleeds into the text.
         layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.9).cgColor
         layer?.cornerRadius = 8
         layer?.borderColor = NSColor.separatorColor.cgColor
         layer?.borderWidth = 1
 
+        // The frosted plate: the standard popover material, rounded, hugging
+        // the caption. It is a dynamic material — it adapts to the theme and
+        // window state on its own, with no layer colour to re-resolve on an
+        // appearance change (§3.1).
+        plate.material = .popover
+        plate.blendingMode = .withinWindow
+        plate.state = .active
+        plate.wantsLayer = true
+        plate.layer?.cornerRadius = 6
+        plate.layer?.masksToBounds = true
+        plate.translatesAutoresizingMaskIntoConstraints = false
+
         label.stringValue = title
         label.font = .systemFont(ofSize: 14, weight: .semibold)
         label.alignment = .center
-        label.textColor = .secondaryLabelColor
+        // On the frosted plate the label always reads at full strength; the
+        // colour follows the theme through the material.
+        label.textColor = .labelColor
         label.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(label)
+        plate.addSubview(label)
+
+        addSubview(plate)
         NSLayoutConstraint.activate([
-            label.centerXAnchor.constraint(equalTo: centerXAnchor),
-            label.centerYAnchor.constraint(equalTo: centerYAnchor),
-            label.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 12),
-            label.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),
+            plate.centerXAnchor.constraint(equalTo: centerXAnchor),
+            plate.centerYAnchor.constraint(equalTo: centerYAnchor),
+            // Keep the plate inside the zone even if it gets narrow: the plate
+            // still hugs the caption, just clamped to the zone's edges.
+            plate.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 8),
+            plate.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
+
+            label.leadingAnchor.constraint(equalTo: plate.leadingAnchor, constant: 10),
+            label.trailingAnchor.constraint(equalTo: plate.trailingAnchor, constant: -10),
+            label.topAnchor.constraint(equalTo: plate.topAnchor, constant: 5),
+            label.bottomAnchor.constraint(equalTo: plate.bottomAnchor, constant: -5),
         ])
     }
 
@@ -175,15 +205,14 @@ private final class DropTargetView: NSView {
     }
 
     func setHighlighted(_ highlighted: Bool) {
-        wantsLayer = true
-        // The plate stays the same milky, mostly-opaque fill in BOTH states: a
-        // highlighted target tinted with translucent accent blue lets the dump
-        // behind bleed through at 25% and drowns the label text. Hover is
-        // signalled by the accent border and full-strength label instead, so
-        // the caption always sits on a readable plate (§4.3).
-        layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.9).cgColor
+        // Hover floods the zone with a translucent accent-blue fill; idle keeps
+        // the quiet milky plate. Hover is also signalled by the accent border
+        // and a thicker stroke. The caption's frosted plate is untouched — its
+        // material and label adapt on their own (§4.3).
+        layer?.backgroundColor = (highlighted
+            ? NSColor.controlAccentColor.withAlphaComponent(0.25)
+            : NSColor.windowBackgroundColor.withAlphaComponent(0.9)).cgColor
         layer?.borderColor = (highlighted ? NSColor.controlAccentColor : NSColor.separatorColor).cgColor
         layer?.borderWidth = highlighted ? 2 : 1
-        label.textColor = highlighted ? .labelColor : .secondaryLabelColor
     }
 }
