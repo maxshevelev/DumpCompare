@@ -321,50 +321,6 @@ final class SearchResultsView: NSView {
         return result
     }
 
-    /// Renders an excerpt truncated to `maxWidth` around the match: when the
-    /// whole excerpt doesn't fit, keep the match and as much context as fits,
-    /// marking the dropped bytes with "… " on the left and " …" on the right —
-    /// the significant middle stays visible, not the ends. `cellsPerByte` is
-    /// the glyph cells one byte occupies (3 for the hex column — "XX " — and 1
-    /// for the text column); the budget reserves two "… " markers and rounds
-    /// down, so the result never overflows the cell.
-    private func truncatedExcerpt(bytes: [UInt8], matchLocal: Range<Int>,
-                                  cellsPerByte: CGFloat, maxWidth: CGFloat,
-                                  render: ([UInt8], Range<Int>) -> NSAttributedString) -> NSAttributedString {
-        let n = bytes.count
-        guard n > 0 else { return NSAttributedString() }
-        let full = render(bytes, matchLocal)
-        guard full.size().width > maxWidth else { return full }
-
-        // Cells available for content after reserving the two markers; the
-        // last byte has no trailing separator, hence the "+1".
-        let charWidth = AppearanceSettings.charWidth(for: regularFont)
-        let available = maxWidth / charWidth - 4
-        let maxBytes = max(Int((available + 1) / cellsPerByte), 0)
-        let budget = max(maxBytes, matchLocal.count)
-
-        // A `budget`-byte window centred on the match, slid so it always
-        // covers the whole match.
-        var start = max(0, matchLocal.lowerBound - (budget - matchLocal.count) / 2)
-        var end = min(n, start + budget)
-        if matchLocal.lowerBound < start { start = matchLocal.lowerBound }
-        if matchLocal.upperBound > end { end = matchLocal.upperBound }
-
-        let shown = Array(bytes[start..<end])
-        let shownMatch = (matchLocal.lowerBound - start)..<(matchLocal.upperBound - start)
-        let result = NSMutableAttributedString()
-        if start > 0 {
-            result.append(NSAttributedString(string: "… ",
-                                             attributes: [.font: regularFont, .foregroundColor: NSColor.secondaryLabelColor]))
-        }
-        result.append(render(shown, shownMatch))
-        if end < n {
-            result.append(NSAttributedString(string: " …",
-                                             attributes: [.font: regularFont, .foregroundColor: NSColor.secondaryLabelColor]))
-        }
-        return result
-    }
-
     /// The match's start as padded uppercase hex — the same shape as the dump's
     /// offset column, which shows the row address in ink blue (§6).
     private func offsetText(_ offset: UInt64) -> NSAttributedString {
@@ -390,26 +346,22 @@ extension SearchResultsView: NSTableViewDataSource, NSTableViewDelegate {
         let cell = (tableView.makeView(withIdentifier: identifier, owner: self) as? SearchResultCellView)
             ?? SearchResultCellView(identifier: identifier)
 
-        // Available text width: the column's width minus the cell's padding.
-        let maxWidth = max(tableColumn.width - 8, 0)
+        // The full excerpt is handed to the cell untruncated; the cell's
+        // single-line label truncates it at the tail with "…" against whatever
+        // width the column currently has, re-truncating automatically as the
+        // user resizes the column (§11).
         switch identifier {
         case ColumnID.offset:
             cell.attributedText = offsetText(match.lowerBound)
         case ColumnID.hex:
             let (window, matchLocal) = excerptWindow(for: match)
             let bytes = byteProvider?(window.lowerBound, Int(window.count)) ?? []
-            cell.attributedText = truncatedExcerpt(
-                bytes: bytes, matchLocal: matchLocal, cellsPerByte: 3, maxWidth: maxWidth) { bytes, matchLocal in
-                hexExcerpt(bytes: bytes, matchLocal: matchLocal)
-            }
+            cell.attributedText = hexExcerpt(bytes: bytes, matchLocal: matchLocal)
         case ColumnID.text:
             let (window, matchLocal) = excerptWindow(for: match)
             let bytes = byteProvider?(window.lowerBound, Int(window.count)) ?? []
             if let decoder = textDecoder {
-                cell.attributedText = truncatedExcerpt(
-                    bytes: bytes, matchLocal: matchLocal, cellsPerByte: 1, maxWidth: maxWidth) { bytes, matchLocal in
-                    textExcerpt(bytes: bytes, matchLocal: matchLocal, decoder: decoder)
-                }
+                cell.attributedText = textExcerpt(bytes: bytes, matchLocal: matchLocal, decoder: decoder)
             }
         default:
             break
@@ -419,9 +371,9 @@ extension SearchResultsView: NSTableViewDataSource, NSTableViewDelegate {
 }
 
 /// One table cell: a label that fills the cell and is updated per column on
-/// reuse. The excerpt is pre-truncated around the match before it reaches the
-/// label; the label's own tail truncation is only a safety net, so it never
-/// wraps onto a second line.
+/// reuse. The excerpt reaches the label whole; the label's single-line mode
+/// renders it on exactly one line, truncating the tail with "…" against the
+/// column's current width (§11).
 final class SearchResultCellView: NSTableCellView {
     private let label = NSTextField(labelWithString: "")
 
@@ -429,6 +381,14 @@ final class SearchResultCellView: NSTableCellView {
         super.init(frame: .zero)
         self.identifier = identifier
         label.font = AppearanceSettings.font(size: 13)
+        // A result value must never wrap onto a second line. Single-line mode
+        // is the standard SDK guarantee: an attributed string without an
+        // explicit paragraph style would otherwise render with the default
+        // word-wrapping (ignoring the field's own lineBreakMode) and grow the
+        // row taller. With single-line mode the text always stays on one line,
+        // truncating at the tail with "…" when the column is too narrow — and
+        // it re-truncates automatically as the column resizes (§11).
+        label.usesSingleLineMode = true
         label.lineBreakMode = .byTruncatingTail
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)

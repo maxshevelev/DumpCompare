@@ -884,6 +884,40 @@ final class FindFlowTests: XCTestCase {
                              "the matched bytes must be bold in the text excerpt")
     }
 
+    /// A Search Results value must never wrap onto a second line: the excerpt
+    /// is handed to the cell whole, and the cell's single-line label truncates
+    /// the tail with "…" against the column's current width. Pins the no-wrap
+    /// guarantee — a wrapped label would grow taller than one line.
+    func testSearchAllExcerptNeverWraps() throws {
+        // One 2-byte match ("DE AD") at the start of a 200-byte file: the
+        // excerpt window is the match ±8 bytes clamped to the file, so the hex
+        // cell shows 10 bytes ("DE AD 00 00 …", ~29 glyphs) — far wider than
+        // the narrowed 100pt column.
+        let bytes: [UInt8] = [0xDE, 0xAD] + [UInt8](repeating: 0x00, count: 198)
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let view = try runSearchAll("DE AD", in: window)
+        XCTAssertEqual(view.tableView.numberOfRows, 1)
+
+        // Narrow the hex column so the excerpt cannot fit on one line.
+        let hexColumn = try XCTUnwrap(view.tableView.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier("hex")))
+        hexColumn.width = 100
+        view.layoutSubtreeIfNeeded()
+
+        let hexIndex = view.tableView.column(withIdentifier: hexColumn.identifier)
+        let cell = try XCTUnwrap(view.tableView.view(atColumn: hexIndex, row: 0,
+                                                     makeIfNecessary: true) as? SearchResultCellView)
+        cell.layoutSubtreeIfNeeded()
+
+        // One 13pt line is ≈17pt tall; a wrapped label would need ≥2 lines
+        // (~34pt), spilling past the 20pt row into the next one.
+        let label = try XCTUnwrap(descendants(of: cell, NSTextField.self).first)
+        XCTAssertLessThanOrEqual(label.frame.height, 20,
+                                 "a Search Results value must stay on one line, truncating with \"…\" instead of wrapping")
+    }
+
     /// Clicking a result row positions the caret at that match and selects it —
     /// the same behaviour as a single Find result.
     func testSearchAllRowClickSelectsMatch() throws {
