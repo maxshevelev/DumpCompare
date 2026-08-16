@@ -122,9 +122,9 @@ final class MainWindowController: NSWindowController {
         }
         let group = NSToolbarItemGroup(itemIdentifier: .diffNavigation)
         group.subitems = [
-            navItem(.previousDifference, "backward", "Previous Difference",
+            navItem(.previousDifference, "backward", "Prev Diff",
                     #selector(MainViewController.previousDifference)),
-            navItem(.nextDifference, "forward", "Next Difference",
+            navItem(.nextDifference, "forward", "Next Diff",
                     #selector(MainViewController.nextDifference)),
         ]
         group.controlRepresentation = .expanded
