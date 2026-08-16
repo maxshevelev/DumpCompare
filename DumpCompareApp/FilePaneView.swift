@@ -129,13 +129,6 @@ final class FilePaneView: NSView {
     /// The hex dump keeps at least this height when the panel is resized (§11).
     static let minHexHeightInPane: CGFloat = 40
 
-    /// Whether the Search All results panel is shown. Drives the split
-    /// delegate's divider range: while hidden, the divider is pinned to the
-    /// bottom so the panel sits at zero height and the dump reclaims the pane
-    /// (§11). The panel's `isHidden` follows this, but the divider moves while
-    /// the panel is still visible — `setPosition` ignores a hidden pane.
-    private var searchResultsPanelVisible = false
-
     /// Extra status text appended on the right (e.g. "Indexing… 42%" or diff
     /// counts in comparison mode). Set by ComparisonView/MainViewController.
     var comparisonInfo: String = "" {
@@ -349,10 +342,9 @@ final class FilePaneView: NSView {
         searchResultsSplit.delegate = self
         searchResultsSplit.addArrangedSubview(scrollView)
         searchResultsSplit.addArrangedSubview(searchResultsView)
-        // The panel starts collapsed: NSSplitView hides the arranged subview
-        // natively (zero height), so the dump gets the whole pane until a
-        // Search All shows results (§11).
-        searchResultsView.isHidden = true
+        // The panel starts collapsed at zero height — the split's first real
+        // layout pins the divider to the bottom — so the dump gets the whole
+        // pane until a Search All shows results (§11).
 
         // The header and column header are pinned at the top; the split view and
         // the status bar fill the rest. A stack arranged subview is sized to its
@@ -598,28 +590,20 @@ final class FilePaneView: NSView {
             },
             textDecoder: viewModel.textDecoder,
             fileSize: viewModel.fileSize)
-        searchResultsView.isHidden = false
-        searchResultsPanelVisible = true
-        // NSSplitView reveals a previously-collapsed pane only when it
-        // re-arranges its subviews — the pass a window resize triggers.
-        // `layoutSubtreeIfNeeded` won't do it (the split's own frame doesn't
-        // change), so force the arrangement explicitly, then place the divider
-        // at the stored height (§11).
-        searchResultsSplit.adjustSubviews()
+        searchResultsSplit.resultsPanelVisible = true
         applySearchResultsHeight()
     }
 
     /// Hides and clears the Search All results panel (the ×, or a structural
     /// change that invalidates the offsets). The divider moves to the very
-    /// bottom while the panel is still visible — the delegate (now pinned by
-    /// `searchResultsPanelVisible` == false) clamps it there, so the panel
-    /// collapses to zero and the dump reclaims the pane — and only then is the
-    /// panel marked hidden, so later layouts keep it collapsed (§11).
+    /// bottom — the delegate (now pinned by `resultsPanelVisible` == false)
+    /// clamps it there, so the panel collapses to zero height and the dump
+    /// reclaims the pane (§11). The panel is never `isHidden`; zero height is
+    /// its native collapsed state.
     func hideSearchResults() {
-        searchResultsPanelVisible = false
+        searchResultsSplit.resultsPanelVisible = false
         searchResultsView.clear()
         searchResultsSplit.setPanelHeight(0)
-        searchResultsView.isHidden = true
     }
 
     /// Gives the results panel the height the user last chose (or the built-in
@@ -627,7 +611,7 @@ final class FilePaneView: NSView {
     /// to the pane's room. The stored value is persisted by the split delegate
     /// whenever the divider moves (§11).
     private func applySearchResultsHeight() {
-        guard !searchResultsView.isHidden else { return }
+        guard searchResultsSplit.resultsPanelVisible else { return }
         let stored = UserDefaults.standard.object(forKey: Self.searchResultsHeightDefaultsKey) as? NSNumber
         let height = stored.map { CGFloat($0.doubleValue) } ?? SearchResultsView.panelHeight
         searchResultsSplit.setPanelHeight(height)
@@ -767,13 +751,13 @@ extension FilePaneView: NSSplitViewDelegate {
     /// panel below its minimum. While hidden, both bounds pin the divider to
     /// the very bottom so the panel collapses to zero height (§11).
     func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
-        searchResultsPanelVisible
+        searchResultsSplit.resultsPanelVisible
             ? FilePaneView.minHexHeightInPane
             : splitView.bounds.height - splitView.dividerThickness
     }
 
     func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
-        guard searchResultsPanelVisible else {
+        guard searchResultsSplit.resultsPanelVisible else {
             return splitView.bounds.height - splitView.dividerThickness
         }
         return max(
@@ -790,7 +774,7 @@ extension FilePaneView: NSSplitViewDelegate {
     /// poison the next reveal.
     func splitViewDidResizeSubviews(_ notification: Notification) {
         guard let split = notification.object as? NSSplitView, split === searchResultsSplit else { return }
-        guard searchResultsPanelVisible, split.arrangedSubviews.count == 2 else { return }
+        guard searchResultsSplit.resultsPanelVisible, split.arrangedSubviews.count == 2 else { return }
         let dumpHeight = split.arrangedSubviews[0].frame.height
         let panelHeight = split.bounds.height - dumpHeight - split.dividerThickness
         let legalMax = split.bounds.height - FilePaneView.minHexHeightInPane - split.dividerThickness

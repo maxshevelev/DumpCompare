@@ -168,9 +168,9 @@ final class FindFlowTests: XCTestCase {
         combo.stringValue = pattern
         try findAllButton(window).performClick(nil)
         let view = try resultsView(window)
-        // The reveal and the divider placement are deferred by the split view,
-        // so wait for the panel to actually occupy its height.
-        XCTAssertTrue(pumpUntil(3) { !view.isHidden && view.frame.height > 1 },
+        // The divider placement follows the panel's reveal; wait for the panel
+        // to actually occupy its height.
+        XCTAssertTrue(pumpUntil(3) { view.frame.height > 1 },
                       "Search All must show the results panel")
         return view
     }
@@ -707,13 +707,44 @@ final class FindFlowTests: XCTestCase {
 
     // MARK: - Search All (§11)
 
-    /// The results panel is hidden by default — it only appears for a Search
+    /// The results panel is collapsed by default — it only expands for a Search
     /// All.
-    func testSearchResultsPanelHiddenByDefault() throws {
+    func testSearchResultsPanelCollapsedByDefault() throws {
         let (controller, window, url) = try makeController([0x41, 0x42, 0x43])
         defer { cleanup(controller, url) }
-        XCTAssertTrue(try resultsView(window).isHidden,
-                      "the results panel must be hidden until a Search All runs")
+        let view = try resultsView(window)
+        window.layoutIfNeeded()
+        XCTAssertLessThan(view.frame.height, 1,
+                          "the results panel must stay collapsed until a Search All runs")
+    }
+
+    /// The collapsed (hidden) panel stays collapsed across a window resize — it
+    /// must not pop open to the default half-height distribution.
+    func testSearchResultsPanelStaysCollapsedOnWindowResize() throws {
+        let (controller, window, url) = try makeController([0xDE, 0xAD])
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let view = try runSearchAll("DE AD", in: window)
+        let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
+
+        // Hide, then make the window bigger and smaller.
+        let closeButton = try XCTUnwrap(descendants(of: view, NSButton.self).first {
+            $0.accessibilityLabel() == "Close search results"
+        })
+        closeButton.performClick(nil)
+        XCTAssertTrue(pumpUntil(2) { view.frame.height < 1 })
+
+        for newHeight: CGFloat in [700, 500, 800] {
+            window.setContentSize(NSSize(width: 800, height: newHeight))
+            window.layoutIfNeeded()
+            XCTAssertLessThan(view.frame.height, 1,
+                              "the collapsed panel must survive a resize to \(newHeight)")
+            XCTAssertEqual(paneView.scrollView.frame.height,
+                           paneView.searchResultsSplit.bounds.height - paneView.searchResultsSplit.dividerThickness,
+                           accuracy: 0.5,
+                           "the dump must reclaim the whole pane at \(newHeight)")
+        }
     }
 
     /// Search All lists every occurrence: the panel's header shows the match
@@ -817,7 +848,7 @@ final class FindFlowTests: XCTestCase {
 
         controller.findPattern()
         let view = try runSearchAll("DE AD", in: window)
-        XCTAssertFalse(view.isHidden)
+        XCTAssertGreaterThan(view.frame.height, 1, "Search All must show the results panel")
 
         let closeButton = try XCTUnwrap(descendants(of: view, NSButton.self).first {
             $0.accessibilityLabel() == "Close search results"
@@ -842,7 +873,6 @@ final class FindFlowTests: XCTestCase {
         let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
         let split = paneView.searchResultsSplit
 
-        XCTAssertFalse(view.isHidden)
         window.layoutIfNeeded()
         XCTAssertFalse(split.isSubviewCollapsed(view),
                        "the panel must be an expanded pane while results are shown")

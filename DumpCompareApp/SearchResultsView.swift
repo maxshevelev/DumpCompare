@@ -123,10 +123,16 @@ final class SearchResultsView: NSView {
         // fills the panel; the `height >= 0` keeps it from overrunning the
         // panel's bottom edge in the collapsed state.
         scrollBottom.priority = .defaultHigh
+        // The title's gap to the × button is also preferred: a transient
+        // zero-width layout (the split sizing the collapsed panel) cannot fit
+        // the title and the button in negative space, and a required gap would
+        // warn on every such pass. At normal widths it holds.
+        let titleToButton = headerLabel.trailingAnchor.constraint(lessThanOrEqualTo: closeButton.leadingAnchor, constant: -6)
+        titleToButton.priority = .defaultHigh
         NSLayoutConstraint.activate([
             headerLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
             headerLabel.topAnchor.constraint(equalTo: topAnchor, constant: 5),
-            headerLabel.trailingAnchor.constraint(lessThanOrEqualTo: closeButton.leadingAnchor, constant: -6),
+            titleToButton,
 
             closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
             closeButton.centerYAnchor.constraint(equalTo: headerLabel.centerYAnchor),
