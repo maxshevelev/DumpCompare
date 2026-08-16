@@ -90,23 +90,7 @@ final class MainWindowController: NSWindowController {
         // Edit menu (§7, §11, §12)
         let editItem = NSMenuItem()
         mainMenu.addItem(editItem)
-        let editMenu = NSMenu(title: "Edit")
-        editMenu.addItem(withTitle: "Undo", action: #selector(MainViewController.undoEdit), keyEquivalent: "z")
-        editMenu.addItem(withTitle: "Redo", action: #selector(MainViewController.redoEdit), keyEquivalent: "Z")
-        editMenu.addItem(.separator())
-        editMenu.addItem(withTitle: "Cut", action: nil, keyEquivalent: "")
-        editMenu.addItem(withTitle: "Copy", action: #selector(MainViewController.copySelection), keyEquivalent: "c")
-        editMenu.addItem(withTitle: "Paste Write", action: #selector(MainViewController.pasteWrite), keyEquivalent: "v")
-        editMenu.addItem(withTitle: "Paste Insert…", action: #selector(MainViewController.pasteInsert), keyEquivalent: "")
-        editMenu.addItem(withTitle: "Delete Bytes…", action: #selector(MainViewController.deleteBytes), keyEquivalent: "")
-        editMenu.addItem(.separator())
-        editMenu.addItem(withTitle: "Fill Selection with…", action: #selector(MainViewController.fillSelectionWithBytes), keyEquivalent: "")
-        editMenu.addItem(withTitle: "Select All", action: #selector(MainViewController.selectAllBytes), keyEquivalent: "a")
-        editMenu.addItem(.separator())
-        editMenu.addItem(withTitle: "Select Block…", action: #selector(MainViewController.selectBlock), keyEquivalent: "")
-        editMenu.addItem(withTitle: "Find", action: #selector(MainViewController.findPattern), keyEquivalent: "f")
-        editMenu.addItem(withTitle: "Go To Position…", action: #selector(MainViewController.goToPosition), keyEquivalent: "g")
-        editItem.submenu = editMenu
+        editItem.submenu = makeEditMenu()
 
         // View menu (§10.3 navigation, §3.3 layout)
         let viewItem = NSMenuItem()
@@ -187,6 +171,34 @@ final class MainWindowController: NSWindowController {
         // open it falls back to closing the window (§3.5).
         add("Close", #selector(MainViewController.closeDocument), "w")
         return fileMenu
+    }
+
+    /// Builds the app menu bar's Edit submenu (§7, §11, §12). Standalone so a
+    /// test can pin the key-equivalent routing: ⌘V must reach the standard
+    /// `paste:` action (responder chain), never paste-write.
+    func makeEditMenu() -> NSMenu {
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(withTitle: "Undo", action: #selector(MainViewController.undoEdit), keyEquivalent: "z")
+        editMenu.addItem(withTitle: "Redo", action: #selector(MainViewController.redoEdit), keyEquivalent: "Z")
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "Cut", action: nil, keyEquivalent: "")
+        editMenu.addItem(withTitle: "Copy", action: #selector(MainViewController.copySelection), keyEquivalent: "c")
+        // ⌘V is the standard Paste (§11): the menu item dispatches `paste:`
+        // down the responder chain, so a focused text field's editor pastes
+        // text, while a focused hex view routes to MainViewController.paste(_:)
+        // and overwrites bytes (paste-write). Plain Paste already IS the
+        // paste-write in the dump, so no separate "Paste Write" entry exists.
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Paste Insert…", action: #selector(MainViewController.pasteInsert), keyEquivalent: "")
+        editMenu.addItem(withTitle: "Delete Bytes…", action: #selector(MainViewController.deleteBytes), keyEquivalent: "")
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "Fill Selection with…", action: #selector(MainViewController.fillSelectionWithBytes), keyEquivalent: "")
+        editMenu.addItem(withTitle: "Select All", action: #selector(MainViewController.selectAllBytes), keyEquivalent: "a")
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "Select Block…", action: #selector(MainViewController.selectBlock), keyEquivalent: "")
+        editMenu.addItem(withTitle: "Find", action: #selector(MainViewController.findPattern), keyEquivalent: "f")
+        editMenu.addItem(withTitle: "Go To Position…", action: #selector(MainViewController.goToPosition), keyEquivalent: "g")
+        return editMenu
     }
 
 }

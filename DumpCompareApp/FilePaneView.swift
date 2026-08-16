@@ -126,6 +126,14 @@ final class FilePaneView: NSView {
         didSet { header.menu = paneMenu }
     }
 
+    /// Builds the context menu shown when the user right-clicks an address in
+    /// the hex dump's Offset column — the "Select block from here" menu — given
+    /// the clicked offset. Built by MainViewController so the item resolves
+    /// THIS pane even when it is not the active one (§10.2).
+    var offsetMenuProvider: ((UInt64) -> NSMenu)? {
+        didSet { hexView.offsetMenuProvider = offsetMenuProvider }
+    }
+
     /// Fired when the user clicks anywhere in the pane (activates it).
     var onActivate: (() -> Void)?
     /// Fired when the user double-clicks the header: expand this pane so its
@@ -361,6 +369,13 @@ final class FilePaneView: NSView {
     /// shown mid-pane instead of at its edge (§11).
     func revealSelectionCentered() {
         hexView.revealSelectionCentered()
+    }
+
+    /// Scrolls the hex view so the row containing `offset` sits in the vertical
+    /// centre of the visible area (clamped to the document's edges). Used to
+    /// show a newly selected block's start mid-pane (§10.2).
+    func revealOffsetCentered(_ offset: UInt64) {
+        hexView.revealOffsetCentered(offset)
     }
 
     /// Shows a transient message (e.g. "No match found.") in the status bar,

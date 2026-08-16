@@ -3,6 +3,31 @@ import DumpCompareCore
 
 // MARK: - Shared sheet chrome
 
+/// An `NSTextField` that doesn't select its whole text when it gains focus:
+/// the caret lands after the existing text (the "0x" prefix), so the user can
+/// type hex digits immediately and deletes the prefix only for a decimal value
+/// (§10). AppKit's default is select-all on focus, which would replace "0x".
+/// Also fires `onTextChange` on every edit so the sheet can re-validate live.
+private final class HexInputField: NSTextField {
+    /// Called on every edit (typing, deleting, replacing) — the sheet uses it
+    /// to re-validate the input and update the error label as the user types.
+    var onTextChange: (() -> Void)?
+
+    override func becomeFirstResponder() -> Bool {
+        let focused = super.becomeFirstResponder()
+        if focused, let editor = currentEditor() as? NSTextView {
+            let length = (stringValue as NSString).length
+            editor.selectedRange = NSRange(location: length, length: 0)
+        }
+        return focused
+    }
+
+    override func textDidChange(_ notification: Notification) {
+        super.textDidChange(notification)
+        onTextChange?()
+    }
+}
+
 /// Base class for the input dialogs (Go To Position, Select Block).
 /// Builds a titled sheet with a field stack, an inline error label, and a
 /// Cancel/Submit button row; subclasses add fields and validation (§10).
@@ -119,6 +144,8 @@ class SheetViewController: NSViewController {
             presentationInProgress = true
             view.window?.makeFirstResponder(field)
             presentationInProgress = false
+            // The caret lands after the "0x" prefix via `HexInputField`, which
+            // never selects the field's whole text on focus.
         }
     }
 
@@ -160,6 +187,20 @@ class SheetViewController: NSViewController {
         errorLabel.isHidden = false
     }
 
+    /// Re-runs `validate()` on every keystroke (fired from `HexInputField`'s
+    /// `textDidChange`) and updates the error label, so a stale error clears
+    /// the moment the input becomes valid instead of lingering until the user
+    /// submits or leaves the field (§10). Both hex (with "0x") and decimal
+    /// inputs validate the same way `submitPressed` does. `fileprivate` so the
+    /// subclasses' field builders can wire `onTextChange` to it.
+    fileprivate func updateLiveError() {
+        if let error = validate() {
+            showError(error)
+        } else {
+            errorLabel.isHidden = true
+        }
+    }
+
     /// Builds a label + text field row inside `contentStack` and returns the field.
     func addFieldRow(label text: String, initial: String) -> NSTextField {
         let label = NSTextField(labelWithString: text)
@@ -169,10 +210,14 @@ class SheetViewController: NSViewController {
         label.translatesAutoresizingMaskIntoConstraints = false
         label.widthAnchor.constraint(equalToConstant: 110).isActive = true
 
-        let field = NSTextField(string: initial)
+        let field = HexInputField(string: initial)
         field.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         field.target = self
         field.action = #selector(submitPressed)
+        // §10: submit only on OK / Return — losing focus (e.g. clicking another
+        // field) must NOT activate the selection. The flag lives on the cell.
+        field.cell?.sendsActionOnEndEditing = false
+        field.onTextChange = { [weak self] in self?.updateLiveError() }
         field.translatesAutoresizingMaskIntoConstraints = false
         field.widthAnchor.constraint(equalToConstant: 240).isActive = true
         field.setAccessibilityLabel(text)  // §15: VoiceOver names the field.
@@ -230,22 +275,42 @@ final class GoToSheetController: SheetViewController {
 
 // MARK: - Select Block (§10.2)
 
-/// Select a range by Start/End or by Start/Length.
+/// Select a range by Start and one of End or Length. Three fields — Start, End,
+/// Length — with standard radio buttons before End and Length: exactly one of
+/// the two is active at a time, and the inactive field is disabled but keeps the
+/// value the user typed, so switching back restores it (§10.2). The radios are
+/// plain `NSButton` radio buttons (no custom controls); exclusivity is managed
+/// by their shared action.
+///
+/// End is the address of the block's LAST byte (inclusive) — the selection's
+/// half-open `[start, end)` is built as `[start, end + 1)`.
+///
+/// A `presetStart` opens the sheet from the offset context menu ("Select block
+/// from here"): Start is pre-filled with that address, the Length option is
+/// active from the start, and the cursor lands in the Length field.
 final class SelectBlockSheetController: SheetViewController {
-    private enum Mode: Int { case startEnd = 0, startLength = 1 }
-
     private let fileSize: UInt64
+    private let presetStart: UInt64?
     private let onSelect: (SelectionModel) -> Void
 
-    private var startField: NSTextField!
-    private var secondField: NSTextField!
-    private var secondLabel: NSTextField!
+    /// `private(set)` so tests can read the widgets and set their values.
+    private(set) var startField: NSTextField!
+    private(set) var endField: NSTextField!
+    private(set) var lengthField: NSTextField!
+    private(set) var endRadio: NSButton!
+    private(set) var lengthRadio: NSButton!
 
-    init(fileSize: UInt64, onSelect: @escaping (SelectionModel) -> Void) {
+    init(fileSize: UInt64, presetStart: UInt64? = nil, onSelect: @escaping (SelectionModel) -> Void) {
         self.fileSize = fileSize
+        self.presetStart = presetStart
         self.onSelect = onSelect
-        super.init(title: "Select Block",
-                   message: "Select a byte range by absolute offsets.")
+        let message: String
+        if let presetStart {
+            message = "Select a block starting at \(String(format: "0x%X", presetStart)) by its length."
+        } else {
+            message = "Select a byte range by absolute offsets. End is the block's last byte."
+        }
+        super.init(title: "Select Block", message: message)
     }
 
     required init?(coder: NSCoder) {
@@ -255,79 +320,120 @@ final class SelectBlockSheetController: SheetViewController {
     override func loadView() {
         super.loadView()
 
-        let modePopup = NSPopUpButton()
-        modePopup.addItems(withTitles: ["Start and End", "Start and Length"])
-        modePopup.target = self
-        modePopup.action = #selector(modeChanged(_:))
-        contentStack.addArrangedSubview(modePopup)
+        startField = addFieldRow(label: "Start:",
+                                 initial: presetStart.map { String(format: "0x%X", $0) } ?? "0x")
 
-        startField = addFieldRow(label: "Start:", initial: "0x")
+        let end = addRadioFieldRow(title: "End", action: #selector(modeRadioChanged(_:)))
+        endRadio = end.radio
+        endField = end.field
 
-        secondLabel = NSTextField(labelWithString: "End:")
-        secondLabel.font = .systemFont(ofSize: 12)
-        secondLabel.textColor = .secondaryLabelColor
-        secondLabel.alignment = .right
-        secondLabel.translatesAutoresizingMaskIntoConstraints = false
-        secondLabel.widthAnchor.constraint(equalToConstant: 110).isActive = true
+        let length = addRadioFieldRow(title: "Length", action: #selector(modeRadioChanged(_:)))
+        lengthRadio = length.radio
+        lengthField = length.field
 
-        secondField = NSTextField(string: "0x")
-        secondField.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-        secondField.target = self
-        secondField.action = #selector(submitPressed)
-        secondField.translatesAutoresizingMaskIntoConstraints = false
-        secondField.widthAnchor.constraint(equalToConstant: 240).isActive = true
-        secondField.setAccessibilityLabel("End")  // §15; updated by modeChanged.
+        if presetStart != nil {
+            // §10.2 "Select block from here": Start is pre-filled with the
+            // right-clicked address, so Length is the active option from the
+            // start. `isEnabled = false` keeps the End field's value untouched.
+            endRadio.state = .off
+            lengthRadio.state = .on
+            endField.isEnabled = false
+            lengthField.isEnabled = true
+        } else {
+            // Default: End mode — End is editable, Length is disabled but
+            // retains its text. `isEnabled = false` keeps `stringValue` untouched.
+            endRadio.state = .on
+            lengthRadio.state = .off
+            lengthField.isEnabled = false
+        }
+    }
+
+    override func firstField() -> NSView? {
+        // §10.2: with a pre-filled start the user's job is the length, so focus
+        // the Length field (and position its caret after the "0x" prefix).
+        presetStart != nil ? lengthField : startField
+    }
+
+    /// Builds a radio button + text field row (the End / Length pair). The radio
+    /// carries the field's name, replacing the label column of `addFieldRow`; a
+    /// fixed width keeps the fields column-aligned with Start's.
+    private func addRadioFieldRow(title: String, action: Selector) -> (radio: NSButton, field: NSTextField) {
+        let radio = NSButton(radioButtonWithTitle: title, target: self, action: action)
+        radio.font = .systemFont(ofSize: 12)
+        radio.translatesAutoresizingMaskIntoConstraints = false
+        radio.widthAnchor.constraint(equalToConstant: 110).isActive = true
+
+        let field = HexInputField(string: "0x")
+        field.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        field.target = self
+        field.action = #selector(submitPressed)
+        // §10: submit only on OK / Return — losing focus must not activate.
+        field.cell?.sendsActionOnEndEditing = false
+        field.onTextChange = { [weak self] in self?.updateLiveError() }
+        field.translatesAutoresizingMaskIntoConstraints = false
+        field.widthAnchor.constraint(equalToConstant: 240).isActive = true
+        field.setAccessibilityLabel(title)  // §15: VoiceOver names the field.
 
         let row = NSStackView()
         row.orientation = .horizontal
         row.alignment = .centerY
         row.spacing = 8
-        row.addArrangedSubview(secondLabel)
-        row.addArrangedSubview(secondField)
+        row.addArrangedSubview(radio)
+        row.addArrangedSubview(field)
         contentStack.addArrangedSubview(row)
+        return (radio, field)
     }
 
-    override func firstField() -> NSView? { startField }
-
-    @objc private func modeChanged(_ sender: NSPopUpButton) {
-        secondLabel.stringValue = sender.indexOfSelectedItem == Mode.startEnd.rawValue ? "End:" : "Length:"
-        secondField.setAccessibilityLabel(secondLabel.stringValue)  // §15
+    /// The shared radio action keeps the two options mutually exclusive: clicking
+    /// one turns the other off and swaps which field is editable. The field that
+    /// becomes disabled keeps its value, so switching back restores it (§10.2).
+    @objc private func modeRadioChanged(_ sender: NSButton) {
+        let useLength = sender === lengthRadio
+        endRadio.state = useLength ? .off : .on
+        lengthRadio.state = useLength ? .on : .off
+        endField.isEnabled = !useLength
+        lengthField.isEnabled = useLength
     }
 
     override func validate() -> String? {
-        let isLengthMode = secondLabel.stringValue == "Length:"
         guard let start = parse(startField.stringValue) else {
             return "Invalid start offset."
         }
         guard start <= fileSize else {
             return "Start is beyond the end of the file."
         }
-        guard let second = parse(secondField.stringValue) else {
-            return isLengthMode ? "Invalid length." : "Invalid end offset."
-        }
-        if !isLengthMode {
-            if start > second {
+        if endRadio.state == .on {
+            guard let end = parse(endField.stringValue) else {
+                return "Invalid end offset."
+            }
+            if start > end {
                 return "Start must not exceed end."
             }
-            if second > fileSize {
+            // End is the address of the block's LAST byte, so it must point at
+            // a real byte — the maximum is fileSize - 1 (the selection's
+            // half-open upper bound is end + 1).
+            if end >= fileSize {
                 return "End is beyond the end of the file."
+            }
+        } else {
+            guard parse(lengthField.stringValue) != nil else {
+                return "Invalid length."
             }
         }
         return nil
     }
 
     override func handleSubmit() {
-        let isLengthMode = secondLabel.stringValue == "Length:"
         guard let start = parse(startField.stringValue), start <= fileSize else { return }
-        guard let second = parse(secondField.stringValue) else { return }
-        let selection: SelectionModel
-        if isLengthMode {
-            selection = SelectionModel(start: start, length: second, fileSize: fileSize)
+        if endRadio.state == .on {
+            guard let end = parse(endField.stringValue), end < fileSize else { return }
+            // End is the last byte INCLUDED; the internal half-open range ends
+            // just past it.
+            onSelect(SelectionModel(start: start, end: end + 1, fileSize: fileSize))
         } else {
-            guard second <= fileSize else { return }
-            selection = SelectionModel(start: start, end: second, fileSize: fileSize)
+            guard let length = parse(lengthField.stringValue) else { return }
+            onSelect(SelectionModel(start: start, length: length, fileSize: fileSize))
         }
-        onSelect(selection)
     }
 
     private func parse(_ text: String) -> UInt64? {

@@ -86,6 +86,26 @@ final class HexView: NSView {
     /// dead zone the flag sticks, so later `mouseDragged` events keep extending.
     private var dragEngaged = false
 
+    /// The offset whose address is framed while its context menu is up — the
+    /// row's start address for a right-click on the Offset column, or the
+    /// clicked byte's offset for a right-click on a hex byte — or nil when no
+    /// context menu is showing. `rightMouseDown` sets it for the lifetime of
+    /// the pop-up and clears it on dismissal; `draw(_:)` paints the standard
+    /// focus ring around that anchor while it is set (§10.2).
+    private(set) var contextMenuOffset: UInt64?
+
+    /// Whether the context-menu frame wraps a single hex byte (the menu was
+    /// opened on a byte in the hex column) rather than the Offset column's
+    /// row address. Only meaningful while `contextMenuOffset` is set.
+    private var contextMenuFramesByte = false
+
+    /// Builds the context menu shown when the user right-clicks an address in
+    /// the Offset column or a byte in the hex column. The pane/controller
+    /// supplies it so the "Select block from here" and "Copy offset" actions
+    /// resolve the exact offset and pane (§10.2). When nil (the default) the
+    /// right-click falls through to `super` unchanged.
+    var offsetMenuProvider: ((UInt64) -> NSMenu)?
+
     /// Ideal width of the hex grid (offset column + hex + ASCII). The window
     /// delegate uses this to zoom-to-fit (§3.1) instead of zooming to max.
     var hexContentWidth: CGFloat { currentLayout.contentWidth }
@@ -321,6 +341,18 @@ final class HexView: NSView {
         // traced onto the inactive pane only (§3.3). `drawMirrorContour`
         // guards internally when there is nothing to mirror.
         drawMirrorContour()
+
+        // Context-menu anchor: while a right-click menu is up, frame the
+        // right-clicked anchor with the standard focus ring (§10.2) — the
+        // Offset column's row address, or the single byte the menu was opened
+        // on in the hex column.
+        if let contextMenuOffset, contextMenuOffset < fileSize {
+            let (row, column) = layout.rowColumn(of: contextMenuOffset)
+            let frame = contextMenuFramesByte
+                ? layout.hexByteFrame(row: row, column: column)
+                : layout.offsetColumnFrame(row: row)
+            drawContextMenuFrame(around: frame)
+        }
     }
 
     private func drawRow(row: Int, layout: HexLayout, fileSize: UInt64,
@@ -743,6 +775,20 @@ final class HexView: NSView {
         (text as NSString).draw(at: NSPoint(x: frame.minX, y: frame.minY + baseline), withAttributes: attributes)
     }
 
+    /// The frame around the right-clicked address while its context menu is up
+    /// (§10.2). Drawn with the exact same algorithm and style as the selection
+    /// contours (§3.3): flush with the row's top and bottom edges, padded
+    /// `mirrorContourPadding` outside the left/right edges, then stroked via
+    /// `drawContours` with the mirror's accent colour, alpha, line width and
+    /// corner radius — so the frame is indistinguishable from a mirror contour.
+    private func drawContextMenuFrame(around frame: CGRect) {
+        let padded = frame.insetBy(dx: -Self.mirrorContourPadding, dy: 0)
+        drawContours([[CGPoint(x: padded.minX, y: padded.minY),
+                       CGPoint(x: padded.maxX, y: padded.minY),
+                       CGPoint(x: padded.maxX, y: padded.maxY),
+                       CGPoint(x: padded.minX, y: padded.maxY)]])
+    }
+
     // MARK: - Scrolling
 
     /// Scrolls the caret into view within the enclosing scroll view.
@@ -809,6 +855,73 @@ final class HexView: NSView {
             dragEngaged = true
         }
         handleMouse(event, extendSelection: true)
+    }
+
+    /// What a right-click in the dump anchors the context menu to (§10.2).
+    struct ContextMenuAnchor {
+        let offset: UInt64
+        /// True when the anchor is a single hex byte (the menu was opened on a
+        /// byte in the hex column); false when it is the Offset column's row
+        /// address, whose frame spans the whole column.
+        let framesByte: Bool
+    }
+
+    /// Right-click on an address in the Offset column or on a byte in the hex
+    /// column: frames the anchor with the standard focus ring and pops the
+    /// offset context menu ("Select block from here", "Copy offset") built by
+    /// `offsetMenuProvider`. `NSMenu.popUpContextMenu` runs the menu's tracking
+    /// loop synchronously, so the frame stays up for the whole time the menu is
+    /// visible and clears once it is dismissed (§10.2).
+    override func rightMouseDown(with event: NSEvent) {
+        guard let anchor = contextMenuAnchor(for: event) else {
+            super.rightMouseDown(with: event)
+            return
+        }
+        guard let menu = offsetMenuProvider?(anchor.offset) else {
+            super.rightMouseDown(with: event)
+            return
+        }
+        contextMenuOffset = anchor.offset
+        contextMenuFramesByte = anchor.framesByte
+        needsDisplay = true
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+        contextMenuOffset = nil
+        contextMenuFramesByte = false
+        needsDisplay = true
+    }
+
+    /// The anchor for a right-click context menu: the Offset column maps to the
+    /// row's start address, and the hex column maps to the clicked byte's own
+    /// offset. Returns nil for the ASCII column, the gaps, and anywhere past
+    /// EOF (the empty caret row, or a placeholder byte in a partial last row).
+    func contextMenuAnchor(for event: NSEvent) -> ContextMenuAnchor? {
+        guard let dataSource else { return nil }
+        let layout = currentLayout
+        let point = convert(event.locationInWindow, from: nil)
+        let rowCount = layout.rowCount(fileSize: dataSource.fileSize)
+        guard let hit = layout.hitTest(point: point, rowCount: rowCount) else { return nil }
+        let offset: UInt64
+        let framesByte: Bool
+        switch hit.column {
+        case .offset:
+            offset = layout.byteOffset(row: hit.row, column: 0)
+            framesByte = false
+        case .hex(let column):
+            offset = layout.byteOffset(row: hit.row, column: column)
+            framesByte = true
+        case .ascii:
+            return nil
+        }
+        guard offset < dataSource.fileSize else { return nil }
+        return ContextMenuAnchor(offset: offset, framesByte: framesByte)
+    }
+
+    /// The right-clicked address for a context menu — the row's start offset
+    /// for a click on the Offset column, or the clicked byte's offset for a
+    /// click in the hex column; nil when the click is in the ASCII column, the
+    /// gaps, or past EOF.
+    func rightClickedOffset(for event: NSEvent) -> UInt64? {
+        contextMenuAnchor(for: event)?.offset
     }
 
     /// Whether a drag started at `origin` has moved far enough at `point` to

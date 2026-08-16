@@ -57,6 +57,9 @@
 		C268E54A71DBE773D3595CDF /* ByteSignificanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B0D5CB24B4DFBC1B37F3F42 /* ByteSignificanceTests.swift */; };
 		C35E1583998132707D8E1749 /* SettingsWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE9F686DC291219019034AF9 /* SettingsWindowController.swift */; };
 		C469DA232E32792EBE3B5607 /* SingleFileDropView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 843BDADF6DC010ED5707D0F2 /* SingleFileDropView.swift */; };
+		D4C3B2A109876FEDCBA54321 /* SelectBlockSheetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21DE05AB0C9D8E7F6A5B4C3D /* SelectBlockSheetTests.swift */; };
+		D5E6F708192A3B4C5D6E7F80 /* OffsetContextMenuTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B1C2D3E4F5061728394A5B6 /* OffsetContextMenuTests.swift */; };
+		A1B2C3D4E5F60718293A4B5C /* MainWindowMenuTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6D7E8F90123456789ABCDEF /* MainWindowMenuTests.swift */; };
 		E48043200E726B8423B101CD /* PaneViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FC713959D9654C564AB34E0 /* PaneViewModelTests.swift */; };
 		E4B2D90C3A49F9CAA976DCEF /* SheetControllers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B1D587B9291F026D4B00A15 /* SheetControllers.swift */; };
 		ED2A6A04F4EE3CA0BD3B4160 /* ComparisonPaneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2581320A3453C01FF111B29B /* ComparisonPaneTests.swift */; };
@@ -86,6 +89,9 @@
 		1D73B46350757B2E6D907D7F /* DumpCompare.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = DumpCompare.entitlements; sourceTree = "<group>"; };
 		20D9603C698CA61F9D4A641B /* HeaderFitWidthTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HeaderFitWidthTests.swift; sourceTree = "<group>"; };
 		212A4A8B0EA478EDDEB03EA5 /* TextDecodingSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextDecodingSettingsViewController.swift; sourceTree = "<group>"; };
+		21DE05AB0C9D8E7F6A5B4C3D /* SelectBlockSheetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectBlockSheetTests.swift; sourceTree = "<group>"; };
+		0B1C2D3E4F5061728394A5B6 /* OffsetContextMenuTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OffsetContextMenuTests.swift; sourceTree = "<group>"; };
+		C6D7E8F90123456789ABCDEF /* MainWindowMenuTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainWindowMenuTests.swift; sourceTree = "<group>"; };
 		2581320A3453C01FF111B29B /* ComparisonPaneTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComparisonPaneTests.swift; sourceTree = "<group>"; };
 		2751D9902BBBD4771AFB0FD5 /* MainViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainViewController.swift; sourceTree = "<group>"; };
 		2B6700D9C2E00D1370AB090A /* ComparisonResizeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComparisonResizeTests.swift; sourceTree = "<group>"; };
@@ -249,6 +255,9 @@
 				7CC40FA3295CB53000898E26 /* OpenPlacementTests.swift */,
 				F2C7301D0193A3E8079F472C /* PaneHeaderIconTests.swift */,
 				7FC713959D9654C564AB34E0 /* PaneViewModelTests.swift */,
+				21DE05AB0C9D8E7F6A5B4C3D /* SelectBlockSheetTests.swift */,
+				0B1C2D3E4F5061728394A5B6 /* OffsetContextMenuTests.swift */,
+				C6D7E8F90123456789ABCDEF /* MainWindowMenuTests.swift */,
 				E9BBBA06BD7728DB1217E802 /* TextVerticalAlignmentTests.swift */,
 				C85616E8D61566958CB9364D /* TitleBarMenuTests.swift */,
 				16A8C6524AA2950540398C91 /* UntitledFileTests.swift */,
@@ -403,6 +412,9 @@
 				9BACD1885C8A876AEBC95150 /* OpenPlacementTests.swift in Sources */,
 				A87964BADD3A4153189BB25B /* PaneHeaderIconTests.swift in Sources */,
 				E48043200E726B8423B101CD /* PaneViewModelTests.swift in Sources */,
+				D4C3B2A109876FEDCBA54321 /* SelectBlockSheetTests.swift in Sources */,
+				D5E6F708192A3B4C5D6E7F80 /* OffsetContextMenuTests.swift in Sources */,
+				A1B2C3D4E5F60718293A4B5C /* MainWindowMenuTests.swift in Sources */,
 				B4812C24F46A9A662D650DC3 /* TextVerticalAlignmentTests.swift in Sources */,
 				53D9057C80E14892BA143948 /* TitleBarMenuTests.swift in Sources */,
 				636183CDE24C1ACAE7515A87 /* UntitledFileTests.swift in Sources */,

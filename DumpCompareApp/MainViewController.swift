@@ -91,9 +91,14 @@ final class MainViewController: NSViewController {
             setContentView(emptyView)
 
         case .singleFile:
-            let pane = FilePaneView(viewModel: windowModel.pane1)
+            let paneModel = windowModel.pane1
+            let pane = FilePaneView(viewModel: paneModel)
             // Header right-click menu: acts on THIS pane (§4/§5).
-            pane.paneMenu = makePaneMenu(for: windowModel.pane1)
+            pane.paneMenu = makePaneMenu(for: paneModel)
+            // Offset-column right-click menu ("Select block from here", §10.2).
+            pane.offsetMenuProvider = { [weak self] offset in
+                self?.makeOffsetMenu(for: paneModel, offset: offset) ?? NSMenu()
+            }
             // Close button: closing the last file returns to empty mode (§3.5).
             pane.onClose = { [weak self] in self?.closePane(at: 0) }
             // Wrap in the drop-target split view (§4.3 single-file mode). The
@@ -110,11 +115,20 @@ final class MainViewController: NSViewController {
 
         case .comparison:
             wireComparison()
-            let pane1View = FilePaneView(viewModel: windowModel.pane1)
-            let pane2View = FilePaneView(viewModel: windowModel.pane2)
+            let pane1 = windowModel.pane1
+            let pane2 = windowModel.pane2
+            let pane1View = FilePaneView(viewModel: pane1)
+            let pane2View = FilePaneView(viewModel: pane2)
             // Header right-click menus act on their own pane (§4/§5).
-            pane1View.paneMenu = makePaneMenu(for: windowModel.pane1)
-            pane2View.paneMenu = makePaneMenu(for: windowModel.pane2)
+            pane1View.paneMenu = makePaneMenu(for: pane1)
+            pane2View.paneMenu = makePaneMenu(for: pane2)
+            // Offset-column right-click menus ("Select block from here", §10.2).
+            pane1View.offsetMenuProvider = { [weak self] offset in
+                self?.makeOffsetMenu(for: pane1, offset: offset) ?? NSMenu()
+            }
+            pane2View.offsetMenuProvider = { [weak self] offset in
+                self?.makeOffsetMenu(for: pane2, offset: offset) ?? NSMenu()
+            }
             // Comparison-mode drops target the hovered pane (§4.3).
             pane1View.enableFileDrop()
             pane2View.enableFileDrop()
@@ -721,10 +735,65 @@ final class MainViewController: NSViewController {
         return menu
     }
 
+    /// Builds the context menu for a right-clicked address in the Offset column:
+    /// "Copy offset" (copies the hex offset to the clipboard), then "Select
+    /// block from here", both resolving THIS pane (the header-menu pattern of
+    /// §4/§5) and the clicked offset (§10.2). When the clicked byte lies inside
+    /// the pane's current selection, the menu instead leads with selection-scoped
+    /// actions — Copy, Fill Selection with…, Delete Bytes — that act on the
+    /// right-clicked pane's selection, never the active pane's (§10.2).
+    func makeOffsetMenu(for pane: PaneViewModel, offset: UInt64) -> NSMenu {
+        let menu = NSMenu(title: "Offset")
+        let selection = pane.hexSelection()
+        if !selection.isEmpty, offset >= selection.start, offset < selection.end {
+            addSelectionMenuItems(to: menu, for: pane, offset: offset)
+            menu.addItem(.separator())
+        }
+        let copy = menu.addItem(withTitle: "Copy offset",
+                                action: #selector(copyOffset(_:)),
+                                keyEquivalent: "")
+        copy.target = self
+        copy.representedObject = OffsetContextTarget(pane: pane, offset: offset)
+        menu.addItem(.separator())
+        let select = menu.addItem(withTitle: "Select block from here",
+                                  action: #selector(selectBlockFromHere(_:)),
+                                  keyEquivalent: "")
+        select.target = self
+        select.representedObject = OffsetContextTarget(pane: pane, offset: offset)
+        return menu
+    }
+
+    /// The three selection-scoped context-menu items (§10.2). Each carries the
+    /// right-clicked pane (plus offset) so its action resolves THIS pane's
+    /// selection, exactly as the offset items below resolve the pane.
+    private func addSelectionMenuItems(to menu: NSMenu, for pane: PaneViewModel, offset: UInt64) {
+        let target = OffsetContextTarget(pane: pane, offset: offset)
+        let copy = menu.addItem(withTitle: "Copy",
+                                action: #selector(copyPaneSelection(_:)),
+                                keyEquivalent: "")
+        copy.target = self
+        copy.representedObject = target
+        let fill = menu.addItem(withTitle: "Fill Selection with…",
+                                action: #selector(fillPaneSelection(_:)),
+                                keyEquivalent: "")
+        fill.target = self
+        fill.representedObject = target
+        let delete = menu.addItem(withTitle: "Delete Bytes…",
+                                  action: #selector(deletePaneSelection(_:)),
+                                  keyEquivalent: "")
+        delete.target = self
+        delete.representedObject = target
+    }
+
     /// The pane carried by a context-menu item (`representedObject`), or nil for
     /// menu-bar items, which act on the active pane instead.
     private func pane(from sender: Any?) -> PaneViewModel? {
         (sender as? NSMenuItem)?.representedObject as? PaneViewModel
+    }
+
+    /// The offset-context target carried by a right-click menu item, or nil.
+    private func offsetContextTarget(from sender: Any?) -> OffsetContextTarget? {
+        (sender as? NSMenuItem)?.representedObject as? OffsetContextTarget
     }
 
     /// The window-model index of `pane` (0 or 1). The pane objects are swapped
@@ -732,6 +801,43 @@ final class MainViewController: NSViewController {
     /// at action time, never a captured index.
     private func paneIndex(_ pane: PaneViewModel) -> Int {
         pane === windowModel.pane1 ? 0 : 1
+    }
+
+    /// The `FilePaneView` hosting `pane`, or nil when the pane has no view right
+    /// now. Used to scroll the right-clicked pane's dump, which may not be the
+    /// active one (§10.2).
+    private func filePaneView(for pane: PaneViewModel) -> FilePaneView? {
+        if pane === windowModel.pane1 { return comparisonView?.paneView1 ?? activeFilePane }
+        return comparisonView?.paneView2
+    }
+
+    /// Offset context menu > Select block from here: opens the Select Block
+    /// sheet for the pane that was right-clicked — Start pre-filled with the
+    /// clicked address, the Length option active, and the cursor in the Length
+    /// field (§10.2).
+    @objc func selectBlockFromHere(_ sender: Any?) {
+        guard let target = (sender as? NSMenuItem)?.representedObject as? OffsetContextTarget,
+              target.pane.isOpen else { return }
+        let pane = target.pane
+        let sheet = SelectBlockSheetController(fileSize: pane.fileSize, presetStart: target.offset) { [weak self] selection in
+            pane.setSelection(selection)
+            // §10.2: show the block's START mid-pane — in the pane that was
+            // right-clicked, not the active one.
+            self?.filePaneView(for: pane)?.revealOffsetCentered(selection.start)
+        }
+        presentAsSheet(sheet)
+    }
+
+    /// Offset context menu > Copy offset: copies the right-clicked offset to
+    /// the clipboard as bare hex digits ("10", not "0x10"). The offset fields
+    /// already carry a "0x" prefix with the caret right after it, so pasting a
+    /// prefixed value would double it ("0x0x10"); bare digits paste straight
+    /// into Go To Position / Select Block / Find (§10.2).
+    @objc func copyOffset(_ sender: Any?) {
+        guard let target = (sender as? NSMenuItem)?.representedObject as? OffsetContextTarget else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(String(format: "%X", target.offset), forType: .string)
     }
 
     /// Header context menu > New File: a brand-new untitled document lands in
@@ -808,8 +914,20 @@ final class MainViewController: NSViewController {
         focusActiveHexView()
     }
 
+    /// Edit > Copy (⌘C): copies the ACTIVE pane's selection.
     @objc func copySelection() {
-        let pane = activePane
+        copySelectionBytes(of: activePane)
+    }
+
+    /// Context menu > Copy: copies the RIGHT-CLICKED pane's selection (§10.2).
+    @objc func copyPaneSelection(_ sender: Any?) {
+        guard let target = offsetContextTarget(from: sender), target.pane.isOpen else { return }
+        copySelectionBytes(of: target.pane)
+    }
+
+    /// Copies `pane`'s selection to the clipboard: raw bytes (primary, §12.1)
+    /// plus uppercase hex text.
+    private func copySelectionBytes(of pane: PaneViewModel) {
         guard let doc = pane.document, !doc.selection.isEmpty else { return }
         let range = doc.selection.start..<doc.selection.end
         guard let bytes = try? doc.read(at: range.lowerBound, length: Int(range.count)) else { return }
@@ -817,6 +935,17 @@ final class MainViewController: NSViewController {
         pasteboard.clearContents()
         pasteboard.setData(Data(bytes), forType: .rawBytes)  // raw bytes: primary (§12.1)
         pasteboard.setString(ClipboardCodec.hexText(from: bytes), forType: .string)
+    }
+
+    /// The standard "Paste" menu item (⌘V → `paste:`) dispatches through the
+    /// responder chain (§11). A focused text field's editor implements
+    /// `paste:` and pastes text, so the message only reaches this controller
+    /// when the first responder has no text-paste of its own — i.e. the hex
+    /// view. Paste-write into the dump therefore happens only while a hex
+    /// pane holds focus; everywhere else ⌘V is the standard system paste.
+    @objc func paste(_ sender: Any?) {
+        guard view.window?.firstResponder is HexView, activePane.isOpen else { return }
+        pasteWrite()
     }
 
     @objc func pasteWrite() {
@@ -856,17 +985,42 @@ final class MainViewController: NSViewController {
         }
     }
 
+    /// Edit > Fill Selection with…: fills the ACTIVE pane's selection.
     @objc func fillSelectionWithBytes() {
-        let pane = activePane
+        presentFillSheet(for: activePane)
+    }
+
+    /// Context menu > Fill Selection with…: fills the RIGHT-CLICKED pane's
+    /// selection (§10.2). The sheet's completion captures that pane directly, so
+    /// a selection in a non-active pane is still the one that gets filled.
+    @objc func fillPaneSelection(_ sender: Any?) {
+        guard let target = offsetContextTarget(from: sender), target.pane.isOpen else { return }
+        presentFillSheet(for: target.pane)
+    }
+
+    private func presentFillSheet(for pane: PaneViewModel) {
         guard pane.isOpen, !pane.hexSelection().isEmpty else { return }
-        let sheet = FillSheetController(selectionCount: pane.hexSelection().count) { [weak self] pattern in
-            self?.activePane.fillSelection(with: pattern)
+        let sheet = FillSheetController(selectionCount: pane.hexSelection().count) { pattern in
+            pane.fillSelection(with: pattern)
         }
         presentAsSheet(sheet)
     }
 
+    /// Edit > Delete Bytes…: deletes the ACTIVE pane's selection, or the caret
+    /// byte when the selection is empty.
     @objc func deleteBytes() {
-        let pane = activePane
+        deleteSelectionOrCaret(in: activePane)
+    }
+
+    /// Context menu > Delete Bytes…: deletes the RIGHT-CLICKED pane's selection
+    /// (§10.2). Only offered when the selection is non-empty, so the single-byte
+    /// caret fallback never applies here.
+    @objc func deletePaneSelection(_ sender: Any?) {
+        guard let target = offsetContextTarget(from: sender), target.pane.isOpen else { return }
+        deleteSelectionOrCaret(in: target.pane)
+    }
+
+    private func deleteSelectionOrCaret(in pane: PaneViewModel) {
         guard pane.isOpen else { return }
         let selection = pane.hexSelection()
         let start = selection.start
@@ -969,8 +1123,11 @@ final class MainViewController: NSViewController {
     @objc func selectBlock() {
         let pane = activePane
         guard pane.isOpen else { return }
-        let sheet = SelectBlockSheetController(fileSize: pane.fileSize) { selection in
+        let sheet = SelectBlockSheetController(fileSize: pane.fileSize) { [weak self] selection in
             pane.setSelection(selection)
+            // §10.2: show the block's START mid-pane, the way the Find bar
+            // centres a match — the block begins where the user looks.
+            self?.activeFilePane?.revealOffsetCentered(selection.start)
         }
         presentAsSheet(sheet)
     }
@@ -1265,7 +1422,6 @@ extension MainViewController: NSMenuItemValidation {
              #selector(saveDocumentAs),
              #selector(undoEdit),
              #selector(redoEdit),
-             #selector(pasteWrite),
              #selector(pasteInsert),
              #selector(deleteBytes),
              #selector(selectBlock),
@@ -1283,12 +1439,25 @@ extension MainViewController: NSMenuItemValidation {
         case #selector(revertPaneDocument(_:)):
             guard let pane = pane(from: menuItem) else { return false }
             return pane.isOpen && !pane.isUntitled
+        case #selector(copyPaneSelection(_:)),
+             #selector(fillPaneSelection(_:)),
+             #selector(deletePaneSelection(_:)):
+            // Right-click selection actions act on the pane they were built for.
+            return (menuItem.representedObject as? OffsetContextTarget)?.pane.isOpen ?? false
         case #selector(fillSelectionWithBytes):
             let pane = activePane
             return pane.isOpen && !pane.hexSelection().isEmpty
         case #selector(copySelection):
             let pane = activePane
             return pane.isOpen && !pane.hexSelection().isEmpty
+        case #selector(NSText.paste(_:)):
+            // ⌘V pastes text into a focused field editor (standard system
+            // paste) or, when the hex dump holds focus, writes bytes into
+            // the active pane via HexView.paste(_:) (§11). Everywhere else
+            // the item is disabled, so paste never fires on the wrong target.
+            if viewIfLoaded?.window?.firstResponder is NSTextView { return true }
+            if viewIfLoaded?.window?.firstResponder is HexView { return activePane.isOpen }
+            return false
         case #selector(nextDifference),
              #selector(previousDifference),
              #selector(nextSameBlock),
@@ -1335,4 +1504,16 @@ private func pasteboardBytes() throws -> [UInt8] {
         return try ClipboardCodec.bytes(fromHexText: text)
     }
     throw PasteError.noClipboardData
+}
+
+/// Boxes the pane and clicked offset carried by a "Select block from here"
+/// menu item — `NSMenuItem.representedObject` can't hold a tuple (§10.2).
+private final class OffsetContextTarget: NSObject {
+    let pane: PaneViewModel
+    let offset: UInt64
+
+    init(pane: PaneViewModel, offset: UInt64) {
+        self.pane = pane
+        self.offset = offset
+    }
 }
