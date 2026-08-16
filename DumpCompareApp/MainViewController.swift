@@ -84,6 +84,9 @@ final class MainViewController: NSViewController {
         ) { [weak self] _ in
             guard let self, self.mode == .comparison else { return }
             self.comparisonView?.setLayout(vertical: LayoutSettings.isVertical)
+            // The pane arrangement changed (View menu or the Settings tab), so
+            // the minimap's internal split flips with it (§ N).
+            self.updateMinimapLayout()
         }
         // Re-evaluate navigation availability on every index-state transition
         // (build starts/completes/cancels/stops, edits applied) (§10.3).
@@ -248,9 +251,15 @@ final class MainViewController: NSViewController {
             comparisonView = view
             setContentView(view)
             view.setActive(windowModel.activePaneIndex)
+            // The minimap's stacked divider mirrors the panes' divider position,
+            // so keep it glued whenever the panes' divider moves (§ N).
+            view.splitView.onFractionChanged = { [weak self] in
+                self?.updateMinimapLayout()
+            }
             comparisonCoordinator.start()
             activeFilePane?.focusHexView()
         }
+        updateMinimapLayout()
         refreshDiffNavigation()
     }
 
@@ -310,6 +319,24 @@ final class MainViewController: NSViewController {
     /// user's chosen width between shows.
     @objc func toggleMinimap() {
         minimapSplit.togglePanel(animated: true)
+    }
+
+    /// Recomputes the minimap's internal map split from the current window mode
+    /// and pane arrangement (§ N): one map in single-file mode, two maps with a
+    /// centered vertical line for side-by-side panes, two maps with a
+    /// horizontal line mirroring the panes' divider for stacked panes.
+    private func updateMinimapLayout() {
+        switch mode {
+        case .empty, .singleFile:
+            minimapView.setMapLayout(.single)
+        case .comparison:
+            guard let split = comparisonView?.splitView else { return }
+            if split.isVertical {
+                minimapView.setMapLayout(.sideBySide)
+            } else {
+                minimapView.setMapLayout(.stacked(fraction: split.currentFraction))
+            }
+        }
     }
 
     // MARK: - Helpers

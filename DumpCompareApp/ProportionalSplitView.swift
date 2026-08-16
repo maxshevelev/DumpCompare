@@ -66,6 +66,15 @@ final class ProportionalSplitView: NSSplitView {
         set { if isVertical { verticalFraction = newValue } else { horizontalFraction = newValue } }
     }
 
+    /// Called whenever the divider fraction changes — a drag, a programmatic
+    /// `setPosition`, an animation tick, the 50/50 reset. The minimap uses it
+    /// to keep its stacked divider line glued to the panes' divider.
+    var onFractionChanged: (() -> Void)?
+
+    /// The current split fraction of the first pane along the split axis
+    /// (0...1), read by the minimap so its stacked divider mirrors the panes'.
+    var currentFraction: CGFloat { fraction }
+
     /// Binds the first pane's trailing/bottom edge to the divider position
     /// (§3.3). Kept in sync with the frames `layout()` sets, so the layout
     /// engine and the drag agree about where the divider sits.
@@ -384,6 +393,7 @@ final class ProportionalSplitView: NSSplitView {
         fraction = newFraction
         needsLayout = true
         layout()
+        onFractionChanged?()
     }
 
     override func resetCursorRects() {

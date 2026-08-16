@@ -15,6 +15,7 @@ final class MinimapTests: XCTestCase {
     private var isolatedSuiteName = ""
     private var isolatedDefaults: UserDefaults!
     private var savedMainMenu: NSMenu?
+    private var savedLayoutIsVertical: Bool?
 
     override func setUp() {
         super.setUp()
@@ -29,14 +30,25 @@ final class MinimapTests: XCTestCase {
         // Building a MainWindowController rebuilds the app menu; keep the prior
         // menu intact for whatever other test runs after this one.
         savedMainMenu = NSApp.mainMenu
+        savedLayoutIsVertical = LayoutSettings.isVertical
     }
 
     override func tearDown() {
+        if let savedLayoutIsVertical {
+            LayoutSettings.set(isVertical: savedLayoutIsVertical)
+        }
         NSApp.mainMenu = savedMainMenu
         isolatedDefaults.removePersistentDomain(forName: isolatedSuiteName)
         MinimapSplitView.defaults = .standard
         isolatedDefaults = nil
         super.tearDown()
+    }
+
+    private func tempFile(_ bytes: [UInt8]) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("minimap-\(UUID().uuidString).bin")
+        try Data(bytes).write(to: url)
+        return url
     }
 
     private func descendants<T: NSView>(of view: NSView, _ type: T.Type) -> [T] {
@@ -214,5 +226,95 @@ final class MinimapTests: XCTestCase {
         _ = pumpUntil(1.0) { !panel.isHidden && panel.frame.width >= MinimapSplitView.minPanelWidth }
         XCTAssertTrue(split.panelVisible)
         XCTAssertGreaterThanOrEqual(panel.frame.width, MinimapSplitView.minPanelWidth - 1)
+    }
+
+    // MARK: - Stage 2: map layout
+
+    /// Opens two files and applies comparison mode at the given pane
+    /// arrangement (vertical = side-by-side, horizontal = stacked).
+    private func makeComparisonWindow(vertical: Bool) throws -> (MainViewController, NSWindow) {
+        LayoutSettings.set(isVertical: vertical)
+        let url1 = try tempFile([UInt8](repeating: 0x41, count: 256))
+        let url2 = try tempFile([UInt8](repeating: 0x42, count: 128))
+        let (controller, window) = try makeController()
+        try controller.windowModel.pane1.open(url: url1)
+        try controller.windowModel.pane2.open(url: url2)
+        controller.apply(mode: .comparison)
+        window.layoutIfNeeded()
+        return (controller, window)
+    }
+
+    func testSingleFileShowsOneMap() throws {
+        let url = try tempFile([0x00, 0x01, 0x02])
+        let (controller, window) = try makeController()
+        try controller.windowModel.pane1.open(url: url)
+        controller.apply(mode: .singleFile)
+        window.layoutIfNeeded()
+
+        let (split, panel) = try minimapViews(window)
+        split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+        guard case .single = panel.mapLayout else {
+            return XCTFail("single-file mode shows a single map, got \(panel.mapLayout)")
+        }
+    }
+
+    func testComparisonSideBySideSplitsPanelVertically() throws {
+        let (_, window) = try makeComparisonWindow(vertical: true)
+        let (split, panel) = try minimapViews(window)
+        split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+        guard case .sideBySide = panel.mapLayout else {
+            return XCTFail("side-by-side comparison splits the minimap vertically, got \(panel.mapLayout)")
+        }
+    }
+
+    func testComparisonStackedSplitsPanelHorizontally() throws {
+        let (_, window) = try makeComparisonWindow(vertical: false)
+        let (split, panel) = try minimapViews(window)
+        split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+        guard case .stacked(let fraction) = panel.mapLayout else {
+            return XCTFail("stacked comparison splits the minimap horizontally, got \(panel.mapLayout)")
+        }
+        XCTAssertEqual(fraction, 0.5, accuracy: 0.001,
+                       "a fresh comparison starts at a 50/50 split")
+    }
+
+    func testStackedDividerFollowsPaneDivider() throws {
+        let (_, window) = try makeComparisonWindow(vertical: false)
+        let (split, panel) = try minimapViews(window)
+        split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+
+        let paneSplit = try XCTUnwrap(descendants(of: window.contentView!, ProportionalSplitView.self).first,
+                                      "the comparison's pane split")
+        let available = paneSplit.bounds.height - paneSplit.dividerThickness
+        paneSplit.setPosition(available * 0.25, ofDividerAt: 0)
+        window.layoutIfNeeded()
+
+        guard case .stacked(let fraction) = panel.mapLayout else {
+            return XCTFail("stacked comparison keeps a horizontal split, got \(panel.mapLayout)")
+        }
+        XCTAssertEqual(fraction, 0.25, accuracy: 0.001,
+                       "the minimap divider mirrors the pane divider as it moves")
+    }
+
+    func testTogglingPaneLayoutFlipsMinimapSplit() throws {
+        let (controller, window) = try makeComparisonWindow(vertical: true)
+        let (split, panel) = try minimapViews(window)
+        split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+        guard case .sideBySide = panel.mapLayout else {
+            return XCTFail("comparison starts side-by-side, got \(panel.mapLayout)")
+        }
+
+        // View > Toggle Pane Layout: the minimap follows the new arrangement.
+        controller.togglePaneLayout()
+        window.layoutIfNeeded()
+        guard case .stacked(let fraction) = panel.mapLayout else {
+            return XCTFail("after toggling, the minimap splits horizontally, got \(panel.mapLayout)")
+        }
+        XCTAssertEqual(fraction, 0.5, accuracy: 0.001)
     }
 }
