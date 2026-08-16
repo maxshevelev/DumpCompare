@@ -173,6 +173,41 @@ final class OffsetContextMenuTests: XCTestCase {
         XCTAssertNil(hexView.contextMenuOffset)
     }
 
+    // MARK: - Frame invalidation (§10.2)
+
+    /// The regression: clearing the frame after the menu must invalidate the
+    /// anchor's rows even though `contextMenuOffset` is already nil at that
+    /// moment — the old code called a no-argument helper that `guard`ed on the
+    /// nil anchor and returned silently, so §3.3 region-redraw preserved the
+    /// focus ring on screen. `invalidateContextMenuFrame` takes the offset
+    /// explicitly, so the clearing call is stateless and marks the view dirty
+    /// whatever the anchor state.
+    func testClearingContextMenuFrameInvalidatesAnchorRows() {
+        let hexView = HexView()
+        let rowHeight = hexView.hexLayout.rowHeight
+        XCTAssertGreaterThan(rowHeight, 0)
+
+        // The state rightMouseDown leaves behind once the menu closes.
+        XCTAssertNil(hexView.contextMenuOffset, "the menu is down, so the anchor is already cleared")
+
+        // The clearing invalidation must still reach the anchor's rows — the
+        // old code's `guard let contextMenuOffset` returned silently, and §3.3
+        // region-redraw preserved the focus ring's pixels on screen.
+        let rows = invalidatedRows(hexView.invalidateContextMenuFrame(for: 0x21), rowHeight: rowHeight)
+        XCTAssertEqual(rows, [1, 2, 3], "0x21 is row 2; its frame draws on row 2 and the neighbours")
+
+        // Row 0 has no neighbour above; the invalidation still reaches it and
+        // the row below.
+        let firstRow = invalidatedRows(hexView.invalidateContextMenuFrame(for: 0x00), rowHeight: rowHeight)
+        XCTAssertEqual(firstRow, [0, 1])
+    }
+
+    /// The set of row indices the returned rects cover, so the assertion reads
+    /// as "rows {1, 2, 3} are invalidated" rather than comparing pixel rects.
+    private func invalidatedRows(_ rects: [CGRect], rowHeight: CGFloat) -> [Int] {
+        rects.map { Int(($0.minY / rowHeight).rounded()) }.sorted()
+    }
+
     /// The pane forwards its offset-menu provider to the hex view, so a
     /// right-click menu resolves the pane's offset (the MainViewController
     /// wiring test: FilePaneView.offsetMenuProvider → HexView.offsetMenuProvider).

@@ -1424,28 +1424,35 @@ final class HexView: NSView {
         }
         contextMenuOffset = anchor.offset
         contextMenuFramesByte = anchor.framesByte
-        invalidateContextMenuFrame()
+        invalidateContextMenuFrame(for: anchor.offset)
         NSMenu.popUpContextMenu(menu, with: event, for: self)
+        // Clear the frame: the rows must be invalidated even though the offset
+        // is already gone — the no-argument form guards on it, so the clear
+        // call passes the anchor's row explicitly (§10.2).
         contextMenuOffset = nil
         contextMenuFramesByte = false
-        invalidateContextMenuFrame()
+        invalidateContextMenuFrame(for: anchor.offset)
     }
 
-    /// Invalidates the rows the context-menu frame draws on — the anchor's row
-    /// plus one on each side, because the frame is a stroked line whose 2px
-    /// stroke sits on the row's top/bottom edges and bleeds a pixel into the
-    /// adjacent rows (the same convention as `changedSelectionRects`, §3.3).
-    /// The frame always lives inside a single row, so no whole-pane redraw is
-    /// needed to show or clear it (§3.3 extension).
-    private func invalidateContextMenuFrame() {
-        guard let contextMenuOffset else { return }
-        let row = currentLayout.rowColumn(of: contextMenuOffset).row
+    /// Invalidates the rows a context-menu frame around `offset` draws on and
+    /// returns their rects. Takes the offset explicitly (rather than reading
+    /// `contextMenuOffset`) so the clearing call after the menu works even
+    /// though the anchor is already nil — the rows must be repainted without
+    /// the frame, or §3.3 region-redraw leaves the focus ring on screen (§10.2).
+    @discardableResult
+    func invalidateContextMenuFrame(for offset: UInt64) -> [CGRect] {
+        let row = currentLayout.rowColumn(of: offset).row
         var rows = [row]
         if row > 0 { rows.append(row - 1) }
         rows.append(row + 1)
+        var rects: [CGRect] = []
+        rects.reserveCapacity(rows.count)
         for invalidRow in rows {
-            setNeedsDisplay(currentLayout.rowFrame(row: invalidRow))
+            let rect = currentLayout.rowFrame(row: invalidRow)
+            setNeedsDisplay(rect)
+            rects.append(rect)
         }
+        return rects
     }
 
     /// The anchor for a right-click context menu: the Offset column maps to the
