@@ -385,6 +385,17 @@ final class HexView: NSView {
             guard last >= first else { continue }
             for row in first...last { rows.insert(row) }
         }
+
+        // A bare caret at P and a one-byte selection [P, P+1) render differently
+        // — a thin bar vs a filled cell — yet collapse to the same byte span, so
+        // the span XOR above misses the caret→selection handoff: the byte keeps
+        // its caret-only pixels and the first selected byte never highlights
+        // until a second press repaints the whole row. The caret sits on a
+        // point, so whichever side is a caret must mark its row dirty even when
+        // its span coincides with the other side's (§3.3).
+        if old.isEmpty { rows.insert(Int(old.start / UInt64(HexLayout.bytesPerRow))) }
+        if new.isEmpty { rows.insert(Int(new.start / UInt64(HexLayout.bytesPerRow))) }
+
         guard !rows.isEmpty else { return [] }
         // The selection's outline — the mirrored contour, the caret bar, the
         // cross-column link — is a stroked line whose top/bottom edges sit on

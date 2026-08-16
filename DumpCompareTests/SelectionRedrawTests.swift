@@ -102,6 +102,36 @@ final class SelectionRedrawTests: XCTestCase {
         XCTAssertEqual(rows(rects, rowHeight: rowHeight), [0, 1])
     }
 
+    /// Shift+Right selecting the FIRST byte must repaint the caret's own row: a
+    /// caret at P and a one-byte selection [P, P+1) share a byte span, so the
+    /// span XOR alone misses the handoff and the byte keeps its caret-only
+    /// pixels — the "1 selected in the status bar, nothing highlighted" bug.
+    func testCaretToFirstByteSelectionRepaintsCaretRow() throws {
+        let (hexView, url) = try makePane([UInt8](repeating: 0, count: 200))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let rowHeight = hexView.hexLayout.rowHeight
+
+        let rects = hexView.changedSelectionRects(
+            from: selection(5, 5, size: 200),   // caret at byte 5
+            to: selection(5, 6, size: 200))     // first byte selected
+        XCTAssertEqual(rows(rects, rowHeight: rowHeight), [0, 1],
+                       "the caret's own row must repaint when the first byte is selected")
+    }
+
+    /// The mirror image: a one-byte selection collapsing back to the caret must
+    /// also clear its fill rather than leave the byte highlighted.
+    func testOneByteSelectionCollapseRepaintsCaretRow() throws {
+        let (hexView, url) = try makePane([UInt8](repeating: 0, count: 200))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let rowHeight = hexView.hexLayout.rowHeight
+
+        let rects = hexView.changedSelectionRects(
+            from: selection(5, 6, size: 200),   // first byte selected
+            to: selection(5, 5, size: 200))     // back to the caret
+        XCTAssertEqual(rows(rects, rowHeight: rowHeight), [0, 1],
+                       "the selected byte's row must repaint when it collapses back to a caret")
+    }
+
     func testSelectionCollapsingToCaretAtNewOffsetInvalidatesBothRows() throws {
         let (hexView, url) = try makePane([UInt8](repeating: 0, count: 200))
         defer { try? FileManager.default.removeItem(at: url) }
