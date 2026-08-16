@@ -176,9 +176,12 @@ private final class DropTargetView: NSView {
 
     func setHighlighted(_ highlighted: Bool) {
         wantsLayer = true
-        layer?.backgroundColor = (highlighted
-            ? NSColor.controlAccentColor.withAlphaComponent(0.25)
-            : NSColor.windowBackgroundColor.withAlphaComponent(0.9)).cgColor
+        // The plate stays the same milky, mostly-opaque fill in BOTH states: a
+        // highlighted target tinted with translucent accent blue lets the dump
+        // behind bleed through at 25% and drowns the label text. Hover is
+        // signalled by the accent border and full-strength label instead, so
+        // the caption always sits on a readable plate (§4.3).
+        layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.9).cgColor
         layer?.borderColor = (highlighted ? NSColor.controlAccentColor : NSColor.separatorColor).cgColor
         layer?.borderWidth = highlighted ? 2 : 1
         label.textColor = highlighted ? .labelColor : .secondaryLabelColor
