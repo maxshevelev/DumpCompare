@@ -141,33 +141,75 @@ final class SelectionRedrawTests: XCTestCase {
     }
 
     /// A selection jumping far beyond the viewport (a search result, Select
-    /// Block) must invalidate only the on-screen rows — not every row between
-    /// the old and new positions, which on a large file is millions of display
-    /// rects unioned on the main thread. The virtualization guarantee that
-    /// bounds a jump's repaint cost, mirroring
-    /// `testBytesChangeClampsToVisibleRows` for the content path (§3.3).
-    func testFarSelectionJumpClampsToVisibleRows() throws {
+    /// Block) must invalidate only the rows the selection actually left and
+    /// entered — never the gap between them, which on a large file is millions
+    /// of display rects unioned on the main thread. Off-screen rows are still
+    /// invalidated: a selection that scrolls back into view must not keep stale
+    /// pixels (the layer-backed stale-highlight bug). This O(old + new rows)
+    /// bound replaced the old viewport clamp (§3.3).
+    func testFarSelectionJumpInvalidatesOnlyOldAndNewSpans() throws {
         // 5000 bytes ≈ 313 rows; the viewport shows ~30. Jumping the selection
-        // from the caret at 0 to byte 4000 spans ~250 rows but must redraw only
-        // the visible ones (plus their edge rows for the outline's stroke).
+        // from the caret at 0 to byte 4000 (row 250) must invalidate the old
+        // caret's row and the new block's rows — and nothing in between.
         let (hexView, url) = try makePane([UInt8](repeating: 0, count: 5000))
         defer { try? FileManager.default.removeItem(at: url) }
         let layout = hexView.hexLayout
-        let viewport = try XCTUnwrap(hexView.enclosingScrollView?.contentView.bounds)
-        let visible = layout.visibleRowRange(in: viewport)
 
         let rects = hexView.changedSelectionRects(
             from: selection(0, 0, size: 5000),
             to: selection(4000, 4016, size: 5000))
         let invalidated = rows(rects, rowHeight: layout.rowHeight)
 
-        // Only the visible rows plus one edge row on each side may repaint.
-        XCTAssertLessThanOrEqual(invalidated.count, visible.count + 2,
-                                 "a far selection jump must redraw only the visible rows plus their edges")
-        XCTAssertFalse(invalidated.contains { $0 > visible.upperBound },
-                       "no row below the viewport may be invalidated")
-        XCTAssertFalse(invalidated.contains { $0 < visible.lowerBound - 1 && $0 >= 0 },
-                       "no row above the viewport may be invalidated")
+        // The caret's row 0 and the new block's row 250, each with one edge row.
+        XCTAssertEqual(invalidated, [0, 1, 249, 250, 251],
+                       "a far selection jump must invalidate the old and new spans only")
+    }
+
+    /// The stale-highlight bug: select block A, scroll it off the visible
+    /// viewport, then select block B elsewhere. A's rows keep their old fill
+    /// after scrolling back because the old viewport clamp dropped them from
+    /// the invalidation — they were never marked dirty, and a layer-backed pane
+    /// does not repaint unmarked rows that scroll back into view. A's rows must
+    /// be invalidated even though they are off-screen (§3.3 fix).
+    func testOffScreenOldSelectionStaysInvalidated() throws {
+        // 2000 bytes ≈ 125 rows; the viewport shows ~35. Scroll so rows 0-10
+        // (block A) sit above the visible area — exactly the user's repro: the
+        // old block is off-screen when the new block is selected.
+        let (hexView, url) = try makePane([UInt8](repeating: 0, count: 2000))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let layout = hexView.hexLayout
+        let clip = try XCTUnwrap(hexView.enclosingScrollView?.contentView)
+        clip.setBoundsOrigin(NSPoint(x: 0, y: CGFloat(35) * layout.rowHeight))
+        hexView.displayIfNeeded()
+
+        // Select-block A at bytes 0..<176 (rows 0-10), then select block B at
+        // bytes 640..<720 (rows 40-44).
+        let rects = hexView.changedSelectionRects(
+            from: selection(0, 176, size: 2000),
+            to: selection(640, 720, size: 2000))
+        let invalidated = rows(rects, rowHeight: layout.rowHeight)
+
+        // Block A's rows are off-screen yet must repaint, or the stale fill
+        // survives the scroll back; block B's rows repaint as the new fill.
+        XCTAssertEqual(invalidated, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+                                     39, 40, 41, 42, 43, 44, 45],
+                       "the off-screen old selection must stay invalidated so it repaints on scroll-back")
+    }
+
+    /// Select All on a large file would otherwise emit one display rect per row
+    /// — hundreds of thousands on a big file — so a change spanning more than a
+    /// threshold of rows collapses to a single full-bounds rect. Layer-backed
+    /// display repaints that rect only where visible, so the cost stays
+    /// O(visible) per frame (§3.3).
+    func testHugeSelectionChangeFallsBackToOneFullBoundsRect() throws {
+        // 200,000 bytes = 12,500 rows > the 4096-row threshold → full-bounds.
+        let (hexView, url) = try makePane([UInt8](repeating: 0, count: 200_000))
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let rects = hexView.changedSelectionRects(
+            from: selection(0, 0, size: 200_000),
+            to: selection(0, 200_000, size: 200_000))
+        XCTAssertEqual(rects, [hexView.bounds])
     }
 
     /// The drag hot path (§3.3): `mouseDragged` drives `moveCaret(to:

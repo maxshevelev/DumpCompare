@@ -334,45 +334,56 @@ final class HexView: NSView {
 
     /// Row frames whose selection rendering differs between `old` and `new`. A
     /// selection change only ever moves its ends (or a bare caret), so the
-    /// affected rows are those spanning the gaps between the old and new
-    /// starts and ends — plus the rows a caret sits on, since a caret is drawn
-    /// at `start` while a selection fills from its anchor. Exposed (internal)
-    /// so tests can pin the exact invalidation contract (§3.3).
+    /// affected rows are exactly those one selection covers and the other does
+    /// not — the symmetric difference of the two spans, plus the rows a caret
+    /// sits on (a caret is drawn at `start` while a selection fills from its
+    /// anchor). Exposed (internal) so tests can pin the exact invalidation
+    /// contract (§3.3).
     func changedSelectionRects(from old: SelectionModel, to new: SelectionModel) -> [CGRect] {
-        // Only the rows intersecting the visible viewport can need repainting;
-        // off-screen rows repaint fresh when scrolled in (the virtualization
-        // guarantee). A jump from the caret to a selection far away (a search
-        // result, Select Block) would otherwise insert every row between them —
-        // millions on a large file — and union that many display rects on the
-        // main thread (§3.3). The mirror of the `.bytes` clamp in
-        // `contentChangeRects`, so both stay O(visible) regardless of range.
-        let layout = currentLayout
-        let viewport = enclosingScrollView?.contentView.bounds ?? bounds
-        let visible = layout.visibleRowRange(in: viewport)
+        // Each selection as a half-open span; a bare caret occupies the single
+        // byte at `start`.
+        let oldRange = old.isEmpty ? old.start..<(old.start + 1) : old.start..<old.end
+        let newRange = new.isEmpty ? new.start..<(new.start + 1) : new.start..<new.end
+
+        // The head one span alone covers and the tail the other alone covers.
+        // Unlike the union of the two gaps this never includes the region
+        // between two disjoint spans, so a jump from the caret to a far-away
+        // block (a search result, Select Block) invalidates only the rows the
+        // selection actually left and entered — never every row between them.
+        var ranges: [Range<UInt64>] = []
+        if oldRange.lowerBound < newRange.lowerBound {
+            ranges.append(oldRange.lowerBound..<min(oldRange.upperBound, newRange.lowerBound))
+        } else if newRange.lowerBound < oldRange.lowerBound {
+            ranges.append(newRange.lowerBound..<min(newRange.upperBound, oldRange.lowerBound))
+        }
+        if oldRange.upperBound > newRange.upperBound {
+            ranges.append(max(oldRange.lowerBound, newRange.upperBound)..<oldRange.upperBound)
+        } else if newRange.upperBound > oldRange.upperBound {
+            ranges.append(max(newRange.lowerBound, oldRange.upperBound)..<newRange.upperBound)
+        }
+
+        // Off-screen rows are invalidated too — deliberately no viewport clamp.
+        // When the view is layer-backed (as in the live app's window), a
+        // selection scrolled out of view keeps its old pixels until its rows are
+        // marked dirty; the clamp let a stale block survive a scroll away and
+        // back. Each XOR piece is bounded by a selection span, so a far jump
+        // still costs O(old + new rows) rather than the gap between them. A
+        // whole-file change (Select All on a large file) would emit millions of
+        // per-row rects, so it falls back to one full-bounds rect; layer-backed
+        // display repaints that rect only where visible, so it stays O(visible)
+        // per frame (§3.3).
+        let totalBytes = ranges.reduce(UInt64(0)) { $0 + UInt64($1.count) }
+        if totalBytes / UInt64(HexLayout.bytesPerRow) > 4096 {
+            return [bounds]
+        }
+
         var rows = Set<Int>()
-        func addRows(in range: Range<UInt64>) {
-            guard range.lowerBound < range.upperBound else { return }
+        for range in ranges {
+            guard range.lowerBound < range.upperBound else { continue }
             let first = Int(range.lowerBound / UInt64(HexLayout.bytesPerRow))
             let last = Int((range.upperBound - 1) / UInt64(HexLayout.bytesPerRow))
-            guard last >= first else { return }
-            let intersectFirst = max(first, visible.lowerBound)
-            let intersectLast = min(last, visible.upperBound - 1)
-            guard intersectLast >= intersectFirst else { return }
-            for row in intersectFirst...intersectLast { rows.insert(row) }
-        }
-        if old.isEmpty && new.isEmpty {
-            // A bare caret moving: only the two caret rows change (the caret is
-            // drawn at `start`), not the whole span between them.
-            addRows(in: old.start..<old.start + 1)
-            addRows(in: new.start..<new.start + 1)
-        } else {
-            addRows(in: min(old.start, new.start)..<max(old.start, new.start))
-            addRows(in: min(old.end, new.end)..<max(old.end, new.end))
-            // A caret at `start` appears or disappears at the boundary of a
-            // selection; its row is not always inside the gaps above (e.g.
-            // selection → caret at a new offset).
-            if old.isEmpty { addRows(in: old.start..<old.start + 1) }
-            if new.isEmpty { addRows(in: new.start..<new.start + 1) }
+            guard last >= first else { continue }
+            for row in first...last { rows.insert(row) }
         }
         guard !rows.isEmpty else { return [] }
         // The selection's outline — the mirrored contour, the caret bar, the
