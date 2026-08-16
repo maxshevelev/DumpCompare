@@ -122,6 +122,12 @@ final class FilePaneView: NSView {
     /// tests can assert the collapse and the resized height.
     let searchResultsSplit = SearchResultsSplitView()
 
+    /// Whether this pane has already shown the results panel once this session.
+    /// The one-third-of-the-dump clamp applies only to the height restored
+    /// from a previous launch; a height the user chose by dragging a divider in
+    /// this session is applied as-is on later shows (§11).
+    private var hasRestoredPanelHeightThisSession = false
+
     /// `UserDefaults` key for the user's chosen Search All panel height (§11).
     static let searchResultsHeightDefaultsKey = "SearchResultsPanelHeight"
     /// The results panel keeps at least this height when resized (§11).
@@ -615,13 +621,31 @@ final class FilePaneView: NSView {
     }
 
     /// Gives the results panel the height the user last chose (or the built-in
-    /// default), by placing the native divider accordingly; the split clamps it
-    /// to the pane's room. The stored value is persisted by the split delegate
-    /// whenever the divider moves (§11).
+    /// default), by placing the native divider accordingly. On the pane's first
+    /// show of a session the stored height is clamped to the current room —
+    /// never below the panel's minimum, never taller than a third of the pane's
+    /// shared height, so the hex dump keeps at least two thirds and the panel
+    /// never exceeds half the dump (§11) — because the stored value may date
+    /// from a taller window or the other pane. Once the pane has shown the
+    /// panel, a height the user picked by dragging in this session is applied
+    /// as-is. The split's delegate would clamp the same `setPosition`, but
+    /// clamping here keeps the restoration correct without depending on that
+    /// implicit behavior.
     private func applySearchResultsHeight() {
         guard searchResultsSplit.resultsPanelVisible else { return }
+        let total = searchResultsSplit.bounds.height
+        guard total > 0 else { return }
         let stored = UserDefaults.standard.object(forKey: Self.searchResultsHeightDefaultsKey) as? NSNumber
-        let height = stored.map { CGFloat($0.doubleValue) } ?? SearchResultsView.panelHeight
+        let preferred = stored.map { CGFloat($0.doubleValue) } ?? SearchResultsView.panelHeight
+        let height: CGFloat
+        if hasRestoredPanelHeightThisSession {
+            height = preferred
+        } else {
+            hasRestoredPanelHeightThisSession = true
+            let room = max(FilePaneView.minSearchResultsHeight,
+                           (total - searchResultsSplit.dividerThickness) / 3)
+            height = min(max(preferred, FilePaneView.minSearchResultsHeight), room)
+        }
         searchResultsSplit.setPanelHeight(height)
     }
 

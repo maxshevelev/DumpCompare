@@ -1089,6 +1089,69 @@ final class FindFlowTests: XCTestCase {
                        accuracy: 0.5, "Search All must restore the persisted panel height")
     }
 
+    /// A height persisted from a taller window or the other pane is clamped to
+    /// the pane's room when the panel opens: Search All never shows the panel
+    /// taller than the pane allows, however large the stored value is (§11).
+    func testSearchResultsPanelClampsPersistedHeightOnShow() throws {
+        let (controller, window, url) = try makeController([0xDE, 0xAD])
+        defer {
+            cleanup(controller, url)
+            UserDefaults.standard.removeObject(forKey: FilePaneView.searchResultsHeightDefaultsKey)
+        }
+        UserDefaults.standard.set(10_000.0, forKey: FilePaneView.searchResultsHeightDefaultsKey)
+
+        controller.findPattern()
+        let view = try runSearchAll("DE AD", in: window)
+        let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
+        window.layoutIfNeeded()
+        XCTAssertEqual(view.frame.height,
+                       expectedPanelHeight(10_000, split: paneView.searchResultsSplit),
+                       accuracy: 0.5,
+                       "the panel must not open past the pane's room on show")
+    }
+
+    /// The one-third-of-the-dump clamp applies only to the first show of a
+    /// session — the height restored from a previous launch. A height the user
+    /// chose by dragging the divider in this session is applied as-is on later
+    /// shows, even above the restored clamp (§11).
+    func testSearchResultsPanelKeepsDraggedHeightInSession() throws {
+        let (controller, window, url) = try makeController([0xDE, 0xAD])
+        defer {
+            cleanup(controller, url)
+            UserDefaults.standard.removeObject(forKey: FilePaneView.searchResultsHeightDefaultsKey)
+        }
+        UserDefaults.standard.set(10_000.0, forKey: FilePaneView.searchResultsHeightDefaultsKey)
+
+        controller.findPattern()
+        let view = try runSearchAll("DE AD", in: window)
+        let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
+        let split = paneView.searchResultsSplit
+        window.layoutIfNeeded()
+        // The first show clamps the stale persisted height to the pane's room.
+        XCTAssertEqual(view.frame.height, expectedPanelHeight(10_000, split: split),
+                       accuracy: 0.5, "the first show clamps the stale persisted height")
+
+        // The user drags the divider taller than the restored clamp would
+        // allow; the split persists that height as the user's choice.
+        split.setPanelHeight(400)
+        window.layoutIfNeeded()
+        let draggedHeight = view.frame.height
+        XCTAssertGreaterThan(draggedHeight, expectedPanelHeight(10_000, split: split),
+                             "a drag must be able to exceed the restored clamp")
+
+        // Close and reopen the panel: the height picked in this session wins.
+        let closeButton = try XCTUnwrap(descendants(of: view, NSButton.self).first {
+            $0.accessibilityLabel() == "Close search results"
+        })
+        closeButton.performClick(nil)
+        XCTAssertTrue(pumpUntil(2) { view.frame.height < 1 })
+
+        try runSearchAll("DE AD", in: window)
+        window.layoutIfNeeded()
+        XCTAssertEqual(view.frame.height, draggedHeight, accuracy: 0.5,
+                       "a height chosen in this session must apply as-is on the next show")
+    }
+
     /// The native divider clamps: the panel can't shrink below its minimum nor
     /// grow past the point that would squeeze the hex dump away. The clamp is
     /// enforced by the split delegate when `setPosition` (or a drag) targets an
@@ -1118,12 +1181,14 @@ final class FindFlowTests: XCTestCase {
                        "the divider must keep the hex dump at its minimum")
     }
 
-    /// The height a requested panel height resolves to after the split view
-    /// clamps it to the pane's room, so assertions hold at any pane size.
+    /// The height a requested panel height resolves to after the clamp, so
+    /// assertions hold at any pane size: at least the panel minimum and at most
+    /// a third of the pane's shared height, so the panel never exceeds half the
+    /// hex dump (§11).
     private func expectedPanelHeight(_ stored: CGFloat, split: NSSplitView) -> CGFloat {
         min(max(stored, FilePaneView.minSearchResultsHeight),
             max(FilePaneView.minSearchResultsHeight,
-                split.bounds.height - FilePaneView.minHexHeightInPane - split.dividerThickness))
+                (split.bounds.height - split.dividerThickness) / 3))
     }
 
     /// A search that must scan the whole file (2 GiB of zeros, pattern never
