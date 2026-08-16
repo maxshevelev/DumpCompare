@@ -164,9 +164,16 @@ final class PaneViewModel: HexViewDataSource {
     func open(url: URL) throws {
         let doc = try BinaryDocument(url: url)
         document = doc
+        // A real file on disk is never untitled — opening one must clear the
+        // flag an earlier New File left behind, or the pane header keeps showing
+        // "Untitled" with the new-file glyph instead of the loaded file (§4/§5).
+        isUntitled = false
         refreshSavedStorage()
         resetEditingState()
         startWatching(url)
+        // Announce the new document so the header glyph/name and the hex view
+        // update immediately, not only on the next user action.
+        notify()
     }
 
     /// Opens a brand-new empty document in memory (File > New File). Nothing is
