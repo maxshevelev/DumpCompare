@@ -879,9 +879,9 @@ final class HexView: NSView {
     }
 
     /// One drag-autoscroll step. When the pointer is beyond the visible top or
-    /// bottom edge, scrolls the pane toward it — the scroll speed ramps
-    /// smoothly with how far past the edge the pointer is, from a gentle creep
-    /// just past the boundary to a fast glide far out (§6) — and returns the
+    /// bottom edge, scrolls the pane toward it by exactly the overshoot — the
+    /// speed is directly proportional to how far past the edge the pointer
+    /// sits, HexFiend's rule, with no saturation (§6) — and returns the
     /// pointer position that should drive the selection: clamped to the visible
     /// edge, so the selection keeps extending to the row at the edge while the
     /// pane scrolls. The point is clamped even when nothing scrolls (the
@@ -895,13 +895,15 @@ final class HexView: NSView {
             : point.y > visible.maxY ? point.y - visible.maxY
             : 0
         guard overshoot != 0 else { return point }
-        // Exponential ramp: 1 - e^(-d/ramp) grows continuously from 0 at the
-        // edge toward 1 far out, so the speed increases smoothly with the
-        // overshoot instead of stepping through fixed bands. The constants
-        // keep the rise visible: from a gentle ~15 px/tick just past the edge
-        // to ~5× that around 120 px out, saturating near maxStep.
-        let maxStep: CGFloat = 80
-        let step = maxStep * (1 - exp(-abs(overshoot) / 50))
+        // Linear step, taken from HexFiend's autoscroll: it scrolls
+        // amountToScroll = overshoot / lineHeight lines per periodic tick,
+        // i.e. exactly `overshoot` pixels — the scroll distance equals the
+        // pointer's overshoot, so the speed grows in lockstep with how far past
+        // the edge the pointer sits. No exponential ramp, no saturation: a
+        // pointer barely past the edge creeps, a pointer far out glides fast.
+        // The document edge clamps the scroll, as HexFiend's scrollByLines:
+        // MIN(maxScroll, location + lines) does.
+        let step = abs(overshoot)
         let originY = min(max(0, visible.origin.y + (overshoot > 0 ? step : -step)), maxVerticalScroll)
         if abs(originY - visible.origin.y) > 0.5 {
             clip.setBoundsOrigin(NSPoint(x: visible.origin.x, y: originY))

@@ -242,10 +242,11 @@ final class AutoscrollSelectionTests: XCTestCase {
         hexView.mouseUp(with: mouse(.leftMouseUp, at: below, window: window))
     }
 
-    /// The scroll speed ramps smoothly with how far past the edge the pointer
-    /// sits: each step scrolls further as the overshoot grows, without a flat
-    /// band near the edge (the old speed rule gave the same step for any
-    /// overshoot up to 24 px).
+    /// The scroll speed is linear in the overshoot, as in HexFiend: each step
+    /// scrolls exactly the distance the pointer sits past the edge, so the
+    /// speed grows in lockstep with the overshoot — a barely-past-edge pointer
+    /// creeps, a far-out one glides fast, with no saturation and no flat band
+    /// near the edge.
     func testAutoscrollSpeedRisesSmoothlyWithOvershoot() throws {
         let (_, _, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 8192))
         defer { try? FileManager.default.removeItem(at: url) }
@@ -286,11 +287,10 @@ final class AutoscrollSelectionTests: XCTestCase {
         let visibleHeight = clip.bounds.height
 
         hexView.mouseDown(with: mouse(.leftMouseDown, at: byteCentre(hexView, row: 0, column: 0), window: window))
-        // A SMALL overshoot (20px) deliberately: the exponential ramp's step
-        // for large overshoots (~69px at 100px out) can outrun the old buggy
-        // check, so a large overshoot scrolls on anyway. The freeze the bug
-        // caused is specific to small overshoots — exactly where the status bar
-        // (12px) and a pointer barely past the edge sit.
+        // A SMALL overshoot (20px) deliberately: the bug's freeze was specific
+        // to small overshoots — exactly where the status bar (12px) and a
+        // pointer barely past the edge sit. (A large overshoot masked it
+        // because the old pre-scroll check was outrun by the bigger step.)
         let below = bytePoint(hexView, atY: visibleHeight + 20)
         hexView.mouseDragged(with: mouse(.leftMouseDragged, at: below, window: window))
 
