@@ -76,32 +76,92 @@ public struct DiffBlockIndex: Equatable, Sendable {
 
     /// The first block starting strictly after `offset`.
     public func firstBlock(after offset: UInt64) -> DiffBlock? {
-        blocks.first { $0.range.lowerBound > offset }
+        guard let i = firstBlockStart(after: offset) else { return nil }
+        return blocks[i]
     }
 
     /// The last block ending at or before `offset`.
     public func firstBlock(before offset: UInt64) -> DiffBlock? {
-        blocks.last { $0.range.upperBound <= offset }
+        guard let last = lastBlockEnd(atOrBefore: offset) else { return nil }
+        return blocks[last]
     }
 
     /// The first different block starting strictly after `offset`.
     public func nextDifference(from offset: UInt64) -> DiffBlock? {
-        blocks.first { $0.kind == .different && $0.range.lowerBound > offset }
+        guard let i = firstBlockStart(after: offset) else { return nil }
+        if blocks[i].kind == .different { return blocks[i] }
+        let j = i + 1
+        guard j < blocks.count, blocks[j].kind == .different else { return nil }
+        return blocks[j]
     }
 
     /// The last different block ending at or before `offset`.
     public func previousDifference(from offset: UInt64) -> DiffBlock? {
-        blocks.last { $0.kind == .different && $0.range.upperBound <= offset }
+        guard let last = lastBlockEnd(atOrBefore: offset) else { return nil }
+        if blocks[last].kind == .different { return blocks[last] }
+        let prev = last - 1
+        guard prev >= 0, blocks[prev].kind == .different else { return nil }
+        return blocks[prev]
     }
 
     /// The first same block starting strictly after `offset`.
     public func nextSame(from offset: UInt64) -> DiffBlock? {
-        blocks.first { $0.kind == .same && $0.range.lowerBound > offset }
+        guard let i = firstBlockStart(after: offset) else { return nil }
+        if blocks[i].kind == .same { return blocks[i] }
+        let j = i + 1
+        guard j < blocks.count, blocks[j].kind == .same else { return nil }
+        return blocks[j]
     }
 
     /// The last same block ending at or before `offset`.
     public func previousSame(from offset: UInt64) -> DiffBlock? {
-        blocks.last { $0.kind == .same && $0.range.upperBound <= offset }
+        guard let last = lastBlockEnd(atOrBefore: offset) else { return nil }
+        if blocks[last].kind == .same { return blocks[last] }
+        let prev = last - 1
+        guard prev >= 0, blocks[prev].kind == .same else { return nil }
+        return blocks[prev]
+    }
+
+    // MARK: - Binary-search anchors
+
+    /// The index of the first block starting strictly after `offset`, or nil
+    /// when none does. The blocks are sorted by `lowerBound`, so this is a
+    /// binary search — O(log n), not the O(n) a `first(where:)` scan costs.
+    ///
+    /// The navigation queries used to scan linearly: two very different large
+    /// files produce a block per byte (millions of blocks), and every caret
+    /// move re-queried all four — drag selection froze once indexing finished.
+    private func firstBlockStart(after offset: UInt64) -> Int? {
+        var lo = 0
+        var hi = blocks.count  // [lo, hi) — first index with lowerBound > offset
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if blocks[mid].range.lowerBound <= offset {
+                lo = mid + 1
+            } else {
+                hi = mid
+            }
+        }
+        return lo < blocks.count ? lo : nil
+    }
+
+    /// The index of the last block ending at or before `offset`, or nil when
+    /// none does. Blocks are non-overlapping and tiled, so `upperBound` is
+    /// strictly increasing; a binary search lands on the first block that ends
+    /// after `offset`, and the answer is the block before it.
+    private func lastBlockEnd(atOrBefore offset: UInt64) -> Int? {
+        var lo = 0
+        var hi = blocks.count  // [lo, hi) — first index with upperBound > offset
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if blocks[mid].range.upperBound <= offset {
+                lo = mid + 1
+            } else {
+                hi = mid
+            }
+        }
+        let last = lo - 1
+        return last >= 0 ? last : nil
     }
 
     /// Merges adjacent blocks that share a kind and touch, restoring the

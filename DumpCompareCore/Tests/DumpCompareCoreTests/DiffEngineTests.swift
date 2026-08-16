@@ -171,6 +171,40 @@ final class DiffEngineTests: XCTestCase {
         XCTAssertEqual(index.previousDifference(from: 4)?.range, 2..<4)
     }
 
+    /// Two very different large files produce one block per byte — millions of
+    /// blocks. The navigation queries must stay O(log n) via binary search, not
+    /// re-scan the array from an end: a linear scan here is exactly what froze
+    /// drag selection once indexing completed. Pins the large-array semantics at
+    /// the extremes and the middle.
+    func testNavigationQueriesScaleToManyBlocks() {
+        let count = 200_000
+        var blocks: [DiffBlock] = []
+        blocks.reserveCapacity(count)
+        for i in 0..<count {
+            let kind: DiffBlock.Kind = (i % 2 == 0) ? .same : .different
+            blocks.append(Block(kind: kind, range: UInt64(i)..<UInt64(i + 1)))
+        }
+        let index = DiffBlockIndex(leftSize: UInt64(count), rightSize: UInt64(count), blocks: blocks)
+
+        XCTAssertEqual(index.nextDifference(from: 0)?.range, 1..<2)
+        XCTAssertEqual(index.nextDifference(from: 2)?.range, 3..<4)
+        XCTAssertEqual(index.nextDifference(from: 123_456)?.range, 123_457..<123_458)
+        XCTAssertNil(index.nextDifference(from: UInt64(count) - 1))
+
+        XCTAssertEqual(index.previousDifference(from: 4)?.range, 3..<4)
+        XCTAssertEqual(index.previousDifference(from: UInt64(count))?.range, UInt64(count - 1)..<UInt64(count))
+        XCTAssertEqual(index.previousDifference(from: 2)?.range, 1..<2)
+        XCTAssertNil(index.previousDifference(from: 1))
+
+        XCTAssertEqual(index.nextSame(from: 0)?.range, 2..<3)
+        XCTAssertEqual(index.nextSame(from: 1)?.range, 2..<3)
+        XCTAssertNil(index.nextSame(from: UInt64(count) - 1))
+
+        XCTAssertEqual(index.previousSame(from: 1)?.range, 0..<1)
+        XCTAssertEqual(index.previousSame(from: UInt64(count))?.range, UInt64(count - 2)..<UInt64(count - 1))
+        XCTAssertNil(index.previousSame(from: 0))
+    }
+
     // MARK: - Incremental invalidation
 
     func testApplyOverwriteTurnsSameIntoDifferent() throws {
