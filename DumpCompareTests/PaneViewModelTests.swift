@@ -309,6 +309,69 @@ final class PaneViewModelTests: XCTestCase {
         XCTAssertEqual(sel.end, 3)
     }
 
+    /// Repeated Shift+Right must grow the selection past anchor + 1: the
+    /// moving end is `selection.end`, while the normalized `start` is the fixed
+    /// anchor — moving from `start` froze the selection at one byte.
+    func testShiftRightExtendsForwardByteByByte() throws {
+        let (pane, url) = try openPane(Array(repeating: 0x00, count: 16))
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.moveCaret(to: 5)
+        pane.moveCaret(by: 1, extendSelection: true)
+        pane.moveCaret(by: 1, extendSelection: true)
+        pane.moveCaret(by: 1, extendSelection: true)
+        let sel = pane.hexSelection()
+        XCTAssertEqual(sel.start, 5)
+        XCTAssertEqual(sel.end, 8)
+    }
+
+    /// Shift+Left extends backward: the moving end is the left edge, and
+    /// `moveCaret(by:)` must keep walking it left, not bounce off `start`.
+    func testShiftLeftExtendsBackwardByteByByte() throws {
+        let (pane, url) = try openPane(Array(repeating: 0x00, count: 16))
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.moveCaret(to: 5)
+        pane.moveCaret(by: -1, extendSelection: true)
+        pane.moveCaret(by: -1, extendSelection: true)
+        pane.moveCaret(by: -1, extendSelection: true)
+        let sel = pane.hexSelection()
+        XCTAssertEqual(sel.start, 2)
+        XCTAssertEqual(sel.end, 5)
+    }
+
+    /// Shift+Down extends forward by a whole row per press — the same moving-
+    /// end rule as Shift+Right, at line granularity.
+    func testShiftDownExtendsForwardByOneRowPerPress() throws {
+        let (pane, url) = try openPane(Array(repeating: 0x00, count: 64))
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.moveCaret(to: 3)
+        let row = UInt64(HexLayout.bytesPerRow)
+        pane.moveCaret(by: Int64(row), extendSelection: true)
+        pane.moveCaret(by: Int64(row), extendSelection: true)
+        let sel = pane.hexSelection()
+        XCTAssertEqual(sel.start, 3)
+        XCTAssertEqual(sel.end, 3 + 2 * row)
+    }
+
+    /// Reversing direction must shrink from the moving end, not re-anchor at
+    /// the opposite edge and start growing the other way.
+    func testShiftArrowDirectionFlipShrinksFromMovingEnd() throws {
+        let (pane, url) = try openPane(Array(repeating: 0x00, count: 16))
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.moveCaret(to: 5)
+        pane.moveCaret(by: 1, extendSelection: true)   // (5,6)
+        pane.moveCaret(by: 1, extendSelection: true)   // (5,7)
+        pane.moveCaret(by: -1, extendSelection: true)  // shrink back to (5,6)
+        XCTAssertEqual(pane.hexSelection().start, 5)
+        XCTAssertEqual(pane.hexSelection().end, 6)
+
+        pane.moveCaret(to: 5)
+        pane.moveCaret(by: -1, extendSelection: true)  // (4,5)
+        pane.moveCaret(by: -1, extendSelection: true)  // (3,5)
+        pane.moveCaret(by: 1, extendSelection: true)   // shrink back to (4,5)
+        XCTAssertEqual(pane.hexSelection().start, 4)
+        XCTAssertEqual(pane.hexSelection().end, 5)
+    }
+
     // MARK: - Find
 
     func testFindPatternForward() throws {

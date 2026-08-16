@@ -568,7 +568,18 @@ final class PaneViewModel: HexViewDataSource {
 
     func moveCaret(by delta: Int64, extendSelection: Bool = false) {
         guard let doc = document else { return }
-        let current = doc.selection.start
+        // The caret's live position is the selection's *moving* end, not its
+        // normalized `start`: extending right keeps the anchor (the left edge)
+        // fixed while the end moves, and extending left keeps the right edge
+        // fixed while the start moves. Starting from `selection.start` in both
+        // directions froze a forward extension at anchor+1 — repeated Shift+Right
+        // went nowhere. A bare caret has start == end, so either edge is fine.
+        let current: UInt64
+        if extendSelection, let anchor = selectionAnchor, !doc.selection.isEmpty {
+            current = (anchor == doc.selection.end) ? doc.selection.start : doc.selection.end
+        } else {
+            current = doc.selection.start
+        }
         var target: UInt64
         if delta >= 0 {
             target = min(doc.size, current + UInt64(delta))
