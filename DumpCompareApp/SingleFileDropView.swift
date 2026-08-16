@@ -73,6 +73,11 @@ final class SingleFileDropView: NSView {
     // MARK: - Drag targeting
 
     private func showTargets() {
+        // A transparent view still hit-tests, so the overlays must be truly
+        // hidden while idle — otherwise they swallow every click over the pane
+        // (the hex dump and the Search All results table) in single-file mode.
+        replaceTarget.isHidden = false
+        addTarget.isHidden = false
         replaceTarget.alphaValue = 1
         addTarget.alphaValue = 1
     }
@@ -80,6 +85,8 @@ final class SingleFileDropView: NSView {
     private func hideTargets() {
         replaceTarget.setHighlighted(false)
         addTarget.setHighlighted(false)
+        replaceTarget.isHidden = true
+        addTarget.isHidden = true
         replaceTarget.alphaValue = 0
         addTarget.alphaValue = 0
     }

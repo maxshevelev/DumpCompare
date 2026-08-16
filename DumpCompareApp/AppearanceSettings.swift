@@ -65,6 +65,20 @@ enum AppearanceSettings {
         return .monospacedSystemFont(ofSize: size, weight: .regular)
     }
 
+    /// The bold member of the same family — used where emphasis must match the
+    /// hex font exactly (the Search All results excerpts). A monospaced family
+    /// shares one advance width across weights, so bolding never shifts bytes.
+    static func boldFont(size: CGFloat) -> NSFont {
+        let family = fontFamily
+        guard !family.isEmpty else {
+            return .monospacedSystemFont(ofSize: size, weight: .bold)
+        }
+        if let resolved = NSFontManager.shared.font(withFamily: family, traits: [.boldFontMask], weight: 9, size: size) {
+            return resolved
+        }
+        return .monospacedSystemFont(ofSize: size, weight: .bold)
+    }
+
     /// Width of one monospaced glyph cell — the horizontal pitch shared by the
     /// hex view and the Settings text-decoding preview.
     static func charWidth(for font: NSFont) -> CGFloat {

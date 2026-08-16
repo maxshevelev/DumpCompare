@@ -228,4 +228,118 @@ final class SearchEngineTests: XCTestCase {
         XCTAssertEqual(try findCI([0x41, 0x62, 0x63], in: bytes, caseSensitive: true), 0..<3)
         XCTAssertNil(try findCI([0x61, 0x62, 0x63], in: bytes, caseSensitive: true))
     }
+
+    // MARK: - Find All (§11)
+
+    private func findAll(_ pattern: [UInt8], in bytes: [UInt8], chunkSize: Int = 7,
+                         caseSensitive: Bool = true) throws -> [Range<UInt64>] {
+        try SearchEngine.findAll(pattern: pattern, in: ArrayStorage(bytes),
+                                 caseSensitive: caseSensitive, chunkSize: chunkSize)
+    }
+
+    func testFindAllFindsEveryOccurrence() throws {
+        let bytes: [UInt8] = [0xDE, 0xAD, 0xBE, 0x00, 0xDE, 0xAD, 0xBE, 0xDE, 0xAD]
+        XCTAssertEqual(try findAll([0xDE, 0xAD], in: bytes), [0..<2, 4..<6, 7..<9])
+        XCTAssertEqual(try findAll([0xBE], in: bytes), [2..<3, 6..<7])
+    }
+
+    func testFindAllSingleByteEveryByte() throws {
+        let bytes: [UInt8] = [0xAA, 0xAA, 0xAA]
+        XCTAssertEqual(try findAll([0xAA], in: bytes), [0..<1, 1..<2, 2..<3])
+    }
+
+    /// Consecutive matches never overlap: after a match the scan resumes just
+    /// past its end, so "AAAAAA" with pattern "AAA" yields 0..<3 and 3..<6 —
+    /// the overlapping starts at 1 and 2 are skipped.
+    func testFindAllNonOverlapping() throws {
+        let bytes: [UInt8] = [0x41, 0x41, 0x41, 0x41, 0x41, 0x41]  // "AAAAAA"
+        XCTAssertEqual(try findAll([0x41, 0x41, 0x41], in: bytes), [0..<3, 3..<6])
+    }
+
+    func testFindAllAcrossChunkBoundary() throws {
+        // Chunk size 3; the match straddles offset 2..<5 (boundary at 3).
+        let bytes: [UInt8] = [0x00, 0x01, 0xAA, 0xBB, 0xCC, 0x00, 0x00, 0x00]
+        XCTAssertEqual(try findAll([0xAA, 0xBB, 0xCC], in: bytes, chunkSize: 3), [2..<5])
+    }
+
+    /// Matches spanning several chunk boundaries, some ending exactly at a
+    /// boundary — the overlap must neither drop nor double-count a match.
+    func testFindAllAcrossMultipleChunkBoundaries() throws {
+        let bytes: [UInt8] = [0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB, 0xAA, 0xBB]
+        XCTAssertEqual(try findAll([0xAA, 0xBB], in: bytes, chunkSize: 3),
+                       [0..<2, 2..<4, 4..<6, 6..<8])
+    }
+
+    /// A match starting exactly at a chunk boundary is found once, by the
+    /// window that owns the fresh portion the boundary opens — never twice.
+    func testFindAllMatchAtChunkBoundaryIsCountedOnce() throws {
+        let bytes: [UInt8] = [0x00, 0x00, 0x00, 0x00, 0xAA, 0xBB, 0x00]
+        XCTAssertEqual(try findAll([0xAA, 0xBB], in: bytes, chunkSize: 4), [4..<6])
+    }
+
+    func testFindAllNoMatch() throws {
+        let bytes: [UInt8] = [0x00, 0x01, 0x02]
+        XCTAssertEqual(try findAll([0xAA, 0xBB], in: bytes), [])
+    }
+
+    func testFindAllPatternLongerThanFile() throws {
+        XCTAssertEqual(try findAll([0x00, 0x01, 0x02, 0x03], in: [0x00, 0x01]), [])
+    }
+
+    func testFindAllMatchAtEOF() throws {
+        let bytes: [UInt8] = [0x00, 0x01, 0xAA, 0xBB]
+        XCTAssertEqual(try findAll([0xAA, 0xBB], in: bytes), [2..<4])
+    }
+
+    func testFindAllCaseInsensitive() throws {
+        let bytes = Array("Hi hi HI".utf8)  // "Hi" at 0, "hi" at 3, "HI" at 6
+        XCTAssertEqual(try findAll(Array("hi".utf8), in: bytes, caseSensitive: false),
+                       [0..<2, 3..<5, 6..<8])
+        // Case-sensitive finds only the exact lowercase pair.
+        XCTAssertEqual(try findAll(Array("hi".utf8), in: bytes, caseSensitive: true), [3..<5])
+    }
+
+    func testFindAllAcrossChunkBoundaryCaseInsensitive() throws {
+        // Chunk size 3; "AbC" straddles offsets 2..<5 and matches "abc".
+        var bytes = [UInt8](repeating: 0, count: 8)
+        bytes.replaceSubrange(2..<5, with: Array("AbC".utf8))
+        XCTAssertEqual(try findAll(Array("abc".utf8), in: bytes, chunkSize: 3, caseSensitive: false), [2..<5])
+    }
+
+    func testFindAllUsesCurrentUnsavedContent() throws {
+        let base = ArrayStorage([0xAA, 0x00, 0xAA, 0x00])
+        let storage = EditOverlayStorage(base: base)
+        try storage.overwrite(range: 1..<2, with: [0xAA])
+        // After the edit the file is AA AA AA 00: every single-byte match at
+        // 0, 1, and 2 is reported (adjacent, never overlapping).
+        XCTAssertEqual(try SearchEngine.findAll(pattern: [0xAA], in: storage),
+                       [0..<1, 1..<2, 2..<3])
+    }
+
+    func testFindAllCancellationThrows() throws {
+        XCTAssertThrowsError(try SearchEngine.findAll(
+            pattern: [0xAA], in: ArrayStorage([UInt8](repeating: 0, count: 32)),
+            chunkSize: 4,
+            shouldCancel: { true }
+        )) { error in
+            XCTAssertTrue(error is CancellationError)
+        }
+    }
+
+    func testFindAllReportsProgress() throws {
+        var last: Double = -1
+        let result = try SearchEngine.findAll(
+            pattern: [0xFF], in: ArrayStorage([UInt8](repeating: 0, count: 16)),
+            chunkSize: 4,
+            progress: { last = $0 }
+        )
+        XCTAssertEqual(result, [])
+        XCTAssertEqual(last, 1.0)
+    }
+
+    func testFindAllEmptyPatternThrows() {
+        XCTAssertThrowsError(try SearchEngine.findAll(pattern: [], in: ArrayStorage([1, 2, 3]))) { error in
+            XCTAssertEqual(error as? SearchError, .emptyPattern)
+        }
+    }
 }

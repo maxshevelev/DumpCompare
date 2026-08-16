@@ -40,6 +40,10 @@ final class FindFlowTests: XCTestCase {
     }
 
     /// A real controller in a real window with one file open (single-file mode).
+    /// The test host resizes the window to the pane's fitting size (which, with
+    /// the hex dump's content-sized scroll view, would leave the results-panel
+    /// split with zero height); pin a real content height so the layout has
+    /// room for the dump and the panel.
     private func makeController(_ bytes: [UInt8]) throws -> (MainViewController, NSWindow, URL) {
         let url = try tempFile(bytes)
         let controller = MainViewController()
@@ -47,8 +51,13 @@ final class FindFlowTests: XCTestCase {
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.contentViewController = controller
         window.makeKeyAndOrderFront(nil)
+        // Assigning contentViewController resizes the window to the controller's
+        // (empty-mode) view's fitting size; re-affirm a real size so the pane's
+        // first layout happens at its final height, not a shrunken one.
+        window.setContentSize(NSSize(width: 800, height: 600))
         try controller.windowModel.pane1.open(url: url)
         controller.apply(mode: .singleFile)
+        window.contentView?.heightAnchor.constraint(greaterThanOrEqualToConstant: 600).isActive = true
         window.layoutIfNeeded()
         return (controller, window, url)
     }
@@ -136,6 +145,34 @@ final class FindFlowTests: XCTestCase {
     /// "No match found." in the pane's status bar).
     private func hasStatus(_ text: String, in window: NSWindow) -> Bool {
         descendants(of: window.contentView!, NSTextField.self).contains { $0.stringValue == text }
+    }
+
+    /// The Search All button in the find bar.
+    private func findAllButton(_ window: NSWindow) throws -> NSButton {
+        let bar = try findBar(window)
+        return try XCTUnwrap(descendants(of: bar, NSButton.self).first { $0.accessibilityLabel() == "Find All" },
+                             "Find All button")
+    }
+
+    /// The single file pane's Search All results panel.
+    private func resultsView(_ window: NSWindow) throws -> SearchResultsView {
+        let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
+        return paneView.searchResultsView
+    }
+
+    /// Runs a Search All for `pattern` and waits for the results panel to
+    /// appear.
+    @discardableResult
+    private func runSearchAll(_ pattern: String, in window: NSWindow) throws -> SearchResultsView {
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = pattern
+        try findAllButton(window).performClick(nil)
+        let view = try resultsView(window)
+        // The reveal and the divider placement are deferred by the split view,
+        // so wait for the panel to actually occupy its height.
+        XCTAssertTrue(pumpUntil(3) { !view.isHidden && view.frame.height > 1 },
+                      "Search All must show the results panel")
+        return view
     }
 
     // MARK: - Flow
@@ -668,6 +705,235 @@ final class FindFlowTests: XCTestCase {
         XCTAssertTrue(cancelled, "the × button must route to the operation's cancel action")
     }
 
+    // MARK: - Search All (§11)
+
+    /// The results panel is hidden by default — it only appears for a Search
+    /// All.
+    func testSearchResultsPanelHiddenByDefault() throws {
+        let (controller, window, url) = try makeController([0x41, 0x42, 0x43])
+        defer { cleanup(controller, url) }
+        XCTAssertTrue(try resultsView(window).isHidden,
+                      "the results panel must be hidden until a Search All runs")
+    }
+
+    /// Search All lists every occurrence: the panel's header shows the match
+    /// count and the table holds one row per match, in file order.
+    func testSearchAllShowsEveryMatchInPanel() throws {
+        // "DE AD" at offsets 0, 6, 12, 18.
+        let bytes: [UInt8] = [0xDE, 0xAD, 0x00, 0x00, 0x00, 0x00, 0xDE, 0xAD, 0x00, 0x00,
+                              0x00, 0x00, 0xDE, 0xAD, 0x00, 0x00, 0x00, 0x00, 0xDE, 0xAD]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let view = try runSearchAll("DE AD", in: window)
+
+        XCTAssertEqual(view.tableView.numberOfRows, 4,
+                       "one row per occurrence")
+        let header = try XCTUnwrap(descendants(of: view, NSTextField.self).first {
+            $0.stringValue.hasPrefix("Search results")
+        })
+        XCTAssertEqual(header.stringValue, "Search results (4)")
+    }
+
+    /// The found bytes are drawn bold in each row's hex and text excerpts —
+    /// the emphasis that marks the match inside its context window.
+    func testSearchAllBoldsTheMatchInExcerpts() throws {
+        let bytes: [UInt8] = [0xDE, 0xAD, 0x00, 0x00, 0x00, 0x00]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let view = try runSearchAll("DE AD", in: window)
+        XCTAssertEqual(view.tableView.numberOfRows, 1)
+
+        func boldRunCount(in columnID: String) throws -> Int {
+            let column = try XCTUnwrap(view.tableView.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier(columnID)))
+            let columnIndex = view.tableView.column(withIdentifier: column.identifier)
+            let cell = try XCTUnwrap(view.tableView.view(atColumn: columnIndex, row: 0,
+                                                         makeIfNecessary: true) as? SearchResultCellView)
+            let attr = cell.attributedText
+            var count = 0
+            attr.enumerateAttribute(.font, in: NSRange(location: 0, length: attr.length)) { value, _, _ in
+                if let font = value as? NSFont, font.fontDescriptor.symbolicTraits.contains(.bold) {
+                    count += 1
+                }
+            }
+            return count
+        }
+
+        XCTAssertGreaterThan(try boldRunCount(in: "hex"), 0,
+                             "the matched bytes must be bold in the hex excerpt")
+        XCTAssertGreaterThan(try boldRunCount(in: "text"), 0,
+                             "the matched bytes must be bold in the text excerpt")
+    }
+
+    /// Clicking a result row positions the caret at that match and selects it —
+    /// the same behaviour as a single Find result.
+    func testSearchAllRowClickSelectsMatch() throws {
+        // Matches at 0, 4, 8.
+        let bytes: [UInt8] = [0xDE, 0xAD, 0x00, 0x00, 0xDE, 0xAD, 0x00, 0x00, 0xDE, 0xAD]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let view = try runSearchAll("DE AD", in: window)
+        XCTAssertEqual(view.tableView.numberOfRows, 3)
+
+        // Selecting row 1 and firing the table's action mirrors a click: the
+        // action handler (`rowClicked`) falls back to the selected row, reports
+        // the match's range, and the pane selects it (§11). NSTableView's own
+        // click-to-select needs a physically pressed button, so a synthetic
+        // mouse event can't drive it — selection + action is the real path
+        // behind the handler.
+        let tableView = view.tableView
+        tableView.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        tableView.sendAction(tableView.action, to: tableView.target)
+
+        XCTAssertEqual(controller.windowModel.pane1.hexSelection().start, 4)
+        XCTAssertEqual(controller.windowModel.pane1.hexSelection().end, 6)
+    }
+
+    /// A Search All with no occurrences shows an empty panel with "(0)" — the
+    /// panel always reports the count.
+    func testSearchAllNoMatchesShowsZeroCount() throws {
+        let (controller, window, url) = try makeController([0x41, 0x42, 0x43])
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let view = try runSearchAll("FF FF FF", in: window)
+
+        XCTAssertEqual(view.tableView.numberOfRows, 0)
+        let header = try XCTUnwrap(descendants(of: view, NSTextField.self).first {
+            $0.stringValue.hasPrefix("Search results")
+        })
+        XCTAssertEqual(header.stringValue, "Search results (0)")
+    }
+
+    /// The panel's × hides it again.
+    func testSearchAllCloseButtonHidesPanel() throws {
+        let (controller, window, url) = try makeController([0xDE, 0xAD])
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let view = try runSearchAll("DE AD", in: window)
+        XCTAssertFalse(view.isHidden)
+
+        let closeButton = try XCTUnwrap(descendants(of: view, NSButton.self).first {
+            $0.accessibilityLabel() == "Close search results"
+        })
+        closeButton.performClick(nil)
+        XCTAssertTrue(pumpUntil(2) { view.frame.height < 1 },
+                      "the × must collapse the results panel to zero height")
+    }
+
+    /// The results panel is a native NSSplitView pane: shown after Search All
+    /// as an expanded pane, collapsed when hidden (the ×) so the dump reclaims
+    /// the full height.
+    func testSearchResultsPanelShowsAndCollapses() throws {
+        let (controller, window, url) = try makeController([0xDE, 0xAD, 0x00, 0x00, 0x00, 0x00])
+        defer {
+            cleanup(controller, url)
+            UserDefaults.standard.removeObject(forKey: FilePaneView.searchResultsHeightDefaultsKey)
+        }
+
+        controller.findPattern()
+        let view = try runSearchAll("DE AD", in: window)
+        let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
+        let split = paneView.searchResultsSplit
+
+        XCTAssertFalse(view.isHidden)
+        window.layoutIfNeeded()
+        XCTAssertFalse(split.isSubviewCollapsed(view),
+                       "the panel must be an expanded pane while results are shown")
+        XCTAssertEqual(view.frame.height, expectedPanelHeight(SearchResultsView.panelHeight, split: split),
+                       accuracy: 0.5, "the panel opens at its default height")
+
+        let closeButton = try XCTUnwrap(descendants(of: view, NSButton.self).first {
+            $0.accessibilityLabel() == "Close search results"
+        })
+        closeButton.performClick(nil)
+        XCTAssertTrue(pumpUntil(2) { view.frame.height < 1 },
+                      "hiding the panel must collapse it to zero height")
+        window.layoutIfNeeded()
+        // The divider is pinned to the very bottom, so the dump fills the pane
+        // minus the divider's own thickness.
+        XCTAssertEqual(paneView.scrollView.frame.height,
+                       split.bounds.height - split.dividerThickness, accuracy: 0.5,
+                       "the dump must reclaim the panel's height")
+    }
+
+    /// Setting the split view's panel height moves the divider so the panel
+    /// takes exactly that much — the mechanism a native drag drives.
+    func testSearchResultsPanelResizesToRequestedHeight() throws {
+        let (controller, window, url) = try makeController([0xDE, 0xAD, 0x00, 0x00, 0x00, 0x00])
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let view = try runSearchAll("DE AD", in: window)
+        let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
+        let split = paneView.searchResultsSplit
+
+        split.setPanelHeight(120)
+        window.layoutIfNeeded()
+        XCTAssertEqual(view.frame.height, expectedPanelHeight(120, split: split), accuracy: 0.5,
+                       "the panel height must take effect")
+    }
+
+    /// The user's chosen height is restored on the next Search All.
+    func testSearchResultsPanelRestoresPersistedHeight() throws {
+        let (controller, window, url) = try makeController([0xDE, 0xAD, 0x00, 0x00, 0x00, 0x00])
+        defer {
+            cleanup(controller, url)
+            UserDefaults.standard.removeObject(forKey: FilePaneView.searchResultsHeightDefaultsKey)
+        }
+        UserDefaults.standard.set(120.0, forKey: FilePaneView.searchResultsHeightDefaultsKey)
+
+        controller.findPattern()
+        let view = try runSearchAll("DE AD", in: window)
+        let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
+        window.layoutIfNeeded()
+        XCTAssertEqual(view.frame.height, expectedPanelHeight(120, split: paneView.searchResultsSplit),
+                       accuracy: 0.5, "Search All must restore the persisted panel height")
+    }
+
+    /// The native divider clamps: the panel can't shrink below its minimum nor
+    /// grow past the point that would squeeze the hex dump away. The clamp is
+    /// enforced by the split delegate when `setPosition` (or a drag) targets an
+    /// out-of-range divider — `setPanelHeight` asks for the raw height and the
+    /// split clamps it.
+    func testSearchResultsPanelDividerClamps() throws {
+        let (controller, window, url) = try makeController([0xDE, 0xAD])
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let view = try runSearchAll("DE AD", in: window)
+        let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
+        let split = paneView.searchResultsSplit
+        window.layoutIfNeeded()
+
+        // Asking for less than the panel's minimum clamps up to the minimum.
+        split.setPanelHeight(10)
+        window.layoutIfNeeded()
+        XCTAssertEqual(view.frame.height, FilePaneView.minSearchResultsHeight, accuracy: 0.5,
+                       "the divider must keep the results panel at its minimum")
+
+        // Asking for more than the pane's room clamps down so the hex dump
+        // keeps its minimum.
+        split.setPanelHeight(10_000)
+        window.layoutIfNeeded()
+        XCTAssertEqual(paneView.scrollView.frame.height, FilePaneView.minHexHeightInPane, accuracy: 0.5,
+                       "the divider must keep the hex dump at its minimum")
+    }
+
+    /// The height a requested panel height resolves to after the split view
+    /// clamps it to the pane's room, so assertions hold at any pane size.
+    private func expectedPanelHeight(_ stored: CGFloat, split: NSSplitView) -> CGFloat {
+        min(max(stored, FilePaneView.minSearchResultsHeight),
+            max(FilePaneView.minSearchResultsHeight,
+                split.bounds.height - FilePaneView.minHexHeightInPane - split.dividerThickness))
+    }
+
     /// A search that must scan the whole file (2 GiB of zeros, pattern never
     /// matches) must keep the main thread responsive and show the Searching…
     /// strip with live progress — the same behaviour as indexing. This guards
@@ -718,10 +984,10 @@ final class FindFlowTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(scheduledAt), 1.5,
                           "a long search must not stall the main thread")
 
-        // The scan completes: the strip hides and the no-match message shows.
+        // The scan completes: the no-match message shows and the strip hides.
         XCTAssertTrue(pumpUntil(30) { self.hasStatus("No match found.", in: window) },
                       "the full-file scan must complete")
-        XCTAssertTrue(paneView.operationView.isHidden,
+        XCTAssertTrue(pumpUntil(5) { paneView.operationView.isHidden },
                       "the strip must hide once the search finishes")
     }
 

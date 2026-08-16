@@ -57,10 +57,9 @@ final class ActivePaneTests: XCTestCase {
         return (cv, window, url1, url2)
     }
 
-    /// The real header view of a pane (first row of its vertical stack).
+    /// The real header view of a pane (its topmost direct subview).
     private func header(of pane: FilePaneView) throws -> PaneHeaderView {
-        let stack = try XCTUnwrap(pane.subviews.compactMap({ $0 as? NSStackView }).first)
-        return try XCTUnwrap(stack.arrangedSubviews.first as? PaneHeaderView)
+        try XCTUnwrap(pane.subviews.compactMap({ $0 as? PaneHeaderView }).first)
     }
 
     private func hexView(of pane: FilePaneView) throws -> HexView {

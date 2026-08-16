@@ -77,6 +77,9 @@ final class MainViewController: NSViewController {
         findBar.onSearch = { [weak self] pattern, direction, caseSensitive in
             self?.runSearch(pattern: pattern, direction: direction, caseSensitive: caseSensitive)
         }
+        findBar.onSearchAll = { [weak self] pattern, caseSensitive in
+            self?.runSearchAll(pattern: pattern, caseSensitive: caseSensitive)
+        }
         findBar.onError = { [weak self] message in
             self?.showFindMessage(message)
         }
@@ -1307,6 +1310,64 @@ final class MainViewController: NSViewController {
             findBar.focusPatternField()
         }
         return true
+    }
+
+    /// Launches a Search All from the find bar (§11): every occurrence of the
+    /// pattern is collected in the background and shown as a results table in
+    /// the active pane. Runs as a `BackgroundOperation` like a single search, so
+    /// the strip (name + progress + ×) appears in the status bar and it can be
+    /// cancelled (§14.4).
+    private func runSearchAll(pattern: SearchPattern, caseSensitive: Bool) {
+        findTask?.cancel()
+        findOperation?.finish()
+        let operation = BackgroundOperation(name: "Finding all…") { [weak self] in
+            self?.findTask?.cancel()
+        }
+        findOperation = operation
+        activeFilePane?.beginOperation(operation)
+        findTask = Task { [weak self] in
+            guard let self else { return }
+            let (pane, matches) = await self.performFindAll(pattern: pattern, caseSensitive: caseSensitive,
+                                                            operation: operation)
+            operation.finish()
+            guard !Task.isCancelled else { return }
+            self.showSearchResults(matches: matches, pattern: pattern, in: pane)
+        }
+    }
+
+    /// Runs a Search All off the main thread over the pane active when the
+    /// search started, returning that pane (so the results land in the right
+    /// hosting view even if the active pane changed while scanning) and every
+    /// non-overlapping match in file order (§13.8, §14.4). `operation` receives
+    /// the scan's progress so the status bar advances.
+    private func performFindAll(pattern: SearchPattern, caseSensitive: Bool,
+                                operation: BackgroundOperation) async -> (pane: PaneViewModel, matches: [Range<UInt64>]) {
+        let pane = activePane
+        guard pane.isOpen, let storage = pane.document?.storage else { return (pane, []) }
+        let background = Task.detached(priority: .userInitiated) {
+            do {
+                return try SearchEngine.findAll(pattern: pattern.bytes, in: storage,
+                                                caseSensitive: caseSensitive,
+                                                shouldCancel: { Task.isCancelled },
+                                                progress: { operation.report($0) })
+            } catch is CancellationError {
+                return []
+            } catch {
+                return []
+            }
+        }
+        let matches = await withTaskCancellationHandler(
+            operation: { await background.value },
+            onCancel: { background.cancel() }
+        )
+        return (pane, matches)
+    }
+
+    /// Shows (or refreshes) the Search All results panel in the pane hosting
+    /// `pane` — the one that was active when the search started (§11).
+    private func showSearchResults(matches: [Range<UInt64>], pattern: SearchPattern, in pane: PaneViewModel) {
+        guard let paneView = filePaneView(for: pane) else { return }
+        paneView.showSearchResults(matches: matches)
     }
 
     /// Beeps and flashes `message` in the active pane's status bar (used for

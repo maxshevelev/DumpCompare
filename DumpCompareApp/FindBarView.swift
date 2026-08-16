@@ -4,7 +4,8 @@ import DumpCompareCore
 /// The non-modal Find bar shown at the top of the window (§11), modelled after
 /// TextEdit: a `Find` label, an editable pattern combo that stretches to fill
 /// the remaining width, the encoding popup, a case-sensitive "Aa" toggle, joined
-/// `<` `>` navigation, and a `Done` button — all on one line.
+/// `<` `>` navigation, a Search All button that lists every occurrence in the
+/// active pane's results panel, and a `Done` button — all on one line.
 ///
 /// - Enter in the pattern field runs Find Next; Esc or `Done` closes the bar.
 /// - The bar stays open after a search — only the selection moves.
@@ -19,6 +20,9 @@ final class FindBarView: NSView {
     var onError: ((String) -> Void)?
     /// Fired when the user closes the bar (Done or Esc).
     var onClose: (() -> Void)?
+    /// Fired when the user runs Search All (§11). The pattern is already parsed
+    /// and validated; the second argument is the case toggle.
+    var onSearchAll: ((SearchPattern, Bool) -> Void)?
 
     /// UserDefaults key for the persisted case-sensitive toggle.
     static let caseSensitiveKey = "FindCaseSensitive"
@@ -40,6 +44,9 @@ final class FindBarView: NSView {
     private let nextButton = NSButton()
     private let divider = NSView()
     private let doneButton = NSButton()
+    /// The Search All button: lists every occurrence of the pattern in the
+    /// active pane's results panel (§11).
+    private let findAllButton = NSButton()
 
     /// Whether this search matches bytes exactly. Hex patterns are ALWAYS
     /// exact: the toggle is disabled for hex, but its state (off by default =
@@ -80,6 +87,7 @@ final class FindBarView: NSView {
         setUpEncodingPopup()
         setUpCaseButton()
         setUpNavGroup()
+        setUpFindAllButton()
         setUpDoneButton()
 
         let stack = NSStackView()
@@ -95,6 +103,7 @@ final class FindBarView: NSView {
         stack.addArrangedSubview(encodingPopup)
         stack.addArrangedSubview(caseButton)
         stack.addArrangedSubview(navGroup)
+        stack.addArrangedSubview(findAllButton)
         stack.addArrangedSubview(doneButton)
         addSubview(stack)
 
@@ -123,7 +132,7 @@ final class FindBarView: NSView {
 
         // Give everything except the pattern a high hugging priority so only it
         // expands when the window is resized (§11).
-        for view in [findLabel, encodingPopup, caseButton, navGroup, doneButton] {
+        for view in [findLabel, encodingPopup, caseButton, navGroup, findAllButton, doneButton] {
             view.setContentHuggingPriority(.defaultHigh, for: .horizontal)
             view.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
         }
@@ -240,6 +249,18 @@ final class FindBarView: NSView {
         ])
     }
 
+    private func setUpFindAllButton() {
+        findAllButton.setButtonType(.momentaryChange)
+        findAllButton.bezelStyle = .texturedRounded
+        findAllButton.imagePosition = .imageOnly
+        findAllButton.image = NSImage(systemSymbolName: "list.bullet",
+                                      accessibilityDescription: "Find All")
+        findAllButton.setAccessibilityLabel("Find All")
+        findAllButton.toolTip = "Find All"
+        findAllButton.target = self
+        findAllButton.action = #selector(findAllPressed)
+    }
+
     private func setUpDoneButton() {
         doneButton.title = "Done"
         doneButton.target = self
@@ -346,6 +367,10 @@ final class FindBarView: NSView {
         onClose?()
     }
 
+    @objc private func findAllPressed() {
+        runSearchAll()
+    }
+
     /// Esc can also reach the bar through the responder chain (e.g. when the
     /// combo is mid-edit and the field editor consumes the key equivalent).
     override func cancelOperation(_ sender: Any?) {
@@ -362,6 +387,16 @@ final class FindBarView: NSView {
                                 caseSensitive: isCaseSensitive)
         refreshHistoryItems()
         onSearch?(pattern, direction, isCaseSensitive)
+    }
+
+    /// Runs a Search All: the same parse + history bookkeeping as a plain
+    /// search, but every occurrence is collected instead of moving the caret.
+    private func runSearchAll() {
+        guard let pattern = parsedPattern() else { return }  // onError fired inside
+        FindHistoryStore.record(pattern: patternCombo.stringValue, encoding: pattern.encoding,
+                                caseSensitive: isCaseSensitive)
+        refreshHistoryItems()
+        onSearchAll?(pattern, isCaseSensitive)
     }
 
     private func parsedPattern() -> SearchPattern? {

@@ -30,8 +30,7 @@ final class HexColumnHeaderTests: XCTestCase {
         let viewModel = PaneViewModel()
         try viewModel.open(url: url)
         let pane = FilePaneView(viewModel: viewModel)
-        let stack = try XCTUnwrap(pane.subviews.compactMap { $0 as? NSStackView }.first)
-        let header = try XCTUnwrap(stack.arrangedSubviews[1] as? HexColumnHeaderView)
+        let header = try XCTUnwrap(pane.subviews.compactMap { $0 as? HexColumnHeaderView }.first)
         let hexView = try XCTUnwrap(pane.scrollView.documentView as? HexView)
         // A window-less pane has a zero-size clip view, so refresh()'s
         // `revealCaret` → `scrollToVisible` nudges the clip origin to the caret
@@ -84,17 +83,20 @@ final class HexColumnHeaderTests: XCTestCase {
         XCTAssertEqual(before.ascii.minX - after.ascii.minX, 47, accuracy: 0.01)
     }
 
-    /// The header is one hex row tall plus vertical padding and sits in the pane
-    /// stack above the scroll view, so it is pinned (never scrolls vertically)
+    /// The header is one hex row tall plus vertical padding and sits pinned above
+    /// the scroll view (a direct subview of the pane, never scrolls vertically)
     /// and counts toward the window's zoom-to-fit height.
     func testHeaderIsAPinnedStripAboveTheScrollViewCountingTowardFitHeight() throws {
         let (pane, header, hexView, url) = try makePane([UInt8](repeating: 0x55, count: 64))
         defer { try? FileManager.default.removeItem(at: url) }
-        let stack = try XCTUnwrap(pane.subviews.compactMap { $0 as? NSStackView }.first)
+        let subviews = pane.subviews
 
-        XCTAssertTrue(stack.arrangedSubviews[0] is PaneHeaderView)
-        XCTAssertTrue(stack.arrangedSubviews[1] is HexColumnHeaderView)
-        XCTAssertTrue(stack.arrangedSubviews[2] === pane.scrollView)
+        XCTAssertTrue(subviews.contains { $0 is PaneHeaderView })
+        XCTAssertTrue(subviews.contains { $0 is HexColumnHeaderView })
+        // The scroll view now shares the pane with the Search All results panel
+        // through a split view (§11), which is the pane's arranged dump pane.
+        let split = try XCTUnwrap(subviews.compactMap { $0 as? NSSplitView }.first)
+        XCTAssertTrue(split.arrangedSubviews[0] === pane.scrollView)
 
         XCTAssertEqual(header.headerHeight,
                        hexView.hexLayout.rowHeight + 2 * HexColumnHeaderView.verticalPadding, accuracy: 0.01)

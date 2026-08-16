@@ -111,6 +111,80 @@ public enum SearchEngine {
         }
     }
 
+    /// Finds every non-overlapping occurrence of `pattern` in `storage`, in
+    /// file order (the Search All feature, §11).
+    ///
+    /// Shares `find`'s byte-domain semantics — case-insensitive ASCII folding
+    /// for text encodings, exact bytes for hex — and its chunked scanning: each
+    /// window is `chunkSize + patternLength - 1` bytes so a match crossing a
+    /// boundary is still found, and only matches starting in a window's fresh
+    /// portion are recorded (a match starting in the overlap is found by the
+    /// next window, never counted twice). Consecutive matches never overlap: the
+    /// scan resumes just past each match's end, exactly as a sequence of
+    /// Find Next searches would land.
+    ///
+    /// Reports `progress` (0…1) as chunks are covered and throws
+    /// `CancellationError` when `shouldCancel` returns true between chunks, so a
+    /// Search All over a large file runs in the background like a single search.
+    /// Returns an empty array when the pattern cannot fit or never occurs.
+    public static func findAll(
+        pattern: [UInt8],
+        in storage: ByteStorage,
+        caseSensitive: Bool = true,
+        chunkSize: Int = defaultChunkSize,
+        shouldCancel: () -> Bool = { false },
+        progress: (Double) -> Void = { _ in }
+    ) throws -> [Range<UInt64>] {
+        guard !pattern.isEmpty else { throw SearchError.emptyPattern }
+        let patternLength = UInt64(pattern.count)
+        let size = storage.size
+        guard patternLength <= size else { return [] }
+
+        let patternData = caseSensitive ? Data(pattern) : Data(pattern.map(Self.foldByte))
+        let windowLength = UInt64(chunkSize) + patternLength - 1
+        var matches: [Range<UInt64>] = []
+        // The first offset at which the next match may start. Carried across
+        // windows so a match found in one window's overlap is not re-reported by
+        // the next window (non-overlapping matches, §11).
+        var nextSearchStart: UInt64 = 0
+        var cursor: UInt64 = 0
+        var processed: UInt64 = 0
+
+        while cursor < size {
+            if shouldCancel() { throw CancellationError() }
+            let length = Int(min(windowLength, size - cursor))
+            let bytes = try storage.read(at: cursor, length: length)
+            guard !bytes.isEmpty else { break }
+            let data = caseSensitive ? Data(bytes) : Data(bytes.map(Self.foldByte))
+
+            // Record a match only while it starts in the fresh portion
+            // `[cursor, cursor + chunkSize)`; one starting in the overlap is
+            // found again by the next window, and recording it here would count
+            // it twice. Resuming just past each match keeps the results
+            // non-overlapping. `nextSearchStart` may already lie before this
+            // window's cursor (a match's tail), so clamp the skip to 0.
+            var searchStart = nextSearchStart > cursor ? Int(nextSearchStart - cursor) : 0
+            while searchStart < chunkSize, searchStart < length {
+                // `Data` slices keep their parent's indices, so a match's
+                // `lowerBound` is already a global index — no offset by
+                // `searchStart` (the search starts at `searchStart`).
+                guard let match = data[searchStart..<length].range(of: patternData) else { break }
+                let windowIndex = match.lowerBound
+                let start = cursor + UInt64(windowIndex)
+                guard start < cursor + UInt64(chunkSize) else { break }  // starts in the overlap
+                matches.append(start..<(start + patternLength))
+                nextSearchStart = start + patternLength
+                searchStart = windowIndex + patternData.count
+            }
+
+            cursor += UInt64(chunkSize)
+            processed += UInt64(bytes.count)
+            if size > 0 { progress(min(Double(processed) / Double(size), 1)) }
+        }
+        if size > 0 { progress(1) }
+        return matches
+    }
+
     // MARK: - Parsing
 
     /// Parses a hexadecimal byte sequence. Whitespace between bytes is ignored,
