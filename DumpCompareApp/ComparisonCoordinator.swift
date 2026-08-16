@@ -49,6 +49,12 @@ final class ComparisonCoordinator {
     /// Fired from `start()` with the new build operation; the view presents it
     /// in the active pane's status bar.
     var onOperation: ((BackgroundOperation) -> Void)?
+    /// Fired whenever the availability of the index changes — build starts,
+    /// completes, is cancelled, stops, or edits are applied — so consumers can
+    /// re-evaluate whether diff navigation is possible (§10.3). A single hook
+    /// covers transitions that `onIndexChanged`/`onOperation` don't (cancel,
+    /// stop, build failure).
+    var onStateChanged: (() -> Void)?
 
     /// Bumped on every start/rebuild/stop so stale background results are dropped.
     private var generation = 0
@@ -84,6 +90,7 @@ final class ComparisonCoordinator {
         }
         operation = op
         onOperation?(op)
+        onStateChanged?()
 
         let gen = generation
         Task {
@@ -113,6 +120,7 @@ final class ComparisonCoordinator {
         applying = false
         isBuilding = false
         endBuildOperation()
+        onStateChanged?()
         Task { await builder.cancel() }
     }
 
@@ -123,6 +131,7 @@ final class ComparisonCoordinator {
         generation += 1
         isBuilding = false
         endBuildOperation()
+        onStateChanged?()
         Task { await builder.cancel() }
     }
 
@@ -168,6 +177,7 @@ final class ComparisonCoordinator {
             guard gen == self.generation else { return }
             self.index = working
             self.applying = false
+            self.onStateChanged?()
             if !self.queuedEdits.isEmpty {
                 self.drainQueue()
             } else {
@@ -222,6 +232,7 @@ final class ComparisonCoordinator {
             self.index = built
             self.isBuilding = false
             self.endBuildOperation()
+            self.onStateChanged?()
             if !self.pendingEdits.isEmpty {
                 self.queuedEdits = self.pendingEdits + self.queuedEdits
                 self.pendingEdits.removeAll()
@@ -234,11 +245,13 @@ final class ComparisonCoordinator {
             guard gen == self.generation else { return }
             self.isBuilding = false
             self.endBuildOperation()
+            self.onStateChanged?()
         } catch {
             progressTask.cancel()
             guard gen == self.generation else { return }
             self.isBuilding = false
             self.endBuildOperation()
+            self.onStateChanged?()
             self.onError?(error)
         }
     }

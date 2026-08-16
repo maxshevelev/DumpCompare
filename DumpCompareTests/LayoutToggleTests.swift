@@ -83,10 +83,16 @@ final class LayoutToggleTests: XCTestCase {
         }
         let sv = cv.splitView
 
+        // The panes fill the window's content area: window height minus the
+        // title bar and the unified toolbar, which occupies the title bar.
+        // Read it from the window rather than hard-coding, so a toolbar height
+        // change doesn't silently break the geometry assertions below (§10.3).
+        let contentHeight = window.contentLayoutRect.height
+
         // Vertical: side-by-side, full height, window unchanged.
         XCTAssertEqual(window.frame.size.width, 1080, accuracy: 1)
-        XCTAssertEqual(cv.paneView1.frame.height, 692, accuracy: 1)  // 720 − titlebar
-        XCTAssertEqual(cv.paneView2.frame.height, 692, accuracy: 1)
+        XCTAssertEqual(cv.paneView1.frame.height, contentHeight, accuracy: 1)
+        XCTAssertEqual(cv.paneView2.frame.height, contentHeight, accuracy: 1)
         XCTAssertEqual(cv.paneView1.frame.width + cv.paneView2.frame.width + cv.splitView.dividerThickness, 1080, accuracy: 1)
 
         // Toggle to stacked: window MUST keep its size, panes full-width stacked.
@@ -95,7 +101,7 @@ final class LayoutToggleTests: XCTestCase {
         XCTAssertEqual(window.frame.size.width, 1080, accuracy: 1)
         XCTAssertEqual(cv.paneView1.frame.width, 1080, accuracy: 1)
         XCTAssertEqual(cv.paneView2.frame.width, 1080, accuracy: 1)
-        let stackedHalf = (692 - cv.splitView.dividerThickness) / 2
+        let stackedHalf = (contentHeight - cv.splitView.dividerThickness) / 2
         XCTAssertEqual(cv.paneView1.frame.height, stackedHalf, accuracy: 1)
         XCTAssertEqual(cv.paneView2.frame.height, stackedHalf, accuracy: 1)
 
@@ -113,7 +119,7 @@ final class LayoutToggleTests: XCTestCase {
         wc.mainViewController.togglePaneLayout()
         settle(window)
         XCTAssertEqual(window.frame.size.width, 1080, accuracy: 1)
-        XCTAssertEqual(cv.paneView1.frame.height, 692, accuracy: 1)
+        XCTAssertEqual(cv.paneView1.frame.height, contentHeight, accuracy: 1)
         XCTAssertEqual(cv.paneView1.frame.width + cv.paneView2.frame.width + cv.splitView.dividerThickness, 1080, accuracy: 1)
     }
 }

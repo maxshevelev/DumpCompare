@@ -3,6 +3,11 @@ import Cocoa
 final class MainWindowController: NSWindowController {
     let mainViewController: MainViewController
 
+    /// The window toolbar's Prev/Next Difference group (two default items in
+    /// one joined block, pinned to the toolbar's right edge). Held so the
+    /// delegate can hand it out.
+    private(set) var diffNavigationGroup: NSToolbarItemGroup?
+
     init() {
         let controller = MainViewController()
         let window = NSWindow(
@@ -12,6 +17,10 @@ final class MainWindowController: NSWindowController {
             defer: false
         )
         window.title = "DumpCompare"
+        // The app name in the title bar is redundant — the toolbar occupies the
+        // whole title bar — so hide the title text. The title stays set for the
+        // Window menu, Mission Control, etc. (§10.3).
+        window.titleVisibility = .hidden
         window.center()
         window.setFrameAutosaveName("MainWindow")
         window.contentViewController = controller
@@ -19,6 +28,7 @@ final class MainWindowController: NSWindowController {
         mainViewController = controller
         super.init(window: window)
         buildMainMenu()
+        buildToolbar()
     }
 
     /// Owned lazily so the settings window isn't instantiated until first use.
@@ -47,6 +57,50 @@ final class MainWindowController: NSWindowController {
             window.setFrame(NSRect(x: 0, y: 0, width: 1080, height: 720), display: true)
             window.center()
         }
+    }
+
+    // MARK: - Toolbar
+
+    /// Builds the window toolbar (§10.3 navigation). The Prev/Next Difference
+    /// block sits pinned to the right edge — a flexible space fills everything
+    /// to its left (§10.3).
+    private func buildToolbar() {
+        let toolbar = NSToolbar(identifier: "MainToolbar")
+        toolbar.delegate = self
+        toolbar.displayMode = .iconOnly
+        toolbar.allowsUserCustomization = false
+        // Fixed item layout — never autosave a reordered/customized copy of the
+        // default identifiers below, so the flexible-space-first order that
+        // pins the diff block to the right edge can't be displaced by a saved
+        // configuration.
+        toolbar.autosavesConfiguration = false
+        window?.toolbar = toolbar
+        window?.toolbarStyle = .unified
+    }
+
+    /// The Prev/Next Difference toolbar group: two default toolbar items (the
+    /// system backward/forward icons for previous/next) joined in one expanded
+    /// block, targeting `mainViewController` directly — the same routing the
+    /// menu items use (§10.3).
+    private func makeDiffNavigationGroup() -> NSToolbarItemGroup {
+        func navItem(_ identifier: NSToolbarItem.Identifier, _ symbol: String,
+                     _ label: String, _ action: Selector) -> NSToolbarItem {
+            let item = NSToolbarItem(itemIdentifier: identifier)
+            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+            item.label = label
+            item.target = mainViewController
+            item.action = action
+            return item
+        }
+        let group = NSToolbarItemGroup(itemIdentifier: .diffNavigation)
+        group.subitems = [
+            navItem(.previousDifference, "backward", "Previous Difference",
+                    #selector(MainViewController.previousDifference)),
+            navItem(.nextDifference, "forward", "Next Difference",
+                    #selector(MainViewController.nextDifference)),
+        ]
+        group.controlRepresentation = .expanded
+        return group
     }
 
     // MARK: - Menu
@@ -201,4 +255,41 @@ final class MainWindowController: NSWindowController {
         return editMenu
     }
 
+}
+
+// MARK: - Toolbar
+
+extension NSToolbarItem.Identifier {
+    /// The Prev/Next Difference group in the window toolbar.
+    static let diffNavigation = NSToolbarItem.Identifier("DiffNavigation")
+    /// Previous Difference — the left subitem of the diff group.
+    static let previousDifference = NSToolbarItem.Identifier("PreviousDifference")
+    /// Next Difference — the right subitem of the diff group.
+    static let nextDifference = NSToolbarItem.Identifier("NextDifference")
+}
+
+extension MainWindowController: NSToolbarDelegate {
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        // The flexible space must be listed as allowed too, or AppKit drops it
+        // from the default items and the diff block ends up on the LEFT edge.
+        [.flexibleSpace, .diffNavigation]
+    }
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        // The flexible space before the block pins it to the toolbar's right
+        // edge; everything to the left is empty (§10.3).
+        [.flexibleSpace, .diffNavigation]
+    }
+
+    func toolbar(_ toolbar: NSToolbar,
+                 itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
+                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        guard itemIdentifier == .diffNavigation else { return nil }
+        // Build it on first request, then keep returning the same instance so
+        // the toolbar's default items resolve to one fixed group.
+        if diffNavigationGroup == nil {
+            diffNavigationGroup = makeDiffNavigationGroup()
+        }
+        return diffNavigationGroup
+    }
 }

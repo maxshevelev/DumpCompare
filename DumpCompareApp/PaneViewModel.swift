@@ -106,6 +106,12 @@ final class PaneViewModel: HexViewDataSource {
     /// Called after any change so the view can redraw and refresh the status bar.
     var onChange: (() -> Void)?
 
+    /// Fired from `notify()` on every caret/selection change (and on edits too,
+    /// since most move the caret). The navigation-enablement logic observes it
+    /// to re-check whether a next/previous block still exists from the new
+    /// position (§10.3).
+    var onCaretChanged: (() -> Void)?
+
     /// The active text decoder, rebuilt whenever decoding settings change.
     private(set) var textDecoder: any TextDecoder
 
@@ -673,6 +679,7 @@ final class PaneViewModel: HexViewDataSource {
         // mirroring it.
         companion?.onMirroredSelectionChanged?()
         onChange?()
+        onCaretChanged?()
     }
 }
 

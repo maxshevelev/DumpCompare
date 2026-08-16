@@ -1,8 +1,21 @@
 import Cocoa
 import DumpCompareCore
 
+/// Whether each diff-navigation action currently has a block to go to (§10.3).
+/// A false value means the command is disabled — wrong mode, index still
+/// building, or the block doesn't exist in that direction from the caret.
+struct DiffNavigationState: Equatable {
+    var previousDifference = false
+    var nextDifference = false
+    var previousSameBlock = false
+    var nextSameBlock = false
+}
+
 final class MainViewController: NSViewController {
     private(set) var mode: WindowMode = .empty
+    /// Current diff-navigation availability. Recomputed on every mode, index,
+    /// and caret change; the menu items read it via `validateMenuItem` (§10.3).
+    private(set) var diffNavigationState = DiffNavigationState()
     let windowModel = WindowViewModel()
     private weak var activeFilePane: FilePaneView?
     private weak var comparisonView: ComparisonView?
@@ -39,6 +52,11 @@ final class MainViewController: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         wireExternalChangeDetection()
+        // Re-evaluate navigation availability on every index-state transition
+        // (build starts/completes/cancels/stops, edits applied) (§10.3).
+        comparisonCoordinator.onStateChanged = { [weak self] in
+            self?.refreshDiffNavigation()
+        }
 
         findBar.translatesAutoresizingMaskIntoConstraints = false
         findBar.isHidden = true  // shown by Cmd+F (§11)
@@ -151,6 +169,9 @@ final class MainViewController: NSViewController {
                 // Focus follows activation (e.g. a header click), so typing and
                 // the active-pane pointer stay aligned (§3.3).
                 self.activeFilePane?.focusHexView()
+                // Navigation anchors on the active pane's caret — a pane switch
+                // can change whether a next/previous block exists (§10.3).
+                self.refreshDiffNavigation()
             }
             pane1View.onClose = { [weak self] in self?.closePane(at: 0) }
             pane2View.onClose = { [weak self] in self?.closePane(at: 1) }
@@ -162,9 +183,12 @@ final class MainViewController: NSViewController {
             comparisonCoordinator.start()
             activeFilePane?.focusHexView()
         }
+        refreshDiffNavigation()
     }
 
     /// Wires companion panes and coordinator callbacks for comparison mode.
+    /// Runs on every comparison apply — pane objects are swapped by Swap Panels
+    /// and close-promotion, so the callbacks must target the CURRENT panes.
     private func wireComparison() {
         windowModel.pane1.companion = windowModel.pane2
         windowModel.pane2.companion = windowModel.pane1
@@ -179,6 +203,14 @@ final class MainViewController: NSViewController {
         }
         windowModel.pane2.onFullInvalidation = { [weak self] in
             self?.comparisonCoordinator.rebuild()
+        }
+        // A moved caret changes whether a next/previous block still exists from
+        // the new position, so navigation enablement follows it (§10.3).
+        windowModel.pane1.onCaretChanged = { [weak self] in
+            self?.refreshDiffNavigation()
+        }
+        windowModel.pane2.onCaretChanged = { [weak self] in
+            self?.refreshDiffNavigation()
         }
     }
 
@@ -1046,6 +1078,26 @@ final class MainViewController: NSViewController {
     @objc func nextSameBlock() { navigateBlock(kind: .same, direction: .forward) }
     @objc func previousSameBlock() { navigateBlock(kind: .same, direction: .backward) }
 
+    /// Recomputes `diffNavigationState` from the current mode, index build
+    /// state, and active caret — the same `from` and search rules
+    /// `navigateBlock` uses, so a menu item is enabled exactly when the action
+    /// would find a block. Fired on mode changes, index transitions, pane
+    /// switches, and caret moves; the menu items read the result via
+    /// `validateMenuItem` (§10.3).
+    private func refreshDiffNavigation() {
+        var state = DiffNavigationState()
+        if mode == .comparison,
+           let index = comparisonCoordinator.index,
+           !comparisonCoordinator.isBuilding {
+            let from = windowModel.activePane.caretOffset
+            state.previousDifference = index.previousDifference(from: from) != nil
+            state.nextDifference = index.nextDifference(from: from) != nil
+            state.previousSameBlock = index.previousSame(from: from) != nil
+            state.nextSameBlock = index.nextSame(from: from) != nil
+        }
+        diffNavigationState = state
+    }
+
     private func navigateBlock(kind: DiffBlock.Kind, direction: SearchDirection) {
         guard mode == .comparison else { return }
         let from = windowModel.activePane.caretOffset
@@ -1458,12 +1510,17 @@ extension MainViewController: NSMenuItemValidation {
             if viewIfLoaded?.window?.firstResponder is NSTextView { return true }
             if viewIfLoaded?.window?.firstResponder is HexView { return activePane.isOpen }
             return false
-        case #selector(nextDifference),
-             #selector(previousDifference),
-             #selector(nextSameBlock),
-             #selector(previousSameBlock),
-             #selector(togglePaneLayout),
+        case #selector(nextDifference):
+            return diffNavigationState.nextDifference
+        case #selector(previousDifference):
+            return diffNavigationState.previousDifference
+        case #selector(nextSameBlock):
+            return diffNavigationState.nextSameBlock
+        case #selector(previousSameBlock):
+            return diffNavigationState.previousSameBlock
+        case #selector(togglePaneLayout),
              #selector(swapPanes):
+            // Layout and swap depend only on comparison mode, not the index.
             return mode == .comparison
         case #selector(setWordSize(_:)):
             // Radio state: check the item matching the current word size (§6).
