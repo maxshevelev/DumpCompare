@@ -472,7 +472,7 @@ final class MainViewController: NSViewController {
         alert.addButton(withTitle: "Save and Replace")
         alert.addButton(withTitle: "Replace Without Saving")
         alert.addButton(withTitle: "Cancel")
-        switch alert.runModal() {
+        switch Self.presentModal(alert, defaultInTest: .alertThirdButtonReturn) {  // Cancel in tests
         case .alertFirstButtonReturn:  // Save and Replace
             if pane.isUntitled {
                 presentSaveAs(for: pane, onSaved: onSaved)
@@ -698,8 +698,10 @@ final class MainViewController: NSViewController {
     }
 
     /// Prompt for a file that changed on disk (§5.5): reload/keep when clean;
-    /// reload-and-discard / keep / save-as when dirty.
-    private func presentExternalChange(for pane: PaneViewModel) {
+    /// reload-and-discard / keep / save-as when dirty. In test mode the prompt
+    /// resolves to "keep" (never reload) so a stray watcher event cannot mutate
+    /// a pane mid-test. Exposed (internal) so tests can pin that contract.
+    func presentExternalChange(for pane: PaneViewModel) {
         guard pane.isOpen else { return }
         let name = pane.status.fileName
         if pane.status.isDirty {
@@ -709,7 +711,7 @@ final class MainViewController: NSViewController {
             alert.addButton(withTitle: "Reload and Discard Changes")
             alert.addButton(withTitle: "Keep Local Changes")
             alert.addButton(withTitle: "Save As…")
-            switch alert.runModal() {
+            switch Self.presentModal(alert, defaultInTest: .alertSecondButtonReturn) {  // Keep Local Changes in tests
             case .alertFirstButtonReturn:
                 do {
                     try pane.revert()
@@ -727,7 +729,7 @@ final class MainViewController: NSViewController {
             alert.informativeText = "“\(name)” has been changed by another program. Reload to see the latest version?"
             alert.addButton(withTitle: "Reload")
             alert.addButton(withTitle: "Keep Current Contents")
-            if alert.runModal() == .alertFirstButtonReturn {
+            if Self.presentModal(alert, defaultInTest: .alertSecondButtonReturn) == .alertFirstButtonReturn {  // Keep in tests
                 do {
                     try pane.revert()
                 } catch {
@@ -1453,6 +1455,29 @@ final class MainViewController: NSViewController {
         activeFilePane?.showTransientMessage(message)
     }
 
+    // MARK: - Test mode
+
+    /// True when the app runs inside the XCTest runner (a test host). A modal
+    /// alert has no human to click it there, so every blocking prompt must
+    /// short-circuit to a conservative default — otherwise a stray prompt (the
+    /// file-changed Reload/Keep alert, an error) hangs the test suite forever.
+    static var isRunningTests: Bool {
+        let environment = ProcessInfo.processInfo.environment
+        return environment["XCTestConfigurationFilePath"] != nil
+            || environment["XCTestBundlePath"] != nil
+    }
+
+    /// Presents `alert` modally, or returns `defaultInTest` immediately when
+    /// running under XCTest. Callers pick a response that leaves the document
+    /// untouched (Cancel / Keep Current Contents) so a stray alert can never
+    /// discard edits or reload a file mid-test. Exposed (internal) so a test
+    /// can pin the suppression contract.
+    @discardableResult
+    static func presentModal(_ alert: NSAlert, defaultInTest: NSApplication.ModalResponse) -> NSApplication.ModalResponse {
+        guard !isRunningTests else { return defaultInTest }
+        return alert.runModal()
+    }
+
     // MARK: - Alerts
 
     @discardableResult
@@ -1465,7 +1490,7 @@ final class MainViewController: NSViewController {
         if destructive {
             alert.buttons.first?.hasDestructiveAction = true
         }
-        return alert.runModal()
+        return Self.presentModal(alert, defaultInTest: .alertSecondButtonReturn)  // Cancel in tests
     }
 
     @discardableResult
@@ -1476,7 +1501,7 @@ final class MainViewController: NSViewController {
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Don't Save")
         alert.addButton(withTitle: "Cancel")
-        return alert.runModal()
+        return Self.presentModal(alert, defaultInTest: .alertThirdButtonReturn)  // Cancel in tests
     }
 
     private func presentAlert(title: String, message: String) {
@@ -1484,7 +1509,7 @@ final class MainViewController: NSViewController {
         alert.messageText = title
         alert.informativeText = message
         alert.alertStyle = .informational
-        alert.runModal()
+        Self.presentModal(alert, defaultInTest: .alertFirstButtonReturn)  // OK in tests, result ignored
     }
 
     private func presentError(_ title: String, _ error: Error) {
@@ -1492,7 +1517,7 @@ final class MainViewController: NSViewController {
         alert.messageText = title
         alert.informativeText = error.localizedDescription
         alert.alertStyle = .critical
-        alert.runModal()
+        Self.presentModal(alert, defaultInTest: .alertFirstButtonReturn)  // OK in tests, result ignored
     }
 
     /// Shows a file-operation error, upgrading sandbox/permission denials to a
@@ -1621,7 +1646,7 @@ extension MainViewController: NSWindowDelegate {
         alert.addButton(withTitle: "Save")
         alert.addButton(withTitle: "Don't Save")
         alert.addButton(withTitle: "Cancel")
-        switch alert.runModal() {
+        switch Self.presentModal(alert, defaultInTest: .alertThirdButtonReturn) {  // Cancel in tests (abort close)
         case .alertFirstButtonReturn:
             // Untitled panes have no file yet, so their "Save" runs a Save As
             // sheet; the window closes once every pane is on disk. When every
