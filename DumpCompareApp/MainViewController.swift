@@ -89,9 +89,12 @@ final class MainViewController: NSViewController {
             self.updateMinimapLayout()
         }
         // Re-evaluate navigation availability on every index-state transition
-        // (build starts/completes/cancels/stops, edits applied) (§10.3).
+        // (build starts/completes/cancels/stops, edits applied) (§10.3). The
+        // index also feeds the minimap's difference stripes, so an index change
+        // re-merges them (cheap — no file re-read, §N).
         comparisonCoordinator.onStateChanged = { [weak self] in
             self?.refreshDiffNavigation()
+            self?.rebuildMinimap(full: false)
         }
 
         findBar.translatesAutoresizingMaskIntoConstraints = false
@@ -183,6 +186,17 @@ final class MainViewController: NSViewController {
             pane.onSearchResultsClose = { [weak self] pane in
                 self?.cancelSearchAll(from: pane)
             }
+            // The minimap's single map mirrors this pane: edits rebuild its
+            // stripes, a moved caret moves the selection overlay (§ N).
+            paneModel.onEdit = { [weak self] _ in
+                self?.rebuildMinimap(full: true)
+            }
+            paneModel.onFullInvalidation = { [weak self] in
+                self?.rebuildMinimap(full: true)
+            }
+            paneModel.onCaretChanged = { [weak self] in
+                self?.updateMinimapSelections()
+            }
             // Wrap in the drop-target split view (§4.3 single-file mode). The
             // pane itself is NOT drop-registered here so the outer view wins.
             let dropView = SingleFileDropView(paneView: pane)
@@ -260,6 +274,8 @@ final class MainViewController: NSViewController {
             activeFilePane?.focusHexView()
         }
         updateMinimapLayout()
+        updateMinimapSelections()
+        rebuildMinimap(full: true)
         refreshDiffNavigation()
     }
 
@@ -271,23 +287,32 @@ final class MainViewController: NSViewController {
         windowModel.pane2.companion = windowModel.pane1
         windowModel.pane1.onEdit = { [weak self] edit in
             self?.comparisonCoordinator.record(edit: edit)
+            // A byte edit can change a stripe's significance, so rebuild the
+            // minimap's maps (§ N).
+            self?.rebuildMinimap(full: true)
         }
         windowModel.pane2.onEdit = { [weak self] edit in
             self?.comparisonCoordinator.record(edit: edit)
+            self?.rebuildMinimap(full: true)
         }
         windowModel.pane1.onFullInvalidation = { [weak self] in
             self?.comparisonCoordinator.rebuild()
+            self?.rebuildMinimap(full: true)
         }
         windowModel.pane2.onFullInvalidation = { [weak self] in
             self?.comparisonCoordinator.rebuild()
+            self?.rebuildMinimap(full: true)
         }
         // A moved caret changes whether a next/previous block still exists from
-        // the new position, so navigation enablement follows it (§10.3).
+        // the new position, so navigation enablement follows it (§10.3); the
+        // selection overlay on the minimap follows the caret too (§ N).
         windowModel.pane1.onCaretChanged = { [weak self] in
             self?.refreshDiffNavigation()
+            self?.updateMinimapSelections()
         }
         windowModel.pane2.onCaretChanged = { [weak self] in
             self?.refreshDiffNavigation()
+            self?.updateMinimapSelections()
         }
     }
 
@@ -337,6 +362,162 @@ final class MainViewController: NSViewController {
                 minimapView.setMapLayout(.stacked(fraction: split.currentFraction))
             }
         }
+    }
+
+    // MARK: - Minimap data (§ N)
+
+    /// The last built significance stripes per map (indexed like the current
+    /// maps). Kept apart from the difference stripes so an index-only refresh
+    /// can re-derive the diff overlay without re-reading the file bytes.
+    private var minimapSignificance: [[MinimapView.Row]] = []
+    /// The in-flight background rebuild; cancelled and replaced on the next
+    /// full rebuild.
+    private var minimapBuildTask: Task<Void, Never>?
+
+    /// Rebuilds the minimap maps. `full: true` re-reads the file bytes for the
+    /// significance stripes and is triggered by opening/reverting/editing;
+    /// `full: false` (a comparison index change) only re-merges the difference
+    /// stripes on top of the last significance — cheap, so it can fire on every
+    /// index refresh without stalling the main thread.
+    private func rebuildMinimap(full: Bool) {
+        // Snapshot the inputs on the main thread before leaving it.
+        let source: [(storage: (any ByteStorage)?, size: UInt64)]
+        switch mode {
+        case .singleFile:
+            source = [(windowModel.pane1.byteStorage, windowModel.pane1.fileSize)]
+        case .comparison:
+            source = [(windowModel.pane1.byteStorage, windowModel.pane1.fileSize),
+                      (windowModel.pane2.byteStorage, windowModel.pane2.fileSize)]
+        case .empty:
+            source = []
+        }
+
+        if full {
+            minimapBuildTask?.cancel()
+            minimapBuildTask = Task.detached(priority: .utility) { [weak self] in
+                let significance = source.map { Self.buildSignificanceRows(storage: $0.storage, fileSize: $0.size) }
+                guard !Task.isCancelled else { return }
+                // Read the freshest index after the (slow) significance pass so
+                // a rebuild racing an index refresh still lands on the new diff.
+                let index = await MainActor.run { self?.comparisonCoordinator.index }
+                guard !Task.isCancelled else { return }
+                let maps = Self.mergedMaps(significance: significance,
+                                           sizes: source.map(\.size),
+                                           index: index)
+                await MainActor.run {
+                    guard let self, !Task.isCancelled else { return }
+                    self.minimapSignificance = significance
+                    self.minimapView.setMaps(maps)
+                    self.updateMinimapSelections()
+                }
+            }
+        } else {
+            // Diff-only refresh: merge in place, immediately.
+            let maps = Self.mergedMaps(significance: minimapSignificance,
+                                       sizes: source.map(\.size),
+                                       index: comparisonCoordinator.index)
+            minimapView.setMaps(maps)
+            updateMinimapSelections()
+        }
+    }
+
+    /// Moves each map's selection overlay to its pane's current selection.
+    /// Cheap (an overlay repaint), so it rides the caret-changed callbacks.
+    private func updateMinimapSelections() {
+        let selections: [Range<UInt64>?]
+        switch mode {
+        case .singleFile:
+            selections = [minimapSelectionRange(windowModel.pane1)]
+        case .comparison:
+            selections = [minimapSelectionRange(windowModel.pane1),
+                          minimapSelectionRange(windowModel.pane2)]
+        case .empty:
+            selections = []
+        }
+        for (index, selection) in selections.enumerated() {
+            minimapView.updateSelection(selection, forMapAt: index)
+        }
+    }
+
+    private func minimapSelectionRange(_ pane: PaneViewModel) -> Range<UInt64>? {
+        let selection = pane.hexSelection()
+        guard !selection.isEmpty else { return nil }
+        return selection.start..<selection.end
+    }
+
+    /// Builds a file's significance stripes: a stripe is significant when any
+    /// byte it covers is not a 0x00/0xFF fill. One stripe per hex row up to
+    /// `maxRenderRows`, so a huge file collapses onto a fixed stripe count.
+    /// Reads in chunks and stops a stripe's scan as soon as a significant byte
+    /// is found.
+    private static func buildSignificanceRows(storage: (any ByteStorage)?,
+                                              fileSize: UInt64) -> [MinimapView.Row] {
+        guard let storage, fileSize > 0 else { return [] }
+        let hexRows = (fileSize + 15) / 16
+        let count = Int(min(hexRows, UInt64(MinimapView.maxRenderRows)))
+        var rows = [MinimapView.Row](repeating: .insignificant, count: count)
+        let chunkSize = 64 * 1024
+        for i in 0..<count {
+            let byteRange = Self.rowByteRange(row: i, count: count, hexRows: hexRows, fileSize: fileSize)
+            var offset = byteRange.lowerBound
+            var significant = false
+            while offset < byteRange.upperBound {
+                let length = Int(min(UInt64(chunkSize), byteRange.upperBound - offset))
+                guard let bytes = try? storage.read(at: offset, length: length), !bytes.isEmpty else { break }
+                if bytes.contains(where: { $0 != 0x00 && $0 != 0xFF }) {
+                    significant = true
+                    break
+                }
+                offset += UInt64(bytes.count)
+            }
+            if significant { rows[i] = .significant }
+        }
+        return rows
+    }
+
+    /// Merges the significance stripes with the comparison index's difference
+    /// stripes: any stripe overlapping a `.different` block becomes `.different`
+    /// (the orange wins), the rest keep their significance.
+    private static func mergedMaps(significance: [[MinimapView.Row]],
+                                   sizes: [UInt64],
+                                   index: DiffBlockIndex?) -> [MinimapView.Map] {
+        var maps: [MinimapView.Map] = []
+        for (i, sig) in significance.enumerated() {
+            let size = sizes.indices.contains(i) ? sizes[i] : 0
+            let hexRows = (size + 15) / 16
+            let count = sig.count
+            let rows: [MinimapView.Row]
+            if let index, size > 0 {
+                rows = (0..<count).map { row in
+                    let range = Self.rowByteRange(row: row, count: count, hexRows: hexRows, fileSize: size)
+                    return Self.containsDifferent(index, in: range) ? .different : sig[row]
+                }
+            } else {
+                rows = sig
+            }
+            maps.append(MinimapView.Map(fileSize: size, rows: rows))
+        }
+        return maps
+    }
+
+    /// The byte range a minimap stripe covers. Stripe `row` of `count` stripes
+    /// spans hex rows `[floor(row·H/C), floor((row+1)·H/C))`, converted to byte
+    /// offsets and clamped to the file.
+    private static func rowByteRange(row: Int, count: Int, hexRows: UInt64, fileSize: UInt64) -> Range<UInt64> {
+        let start = hexRows * UInt64(row) / UInt64(count) * 16
+        let end = hexRows * UInt64(row + 1) / UInt64(count) * 16
+        return min(start, fileSize)..<min(end, fileSize)
+    }
+
+    /// Whether any `.different` block of the index overlaps `range`. Blocks tile
+    /// `[0, maxSize)`, so checking the two boundary bytes plus the first
+    /// difference after the range's start decides it without a linear scan.
+    private static func containsDifferent(_ index: DiffBlockIndex, in range: Range<UInt64>) -> Bool {
+        guard range.lowerBound < range.upperBound else { return false }
+        if index.state(at: range.lowerBound) == .different { return true }
+        if index.state(at: range.upperBound - 1) == .different { return true }
+        guard let next = index.nextDifference(from: range.lowerBound) else { return false }
+        return next.range.lowerBound < range.upperBound
     }
 
     // MARK: - Helpers

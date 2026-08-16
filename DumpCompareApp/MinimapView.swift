@@ -6,9 +6,18 @@ import Cocoa
 /// single map over the whole panel; side-by-side comparison splits the panel
 /// with a vertical divider at its exact center (one map per pane); stacked
 /// comparison splits it with a horizontal divider that mirrors the panes'
-/// draggable divider — the line moves as the panes' divider moves. The maps
-/// themselves are still empty; stage 3 fills them with the byte-conditional
-/// lines.
+/// draggable divider — the line moves as the panes' divider moves.
+///
+/// Stage 3 fills the maps with the files' contents as horizontal stripes, one
+/// per `maxRenderRows` slot regardless of file size (a huge file collapses onto
+/// a fixed number of stripes instead of one stripe per hex row). A stripe is
+/// coloured by the state of the bytes it covers — the same colours the hex
+/// panes use:
+/// - every byte a 0x00/0xFF fill → muted (`mutedByteText`);
+/// - at least one significant byte → ink (`byteText`);
+/// - at least one differing byte → orange (`differenceFill`);
+/// and the current selection is drawn as a translucent blue overlay on top of
+/// the stripes (`selectionFill`), mirroring the selection fill in the panes.
 final class MinimapView: NSView {
     /// How the panel is divided into maps for the open file(s).
     enum MapLayout {
@@ -22,7 +31,35 @@ final class MinimapView: NSView {
         case stacked(fraction: CGFloat)
     }
 
+    /// One map: the file's size (for byte→stripe mapping) and its precomputed
+    /// stripes. `rows` always has exactly `maxRenderRows` entries.
+    struct Map {
+        let fileSize: UInt64
+        let rows: [Row]
+        /// The file's current selection, drawn as an overlay on top of the
+        /// stripes; nil (or empty) when the caret sits alone.
+        var selection: Range<UInt64>?
+    }
+
+    /// How a stripe is coloured, by what the bytes it covers contain.
+    enum Row {
+        /// No significant byte and no difference — all 0x00/0xFF fill.
+        case insignificant
+        /// At least one byte that is not a 0x00/0xFF fill.
+        case significant
+        /// At least one byte that differs from the companion file.
+        case different
+    }
+
+    /// Fixed render density: at most this many stripes per map regardless of
+    /// file size, so a giant file collapses onto a few thousand stripes instead
+    /// of one per hex row (which would be millions for a big file).
+    static let maxRenderRows = 2048
+
     private(set) var mapLayout: MapLayout = .single
+    /// The maps currently drawn (file sizes + stripes). Updated by `setMaps`
+    /// after a background rebuild; readable so tests can inspect the stripes.
+    private(set) var maps: [Map] = []
 
     /// Adopts a new map split, redrawing the divider lines only when the split
     /// actually changed (a stacked fraction can move by a hair on every pane
@@ -31,6 +68,29 @@ final class MinimapView: NSView {
         guard !mapLayout.equivalent(to: layout) else { return }
         mapLayout = layout
         needsDisplay = true
+    }
+
+    /// Replaces the maps' contents (file sizes + stripes). The panel keeps the
+    /// current selections unless `updateSelection` is called afterwards — a
+    /// rebuild and a selection change race, so the caller re-applies them.
+    func setMaps(_ maps: [Map]) {
+        self.maps = maps
+        needsDisplay = true
+    }
+
+    /// Moves one map's selection overlay. Cheap — no stripe rebuild — so it is
+    /// safe to call on every caret/selection change (e.g. a mouse drag).
+    func updateSelection(_ selection: Range<UInt64>?, forMapAt index: Int) {
+        guard maps.indices.contains(index) else { return }
+        guard maps[index].selection != selection else { return }
+        maps[index].selection = selection
+        needsDisplay = true
+    }
+
+    /// The selection currently overlaid on a map (for tests).
+    func selection(forMapAt index: Int) -> Range<UInt64>? {
+        guard maps.indices.contains(index) else { return nil }
+        return maps[index].selection
     }
 
     /// The panel's quiet background — the same paper the hex dumps sit on, so
@@ -70,6 +130,11 @@ final class MinimapView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
+        for (index, map) in maps.enumerated() {
+            let area = area(forMapAt: index)
+            drawStripes(of: map, in: area, dirtyRect: dirtyRect)
+            drawSelection(map.selection, fileSize: map.fileSize, in: area, dirtyRect: dirtyRect)
+        }
         switch mapLayout {
         case .single:
             break
@@ -79,6 +144,68 @@ final class MinimapView: NSView {
             let y = min(max(fraction, 0), 1) * bounds.height
             drawHorizontalDivider(at: y, in: dirtyRect)
         }
+    }
+
+    // MARK: - Stripes
+
+    private func area(forMapAt index: Int) -> NSRect {
+        let width = bounds.width
+        let height = bounds.height
+        switch mapLayout {
+        case .single:
+            return bounds
+        case .sideBySide:
+            let half = width / 2
+            if index == 0 {
+                return NSRect(x: 0, y: 0, width: half, height: height)
+            }
+            return NSRect(x: half, y: 0, width: width - half, height: height)
+        case .stacked(let fraction):
+            let split = min(max(fraction, 0), 1) * height
+            if index == 0 {
+                return NSRect(x: 0, y: 0, width: width, height: split)
+            }
+            return NSRect(x: 0, y: split, width: width, height: height - split)
+        }
+    }
+
+    private func drawStripes(of map: Map, in area: NSRect, dirtyRect: NSRect) {
+        let rows = map.rows
+        guard !rows.isEmpty, area.height > 0 else { return }
+        let stripeHeight = area.height / CGFloat(rows.count)
+        // The map's stripes only cover the area rows that intersect the dirty
+        // region; clip to it so a scroll-adjacent repaint doesn't re-fill the
+        // whole panel.
+        let firstStripe = max(0, Int((dirtyRect.minY - area.minY) / max(stripeHeight, 0.0001)))
+        let lastStripe = min(rows.count - 1,
+                             Int((dirtyRect.maxY - area.minY) / max(stripeHeight, 0.0001)))
+        guard lastStripe >= firstStripe else { return }
+        for i in firstStripe...lastStripe {
+            let color: NSColor
+            switch rows[i] {
+            case .insignificant: color = HexTheme.mutedByteText
+            case .significant: color = HexTheme.byteText
+            case .different: color = HexTheme.differenceFill
+            }
+            color.setFill()
+            NSRect(x: area.minX,
+                   y: area.minY + CGFloat(i) * stripeHeight,
+                   width: area.width,
+                   height: stripeHeight).fill()
+        }
+    }
+
+    private func drawSelection(_ selection: Range<UInt64>?, fileSize: UInt64,
+                               in area: NSRect, dirtyRect: NSRect) {
+        guard let selection, !selection.isEmpty, fileSize > 0 else { return }
+        let startFraction = CGFloat(min(selection.lowerBound, fileSize)) / CGFloat(fileSize)
+        let endFraction = CGFloat(min(selection.upperBound, fileSize)) / CGFloat(fileSize)
+        guard endFraction > startFraction else { return }
+        let y0 = area.minY + startFraction * area.height
+        let y1 = area.minY + endFraction * area.height
+        guard y1 > y0, y1 >= dirtyRect.minY, y0 <= dirtyRect.maxY else { return }
+        HexTheme.selectionFill.setFill()
+        NSRect(x: area.minX, y: y0, width: area.width, height: y1 - y0).fill()
     }
 
     private func drawVerticalDivider(at x: CGFloat, in dirtyRect: NSRect) {

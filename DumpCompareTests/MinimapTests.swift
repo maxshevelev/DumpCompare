@@ -317,4 +317,88 @@ final class MinimapTests: XCTestCase {
         }
         XCTAssertEqual(fraction, 0.5, accuracy: 0.001)
     }
+
+    // MARK: - Stage 3: stripes
+
+    /// Opens one file in single-file mode and waits for the minimap's async
+    /// significance build to land.
+    private func makeSingleFileWindow(_ bytes: [UInt8]) throws -> (MainViewController, NSWindow, MinimapView) {
+        let url = try tempFile(bytes)
+        let (controller, window) = try makeController()
+        try controller.windowModel.pane1.open(url: url)
+        controller.apply(mode: .singleFile)
+        window.layoutIfNeeded()
+        let (split, panel) = try minimapViews(window)
+        split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+        _ = pumpUntil(2.0) { !panel.maps.isEmpty && !panel.maps[0].rows.isEmpty }
+        return (controller, window, panel)
+    }
+
+    func testSignificanceStripesMarkSignificantBytes() throws {
+        // 3 hex rows: row 0 has a significant byte, row 1 is all fill, row 2
+        // has a significant byte.
+        let bytes: [UInt8] = [0x00, 0x41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                              0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                              0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                              0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                              0x00, 0x00, 0x42, 0x00, 0x00, 0x00, 0x00, 0x00,
+                              0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+        let (_, _, panel) = try makeSingleFileWindow(bytes)
+        let map = try XCTUnwrap(panel.maps.first)
+        XCTAssertEqual(map.fileSize, UInt64(bytes.count))
+        XCTAssertEqual(map.rows.count, 3, "48 bytes = 3 hex rows → 3 stripes")
+        XCTAssertEqual(map.rows[0], .significant, "row 0 holds byte 0x41")
+        XCTAssertEqual(map.rows[1], .insignificant, "row 1 is all 0x00/0xFF fill")
+        XCTAssertEqual(map.rows[2], .significant, "row 2 holds byte 0x42")
+    }
+
+    func testStripeCountCollapsesLargeFiles() throws {
+        // More hex rows than maxRenderRows → exactly maxRenderRows stripes.
+        let size = MinimapView.maxRenderRows * 16 + 100
+        let bytes = [UInt8](repeating: 0x00, count: size)
+        let (_, _, panel) = try makeSingleFileWindow(bytes)
+        let map = try XCTUnwrap(panel.maps.first)
+        XCTAssertEqual(map.rows.count, MinimapView.maxRenderRows,
+                       "a file larger than the render density collapses to maxRenderRows stripes")
+    }
+
+    func testComparisonDifferenceStripesWin() throws {
+        // Two files that differ everywhere → every stripe is a difference stripe.
+        let url1 = try tempFile([UInt8](repeating: 0x41, count: 64))
+        let url2 = try tempFile([UInt8](repeating: 0x42, count: 64))
+        let (controller, window) = try makeController()
+        try controller.windowModel.pane1.open(url: url1)
+        try controller.windowModel.pane2.open(url: url2)
+        controller.apply(mode: .comparison)
+        window.layoutIfNeeded()
+        let (split, panel) = try minimapViews(window)
+        split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+
+        _ = pumpUntil(2.0) { panel.maps.count == 2 && !panel.maps[0].rows.isEmpty }
+        // The background index needs to land before the diff stripes appear.
+        _ = pumpUntil(3.0) {
+            panel.maps.allSatisfy { map in !map.rows.isEmpty && map.rows.allSatisfy { $0 == .different } }
+        }
+        XCTAssertEqual(panel.maps.count, 2, "one map per pane")
+    }
+
+    func testSelectionOverlayFollowsCaret() throws {
+        let bytes = [UInt8](repeating: 0x41, count: 32)
+        let (controller, _, panel) = try makeSingleFileWindow(bytes)
+
+        // No selection yet → no overlay.
+        XCTAssertNil(panel.selection(forMapAt: 0))
+
+        controller.windowModel.pane1.moveCaret(to: 4)
+        controller.windowModel.pane1.moveCaret(to: 10, extendSelection: true)
+        _ = pumpUntil(1.0) { panel.selection(forMapAt: 0) == (4..<10) }
+        XCTAssertEqual(panel.selection(forMapAt: 0), 4..<10)
+
+        // Collapsing the selection back to a caret removes the overlay.
+        controller.windowModel.pane1.moveCaret(to: 7)
+        _ = pumpUntil(1.0) { panel.selection(forMapAt: 0) == nil }
+        XCTAssertNil(panel.selection(forMapAt: 0))
+    }
 }
