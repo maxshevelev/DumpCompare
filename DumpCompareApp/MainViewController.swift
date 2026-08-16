@@ -26,6 +26,15 @@ final class MainViewController: NSViewController {
     private let findBar = FindBarView()
     /// Host for the mode content (`setContentView` swaps what's inside).
     private let contentContainer = NSView()
+    /// The left pane of the minimap split — the mode's content lives here, so
+    /// the minimap panel can share the content area to its right (§ N).
+    private let contentHost = NSView()
+    /// The right-hand minimap panel (hidden by default, toggled by the toolbar
+    /// button). Internal so tests can assert its visibility (§ N).
+    let minimapView = MinimapView()
+    /// The vertical split sharing the content area between the panes and the
+    /// minimap. Internal so tests can toggle it and drive the divider (§ N).
+    let minimapSplit = MinimapSplitView()
     private var contentTopToView: NSLayoutConstraint!
     private var contentTopToFindBar: NSLayoutConstraint!
     private var findTask: Task<Void, Never>?
@@ -111,6 +120,27 @@ final class MainViewController: NSViewController {
             contentContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             contentContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
             contentTopToView,
+        ])
+
+        // The minimap split fills the content container: the mode content on
+        // the left, the minimap panel on the right. The panel starts collapsed
+        // (the minimap is hidden on launch); the toolbar button toggles it (§
+        // N). The delegate owns the divider's min/max clamping and persists the
+        // panel width whenever the divider moves.
+        minimapSplit.translatesAutoresizingMaskIntoConstraints = false
+        minimapSplit.isVertical = true
+        minimapSplit.dividerStyle = .thin
+        minimapSplit.delegate = self
+        contentHost.translatesAutoresizingMaskIntoConstraints = false
+        minimapView.translatesAutoresizingMaskIntoConstraints = false
+        minimapSplit.addArrangedSubview(contentHost)
+        minimapSplit.addArrangedSubview(minimapView)
+        contentContainer.addSubview(minimapSplit)
+        NSLayoutConstraint.activate([
+            minimapSplit.topAnchor.constraint(equalTo: contentContainer.topAnchor),
+            minimapSplit.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor),
+            minimapSplit.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor),
+            minimapSplit.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
         ])
 
         apply(mode: .empty)
@@ -262,15 +292,24 @@ final class MainViewController: NSViewController {
     }
 
     private func setContentView(_ newView: NSView) {
-        contentContainer.subviews.forEach { $0.removeFromSuperview() }
+        contentHost.subviews.forEach { $0.removeFromSuperview() }
         newView.translatesAutoresizingMaskIntoConstraints = false
-        contentContainer.addSubview(newView)
+        contentHost.addSubview(newView)
         NSLayoutConstraint.activate([
-            newView.topAnchor.constraint(equalTo: contentContainer.topAnchor),
-            newView.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor),
-            newView.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor),
-            newView.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
+            newView.topAnchor.constraint(equalTo: contentHost.topAnchor),
+            newView.bottomAnchor.constraint(equalTo: contentHost.bottomAnchor),
+            newView.leadingAnchor.constraint(equalTo: contentHost.leadingAnchor),
+            newView.trailingAnchor.constraint(equalTo: contentHost.trailingAnchor),
         ])
+    }
+
+    // MARK: - Minimap (§ N)
+
+    /// Toggles the right-hand minimap panel (the toolbar button). The panel is
+    /// hidden by default and animated in/out; the split's divider keeps the
+    /// user's chosen width between shows.
+    @objc func toggleMinimap() {
+        minimapSplit.togglePanel(animated: true)
     }
 
     // MARK: - Helpers
@@ -1784,5 +1823,45 @@ private final class OffsetContextTarget: NSObject {
     init(pane: PaneViewModel, offset: UInt64) {
         self.pane = pane
         self.offset = offset
+    }
+}
+
+// MARK: - Minimap split divider (§ N)
+
+extension MainViewController: NSSplitViewDelegate {
+    /// The minimap divider's legal range. While the panel is shown, a drag (or
+    /// a resize) never shrinks the minimap below its minimum nor grows it
+    /// beyond a quarter of the screen; while hidden, both bounds pin the
+    /// divider to the right edge so the panel collapses to zero width.
+    func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
+        guard splitView === minimapSplit else { return proposedMinimumPosition }
+        guard minimapSplit.panelVisible else { return 0 }
+        let total = splitView.bounds.width
+        let maxPanel = min(MinimapSplitView.maxPanelWidth, max(0, total - splitView.dividerThickness))
+        return max(0, total - maxPanel - splitView.dividerThickness)
+    }
+
+    func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
+        guard splitView === minimapSplit else { return proposedMaximumPosition }
+        guard minimapSplit.panelVisible else {
+            return splitView.bounds.width - splitView.dividerThickness
+        }
+        return max(0, splitView.bounds.width - MinimapSplitView.minPanelWidth - splitView.dividerThickness)
+    }
+
+    /// The divider moved — a drag, a programmatic `setPosition`, or a resize —
+    /// so the panel's new width becomes the user's preferred width for the
+    /// next show. Only persisted while the panel is shown and within the legal
+    /// range: NSSplitView can report transient layouts (e.g. mid-animation)
+    /// whose panel width is absurd, and persisting those would poison the next
+    /// reveal.
+    func splitViewDidResizeSubviews(_ notification: Notification) {
+        guard let split = notification.object as? NSSplitView, split === minimapSplit else { return }
+        guard minimapSplit.panelVisible, split.arrangedSubviews.count == 2 else { return }
+        let contentWidth = split.arrangedSubviews[0].frame.width
+        let panelWidth = split.bounds.width - contentWidth - split.dividerThickness
+        guard panelWidth >= MinimapSplitView.minPanelWidth,
+              panelWidth <= MinimapSplitView.maxPanelWidth else { return }
+        MinimapSplitView.defaults.set(panelWidth, forKey: MinimapSplitView.widthDefaultsKey)
     }
 }
