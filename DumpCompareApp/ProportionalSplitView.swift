@@ -11,6 +11,10 @@ import Cocoa
 /// - dragging the divider re-derives the ratio from where it actually lands;
 /// - window resizes re-apply that same ratio to the new available space.
 ///
+/// The ratio is kept per pane layout (§3.3): side-by-side and stacked each
+/// remember their own divider position, so toggling the arrangement restores
+/// the other layout's proportion instead of carrying the dragged one over.
+///
 /// The panes' edges are bound with constraints, not just frames (§3.3):
 ///
 /// - the first pane's trailing edge (vertical) / bottom edge (stacked) is tied
@@ -46,9 +50,21 @@ import Cocoa
 /// Layout subviews in a stacked split, which made `setPosition` clamp to a
 /// no-op.
 final class ProportionalSplitView: NSSplitView {
-    /// Fraction (0...1) of the split axis given to the first pane. 0.5 until a
-    /// divider drag or `setPosition` changes it; resizes never touch it.
-    private var fraction: CGFloat = 0.5
+    /// Fraction (0...1) of the split axis given to the first pane, stored per
+    /// pane layout (§3.3): side-by-side (vertical) and stacked (horizontal) each
+    /// keep their own divider proportion, so dragging the divider in one
+    /// arrangement never changes the other's. 0.5 until a divider drag or
+    /// `setPosition` changes it; resizes never touch it.
+    private var verticalFraction: CGFloat = 0.5
+    private var horizontalFraction: CGFloat = 0.5
+
+    /// The fraction for the CURRENT layout: `isVertical` picks which slot to
+    /// read or write, so every existing read/write in the layout, drag and
+    /// animation paths already targets the active arrangement.
+    private var fraction: CGFloat {
+        get { isVertical ? verticalFraction : horizontalFraction }
+        set { if isVertical { verticalFraction = newValue } else { horizontalFraction = newValue } }
+    }
 
     /// Binds the first pane's trailing/bottom edge to the divider position
     /// (§3.3). Kept in sync with the frames `layout()` sets, so the layout
