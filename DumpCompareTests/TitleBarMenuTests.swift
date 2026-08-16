@@ -4,11 +4,12 @@ import XCTest
 
 /// §4/§5: a right-click on a pane's header (the strip with the document icon and
 /// file name) pops a File menu that carries the same items as the app menu bar's
-/// File submenu, plus a separate Swap Panels block. The context menu's File items
-/// target `mainViewController` and carry the pane they were built for in
-/// `representedObject`, so New, Open, Save and Close act on THAT pane — even when
-/// only one pane is open — never on the active pane. Swap Panels is
-/// mode-scoped, so it carries no pane and is enabled only in comparison mode.
+/// File submenu, plus the header-only Show in Finder and a separate Swap Panels
+/// block. The context menu's File items target `mainViewController` and carry
+/// the pane they were built for in `representedObject`, so New, Open, Save and
+/// Close act on THAT pane — even when only one pane is open — never on the
+/// active pane. Swap Panels is mode-scoped, so it carries no pane and is
+/// enabled only in comparison mode.
 @MainActor
 final class TitleBarMenuTests: XCTestCase {
     enum ExpectedItem: Equatable {
@@ -28,9 +29,22 @@ final class TitleBarMenuTests: XCTestCase {
         .title("Close"),
     ]
 
-    /// The pane header menu: every File item, then Swap Panels in its own block.
+    /// The pane header menu: every File item, the header-only Show in Finder,
+    /// then Swap Panels in its own block.
     private var paneMenuItems: [ExpectedItem] {
-        fileMenuItems + [.separator, .title("Swap Panels")]
+        [
+            .title("New File"),
+            .title("Open…"),
+            .separator,
+            .title("Save"),
+            .title("Save As…"),
+            .title("Revert to Saved"),
+            .title("Show in Finder"),
+            .separator,
+            .title("Close"),
+            .separator,
+            .title("Swap Panels"),
+        ]
     }
 
     private func titlesAndSeparators(of menu: NSMenu) -> [ExpectedItem] {
@@ -132,6 +146,31 @@ final class TitleBarMenuTests: XCTestCase {
         mvc.apply(mode: .comparison)
         XCTAssertTrue(mvc.validateMenuItem(swap),
                       "Swap Panels is enabled in comparison mode")
+    }
+
+    /// Show in Finder is a header-only item that needs a file on disk: it is
+    /// disabled for an empty pane and for an untitled in-memory document (no
+    /// URL to reveal), and enabled once the pane holds a real file.
+    func testShowInFinderNeedsAFileOnDisk() throws {
+        let mvc = MainViewController()
+        let pane = mvc.windowModel.pane1
+        let showInFinder = try XCTUnwrap(
+            mvc.makePaneMenu(for: pane).items.first { $0.title == "Show in Finder" })
+        XCTAssertEqual(showInFinder.action, #selector(MainViewController.showPaneInFinder(_:)))
+        XCTAssertTrue(showInFinder.target === mvc)
+
+        // Empty pane: nothing on disk to reveal.
+        XCTAssertFalse(mvc.validateMenuItem(showInFinder))
+
+        // Untitled in-memory document: still no URL.
+        pane.openUntitled()
+        XCTAssertFalse(mvc.validateMenuItem(showInFinder))
+
+        // A real file on disk is revealable.
+        let url = try tempFile([UInt8](repeating: 0x41, count: 16))
+        defer { try? FileManager.default.removeItem(at: url) }
+        try pane.open(url: url)
+        XCTAssertTrue(mvc.validateMenuItem(showInFinder))
     }
 
     /// The controller wires the menu onto the pane header when it builds a pane,

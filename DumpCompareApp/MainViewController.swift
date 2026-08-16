@@ -641,6 +641,18 @@ final class MainViewController: NSViewController {
         }
     }
 
+    /// Reveals the right-clicked pane's file in the Finder (header context
+    /// menu). Resolves the pane the menu item was built for — so it shows the
+    /// file even when another pane is active — and needs a real file on disk:
+    /// an empty pane has nothing, and an untitled document has no URL to reveal.
+    @objc func showPaneInFinder(_ sender: Any?) {
+        guard let pane = pane(from: sender),
+              pane.isOpen,
+              !pane.isUntitled,
+              let url = pane.document?.url else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
     // MARK: - External change detection (§5.5)
 
     /// Wires each pane's watcher to the conflict prompt. Closures capture the
@@ -750,12 +762,12 @@ final class MainViewController: NSViewController {
     // MARK: - Pane header context menu (§4/§5)
 
     /// Builds the right-click menu for a pane's header. It carries the same
-    /// items as the menu bar's File submenu, but every item's action resolves
-    /// the pane captured here (via `representedObject`) — so New, Open, Save and
-    /// Close always act on the header that was right-clicked, even when another
-    /// pane is active or only one pane is open. A final separate block holds
-    /// Swap Panels, which is mode-scoped (comparison only) and so carries no
-    /// `representedObject`.
+    /// items as the menu bar's File submenu (plus the header-only Show in
+    /// Finder), and every item's action resolves the pane captured here (via
+    /// `representedObject`) — so New, Open, Save and Close always act on the
+    /// header that was right-clicked, even when another pane is active or only
+    /// one pane is open. A final separate block holds Swap Panels, which is
+    /// mode-scoped (comparison only) and so carries no `representedObject`.
     func makePaneMenu(for pane: PaneViewModel) -> NSMenu {
         let menu = NSMenu(title: "File")
         func add(_ title: String, _ action: Selector, _ key: String) {
@@ -769,6 +781,10 @@ final class MainViewController: NSViewController {
         add("Save", #selector(savePaneDocument(_:)), "s")
         add("Save As…", #selector(savePaneDocumentAs(_:)), "S")
         add("Revert to Saved", #selector(revertPaneDocument(_:)), "")
+        // Show in Finder is header-only: it reveals THIS pane's file in the
+        // Finder, which is a per-pane act, so the menu bar's File submenu
+        // (active-pane) doesn't duplicate it.
+        add("Show in Finder", #selector(showPaneInFinder(_:)), "")
         menu.addItem(.separator())
         add("Close", #selector(closePaneDocument(_:)), "w")
         // Swap Panels is a comparison-mode command, not a per-pane File action,
@@ -1518,6 +1534,11 @@ extension MainViewController: NSMenuItemValidation {
             // Context-menu items act on the pane they were built for.
             return pane(from: menuItem)?.isOpen ?? false
         case #selector(revertPaneDocument(_:)):
+            guard let pane = pane(from: menuItem) else { return false }
+            return pane.isOpen && !pane.isUntitled
+        case #selector(showPaneInFinder(_:)):
+            // A file must be on disk to reveal it in the Finder — an empty pane
+            // has nothing, and an untitled document has no URL.
             guard let pane = pane(from: menuItem) else { return false }
             return pane.isOpen && !pane.isUntitled
         case #selector(copyPaneSelection(_:)),
