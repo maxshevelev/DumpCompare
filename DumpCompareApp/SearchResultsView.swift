@@ -153,6 +153,17 @@ final class SearchResultsView: NSView {
         ])
     }
 
+    /// The panel's background layer bakes `controlBackgroundColor` when `setUp`
+    /// runs — before the view is in a window — so switching to dark mode left
+    /// the panel white. Re-resolve the dynamic color here, where the effective
+    /// appearance is authoritative (§3.1).
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        }
+    }
+
     private func setUpTable() {
         let offsetColumn = NSTableColumn(identifier: ColumnID.offset)
         offsetColumn.title = "Offset"

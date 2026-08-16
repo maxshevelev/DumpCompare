@@ -43,6 +43,11 @@ final class FindBarView: NSView {
     private let prevButton = NSButton()
     private let nextButton = NSButton()
     private let divider = NSView()
+    /// The 1px rule between the bar and the pane below. A property (not a local)
+    /// so `viewDidChangeEffectiveAppearance` can re-resolve its dynamic colour
+    /// on a theme switch — a layer background baked in `setUp` would otherwise
+    /// keep the launch theme's pixels (§3.1).
+    private let separator = NSView()
     private let doneButton = NSButton()
     /// The Search All button: lists every occurrence of the pattern in the
     /// active pane's results panel (§11).
@@ -74,7 +79,6 @@ final class FindBarView: NSView {
         // between the title bar and the pane content.
         wantsLayer = true
         layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
-        let separator = NSView()
         separator.translatesAutoresizingMaskIntoConstraints = false
         separator.wantsLayer = true
         separator.layer?.backgroundColor = NSColor.separatorColor.cgColor
@@ -138,6 +142,22 @@ final class FindBarView: NSView {
         }
         patternCombo.setContentHuggingPriority(.defaultLow, for: .horizontal)
         patternCombo.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    }
+
+    /// Layer colors are resolved once when they are assigned: the
+    /// `controlBackgroundColor`/`separatorColor` CGColors baked in `setUp` are
+    /// captured before the bar is in a window, so a later switch to dark mode
+    /// leaves the bar white. Re-resolve every dynamic layer color here, where
+    /// the effective appearance is authoritative (§3.1).
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+            separator.layer?.backgroundColor = NSColor.separatorColor.cgColor
+            navGroup.layer?.borderColor = NSColor.separatorColor.cgColor
+            navGroup.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+            divider.layer?.backgroundColor = NSColor.separatorColor.cgColor
+        }
     }
 
     private func setUpPatternCombo() {

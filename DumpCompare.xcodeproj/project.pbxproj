@@ -30,6 +30,7 @@
 		1A2B3C4D5E6F708192A3B4C5 /* SelectionRedrawTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C3D4E5F60718293A4B5C6D7 /* SelectionRedrawTests.swift */; };
 		D0C1B2A39485766778899AAB /* ContentRedrawTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1E2D3C4B5A6978877665544 /* ContentRedrawTests.swift */; };
 		C9D0E1F2A3B4C5D6E7F8091A /* MainViewControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0E1F2A3B4C5D6E7F8091A2B /* MainViewControllerTests.swift */; };
+		E1F2A3B4C5D6E7F8091A2B3C /* PanelAppearanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2A3B4C5D6E7F8091A2B3C4D /* PanelAppearanceTests.swift */; };
 		55EFF117DEDC3F5F7AB1D851 /* CloseFileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35619EB218B8A77217CF90D9 /* CloseFileTests.swift */; };
 		59F525D82A21BA453FA1001C /* TitleBarMenuTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6B628E64567341A9AB617D6 /* TitleBarMenuTests.swift */; };
 		5B3F5E75CD647B8FBC63F2B0 /* FileChangeWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 443E56A308DC1D5D8E806F72 /* FileChangeWatcher.swift */; };
@@ -158,6 +159,7 @@
 		2C3D4E5F60718293A4B5C6D7 /* SelectionRedrawTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionRedrawTests.swift; sourceTree = "<group>"; };
 		F1E2D3C4B5A6978877665544 /* ContentRedrawTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentRedrawTests.swift; sourceTree = "<group>"; };
 		D0E1F2A3B4C5D6E7F8091A2B /* MainViewControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainViewControllerTests.swift; sourceTree = "<group>"; };
+		F2A3B4C5D6E7F8091A2B3C4D /* PanelAppearanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelAppearanceTests.swift; sourceTree = "<group>"; };
 		1B2C3D4E5F60718293A4B5C6 /* LayoutSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LayoutSettingsViewController.swift; sourceTree = "<group>"; };
 		3D4E5F60718293A4B5C6D7E8 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -276,6 +278,7 @@
 				2C3D4E5F60718293A4B5C6D7 /* SelectionRedrawTests.swift */,
 				F1E2D3C4B5A6978877665544 /* ContentRedrawTests.swift */,
 				D0E1F2A3B4C5D6E7F8091A2B /* MainViewControllerTests.swift */,
+				F2A3B4C5D6E7F8091A2B3C4D /* PanelAppearanceTests.swift */,
 				D56C7E4027097952395DD0AF /* NewFileAndSwapTests.swift */,
 				209E4194094A04377AA5F50F /* OffsetContextMenuTests.swift */,
 				7CC40FA3295CB53000898E26 /* OpenPlacementTests.swift */,
@@ -452,6 +455,7 @@
 				1A2B3C4D5E6F708192A3B4C5 /* SelectionRedrawTests.swift in Sources */,
 				D0C1B2A39485766778899AAB /* ContentRedrawTests.swift in Sources */,
 				C9D0E1F2A3B4C5D6E7F8091A /* MainViewControllerTests.swift in Sources */,
+				E1F2A3B4C5D6E7F8091A2B3C /* PanelAppearanceTests.swift in Sources */,
 				BBA569BD55CADEA84C29281E /* NewFileAndSwapTests.swift in Sources */,
 				7108A4ABF852A054F1F5E641 /* OffsetContextMenuTests.swift in Sources */,
 				9BACD1885C8A876AEBC95150 /* OpenPlacementTests.swift in Sources */,
