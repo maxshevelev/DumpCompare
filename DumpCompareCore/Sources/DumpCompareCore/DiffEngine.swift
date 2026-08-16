@@ -23,6 +23,50 @@ public enum DiffEdit: Equatable, Sendable {
         case .delete(let range): return range.lowerBound
         }
     }
+
+    /// Derives the single net edit an undo/redo transaction produces, given the
+    /// ops in the exact order they mutate storage (forward order for a redo;
+    /// inverse ops in reversed order for an undo). `DiffEngine.apply` is
+    /// self-correcting — it rescans against current bytes — so the edit only
+    /// needs to cover every offset the transaction could have changed:
+    /// - a length-changing transaction emits `.insert`/`.delete` from the
+    ///   earliest **pre-shift** op offset, which makes `apply` rescan that
+    ///   offset to EOF;
+    /// - a length-preserving transaction (all overwrites, in this app — a typing
+    ///   pair, a fill) emits `.overwrite` over its bounding window.
+    ///
+    /// Pre-shift bounds (not shifted by later inserts/deletes) are essential: an
+    /// overwrite rewrites bytes in place, so a later insert that lands after the
+    /// overwritten range does not move them — shifting the interval would put
+    /// the window past the changed bytes.
+    static func netDiffEdit(ops: [UndoOperation]) -> DiffEdit? {
+        guard !ops.isEmpty else { return nil }
+        var from = UInt64.max
+        var maxEnd: UInt64 = 0
+        var netDelta: Int64 = 0
+        for op in ops {
+            switch op {
+            case .overwrite(let range, _, _):
+                from = min(from, range.lowerBound)
+                maxEnd = max(maxEnd, range.upperBound)
+            case .insert(let at, let bytes):
+                from = min(from, at)
+                maxEnd = max(maxEnd, at + UInt64(bytes.count))
+                netDelta += Int64(bytes.count)
+            case .delete(let range, _):
+                from = min(from, range.lowerBound)
+                maxEnd = max(maxEnd, range.upperBound)
+                netDelta -= Int64(range.count)
+            }
+        }
+        if netDelta > 0 {
+            return .insert(at: from, length: UInt64(netDelta))
+        } else if netDelta < 0 {
+            return .delete(range: from..<(from + UInt64(-netDelta)))
+        } else {
+            return .overwrite(range: from..<maxEnd)
+        }
+    }
 }
 
 /// Compares two byte streams strictly by absolute offset (§8).

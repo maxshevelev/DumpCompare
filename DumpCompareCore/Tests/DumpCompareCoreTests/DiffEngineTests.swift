@@ -501,4 +501,65 @@ final class DiffEngineTests: XCTestCase {
         let p = await builder.progress
         XCTAssertEqual(p, 0)
     }
+
+    // MARK: - Net DiffEdit derivation (incremental undo/redo)
+
+    func testNetDiffEditSingleOverwrite() {
+        XCTAssertEqual(DiffEdit.netDiffEdit(ops: [
+            .overwrite(range: 5..<6, before: [0x00], after: [0xFF]),
+        ]), .overwrite(range: 5..<6))
+    }
+
+    func testNetDiffEditTypingPairCoalescesToOverwrite() {
+        // Two nibbles of one byte = two overwrites of the same range.
+        XCTAssertEqual(DiffEdit.netDiffEdit(ops: [
+            .overwrite(range: 5..<6, before: [0x00], after: [0xA0]),
+            .overwrite(range: 5..<6, before: [0x00], after: [0xA5]),
+        ]), .overwrite(range: 5..<6))
+    }
+
+    func testNetDiffEditSingleInsert() {
+        XCTAssertEqual(DiffEdit.netDiffEdit(ops: [
+            .insert(at: 2, bytes: [0xFF, 0xFE]),
+        ]), .insert(at: 2, length: 2))
+    }
+
+    func testNetDiffEditSingleDelete() {
+        XCTAssertEqual(DiffEdit.netDiffEdit(ops: [
+            .delete(range: 3..<6, bytes: [0x01, 0x02, 0x03]),
+        ]), .delete(range: 3..<6))
+    }
+
+    func testNetDiffEditReplaceShrinksToDelete() {
+        // replace(3..<8, [X, Y]) records an overwrite 3..<5 + delete 5..<8:
+        // a net delete of three bytes from the earliest affected offset.
+        XCTAssertEqual(DiffEdit.netDiffEdit(ops: [
+            .overwrite(range: 3..<5, before: [0x01, 0x02], after: [0xFF, 0xFE]),
+            .delete(range: 5..<8, bytes: [0x03, 0x04, 0x05]),
+        ]), .delete(range: 3..<6))
+    }
+
+    func testNetDiffEditOverwritePastEOFBecomesInsert() {
+        // overwrite 5..<6 + insert at 6 of 3 (the split applyOverwrite produces
+        // for a paste past EOF): net +3, and the earliest pre-shift offset is 5 —
+        // the overwritten byte stays at 5, so the insert must start there.
+        XCTAssertEqual(DiffEdit.netDiffEdit(ops: [
+            .overwrite(range: 5..<6, before: [0x00], after: [0xFF]),
+            .insert(at: 6, bytes: [0xAA, 0xBB, 0xCC]),
+        ]), .insert(at: 5, length: 3))
+    }
+
+    func testNetDiffEditUndoOfDeleteThenInsert() {
+        // Undo of a committed [delete(0..2), insert(at:4)] applies the inverses
+        // reversed: an overwrite 4..<6 then an insert at 0. The earliest
+        // pre-shift offset is 0, so the net edit is an insert there.
+        XCTAssertEqual(DiffEdit.netDiffEdit(ops: [
+            .overwrite(range: 4..<6, before: [0x01, 0x02], after: [0x01, 0x02]),
+            .insert(at: 0, bytes: [0x00, 0x00]),
+        ]), .insert(at: 0, length: 2))
+    }
+
+    func testNetDiffEditEmptyReturnsNil() {
+        XCTAssertNil(DiffEdit.netDiffEdit(ops: []))
+    }
 }

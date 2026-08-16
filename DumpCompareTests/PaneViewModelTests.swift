@@ -199,6 +199,52 @@ final class PaneViewModelTests: XCTestCase {
         XCTAssertEqual(pane.hexByteStates(in: 0..<1)[0].byte, 0xFF)
     }
 
+    func testUndoRestoresCaretRedoReappliesIt() throws {
+        let (pane, url) = try openPane([UInt8](repeating: 0, count: 200))
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.moveCaret(to: 5)
+        pane.typeASCII(0x41)
+        XCTAssertEqual(pane.caretOffset, 6)
+
+        XCTAssertTrue(try pane.undo())
+        XCTAssertEqual(pane.caretOffset, 5, "undo returns the caret to where typing began")
+
+        XCTAssertTrue(try pane.redo())
+        XCTAssertEqual(pane.caretOffset, 6, "redo lands the caret after the byte")
+    }
+
+    func testUndoReportsNetDiffEditAndSkipsFullInvalidation() throws {
+        let (pane, url) = try openPane([UInt8](repeating: 0, count: 200))
+        defer { try? FileManager.default.removeItem(at: url) }
+        var edits: [DiffEdit] = []
+        var fullInvalidations = 0
+        pane.onEdit = { edits.append($0) }
+        pane.onFullInvalidation = { fullInvalidations += 1 }
+
+        pane.moveCaret(to: 5)
+        pane.typeASCII(0x41)
+        edits.removeAll()   // the forward edit's own onEdit
+
+        try pane.undo()
+        XCTAssertEqual(edits, [.overwrite(range: 5..<6)],
+                       "undo derives the net edit of the typed byte — incremental, not a rebuild")
+        XCTAssertEqual(fullInvalidations, 0, "undo/redo must not trigger a full-file comparison rebuild")
+    }
+
+    func testFillUndoRedoRestoreCaretToSelectionStart() throws {
+        let (pane, url) = try openPane([0x00, 0x01, 0x02, 0x03, 0x04])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.setSelection(SelectionModel(start: 1, end: 4, fileSize: pane.fileSize))
+        pane.fillSelection(with: [0xFF])
+        XCTAssertEqual(pane.caretOffset, 1, "a fill leaves the caret at the selection start")
+
+        try pane.undo()
+        XCTAssertEqual(pane.caretOffset, 1, "undo returns to where the fill began")
+
+        try pane.redo()
+        XCTAssertEqual(pane.caretOffset, 1, "redo lands where the fill left the caret")
+    }
+
     // MARK: - Save / revert / modified detection
 
     func testSaveClearsDirtyAndRevertRestores() throws {

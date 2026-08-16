@@ -1,6 +1,19 @@
 import Cocoa
 import DumpCompareCore
 
+/// What changed in the pane's content, so the hex view can invalidate only the
+/// affected rows or columns instead of repainting the whole pane — the content
+/// counterpart of the selection-only redraw (§3.3 extension). The view model
+/// reports the affected region; the view computes the dirty screen rects from
+/// it.
+enum HexViewChange: Equatable {
+    /// Bytes were overwritten in this range — the glyphs and fills in those
+    /// rows must repaint. Row-granular: one whole row redraws per touched byte.
+    case bytes(in: Range<UInt64>)
+    /// The text decoder changed — only the decoded-text column is affected.
+    case textDecoding
+}
+
 /// Supplies the bytes and selection the hex view renders (§6).
 @MainActor
 protocol HexViewDataSource: AnyObject {
@@ -58,7 +71,13 @@ final class HexView: NSView {
     /// The active text decoder for the decoded-text column. The view model
     /// rebuilds this whenever the user changes the decoding settings.
     var textDecoder: any TextDecoder {
-        didSet { needsDisplay = true }
+        didSet {
+            // Only the decoded-text column is drawn from the decoder — the hex
+            // glyphs are decoder-independent. Invalidate just that band, so a
+            // decoding change repaints the ASCII column instead of the whole
+            // pane (§3.3 extension).
+            invalidateTextColumn()
+        }
     }
 
     override var isFlipped: Bool { true }
@@ -226,8 +245,22 @@ final class HexView: NSView {
 
     // MARK: - Data refresh
 
-    /// Recomputes the content frame and redraws. Call when the file size or
-    /// selection changes.
+    /// The local selection the view last drew (or last diffed against).
+    /// `reloadSelection()` compares the current selection against this to
+    /// invalidate only the rows whose appearance changed (§3.3).
+    private var lastDrawnSelection = SelectionModel.empty(at: 0, fileSize: 0)
+    /// The opposite pane's selection the view last drew (nil in single-file
+    /// mode, when there is nothing to mirror).
+    private var lastDrawnMirroredSelection: SelectionModel?
+    /// The caret's input region (hex/ASCII column) the view last drew. The
+    /// caret bar lives in one column or the other, so a region change moves it
+    /// without moving the selection — `reloadSelection()` invalidates the
+    /// caret's row for that (§3.3).
+    private var lastDrawnInputRegion: HexInputRegion?
+
+    /// Recomputes the content frame and redraws. Call when the file size,
+    /// layout, or content changes — anything a selection-only redraw cannot
+    /// cover.
     func reloadData() {
         currentLayout = makeLayout()
         let height = currentLayout.totalHeight(fileSize: dataSource?.fileSize ?? 0)
@@ -235,7 +268,147 @@ final class HexView: NSView {
         if width != frame.width || height != frame.height {
             setFrameSize(NSSize(width: width, height: height))
         }
+        // A full redraw repaints everything, so the diff baselines catch up to
+        // the current state — otherwise a later `reloadSelection` would
+        // invalidate rows this redraw already made current.
+        lastDrawnSelection = dataSource?.hexSelection() ?? SelectionModel.empty(at: 0, fileSize: 0)
+        lastDrawnMirroredSelection = dataSource?.hexMirroredSelection()
+        lastDrawnInputRegion = dataSource?.hexInputRegion()
         needsDisplay = true
+    }
+
+    /// Redraws only the rows whose rendering changed when the selection moved
+    /// (no bytes changed): the rows the old and new local selections cover
+    /// differently, plus the same for the mirrored selection. Called on every
+    /// drag-selection event and mirrored-caret move. A full `reloadData()` per
+    /// event was what made drag selection lag on tall windows — the redraw
+    /// cost there scaled with the number of visible rows (§3.3).
+    func reloadSelection() {
+        let newLocal = dataSource?.hexSelection() ?? SelectionModel.empty(at: 0, fileSize: 0)
+        let newMirrored = dataSource?.hexMirroredSelection()
+        let newRegion = dataSource?.hexInputRegion()
+        var rects = changedSelectionRects(from: lastDrawnSelection, to: newLocal)
+        if newMirrored != lastDrawnMirroredSelection {
+            rects += changedSelectionRects(
+                from: lastDrawnMirroredSelection ?? SelectionModel.empty(at: 0, fileSize: 0),
+                to: newMirrored ?? SelectionModel.empty(at: 0, fileSize: 0)
+            )
+        }
+        if newRegion != lastDrawnInputRegion {
+            // The caret bar moved between the hex and ASCII columns (a click
+            // into the other column): its row must repaint even though the
+            // selection itself did not change (§3.3).
+            let caret = newLocal.start
+            if caret < dataSource?.fileSize ?? 0 {
+                let row = Int(caret / UInt64(HexLayout.bytesPerRow))
+                rects.append(currentLayout.rowFrame(row: row))
+            }
+        }
+        lastDrawnSelection = newLocal
+        lastDrawnMirroredSelection = newMirrored
+        lastDrawnInputRegion = newRegion
+        for rect in rects {
+            setNeedsDisplay(rect)
+        }
+    }
+
+    /// Row frames whose selection rendering differs between `old` and `new`. A
+    /// selection change only ever moves its ends (or a bare caret), so the
+    /// affected rows are those spanning the gaps between the old and new
+    /// starts and ends — plus the rows a caret sits on, since a caret is drawn
+    /// at `start` while a selection fills from its anchor. Exposed (internal)
+    /// so tests can pin the exact invalidation contract (§3.3).
+    func changedSelectionRects(from old: SelectionModel, to new: SelectionModel) -> [CGRect] {
+        var rows = Set<Int>()
+        func addRows(in range: Range<UInt64>) {
+            guard range.lowerBound < range.upperBound else { return }
+            let first = Int(range.lowerBound / UInt64(HexLayout.bytesPerRow))
+            let last = Int((range.upperBound - 1) / UInt64(HexLayout.bytesPerRow))
+            guard last >= first else { return }
+            for row in first...last { rows.insert(row) }
+        }
+        if old.isEmpty && new.isEmpty {
+            // A bare caret moving: only the two caret rows change (the caret is
+            // drawn at `start`), not the whole span between them.
+            addRows(in: old.start..<old.start + 1)
+            addRows(in: new.start..<new.start + 1)
+        } else {
+            addRows(in: min(old.start, new.start)..<max(old.start, new.start))
+            addRows(in: min(old.end, new.end)..<max(old.end, new.end))
+            // A caret at `start` appears or disappears at the boundary of a
+            // selection; its row is not always inside the gaps above (e.g.
+            // selection → caret at a new offset).
+            if old.isEmpty { addRows(in: old.start..<old.start + 1) }
+            if new.isEmpty { addRows(in: new.start..<new.start + 1) }
+        }
+        guard !rows.isEmpty else { return [] }
+        // The selection's outline — the mirrored contour, the caret bar, the
+        // cross-column link — is a stroked line whose top/bottom edges sit on
+        // row boundaries when the selection ends at one, and its ~2px stroke
+        // (plus rounded corners) extends into the row past that boundary. A
+        // redraw of only the changed rows would leave the old far-end edge
+        // behind in the preserved row above/below. One row on each side of the
+        // changed set catches both the old and the new edge (§3.3).
+        var expanded = Set<Int>()
+        for row in rows {
+            if row > 0 { expanded.insert(row - 1) }
+            expanded.insert(row)
+            expanded.insert(row + 1)
+        }
+        return expanded.map { currentLayout.rowFrame(row: $0) }
+    }
+
+    /// Redraws only the rows/columns affected by a content change — byte
+    /// overwrites or a text-decoder change — instead of repainting the whole
+    /// pane. The content counterpart of `reloadSelection()`. Called by the pane
+    /// when the view model reports an edit (§3.3 extension).
+    func reloadContent(_ change: HexViewChange) {
+        for rect in contentChangeRects(change) {
+            setNeedsDisplay(rect)
+        }
+    }
+
+    /// The rects whose rendering changed with `change` — the content
+    /// counterpart of `changedSelectionRects`. `.bytes` invalidates the rows the
+    /// range spans, clamped to the visible viewport so a huge fill/paste costs
+    /// no more than the rows on screen (off-screen rows repaint fresh when
+    /// scrolled in — the virtualization guarantee). `.textDecoding` invalidates
+    /// the decoded-text column band of the visible viewport. Exposed (internal)
+    /// so tests can pin the exact invalidation contract (§3.3 extension).
+    func contentChangeRects(_ change: HexViewChange) -> [CGRect] {
+        let layout = currentLayout
+        let fileSize = dataSource?.fileSize ?? 0
+        let viewport = enclosingScrollView?.contentView.bounds ?? bounds
+        switch change {
+        case .bytes(let range):
+            guard range.lowerBound < range.upperBound, range.lowerBound < fileSize else { return [] }
+            let first = Int(range.lowerBound / UInt64(HexLayout.bytesPerRow))
+            let last = Int((min(range.upperBound, fileSize) - 1) / UInt64(HexLayout.bytesPerRow))
+            guard last >= first else { return [] }
+            // Intersect the range's rows with the viewport numerically, not by
+            // scanning every row in the range: a full-file fill/paste can span
+            // millions of rows, and the loop must cost only the rows on screen
+            // (off-screen rows repaint fresh when scrolled in — the
+            // virtualization guarantee). O(visible) regardless of range size.
+            let visible = layout.visibleRowRange(in: viewport)
+            let intersectFirst = max(first, visible.lowerBound)
+            let intersectLast = min(last, visible.upperBound - 1)
+            guard intersectLast >= intersectFirst else { return [] }
+            return (intersectFirst...intersectLast).map { layout.rowFrame(row: $0) }
+        case .textDecoding:
+            guard viewport.height > 0 else { return [] }
+            return [CGRect(x: layout.asciiX(column: 0), y: viewport.minY,
+                           width: layout.asciiColumnWidth, height: viewport.height)]
+        }
+    }
+
+    /// Invalidates the decoded-text column band of the visible viewport — the
+    /// rect a decoder change can affect. Shares its geometry with
+    /// `contentChangeRects(.textDecoding)`.
+    private func invalidateTextColumn() {
+        for rect in contentChangeRects(.textDecoding) {
+            setNeedsDisplay(rect)
+        }
     }
 
     private func makeLayout() -> HexLayout {
@@ -315,8 +488,15 @@ final class HexView: NSView {
     // MARK: - Drawing
 
     override func draw(_ dirtyRect: NSRect) {
+        // Confine all drawing to the dirty region: a selection-only redraw
+        // invalidates just the affected rows, and the rows outside them keep
+        // their previous pixels. Painting the whole bounds here (or drawing
+        // the mirror contour outside the dirty region) would wipe that
+        // preserved content (§3.3). With a full `needsDisplay = true` the
+        // dirty rect is the whole bounds, so nothing is lost.
+        NSBezierPath(rect: dirtyRect).addClip()
         NSColor.textBackgroundColor.setFill()
-        NSBezierPath(rect: bounds).fill()
+        NSBezierPath(rect: dirtyRect).fill()
 
         guard let dataSource else { return }
         let layout = currentLayout
@@ -326,13 +506,31 @@ final class HexView: NSView {
         let nibble = dataSource.hexCaretNibble()
         let region = dataSource.hexInputRegion()
 
+        // The three column bands a row can be asked to repaint. Each is tested
+        // against the dirty rect, so a `.textDecoding` change (which invalidates
+        // only the ASCII band) redraws just the decoded-text column instead of
+        // every glyph in every visible row; a full-width dirty rect draws all
+        // three, exactly as before (§3.3 extension).
+        let drawsOffset = CGRect(x: layout.leftPadding, y: 0,
+                                 width: layout.offsetColumnWidth, height: bounds.height)
+            .intersects(dirtyRect)
+        let hexBand = CGRect(x: layout.hexByteX(column: 0), y: 0,
+                             width: layout.hexByteX(column: HexLayout.bytesPerRow - 1)
+                                 + layout.hexByteWidth - layout.hexByteX(column: 0),
+                             height: bounds.height)
+        let asciiBand = CGRect(x: layout.asciiX(column: 0), y: 0,
+                               width: layout.asciiColumnWidth, height: bounds.height)
+        let drawsHex = hexBand.intersects(dirtyRect)
+        let drawsAscii = asciiBand.intersects(dirtyRect)
+
         let rows = layout.visibleRowRange(in: dirtyRect)
 
         for row in rows {
             guard UInt64(row) < rowCount else { break }
             drawRow(
                 row: row, layout: layout, fileSize: fileSize,
-                selection: selection, baseline: baseline
+                selection: selection, baseline: baseline,
+                drawsOffset: drawsOffset, drawsHex: drawsHex, drawsAscii: drawsAscii
             )
         }
 
@@ -367,34 +565,48 @@ final class HexView: NSView {
         }
     }
 
+    /// Draws one row, confined to the column bands the dirty rect intersects
+    /// (`drawsOffset`/`drawsHex`/`drawsAscii`). A full-width dirty rect draws all
+    /// three in exactly the previous order and output; a column-band-only dirty
+    /// rect (the decoded-text column after a decoding change) draws just that
+    /// band's fills and glyphs, skipping the ~33 hex/offset glyphs (§3.3
+    /// extension).
     private func drawRow(row: Int, layout: HexLayout, fileSize: UInt64,
-                         selection: SelectionModel, baseline: CGFloat) {
+                         selection: SelectionModel, baseline: CGFloat,
+                         drawsOffset: Bool, drawsHex: Bool, drawsAscii: Bool) {
         let rowStart = layout.byteOffset(row: row, column: 0)
         let rowEnd = rowStart + UInt64(HexLayout.bytesPerRow)
 
         // Offset column.
-        let offsetText = String(rowStart, radix: 16, uppercase: true).leftPadded(to: layout.offsetColumnChars, with: "0")
-        draw(text: offsetText, in: layout.offsetColumnFrame(row: row),
-             baseline: baseline, color: HexTheme.inkBlue)
+        if drawsOffset {
+            let offsetText = String(rowStart, radix: 16, uppercase: true).leftPadded(to: layout.offsetColumnChars, with: "0")
+            draw(text: offsetText, in: layout.offsetColumnFrame(row: row),
+                 baseline: baseline, color: HexTheme.inkBlue)
+        }
 
         let states = dataSource?.hexByteStates(in: rowStart..<rowEnd) ?? []
 
         // Backgrounds: EOF cells and the comparison difference stay per-byte;
         // the selection is one continuous fill across the whole selected span
         // of the row (§6), through the word and group gaps.
-        for column in 0..<HexLayout.bytesPerRow {
-            let state = states.indices.contains(column) ? states[column] : HexByteState(isEOF: true)
-            guard !state.isEOF else { continue }
-            let hexFrame = layout.hexByteFrame(row: row, column: column)
-            if state.isDifferent {
+        if drawsHex || drawsAscii {
+            for column in 0..<HexLayout.bytesPerRow {
+                let state = states.indices.contains(column) ? states[column] : HexByteState(isEOF: true)
+                guard !state.isEOF, state.isDifferent else { continue }
                 HexTheme.differenceFill.setFill()
-                NSBezierPath(rect: hexFrame).fill()
-                NSBezierPath(rect: CGRect(x: layout.asciiX(column: column), y: hexFrame.minY,
-                                          width: layout.charWidth, height: layout.rowHeight)).fill()
+                let hexFrame = layout.hexByteFrame(row: row, column: column)
+                if drawsHex {
+                    NSBezierPath(rect: hexFrame).fill()
+                }
+                if drawsAscii {
+                    NSBezierPath(rect: CGRect(x: layout.asciiX(column: column), y: hexFrame.minY,
+                                              width: layout.charWidth, height: layout.rowHeight)).fill()
+                }
             }
+            drawSelectionFill(row: row, rowStart: rowStart, rowEnd: rowEnd,
+                              selection: selection, layout: layout,
+                              drawsHex: drawsHex, drawsAscii: drawsAscii)
         }
-        drawSelectionFill(row: row, rowStart: rowStart, rowEnd: rowEnd,
-                          selection: selection, layout: layout)
 
         // Cell content: EOF placeholder styling and the per-byte glyphs.
         for column in 0..<HexLayout.bytesPerRow {
@@ -404,45 +616,59 @@ final class HexView: NSView {
                                    y: hexFrame.minY, width: layout.charWidth, height: layout.rowHeight)
 
             if state.isEOF {
-                HexTheme.eofFill.setFill()
-                NSBezierPath(rect: hexFrame).fill()
-                NSBezierPath(rect: asciiRect).fill()
-                // Style cue for EOF (§15): a fine diagonal hatch over the muted
-                // fill so the file's end reads without relying on color alone.
-                drawEOFHatch(in: [hexFrame, asciiRect])
+                var eofRects: [CGRect] = []
+                if drawsHex { eofRects.append(hexFrame) }
+                if drawsAscii { eofRects.append(asciiRect) }
+                if !eofRects.isEmpty {
+                    HexTheme.eofFill.setFill()
+                    for rect in eofRects { NSBezierPath(rect: rect).fill() }
+                    // Style cue for EOF (§15): a fine diagonal hatch over the
+                    // muted fill so the file's end reads without relying on
+                    // color alone.
+                    drawEOFHatch(in: eofRects)
+                }
                 continue
             }
 
             let textColor = HexTheme.textColor(for: state)
-            draw(text: hexDigits(state.byte), in: hexFrame, baseline: baseline, color: textColor)
-
-            let asciiChar = textDecoder.decode(state.byte)
-            let isDisplayable = textDecoder.isDisplayable(state.byte)
-            let asciiColor = isDisplayable ? textColor : HexTheme.mutedTextColor
-            draw(text: String(asciiChar), in: asciiRect, baseline: baseline, color: asciiColor)
+            if drawsHex {
+                draw(text: hexDigits(state.byte), in: hexFrame, baseline: baseline, color: textColor)
+            }
+            if drawsAscii {
+                let asciiChar = textDecoder.decode(state.byte)
+                let isDisplayable = textDecoder.isDisplayable(state.byte)
+                let asciiColor = isDisplayable ? textColor : HexTheme.mutedTextColor
+                draw(text: String(asciiChar), in: asciiRect, baseline: baseline, color: asciiColor)
+            }
         }
     }
 
     /// Fills the selection's span of `row` as one continuous rectangle through
     /// the hex column and one through the ASCII column — no gaps between words
-    /// or byte cells, and no gap between the two 8-byte groups (§6).
+    /// or byte cells, and no gap between the two 8-byte groups (§6). Each half
+    /// is drawn only when its column band is being repainted.
     private func drawSelectionFill(row: Int, rowStart: UInt64, rowEnd: UInt64,
-                                   selection: SelectionModel, layout: HexLayout) {
+                                   selection: SelectionModel, layout: HexLayout,
+                                   drawsHex: Bool, drawsAscii: Bool) {
         let selStart = max(selection.start, rowStart)
         let selEnd = min(selection.end, rowEnd)
         guard selStart < selEnd else { return }
         let firstColumn = Int(selStart - rowStart)
         let lastColumn = Int(selEnd - rowStart) - 1
         let rowFrame = layout.rowFrame(row: row)
-        let hexLeft = layout.hexByteX(column: firstColumn)
-        let hexRight = layout.hexByteX(column: lastColumn) + layout.hexByteWidth
-        let asciiLeft = layout.asciiX(column: firstColumn)
-        let asciiRight = layout.asciiX(column: lastColumn) + layout.charWidth
         HexTheme.selectionFill.setFill()
-        NSBezierPath(rect: CGRect(x: hexLeft, y: rowFrame.minY,
-                                  width: hexRight - hexLeft, height: layout.rowHeight)).fill()
-        NSBezierPath(rect: CGRect(x: asciiLeft, y: rowFrame.minY,
-                                  width: asciiRight - asciiLeft, height: layout.rowHeight)).fill()
+        if drawsHex {
+            let hexLeft = layout.hexByteX(column: firstColumn)
+            let hexRight = layout.hexByteX(column: lastColumn) + layout.hexByteWidth
+            NSBezierPath(rect: CGRect(x: hexLeft, y: rowFrame.minY,
+                                      width: hexRight - hexLeft, height: layout.rowHeight)).fill()
+        }
+        if drawsAscii {
+            let asciiLeft = layout.asciiX(column: firstColumn)
+            let asciiRight = layout.asciiX(column: lastColumn) + layout.charWidth
+            NSBezierPath(rect: CGRect(x: asciiLeft, y: rowFrame.minY,
+                                      width: asciiRight - asciiLeft, height: layout.rowHeight)).fill()
+        }
     }
 
     /// Draws a fine diagonal hatch over the given rects to mark EOF cells.
@@ -1034,11 +1260,28 @@ final class HexView: NSView {
         }
         contextMenuOffset = anchor.offset
         contextMenuFramesByte = anchor.framesByte
-        needsDisplay = true
+        invalidateContextMenuFrame()
         NSMenu.popUpContextMenu(menu, with: event, for: self)
         contextMenuOffset = nil
         contextMenuFramesByte = false
-        needsDisplay = true
+        invalidateContextMenuFrame()
+    }
+
+    /// Invalidates the rows the context-menu frame draws on — the anchor's row
+    /// plus one on each side, because the frame is a stroked line whose 2px
+    /// stroke sits on the row's top/bottom edges and bleeds a pixel into the
+    /// adjacent rows (the same convention as `changedSelectionRects`, §3.3).
+    /// The frame always lives inside a single row, so no whole-pane redraw is
+    /// needed to show or clear it (§3.3 extension).
+    private func invalidateContextMenuFrame() {
+        guard let contextMenuOffset else { return }
+        let row = currentLayout.rowColumn(of: contextMenuOffset).row
+        var rows = [row]
+        if row > 0 { rows.append(row - 1) }
+        rows.append(row + 1)
+        for invalidRow in rows {
+            setNeedsDisplay(currentLayout.rowFrame(row: invalidRow))
+        }
     }
 
     /// The anchor for a right-click context menu: the Offset column maps to the

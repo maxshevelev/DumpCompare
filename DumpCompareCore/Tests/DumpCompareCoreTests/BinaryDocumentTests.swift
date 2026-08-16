@@ -177,6 +177,43 @@ final class BinaryDocumentTests: XCTestCase {
         XCTAssertEqual(try readAll(doc), [0x00, 0x01])
     }
 
+    func testUndoRestoresCaretBeforeRedoRestoresCaretAfter() throws {
+        let (doc, _) = try makeDocument([0x00, 0x01, 0x02, 0x03, 0x04])
+        doc.setSelection(SelectionModel.empty(at: 3, fileSize: doc.size))
+        try doc.overwrite(range: 3..<4, with: [0xFF])
+
+        try doc.undo()
+        XCTAssertEqual(doc.selection.start, 3, "undo returns the caret to where the edit began")
+
+        try doc.redo()
+        XCTAssertEqual(doc.selection.start, 4, "redo lands the caret where the edit left it")
+    }
+
+    func testUndoRedoInsertCaret() throws {
+        let (doc, _) = try makeDocument([0x00, 0x01, 0x02])
+        doc.setSelection(SelectionModel.empty(at: 1, fileSize: doc.size))
+        try doc.insert(at: 1, bytes: [0xAA, 0xBB])
+        XCTAssertEqual(doc.selection.start, 1)  // insert doesn't move the caret
+
+        try doc.undo()
+        XCTAssertEqual(doc.selection.start, 1, "undo returns to the insert point")
+
+        try doc.redo()
+        XCTAssertEqual(doc.selection.start, 3, "redo restores the post-insert caret (at+count)")
+    }
+
+    func testFillCaretOverrideUsedOnUndoRedo() throws {
+        let (doc, _) = try makeDocument([0x00, 0x01, 0x02, 0x03])
+        doc.setSelection(SelectionModel(start: 1, end: 3, fileSize: doc.size))
+        try doc.fill(pattern: [0xFF], in: 1..<3, caretAfter: 1)
+
+        try doc.undo()
+        XCTAssertEqual(doc.selection.start, 1, "caretBefore = the selection start")
+
+        try doc.redo()
+        XCTAssertEqual(doc.selection.start, 1, "a fill leaves the caret at the range start (override)")
+    }
+
     func testRedoStackClearedOnNewEdit() throws {
         let (doc, _) = try makeDocument([0x00])
         try doc.overwrite(range: 0..<1, with: [0xAA])
@@ -189,7 +226,7 @@ final class BinaryDocumentTests: XCTestCase {
 
         try doc.undo()
         XCTAssertEqual(try readAll(doc), [0x00])
-        XCTAssertFalse(try doc.undo())          // nothing left before the first edit
+        XCTAssertNil(try doc.undo())            // nothing left before the first edit
     }
 
     func testSaveAsWritesNewFileAndUpdatesURL() throws {

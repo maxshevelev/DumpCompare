@@ -17,6 +17,36 @@ public enum UndoOperation: Equatable, Sendable {
     case overwrite(range: Range<UInt64>, before: [UInt8], after: [UInt8])
     case insert(at: UInt64, bytes: [UInt8])
     case delete(range: Range<UInt64>, bytes: [UInt8])
+
+    /// The op that reverts this one, for applying a transaction in reverse
+    /// (undo): an overwrite swaps its before/after bytes, an insert becomes the
+    /// delete of its bytes, a delete re-inserts its removed bytes.
+    var inverted: UndoOperation {
+        switch self {
+        case .overwrite(let range, let before, let after):
+            return .overwrite(range: range, before: after, after: before)
+        case .insert(let at, let bytes):
+            return .delete(range: at..<(at + UInt64(bytes.count)), bytes: bytes)
+        case .delete(let range, let bytes):
+            return .insert(at: range.lowerBound, bytes: bytes)
+        }
+    }
+}
+
+/// A committed undo step: the ops applied as a unit, plus the caret positions
+/// that bracket it — where the caret was when the edit started (`caretBefore`,
+/// restored by undo) and where it ended up after it (`caretAfter`, restored by
+/// redo). Captured by `BinaryDocument` at record time.
+public struct UndoTransaction: Equatable, Sendable {
+    public let ops: [UndoOperation]
+    public let caretBefore: UInt64
+    public let caretAfter: UInt64
+
+    public init(ops: [UndoOperation], caretBefore: UInt64, caretAfter: UInt64) {
+        self.ops = ops
+        self.caretBefore = caretBefore
+        self.caretAfter = caretAfter
+    }
 }
 
 /// Linear undo/redo history with a dirty checkpoint (decision D4).
@@ -32,7 +62,7 @@ public enum UndoOperation: Equatable, Sendable {
 ///
 /// This class is confined to a single thread (the document it belongs to).
 public final class UndoHistory: @unchecked Sendable {
-    private var history: [[UndoOperation]] = []
+    private var history: [UndoTransaction] = []
     private var cursor = 0
     private var savedIndex = 0
 
@@ -44,30 +74,32 @@ public final class UndoHistory: @unchecked Sendable {
     public var undoDepth: Int { cursor }
 
     /// Records a transaction of ops applied to storage. Any undone transactions
-    /// (the redo stack) are discarded, because the state has diverged.
-    public func record(_ ops: [UndoOperation]) {
+    /// (the redo stack) are discarded, because the state has diverged. The caret
+    /// pair records where the edit started and left the caret, so undo/redo can
+    /// restore it.
+    public func record(_ ops: [UndoOperation], caretBefore: UInt64 = 0, caretAfter: UInt64 = 0) {
         guard !ops.isEmpty else { return }
         if cursor < history.count {
             history.removeSubrange(cursor...)
         }
-        history.append(ops)
+        history.append(UndoTransaction(ops: ops, caretBefore: caretBefore, caretAfter: caretAfter))
         cursor = history.count
     }
 
-    /// Reverts the most recent committed transaction, returning its ops (in
-    /// committed order) for the caller to apply in reverse. Returns `nil` if
+    /// Reverts the most recent committed transaction, returning it (ops in
+    /// committed order, for the caller to apply in reverse). Returns `nil` if
     /// there is nothing to undo.
     @discardableResult
-    public func undo() -> [UndoOperation]? {
+    public func undo() -> UndoTransaction? {
         guard canUndo else { return nil }
         cursor -= 1
         return history[cursor]
     }
 
-    /// Reapplies the next undone transaction, returning its ops for the caller
-    /// to apply in order. Returns `nil` if there is nothing to redo.
+    /// Reapplies the next undone transaction, returning it for the caller to
+    /// apply in order. Returns `nil` if there is nothing to redo.
     @discardableResult
-    public func redo() -> [UndoOperation]? {
+    public func redo() -> UndoTransaction? {
         guard canRedo else { return nil }
         defer { cursor += 1 }
         return history[cursor]

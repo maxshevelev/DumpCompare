@@ -11,8 +11,8 @@ final class UndoHistoryTests: XCTestCase {
         history.record([op(0)])
         history.record([op(1)])
 
-        XCTAssertEqual(history.undo()?.count, 1)
-        XCTAssertEqual(history.undo()?.count, 1)
+        XCTAssertEqual(history.undo()?.ops.count, 1)
+        XCTAssertEqual(history.undo()?.ops.count, 1)
         XCTAssertNil(history.undo())
         XCTAssertFalse(history.canUndo)
         XCTAssertTrue(history.canRedo)
@@ -52,8 +52,8 @@ final class UndoHistoryTests: XCTestCase {
 
         history.record([op(2)])          // diverges: redo stack (t1) discarded
         XCTAssertFalse(history.canRedo)
-        XCTAssertEqual(history.undo()?.count, 1)  // t2
-        XCTAssertEqual(history.undo()?.count, 1)  // t0 still committed
+        XCTAssertEqual(history.undo()?.ops.count, 1)  // t2
+        XCTAssertEqual(history.undo()?.ops.count, 1)  // t0 still committed
         XCTAssertNil(history.undo())
     }
 
@@ -83,7 +83,27 @@ final class UndoHistoryTests: XCTestCase {
         let history = UndoHistory()
         history.record([op(0), op(1), op(2)])  // one transaction, three ops
         XCTAssertTrue(history.canUndo)
-        XCTAssertEqual(history.undo()?.count, 3) // all three revert together
+        XCTAssertEqual(history.undo()?.ops.count, 3) // all three revert together
         XCTAssertFalse(history.canUndo)
+    }
+
+    func testTransactionCarriesCaretPositions() {
+        let history = UndoHistory()
+        history.record([op(0)], caretBefore: 5, caretAfter: 6)
+        history.record([op(1)], caretBefore: 7, caretAfter: 8)
+
+        let undone = history.undo()
+        XCTAssertEqual(undone?.ops, [op(1)])
+        XCTAssertEqual(undone?.caretBefore, 7)
+        XCTAssertEqual(undone?.caretAfter, 8)
+
+        let redone = history.redo()
+        XCTAssertEqual(redone?.ops, [op(1)])
+        XCTAssertEqual(redone?.caretBefore, 7)
+        XCTAssertEqual(redone?.caretAfter, 8)
+
+        // Caret-less records (legacy callers) default to 0/0.
+        history.record([op(2)])
+        XCTAssertEqual(history.undo()?.caretBefore, 0)
     }
 }

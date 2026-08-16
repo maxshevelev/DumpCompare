@@ -106,6 +106,26 @@ final class PaneViewModel: HexViewDataSource {
     /// Called after any change so the view can redraw and refresh the status bar.
     var onChange: (() -> Void)?
 
+    /// Fired when only the caret/selection moved (no bytes changed), so the
+    /// view can redraw just the rows the selection now covers differently — the
+    /// hot path for mouse-drag selection, where a full redraw on every event
+    /// lags the cursor (§3.3).
+    var onSelectionChanged: (() -> Void)?
+
+    /// Fired after a content change — bytes overwritten in this pane, or its
+    /// text decoder rebuilt — carrying the affected region, so the view can
+    /// redraw only the affected rows/columns instead of the whole pane (§3.3
+    /// extension). Not fired for length-changing edits (insert/delete, paste
+    /// insert, undo/redo/revert, open/save) — those still use `onChange`.
+    var onContentChanged: ((HexViewChange) -> Void)?
+
+    /// Fired when the *companion* pane's bytes changed, so this pane can redraw
+    /// the rows the comparison-difference background now covers differently. A
+    /// hex-view redraw only — this pane's own content, status, and scroll are
+    /// untouched (the companion's own chrome refreshes via its
+    /// `onContentChanged`). Mirror of `onMirroredSelectionChanged`.
+    var onCompanionContentChanged: ((HexViewChange) -> Void)?
+
     /// Fired from `notify()` on every caret/selection change (and on edits too,
     /// since most move the caret). The navigation-enablement logic observes it
     /// to re-check whether a next/previous block still exists from the new
@@ -137,7 +157,10 @@ final class PaneViewModel: HexViewDataSource {
                 let store = TextDecodingSettingsStore()
                 let settings = store.settings
                 self.textDecoder = TextDecoderRegistry.make(identifier: settings.identifier, placeholder: settings.placeholder)
-                self.onChange?()
+                // A decoding change only affects the decoded-text column; the
+                // view redraws that band instead of the whole pane (§3.3
+                // extension).
+                self.onContentChanged?(.textDecoding)
             }
         }
     }
@@ -174,6 +197,7 @@ final class PaneViewModel: HexViewDataSource {
         // Announce the new document so the header glyph/name and the hex view
         // update immediately, not only on the next user action.
         notify()
+        notifyCompanionContentFullyChanged()
     }
 
     /// Opens a brand-new empty document in memory (File > New File). Nothing is
@@ -194,6 +218,7 @@ final class PaneViewModel: HexViewDataSource {
         changeWatcher?.stop()
         changeWatcher = nil
         notify()
+        notifyCompanionContentFullyChanged()
     }
 
     func close() {
@@ -246,6 +271,7 @@ final class PaneViewModel: HexViewDataSource {
         // Revert replaces the storage wholesale; the comparison must re-read.
         onFullInvalidation?()
         notify()
+        notifyCompanionContentFullyChanged()
     }
 
     /// The document's live byte storage — the same class instance across edits,
@@ -291,8 +317,15 @@ final class PaneViewModel: HexViewDataSource {
     /// Moves the caret's input region to `region` (set when the user clicks the
     /// hex or ASCII area).
     func setInputRegion(_ region: HexInputRegion) {
+        guard inputRegion != region else { return }
         inputRegion = region
-        notify()
+        // A region change only moves the caret bar between the hex and ASCII
+        // columns — the bytes are unchanged, so a selection-only redraw
+        // suffices (§3.3). The guard matters on the drag hot path:
+        // `mouseDragged` calls this on every event, and an unconditional full
+        // `notify()` there would rebuild and repaint the whole pane on each
+        // one, re-introducing the drag lag on tall windows.
+        notify(selectionChangedOnly: true)
     }
 
     // MARK: - HexViewDataSource
@@ -400,17 +433,19 @@ final class PaneViewModel: HexViewDataSource {
     /// The two nibbles of a byte coalesce into one undo step.
     func typeHexNibble(_ digit: Int) {
         guard let doc = document, (0...15).contains(digit) else { return }
+        let sizeBefore = doc.size
 
+        let offset: UInt64
         if nibble == 0 {
             prepareForTyping()
-            let offset = typingOffset(doc)
+            offset = typingOffset(doc)
             let old = byteAt(offset) ?? 0
             beginTypingGroup()
             try? doc.overwrite(range: offset..<offset + 1, with: [(UInt8(digit) << 4) | (old & 0x0F)])
             nibble = 1
             onEdit?(.overwrite(range: offset..<offset + 1))
         } else {
-            let offset = typingOffset(doc)
+            offset = typingOffset(doc)
             let old = byteAt(offset) ?? 0
             try? doc.overwrite(range: offset..<offset + 1, with: [(old & 0xF0) | UInt8(digit)])
             nibble = 0
@@ -418,7 +453,7 @@ final class PaneViewModel: HexViewDataSource {
             advanceAfterByte()
             onEdit?(.overwrite(range: offset..<offset + 1))
         }
-        notify()
+        notifyAfterEdit(range: offset..<offset + 1, sizeBefore: sizeBefore)
     }
 
     /// Types one decoded-text character. The HexView validates the character
@@ -427,6 +462,7 @@ final class PaneViewModel: HexViewDataSource {
     /// edit: one undo step.
     func typeASCII(_ byte: UInt8) {
         guard let doc = document else { return }
+        let sizeBefore = doc.size
         endTypingGroup()
         prepareForTyping()
         let offset = typingOffset(doc)
@@ -434,7 +470,7 @@ final class PaneViewModel: HexViewDataSource {
         nibble = 0
         advanceAfterByte()
         onEdit?(.overwrite(range: offset..<offset + 1))
-        notify()
+        notifyAfterEdit(range: offset..<offset + 1, sizeBefore: sizeBefore)
     }
 
     /// Delete: fill the selection (or the current byte) with 0x00 (§7.3).
@@ -445,12 +481,14 @@ final class PaneViewModel: HexViewDataSource {
             fillSelection()
             return
         }
+        let sizeBefore = doc.size
         let caret = doc.selection.start
         guard caret < doc.size else { return }
-        try? doc.fillZero(in: caret..<caret + 1)
+        // Forward delete fills a byte but leaves the caret put — redo must too.
+        try? doc.fillZero(in: caret..<caret + 1, caretAfter: caret)
         nibble = 0
         onEdit?(.overwrite(range: caret..<caret + 1))
-        notify()
+        notifyAfterEdit(range: caret..<caret + 1, sizeBefore: sizeBefore)
     }
 
     /// Backspace: fill the selection (or the previous byte) with 0x00 and move
@@ -462,13 +500,16 @@ final class PaneViewModel: HexViewDataSource {
             fillSelection()
             return
         }
+        let sizeBefore = doc.size
         let caret = doc.selection.start
         guard caret > 0 else { return }
-        try? doc.fillZero(in: (caret - 1)..<caret)
+        // Backspace fills the previous byte and steps back one — redo must land
+        // there too, not at the (unmoved) caret.
+        try? doc.fillZero(in: (caret - 1)..<caret, caretAfter: caret - 1)
         doc.setSelection(SelectionModel.empty(at: caret - 1, fileSize: doc.size))
         nibble = 0
         onEdit?(.overwrite(range: (caret - 1)..<caret))
-        notify()
+        notifyAfterEdit(range: (caret - 1)..<caret, sizeBefore: sizeBefore)
     }
 
     /// Fill Selection with… (menu command, §7.3): repeats `pattern` across the
@@ -490,12 +531,14 @@ final class PaneViewModel: HexViewDataSource {
         overwriteSelection = nil
         onEdit?(.delete(range: range))
         notify()
+        notifyCompanionContentFullyChanged()
     }
 
     /// Paste Write: overwrite from the caret (or selection start), extending
     /// past EOF without confirmation (§7.1, §12.2).
     func pasteWrite(_ bytes: [UInt8]) throws {
         guard let doc = document, !bytes.isEmpty else { return }
+        let sizeBefore = doc.size
         let start = doc.selection.start
         let range = start..<start + UInt64(bytes.count)
         try doc.overwrite(range: range, with: bytes)
@@ -504,7 +547,9 @@ final class PaneViewModel: HexViewDataSource {
         // The engine's `.overwrite` recomputes `[start, end)`, which covers the
         // paste even when it extends past EOF (the recompute reads current bytes).
         onEdit?(.overwrite(range: range))
-        notify()
+        // A paste that extends past EOF grows the file, so the layout (frame
+        // height, caret row) must rebuild — `notifyAfterEdit` handles that.
+        notifyAfterEdit(range: range, sizeBefore: sizeBefore)
     }
 
     /// Paste Insert: insert before the caret (confirmed by the UI, §7.2/§12.3).
@@ -516,6 +561,7 @@ final class PaneViewModel: HexViewDataSource {
         resetEditingState()
         onEdit?(.insert(at: at, length: UInt64(bytes.count)))
         notify()
+        notifyCompanionContentFullyChanged()
     }
 
     // MARK: - Caret & selection
@@ -547,21 +593,21 @@ final class PaneViewModel: HexViewDataSource {
         }
         nibble = 0
         overwriteSelection = nil
-        notify()
+        notify(selectionChangedOnly: true)
     }
 
     func selectAll() {
         guard let doc = document else { return }
         doc.setSelection(SelectionModel(start: 0, end: doc.size, fileSize: doc.size))
         resetEditingState()
-        notify()
+        notify(selectionChangedOnly: true)
     }
 
     func setSelection(_ selection: SelectionModel) {
         guard let doc = document else { return }
         doc.setSelection(selection)
         resetEditingState()
-        notify()
+        notify(selectionChangedOnly: true)
     }
 
     /// Selects `range`, clamped to the file size (used by Find and Select Block).
@@ -569,7 +615,7 @@ final class PaneViewModel: HexViewDataSource {
         guard let doc = document else { return }
         doc.setSelection(SelectionModel(start: range.lowerBound, end: range.upperBound, fileSize: doc.size))
         resetEditingState()
-        notify()
+        notify(selectionChangedOnly: true)
     }
 
     /// Finds `pattern` in the current (unsaved) contents (§11). `from` is the
@@ -585,23 +631,32 @@ final class PaneViewModel: HexViewDataSource {
     @discardableResult
     func undo() throws -> Bool {
         guard let doc = document else { return false }
-        let ok = try doc.undo()
+        // Flush a pending typing group BEFORE undoing: a half-typed byte must be
+        // committed so undo reverts it (and keeps the redo stack intact) instead
+        // of skipping it for an older edit.
         resetEditingState()
-        // Undo applies inverse ops directly to storage; the comparison must
-        // re-derive the whole index rather than apply a single DiffEdit.
-        if ok { onFullInvalidation?() }
+        let edit = try doc.undo()   // restores the caret to where the edit began
+        if let edit {
+            // Undo mutates the storage in place, so the net DiffEdit updates the
+            // comparison incrementally — no full-file re-scan (§8.3).
+            onEdit?(edit)
+            notifyCompanionContentChanged(edit)
+        }
         notify()
-        return ok
+        return edit != nil
     }
 
     @discardableResult
     func redo() throws -> Bool {
         guard let doc = document else { return false }
-        let ok = try doc.redo()
         resetEditingState()
-        if ok { onFullInvalidation?() }
+        let edit = try doc.redo()   // restores the caret to where the edit left it
+        if let edit {
+            onEdit?(edit)
+            notifyCompanionContentChanged(edit)
+        }
         notify()
-        return ok
+        return edit != nil
     }
 
     // MARK: - Internals
@@ -670,23 +725,93 @@ final class PaneViewModel: HexViewDataSource {
 
     private func fillSelection(pattern: [UInt8]) {
         guard let doc = document else { return }
+        let sizeBefore = doc.size
         let start = doc.selection.start
         let end = doc.selection.end
-        try? doc.fill(pattern: pattern, in: start..<end)
+        // A fill leaves the caret at the selection start — redo must too.
+        try? doc.fill(pattern: pattern, in: start..<end, caretAfter: start)
         doc.setSelection(SelectionModel.empty(at: start, fileSize: doc.size))
         nibble = 0
         overwriteSelection = nil
         onEdit?(.overwrite(range: start..<end))
-        notify()
+        notifyAfterEdit(range: start..<end, sizeBefore: sizeBefore)
     }
 
-    private func notify() {
+    /// Reports a change to the view (and, where relevant, the companion's
+    /// view). Three routes, in increasing cost:
+    /// - `selectionChangedOnly`: a pure caret/selection move — the bytes are
+    ///   unchanged, so the view redraws only the rows the selection now covers
+    ///   differently (§3.3).
+    /// - `contentChange`: bytes overwritten or the decoder rebuilt — the view
+    ///   redraws just the affected rows/columns, and the companion redraws the
+    ///   same rows so its live diff background catches up (§3.3 extension).
+    /// - neither (plain `notify()`): a layout or lifecycle change (insert /
+    ///   delete, undo/redo, open/save/revert) — the whole pane repaints.
+    private func notify(selectionChangedOnly: Bool = false, contentChange: HexViewChange? = nil) {
         // Selections are independent per pane (§3.3): the companion must not
         // adopt this pane's selection — its hex view only redraws the frames
         // mirroring it.
         companion?.onMirroredSelectionChanged?()
-        onChange?()
+        if let contentChange {
+            // An edit in this pane changes the comparison difference in the
+            // companion: it redraws the affected rows so its diff background
+            // recomputes against the new bytes (§3.3 extension).
+            companion?.onCompanionContentChanged?(contentChange)
+            onContentChanged?(contentChange)
+        } else if selectionChangedOnly {
+            // A pure selection move (drag, click, keyboard, Find): the bytes
+            // are unchanged, so the view redraws only the rows the selection
+            // now covers differently instead of the whole pane (§3.3).
+            onSelectionChanged?()
+        } else {
+            onChange?()
+        }
         onCaretChanged?()
+    }
+
+    /// Reports an in-place byte edit. When the file size is unchanged, a
+    /// region-scoped content change — the affected rows redraw instead of the
+    /// whole pane; when the size grew or shrank, a full change, because the
+    /// layout (frame height, caret row) must rebuild.
+    private func notifyAfterEdit(range: Range<UInt64>, sizeBefore: UInt64) {
+        if document?.size == sizeBefore {
+            notify(contentChange: .bytes(in: range))
+        } else {
+            notify()
+        }
+    }
+
+    /// A structural edit — undo/redo, revert, a length-changing insert/delete,
+    /// opening a new document — can move or replace bytes at any offset, so no
+    /// single `.bytes(in:)` range describes it. The companion's diff background
+    /// is computed live in `hexByteStates`, so it only needs to repaint: tell
+    /// it the whole content may differ. The range spans both panes' sizes so
+    /// EOF-only differences past a shrunk pane's end are repainted too; the
+    /// view clamps invalidation to the visible viewport, keeping the cost
+    /// bounded (§3.3 extension). This mirrors `onMirroredSelectionChanged`:
+    /// without it, an undo/redo in one pane would leave the other pane's diff
+    /// background stale until that pane happened to repaint for its own reason.
+    private func notifyCompanionContentFullyChanged() {
+        let maxSize = max(document?.size ?? 0, companion?.fileSize ?? 0)
+        guard maxSize > 0 else { return }
+        companion?.onCompanionContentChanged?(.bytes(in: 0..<maxSize))
+    }
+
+    /// The companion's diff background for an undo/redo: repaint only the rows a
+    /// net edit can have changed, mirroring the edit's own invalidation. A
+    /// length-shifting edit (`.insert`/`.delete`) moves every offset at/after
+    /// its earliest point, so the companion repaints that range to EOF; a
+    /// length-preserving edit touches only its window.
+    private func notifyCompanionContentChanged(_ edit: DiffEdit) {
+        let maxSize = max(document?.size ?? 0, companion?.fileSize ?? 0)
+        let range: Range<UInt64>
+        switch edit {
+        case .overwrite(let r): range = r
+        case .insert(let at, _): range = at..<maxSize
+        case .delete(let r): range = r.lowerBound..<maxSize
+        }
+        guard range.lowerBound < maxSize else { return }
+        companion?.onCompanionContentChanged?(.bytes(in: range))
     }
 }
 

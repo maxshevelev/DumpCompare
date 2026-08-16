@@ -84,15 +84,19 @@ public final class BinaryDocument: @unchecked Sendable {
     }
 
     /// Overwrites `range` with zero bytes (§7.3: Delete/Backspace fill 0x00).
-    public func fillZero(in range: Range<UInt64>) throws {
-        try fill(pattern: [0], in: range)
+    /// `caretAfter` overrides the caret position redo restores (a fill leaves
+    /// the caret at the range start, not the upper bound).
+    public func fillZero(in range: Range<UInt64>, caretAfter: UInt64? = nil) throws {
+        try fill(pattern: [0], in: range, caretAfter: caretAfter)
     }
 
     /// Overwrites `range` by repeating `pattern` to cover it (§7.3 fill dialog).
     /// The final repetition is truncated when the range length isn't a multiple
     /// of the pattern length; a pattern longer than the range writes only its
     /// prefix. Recorded as an `.overwrite` so undo restores the original bytes.
-    public func fill(pattern: [UInt8], in range: Range<UInt64>) throws {
+    /// `caretAfter` overrides the caret position redo restores (a fill leaves
+    /// the caret at the range start, not the upper bound).
+    public func fill(pattern: [UInt8], in range: Range<UInt64>, caretAfter: UInt64? = nil) throws {
         guard !pattern.isEmpty else { return }
         let start = min(range.lowerBound, storage.size)
         let end = min(range.upperBound, storage.size)
@@ -105,7 +109,7 @@ public final class BinaryDocument: @unchecked Sendable {
             after.append(pattern[i % pattern.count])
         }
         try storage.overwrite(range: start..<end, with: after)
-        record([.overwrite(range: start..<end, before: before, after: after)])
+        record([.overwrite(range: start..<end, before: before, after: after)], caretAfter: caretAfter)
         clampSelection()
     }
 
@@ -127,20 +131,29 @@ public final class BinaryDocument: @unchecked Sendable {
 
     // MARK: - Undo / Redo
 
+    /// Reverts the most recent transaction: applies its inverse ops to storage
+    /// (each op's `inverted` in reverse order), restores the caret to where it
+    /// was when the edit started, and returns the net `DiffEdit` describing the
+    /// storage change — so a comparison can update incrementally instead of
+    /// re-scanning both files. `nil` when there is nothing to undo.
     @discardableResult
-    public func undo() throws -> Bool {
-        guard let ops = undoHistory.undo() else { return false }
-        for op in ops.reversed() { try applyInverse(op) }
-        clampSelection()
-        return true
+    public func undo() throws -> DiffEdit? {
+        guard let txn = undoHistory.undo() else { return nil }
+        let applied = txn.ops.reversed().map(\.inverted)
+        for op in applied { try applyForward(op) }
+        selection = SelectionModel.empty(at: min(txn.caretBefore, storage.size), fileSize: storage.size)
+        return DiffEdit.netDiffEdit(ops: applied)
     }
 
+    /// Reapplies the next undone transaction in its original order, restores the
+    /// caret to where the edit left it, and returns the net `DiffEdit` for the
+    /// storage change (see `undo()`). `nil` when there is nothing to redo.
     @discardableResult
-    public func redo() throws -> Bool {
-        guard let ops = undoHistory.redo() else { return false }
-        for op in ops { try applyForward(op) }
-        clampSelection()
-        return true
+    public func redo() throws -> DiffEdit? {
+        guard let txn = undoHistory.redo() else { return nil }
+        for op in txn.ops { try applyForward(op) }
+        selection = SelectionModel.empty(at: min(txn.caretAfter, storage.size), fileSize: storage.size)
+        return DiffEdit.netDiffEdit(ops: txn.ops)
     }
 
     // MARK: - Save / Revert
@@ -183,13 +196,21 @@ public final class BinaryDocument: @unchecked Sendable {
 
     // MARK: - Edit grouping (typing sessions coalesce into one undo)
 
-    public func beginEditGroup() { groupDepth += 1 }
+    public func beginEditGroup() {
+        if groupDepth == 0 { groupStartCaret = selection.start }
+        groupDepth += 1
+    }
 
     public func endEditGroup() {
         groupDepth -= 1
         if groupDepth == 0, !pendingGroupOps.isEmpty {
-            undoHistory.record(pendingGroupOps)
+            undoHistory.record(
+                pendingGroupOps,
+                caretBefore: groupStartCaret ?? selection.start,
+                caretAfter: naturalCaretAfter(pendingGroupOps)
+            )
             pendingGroupOps.removeAll()
+            groupStartCaret = nil
         }
     }
 
@@ -203,12 +224,32 @@ public final class BinaryDocument: @unchecked Sendable {
 
     private var groupDepth = 0
     private var pendingGroupOps: [UndoOperation] = []
+    /// The caret when the open edit group began (undo of a coalesced typing
+    /// session returns here).
+    private var groupStartCaret: UInt64?
 
-    private func record(_ ops: [UndoOperation]) {
+    /// Records ops as one transaction, capturing the caret pair: `caretBefore`
+    /// is the current selection start (mutations never move the caret before
+    /// recording), `caretAfter` is the override or the natural post-edit
+    /// position of the final op.
+    private func record(_ ops: [UndoOperation], caretAfter: UInt64? = nil) {
+        guard !ops.isEmpty else { return }
         if groupDepth > 0 {
             pendingGroupOps.append(contentsOf: ops)
         } else {
-            undoHistory.record(ops)
+            undoHistory.record(ops, caretBefore: selection.start, caretAfter: caretAfter ?? naturalCaretAfter(ops))
+        }
+    }
+
+    /// The caret position the final op of a transaction naturally leaves:
+    /// overwrite/fill end at the range's upper bound, insert at `at+count`,
+    /// delete at the range start.
+    private func naturalCaretAfter(_ ops: [UndoOperation]) -> UInt64 {
+        guard let last = ops.last else { return selection.start }
+        switch last {
+        case .overwrite(let range, _, _): return range.upperBound
+        case .insert(let at, let bytes): return at + UInt64(bytes.count)
+        case .delete(let range, _): return range.lowerBound
         }
     }
 
@@ -250,14 +291,4 @@ public final class BinaryDocument: @unchecked Sendable {
         }
     }
 
-    private func applyInverse(_ op: UndoOperation) throws {
-        switch op {
-        case .overwrite(let range, let before, _):
-            try storage.overwrite(range: range, with: before)
-        case .insert(let at, let bytes):
-            try storage.delete(range: at..<(at + UInt64(bytes.count)))
-        case .delete(let range, let bytes):
-            try storage.insert(at: range.lowerBound, bytes: bytes)
-        }
-    }
 }

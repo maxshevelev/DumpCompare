@@ -351,11 +351,30 @@ final class FilePaneView: NSView {
         viewModel.onChange = { [weak self] in
             self?.refresh()
         }
-        // When the companion's selection changes, redraw this pane's hex view
-        // so its mirror frames track the opposite pane (§3.3). A redraw only —
-        // this pane's own content, status, and scroll did not change.
+        // A pure selection move (drag, click, keyboard): the bytes are
+        // unchanged, so redraw only the rows the selection now covers
+        // differently instead of the whole pane (§3.3).
+        viewModel.onSelectionChanged = { [weak self] in
+            self?.refreshSelection()
+        }
+        // A content change — bytes overwritten in this pane, or its decoder
+        // rebuilt: redraw just the affected rows/columns and refresh the chrome
+        // that follows the caret, without a full `reloadData` (§3.3 extension).
+        viewModel.onContentChanged = { [weak self] change in
+            self?.refreshContent(change)
+        }
+        // The companion pane's bytes changed: this pane's comparison-difference
+        // background for those rows must repaint. A redraw only; this pane's
+        // own content, status, and scroll are untouched (§3.3 extension).
+        viewModel.onCompanionContentChanged = { [weak self] change in
+            self?.hexView.reloadContent(change)
+        }
+        // When the companion's selection changed, this pane's mirror frames
+        // moved — redraw only the rows those frames now cover differently. A
+        // redraw only; this pane's own content, status, and scroll are
+        // untouched (§3.3).
         viewModel.onMirroredSelectionChanged = { [weak self] in
-            self?.hexView.needsDisplay = true
+            self?.hexView.reloadSelection()
         }
     }
 
@@ -496,6 +515,38 @@ final class FilePaneView: NSView {
         hexView.revealCaret()
         updateHeader()
         updateStatus()
+    }
+
+    /// The selection-only counterpart of `refresh()`: the bytes are unchanged,
+    /// so the hex view redraws just the affected rows, and only the status bar
+    /// (whose offset/selection readout follows the caret) is updated. The
+    /// header, layout, and column header are untouched (§3.3).
+    private func refreshSelection() {
+        hexView.reloadSelection()
+        hexView.revealCaret()
+        updateStatus()
+    }
+
+    /// The content-change counterpart of `refresh()`: the bytes changed (or the
+    /// decoder rebuilt) but the layout did not, so the hex view redraws just the
+    /// affected rows/columns and the caret-following chrome is refreshed — no
+    /// `reloadData`, no column-header redraw (§3.3 extension).
+    private func refreshContent(_ change: HexViewChange) {
+        switch change {
+        case .bytes:
+            hexView.reloadContent(change)
+            // The edit moved the caret/selection — redraw the rows the
+            // selection now covers differently, and keep the caret on screen.
+            hexView.reloadSelection()
+            hexView.revealCaret()
+            // The dirty glyph and the offset/selection readout follow the edit.
+            updateHeader()
+            updateStatus()
+        case .textDecoding:
+            // Assigning the decoder invalidates the decoded-text band in the
+            // view (its `textDecoder` didSet).
+            hexView.textDecoder = viewModel.textDecoder
+        }
     }
 
     private func updateHeader() {
