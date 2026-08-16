@@ -339,13 +339,26 @@ final class HexView: NSView {
     /// at `start` while a selection fills from its anchor. Exposed (internal)
     /// so tests can pin the exact invalidation contract (§3.3).
     func changedSelectionRects(from old: SelectionModel, to new: SelectionModel) -> [CGRect] {
+        // Only the rows intersecting the visible viewport can need repainting;
+        // off-screen rows repaint fresh when scrolled in (the virtualization
+        // guarantee). A jump from the caret to a selection far away (a search
+        // result, Select Block) would otherwise insert every row between them —
+        // millions on a large file — and union that many display rects on the
+        // main thread (§3.3). The mirror of the `.bytes` clamp in
+        // `contentChangeRects`, so both stay O(visible) regardless of range.
+        let layout = currentLayout
+        let viewport = enclosingScrollView?.contentView.bounds ?? bounds
+        let visible = layout.visibleRowRange(in: viewport)
         var rows = Set<Int>()
         func addRows(in range: Range<UInt64>) {
             guard range.lowerBound < range.upperBound else { return }
             let first = Int(range.lowerBound / UInt64(HexLayout.bytesPerRow))
             let last = Int((range.upperBound - 1) / UInt64(HexLayout.bytesPerRow))
             guard last >= first else { return }
-            for row in first...last { rows.insert(row) }
+            let intersectFirst = max(first, visible.lowerBound)
+            let intersectLast = min(last, visible.upperBound - 1)
+            guard intersectLast >= intersectFirst else { return }
+            for row in intersectFirst...intersectLast { rows.insert(row) }
         }
         if old.isEmpty && new.isEmpty {
             // A bare caret moving: only the two caret rows change (the caret is

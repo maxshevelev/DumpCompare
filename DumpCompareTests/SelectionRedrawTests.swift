@@ -140,6 +140,36 @@ final class SelectionRedrawTests: XCTestCase {
         XCTAssertTrue(rects.isEmpty)
     }
 
+    /// A selection jumping far beyond the viewport (a search result, Select
+    /// Block) must invalidate only the on-screen rows — not every row between
+    /// the old and new positions, which on a large file is millions of display
+    /// rects unioned on the main thread. The virtualization guarantee that
+    /// bounds a jump's repaint cost, mirroring
+    /// `testBytesChangeClampsToVisibleRows` for the content path (§3.3).
+    func testFarSelectionJumpClampsToVisibleRows() throws {
+        // 5000 bytes ≈ 313 rows; the viewport shows ~30. Jumping the selection
+        // from the caret at 0 to byte 4000 spans ~250 rows but must redraw only
+        // the visible ones (plus their edge rows for the outline's stroke).
+        let (hexView, url) = try makePane([UInt8](repeating: 0, count: 5000))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let layout = hexView.hexLayout
+        let viewport = try XCTUnwrap(hexView.enclosingScrollView?.contentView.bounds)
+        let visible = layout.visibleRowRange(in: viewport)
+
+        let rects = hexView.changedSelectionRects(
+            from: selection(0, 0, size: 5000),
+            to: selection(4000, 4016, size: 5000))
+        let invalidated = rows(rects, rowHeight: layout.rowHeight)
+
+        // Only the visible rows plus one edge row on each side may repaint.
+        XCTAssertLessThanOrEqual(invalidated.count, visible.count + 2,
+                                 "a far selection jump must redraw only the visible rows plus their edges")
+        XCTAssertFalse(invalidated.contains { $0 > visible.upperBound },
+                       "no row below the viewport may be invalidated")
+        XCTAssertFalse(invalidated.contains { $0 < visible.lowerBound - 1 && $0 >= 0 },
+                       "no row above the viewport may be invalidated")
+    }
+
     /// The drag hot path (§3.3): `mouseDragged` drives `moveCaret(to:
     /// extendSelection:true)` and then reports the click's input region on
     /// every event. Before the fix the region report re-broadcast a *full*

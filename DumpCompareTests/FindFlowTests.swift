@@ -668,4 +668,61 @@ final class FindFlowTests: XCTestCase {
         XCTAssertTrue(cancelled, "the × button must route to the operation's cancel action")
     }
 
+    /// A search that must scan the whole file (2 GiB of zeros, pattern never
+    /// matches) must keep the main thread responsive and show the Searching…
+    /// strip with live progress — the same behaviour as indexing. This guards
+    /// against the search regressing into a synchronous scan that freezes the
+    /// app (§14.4).
+    func testLongSearchKeepsMainThreadResponsiveAndShowsProgress() throws {
+        // 2 GiB of 0x00; "FF FF" never occurs, so the scan covers the whole file.
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("find-long-\(UUID().uuidString).bin")
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: url)
+        let page = Data(repeating: 0x00, count: 1024 * 1024)
+        for _ in 0..<2048 { try handle.write(contentsOf: page) }
+        try handle.close()
+
+        let controller = MainViewController()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.contentViewController = controller
+        window.makeKeyAndOrderFront(nil)
+        try controller.windowModel.pane1.open(url: url)
+        controller.apply(mode: .singleFile)
+        window.layoutIfNeeded()
+        defer {
+            controller.windowModel.pane1.close()
+            try? FileManager.default.removeItem(at: url)
+        }
+
+        controller.findPattern()
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "FF FF"
+        try clickFindNext(window)
+
+        let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
+
+        // The strip must appear while the scan runs (long enough to clear the
+        // 0.3 s debounce) and the main thread must stay responsive: a main-queue
+        // block scheduled now fires promptly, not only once the search finishes.
+        XCTAssertTrue(pumpUntil(5) { !paneView.operationView.isHidden },
+                      "the Searching… strip must appear during a long search")
+        XCTAssertEqual(paneView.operationView.nameLabel.stringValue, "Searching…")
+
+        var mainQueueFired = false
+        let scheduledAt = Date()
+        DispatchQueue.main.async { mainQueueFired = true }
+        XCTAssertTrue(pumpUntil(2) { mainQueueFired },
+                      "the main thread must process work while the search scans")
+        XCTAssertLessThan(Date().timeIntervalSince(scheduledAt), 1.5,
+                          "a long search must not stall the main thread")
+
+        // The scan completes: the strip hides and the no-match message shows.
+        XCTAssertTrue(pumpUntil(30) { self.hasStatus("No match found.", in: window) },
+                      "the full-file scan must complete")
+        XCTAssertTrue(paneView.operationView.isHidden,
+                      "the strip must hide once the search finishes")
+    }
+
 }
