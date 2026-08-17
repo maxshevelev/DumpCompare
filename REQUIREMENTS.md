@@ -963,6 +963,10 @@ way to navigate them by pointing.
 - It is hidden by default. Toggling it is available from the toolbar (an
   item at the far right) and from the View menu, whose item names the
   action it will perform ("Show Minimap" / "Hide Minimap").
+- The toolbar toggle is a plain icon button, sized to its icon and set apart
+  from the difference navigation by a system space item — not by an empty
+  custom view, which the toolbar would draw inside the toggle's own
+  background, stretching it into an oblong capsule with the icon off-centre.
 - A second View item switches the render mode (§19.4). It is a checked item,
   not a flipping title: both modes are a minimap, so the check reads as which
   one is in use. It mirrors the header's switch, which is the primary control:

@@ -9,13 +9,8 @@ final class MainWindowController: NSWindowController {
     private(set) var diffNavigationGroup: NSToolbarItemGroup?
 
     /// The toolbar's minimap toggle button (the "sidebar.right" item at the
-    /// far right, past a fixed spacer). Held so the delegate can hand it out.
+    /// far right, past a standard space). Held so the delegate can hand it out.
     private(set) var minimapToggleItem: NSToolbarItem?
-    /// The fixed spacer separating the diff navigation block from the minimap
-    /// button, so the two don't crowd each other at the right edge (§19).
-    private var minimapSpacerItem: NSToolbarItem?
-    /// Width of the fixed spacer between the diff block and the minimap button.
-    private static let minimapSpacerWidth: CGFloat = 14
 
     init() {
         let controller = MainViewController()
@@ -318,22 +313,24 @@ extension NSToolbarItem.Identifier {
     static let nextDifference = NSToolbarItem.Identifier("NextDifference")
     /// The minimap show/hide toggle button at the toolbar's far right (§19).
     static let toggleMinimap = NSToolbarItem.Identifier("ToggleMinimap")
-    /// The fixed spacer between the diff navigation block and the minimap button.
-    static let minimapSpacer = NSToolbarItem.Identifier("MinimapSpacer")
 }
 
 extension MainWindowController: NSToolbarDelegate {
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         // The flexible space must be listed as allowed too, or AppKit drops it
         // from the default items and the diff block ends up on the LEFT edge.
-        [.flexibleSpace, .diffNavigation, .toggleMinimap, .minimapSpacer]
+        [.flexibleSpace, .diffNavigation, .toggleMinimap, .space]
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         // The flexible space before the block pins it to the toolbar's right
-        // edge; the minimap button sits past a fixed spacer, so the diff
-        // navigation and the panel toggle never crowd each other (§19).
-        [.flexibleSpace, .diffNavigation, .minimapSpacer, .toggleMinimap]
+        // edge; the minimap button sits past a standard space, so the diff
+        // navigation and the panel toggle never crowd each other (§19). The
+        // space must be a system one, not a custom empty view: AppKit draws a
+        // single background platter around adjacent items, and a view-backed
+        // spacer joins the toggle's platter — a wide capsule with the icon
+        // shoved against its right edge.
+        [.flexibleSpace, .diffNavigation, .space, .toggleMinimap]
     }
 
     func toolbar(_ toolbar: NSToolbar,
@@ -360,17 +357,6 @@ extension MainWindowController: NSToolbarDelegate {
                 minimapToggleItem = item
             }
             return minimapToggleItem
-        case .minimapSpacer:
-            if minimapSpacerItem == nil {
-                let item = NSToolbarItem(itemIdentifier: .minimapSpacer)
-                // A fixed-width empty view: a plain NSToolbarItem has no
-                // intrinsic width, so an explicit frame gives the spacer its
-                // size and separates the two right-edge groups (§19).
-                item.view = NSView(frame: NSRect(x: 0, y: 0,
-                                                 width: Self.minimapSpacerWidth, height: 24))
-                minimapSpacerItem = item
-            }
-            return minimapSpacerItem
         default:
             return nil
         }

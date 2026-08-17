@@ -219,8 +219,8 @@ final class MinimapTests: XCTestCase {
         _ = pumpUntil(1.0) { toolbar.items.count == 4 }
         let identifiers = toolbar.items.map(\.itemIdentifier)
         XCTAssertEqual(identifiers,
-                       [.flexibleSpace, .diffNavigation, .minimapSpacer, .toggleMinimap],
-                       "flexible space pins the diff block right; the spacer keeps the toggle past it")
+                       [.flexibleSpace, .diffNavigation, .space, .toggleMinimap],
+                       "flexible space pins the diff block right; a system space keeps the toggle past it")
 
         let toggle = toolbar.items.first { $0.itemIdentifier == .toggleMinimap }
         XCTAssertNotNil(toggle?.image, "the toggle shows the sidebar-right icon")
@@ -228,12 +228,44 @@ final class MinimapTests: XCTestCase {
         XCTAssertEqual(toggle?.action, #selector(MainViewController.toggleMinimap),
                        "the toggle drives the controller's minimap show/hide")
 
-        let spacer = toolbar.items.first { $0.itemIdentifier == .minimapSpacer }
-        if let spacer, let spacerView = spacer.view {
-            XCTAssertEqual(spacerView.frame.width, 14, accuracy: 0.5,
-                           "the fixed spacer separates the diff block from the toggle")
-        } else {
-            XCTFail("the minimap spacer item has a fixed-width view")
+        XCTAssertNil(toolbar.items.first { $0.view != nil },
+                     "no item carries a custom view: a view-backed spacer would be drawn "
+                     + "inside the toggle's own background platter")
+    }
+
+    /// The toggle's button and the background capsule behind it must be the
+    /// same size — the icon sits centred in a button sized for it, not pushed
+    /// against the edge of a capsule stretched to swallow a neighbour (§19.1).
+    func testTheMinimapToggleIsAsWideAsItsIcon() {
+        let wc = MainWindowController()
+        defer { wc.close() }
+        guard let window = wc.window else { return XCTFail("the controller has a window") }
+        window.makeKeyAndOrderFront(nil)
+        _ = pumpUntil(1.5) { window.toolbar?.items.count == 4 }
+        window.layoutIfNeeded()
+        guard let root = window.contentView?.superview else { return XCTFail("no theme frame") }
+
+        func descendants(of view: NSView) -> [NSView] {
+            view.subviews + view.subviews.flatMap(descendants(of:))
+        }
+        let views = descendants(of: root)
+        let icon = wc.minimapToggleItem?.image
+        let buttons = views.compactMap { $0 as? NSButton }
+        guard let toggle = buttons.first(where: { $0.image === icon }) else {
+            return XCTFail("the toolbar shows a button carrying the toggle's icon")
+        }
+        XCTAssertEqual(toggle.frame.width, toggle.intrinsicContentSize.width, accuracy: 1,
+                       "the button is exactly as wide as it wants to be")
+
+        // The capsule is a private view class, so match it by geometry: the
+        // ancestor-level view that sits behind the button. If AppKit stops
+        // drawing platters the check simply finds nothing.
+        let buttonInRoot = toggle.convert(toggle.bounds, to: root)
+        for platter in views where String(describing: type(of: platter)).contains("Platter") {
+            let platterInRoot = platter.convert(platter.bounds, to: root)
+            guard platterInRoot.intersects(buttonInRoot) else { continue }
+            XCTAssertEqual(platterInRoot.width, buttonInRoot.width, accuracy: 2,
+                           "the capsule behind the toggle is no wider than the button")
         }
     }
 
