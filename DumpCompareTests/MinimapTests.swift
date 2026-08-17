@@ -1540,4 +1540,142 @@ final class MinimapTests: XCTestCase {
         }
     }
 
+    // MARK: - Panel chrome: header switch, status bar, alignment (§19.2)
+
+    /// The panel's paper brightness, resolved in the appearance it draws in, so a
+    /// test can say "this pixel is not background" in either theme.
+    private func paperBrightness(_ panel: MinimapView) -> CGFloat {
+        var value: CGFloat = 1
+        panel.effectiveAppearance.performAsCurrentDrawingAppearance {
+            value = NSColor.textBackgroundColor.usingColorSpace(.deviceRGB)?.brightnessComponent ?? 1
+        }
+        return value
+    }
+
+    private func panelChrome(_ window: NSWindow) throws -> MinimapPanelView {
+        try XCTUnwrap(descendants(of: window.contentView!, MinimapPanelView.self).first,
+                      "the minimap panel's chrome")
+    }
+
+    /// The map has to start and end where the dump does: that is what the header
+    /// and the status bar are for (§19.2).
+    func testTheMapLinesUpWithTheDumpBesideIt() throws {
+        let (_, window, panel) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 4096))
+        let pane = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
+        let dump = pane.scrollView
+
+        // Compared as rectangles in window coordinates: converting a rect keeps
+        // the edges straight whatever each view's own flippedness is.
+        let map = panel.convert(panel.bounds, to: nil)
+        let bytes = dump.convert(dump.bounds, to: nil)
+        XCTAssertEqual(map.maxY, bytes.maxY, accuracy: 1, "the map starts where the bytes do")
+        XCTAssertEqual(map.minY, bytes.minY, accuracy: 1, "and ends where they do")
+    }
+
+    /// Stacked panes put one dump above the other and the panel's two maps cover
+    /// both, so the map area spans from the upper dump's top to the lower dump's
+    /// bottom. Aligning to one pane's dump would squeeze both maps into half the
+    /// panel.
+    func testTheMapsSpanBothDumpsWhenThePanesAreStacked() throws {
+        let (_, window) = try makeComparisonWindow(vertical: false, sizes: (8_000, 8_000))
+        let (split, panel) = try minimapViews(window)
+        split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+        let panes = descendants(of: window.contentView!, FilePaneView.self)
+        XCTAssertEqual(panes.count, 2, "two panes, one above the other")
+        let dumps = panes.map { $0.scrollView.convert($0.scrollView.bounds, to: nil) }
+        let upper = try XCTUnwrap(dumps.max(by: { $0.maxY < $1.maxY }))
+        let lower = try XCTUnwrap(dumps.min(by: { $0.minY < $1.minY }))
+        XCTAssertGreaterThan(upper.minY, lower.minY, "the fixture really is stacked")
+
+        let map = panel.convert(panel.bounds, to: nil)
+        XCTAssertEqual(map.maxY, upper.maxY, accuracy: 1, "the maps start at the upper dump")
+        XCTAssertEqual(map.minY, lower.minY, accuracy: 1, "and end at the lower one")
+    }
+
+    /// The switch in the header is the mode control the menu item duplicates
+    /// (§15), so the two have to agree in both directions.
+    func testTheHeaderSwitchChangesTheModeAndFollowsTheMenu() throws {
+        let (controller, window, panel) = try makeSingleFileWindow(
+            [UInt8](repeating: 0x41, count: 4096))
+        let chrome = try panelChrome(window)
+        XCTAssertEqual(panel.renderMode, .detail, "the fixture starts local")
+        XCTAssertEqual(chrome.modeSwitch.selectedSegment, 0)
+
+        chrome.modeSwitch.selectedSegment = 1
+        chrome.modeSwitch.sendAction(chrome.modeSwitch.action, to: chrome.modeSwitch.target)
+        XCTAssertEqual(panel.renderMode, .overview, "the switch drives the map")
+        XCTAssertEqual(isolatedDefaults.string(forKey: MainViewController.minimapRenderModeDefaultsKey),
+                       MinimapView.RenderMode.overview.rawValue, "and is remembered")
+
+        controller.toggleMinimapOverview()
+        XCTAssertEqual(panel.renderMode, .detail)
+        XCTAssertEqual(chrome.modeSwitch.selectedSegment, 0,
+                       "the menu item moves the switch with it")
+    }
+
+    /// The status bar carries the rebuild's progress and is empty otherwise.
+    func testTheStatusBarShowsProgressAndClearsItWhenTheRebuildLands() throws {
+        let (_, window, _) = try makeOverviewWindow([UInt8](repeating: 0x41, count: 256 * 1024))
+        let chrome = try panelChrome(window)
+        XCTAssertTrue(chrome.progressBar.isHidden, "a finished rebuild leaves nothing running")
+
+        chrome.setRebuildProgress(0.5)
+        XCTAssertFalse(chrome.progressBar.isHidden)
+        XCTAssertEqual(chrome.progressBar.doubleValue, 0.5, accuracy: 0.001)
+        chrome.setRebuildProgress(nil)
+        XCTAssertTrue(chrome.progressBar.isHidden, "and it goes away when the pass is over")
+    }
+
+    /// A resize re-bins the file, so the summary in hand is for the wrong height
+    /// until the background pass catches up. Until then the known picture is
+    /// stretched over the new height rather than leaving the map short (§19.9).
+    ///
+    /// The fixture is deliberately lopsided — erased flash over real content —
+    /// because a stretch has an orientation: `NSImage.draw` ignores a flipped
+    /// view unless told not to, and the first version of this drew the file
+    /// upside down until the exact pass replaced it.
+    func testAResizeStretchesTheOverviewKeepingItTheRightWayUp() throws {
+        let half = 512 * 1024
+        var bytes = [UInt8](repeating: 0xFF, count: half)
+        bytes += (0..<half).map { UInt8(0x20 + ($0 % 90)) }
+        let (_, window, panel) = try makeOverviewWindow(bytes)
+        let rowsBefore = try XCTUnwrap(panel.overviewSummaries.first?.rowCount)
+
+        // Grow the panel's height without letting the debounced rebuild run.
+        var frame = window.frame
+        frame.size.height += 240
+        window.setFrame(frame, display: false)
+        window.layoutIfNeeded()
+        XCTAssertNotEqual(panel.overviewRowCount(), rowsBefore, "the bins changed")
+        XCTAssertEqual(panel.overviewSummaries.first?.rowCount, rowsBefore,
+                       "and the summary has not caught up yet")
+
+        let paper = paperBrightness(panel)
+        let inset = MinimapView.contentPadding + 2
+        let right = panel.bounds.width - MinimapView.contentPadding - 2
+        func inkiness(atY y: CGFloat) throws -> CGFloat {
+            let samples = try sampleRow(panel, y: y, from: inset, to: right)
+            XCTAssertGreaterThan(samples.count, 20, "enough pixels to judge")
+            return samples.map { abs($0 - paper) }.reduce(0, +) / CGFloat(samples.count)
+        }
+        // The bottom of the map must be drawn at all — the point of the stand-in.
+        let bottom = try inkiness(atY: panel.bounds.maxY - 3)
+        XCTAssertGreaterThan(bottom, 0.05,
+                             "the map is drawn all the way down, not left blank")
+        // And the content half has to be the bottom half, as in the file.
+        let top = try inkiness(atY: panel.bounds.minY + 3)
+        XCTAssertGreaterThan(bottom, top * 2,
+                             "the erased half belongs at the top: top \(top), bottom \(bottom)")
+
+        // Once the exact pass lands, the map is back to one row per pixel.
+        XCTAssertTrue(pumpUntil(10.0) {
+            panel.overviewSummaries.first?.rowCount == panel.overviewRowCount()
+        }, "the exact picture arrives after the stand-in")
+        let exactTop = try inkiness(atY: panel.bounds.minY + 3)
+        let exactBottom = try inkiness(atY: panel.bounds.maxY - 3)
+        XCTAssertGreaterThan(exactBottom, exactTop * 2,
+                             "and the exact picture agrees on which half is which")
+    }
+
 }

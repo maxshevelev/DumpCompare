@@ -32,6 +32,10 @@ final class MainViewController: NSViewController {
     /// The right-hand minimap panel (hidden by default, toggled by the toolbar
     /// button). Internal so tests can assert its visibility (§19).
     let minimapView = MinimapView()
+
+    /// The map plus its chrome — the header's mode switch and the status bar's
+    /// rebuild progress (§19.2).
+    private(set) lazy var minimapPanel = MinimapPanelView(mapView: minimapView)
     /// The vertical split sharing the content area between the panes and the
     /// minimap. Internal so tests can toggle it and drive the divider (§19).
     let minimapSplit = MinimapSplitView()
@@ -142,9 +146,12 @@ final class MainViewController: NSViewController {
         minimapSplit.dividerStyle = .thin
         minimapSplit.delegate = self
         contentHost.translatesAutoresizingMaskIntoConstraints = false
-        minimapView.translatesAutoresizingMaskIntoConstraints = false
+        minimapPanel.translatesAutoresizingMaskIntoConstraints = false
         minimapSplit.addArrangedSubview(contentHost)
-        minimapSplit.addArrangedSubview(minimapView)
+        // The panel, not the bare map: its header carries the mode switch and
+        // its status bar the rebuild's progress, and together they align the map
+        // with the dump beside it (§19.2).
+        minimapSplit.addArrangedSubview(minimapPanel)
         contentContainer.addSubview(minimapSplit)
         NSLayoutConstraint.activate([
             minimapSplit.topAnchor.constraint(equalTo: contentContainer.topAnchor),
@@ -167,6 +174,29 @@ final class MainViewController: NSViewController {
         // the bins and the summary has to be recomputed (§19.4).
         minimapView.onOverviewRowCountChanged = { [weak self] in
             self?.scheduleOverviewRebuild()
+        }
+        minimapPanel.onModeChange = { [weak self] mode in
+            self?.setMinimapRenderMode(mode, remember: true)
+        }
+        // The panel aligns its own chrome with the dump, and asks where the dump
+        // is on every layout pass (§19.2).
+        minimapPanel.dumpAreaInWindow = { [weak self] in
+            guard let self else { return nil }
+            let panes: [FilePaneView]
+            if let comparison = self.comparisonView {
+                panes = [comparison.paneView1, comparison.paneView2]
+            } else if let pane = self.activeFilePane {
+                panes = [pane]
+            } else {
+                panes = []
+            }
+            let areas = panes.compactMap(\.dumpAreaInWindow)
+            guard let first = areas.first else { return nil }
+            // The maps span every dump: stacked panes (§3.3) put one above the
+            // other, and the panel's two maps cover both, so the span the chrome
+            // has to match is their union — not the first pane's dump, which
+            // ends halfway down the window.
+            return areas.dropFirst().reduce(first) { $0.union($1) }
         }
         // Showing the panel needs the current picture: while hidden it drew
         // nothing, so its maps and viewport are stale (§19).
@@ -485,12 +515,16 @@ final class MainViewController: NSViewController {
         if remember {
             MinimapView.defaults.set(mode.rawValue, forKey: Self.minimapRenderModeDefaultsKey)
         }
+        // The switch reflects the map's state whatever changed it — the menu
+        // item (§15), a file that defaults to overview, or the switch itself.
+        minimapPanel.showMode(mode)
         guard minimapView.renderMode != mode else { return }
         minimapView.setRenderMode(mode)
         if mode == .overview {
             scheduleOverviewRebuild()
         } else {
             overviewTask?.cancel()
+            reportOverviewProgress(nil)
         }
     }
 
@@ -539,6 +573,10 @@ final class MainViewController: NSViewController {
             return
         }
         overviewTask?.cancel()
+        beginOverviewProgress()
+        let progress = OverviewProgressSink(total: rowCount * sources.count) { [weak self] fraction in
+            self?.reportOverviewProgress(fraction)
+        }
         // The user is waiting for the picture, so this is user-initiated work,
         // and the two files are independent passes — running them together
         // halves the wait on a comparison.
@@ -550,7 +588,8 @@ final class MainViewController: NSViewController {
                     group.addTask {
                         (index, Self.overviewSummary(source: source, extent: extent,
                                                      rowCount: rowCount,
-                                                     shouldCancel: { Task.isCancelled }))
+                                                     shouldCancel: { Task.isCancelled },
+                                                     rowsDone: { progress.advance($0) }))
                     }
                 }
                 var built: [(Int, MinimapView.OverviewSummary)] = []
@@ -559,11 +598,89 @@ final class MainViewController: NSViewController {
             }
             guard !Task.isCancelled else { return }
             await MainActor.run { [weak self] in
-                guard let self, !Task.isCancelled,
-                      self.minimapView.renderMode == .overview else { return }
+                guard let self else { return }
+                self.reportOverviewProgress(nil)
+                guard !Task.isCancelled, self.minimapView.renderMode == .overview else { return }
                 self.minimapView.setOverviewSummaries(summaries)
             }
         }
+    }
+
+    /// Adds up what the concurrent passes have finished and reports it to the
+    /// panel's status bar, in twentieths: a progress bar told about every one of
+    /// a thousand rows would cost more than the pass it measures.
+    private final class OverviewProgressSink: @unchecked Sendable {
+        private let lock = NSLock()
+        private let total: Int
+        private var done = 0
+        private var reportedStep = -1
+        private let onChange: @Sendable (Double) -> Void
+
+        init(total: Int, onChange: @escaping @Sendable (Double) -> Void) {
+            self.total = max(1, total)
+            self.onChange = onChange
+        }
+
+        func advance(_ rows: Int) {
+            lock.lock()
+            done += rows
+            let fraction = min(1, Double(done) / Double(total))
+            let step = Int(fraction * 20)
+            let changed = step != reportedStep
+            if changed { reportedStep = step }
+            lock.unlock()
+            guard changed else { return }
+            Task { @MainActor in onChange(fraction) }
+        }
+    }
+
+    /// How long a rebuild has to run before its progress is worth showing. A
+    /// small dump is binned in a few milliseconds, and a bar that appeared for
+    /// one frame would read as a glitch rather than as progress.
+    static let overviewProgressDelay: Duration = .milliseconds(150)
+
+    /// The rebuild's latest progress, or nil when nothing is running.
+    private var overviewProgress: Double?
+    private var overviewProgressReveal: Task<Void, Never>?
+
+    /// Starts watching a rebuild: the bar appears only if the pass is still
+    /// going when the delay is up.
+    private func beginOverviewProgress() {
+        overviewProgress = 0
+        overviewProgressReveal?.cancel()
+        overviewProgressReveal = Task { [weak self] in
+            try? await Task.sleep(for: Self.overviewProgressDelay)
+            guard !Task.isCancelled, let self, let fraction = self.overviewProgress else { return }
+            self.minimapPanel.setRebuildProgress(fraction)
+        }
+    }
+
+    /// Moves the bar, or clears the status bar when the rebuild is over (nil).
+    private func reportOverviewProgress(_ fraction: Double?) {
+        overviewProgress = fraction
+        guard let fraction else {
+            overviewProgressReveal?.cancel()
+            overviewProgressReveal = nil
+            minimapPanel.setRebuildProgress(nil)
+            return
+        }
+        // Only move a bar that is already up; whether it appears at all is the
+        // reveal task's decision.
+        guard !minimapPanel.progressBar.isHidden else { return }
+        minimapPanel.setRebuildProgress(fraction)
+    }
+
+    /// Re-aligns the panel's chrome with the dump (§19.2). The panel measures the
+    /// dump itself on every layout pass; this is for the changes that move the
+    /// bytes without touching the panel's own frame — a new pane layout, an
+    /// opened Find bar (§11), a taller row (§6).
+    private func updateMinimapChrome() {
+        minimapPanel.needsLayout = true
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        updateMinimapChrome()
     }
 
     private func overviewSource(_ pane: PaneViewModel) -> OverviewSource {
@@ -625,7 +742,8 @@ final class MainViewController: NSViewController {
     /// by the file's size.
     nonisolated private static func overviewSummary(
         source: OverviewSource, extent: UInt64, rowCount: Int,
-        shouldCancel: () -> Bool
+        shouldCancel: () -> Bool,
+        rowsDone: (Int) -> Void = { _ in }
     ) -> MinimapView.OverviewSummary {
         let columns = Int(MinimapView.bytesPerRow)
         var density = [UInt8](repeating: 0, count: rowCount * columns)
@@ -650,8 +768,15 @@ final class MainViewController: NSViewController {
         }
 
         // Density: one read per row, counting the bytes that are not a fill.
+        // Progress is reported in blocks of rows, which is granular enough for a
+        // bar and rare enough not to matter to the pass.
+        var reportedRow = 0
         for row in 0..<rowCount {
             if shouldCancel() { return empty }
+            if row - reportedRow >= 64 {
+                rowsDone(row - reportedRow)
+                reportedRow = row
+            }
             let rowStart = extent * UInt64(row) / UInt64(rowCount)
             let rowEnd = extent * UInt64(row + 1) / UInt64(rowCount)
             let contentEnd = min(rowEnd, source.size)
@@ -673,6 +798,8 @@ final class MainViewController: NSViewController {
                 }
             }
         }
+
+        rowsDone(rowCount - reportedRow)
 
         // Modified: only where the edit overlay wrote, and only where the byte
         // really differs from the saved copy — the same rule the panes paint by.

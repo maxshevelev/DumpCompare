@@ -965,9 +965,23 @@ way to navigate them by pointing.
   action it will perform ("Show Minimap" / "Hide Minimap").
 - A second View item switches the render mode (§19.4). It is a checked item,
   not a flipping title: both modes are a minimap, so the check reads as which
-  one is in use.
+  one is in use. It mirrors the header's switch, which is the primary control:
+  the mode is a choice a reader makes constantly, so it must be one click
+  away, not buried in a menu.
 - The panel is never removed from the view hierarchy; hidden means its
   width is zero.
+- The panel is built like a pane (§3.4): a header, the map, and a status bar.
+  Their heights are derived from where the dump beside them actually is, so
+  the map's top and bottom edges land on the dump's — a bare map started
+  above the first byte row and ended below the last, and the two never read
+  as the same file. Whatever moves the bytes (a taller row §6, an open Find
+  bar §11) moves the map's edges with them.
+  - The header carries the mode switch (§19.4): Local ⇄ Overview, in the
+    band the panes put their file names in.
+  - The status bar carries the progress of a full overview rebuild (§19.9)
+    and is otherwise empty.
+  - The map keeps a minimum height: a Search All panel (§11) can take most
+    of a pane's height, and the chrome must not consume the map to match it.
 
 19.2 Panel width
 
@@ -1131,6 +1145,15 @@ The panes' visible slice is drawn as a translucent band over the map.
   the main thread, must be debounced, and must be cancelled when superseded.
   The two files of a comparison are independent passes and are computed
   concurrently.
+- A rebuild reports progress to the panel's status bar (§19.1). The bar
+  appears only if the pass outlives a short delay — a small dump is binned in
+  milliseconds, and a bar shown for one frame reads as a glitch — and is
+  cleared when the pass ends.
+- A resize re-bins the file, so the picture in hand is for the wrong height
+  until the rebuild lands. Until it does, that picture is stretched over the
+  map's new height rather than left short of it (or spilling past it), so a
+  resize is smooth and only its precision, not its content, lags behind.
+  The stretch keeps the file's orientation and marks its events visibly.
 
 19.8 Accessibility
 

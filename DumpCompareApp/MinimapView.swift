@@ -235,6 +235,7 @@ final class MinimapView: NSView {
         guard renderMode != mode else { return }
         renderMode = mode
         if mode == .detail { overviewSummaries = [] }
+        overviewStandIns = [:]
         updateTopRow()
         invalidateAll()
         if mode == .overview { onOverviewRowCountChanged?() }
@@ -245,6 +246,7 @@ final class MinimapView: NSView {
         guard overviewSummaries != summaries else { return }
         let damage = overviewDamage(from: overviewSummaries, to: summaries)
         overviewSummaries = summaries
+        overviewStandIns = [:]
         if let damage { invalidate(damage) } else { invalidateAll() }
     }
 
@@ -349,6 +351,7 @@ final class MinimapView: NSView {
         // invalidates them.
         if renderMode == .overview, extentChanged {
             overviewSummaries = []
+            overviewStandIns = [:]
             onOverviewRowCountChanged?()
         }
     }
@@ -496,6 +499,8 @@ final class MinimapView: NSView {
         // appearance, the same way the Find bar and the results panel do
         // (§3.1). The dynamic colours used in `draw` resolve per paint already.
         applyBackgroundColor()
+        // The stand-in has the old theme's colours baked into its pixels.
+        overviewStandIns = [:]
         invalidateAll()
     }
 
@@ -835,6 +840,15 @@ final class MinimapView: NSView {
               let summary = overviewSummary(forMapAt: index) else { return }
         let rowHeight = overviewRowHeight
         guard rowHeight > 0 else { return }
+        // A resized panel bins the file differently, so the picture in hand is
+        // for the wrong height until the background pass catches up. Rather than
+        // leave the map short (or spilling past it), stretch what is already
+        // known to the new height — the row axis is proportional in both, so a
+        // stretch is the same picture at the wrong precision (§19.9).
+        if summary.rowCount != overviewRowCount() {
+            drawOverviewStandIn(forMapAt: index, in: area)
+            return
+        }
         let cells = overviewColumnLayout(in: area)
         guard !cells.isEmpty else { return }
         let first = max(0, Int(floor((dirtyRect.minY - area.minY) / rowHeight)))
@@ -884,6 +898,113 @@ final class MinimapView: NSView {
                 rect.fill()
             }
         }
+    }
+
+    // MARK: - The stand-in picture across a resize (§19.9)
+
+    /// The picture at its own natural resolution — one pixel per row, one per
+    /// column — per map. Built from the summary rather than captured from the
+    /// screen, so it survives any number of resizes, and thrown away when the
+    /// summary or the theme changes.
+    private var overviewStandIns: [Int: NSImage] = [:]
+
+    /// Stretches the known picture over the map's current height. Nearest
+    /// neighbour, not smoothing: this stands in for exact pixels, so it should
+    /// read as the same picture at a coarser scale rather than as a blur.
+    private func drawOverviewStandIn(forMapAt index: Int, in area: NSRect) {
+        guard let image = overviewStandIn(forMapAt: index) else { return }
+        let context = NSGraphicsContext.current
+        let interpolation = context?.imageInterpolation ?? .default
+        context?.imageInterpolation = .none
+        // `respectFlipped` is not the default, and this view is flipped (row 0 is
+        // the file's start, at the top): without it the stand-in came out
+        // mirrored top to bottom until the exact pass replaced it.
+        image.draw(in: area, from: .zero, operation: .sourceOver, fraction: 1,
+                   respectFlipped: true, hints: [.interpolation: NSNumber(value: NSImageInterpolation.none.rawValue)])
+        context?.imageInterpolation = interpolation
+    }
+
+    /// Renders one map's summary into an image, or returns the one already built.
+    /// Called from `draw`, so the dynamic inks resolve against the appearance in
+    /// force; `viewDidChangeEffectiveAppearance` drops the cache.
+    private func overviewStandIn(forMapAt index: Int) -> NSImage? {
+        if let cached = overviewStandIns[index] { return cached }
+        guard let summary = overviewSummary(forMapAt: index) else { return nil }
+        let columns = Int(Self.bytesPerRow)
+        let rows = summary.rowCount
+        guard rows > 0, columns > 0 else { return nil }
+
+        /// The cell colours, flattened onto the panel's paper: the image is
+        /// opaque, so the translucent inks have to be composited here.
+        func flatten(_ colour: NSColor) -> (r: UInt8, g: UInt8, b: UInt8) {
+            let paper = Self.background.usingColorSpace(.deviceRGB) ?? .white
+            guard let ink = colour.usingColorSpace(.deviceRGB) else { return (0, 0, 0) }
+            let alpha = ink.alphaComponent
+            func mix(_ over: CGFloat, _ under: CGFloat) -> UInt8 {
+                UInt8(min(255, max(0, (over * alpha + under * (1 - alpha)) * 255)))
+            }
+            return (mix(ink.redComponent, paper.redComponent),
+                    mix(ink.greenComponent, paper.greenComponent),
+                    mix(ink.blueComponent, paper.blueComponent))
+        }
+        let ink = HexTheme.byteText
+        let tones = (0...255).map { flatten(ink.withAlphaComponent(Self.overviewTone(density: UInt8($0)))) }
+        let modifiedInk = flatten(HexTheme.modifiedText)
+        let differentInk = flatten(HexTheme.differenceFill)
+        let paper = flatten(Self.background)
+
+        var pixels = [UInt8](repeating: 0, count: columns * rows * 4)
+        let fileSize = maps.indices.contains(index) ? maps[index].fileSize : 0
+        let extent = max(summary.extent, 1)
+        for row in 0..<rows {
+            let modified = summary.modified.indices.contains(row) ? summary.modified[row] : 0
+            let different = summary.different.indices.contains(row) ? summary.different[row] : 0
+            let rowStart = extent * UInt64(row) / UInt64(rows)
+            let rowEnd = extent * UInt64(row + 1) / UInt64(rows)
+            let span = rowEnd - rowStart
+            for column in 0..<columns {
+                let bit = UInt16(1) << UInt16(column)
+                let densityIndex = row * columns + column
+                let density = summary.density.indices.contains(densityIndex)
+                    ? summary.density[densityIndex] : 0
+                let sliceStart = rowStart + span * UInt64(column) / UInt64(columns)
+                let isEvent = modified & bit != 0 || different & bit != 0
+                let colour: (r: UInt8, g: UInt8, b: UInt8)
+                if modified & bit != 0 {
+                    colour = modifiedInk
+                } else if different & bit != 0 {
+                    colour = differentInk
+                } else if sliceStart < fileSize {
+                    colour = tones[Int(density)]
+                } else {
+                    colour = paper
+                }
+                // An event covers its own row and the one below, the way the
+                // exact renderer draws it two pixels tall (§19.4.2): a single
+                // row of a thousand is what a downscale drops first.
+                for target in isEvent ? [row, min(rows - 1, row + 1)] : [row] {
+                    let offset = (target * columns + column) * 4
+                    pixels[offset] = colour.r
+                    pixels[offset + 1] = colour.g
+                    pixels[offset + 2] = colour.b
+                    pixels[offset + 3] = 255
+                }
+            }
+        }
+
+        guard let provider = CGDataProvider(data: Data(pixels) as CFData),
+              let cgImage = CGImage(width: columns, height: rows, bitsPerComponent: 8,
+                                    bitsPerPixel: 32, bytesPerRow: columns * 4,
+                                    space: CGColorSpaceCreateDeviceRGB(),
+                                    bitmapInfo: CGBitmapInfo(
+                                        rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                                    provider: provider, decode: nil,
+                                    shouldInterpolate: false, intent: .defaultIntent)
+        else { return nil }
+        let image = NSImage(cgImage: cgImage,
+                            size: NSSize(width: columns, height: rows))
+        overviewStandIns[index] = image
+        return image
     }
 
     /// The ink alpha for a cell holding `density` content, mapped into the tonal

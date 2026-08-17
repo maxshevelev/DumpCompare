@@ -84,6 +84,18 @@ final class FilePaneView: NSView {
         hexContentHeight + Self.headerHeight + Self.statusBarHeight + columnHeader.headerHeight
     }
 
+    /// The dump's own area in window coordinates — the rectangle the minimap
+    /// lines its map up with (§19.2). Nil until the pane is in a window.
+    ///
+    /// Measured rather than summed from the chrome constants, because the sum is
+    /// never quite right: the scroll view has its own inset, the split adds a
+    /// divider, and an open Find bar (§11) or a taller row (§6) moves the dump
+    /// besides. Whatever pushes the bytes around, this follows.
+    var dumpAreaInWindow: NSRect? {
+        guard window != nil else { return nil }
+        return scrollView.convert(scrollView.bounds, to: nil)
+    }
+
     private let titleLabel = NSTextField(labelWithString: "")
     /// The document glyph before the file name: "document" while the file is
     /// clean, "document.fill" once there are unsaved changes (§3.4). Tinted to
