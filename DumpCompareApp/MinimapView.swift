@@ -238,7 +238,7 @@ final class MinimapView: NSView {
             // The map's content (cells, selection) sits in a 10 pt side frame
             // away from the panel's side edges; the viewport rectangle
             // deliberately runs edge to edge past it (§ N).
-            let content = contentArea(within: area)
+            let content = contentArea(within: area, forMapAt: index)
             drawByteGrid(of: map, in: content, dirtyRect: dirtyRect)
             drawViewport(viewport: viewport(forMapAt: index), fileSize: map.fileSize,
                          in: area, dirtyRect: dirtyRect)
@@ -308,12 +308,25 @@ final class MinimapView: NSView {
     /// The padded region a map's content is drawn in: `area` inset by
     /// `contentPadding` on the sides only, so the file's lines sit in a frame
     /// away from the panel's side edges while running edge to edge top and
-    /// bottom. Never negative (a tiny map just collapses to no content).
-    private func contentArea(within area: NSRect) -> NSRect {
+    /// bottom. In side-by-side mode each map keeps only its outer padding: the
+    /// inner edges drop the inset so the two dumps meet at the gutter and the
+    /// visible gap between them is exactly the 1 % gutter — which scales with
+    /// the panel — rather than the gutter plus two fixed pads. Never negative
+    /// (a tiny map just collapses to no content).
+    private func contentArea(within area: NSRect, forMapAt index: Int) -> NSRect {
         let pad = Self.contentPadding
-        return NSRect(x: area.minX + pad, y: area.minY,
-                      width: max(0, area.width - pad * 2),
-                      height: area.height)
+        switch mapLayout {
+        case .single, .stacked:
+            return NSRect(x: area.minX + pad, y: area.minY,
+                          width: max(0, area.width - pad * 2),
+                          height: area.height)
+        case .sideBySide:
+            // index 0 keeps the left pad (outer edge), index 1 the right one.
+            let inset = index == 0 ? (area.minX + pad) : area.minX
+            return NSRect(x: inset, y: area.minY,
+                          width: max(0, area.width - pad),
+                          height: area.height)
+        }
     }
 
     /// The byte cells' geometry for a content region `areaWidth` wide: the x
