@@ -1002,3 +1002,16 @@ The panes' visible slice is drawn as a translucent band over the map.
 - Clicking the band itself begins a drag and must leave the caret alone.
 - A scroll wheel over the panel scrolls the panes.
 - Navigation by pointer must clamp at the file's start and end.
+
+19.8 Accessibility
+
+- The panel must expose itself as a single accessible element with a label
+  and a value describing which part of the file the panes are showing, in
+  the same terms the hex dump uses (hex offsets, size in bytes). Individual
+  byte cells must not be exposed: at this scale a single cell carries no
+  information a reader can use.
+- The pointer gestures the panel offers are not discoverable by a reader, so
+  it must also carry help text describing them.
+- The panel need not be a keyboard focus stop: every navigation it offers
+  must already be reachable from the keyboard in the panes (§10) and its
+  toggle from the View menu (§15).

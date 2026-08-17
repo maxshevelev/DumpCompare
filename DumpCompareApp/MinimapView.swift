@@ -628,6 +628,49 @@ final class MinimapView: NSView {
         NSRect(x: left, y: y, width: right - left, height: 1).fill()
     }
 
+    // MARK: - Accessibility (§15, §19)
+
+    /// The panel is one accessible element, not a grid of thousands of byte
+    /// cells: a 2 pt cell carries nothing a reader can use on its own, while the
+    /// panel as a whole has something worth saying — which part of the file the
+    /// panes are on. Every navigation it offers with the pointer is available
+    /// from the keyboard in the panes themselves (§10), so it is deliberately not
+    /// a keyboard focus stop; VoiceOver reaches it by exploring the window.
+    ///
+    /// A hidden panel is collapsed to zero width rather than removed from the
+    /// hierarchy, so it has to opt out explicitly — otherwise a minimap the user
+    /// has turned off would still be announced.
+    override func isAccessibilityElement() -> Bool { bounds.width >= 1 }
+
+    override func accessibilityRole() -> NSAccessibility.Role? { .group }
+
+    override func accessibilityRoleDescription() -> String? { "minimap" }
+
+    override func accessibilityLabel() -> String? { "Minimap" }
+
+    /// What the panes are showing, in the terms the hex dump announces (hex
+    /// offsets, size in bytes) — that is the actionable fact here, since the
+    /// map's own window follows the panes rather than moving on its own.
+    override func accessibilityValue() -> Any? {
+        guard !maps.isEmpty else { return "No file open." }
+        let sizes = maps.map(\.fileSize)
+        let sizeText = sizes.count > 1
+            ? "File sizes \(sizes[0]) and \(sizes[1]) bytes."
+            : "File size \(sizes[0]) bytes."
+        guard let visible = unifiedViewport() else {
+            return "Nothing visible. " + sizeText
+        }
+        let start = String(visible.lowerBound, radix: 16).uppercased()
+        let end = String(visible.upperBound, radix: 16).uppercased()
+        let subject = maps.count > 1 ? "Panes" : "Pane"
+        return "\(subject) showing 0x\(start) through 0x\(end). " + sizeText
+    }
+
+    override func accessibilityHelp() -> String? {
+        "Drag the highlighted band to scroll the file. "
+            + "Click elsewhere on the map to move the cursor to that byte."
+    }
+
     // MARK: - Dragging the viewport (§19)
 
     /// Where in the band the drag was grabbed, in points from the band's top, so

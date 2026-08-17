@@ -996,4 +996,62 @@ final class MinimapTests: XCTestCase {
         XCTAssertEqual(item.title, "Hide Minimap")
     }
 
+
+    // MARK: - Accessibility (§19.8)
+
+    /// The panel announces itself and what the panes are showing, and stays one
+    /// element rather than exposing thousands of byte cells.
+    func testMinimapAnnouncesWhatThePanesAreShowing() throws {
+        let (_, _, panel) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 100_000))
+        _ = pumpUntil(2.0) { panel.viewport(forMapAt: 0) != nil }
+
+        XCTAssertTrue(panel.isAccessibilityElement(), "reachable by VoiceOver")
+        XCTAssertEqual(panel.accessibilityRole(), .group)
+        XCTAssertEqual(panel.accessibilityRoleDescription(), "minimap")
+        XCTAssertEqual(panel.accessibilityLabel(), "Minimap")
+        XCTAssertNotNil(panel.accessibilityHelp(), "the pointer gestures need describing")
+
+        let visible = try XCTUnwrap(panel.viewport(forMapAt: 0))
+        let value = try XCTUnwrap(panel.accessibilityValue() as? String)
+        XCTAssertTrue(value.contains("0x" + String(visible.lowerBound, radix: 16).uppercased()),
+                      "the value names the first visible offset: \(value)")
+        XCTAssertTrue(value.contains("100000 bytes"), "and the file's size: \(value)")
+        XCTAssertTrue(value.hasPrefix("Pane showing"), "singular for one file: \(value)")
+    }
+
+    /// Comparison speaks of both panes and both file sizes.
+    func testMinimapValueCoversBothPanes() throws {
+        let (_, window) = try makeComparisonWindow(vertical: true, sizes: (8_000, 4_000))
+        let (split, panel) = try minimapViews(window)
+        split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+        _ = pumpUntil(2.0) { panel.viewport(forMapAt: 0) != nil }
+
+        let value = try XCTUnwrap(panel.accessibilityValue() as? String)
+        XCTAssertTrue(value.hasPrefix("Panes showing"), "plural for a comparison: \(value)")
+        XCTAssertTrue(value.contains("8000 and 4000 bytes"),
+                      "both sizes, since the two files differ: \(value)")
+    }
+
+    /// A minimap the user has turned off must not be announced: hiding collapses
+    /// the panel to zero width instead of removing it from the hierarchy.
+    func testHiddenPanelIsNotAnAccessibilityElement() throws {
+        let (_, window, panel) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 64))
+        XCTAssertTrue(panel.isAccessibilityElement(), "shown: announced")
+
+        let (split, _) = try minimapViews(window)
+        split.setPanelVisible(false, animated: false)
+        window.layoutIfNeeded()
+        XCTAssertFalse(panel.isAccessibilityElement(), "hidden: not announced")
+    }
+
+    /// With nothing open there is nothing to describe.
+    func testMinimapValueWithNoFileOpen() throws {
+        let (_, window) = try makeController()
+        let (split, panel) = try minimapViews(window)
+        split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+        XCTAssertEqual(panel.accessibilityValue() as? String, "No file open.")
+    }
+
 }
