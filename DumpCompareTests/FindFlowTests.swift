@@ -1426,7 +1426,19 @@ final class FindFlowTests: XCTestCase {
             func column(_ id: String) throws -> NSTableColumn {
                 try XCTUnwrap(view.tableView.tableColumns.first { $0.identifier.rawValue == id })
             }
-            return (try column("offset").width, try column("hex").width)
+            // Bound separately on purpose: do not fold this back into
+            // `return (try column("offset").width, try column("hex").width)`.
+            //
+            // That inline form crashes the Swift 6.2.4 type checker (Xcode 26.3)
+            // — a stack-guard fault in `TypeChecker::coerceToRValue` while the
+            // solution is applied — where 6.3.3 compiles it fine. Narrowed by
+            // bisection: a tuple of bare `try` calls is fine (`barControls`
+            // above returns one, and `(try width("offset"), try width("hex"))`
+            // compiles); what trips it is a *member access on a `try` call's
+            // result* inside a tuple element.
+            let offset = try column("offset").width
+            let hex = try column("hex").width
+            return (offset, hex)
         }
 
         let short = try widths("5A 5A")
