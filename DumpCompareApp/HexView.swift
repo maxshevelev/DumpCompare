@@ -346,6 +346,13 @@ final class HexView: NSView {
         }
     }
 
+    /// Past this many rows a per-row invalidation is replaced with one
+    /// full-bounds rect: emitting millions of rects would cost more than the
+    /// redraw it saves. It costs nothing in fidelity — layer-backed display
+    /// draws only the visible part of that rect now and keeps the rest invalid
+    /// until it is scrolled to (§3.3).
+    private static let maxInvalidatedRows: UInt64 = 4096
+
     /// Row frames whose selection rendering differs between `old` and `new`. A
     /// selection change only ever moves its ends (or a bare caret), so the
     /// affected rows are exactly those one selection covers and the other does
@@ -387,7 +394,7 @@ final class HexView: NSView {
         // display repaints that rect only where visible, so it stays O(visible)
         // per frame (§3.3).
         let totalBytes = ranges.reduce(UInt64(0)) { $0 + UInt64($1.count) }
-        if totalBytes / UInt64(HexLayout.bytesPerRow) > 4096 {
+        if totalBytes / UInt64(HexLayout.bytesPerRow) > Self.maxInvalidatedRows {
             return [bounds]
         }
 
@@ -463,36 +470,38 @@ final class HexView: NSView {
     }
 
     /// The rects whose rendering changed with `change` — the content
-    /// counterpart of `changedSelectionRects`. `.bytes` invalidates the rows the
-    /// range spans, clamped to the visible viewport so a huge fill/paste costs
-    /// no more than the rows on screen (off-screen rows repaint fresh when
-    /// scrolled in — the virtualization guarantee). `.textDecoding` invalidates
-    /// the decoded-text column band of the visible viewport. Exposed (internal)
-    /// so tests can pin the exact invalidation contract (§3.3 extension).
+    /// counterpart of `changedSelectionRects`, and it follows the same
+    /// off-screen rule.
+    ///
+    /// Nothing is clamped to the viewport. A layer-backed view keeps the pixels
+    /// of a row it has already drawn, so a byte changed while its row was off
+    /// screen still showed its old value when scrolled back to — the very reason
+    /// `changedSelectionRects` stopped clamping. Marking the off-screen rows is
+    /// cheap: the display draws only the visible part now and defers the rest
+    /// until it is scrolled into view. A range spanning more than
+    /// `maxInvalidatedRows` falls back to one full-bounds rect rather than
+    /// millions of per-row ones.
+    ///
+    /// `.bytes` invalidates the rows the range spans; `.textDecoding`
+    /// invalidates the decoded-text column band over the whole document, since
+    /// the decoder feeds every row's text, not just the visible ones. Exposed
+    /// (internal) so tests can pin the exact invalidation contract (§3.3
+    /// extension).
     func contentChangeRects(_ change: HexViewChange) -> [CGRect] {
         let layout = currentLayout
         let fileSize = dataSource?.fileSize ?? 0
-        let viewport = enclosingScrollView?.contentView.bounds ?? bounds
         switch change {
         case .bytes(let range):
             guard range.lowerBound < range.upperBound, range.lowerBound < fileSize else { return [] }
             let first = Int(range.lowerBound / UInt64(HexLayout.bytesPerRow))
             let last = Int((min(range.upperBound, fileSize) - 1) / UInt64(HexLayout.bytesPerRow))
             guard last >= first else { return [] }
-            // Intersect the range's rows with the viewport numerically, not by
-            // scanning every row in the range: a full-file fill/paste can span
-            // millions of rows, and the loop must cost only the rows on screen
-            // (off-screen rows repaint fresh when scrolled in — the
-            // virtualization guarantee). O(visible) regardless of range size.
-            let visible = layout.visibleRowRange(in: viewport)
-            let intersectFirst = max(first, visible.lowerBound)
-            let intersectLast = min(last, visible.upperBound - 1)
-            guard intersectLast >= intersectFirst else { return [] }
-            return (intersectFirst...intersectLast).map { layout.rowFrame(row: $0) }
+            guard UInt64(last - first) + 1 <= Self.maxInvalidatedRows else { return [bounds] }
+            return (first...last).map { layout.rowFrame(row: $0) }
         case .textDecoding:
-            guard viewport.height > 0 else { return [] }
-            return [CGRect(x: layout.asciiX(column: 0), y: viewport.minY,
-                           width: layout.asciiColumnWidth, height: viewport.height)]
+            guard bounds.height > 0 else { return [] }
+            return [CGRect(x: layout.asciiX(column: 0), y: 0,
+                           width: layout.asciiColumnWidth, height: bounds.height)]
         }
     }
 

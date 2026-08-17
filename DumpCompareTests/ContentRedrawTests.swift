@@ -71,16 +71,22 @@ final class ContentRedrawTests: XCTestCase {
         let (hexView, url) = try makePane([UInt8](repeating: 0, count: 200))
         defer { try? FileManager.default.removeItem(at: url) }
         let layout = hexView.hexLayout
-        let viewport = try XCTUnwrap(hexView.enclosingScrollView?.contentView.bounds)
 
-        // A decoder change repaints the decoded-text column of the visible
-        // viewport — nothing else.
+        // A decoder change repaints the decoded-text column and no other column
+        // — but over the whole document, not just the visible part: the decoder
+        // feeds every row's text, and a row already drawn keeps its pixels until
+        // it is marked dirty (§3.3).
         let rects = hexView.contentChangeRects(.textDecoding)
         XCTAssertEqual(rects.count, 1)
         XCTAssertEqual(rects[0].minX, layout.asciiX(column: 0))
         XCTAssertEqual(rects[0].width, layout.asciiColumnWidth)
-        XCTAssertEqual(rects[0].minY, viewport.minY)
-        XCTAssertEqual(rects[0].height, viewport.height)
+        XCTAssertEqual(rects[0].minY, 0)
+        XCTAssertEqual(rects[0].height, hexView.bounds.height)
+        // This fixture is *shorter* than the viewport, which is what makes the
+        // assertion above discriminating: clamped to the viewport the band would
+        // have been the taller of the two.
+        let viewport = try XCTUnwrap(hexView.enclosingScrollView?.contentView.bounds)
+        XCTAssertLessThan(rects[0].height, viewport.height)
     }
 
     func testRowBoundaryEditRedrawsBothRows() throws {
@@ -101,20 +107,44 @@ final class ContentRedrawTests: XCTestCase {
         XCTAssertTrue(union.isSuperset(of: [0, 1]))
     }
 
-    func testBytesChangeClampsToVisibleRows() throws {
-        // A file too big for the viewport: the dirty rects must cover only the
-        // on-screen rows, not every row the range spans — the virtualization
-        // guarantee that bounds a huge fill/paste's invalidation cost.
+    func testBytesChangeInvalidatesOffScreenRowsToo() throws {
+        // A file taller than the viewport. Every row the range spans must be
+        // marked dirty, on screen or not: a layer-backed view keeps a drawn
+        // row's pixels, so an off-screen byte change would still show its old
+        // value when scrolled back to. Off-screen invalidation is deferred by
+        // the display, so it costs nothing now (§3.3).
         let (hexView, url) = try makePane([UInt8](repeating: 0, count: 5000))
         defer { try? FileManager.default.removeItem(at: url) }
         let layout = hexView.hexLayout
         let viewport = try XCTUnwrap(hexView.enclosingScrollView?.contentView.bounds)
-        let expectedRows = Set(layout.visibleRowRange(in: viewport))
+        let visibleRows = Set(layout.visibleRowRange(in: viewport))
 
         let rects = hexView.contentChangeRects(.bytes(in: 0..<5000))
         let invalidated = rows(rects, rowHeight: layout.rowHeight)
-        XCTAssertEqual(invalidated, expectedRows)
-        XCTAssertLessThan(invalidated.count, 5000 / 16, "the visible rows must be far fewer than all the file's rows")
+        // 5000 bytes span rows 0...312 (the last row is partial).
+        XCTAssertEqual(invalidated, Set(0...((5000 - 1) / 16)), "every row the range spans")
+        XCTAssertTrue(invalidated.isStrictSuperset(of: visibleRows),
+                      "which is strictly more than the rows on screen")
+    }
+
+    func testHugeBytesChangeFallsBackToOneFullBoundsRect() throws {
+        // Past the per-row threshold the invalidation collapses to a single
+        // full-bounds rect instead of emitting a rect per row. Layer-backed
+        // display still draws only the visible part of it, so fidelity is
+        // unchanged (§3.3).
+        let rows = 5000
+        let (hexView, url) = try makePane([UInt8](repeating: 0, count: rows * 16))
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let rects = hexView.contentChangeRects(.bytes(in: 0..<UInt64(rows * 16)))
+        XCTAssertEqual(rects.count, 1, "one rect, not \(rows)")
+        XCTAssertEqual(rects[0], hexView.bounds)
+
+        // Just under the threshold it is still one rect per row.
+        let (smallView, smallURL) = try makePane([UInt8](repeating: 0, count: 4000 * 16))
+        defer { try? FileManager.default.removeItem(at: smallURL) }
+        let smallRects = smallView.contentChangeRects(.bytes(in: 0..<UInt64(4000 * 16)))
+        XCTAssertEqual(smallRects.count, 4000)
     }
 
     // MARK: - Notification channels
@@ -259,12 +289,12 @@ final class ContentRedrawTests: XCTestCase {
 
         try paneA.deleteBytes(in: 8..<16)      // A: 100 → 92; B still 100
         XCTAssertEqual(companionContent, [.bytes(in: 0..<100)],
-                       "a delete shifts every byte at/past 8, so the companion repaints all visible rows")
+                       "a delete shifts every byte at/past 8, so the companion repaints every row")
 
         companionContent.removeAll()
         try paneA.pasteInsert([0xFF, 0xFE])    // A: 92 → 94
         XCTAssertEqual(companionContent, [.bytes(in: 0..<100)],
-                       "an insert shifts every byte at/past the caret, so the companion repaints all visible rows")
+                       "an insert shifts every byte at/past the caret, so the companion repaints every row")
     }
 
     /// Undo of a length-changing edit derives its net DiffEdit (a delete here),

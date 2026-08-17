@@ -690,6 +690,8 @@ Requirements:
 6. Undo history may use memory plus temporary disk storage.
 7. Diff and search must process files incrementally.
 8. UI must remain responsive while processing large files.
+9. Redrawing must be partial: a change repaints the rows and columns it
+   affects, not the whole pane.
 
 Recommended architecture:
 
@@ -705,6 +707,14 @@ Performance expectations:
 - Visible row rendering should be fast.
 - Visible diff highlighting after edits should be near-instant.
 - Full-file diff/search may run in background with progress.
+- A change must mark every row it affects for repaint, including rows that are
+  currently off screen. A row that has already been drawn keeps its pixels
+  until it is marked dirty, so clamping the invalidation to the visible area
+  leaves a stale row on screen the moment it is scrolled back to. Marking
+  off-screen rows costs nothing now: the display draws only the visible part
+  and defers the rest until it is scrolled into view.
+- Where a change spans very many rows, one whole-view invalidation is preferred
+  to a rect per row; the display still draws only the visible part of it.
 
 =====================================================================
 14. INTERNAL ARCHITECTURE
