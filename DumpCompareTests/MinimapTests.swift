@@ -842,4 +842,158 @@ final class MinimapTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(panel.frame.width, MinimapSplitView.minPanelWidth - 1,
                                     "the parked width is applied by the first layout")
     }
+
+    // MARK: - Clicking places the caret (§19.7)
+
+    /// A click away from the band means the byte drawn at that point: the caret
+    /// moves there — row from y, column from x — and the pane centres on it.
+    func testClickingTheMapMovesTheCaretToThatByte() throws {
+        let bytes = [UInt8](repeating: 0x41, count: 100_000)
+        let (controller, window, panel) = try makeSingleFileWindow(bytes)
+        _ = pumpUntil(2.0) { panel.viewport(forMapAt: 0) != nil }
+        let pane = controller.windowModel.pane1
+        XCTAssertEqual(pane.hexSelection().start, 0, "the caret starts at the top")
+
+        // A point well below the band, on the third byte column.
+        let band = try XCTUnwrap(panel.viewportRects().first)
+        let point = NSPoint(x: panel.bounds.midX, y: band.maxY + 40)
+        let expected = try XCTUnwrap(panel.byteOffset(at: point))
+        XCTAssertEqual(expected.mapIndex, 0)
+        XCTAssertGreaterThan(expected.offset, 0, "the point is past the file's first byte")
+
+        panel.mouseDown(with: try mouseEvent(.leftMouseDown, at: point, in: panel))
+        panel.mouseUp(with: try mouseEvent(.leftMouseUp, at: point, in: panel))
+        window.layoutIfNeeded()
+
+        XCTAssertEqual(pane.hexSelection().start, expected.offset,
+                       "the caret lands on the byte that was drawn under the cursor")
+        // Centred: the byte sits near the middle of the pane's visible range.
+        _ = pumpUntil(2.0) {
+            guard let visible = panel.viewport(forMapAt: 0) else { return false }
+            return visible.contains(expected.offset)
+        }
+        let visible = try XCTUnwrap(panel.viewport(forMapAt: 0))
+        XCTAssertTrue(visible.contains(expected.offset), "the pane scrolled to it")
+        let middle = visible.lowerBound + (visible.upperBound - visible.lowerBound) / 2
+        let rowsOff = abs(Int64(expected.offset / 16) - Int64(middle / 16))
+        XCTAssertLessThan(rowsOff, 3, "and centred it rather than putting it at an edge")
+    }
+
+    /// The byte under a point comes from the *window* mapping: row from the
+    /// vertical position within the window, column from the horizontal one.
+    func testByteOffsetAtPointMapsRowAndColumn() throws {
+        let bytes = [UInt8](repeating: 0x41, count: 100 * 16)
+        let (_, _, panel) = try makeSingleFileWindow(bytes)
+        let area = NSRect(x: 0, y: 0, width: panel.bounds.width, height: panel.bounds.height)
+
+        // Row 0, first column: the very top-left of the content.
+        let first = try XCTUnwrap(panel.byteOffset(at: NSPoint(x: MinimapView.contentPadding + 1,
+                                                              y: 1)))
+        XCTAssertEqual(first.offset, 0, "the top-left cell is byte 0")
+
+        // Five rows down stays in the same column.
+        let down = try XCTUnwrap(panel.byteOffset(at: NSPoint(x: MinimapView.contentPadding + 1,
+                                                             y: 5 * MinimapView.rowStep + 1)))
+        XCTAssertEqual(down.offset, 5 * 16, "five rows down is five hex rows on")
+
+        // The far right of the content is the row's last column.
+        let right = try XCTUnwrap(panel.byteOffset(at: NSPoint(x: area.maxX - MinimapView.contentPadding - 1,
+                                                              y: 1)))
+        XCTAssertEqual(right.offset, 15, "the rightmost cell of row 0 is byte 15")
+    }
+
+    /// Grabbing the band is a scroll gesture, so it must not disturb the caret.
+    func testDraggingTheBandLeavesTheCaretAlone() throws {
+        let bytes = [UInt8](repeating: 0x41, count: 100_000)
+        let (controller, window, panel) = try makeSingleFileWindow(bytes)
+        _ = pumpUntil(2.0) { panel.viewport(forMapAt: 0) != nil }
+        let pane = controller.windowModel.pane1
+        pane.moveCaret(to: 64)
+        let band = try XCTUnwrap(panel.viewportRects().first)
+
+        panel.mouseDown(with: try mouseEvent(.leftMouseDown,
+                                            at: NSPoint(x: band.midX, y: band.midY), in: panel))
+        panel.mouseDragged(with: try mouseEvent(.leftMouseDragged,
+                                               at: NSPoint(x: band.midX, y: band.midY + 100),
+                                               in: panel))
+        panel.mouseUp(with: try mouseEvent(.leftMouseUp,
+                                          at: NSPoint(x: band.midX, y: band.midY + 100), in: panel))
+        window.layoutIfNeeded()
+        _ = pumpUntil(2.0) { (panel.viewport(forMapAt: 0)?.lowerBound ?? 0) > 0 }
+
+        XCTAssertGreaterThan(try XCTUnwrap(panel.viewport(forMapAt: 0)).lowerBound, 0,
+                             "the drag scrolled the pane")
+        XCTAssertEqual(pane.hexSelection().start, 64, "and left the caret where it was")
+    }
+
+    /// In comparison mode a click on the second map targets the second pane and
+    /// makes it active, so the caret it moved is the one the keyboard acts on.
+    func testClickingTheSecondMapActivatesThatPane() throws {
+        let (controller, window) = try makeComparisonWindow(vertical: true, sizes: (8_000, 8_000))
+        let (split, panel) = try minimapViews(window)
+        split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+        _ = pumpUntil(2.0) { panel.viewportRects().count == 1 }
+        XCTAssertEqual(controller.windowModel.activePaneIndex, 0, "pane 1 starts active")
+
+        // A point on the right-hand map, below the band.
+        let band = try XCTUnwrap(panel.viewportRects().first)
+        let point = NSPoint(x: panel.bounds.width * 0.75, y: band.maxY + 40)
+        let target = try XCTUnwrap(panel.byteOffset(at: point))
+        XCTAssertEqual(target.mapIndex, 1, "the point is on the second map")
+
+        panel.mouseDown(with: try mouseEvent(.leftMouseDown, at: point, in: panel))
+        panel.mouseUp(with: try mouseEvent(.leftMouseUp, at: point, in: panel))
+        window.layoutIfNeeded()
+
+        XCTAssertEqual(controller.windowModel.activePaneIndex, 1,
+                       "clicking the second map activates its pane")
+        XCTAssertEqual(controller.windowModel.pane2.hexSelection().start, target.offset,
+                       "and moves that pane's caret")
+        XCTAssertEqual(controller.windowModel.pane1.hexSelection().start, 0,
+                       "the other pane's caret is untouched")
+    }
+
+    // MARK: - Band height (§19.6)
+
+    /// The band is exactly the rows it stands for — there is no minimum height
+    /// padding it out any more.
+    func testBandIsExactlyTheVisibleRowsTall() throws {
+        let (_, _, panel) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 100_000))
+        _ = pumpUntil(2.0) { panel.viewport(forMapAt: 0) != nil }
+        let visible = try XCTUnwrap(panel.viewport(forMapAt: 0))
+        let rows = (visible.upperBound - visible.lowerBound + 15) / 16
+        let band = try XCTUnwrap(panel.viewportRects().first)
+        XCTAssertEqual(band.height, CGFloat(rows) * MinimapView.rowStep, accuracy: 0.51,
+                       "no minimum-height clamp inflates the band")
+    }
+
+    // MARK: - View menu (§19.1)
+
+    /// The toggle is reachable from the View menu with a key equivalent, and the
+    /// item names the action it will perform rather than the current state.
+    func testViewMenuCarriesTheMinimapToggle() throws {
+        let wc = MainWindowController()
+        defer { wc.close() }
+        let controller = try XCTUnwrap(wc.mainViewController)
+        let viewMenu = try XCTUnwrap(NSApp.mainMenu?.items
+            .compactMap(\.submenu).first { $0.title == "View" }, "the View menu")
+        let item = try XCTUnwrap(viewMenu.items.first {
+            $0.action == #selector(MainViewController.toggleMinimap)
+        }, "a View item toggling the minimap")
+
+        XCTAssertEqual(item.keyEquivalent, "M")
+        XCTAssertEqual(item.keyEquivalentModifierMask, [.command],
+                       "Command+Shift+M — Command+M is Minimize in the Window menu")
+
+        // Hidden: the item offers to show it.
+        XCTAssertTrue(controller.validateMenuItem(item), "always available")
+        XCTAssertEqual(item.title, "Show Minimap")
+
+        // Shown: the item offers to hide it.
+        controller.toggleMinimap()
+        XCTAssertTrue(controller.validateMenuItem(item))
+        XCTAssertEqual(item.title, "Hide Minimap")
+    }
+
 }

@@ -27,14 +27,14 @@ import Cocoa
 /// only, so the default proportional resize carried the panel past its maximum
 /// on a wide window.
 final class MinimapSplitView: NSSplitView {
-    /// The minimap keeps at least this width when shown (§ N).
+    /// The minimap keeps at least this width when shown (§19).
     static let minPanelWidth: CGFloat = 120
 
-    /// The minimap never grows beyond this width (§ N), so it stays a compact
+    /// The minimap never grows beyond this width (§19), so it stays a compact
     /// overview column beside the hex panes no matter how wide the window gets.
     static let maxPanelWidth: CGFloat = 240
 
-    /// `UserDefaults` key for the user's chosen minimap width (§ N).
+    /// `UserDefaults` key for the user's chosen minimap width (§19).
     static let widthDefaultsKey = "MinimapPanelWidth"
     /// The store the panel width is read from and persisted to. Injectable so
     /// tests can point it at an isolated suite instead of the app's defaults.
@@ -53,9 +53,9 @@ final class MinimapSplitView: NSSplitView {
     /// the panel sits at zero width and the hex panes reclaim the content area.
     private(set) var panelVisible = false
 
-    /// Invoked whenever the panel is shown or hidden, with the new state. The
-    /// controller rebuilds the maps on a show: while the panel is hidden it
-    /// builds nothing, so the data has to be (re)made when it appears (§ N).
+    /// Invoked whenever the panel is shown or hidden, with the new state. While
+    /// hidden the panel draws nothing, so its maps and viewport are stale by the
+    /// time it reappears; the controller refreshes them on a show (§19).
     var onPanelVisibilityChanged: ((Bool) -> Void)?
 
     /// True after the first real layout pinned the divider. The pin is the
@@ -149,7 +149,7 @@ final class MinimapSplitView: NSSplitView {
         if changed { onPanelVisibilityChanged?(visible) }
     }
 
-    /// Toggles the panel's visibility (§ N).
+    /// Toggles the panel's visibility (§19).
     func togglePanel(animated: Bool = true) {
         setPanelVisible(!panelVisible, animated: animated)
     }

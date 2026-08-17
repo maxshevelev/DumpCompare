@@ -27,13 +27,13 @@ final class MainViewController: NSViewController {
     /// Host for the mode content (`setContentView` swaps what's inside).
     private let contentContainer = NSView()
     /// The left pane of the minimap split — the mode's content lives here, so
-    /// the minimap panel can share the content area to its right (§ N).
+    /// the minimap panel can share the content area to its right (§19).
     private let contentHost = NSView()
     /// The right-hand minimap panel (hidden by default, toggled by the toolbar
-    /// button). Internal so tests can assert its visibility (§ N).
+    /// button). Internal so tests can assert its visibility (§19).
     let minimapView = MinimapView()
     /// The vertical split sharing the content area between the panes and the
-    /// minimap. Internal so tests can toggle it and drive the divider (§ N).
+    /// minimap. Internal so tests can toggle it and drive the divider (§19).
     let minimapSplit = MinimapSplitView()
     private var contentTopToView: NSLayoutConstraint!
     private var contentTopToFindBar: NSLayoutConstraint!
@@ -85,14 +85,14 @@ final class MainViewController: NSViewController {
             guard let self, self.mode == .comparison else { return }
             self.comparisonView?.setLayout(vertical: LayoutSettings.isVertical)
             // The pane arrangement changed (View menu or the Settings tab), so
-            // the minimap's internal split flips with it (§ N).
+            // the minimap's internal split flips with it (§19).
             self.updateMinimapLayout()
         }
         // Re-evaluate navigation availability on every index-state transition
         // (build starts/completes/cancels/stops, edits applied) (§10.3). The
         // minimap is not in this path: it reads difference state per byte from
         // the panes, the same live comparison they paint with, so the background
-        // index never feeds it (§ N).
+        // index never feeds it (§19).
         comparisonCoordinator.onStateChanged = { [weak self] in
             self?.refreshDiffNavigation()
         }
@@ -149,15 +149,18 @@ final class MainViewController: NSViewController {
             minimapSplit.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
         ])
         // The map is virtualized: it pulls the bytes of its visible window as it
-        // draws, and a drag or a wheel over it scrolls the panes (§ N).
+        // draws, and a drag or a wheel over it scrolls the panes (§19).
         minimapView.byteStates = { [weak self] mapIndex, range in
             self?.minimapByteStates(mapIndex: mapIndex, range: range) ?? []
         }
         minimapView.onScrollToOffset = { [weak self] offset in
             self?.scrollPanesToOffset(offset)
         }
+        minimapView.onSelectOffset = { [weak self] mapIndex, offset in
+            self?.selectMinimapOffset(mapIndex: mapIndex, offset: offset)
+        }
         // Showing the panel needs the current picture: while hidden it drew
-        // nothing, so its maps and viewport are stale (§ N).
+        // nothing, so its maps and viewport are stale (§19).
         minimapSplit.onPanelVisibilityChanged = { [weak self] visible in
             guard let self, visible else { return }
             self.updateMinimapLayout()
@@ -173,7 +176,7 @@ final class MainViewController: NSViewController {
         self.mode = mode
         unwireComparison()
         // Panes are rebuilt on every apply, so the viewport mirrors must start
-        // empty and fill in as the new panes report their visible ranges (§ N).
+        // empty and fill in as the new panes report their visible ranges (§19).
         minimapViewports.removeAll()
         minimapView.setViewports([])
 
@@ -208,7 +211,7 @@ final class MainViewController: NSViewController {
             }
             // The minimap's single map mirrors this pane: edits rebuild its
             // cells, a moved caret moves the selection overlay, and scrolling
-            // moves the viewport rectangle (§ N).
+            // moves the viewport rectangle (§19).
             trackMinimapViewport(for: pane)
             paneModel.onEdit = { [weak self] _ in
                 self?.refreshMinimapMaps()
@@ -217,7 +220,7 @@ final class MainViewController: NSViewController {
                 self?.refreshMinimapMaps()
             }
             // A save moves the on-disk reference, so the map's red cells have to
-            // clear even though no byte changed (§ N).
+            // clear even though no byte changed (§19).
             paneModel.onSavedStateChanged = { [weak self] in
                 self?.refreshMinimapMaps()
             }
@@ -261,7 +264,7 @@ final class MainViewController: NSViewController {
             pane2View.onDropFiles = { [weak self] urls in
                 self?.handleComparisonDrop(targetPane: 1, urls: urls)
             }
-            // Each map's viewport rectangle mirrors its pane's visible slice (§ N).
+            // Each map's viewport rectangle mirrors its pane's visible slice (§19).
             trackMinimapViewport(for: pane1View)
             trackMinimapViewport(for: pane2View)
             let view = ComparisonView(
@@ -270,16 +273,7 @@ final class MainViewController: NSViewController {
                 paneView2: pane2View
             )
             view.onPaneActivated = { [weak self] index in
-                guard let self, let comparisonView = self.comparisonView else { return }
-                self.windowModel.setActivePane(index)
-                self.activeFilePane = index == 0 ? comparisonView.paneView1 : comparisonView.paneView2
-                comparisonView.setActive(index)
-                // Focus follows activation (e.g. a header click), so typing and
-                // the active-pane pointer stay aligned (§3.3).
-                self.activeFilePane?.focusHexView()
-                // Navigation anchors on the active pane's caret — a pane switch
-                // can change whether a next/previous block exists (§10.3).
-                self.refreshDiffNavigation()
+                self?.activatePane(at: index)
             }
             pane1View.onClose = { [weak self] in self?.closePane(at: 0) }
             pane2View.onClose = { [weak self] in self?.closePane(at: 1) }
@@ -296,7 +290,7 @@ final class MainViewController: NSViewController {
             setContentView(view)
             view.setActive(windowModel.activePaneIndex)
             // The minimap's stacked divider mirrors the panes' divider position,
-            // so keep it glued whenever the panes' divider moves (§ N).
+            // so keep it glued whenever the panes' divider moves (§19).
             view.splitView.onFractionChanged = { [weak self] in
                 self?.updateMinimapLayout()
             }
@@ -318,7 +312,7 @@ final class MainViewController: NSViewController {
             self?.comparisonCoordinator.record(edit: edit)
             // A byte edit can change a cell's significance, so rebuild the
             // minimap's maps — debounced, so held-down typing costs one pass
-            // (§ N).
+            // (§19).
             self?.refreshMinimapMaps()
         }
         windowModel.pane2.onEdit = { [weak self] edit in
@@ -334,7 +328,7 @@ final class MainViewController: NSViewController {
             self?.refreshMinimapMaps()
         }
         // A save clears modified state without changing a byte, so the minimap's
-        // cached red cells rebuild from it (§ N).
+        // cached red cells rebuild from it (§19).
         windowModel.pane1.onSavedStateChanged = { [weak self] in
             self?.refreshMinimapMaps()
         }
@@ -343,7 +337,7 @@ final class MainViewController: NSViewController {
         }
         // A moved caret changes whether a next/previous block still exists from
         // the new position, so navigation enablement follows it (§10.3); the
-        // selection overlay on the minimap follows the caret too (§ N).
+        // selection overlay on the minimap follows the caret too (§19).
         windowModel.pane1.onCaretChanged = { [weak self] in
             self?.refreshDiffNavigation()
             self?.updateMinimapSelections()
@@ -377,7 +371,7 @@ final class MainViewController: NSViewController {
         ])
     }
 
-    // MARK: - Minimap (§ N)
+    // MARK: - Minimap (§19)
 
     /// Toggles the right-hand minimap panel (the toolbar button). The panel is
     /// hidden by default and animated in/out; the split's divider keeps the
@@ -387,7 +381,7 @@ final class MainViewController: NSViewController {
     }
 
     /// Recomputes the minimap's internal map split from the current window mode
-    /// and pane arrangement (§ N): one map in single-file mode, two maps with a
+    /// and pane arrangement (§19): one map in single-file mode, two maps with a
     /// centered vertical line for side-by-side panes, two maps with a
     /// horizontal line mirroring the panes' divider for stacked panes.
     private func updateMinimapLayout() {
@@ -404,7 +398,23 @@ final class MainViewController: NSViewController {
         }
     }
 
-    // MARK: - Minimap data (§ N)
+    /// Makes pane `index` the active one: the window model, the active-pane
+    /// pointer, the comparison view's chrome, and the focus all follow (§3.3).
+    /// Driven by a header click and by a click on that pane's minimap.
+    private func activatePane(at index: Int) {
+        guard let comparisonView else { return }
+        windowModel.setActivePane(index)
+        activeFilePane = index == 0 ? comparisonView.paneView1 : comparisonView.paneView2
+        comparisonView.setActive(index)
+        // Focus follows activation (e.g. a header click), so typing and the
+        // active-pane pointer stay aligned (§3.3).
+        activeFilePane?.focusHexView()
+        // Navigation anchors on the active pane's caret — a pane switch can
+        // change whether a next/previous block exists (§10.3).
+        refreshDiffNavigation()
+    }
+
+    // MARK: - Minimap data (§19)
 
     /// Feeds the minimap the per-byte state of the rows it is showing.
     ///
@@ -449,6 +459,27 @@ final class MainViewController: NSViewController {
     /// window and never a file pass.
     private func repaintMinimap() {
         minimapView.needsDisplay = true
+    }
+
+    /// Moves the caret to the byte clicked on a map and centres the pane on it.
+    /// In comparison mode the click also makes that pane active, so the caret it
+    /// just moved is the one the keyboard and the navigation commands act on.
+    private func selectMinimapOffset(mapIndex: Int, offset: UInt64) {
+        let pane: PaneViewModel
+        switch mode {
+        case .empty:
+            return
+        case .singleFile:
+            guard mapIndex == 0 else { return }
+            pane = windowModel.pane1
+        case .comparison:
+            guard mapIndex == 0 || mapIndex == 1 else { return }
+            if mapIndex != windowModel.activePaneIndex { activatePane(at: mapIndex) }
+            pane = mapIndex == 0 ? windowModel.pane1 : windowModel.pane2
+        }
+        guard pane.isOpen else { return }
+        pane.moveCaret(to: offset)
+        filePaneView(for: pane)?.revealOffsetCentered(offset)
     }
 
     /// Scrolls the panes so `offset`'s hex row sits at the top of the pane —
@@ -497,7 +528,7 @@ final class MainViewController: NSViewController {
 
     /// Wires a pane's viewport scrolls into the minimap: every visible-range
     /// change moves the grey viewport band and slides the map's own window,
-    /// since the window is derived from the panes (§ N).
+    /// since the window is derived from the panes (§19).
     private func trackMinimapViewport(for pane: FilePaneView) {
         pane.onHexViewportChanged = { [weak self, weak pane] range in
             guard let self, let pane else { return }
@@ -1942,6 +1973,12 @@ extension MainViewController: NSWindowDelegate {
 extension MainViewController: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
+        case #selector(toggleMinimap):
+            // A Show/Hide item names what it will do, so the title flips with
+            // the panel's state (§19). Always enabled: the minimap works with
+            // no file open too (it just has nothing to draw).
+            menuItem.title = minimapSplit.panelVisible ? "Hide Minimap" : "Show Minimap"
+            return true
         case #selector(saveDocument),
              #selector(saveDocumentAs),
              #selector(undoEdit),
@@ -2052,7 +2089,7 @@ private final class OffsetContextTarget: NSObject {
     }
 }
 
-// MARK: - Minimap split divider (§ N)
+// MARK: - Minimap split divider (§19)
 
 extension MainViewController: NSSplitViewDelegate {
     /// The minimap divider's legal range. While the panel is shown, a drag (or

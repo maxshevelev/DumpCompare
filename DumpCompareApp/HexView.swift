@@ -58,7 +58,7 @@ final class HexView: NSView {
 
     /// Fired whenever the rows visible in the scroll viewport change — a scroll,
     /// a resize, a content-size change. The minimap uses the reported byte range
-    /// to draw its viewport rectangle over the map (§ N).
+    /// to draw its viewport rectangle over the map (§19).
     var onVisibleRangeChanged: ((Range<UInt64>) -> Void)?
 
     /// Whether this hex view is the active pane. The caret is drawn only on the
@@ -507,7 +507,7 @@ final class HexView: NSView {
             self?.notifyVisibleRangeChanged()
         }
         // A scroll moves the clip's bounds, not its frame, so the viewport
-        // rectangle needs a separate observer (§ N). frameDidChange covers
+        // rectangle needs a separate observer (§19). frameDidChange covers
         // resizes; boundsDidChange covers scrolling.
         clipBoundsObserver = NotificationCenter.default.addObserver(
             forName: NSView.boundsDidChangeNotification,
@@ -532,7 +532,7 @@ final class HexView: NSView {
         }
     }
 
-    // MARK: - Visible range (§ N)
+    // MARK: - Visible range (§19)
 
     /// The byte range covered by the rows currently visible in the scroll
     /// viewport — the file slice the minimap's viewport rectangle mirrors.
@@ -1323,7 +1323,7 @@ final class HexView: NSView {
     /// (clamped to the document's edges). The minimap's drag and wheel map a
     /// position on the map to a byte offset and ask for exactly that: the offset
     /// becomes the first visible row, which is the position the minimap's own
-    /// window is derived from (§ N).
+    /// window is derived from (§19).
     func scrollRowToTop(containing offset: UInt64) {
         guard let scroll = enclosingScrollView else { return }
         let layout = currentLayout

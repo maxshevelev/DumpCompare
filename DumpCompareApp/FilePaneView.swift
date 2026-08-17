@@ -172,7 +172,7 @@ final class FilePaneView: NSView {
     /// §4.3). Only active after `enableFileDrop()`.
     var onDropFiles: (([URL]) -> Void)?
     /// Fired with the hex view's visible byte range whenever it changes (scroll,
-    /// resize). The minimap draws its viewport rectangle from it (§ N).
+    /// resize). The minimap draws its viewport rectangle from it (§19).
     var onHexViewportChanged: ((Range<UInt64>) -> Void)?
 
     private var dropEnabled = false
@@ -473,7 +473,7 @@ final class FilePaneView: NSView {
     }
 
     /// Scrolls the hex view so the row containing `offset` sits at the top of the
-    /// visible area. Driven by the minimap's viewport drag and wheel (§ N).
+    /// visible area. Driven by the minimap's viewport drag and wheel (§19).
     func scrollRowToTop(containing offset: UInt64) {
         hexView.scrollRowToTop(containing: offset)
     }

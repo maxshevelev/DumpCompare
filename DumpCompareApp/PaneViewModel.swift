@@ -102,7 +102,7 @@ final class PaneViewModel: HexViewDataSource {
     /// which changes what counts as modified without any byte changing. The
     /// panes need nothing — they re-read `hexByteStates` on every draw — but the
     /// minimap has no such trigger of its own, so without this a save left its
-    /// red cells on screen (§ N).
+    /// red cells on screen (§19).
     var onSavedStateChanged: (() -> Void)?
 
     /// Fired when the companion's selection changed, so this pane can redraw

@@ -767,6 +767,7 @@ Edit:
 
 View/Navigate:
 - Toggle Pane Layout Left/Right vs Top/Bottom
+- Show/Hide Minimap
 - Next Difference
 - Previous Difference
 - Next Same Block
@@ -899,3 +900,105 @@ The implementation is acceptable if:
 12. The app follows a clean layered architecture.
 13. The UI is usable, keyboard-accessible, and supports Dark Mode.
 14. No operation silently destroys user data.
+15. The minimap draws every byte at a fixed scale, follows the panes, and can
+    be dragged and clicked to navigate, without reading the whole file.
+
+=====================================================================
+19. MINIMAP PANEL
+=====================================================================
+
+19.1 Purpose and placement
+
+An optional minimap panel gives a zoomed-out view of the open file(s) and a
+way to navigate them by pointing.
+
+- The panel sits at the right edge of the content area, sharing it with the
+  hex panes through a draggable divider.
+- It is hidden by default. Toggling it is available from the toolbar (an
+  item at the far right) and from the View menu, whose item names the
+  action it will perform ("Show Minimap" / "Hide Minimap").
+- The panel is never removed from the view hierarchy; hidden means its
+  width is zero.
+
+19.2 Panel width
+
+- The panel keeps a minimum width of 120 pt and never exceeds 240 pt, so it
+  stays a compact column beside the dumps.
+- The width the user drags is persisted and restored on the next show.
+- A window resize must not change the panel's width: the hex panes absorb
+  the whole delta, and the clamp above holds at any window size.
+- Zoom-to-fit must make room for a visible panel on top of the hex grids.
+
+19.3 Maps
+
+The panel is divided into maps that mirror the pane arrangement:
+
+- single-file mode: one map over the whole panel;
+- comparison, side-by-side panes: two maps, split by a vertical line at the
+  panel's centre, separated by a gutter proportional to the panel's width;
+- comparison, stacked panes: two maps, split by a horizontal line that
+  mirrors the panes' divider and moves with it.
+
+19.4 Rendering
+
+A map draws its file as a miniature hex dump — the hex column only, no
+offset column and no decoded text.
+
+- The scale is fixed: a byte cell is 2 pt tall with 1 pt between rows, so
+  one hex row costs 3 pt regardless of the file's size.
+- Every byte is drawn as its own cell. Bytes must not be grouped or
+  aggregated: one row of the map is exactly one hex row of the dump, and a
+  partial final row draws only the bytes it has.
+- Byte columns keep the hex dump's proportions, including the word grouping
+  and the gap between the two 8-byte groups, scaled to the map's width.
+- A cell is coloured the way the hex panes colour that byte, layered the
+  same way: a byte that differs from the companion gets a difference
+  background, and the byte itself is drawn on top — modified (unsaved) in
+  the modified colour, significant bytes in ink, a 0x00/0xFF fill muted.
+  The difference background must remain visible behind an opaque byte.
+- The selection is drawn as a translucent overlay on top of the cells.
+- Byte state must come from the same per-byte source the panes paint from,
+  so the map cannot disagree with the dump beside it.
+
+19.5 The window onto the file
+
+Because the scale is fixed, a file taller than the panel does not fit: the
+map shows a window onto it, not the whole file.
+
+- The window's position is derived from the panes; the minimap has no
+  scroll position of its own and no scroll bar.
+- The window's position within the file must match the panes' own position
+  within the file: at the file's start the window starts at its first row,
+  at the file's end the window's last row is the file's last row.
+- Both maps share one window, since the panes are synchronized by absolute
+  offset (§9): the same offset must sit at the same height on both maps.
+  A map whose file ends earlier simply draws fewer rows.
+- Only the visible rows may be read. Building state for the whole file is
+  not permitted — a file of any supported size must cost the same as a
+  small one (§13).
+
+19.6 Viewport band
+
+The panes' visible slice is drawn as a translucent band over the map.
+
+- The band spans the visible rows at the map's own scale.
+- In side-by-side comparison the band is a single rectangle across the
+  whole panel, covering both maps and the gutter between them; the divider
+  between the maps must not interrupt it.
+- In stacked comparison each map keeps its own band.
+- The band is drawn under the selection overlay, so a selection inside it
+  stays readable.
+
+19.7 Navigation
+
+- Dragging the band scrolls the panes and keeps the band under the cursor.
+  Because the window slides with the panes, the band travels the map's full
+  height over the course of the whole file, so the map acts as a
+  proportional scroll bar for it.
+- Clicking the map away from the band moves the caret to the byte drawn at
+  that point — row from the vertical position, column from the horizontal
+  one — and centres the pane on it. In comparison mode the click also makes
+  the clicked map's pane active.
+- Clicking the band itself begins a drag and must leave the caret alone.
+- A scroll wheel over the panel scrolls the panes.
+- Navigation by pointer must clamp at the file's start and end.

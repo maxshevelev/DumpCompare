@@ -1,6 +1,6 @@
 import Cocoa
 
-/// The minimap panel shown to the right of the hex panes (§ N).
+/// The minimap panel shown to the right of the hex panes (§19).
 ///
 /// The panel is divided into maps that mirror the pane arrangement: one file =
 /// one map, so single-file mode shows a single map over the whole panel;
@@ -115,7 +115,7 @@ final class MinimapView: NSView {
     /// in a 10 pt frame on either side, matching the breathing room the hex
     /// panes give their dumps. Only horizontal: the rows run edge to edge top
     /// and bottom. The viewport band deliberately ignores this inset and runs
-    /// edge to edge too (§ N).
+    /// edge to edge too (§19).
     static let contentPadding: CGFloat = 10
 
     /// In side-by-side mode the two maps sit on either side of an inner gutter
@@ -211,10 +211,6 @@ final class MinimapView: NSView {
             : NSColor(white: 0.80, alpha: 1)
     }
 
-    /// The minimum height of the viewport band, for a pane so short it shows
-    /// barely a row.
-    static let viewportMinHeight: CGFloat = 4
-
     /// The viewport band's fill — a translucent grey that reads as a "you are
     /// here" band over the cells without hiding them. Lightened in dark
     /// appearance so it lifts off the near-black paper.
@@ -277,7 +273,7 @@ final class MinimapView: NSView {
         for index in maps.indices {
             // The map's content (cells, selection) sits in a 10 pt side frame
             // away from the panel's side edges; the viewport band deliberately
-            // runs edge to edge past it (§ N).
+            // runs edge to edge past it (§19).
             drawCells(forMapAt: index,
                       in: contentArea(within: area(forMapAt: index), forMapAt: index),
                       dirtyRect: dirtyRect)
@@ -294,7 +290,7 @@ final class MinimapView: NSView {
         case .sideBySide:
             // The band is a single rectangle *over* both maps, so the divider
             // yields to it: a 1 pt line painted across the band would put back
-            // exactly the seam the shared band exists to remove (§ N).
+            // exactly the seam the shared band exists to remove (§19).
             drawVerticalDivider(at: bounds.midX, in: dirtyRect, yielding: viewportRects())
         case .stacked(let fraction):
             let y = min(max(fraction, 0), 1) * bounds.height
@@ -313,7 +309,7 @@ final class MinimapView: NSView {
 
     /// Total hex rows of the longest open file — the extent the window slides
     /// over. The longer file is the comparison's extent, and its map is the one
-    /// the shared viewport band is measured against (§ N).
+    /// the shared viewport band is measured against (§19).
     private func referenceRowCount() -> UInt64 {
         let size = maps.map(\.fileSize).max() ?? 0
         return (size + Self.bytesPerRow - 1) / Self.bytesPerRow
@@ -565,18 +561,13 @@ final class MinimapView: NSView {
     /// One band's rectangle: the visible rows laid out at the map's own fixed
     /// scale, from the window's first row. It runs edge to edge on every side —
     /// the full width of `area` (poking past the padded cells) and the visible
-    /// rows' own height — and is clipped to the map. A pane so short it shows
-    /// barely a row still gets `viewportMinHeight`. Nil when there is nothing to
-    /// draw, or when the visible rows fall outside the window entirely.
+    /// rows' own height — and is clipped to the map. No minimum height: at this
+    /// scale the band is as tall as the rows it stands for (a pane showing one
+    /// row gets one row), and the pane always shows several.
     private func viewportRect(_ viewport: Range<UInt64>?, in area: NSRect) -> NSRect? {
         guard let viewport, !viewport.isEmpty, area.height > 0 else { return nil }
-        var y0 = y(of: viewport.lowerBound, in: area)
-        var y1 = y(of: viewport.upperBound, in: area)
-        if y1 - y0 < Self.viewportMinHeight {
-            y1 = y0 + Self.viewportMinHeight
-        }
-        y0 = max(y0, area.minY)
-        y1 = min(y1, area.maxY)
+        let y0 = max(y(of: viewport.lowerBound, in: area), area.minY)
+        let y1 = min(y(of: viewport.upperBound, in: area), area.maxY)
         guard y1 > y0 else { return nil }
         return NSRect(x: area.minX, y: y0, width: area.width, height: y1 - y0)
     }
@@ -637,32 +628,73 @@ final class MinimapView: NSView {
         NSRect(x: left, y: y, width: right - left, height: 1).fill()
     }
 
-    // MARK: - Dragging the viewport (§ N)
+    // MARK: - Dragging the viewport (§19)
 
     /// Where in the band the drag was grabbed, in points from the band's top, so
     /// the band keeps its grip on the cursor for the whole drag. Nil when no
     /// drag is in flight.
     private var dragGrabOffset: CGFloat?
 
+    /// Moves the caret of `mapIndex`'s pane to `offset` and centres it there.
+    /// The map draws real bytes, so a click on one means that byte — unlike a
+    /// drag of the band, which is a scrollbar gesture and leaves the caret be.
+    var onSelectOffset: ((_ mapIndex: Int, _ offset: UInt64) -> Void)?
+
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         let bands = viewportRects()
         if let band = bands.first(where: { $0.contains(point) }) {
+            // The band is the drag handle: grabbing it scrolls and must not
+            // disturb the caret.
             dragGrabOffset = point.y - band.minY
             return
         }
-        // A click off the band jumps: the band centres on the clicked row, and
-        // the drag continues from its middle.
-        let height = bands.first?.height ?? Self.viewportMinHeight
-        dragGrabOffset = height / 2
-        requestScroll(bandTop: point.y - height / 2, bandHeight: height)
+        // Off the band: the click means the byte drawn under it, so the caret
+        // goes there and the pane centres on it. The drag then continues from
+        // the band's middle, so the press can still turn into a scroll.
+        guard let band = bands.first else { return }
+        if let (mapIndex, offset) = byteOffset(at: point) {
+            onSelectOffset?(mapIndex, offset)
+        }
+        dragGrabOffset = band.height / 2
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard let grab = dragGrabOffset else { return }
+        guard let grab = dragGrabOffset, let height = viewportRects().first?.height else { return }
         let point = convert(event.locationInWindow, from: nil)
-        let height = viewportRects().first?.height ?? Self.viewportMinHeight
         requestScroll(bandTop: point.y - grab, bandHeight: height)
+    }
+
+    /// The map and byte a point on the panel lands on, by the *window* mapping —
+    /// the byte actually drawn there, row from y and column from x. Nil outside
+    /// every map, or past the file's end. Internal so tests can assert the
+    /// mapping without synthesizing clicks.
+    func byteOffset(at point: NSPoint) -> (mapIndex: Int, offset: UInt64)? {
+        for index in maps.indices {
+            let area = area(forMapAt: index)
+            guard area.contains(point) else { continue }
+            let content = contentArea(within: area, forMapAt: index)
+            let row = topRow + UInt64(max(0, floor((point.y - area.minY) / Self.rowStep)))
+            let (origins, _) = byteColumnLayout(contentWidth: content.width)
+            // The last column whose cell starts at or before the point, so the
+            // gaps between cells belong to the column on their left. A point
+            // left of the first column stays on column 0.
+            var column = 0
+            for (j, origin) in origins.enumerated() where point.x >= content.minX + origin {
+                column = j
+            }
+            let offset = row.multipliedReportingOverflow(by: Self.bytesPerRow)
+            guard !offset.overflow else { return nil }
+            let byte = offset.partialValue + UInt64(column)
+            guard byte < maps[index].fileSize else {
+                // Past this file's end: fall back to its last byte so a click
+                // low on a short map still lands somewhere real.
+                guard maps[index].fileSize > 0 else { return nil }
+                return (index, maps[index].fileSize - 1)
+            }
+            return (index, byte)
+        }
+        return nil
     }
 
     override func mouseUp(with event: NSEvent) {
