@@ -2,39 +2,37 @@ import Cocoa
 
 /// The minimap panel shown to the right of the hex panes (§ N).
 ///
-/// Stage 2 lays the panel out: one file = one map, so single-file mode shows a
-/// single map over the whole panel; side-by-side comparison splits the panel
-/// with a vertical divider at its exact center (one map per pane); stacked
-/// comparison splits it with a horizontal divider that mirrors the panes'
-/// draggable divider — the line moves as the panes' divider moves.
+/// The panel is divided into maps that mirror the pane arrangement: one file =
+/// one map, so single-file mode shows a single map over the whole panel;
+/// side-by-side comparison splits the panel with a vertical divider at its exact
+/// center (one map per pane); stacked comparison splits it with a horizontal
+/// divider that mirrors the panes' draggable divider — the line moves as the
+/// panes' divider moves.
 ///
-/// Stage 3 fills the maps with the files' contents as a miniature hex dump:
-/// the hex column only (no offset, no ASCII), each byte a small rectangle at
-/// most `byteHeight` tall, with `rowGap` between rows, so the panel reads as a
-/// grid of pixels. Columns keep the hex dump's proportions (two characters per
-/// byte, one-character gaps between words, two-character gap between the 8-byte
-/// groups) scaled to the content width. A row of the dump is one `ByteRow` of
-/// up to 16 per-byte cells; the last row can be shorter for a partial hex row.
-/// A cell is coloured by what its byte(s) hold — the same colours the hex
-/// panes use, layered the same way: a byte that differs from the companion
-/// gets an orange background over the whole cell, and the byte itself is drawn
-/// on top — red when modified (`modifiedText`), ink when significant
-/// (`byteText`), muted for a 0x00/0xFF fill (`mutedByteText`). The current
-/// selection is drawn as a translucent blue overlay on top of the cells
-/// (`selectionFill`), mirroring the selection fill in the panes.
+/// A map draws the file as a miniature hex dump: the hex column only (no offset,
+/// no ASCII), one cell per byte, `byteHeight` tall with `rowGap` between rows, so
+/// the panel reads as a grid of pixels. Columns keep the hex dump's proportions
+/// (two characters per byte, one-character gaps between words, two-character gap
+/// between the 8-byte groups) scaled to the content width. Every byte gets its
+/// own cell and its own colour — nothing is aggregated — coloured the way the hex
+/// panes colour it and layered the same way: a byte that differs from the
+/// companion gets an orange background over the whole cell, and the byte itself
+/// is drawn on top — red when modified (`modifiedText`), ink when significant
+/// (`byteText`), muted for a 0x00/0xFF fill (`mutedByteText`). The selection is a
+/// translucent blue overlay on top (`selectionFill`), mirroring the panes.
 ///
-/// A small file keeps one mini row per hex row and is drawn at the map's top
-/// (byte height 3 pt), leaving the rest of the map empty; a large file
-/// collapses groups of hex rows onto as many mini rows as fit the map's height
-/// (`rowCapacity(areaHeight:)`), each cell's state aggregating its group's
-/// bytes. The viewport and selection overlays are measured against the map's
-/// content height and run edge to edge, independent of how much of it the
-/// cells actually fill.
+/// **The scale is fixed**, so the file does *not* fit the panel: 4 pt per hex row
+/// means a 1 MB file is ~262 000 pt tall while the panel shows ~150 rows. The map
+/// is therefore a window onto the file, `topRow` being the first hex row drawn,
+/// and it is *virtualized* — no cells are stored and only the visible rows are
+/// ever read (`byteStates`), so a 4 GB file costs exactly what a 4 KB one does.
 ///
-/// The viewport band is per map — except side-by-side, which draws a single
-/// rectangle across the whole panel on a shared offset axis, because the panes
-/// scroll in lockstep and a band interrupted by the gutter read as broken. See
-/// `viewportRects()`.
+/// The window is not scrolled independently: it is derived from the panes, the
+/// way VS Code's and Xcode's minimaps are (`updateTopRow`). Its position within
+/// the file matches the panes' own, which puts the viewport band at the map's top
+/// at the file's start and at its bottom at the file's end — so the band is
+/// always fully on the map, and the map doubles as a proportional scrollbar the
+/// band can be dragged along (`mouseDown`/`mouseDragged`, `onScrollToOffset`).
 final class MinimapView: NSView {
     /// How the panel is divided into maps for the open file(s).
     enum MapLayout {
@@ -48,28 +46,27 @@ final class MinimapView: NSView {
         case stacked(fraction: CGFloat)
     }
 
-    /// One map: the file's size (for byte→cell mapping) and its precomputed
-    /// mini hex rows. A row per hex row up to the map's `rowCapacity`; a larger
-    /// file collapses onto exactly that many rows.
+    /// One map: the file's size (for the byte→row mapping) and its selection.
+    /// The cells are not here — they are pulled per repaint for the visible rows
+    /// only, so a map of any file costs the same.
     struct Map {
         let fileSize: UInt64
-        let rows: [ByteRow]
         /// The file's current selection, drawn as an overlay on top of the
         /// cells; nil (or empty) when the caret sits alone.
         var selection: Range<UInt64>?
     }
 
     /// One mini hex row of the map: the per-byte state of each of its 1...16
-    /// cells (the last row holds fewer when the file's final hex row is short).
+    /// cells (the last row of a file holds fewer when its final hex row is short).
     struct ByteRow {
         let cells: [CellState]
     }
 
-    /// The flags that colour a byte cell, by what the byte(s) it covers contain.
-    /// A cell can carry any combination: a byte can be significant and modified,
-    /// differ from the companion, and so on — the renderer layers them (diff is
-    /// a background, the byte itself is drawn on top), matching the hex panes,
-    /// which show modified (red ink) and difference (background) together.
+    /// The flags that colour a byte cell. A cell can carry any combination: a
+    /// byte can be significant and modified, differ from the companion, and so
+    /// on — the renderer layers them (diff is a background, the byte itself is
+    /// drawn on top), matching the hex panes, which show modified (red ink) and
+    /// difference (background) together.
     struct CellState: Equatable {
         /// The byte is not a 0x00/0xFF fill.
         var isSignificant: Bool
@@ -80,29 +77,45 @@ final class MinimapView: NSView {
 
         static let insignificant = CellState(isSignificant: false, isModified: false, isDifferent: false)
         static let significant = CellState(isSignificant: true, isModified: false, isDifferent: false)
+
+        init(isSignificant: Bool, isModified: Bool, isDifferent: Bool) {
+            self.isSignificant = isSignificant
+            self.isModified = isModified
+            self.isDifferent = isDifferent
+        }
+
+        /// The cell for one byte of the dump. Significance is that byte's own —
+        /// nothing is merged, so a single 0x00 among real content stays muted.
+        init(_ state: HexByteState) {
+            isSignificant = state.byte != 0x00 && state.byte != 0xFF
+            isModified = state.isModified
+            isDifferent = state.isDifferent
+        }
     }
 
-    /// Render density comes from the map's height, not a fixed constant: a byte
-    /// cell is at most this tall, with `rowGap` breathing room between rows, so
-    /// a map can hold `rowCapacity` mini rows. A file small enough for its hex
-    /// rows to fit 1:1 never fills the map (cells stay 3 pt tall, rows drawn
-    /// from the top); a larger file aggregates hex rows down to the capacity.
+    /// The render scale, fixed by design: a byte cell is `byteHeight` tall with
+    /// `rowGap` between rows, so one hex row costs `rowStep` no matter how large
+    /// the file is. This is what makes the map a window rather than an overview.
     static let byteHeight: CGFloat = 3
     static let rowGap: CGFloat = 1
+    static var rowStep: CGFloat { byteHeight + rowGap }
 
-    /// How many mini rows fit a map `areaHeight` tall: every row costs
+    /// Bytes per hex row — the dump's row width, and the map's.
+    static let bytesPerRow: UInt64 = 16
+
+    /// How many hex rows a map `areaHeight` tall can show: every row costs
     /// `byteHeight` plus a trailing `rowGap` except the last. Small heights
     /// collapse to zero rows (nothing fits).
-    static func rowCapacity(areaHeight: CGFloat) -> Int {
+    static func visibleRowCount(areaHeight: CGFloat) -> Int {
         guard areaHeight > 0 else { return 0 }
-        return max(0, Int(floor((areaHeight + rowGap) / (byteHeight + rowGap))))
+        return max(0, Int(floor((areaHeight + rowGap) / rowStep)))
     }
 
     /// Side inset of the maps' content from the panel's edges — the cells sit
     /// in a 10 pt frame on either side, matching the breathing room the hex
     /// panes give their dumps. Only horizontal: the rows run edge to edge top
-    /// and bottom. The viewport rectangle deliberately ignores this inset and
-    /// runs edge to edge too (§ N).
+    /// and bottom. The viewport band deliberately ignores this inset and runs
+    /// edge to edge too (§ N).
     static let contentPadding: CGFloat = 10
 
     /// In side-by-side mode the two maps sit on either side of an inner gutter
@@ -112,38 +125,31 @@ final class MinimapView: NSView {
     static let sideBySideGutterFraction: CGFloat = 0.05
 
     private(set) var mapLayout: MapLayout = .single
-    /// The maps currently drawn (file sizes + byte cells). Updated by `setMaps`
-    /// after a background rebuild; readable so tests can inspect the cells.
+    /// The maps currently drawn (file sizes + selections). Readable so tests can
+    /// inspect them.
     private(set) var maps: [Map] = []
 
     /// The byte range each map's pane currently has visible, by map index —
-    /// what the grey viewport rectangle mirrors. A nil entry (or an empty
-    /// range) means that pane's scroll viewport is empty (no file, or the pane
-    /// shows no bytes). Kept separate from the maps so a scroll only moves the
-    /// overlay and never rebuilds the cells.
+    /// what the grey viewport band mirrors, and what the map's own window is
+    /// derived from. A nil entry (or an empty range) means that pane's scroll
+    /// viewport is empty (no file, or the pane shows no bytes).
     private(set) var viewports: [Range<UInt64>?] = []
 
-    /// Invoked when a resize changes the row density the maps should be built
-    /// with — e.g. the panel grew tall enough to fit more rows, or a stacked
-    /// divider dragged the top map shorter. The caller re-runs the data build
-    /// with `rowCapacities()`; the map's own resize handling only repaints.
-    var onRowCapacityChanged: (() -> Void)?
+    /// The first hex row drawn at the top of every map. One shared window for
+    /// both maps: the panes are synchronized by absolute offset (§9), so the
+    /// same offset must sit at the same y on both. Derived from the panes —
+    /// never set from outside.
+    private(set) var topRow: UInt64 = 0
 
-    /// The number of mini rows each map's data should be built with, derived
-    /// from the current layout and bounds. Indexed like `maps`.
-    func rowCapacities() -> [Int] {
-        switch mapLayout {
-        case .single:
-            return [Self.rowCapacity(areaHeight: bounds.height)]
-        case .sideBySide:
-            return [Self.rowCapacity(areaHeight: bounds.height),
-                    Self.rowCapacity(areaHeight: bounds.height)]
-        case .stacked(let fraction):
-            let frac = min(max(fraction, 0), 1)
-            return [Self.rowCapacity(areaHeight: bounds.height * frac),
-                    Self.rowCapacity(areaHeight: bounds.height * (1 - frac))]
-        }
-    }
+    /// Supplies the per-byte state the map paints, for one byte range of one
+    /// map. Called from `draw` for the visible rows only — the map stores no
+    /// cells, so this is the whole data path.
+    var byteStates: ((_ mapIndex: Int, _ range: Range<UInt64>) -> [HexByteState])?
+
+    /// Asks for the panes to scroll so that `offset`'s hex row sits at the top
+    /// of the pane — the minimap's drag and wheel both go through it. The panes
+    /// then report their new viewport, which slides the map's own window.
+    var onScrollToOffset: ((UInt64) -> Void)?
 
     /// Adopts a new map split, redrawing the divider lines only when the split
     /// actually changed (a stacked fraction can move by a hair on every pane
@@ -151,14 +157,15 @@ final class MinimapView: NSView {
     func setMapLayout(_ layout: MapLayout) {
         guard !mapLayout.equivalent(to: layout) else { return }
         mapLayout = layout
+        updateTopRow()
         needsDisplay = true
     }
 
-    /// Replaces the maps' contents (file sizes + byte cells). The panel keeps the
-    /// current selections unless `updateSelection` is called afterwards — a
-    /// rebuild and a selection change race, so the caller re-applies them.
+    /// Replaces the maps (file sizes). Selections are re-applied by the caller
+    /// afterwards — a rebuild and a selection change race.
     func setMaps(_ maps: [Map]) {
         self.maps = maps
+        updateTopRow()
         needsDisplay = true
     }
 
@@ -183,12 +190,12 @@ final class MinimapView: NSView {
         return viewports[index]
     }
 
-    /// Moves the maps' viewport rectangles. A scroll reports the visible byte
-    /// range of each pane; the panel redraws only the overlay — no data rebuild,
-    /// no file read — so it is cheap enough for live scrolling.
+    /// Adopts the panes' visible byte ranges: moves the viewport band *and*
+    /// slides the map's window, since the window is derived from the panes.
     func setViewports(_ viewports: [Range<UInt64>?]) {
         guard viewports != self.viewports else { return }
         self.viewports = viewports
+        updateTopRow()
         needsDisplay = true
     }
 
@@ -204,15 +211,13 @@ final class MinimapView: NSView {
             : NSColor(white: 0.80, alpha: 1)
     }
 
-    /// The minimum height of the viewport band. On a huge file one visible page
-    /// is a hair-thin slice of the whole — thinner than a pixel on a ~600 pt
-    /// map — so the band is clamped to at least this tall or it reads as a
-    /// missing overlay.
+    /// The minimum height of the viewport band, for a pane so short it shows
+    /// barely a row.
     static let viewportMinHeight: CGFloat = 4
 
-    /// The viewport rectangle's fill — a translucent grey that reads as a
-    /// "you are here" band over the cells without hiding them. Lightened in
-    /// dark appearance so it lifts off the near-black paper.
+    /// The viewport band's fill — a translucent grey that reads as a "you are
+    /// here" band over the cells without hiding them. Lightened in dark
+    /// appearance so it lifts off the near-black paper.
     private static let viewportFill = NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             ? NSColor(white: 0.95, alpha: 0.16)
@@ -256,34 +261,32 @@ final class MinimapView: NSView {
 
     override func layout() {
         super.layout()
-        // A resize re-derives the divider's position from the new bounds (the
-        // centered vertical line, or the fraction × new height), so repaint.
+        // A resize changes how many rows fit, which moves the window, and
+        // re-derives the divider's position from the new bounds.
+        updateTopRow()
         needsDisplay = true
-        notifyRowCapacityChangeIfNeeded()
     }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         // Three passes rather than one per map: side-by-side draws a single
         // viewport band across *both* maps, so the band cannot belong to a
-        // per-map pass. Splitting the passes also keeps the layering a per-map
-        // loop used to give for free — cells, then the band, then the selection
-        // on top of it, so a selection inside the viewport stays readable.
-        for (index, map) in maps.enumerated() {
+        // per-map pass. Splitting the passes also keeps the layering — cells,
+        // then the band, then the selection on top of it, so a selection inside
+        // the viewport stays readable.
+        for index in maps.indices {
             // The map's content (cells, selection) sits in a 10 pt side frame
-            // away from the panel's side edges; the viewport rectangle
-            // deliberately runs edge to edge past it (§ N).
-            drawByteGrid(of: map, in: contentArea(within: area(forMapAt: index), forMapAt: index),
-                         dirtyRect: dirtyRect)
+            // away from the panel's side edges; the viewport band deliberately
+            // runs edge to edge past it (§ N).
+            drawCells(forMapAt: index,
+                      in: contentArea(within: area(forMapAt: index), forMapAt: index),
+                      dirtyRect: dirtyRect)
         }
         drawViewports(dirtyRect: dirtyRect)
-        for (index, map) in maps.enumerated() {
-            // The overlay mirrors the map's actual rows: a small file's map
-            // fills only the top of the panel, so the selection is measured
-            // against the rows' real extent, not the panel height.
-            drawSelection(map.selection, fileSize: map.fileSize,
+        for index in maps.indices {
+            drawSelection(maps[index].selection,
                           in: contentArea(within: area(forMapAt: index), forMapAt: index),
-                          contentHeight: contentHeight(of: map), dirtyRect: dirtyRect)
+                          dirtyRect: dirtyRect)
         }
         switch mapLayout {
         case .single:
@@ -299,27 +302,87 @@ final class MinimapView: NSView {
         }
     }
 
-    /// Whether the density the maps were built with no longer matches what the
-    /// current height/layout asks for. Only meaningful when the data is built:
-    /// a small file whose hex rows already fit 1:1 (rows == hex rows) is done
-    /// regardless of how much taller the map gets; a file past its capacity is
-    /// re-collapsed when the capacity moves. Fires at most once per layout pass
-    /// (the rebuild lands the count back in sync, so the next pass is quiet).
-    private func notifyRowCapacityChangeIfNeeded() {
-        guard !maps.isEmpty else { return }
-        let capacities = rowCapacities()
-        guard capacities.count == maps.count else { return }
-        for (map, capacity) in zip(maps, capacities) {
-            let hexRows = (map.fileSize + 15) / 16
-            let desiredCount = min(Int(hexRows), capacity)
-            if map.rows.count != desiredCount {
-                onRowCapacityChanged?()
-                return
-            }
-        }
+    // MARK: - The window onto the file
+
+    /// The rows the shared window spans — the smallest of the maps', so the
+    /// window (and the band inside it) fits every map. Stacked maps differ in
+    /// height; side-by-side ones do not.
+    private func windowRowCount() -> Int {
+        maps.indices.map { Self.visibleRowCount(areaHeight: area(forMapAt: $0).height) }.min() ?? 0
     }
 
-    // MARK: - Byte grid
+    /// Total hex rows of the longest open file — the extent the window slides
+    /// over. The longer file is the comparison's extent, and its map is the one
+    /// the shared viewport band is measured against (§ N).
+    private func referenceRowCount() -> UInt64 {
+        let size = maps.map(\.fileSize).max() ?? 0
+        return (size + Self.bytesPerRow - 1) / Self.bytesPerRow
+    }
+
+    /// Re-derives the window's first row from the panes.
+    ///
+    /// The window's position within the file matches the panes' own: at the
+    /// file's start the window is at row 0, at its end the window's last row is
+    /// the file's last. That is what keeps the viewport band fully on the map —
+    /// it travels the map's height exactly once over the whole file — and it is
+    /// how VS Code positions its minimap. A file short enough to fit sits at
+    /// row 0 and the band moves inside it directly.
+    private func updateTopRow() {
+        let newTop = derivedTopRow()
+        guard newTop != topRow else { return }
+        topRow = newTop
+        needsDisplay = true
+    }
+
+    private func derivedTopRow() -> UInt64 {
+        let totalRows = referenceRowCount()
+        let windowRows = UInt64(max(0, windowRowCount()))
+        guard windowRows > 0, totalRows > windowRows else { return 0 }
+        guard let visible = unifiedViewport() else { return 0 }
+        let paneTop = visible.lowerBound / Self.bytesPerRow
+        let paneRows = max(1, (visible.upperBound - visible.lowerBound + Self.bytesPerRow - 1)
+            / Self.bytesPerRow)
+        // The panes cannot scroll past this row, so it is the 100 % mark.
+        guard totalRows > paneRows else { return 0 }
+        let maxPaneTop = totalRows - paneRows
+        let fraction = min(1, Double(min(paneTop, maxPaneTop)) / Double(maxPaneTop))
+        return UInt64((fraction * Double(totalRows - windowRows)).rounded())
+    }
+
+    /// The byte range a map shows right now: the shared window clamped to that
+    /// map's own file, so a map whose file ended higher up simply draws fewer
+    /// rows (its EOF area stays empty).
+    private func windowByteRange(forMapAt index: Int) -> Range<UInt64> {
+        guard maps.indices.contains(index) else { return 0..<0 }
+        let fileSize = maps[index].fileSize
+        let rows = Self.visibleRowCount(areaHeight: area(forMapAt: index).height)
+        guard rows > 0, fileSize > 0 else { return 0..<0 }
+        let start = topRow.multipliedReportingOverflow(by: Self.bytesPerRow)
+        guard !start.overflow, start.partialValue < fileSize else { return 0..<0 }
+        let end = (topRow + UInt64(rows)).multipliedReportingOverflow(by: Self.bytesPerRow)
+        let upper = end.overflow ? fileSize : min(end.partialValue, fileSize)
+        return start.partialValue..<upper
+    }
+
+    /// The cells a map is showing, row by row — what `draw` paints. Internal so
+    /// tests can assert the picture without reading pixels.
+    func visibleCells(forMapAt index: Int) -> [ByteRow] {
+        let range = windowByteRange(forMapAt: index)
+        guard !range.isEmpty, let states = byteStates?(index, range) else { return [] }
+        var rows: [ByteRow] = []
+        rows.reserveCapacity(states.count / Int(Self.bytesPerRow) + 1)
+        var offset = 0
+        while offset < states.count {
+            let end = min(offset + Int(Self.bytesPerRow), states.count)
+            let cells = states[offset..<end].filter { !$0.isEOF }.map(CellState.init)
+            if cells.isEmpty { break }  // past EOF: no more rows to draw
+            rows.append(ByteRow(cells: cells))
+            offset = end
+        }
+        return rows
+    }
+
+    // MARK: - Cells
 
     private func area(forMapAt index: Int) -> NSRect {
         let width = bounds.width
@@ -406,33 +469,38 @@ final class MinimapView: NSView {
         return (origins, byteWidth * scale)
     }
 
-    private func drawByteGrid(of map: Map, in area: NSRect, dirtyRect: NSRect) {
-        let rows = map.rows
-        guard !rows.isEmpty, area.height > 0, area.width > 0 else { return }
+    private func drawCells(forMapAt index: Int, in area: NSRect, dirtyRect: NSRect) {
+        guard area.height > 0, area.width > 0 else { return }
+        let rows = visibleCells(forMapAt: index)
+        guard !rows.isEmpty else { return }
         let (origins, cellWidth) = byteColumnLayout(contentWidth: area.width)
         guard cellWidth > 0 else { return }
-        let rowStep = Self.byteHeight + Self.rowGap
-        // Draw only the rows that intersect the dirty region, so a scroll-
-        // adjacent repaint doesn't re-fill the whole panel.
+        let rowStep = Self.rowStep
+        // Draw only the rows that intersect the dirty region, so a repaint of
+        // one band's worth of rows doesn't re-fill the whole panel.
         let firstRow = max(0, Int(floor((dirtyRect.minY - area.minY) / rowStep)))
         let lastRow = min(rows.count - 1,
                           Int(floor((dirtyRect.maxY - area.minY) / rowStep)))
         guard lastRow >= firstRow else { return }
         for i in firstRow...lastRow {
             let y = area.minY + CGFloat(i) * rowStep
-            let row = rows[i]
-            for (j, state) in row.cells.enumerated() {
+            for (j, state) in rows[i].cells.enumerated() {
                 guard j < origins.count else { break }
                 let rect = NSRect(x: area.minX + origins[j],
                                   y: y,
                                   width: cellWidth,
                                   height: Self.byteHeight)
-                // Difference is a background over the whole cell (the byte
-                // columns stay separate — the gaps between cells show the
-                // panel's paper, so a diff read as dotted, not a solid stripe).
+                // Difference is a background *behind* the byte, so it has to be
+                // taller than the byte or the opaque ink on top would hide it
+                // completely — which is what happened while both used the same
+                // rect: a difference only showed where the byte was a muted
+                // (translucent) fill, i.e. never in real content. Filling the
+                // whole row step leaves the inter-row gap orange, so a differing
+                // run reads as a continuous orange band behind the bytes, while
+                // the columns stay separated horizontally.
                 if state.isDifferent {
                     HexTheme.differenceFill.setFill()
-                    rect.fill()
+                    NSRect(x: rect.minX, y: y, width: cellWidth, height: rowStep).fill()
                 }
                 // The byte itself is drawn on top of that background, so a
                 // modified byte shows as red ink on orange, exactly as the hex
@@ -445,16 +513,14 @@ final class MinimapView: NSView {
         }
     }
 
-    /// The vertical extent the map's rows actually occupy, from the map's top:
-    /// `rows.count` mini rows each `byteHeight + rowGap` tall, minus the
-    /// trailing gap. A small file whose hex rows fit 1:1 draws only this tall;
-    /// a large file aggregates to the panel's row capacity, so its extent
-    /// matches the panel's height. The viewport and selection overlays are
-    /// measured against this extent — not the panel's full height — so they
-    /// mirror the real picture on the map.
-    private func contentHeight(of map: Map) -> CGFloat {
-        guard !map.rows.isEmpty else { return 0 }
-        return CGFloat(map.rows.count) * (Self.byteHeight + Self.rowGap) - Self.rowGap
+    // MARK: - Overlays
+
+    /// The y a byte offset sits at inside a map, in the map's own coordinates.
+    /// Offsets above the window come out negative and below it past the map's
+    /// height — the callers clip.
+    private func y(of offset: UInt64, in area: NSRect) -> CGFloat {
+        let row = Double(offset) / Double(Self.bytesPerRow)
+        return area.minY + CGFloat(row - Double(topRow)) * Self.rowStep
     }
 
     /// The "you are here" band(s) the panel draws, as rectangles — the geometry
@@ -464,12 +530,8 @@ final class MinimapView: NSView {
     /// Side-by-side returns exactly ONE rectangle spanning the whole panel: the
     /// panes scroll in lockstep by absolute offset (§9), so a band per map — cut
     /// in two by the gutter between them — read as a broken overlay rather than
-    /// one viewport. The single band runs on a shared offset axis: the longer
-    /// file's size over its map's content height, which is the app's
-    /// absolute-offset rule applied to the panel. A consequence worth knowing:
-    /// when the two files differ in size, the band sits where those bytes are on
-    /// the longer file's map, and not where the shorter map draws them — the
-    /// maps' own rows still run on each file's own scale.
+    /// one viewport. Both maps share one window and one scale, so the single
+    /// band is exact for both.
     ///
     /// Single-file and stacked return one band per map. Stacked cannot share a
     /// band: its maps sit above each other, so the two bands are at different y
@@ -479,27 +541,12 @@ final class MinimapView: NSView {
         switch mapLayout {
         case .single, .stacked:
             return maps.indices.compactMap { index in
-                viewportRect(viewport: viewport(forMapAt: index),
-                             fileSize: maps[index].fileSize,
-                             in: area(forMapAt: index),
-                             contentHeight: contentHeight(of: maps[index]))
+                viewportRect(unifiedViewport(), in: area(forMapAt: index))
             }
         case .sideBySide:
-            guard let reference = referenceMapIndex() else { return [] }
-            let rect = viewportRect(viewport: unifiedViewport(),
-                                    fileSize: maps[reference].fileSize,
-                                    in: bounds,
-                                    contentHeight: contentHeight(of: maps[reference]))
-            return rect.map { [$0] } ?? []
+            guard !maps.isEmpty else { return [] }
+            return viewportRect(unifiedViewport(), in: bounds).map { [$0] } ?? []
         }
-    }
-
-    /// The map the shared band is measured against: the one holding the longer
-    /// file. Its map is also the taller one — more bytes means at least as many
-    /// hex rows, hence at least as many mini rows — so the band is measured over
-    /// the full offset axis of the comparison.
-    private func referenceMapIndex() -> Int? {
-        maps.indices.max(by: { maps[$0].fileSize < maps[$1].fileSize })
     }
 
     /// The visible byte range across both panes. Synchronized scrolling reports
@@ -515,28 +562,22 @@ final class MinimapView: NSView {
         return lower..<upper
     }
 
-    /// One band's rectangle: the visible slice as a fraction of `fileSize`, laid
-    /// over `contentHeight` inside `area`. It runs edge to edge on every side —
-    /// the full width of `area` (poking past the padded cells) and the file
-    /// fraction against `contentHeight`, so on a small file that fills only the
-    /// top of the panel the band hugs the rows instead of stretching to the
-    /// panel's height. A visible page of a huge file measures less than a pixel,
-    /// so the band is given at least `viewportMinHeight` (kept inside the rows'
-    /// extent) — the overlay still reads as a hair-thin slice that moves as the
-    /// pane scrolls. Nil when there is nothing to draw.
-    private func viewportRect(viewport: Range<UInt64>?, fileSize: UInt64,
-                              in area: NSRect, contentHeight: CGFloat) -> NSRect? {
-        guard let viewport, !viewport.isEmpty, fileSize > 0, contentHeight > 0 else { return nil }
-        let startFraction = CGFloat(min(viewport.lowerBound, fileSize)) / CGFloat(fileSize)
-        let endFraction = CGFloat(min(viewport.upperBound, fileSize)) / CGFloat(fileSize)
-        guard endFraction > startFraction else { return nil }
-        var y0 = area.minY + startFraction * contentHeight
-        var y1 = area.minY + endFraction * contentHeight
-        let minHeight = min(Self.viewportMinHeight, contentHeight)
-        if y1 - y0 < minHeight {
-            y1 = min(y0 + minHeight, area.minY + contentHeight)
-            y0 = max(y1 - minHeight, area.minY)
+    /// One band's rectangle: the visible rows laid out at the map's own fixed
+    /// scale, from the window's first row. It runs edge to edge on every side —
+    /// the full width of `area` (poking past the padded cells) and the visible
+    /// rows' own height — and is clipped to the map. A pane so short it shows
+    /// barely a row still gets `viewportMinHeight`. Nil when there is nothing to
+    /// draw, or when the visible rows fall outside the window entirely.
+    private func viewportRect(_ viewport: Range<UInt64>?, in area: NSRect) -> NSRect? {
+        guard let viewport, !viewport.isEmpty, area.height > 0 else { return nil }
+        var y0 = y(of: viewport.lowerBound, in: area)
+        var y1 = y(of: viewport.upperBound, in: area)
+        if y1 - y0 < Self.viewportMinHeight {
+            y1 = y0 + Self.viewportMinHeight
         }
+        y0 = max(y0, area.minY)
+        y1 = min(y1, area.maxY)
+        guard y1 > y0 else { return nil }
         return NSRect(x: area.minX, y: y0, width: area.width, height: y1 - y0)
     }
 
@@ -551,14 +592,12 @@ final class MinimapView: NSView {
         }
     }
 
-    private func drawSelection(_ selection: Range<UInt64>?, fileSize: UInt64,
-                               in area: NSRect, contentHeight: CGFloat, dirtyRect: NSRect) {
-        guard let selection, !selection.isEmpty, fileSize > 0, contentHeight > 0 else { return }
-        let startFraction = CGFloat(min(selection.lowerBound, fileSize)) / CGFloat(fileSize)
-        let endFraction = CGFloat(min(selection.upperBound, fileSize)) / CGFloat(fileSize)
-        guard endFraction > startFraction else { return }
-        let y0 = area.minY + startFraction * contentHeight
-        let y1 = area.minY + endFraction * contentHeight
+    private func drawSelection(_ selection: Range<UInt64>?, in area: NSRect, dirtyRect: NSRect) {
+        guard let selection, !selection.isEmpty, area.height > 0 else { return }
+        var y0 = y(of: selection.lowerBound, in: area)
+        var y1 = y(of: selection.upperBound, in: area)
+        y0 = max(y0, area.minY)
+        y1 = min(y1, area.maxY)
         guard y1 > y0, y1 >= dirtyRect.minY, y0 <= dirtyRect.maxY else { return }
         HexTheme.selectionFill.setFill()
         NSRect(x: area.minX, y: y0, width: area.width, height: y1 - y0).fill()
@@ -596,6 +635,87 @@ final class MinimapView: NSView {
         let left = max(dirtyRect.minX, bounds.minX)
         guard right > left else { return }
         NSRect(x: left, y: y, width: right - left, height: 1).fill()
+    }
+
+    // MARK: - Dragging the viewport (§ N)
+
+    /// Where in the band the drag was grabbed, in points from the band's top, so
+    /// the band keeps its grip on the cursor for the whole drag. Nil when no
+    /// drag is in flight.
+    private var dragGrabOffset: CGFloat?
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let bands = viewportRects()
+        if let band = bands.first(where: { $0.contains(point) }) {
+            dragGrabOffset = point.y - band.minY
+            return
+        }
+        // A click off the band jumps: the band centres on the clicked row, and
+        // the drag continues from its middle.
+        let height = bands.first?.height ?? Self.viewportMinHeight
+        dragGrabOffset = height / 2
+        requestScroll(bandTop: point.y - height / 2, bandHeight: height)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let grab = dragGrabOffset else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        let height = viewportRects().first?.height ?? Self.viewportMinHeight
+        requestScroll(bandTop: point.y - grab, bandHeight: height)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        dragGrabOffset = nil
+    }
+
+    /// Asks the panes to scroll so the viewport band's top lands at `bandTop`.
+    ///
+    /// The window slides with the panes, which makes the band travel the map's
+    /// full height exactly once over the whole file — so the map *is* a
+    /// proportional scrollbar and the band's position maps back to the panes'
+    /// scroll position by simple proportion. A file that fits the window has no
+    /// sliding to undo, so there the band's y is the row directly.
+    private func requestScroll(bandTop: CGFloat, bandHeight: CGFloat) {
+        guard let onScrollToOffset, !maps.isEmpty else { return }
+        let totalRows = referenceRowCount()
+        let windowRows = UInt64(max(0, windowRowCount()))
+        guard totalRows > 0, windowRows > 0 else { return }
+        let offsetInMap = max(0, bandTop - area(forMapAt: 0).minY)
+
+        let row: UInt64
+        if totalRows <= windowRows {
+            row = UInt64(max(0, (offsetInMap / Self.rowStep).rounded()))
+        } else {
+            let travel = CGFloat(windowRows) * Self.rowStep - bandHeight
+            let paneRows = max(1, UInt64((bandHeight / Self.rowStep).rounded()))
+            let maxPaneTop = totalRows > paneRows ? totalRows - paneRows : 0
+            guard travel > 0, maxPaneTop > 0 else { return }
+            let fraction = min(1, max(0, Double(offsetInMap / travel)))
+            row = UInt64((fraction * Double(maxPaneTop)).rounded())
+        }
+        onScrollToOffset(min(row, totalRows - 1) * Self.bytesPerRow)
+    }
+
+    /// A wheel over the panel scrolls the *panes*, at the map's own scale (one
+    /// hex row per `rowStep` of scrolling) — the map has no scroll position of
+    /// its own to move.
+    override func scrollWheel(with event: NSEvent) {
+        guard let onScrollToOffset, let visible = unifiedViewport() else {
+            super.scrollWheel(with: event)
+            return
+        }
+        let delta = event.hasPreciseScrollingDeltas
+            ? event.scrollingDeltaY
+            : event.scrollingDeltaY * Self.rowStep
+        let rows = Int((delta / Self.rowStep).rounded())
+        guard rows != 0 else { return }
+        let totalRows = referenceRowCount()
+        guard totalRows > 0 else { return }
+        let paneTop = Int64(visible.lowerBound / Self.bytesPerRow)
+        let target = max(0, paneTop - Int64(rows))
+        let clamped = min(UInt64(target), totalRows - 1)
+        onScrollToOffset(clamped * Self.bytesPerRow)
     }
 }
 

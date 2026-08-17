@@ -320,10 +320,11 @@ final class MinimapTests: XCTestCase {
         XCTAssertEqual(fraction, 0.5, accuracy: 0.001)
     }
 
-    // MARK: - Stage 3: byte cells
+    // MARK: - Byte cells
 
-    /// Opens one file in single-file mode and waits for the minimap's async
-    /// significance build to land.
+    /// Opens one file in single-file mode with the panel shown. No waiting for a
+    /// build: the map pulls its cells from the pane as it draws, so
+    /// `visibleCells` is meaningful the moment the panel has a size.
     private func makeSingleFileWindow(_ bytes: [UInt8]) throws -> (MainViewController, NSWindow, MinimapView) {
         let url = try tempFile(bytes)
         let (controller, window) = try makeController()
@@ -333,7 +334,6 @@ final class MinimapTests: XCTestCase {
         let (split, panel) = try minimapViews(window)
         split.setPanelVisible(true, animated: false)
         window.layoutIfNeeded()
-        _ = pumpUntil(2.0) { !panel.maps.isEmpty && !panel.maps[0].rows.isEmpty }
         return (controller, window, panel)
     }
 
@@ -347,92 +347,68 @@ final class MinimapTests: XCTestCase {
                               0x00, 0x00, 0x42, 0x00, 0x00, 0x00, 0x00, 0x00,
                               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
         let (_, _, panel) = try makeSingleFileWindow(bytes)
-        let map = try XCTUnwrap(panel.maps.first)
-        XCTAssertEqual(map.fileSize, UInt64(bytes.count))
-        XCTAssertEqual(map.rows.count, 3, "48 bytes = 3 hex rows → 3 mini rows")
-        XCTAssertEqual(map.rows[0].cells.count, 16, "a full hex row keeps 16 cells")
-        XCTAssertEqual(map.rows[0].cells[1], .significant, "row 0 holds 0x41 at column 1")
-        XCTAssertEqual(map.rows[0].cells.filter { $0 == .significant }.count, 1,
+        let rows = panel.visibleCells(forMapAt: 0)
+        XCTAssertEqual(panel.maps.first?.fileSize, UInt64(bytes.count))
+        XCTAssertEqual(rows.count, 3, "48 bytes = 3 hex rows = 3 mini rows")
+        XCTAssertEqual(rows[0].cells.count, 16, "a full hex row keeps 16 cells")
+        XCTAssertEqual(rows[0].cells[1], .significant, "row 0 holds 0x41 at column 1")
+        XCTAssertEqual(rows[0].cells.filter { $0 == .significant }.count, 1,
                        "only 0x41 is significant in row 0")
-        XCTAssertTrue(map.rows[1].cells.allSatisfy { $0 == .insignificant },
+        XCTAssertTrue(rows[1].cells.allSatisfy { $0 == .insignificant },
                       "row 1 is all 0x00/0xFF fill")
-        XCTAssertEqual(map.rows[2].cells[2], .significant, "row 2 holds 0x42 at column 2")
-        XCTAssertEqual(map.rows[2].cells.filter { $0 == .significant }.count, 1,
+        XCTAssertEqual(rows[2].cells[2], .significant, "row 2 holds 0x42 at column 2")
+        XCTAssertEqual(rows[2].cells.filter { $0 == .significant }.count, 1,
                        "only 0x42 is significant in row 2")
     }
 
     func testPartialLastRowKeepsOnlyItsBytes() throws {
         // 3 bytes = one partial hex row → one mini row with exactly 3 cells.
         let (_, _, panel) = try makeSingleFileWindow([0x41, 0x00, 0x42])
-        let map = try XCTUnwrap(panel.maps.first)
-        XCTAssertEqual(map.rows.count, 1)
-        XCTAssertEqual(map.rows[0].cells.count, 3, "the partial row holds only its bytes")
-        XCTAssertEqual(map.rows[0].cells[0], .significant)
-        XCTAssertEqual(map.rows[0].cells[1], .insignificant)
-        XCTAssertEqual(map.rows[0].cells[2], .significant)
+        let rows = panel.visibleCells(forMapAt: 0)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows[0].cells.count, 3, "the partial row holds only its bytes")
+        XCTAssertEqual(rows[0].cells[0], .significant)
+        XCTAssertEqual(rows[0].cells[1], .insignificant)
+        XCTAssertEqual(rows[0].cells[2], .significant)
     }
 
     func testModifiedCellsMarkEditedBytes() throws {
         // A freshly opened file has nothing modified; editing a byte turns its
-        // cell's isModified flag on (the map rebuilds on every edit).
+        // cell's isModified flag on. No wait: the cells are read as they are
+        // drawn, so the edit is on the map the moment it lands.
         let bytes: [UInt8] = [0x00, 0x41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
         let (controller, _, panel) = try makeSingleFileWindow(bytes)
-        let mapBefore = try XCTUnwrap(panel.maps.first)
-        XCTAssertFalse(mapBefore.rows[0].cells.contains(where: \.isModified),
-                       "no edits yet → no modified cells")
+        XCTAssertFalse(try XCTUnwrap(panel.visibleCells(forMapAt: 0).first)
+            .cells.contains(where: \.isModified), "no edits yet → no modified cells")
 
         controller.windowModel.pane1.moveCaret(to: 1)
         controller.windowModel.pane1.typeASCII(0x42)
-        _ = pumpUntil(2.0) {
-            guard let map = panel.maps.first, !map.rows.isEmpty else { return false }
-            return map.rows[0].cells[1].isModified
-        }
-        let mapAfter = try XCTUnwrap(panel.maps.first)
-        XCTAssertEqual(mapAfter.rows[0].cells[1],
+
+        let row = try XCTUnwrap(panel.visibleCells(forMapAt: 0).first)
+        XCTAssertEqual(row.cells[1],
                        MinimapView.CellState(isSignificant: true, isModified: true,
                                              isDifferent: false),
                        "the typed byte is significant and modified")
-        XCTAssertFalse(mapAfter.rows[0].cells[0].isModified,
-                       "untouched bytes stay unmodified")
-    }
-
-    func testRowCountCollapsesLargeFiles() throws {
-        // A probe file gives the panel its real height, so the expected density
-        // matches the row capacity that height implies.
-        let (_, _, probe) = try makeSingleFileWindow([0x41])
-        let capacity = MinimapView.rowCapacity(areaHeight: probe.bounds.height)
-        XCTAssertGreaterThan(capacity, 1, "the test window must fit a few rows")
-        // More hex rows than the capacity → exactly the capacity mini rows.
-        let size = capacity * 16 + 100
-        let bytes = [UInt8](repeating: 0x00, count: size)
-        let (_, _, panel) = try makeSingleFileWindow(bytes)
-        let map = try XCTUnwrap(panel.maps.first)
-        XCTAssertEqual(map.rows.count, capacity,
-                       "a file larger than the render density collapses to the panel's row capacity")
+        XCTAssertFalse(row.cells[0].isModified, "untouched bytes stay unmodified")
     }
 
     func testComparisonDifferenceCellsWin() throws {
         // Two files that differ everywhere → every cell is a difference cell.
-        let url1 = try tempFile([UInt8](repeating: 0x41, count: 64))
-        let url2 = try tempFile([UInt8](repeating: 0x42, count: 64))
-        let (controller, window) = try makeController()
-        try controller.windowModel.pane1.open(url: url1)
-        try controller.windowModel.pane2.open(url: url2)
-        controller.apply(mode: .comparison)
-        window.layoutIfNeeded()
+        // Difference comes from the panes' live comparison, so there is no
+        // background index to wait for.
+        let (_, window) = try makeComparisonWindow(vertical: true, sizes: (64, 64))
         let (split, panel) = try minimapViews(window)
         split.setPanelVisible(true, animated: false)
         window.layoutIfNeeded()
 
-        _ = pumpUntil(2.0) { panel.maps.count == 2 && !panel.maps[0].rows.isEmpty }
-        // The background index needs to land before the diff cells appear.
-        _ = pumpUntil(3.0) {
-            panel.maps.allSatisfy { map in
-                !map.rows.isEmpty && map.rows.allSatisfy { row in row.cells.allSatisfy(\.isDifferent) }
-            }
-        }
         XCTAssertEqual(panel.maps.count, 2, "one map per pane")
+        for index in 0..<2 {
+            let rows = panel.visibleCells(forMapAt: index)
+            XCTAssertEqual(rows.count, 4, "64 bytes = 4 hex rows on map \(index)")
+            XCTAssertTrue(rows.allSatisfy { $0.cells.allSatisfy(\.isDifferent) },
+                          "every byte of map \(index) differs from its companion")
+        }
     }
 
     func testSelectionOverlayFollowsCaret() throws {
@@ -618,194 +594,206 @@ final class MinimapTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(sorted[1].minY, panel.bounds.height / 2 - 1)
     }
 
-    /// The shared band runs on one offset axis — the longer file's size over its
-    /// map's content height — so the same absolute offset means one y for the
-    /// whole panel. Both files here are far taller than the viewport, so the
-    /// band is a genuine partial slice: measuring it against the shorter file
-    /// (50 KB against 100 KB) would put it at twice the offset and twice the
-    /// height, which the assertions below separate.
-    func testSharedBandIsMeasuredAgainstTheLongerFile() throws {
-        // Sizes chosen so the visible slice is a large fraction of the file:
-        // the band is then far taller than `viewportMinHeight`, so the
-        // hair-thin-slice clamp never muddies the arithmetic below.
+    /// The shared band is the visible rows laid out at the map's own fixed
+    /// scale, offset by the window's first row — no file-size fraction is
+    /// involved any more, so the band means the same thing on both maps.
+    func testSharedBandMatchesTheVisibleRowsAtTheFixedScale() throws {
         let (_, window) = try makeComparisonWindow(vertical: true, sizes: (8_000, 4_000))
         let (split, panel) = try minimapViews(window)
         split.setPanelVisible(true, animated: false)
         window.layoutIfNeeded()
-        _ = pumpUntil(2.0) { panel.viewportRects().count == 1 && panel.maps.count == 2 }
+        _ = pumpUntil(2.0) { panel.viewportRects().count == 1 }
 
-        // Scroll into the middle so a wrong scale cannot coincide with the
-        // right one at offset 0.
+        let visible = try XCTUnwrap(panel.viewport(forMapAt: 0))
+        let paneRows = (visible.upperBound - visible.lowerBound + 15) / 16
+        let band = try XCTUnwrap(panel.viewportRects().first)
+        XCTAssertEqual(band.height, CGFloat(paneRows) * MinimapView.rowStep, accuracy: MinimapView.rowStep,
+                       "the band is exactly the pane's rows at 4 pt each")
+        XCTAssertEqual(band.minY,
+                       CGFloat(visible.lowerBound / 16 - panel.topRow) * MinimapView.rowStep,
+                       accuracy: 1, "and starts at the pane's first row within the window")
+    }
+
+    // MARK: - The window onto the file
+
+    /// The rows a map can show at the fixed scale.
+    private func windowRows(_ panel: MinimapView) -> UInt64 {
+        UInt64(MinimapView.visibleRowCount(areaHeight: panel.bounds.height))
+    }
+
+    /// A file short enough to fit needs no window: it sits at row 0 and the band
+    /// moves inside it.
+    func testWindowStaysAtTheTopForAFileThatFits() throws {
+        let (_, window, panel) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 160))
+        _ = pumpUntil(2.0) { panel.viewport(forMapAt: 0) != nil }
+        XCTAssertEqual(panel.topRow, 0, "10 hex rows fit the panel many times over")
+        XCTAssertGreaterThan(windowRows(panel), 10, "the panel really is taller than the file")
+        _ = window
+    }
+
+    /// A file taller than the panel makes the map a window that slides with the
+    /// panes: at the top of the file the window starts at row 0, at the bottom
+    /// its last row is the file's last, and the band stays on the map throughout.
+    func testWindowSlidesWithThePaneAndReachesTheFileEnd() throws {
+        let bytes = [UInt8](repeating: 0x41, count: 100_000)   // 6250 hex rows
+        let (_, window, panel) = try makeSingleFileWindow(bytes)
+        _ = pumpUntil(2.0) { panel.viewport(forMapAt: 0) != nil }
+        let totalRows = UInt64((bytes.count + 15) / 16)
+        let rows = windowRows(panel)
+        XCTAssertLessThan(rows, totalRows, "the file must not fit — that is the point")
+        XCTAssertEqual(panel.topRow, 0, "at the file's start the window starts at row 0")
+        XCTAssertFalse(panel.viewportRects().isEmpty, "the band is on the map")
+
+        // Scroll the pane to the very bottom.
         let hexView = try XCTUnwrap(descendants(of: window.contentView!, HexView.self).first)
         let clip = try XCTUnwrap(hexView.enclosingScrollView?.contentView)
+        clip.setBoundsOrigin(NSPoint(x: 0, y: max(hexView.hexContentHeight - clip.bounds.height, 0)))
+        window.layoutIfNeeded()
+        _ = pumpUntil(2.0) { (panel.viewport(forMapAt: 0)?.upperBound ?? 0) >= UInt64(bytes.count) }
+
+        XCTAssertEqual(panel.topRow, totalRows - rows,
+                       "at the file's end the window's last row is the file's last")
+        XCTAssertFalse(panel.viewportRects().isEmpty, "the band is still on the map")
+
+        // And somewhere in the middle the window sits somewhere in the middle.
         clip.setBoundsOrigin(NSPoint(x: 0, y: (hexView.hexContentHeight - clip.bounds.height) / 2))
         window.layoutIfNeeded()
-        _ = pumpUntil(2.0) { (panel.viewport(forMapAt: 0)?.lowerBound ?? 0) > 0 }
+        _ = pumpUntil(2.0) { panel.topRow > 0 && panel.topRow < totalRows - rows }
+        XCTAssertGreaterThan(panel.topRow, 0)
+        XCTAssertLessThan(panel.topRow, totalRows - rows)
+    }
 
-        let longer = try XCTUnwrap(panel.maps.max(by: { $0.fileSize < $1.fileSize }))
-        let shorter = try XCTUnwrap(panel.maps.min(by: { $0.fileSize < $1.fileSize }))
-        XCTAssertEqual(longer.fileSize, 8_000, "the longer file is the reference")
-
-        // The band covers what both panes have on screen: synchronized scrolling
-        // reports the same offsets, but the shorter file clamps at its own EOF.
-        let ranges = [panel.viewport(forMapAt: 0), panel.viewport(forMapAt: 1)]
-            .compactMap { $0 }.filter { !$0.isEmpty }
-        let lower = try XCTUnwrap(ranges.map(\.lowerBound).min())
-        let upper = try XCTUnwrap(ranges.map(\.upperBound).max())
-        XCTAssertGreaterThan(lower, 0, "the panes are scrolled off the top")
-        XCTAssertLessThan(upper, longer.fileSize, "and show only a slice")
-
-        func contentHeight(_ map: MinimapView.Map) -> CGFloat {
-            CGFloat(map.rows.count) * (MinimapView.byteHeight + MinimapView.rowGap) - MinimapView.rowGap
+    /// Every byte gets its own cell: a mini row is one hex row, never a group of
+    /// them. The file below puts a single significant byte in column `row % 16`,
+    /// so an aggregating map would smear several columns into one row.
+    func testEveryByteGetsItsOwnRowWithNoAggregation() throws {
+        let rowCount = 400
+        var bytes = [UInt8](repeating: 0x00, count: rowCount * 16)
+        for row in 0..<rowCount {
+            bytes[row * 16 + row % 16] = 0x41
         }
-        let axis = contentHeight(longer)
+        let (_, _, panel) = try makeSingleFileWindow(bytes)
+        let rows = panel.visibleCells(forMapAt: 0)
+        XCTAssertEqual(UInt64(rows.count), windowRows(panel),
+                       "the map shows a window of rows, not the whole file collapsed into it")
+        XCTAssertLessThan(rows.count, rowCount, "the file is taller than the window")
+
+        for (index, row) in rows.enumerated() {
+            XCTAssertEqual(row.cells.count, 16, "row \(index) is one hex row")
+            let significant = row.cells.enumerated().filter(\.element.isSignificant).map(\.offset)
+            XCTAssertEqual(significant, [(Int(panel.topRow) + index) % 16],
+                           "row \(index) keeps exactly its own byte significant")
+        }
+    }
+
+    // MARK: - Dragging the viewport
+
+    /// Synthesizes a mouse event at a point in the panel's own coordinates.
+    private func mouseEvent(_ type: NSEvent.EventType, at point: NSPoint,
+                            in panel: MinimapView) throws -> NSEvent {
+        let inWindow = panel.convert(point, to: nil)
+        return try XCTUnwrap(NSEvent.mouseEvent(with: type, location: inWindow, modifierFlags: [],
+                                               timestamp: ProcessInfo.processInfo.systemUptime,
+                                               windowNumber: panel.window?.windowNumber ?? 0,
+                                               context: nil, eventNumber: 0, clickCount: 1,
+                                               pressure: 1),
+                             "could not synthesize \(type)")
+    }
+
+    /// Grabbing the band and pulling it down scrolls the panes forward — the map
+    /// is a proportional scrollbar over the whole file, so a short drag covers a
+    /// lot of a big file.
+    func testDraggingTheBandScrollsThePanes() throws {
+        let bytes = [UInt8](repeating: 0x41, count: 100_000)
+        let (_, window, panel) = try makeSingleFileWindow(bytes)
+        _ = pumpUntil(2.0) { panel.viewport(forMapAt: 0) != nil }
+        let start = try XCTUnwrap(panel.viewport(forMapAt: 0))
+        XCTAssertEqual(start.lowerBound, 0, "the pane starts at the top of the file")
         let band = try XCTUnwrap(panel.viewportRects().first)
-        XCTAssertGreaterThan(band.height, MinimapView.viewportMinHeight,
-                             "the slice is big enough that the min-height clamp stays out of it")
-        XCTAssertEqual(band.minY, CGFloat(lower) / CGFloat(longer.fileSize) * axis,
-                       accuracy: 1, "the band's offset comes from the longer file's scale")
-        XCTAssertEqual(band.height, CGFloat(upper - lower) / CGFloat(longer.fileSize) * axis,
-                       accuracy: 1, "and so does its height")
-        // Guard against the scale silently flipping to the shorter file.
-        let wrongY = CGFloat(min(lower, shorter.fileSize)) / CGFloat(shorter.fileSize)
-            * contentHeight(shorter)
-        XCTAssertNotEqual(band.minY, wrongY, accuracy: 1,
-                          "the shorter file's scale would place the band elsewhere")
-    }
 
-    // MARK: - Difference lookup
-
-    /// The column walk used to paint difference cells skips whole `.same` runs
-    /// in one jump. The jump used to round up from the row's start instead of
-    /// from the column's own first slot, which overshot by a full hex row
-    /// whenever the same block ended inside the row's first j+1 columns — a
-    /// short difference landing in the skipped slot was never painted.
-    func testShortUnalignedDifferenceIsFoundInEveryColumnItTouches() {
-        // 48 bytes = 3 hex rows collapsed onto one mini row; the files differ
-        // only over [20, 25), i.e. columns 4...8 of the middle hex row.
-        let index = DiffBlockIndex(leftSize: 48, rightSize: 48, blocks: [
-            DiffBlock(kind: .same, range: 0..<20),
-            DiffBlock(kind: .different, range: 20..<25),
-            DiffBlock(kind: .same, range: 25..<48),
-        ])
-        for column in 4...8 {
-            XCTAssertTrue(
-                MainViewController.containsDifferent(inColumn: column, start: 0, end: 48, index: index),
-                "column \(column) covers a differing byte at offset \(20 + column - 4)")
-        }
-        for column in [0, 1, 2, 3, 9, 15] {
-            XCTAssertFalse(
-                MainViewController.containsDifferent(inColumn: column, start: 0, end: 48, index: index),
-                "column \(column) covers no differing byte")
-        }
-    }
-
-    /// The same walk, cross-checked against the obvious per-slot scan over a
-    /// set of block layouts — including runs that end mid-row and rows that do
-    /// not start at offset 0 (an aggregated map row).
-    func testDifferenceLookupMatchesAPerSlotScan() {
-        let layouts: [[DiffBlock]] = [
-            [.init(kind: .same, range: 0..<20), .init(kind: .different, range: 20..<25),
-             .init(kind: .same, range: 25..<96)],
-            [.init(kind: .different, range: 0..<1), .init(kind: .same, range: 1..<96)],
-            [.init(kind: .same, range: 0..<47), .init(kind: .different, range: 47..<49),
-             .init(kind: .same, range: 49..<96)],
-            [.init(kind: .same, range: 0..<96)],
-            [.init(kind: .same, range: 0..<33), .init(kind: .different, range: 33..<34),
-             .init(kind: .same, range: 34..<95), .init(kind: .different, range: 95..<96)],
-        ]
-        for (layoutIndex, blocks) in layouts.enumerated() {
-            let index = DiffBlockIndex(leftSize: 96, rightSize: 96, blocks: blocks)
-            for row in [(start: UInt64(0), end: UInt64(48)), (start: UInt64(48), end: UInt64(96))] {
-                for column in 0..<16 {
-                    let expected = stride(from: row.start + UInt64(column), to: row.end, by: 16)
-                        .contains { index.state(at: $0) == .different }
-                    XCTAssertEqual(
-                        MainViewController.containsDifferent(inColumn: column, start: row.start,
-                                                             end: row.end, index: index),
-                        expected,
-                        "layout \(layoutIndex), row [\(row.start), \(row.end)), column \(column)")
-                }
-            }
-        }
-    }
-
-    // MARK: - Hidden panel does no work
-
-    /// The maps cost a file scan, and the panel is hidden by default, so nothing
-    /// is built until it is shown — a user who never opens the minimap never
-    /// pays for it.
-    func testHiddenPanelBuildsNoMapsUntilShown() throws {
-        let url = try tempFile([UInt8](repeating: 0x41, count: 64))
-        let (controller, window) = try makeController()
-        try controller.windowModel.pane1.open(url: url)
-        controller.apply(mode: .singleFile)
+        panel.mouseDown(with: try mouseEvent(.leftMouseDown, at: NSPoint(x: band.midX, y: band.midY),
+                                             in: panel))
+        panel.mouseDragged(with: try mouseEvent(.leftMouseDragged,
+                                                at: NSPoint(x: band.midX, y: band.midY + 120),
+                                                in: panel))
+        panel.mouseUp(with: try mouseEvent(.leftMouseUp, at: NSPoint(x: band.midX, y: band.midY + 120),
+                                           in: panel))
         window.layoutIfNeeded()
-        let (split, panel) = try minimapViews(window)
+        _ = pumpUntil(2.0) { (panel.viewport(forMapAt: 0)?.lowerBound ?? 0) > start.lowerBound }
 
-        XCTAssertFalse(split.panelVisible, "the panel starts hidden")
-        // Give a build every chance to land, then assert none ever did.
-        _ = pumpUntil(0.5) { !panel.maps.isEmpty }
-        XCTAssertTrue(panel.maps.isEmpty, "a hidden panel scans nothing")
+        let moved = try XCTUnwrap(panel.viewport(forMapAt: 0))
+        XCTAssertGreaterThan(moved.lowerBound, start.lowerBound,
+                             "dragging the band down scrolled the pane forward")
+        XCTAssertGreaterThan(panel.topRow, 0, "and the map's window followed it")
+    }
 
-        split.setPanelVisible(true, animated: false)
+    /// Dragging back up returns to the file's start rather than overshooting into
+    /// negative offsets.
+    func testDraggingTheBandToTheTopClampsAtTheFileStart() throws {
+        let bytes = [UInt8](repeating: 0x41, count: 100_000)
+        let (_, window, panel) = try makeSingleFileWindow(bytes)
+        _ = pumpUntil(2.0) { panel.viewport(forMapAt: 0) != nil }
+
+        // Jump into the middle by clicking off the band, then drag far above the
+        // panel's top edge.
+        panel.mouseDown(with: try mouseEvent(.leftMouseDown,
+                                             at: NSPoint(x: panel.bounds.midX,
+                                                         y: panel.bounds.height / 2),
+                                             in: panel))
         window.layoutIfNeeded()
-        _ = pumpUntil(2.0) { panel.maps.first.map { !$0.rows.isEmpty } ?? false }
-        XCTAssertEqual(panel.maps.count, 1, "showing the panel builds the map")
-        XCTAssertFalse(try XCTUnwrap(panel.maps.first).rows.isEmpty)
+        _ = pumpUntil(2.0) { (panel.viewport(forMapAt: 0)?.lowerBound ?? 0) > 0 }
+        XCTAssertGreaterThan(try XCTUnwrap(panel.viewport(forMapAt: 0)).lowerBound, 0,
+                             "a click off the band jumps there")
+
+        panel.mouseDragged(with: try mouseEvent(.leftMouseDragged,
+                                               at: NSPoint(x: panel.bounds.midX, y: -400),
+                                               in: panel))
+        panel.mouseUp(with: try mouseEvent(.leftMouseUp,
+                                          at: NSPoint(x: panel.bounds.midX, y: -400), in: panel))
+        window.layoutIfNeeded()
+        _ = pumpUntil(2.0) { panel.viewport(forMapAt: 0)?.lowerBound == 0 }
+        XCTAssertEqual(try XCTUnwrap(panel.viewport(forMapAt: 0)).lowerBound, 0,
+                       "dragging above the map clamps at the file's start")
+        XCTAssertEqual(panel.topRow, 0)
     }
 
     // MARK: - Modified cells
 
-    /// Modified cells come from the edit overlay's changed ranges, but still
-    /// compare the bytes: overwriting a byte with the value it already held is
-    /// not a modification, exactly as the panes' red foreground rule has it.
+    /// Modified cells come from the panes' own per-byte state, so overwriting a
+    /// byte with the value it already held is not a modification — exactly as the
+    /// panes' red foreground rule has it.
     func testRetypingTheSameValueLeavesTheCellUnmodified() throws {
-        let bytes = [UInt8](repeating: 0x41, count: 16)
-        let (controller, _, panel) = try makeSingleFileWindow(bytes)
+        let (controller, _, panel) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 16))
         let pane = controller.windowModel.pane1
 
-        // Column 3 gets its own value back; column 1 gets a new one, so waiting
-        // for column 1 proves the rebuild that covers both actually landed.
         pane.moveCaret(to: 3)
-        pane.typeASCII(0x41)
+        pane.typeASCII(0x41)   // the value it already had
         pane.moveCaret(to: 1)
-        pane.typeASCII(0x42)
-        _ = pumpUntil(2.0) {
-            guard let map = panel.maps.first, !map.rows.isEmpty else { return false }
-            return map.rows[0].cells[1].isModified
-        }
-        let map = try XCTUnwrap(panel.maps.first)
-        XCTAssertTrue(map.rows[0].cells[1].isModified, "0x42 over 0x41 is a modification")
-        XCTAssertFalse(map.rows[0].cells[3].isModified,
+        pane.typeASCII(0x42)   // a new value
+
+        let row = try XCTUnwrap(panel.visibleCells(forMapAt: 0).first)
+        XCTAssertTrue(row.cells[1].isModified, "0x42 over 0x41 is a modification")
+        XCTAssertFalse(row.cells[3].isModified,
                        "0x41 over 0x41 leaves the byte as it was on disk")
     }
 
-    /// Saving clears modified state without changing a byte. The panes re-read
-    /// their state on every draw so they drop the red foreground by themselves;
-    /// the minimap caches its cells, so it has to be told — otherwise the map
-    /// kept red cells for a file that is fully written to disk.
+    /// Saving clears modified state without changing a byte. The map reads that
+    /// state per repaint, but nothing else tells it to repaint, so the pane's
+    /// saved-state callback is what keeps the red cells from lingering.
     func testSavingClearsModifiedCells() throws {
-        let bytes = [UInt8](repeating: 0x41, count: 16)
-        let (controller, _, panel) = try makeSingleFileWindow(bytes)
+        let (controller, _, panel) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 16))
         let pane = controller.windowModel.pane1
 
         pane.moveCaret(to: 1)
         pane.typeASCII(0x42)
-        _ = pumpUntil(2.0) {
-            panel.maps.first.map { !$0.rows.isEmpty && $0.rows[0].cells[1].isModified } ?? false
-        }
-        XCTAssertTrue(try XCTUnwrap(panel.maps.first).rows[0].cells[1].isModified,
+        XCTAssertTrue(try XCTUnwrap(panel.visibleCells(forMapAt: 0).first).cells[1].isModified,
                       "the edit shows as a modified cell")
 
         try pane.save()
-        _ = pumpUntil(2.0) {
-            panel.maps.first.map { !$0.rows.isEmpty && !$0.rows[0].cells[1].isModified } ?? false
-        }
-        let map = try XCTUnwrap(panel.maps.first)
-        XCTAssertFalse(map.rows[0].cells.contains(where: \.isModified),
+        let row = try XCTUnwrap(panel.visibleCells(forMapAt: 0).first)
+        XCTAssertFalse(row.cells.contains(where: \.isModified),
                        "a saved file has no modified bytes left to paint")
-        XCTAssertTrue(map.rows[0].cells[1].isSignificant,
+        XCTAssertTrue(row.cells[1].isSignificant,
                       "the byte itself is still there — only its modified flag cleared")
     }
 

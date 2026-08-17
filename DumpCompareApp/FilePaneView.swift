@@ -472,6 +472,12 @@ final class FilePaneView: NSView {
         hexView.revealOffsetCentered(offset)
     }
 
+    /// Scrolls the hex view so the row containing `offset` sits at the top of the
+    /// visible area. Driven by the minimap's viewport drag and wheel (§ N).
+    func scrollRowToTop(containing offset: UInt64) {
+        hexView.scrollRowToTop(containing: offset)
+    }
+
     /// Shows a transient message (e.g. "No match found.") in the status bar,
     /// replacing the regular status for a couple of seconds, then restoring it.
     /// Used by the Find bar for errors and empty results (§11).

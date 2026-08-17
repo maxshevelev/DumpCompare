@@ -1319,6 +1319,23 @@ final class HexView: NSView {
         scroll.reflectScrolledClipView(clip)
     }
 
+    /// Scrolls the row containing `offset` to the *top* of the visible area
+    /// (clamped to the document's edges). The minimap's drag and wheel map a
+    /// position on the map to a byte offset and ask for exactly that: the offset
+    /// becomes the first visible row, which is the position the minimap's own
+    /// window is derived from (§ N).
+    func scrollRowToTop(containing offset: UInt64) {
+        guard let scroll = enclosingScrollView else { return }
+        let layout = currentLayout
+        let (row, _) = layout.rowColumn(of: offset)
+        let clip = scroll.contentView
+        let maxOriginY = max(0, bounds.height - clip.bounds.height)
+        let originY = min(max(0, layout.rowFrame(row: row).minY), maxOriginY)
+        guard abs(originY - clip.bounds.origin.y) > 0.5 else { return }
+        clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: originY))
+        scroll.reflectScrolledClipView(clip)
+    }
+
     /// Scrolls the current selection (or the caret when there is none) to the
     /// vertical centre of the visible area.
     func revealSelectionCentered() {
