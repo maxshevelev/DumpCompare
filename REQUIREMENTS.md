@@ -1168,12 +1168,14 @@ The panes' visible slice is drawn as a translucent band over the map.
   frame stops moving. The stretch keeps the file's orientation, marks its
   events visibly, and never leaves the map short of its area or spilling past
   it.
-- The stretched picture must carry the same weight as the exact one. Events are
-  drawn two device pixels tall, so each one also tints the row below it and a
-  run of them composites twice over: a stretch built from one pass per pixel
-  drew a solid difference column — what a long file compared against a much
-  shorter one looks like — at roughly 0.35 alpha instead of 0.58, which reads
-  as the map going pale while the panel is resized.
+- The stretched picture must be the same picture, colour for colour. It is
+  therefore rendered by the *same* routine that draws the map on screen, at one
+  pixel per row, and composited in the window's own colour space. Both
+  shortcuts were visible to the eye: composing the colours by hand drew a solid
+  difference column — what a long file compared against a much shorter one
+  looks like — at roughly 0.35 alpha instead of the 0.58 the exact pass reaches
+  by drawing events two pixels tall, and compositing in a generic colour space
+  left the same column more saturated than the exact one.
 
 19.8 Accessibility
 

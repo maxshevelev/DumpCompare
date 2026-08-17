@@ -1326,18 +1326,17 @@ final class MinimapTests: XCTestCase {
         XCTAssertEqual(item.state, .on)
     }
 
-    /// The stand-in must not pale the picture out. Comparing a long file with a
-    /// much shorter one makes the long file's tail one solid column of
-    /// differences, and there the exact renderer's marks — two device pixels
-    /// tall (§19.4.2) — overlap row on row, so the translucent fill composites
-    /// twice. A stand-in that laid a single pass per pixel drew that column at
-    /// roughly 0.35 alpha instead of 0.58, which is the "diffs go pale while
-    /// resizing" this test exists for (§19.9).
-    func testTheStandInKeepsTheStrengthOfASolidDifferenceColumn() throws {
+    /// The stand-in must draw the picture in the same colour as the exact pass,
+    /// channel for channel. Comparing a long file against a much shorter one
+    /// makes the long map's tail one solid column of differences, which is where
+    /// any difference in how the translucent fill is composited shows: two ways
+    /// of getting it wrong were a single flattened pass per pixel (too pale,
+    /// alpha 0.35 where the exact pass reaches 0.58 by drawing events two pixels
+    /// tall) and compositing in a generic colour space rather than the window's
+    /// (too saturated). Both were visible to the eye during a resize (§19.9).
+    func testTheStandInMatchesTheExactColourOfASolidDifferenceColumn() throws {
         isolatedDefaults.set(MinimapView.RenderMode.overview.rawValue,
                              forKey: MainViewController.minimapRenderModeDefaultsKey)
-        // A long file and a very short one: everything past the short file's end
-        // differs, so the long map's tail is solid.
         let long = (0..<(512 * 1024)).map { UInt8(0x20 + ($0 % 90)) }
         let short = [UInt8](long[0..<(32 * 1024)])
         let url1 = try tempFile(long), url2 = try tempFile(short)
@@ -1355,21 +1354,24 @@ final class MinimapTests: XCTestCase {
                 && (panel.overviewSummaries.first?.different.contains { $0 != 0 } ?? false)
         }, "the exact picture with its difference column arrives")
 
-        /// The mean orangeness across the long map's tail — the solid column.
-        func columnStrength() throws -> CGFloat {
-            var samples: [CGFloat] = []
+        /// The mean colour across the long map's tail — the solid column.
+        func columnColour() throws -> (r: CGFloat, g: CGFloat, b: CGFloat) {
+            var samples: [NSColor] = []
             for step in 0..<12 {
                 let y = panel.bounds.height * (0.45 + 0.04 * CGFloat(step))
                 samples += try sampleRowColours(panel, y: y,
                                                 from: MinimapView.contentPadding + 2,
                                                 to: panel.bounds.width * 0.45)
-                    .map(orangeness)
             }
             XCTAssertGreaterThan(samples.count, 100, "enough pixels to judge")
-            return samples.reduce(0, +) / CGFloat(samples.count)
+            let n = CGFloat(samples.count)
+            return (samples.reduce(0) { $0 + $1.redComponent } / n,
+                    samples.reduce(0) { $0 + $1.greenComponent } / n,
+                    samples.reduce(0) { $0 + $1.blueComponent } / n)
         }
-        let exact = try columnStrength()
-        XCTAssertGreaterThan(exact, 0.1, "the tail really is a solid difference: \(exact)")
+        let exact = try columnColour()
+        XCTAssertGreaterThan(exact.r - exact.b, 0.1,
+                             "the tail really is a solid orange difference: \(exact)")
 
         // Resize so the stand-in takes over, and measure the same column.
         var frame = window.frame
@@ -1378,9 +1380,10 @@ final class MinimapTests: XCTestCase {
         window.layoutIfNeeded()
         XCTAssertNotEqual(panel.overviewSummaries.first?.rowCount, panel.overviewRowCount(),
                           "the summary is stale, so the stand-in is what draws")
-        let stretched = try columnStrength()
-        XCTAssertEqual(stretched, exact, accuracy: exact * 0.15,
-                       "the stand-in draws the column just as strongly: \(stretched) vs \(exact)")
+        let stretched = try columnColour()
+        XCTAssertEqual(stretched.r, exact.r, accuracy: 0.01, "red: \(stretched) vs \(exact)")
+        XCTAssertEqual(stretched.g, exact.g, accuracy: 0.01, "green: \(stretched) vs \(exact)")
+        XCTAssertEqual(stretched.b, exact.b, accuracy: 0.01, "blue: \(stretched) vs \(exact)")
     }
 
     /// The shorter file's tail is empty in overview, the way it already is in

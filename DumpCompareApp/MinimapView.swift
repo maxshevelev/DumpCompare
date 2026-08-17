@@ -866,6 +866,24 @@ final class MinimapView: NSView {
         let first = max(0, Int(floor((dirtyRect.minY - area.minY) / rowHeight)))
         let last = min(summary.rowCount - 1, Int(floor((dirtyRect.maxY - area.minY) / rowHeight)))
         guard last >= first else { return }
+        drawOverviewCells(summary, fileSize: maps.indices.contains(index) ? maps[index].fileSize : 0,
+                          rows: first...last, top: area.minY, cells: cells, rowHeight: rowHeight)
+    }
+
+    /// Draws one map's cells into the current context: `rows` of `summary`, the
+    /// first of them starting at `top`, each `rowHeight` tall, with the columns
+    /// laid out by `cells`.
+    ///
+    /// Shared by the on-screen pass and by the stand-in image (§19.9), which
+    /// renders at one pixel per row through this same routine. That sharing is
+    /// the point: composing the stand-in's colours by hand instead left it
+    /// slightly more saturated than the picture it stands for, because this path
+    /// blends through CoreGraphics in the window's colour space and 35 % orange
+    /// over white does not land in the same place in plain sRGB arithmetic.
+    private func drawOverviewCells(_ summary: OverviewSummary, fileSize: UInt64,
+                                   rows: ClosedRange<Int>, top: CGFloat,
+                                   cells: [(x: CGFloat, width: CGFloat)],
+                                   rowHeight: CGFloat) {
         // The tone ramp, resolved once per pass rather than per cell: a full
         // overview is ~19 000 cells, and deriving each one's colour from the ink
         // was most of the cost of drawing it. Rebuilt every pass, so a theme
@@ -873,10 +891,9 @@ final class MinimapView: NSView {
         let ink = HexTheme.byteText
         let tones = (0...255).map { ink.withAlphaComponent(Self.overviewTone(density: UInt8($0))) }
         let columns = Int(Self.bytesPerRow)
-        let fileSize = maps.indices.contains(index) ? maps[index].fileSize : 0
         let extent = max(summary.extent, 1)
-        for row in first...last {
-            let y = area.minY + CGFloat(row) * rowHeight
+        for row in rows {
+            let y = top + CGFloat(row) * rowHeight
             let modified = summary.modified.indices.contains(row) ? summary.modified[row] : 0
             let different = summary.different.indices.contains(row) ? summary.different[row] : 0
             let rowStart = extent * UInt64(row) / UInt64(summary.rowCount)
@@ -887,9 +904,6 @@ final class MinimapView: NSView {
                 let densityIndex = row * columns + column
                 let density = summary.density.indices.contains(densityIndex)
                     ? summary.density[densityIndex] : 0
-                // Past this file's end there is nothing to draw at all; inside
-                // it, even an all-fill slice is drawn muted, the way the dump
-                // draws a 0x00/0xFF byte (§19.4.2).
                 let sliceStart = rowStart + span * UInt64(column) / UInt64(columns)
                 // Past this file's end there is nothing of it to draw — not a
                 // fill, not an event. That is what leaves the shorter file's
@@ -976,7 +990,10 @@ final class MinimapView: NSView {
         context?.imageInterpolation = interpolation
     }
 
-    /// Renders one map's summary into an image, or returns the one already built.
+    /// Renders one map's summary into an image, or returns the one already built:
+    /// the picture at its own natural resolution, one pixel per row and per
+    /// column, drawn by the same routine that draws it on screen.
+    ///
     /// Called from `draw`, so the dynamic inks resolve against the appearance in
     /// force; `viewDidChangeEffectiveAppearance` drops the cache.
     private func overviewStandIn(forMapAt index: Int) -> NSImage? {
@@ -985,95 +1002,42 @@ final class MinimapView: NSView {
         let columns = Int(Self.bytesPerRow)
         let rows = summary.rowCount
         guard rows > 0, columns > 0 else { return nil }
-
-        /// One colour's components in 0...1.
-        func components(_ colour: NSColor) -> (r: CGFloat, g: CGFloat, b: CGFloat, a: CGFloat) {
-            guard let resolved = colour.usingColorSpace(.deviceRGB) else { return (0, 0, 0, 1) }
-            return (resolved.redComponent, resolved.greenComponent,
-                    resolved.blueComponent, resolved.alphaComponent)
-        }
-        /// Lays one translucent colour over another, the way a fill does.
-        func over(_ ink: (r: CGFloat, g: CGFloat, b: CGFloat, a: CGFloat),
-                  _ base: (r: CGFloat, g: CGFloat, b: CGFloat, a: CGFloat))
-            -> (r: CGFloat, g: CGFloat, b: CGFloat, a: CGFloat) {
-            (ink.r * ink.a + base.r * (1 - ink.a),
-             ink.g * ink.a + base.g * (1 - ink.a),
-             ink.b * ink.a + base.b * (1 - ink.a), 1)
-        }
-
-        let paper = components(Self.background)
-        let inkColour = HexTheme.byteText
-        let tones = (0...255).map {
-            components(inkColour.withAlphaComponent(Self.overviewTone(density: UInt8($0))))
-        }
-        let modifiedInk = components(HexTheme.modifiedText)
-        let differentInk = components(HexTheme.differenceFill)
-
-        var pixels = [UInt8](repeating: 0, count: columns * rows * 4)
-        let fileSize = maps.indices.contains(index) ? maps[index].fileSize : 0
-        let extent = max(summary.extent, 1)
-
-        /// What one cell contributes, or nil where the file has already ended.
-        /// An event replaces the shading rather than layering over it, exactly the
-        /// choice the exact renderer makes.
-        func cellInk(row: Int, column: Int)
-            -> (ink: (r: CGFloat, g: CGFloat, b: CGFloat, a: CGFloat), isEvent: Bool)? {
-            guard row >= 0, row < rows else { return nil }
-            let bit = UInt16(1) << UInt16(column)
-            let rowStart = extent * UInt64(row) / UInt64(rows)
-            let span = extent * UInt64(row + 1) / UInt64(rows) - rowStart
-            guard rowStart + span * UInt64(column) / UInt64(columns) < fileSize else { return nil }
-            let modified = summary.modified.indices.contains(row) ? summary.modified[row] : 0
-            let different = summary.different.indices.contains(row) ? summary.different[row] : 0
-            if modified & bit != 0 { return (modifiedInk, true) }
-            if different & bit != 0 { return (differentInk, true) }
-            let densityIndex = row * columns + column
-            let density = summary.density.indices.contains(densityIndex)
-                ? summary.density[densityIndex] : 0
-            return (tones[Int(density)], false)
-        }
-
-        for row in 0..<rows {
-            for column in 0..<columns {
-                // The exact renderer draws an event two device pixels tall
-                // (§19.4.2), so the row above spills onto this one and its
-                // translucent fill composites twice — which is most of the
-                // colour a dense difference region actually has. One flat pass
-                // instead left the stand-in visibly paler than the picture it
-                // stands in for, so the map looked like it faded during a
-                // resize. The passes are replayed here in the renderer's own
-                // order: the row above's spill, then this row's own cell.
-                var colour = paper
-                if let above = cellInk(row: row - 1, column: column), above.isEvent {
-                    colour = over(above.ink, colour)
-                }
-                if let own = cellInk(row: row, column: column) {
-                    colour = over(own.ink, colour)
-                }
-                let offset = (row * columns + column) * 4
-                pixels[offset] = UInt8(min(255, max(0, colour.r * 255)))
-                pixels[offset + 1] = UInt8(min(255, max(0, colour.g * 255)))
-                pixels[offset + 2] = UInt8(min(255, max(0, colour.b * 255)))
-                pixels[offset + 3] = 255
-            }
-        }
-
-        guard let provider = CGDataProvider(data: Data(pixels) as CFData),
-              let cgImage = CGImage(width: columns, height: rows, bitsPerComponent: 8,
-                                    bitsPerPixel: 32, bytesPerRow: columns * 4,
-                                    space: CGColorSpaceCreateDeviceRGB(),
-                                    bitmapInfo: CGBitmapInfo(
-                                        rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
-                                    provider: provider, decode: nil,
-                                    shouldInterpolate: false, intent: .defaultIntent)
+        // Composited in the window's own colour space, not a generic one: the
+        // translucent fills are blended by CoreGraphics in whatever space the
+        // destination uses, and 35 % orange over white lands in a slightly
+        // different place in sRGB than in the display's wider gamut — enough to
+        // see the stand-in as the more saturated of the two.
+        let space = window?.colorSpace?.cgColorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)
+        guard let space,
+              let cgContext = CGContext(data: nil, width: columns, height: rows,
+                                        bitsPerComponent: 8, bytesPerRow: 0, space: space,
+                                        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
         else { return nil }
-        let image = NSImage(cgImage: cgImage,
-                            size: NSSize(width: columns, height: rows))
+        let context = NSGraphicsContext(cgContext: cgContext, flipped: false)
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        // A bitmap context has its origin at the bottom; flip it so a row's y is
+        // the same expression the view uses, and row 0 lands at the top.
+        cgContext.translateBy(x: 0, y: CGFloat(rows))
+        cgContext.scaleBy(x: 1, y: -1)
+        let bounds = NSRect(x: 0, y: 0, width: CGFloat(columns), height: CGFloat(rows))
+        Self.background.setFill()
+        bounds.fill()
+        drawOverviewCells(summary,
+                          fileSize: maps.indices.contains(index) ? maps[index].fileSize : 0,
+                          rows: 0...(rows - 1), top: 0,
+                          cells: (0..<columns).map { (x: CGFloat($0), width: 1) },
+                          rowHeight: 1)
+        NSGraphicsContext.restoreGraphicsState()
+
+        guard let cgImage = cgContext.makeImage() else { return nil }
+        let image = NSImage(cgImage: cgImage, size: NSSize(width: columns, height: rows))
         overviewStandIns[index] = image
         return image
     }
 
-    /// The ink alpha for a cell holding `density` content, mapped into the tonal
+    /// The ink alpha for a cell holding `density` content, mapped into the tonal    /// The ink alpha for a cell holding `density` content, mapped into the tonal
     /// band the dump itself occupies rather than the full paper-to-black range.
     static func overviewTone(density: UInt8) -> CGFloat {
         let fraction = CGFloat(density) / 255
