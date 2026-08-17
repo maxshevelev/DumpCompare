@@ -172,4 +172,56 @@ final class ComparisonPaneTests: XCTestCase {
         let lone = PaneViewModel()
         XCTAssertNil(lone.hexMirroredSelection())
     }
+
+    // MARK: - Scroll extent over the longer file (§9)
+
+    /// Scrolling is synchronized by absolute offset, so a pane must be able to
+    /// reach the longer file's end even when its own file stopped much earlier —
+    /// otherwise the shorter pane hits the bottom of its own document and the
+    /// two panes drift apart.
+    func testScrollExtentSpansTheLongerFile() throws {
+        let pair = try openPair([UInt8](repeating: 0x41, count: 8_000),
+                                [UInt8](repeating: 0x42, count: 64))
+        defer {
+            try? FileManager.default.removeItem(at: pair.2)
+            try? FileManager.default.removeItem(at: pair.3)
+        }
+        XCTAssertEqual(pair.0.fileSize, 8_000)
+        XCTAssertEqual(pair.1.fileSize, 64)
+        XCTAssertEqual(pair.0.scrollExtent, 8_000, "the longer pane spans its own file")
+        XCTAssertEqual(pair.1.scrollExtent, 8_000,
+                       "the shorter pane spans the comparison's extent, not its own 64 bytes")
+    }
+
+    /// Without a companion there is nothing to synchronize with, so the extent is
+    /// the pane's own file.
+    func testScrollExtentIsTheFileInSingleFileMode() throws {
+        let url = try tempFile([UInt8](repeating: 0x41, count: 100))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let pane = PaneViewModel()
+        try pane.open(url: url)
+        XCTAssertEqual(pane.scrollExtent, 100)
+    }
+
+    /// The extent follows the companion: growing the longer file extends the
+    /// shorter pane's reach, and losing the companion collapses it back.
+    func testScrollExtentFollowsTheCompanion() throws {
+        let pair = try openPair([UInt8](repeating: 0x41, count: 64),
+                                [UInt8](repeating: 0x42, count: 64))
+        defer {
+            try? FileManager.default.removeItem(at: pair.2)
+            try? FileManager.default.removeItem(at: pair.3)
+        }
+        XCTAssertEqual(pair.1.scrollExtent, 64, "equal lengths: nothing to extend")
+
+        pair.0.moveCaret(to: 64)
+        pair.0.typeASCII(0x5A)   // appends one byte past EOF
+        XCTAssertEqual(pair.0.fileSize, 65)
+        XCTAssertEqual(pair.1.scrollExtent, 65,
+                       "the shorter pane now has to reach the companion's new end")
+
+        pair.1.companion = nil
+        XCTAssertEqual(pair.1.scrollExtent, 64, "no companion, no extension")
+    }
+
 }

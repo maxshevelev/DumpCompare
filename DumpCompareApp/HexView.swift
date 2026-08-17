@@ -18,6 +18,11 @@ enum HexViewChange: Equatable {
 @MainActor
 protocol HexViewDataSource: AnyObject {
     var fileSize: UInt64 { get }
+    /// How far the pane must be scrollable, in bytes: its own file, or the
+    /// comparison's extent when the companion is longer (§9). The two panes
+    /// scroll by absolute offset, so both must reach the longer file's end; the
+    /// rows past this pane's own EOF are simply empty.
+    var scrollExtent: UInt64 { get }
     func hexByteStates(in range: Range<UInt64>) -> [HexByteState]
     func hexSelection() -> SelectionModel
     func hexCaretNibble() -> Int
@@ -167,7 +172,7 @@ final class HexView: NSView {
 
     /// Ideal height of the hex grid — all rows for the current file size. The
     /// window delegate uses this to zoom-to-fit the window height (§3.1).
-    var hexContentHeight: CGFloat { currentLayout.totalHeight(fileSize: dataSource?.fileSize ?? 0) }
+    var hexContentHeight: CGFloat { currentLayout.totalHeight(fileSize: dataSource?.scrollExtent ?? 0) }
 
     /// Geometry of the current dump, used internally for hit-testing and
     /// exposed (internal) for tests. (`layout` itself is NSView's method.)
@@ -295,11 +300,7 @@ final class HexView: NSView {
     /// cover.
     func reloadData() {
         currentLayout = makeLayout()
-        let height = currentLayout.totalHeight(fileSize: dataSource?.fileSize ?? 0)
-        let width = max(currentLayout.contentWidth, enclosingScrollView?.contentSize.width ?? currentLayout.contentWidth)
-        if width != frame.width || height != frame.height {
-            setFrameSize(NSSize(width: width, height: height))
-        }
+        updateContentFrame()
         // A full redraw repaints everything, so the diff baselines catch up to
         // the current state — otherwise a later `reloadSelection` would
         // invalidate rows this redraw already made current.
@@ -430,9 +431,23 @@ final class HexView: NSView {
     /// pane. The content counterpart of `reloadSelection()`. Called by the pane
     /// when the view model reports an edit (§3.3 extension).
     func reloadContent(_ change: HexViewChange) {
+        // A companion edit can change *this* pane's scroll extent — in
+        // comparison mode the extent is the longer file (§9) — so the document
+        // is resized here too, not only on this pane's own reloads.
+        updateContentFrame()
         for rect in contentChangeRects(change) {
             setNeedsDisplay(rect)
         }
+    }
+
+    /// Sizes the document to the current layout and scroll extent. Cheap enough
+    /// to call on every reload: it only touches the frame when it changed.
+    private func updateContentFrame() {
+        let height = currentLayout.totalHeight(fileSize: dataSource?.scrollExtent ?? 0)
+        let width = max(currentLayout.contentWidth,
+                        enclosingScrollView?.contentSize.width ?? currentLayout.contentWidth)
+        guard width != frame.width || height != frame.height else { return }
+        setFrameSize(NSSize(width: width, height: height))
     }
 
     /// The rects whose rendering changed with `change` — the content

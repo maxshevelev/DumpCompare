@@ -491,7 +491,10 @@ final class MinimapTests: XCTestCase {
         XCTAssertLessThan(pane1Top.upperBound, 100_000, "pane 1's file is taller than the viewport")
         XCTAssertEqual(pane2Top, 0..<64, "pane 2's tiny file is fully visible")
 
-        // Scroll pane 1 to its tail; pane 2's viewport must not move.
+        // Scroll pane 1 to the tail of the longer file. Scrolling is
+        // synchronized over that file's extent (§9), so pane 2 follows past its
+        // own 64 bytes and ends up showing nothing at all — the short file's
+        // tail is empty.
         let hexViews = descendants(of: window.contentView!, HexView.self)
         let pane1Hex = try XCTUnwrap(hexViews.first)
         let clip1 = try XCTUnwrap(pane1Hex.enclosingScrollView?.contentView)
@@ -503,8 +506,13 @@ final class MinimapTests: XCTestCase {
         }
         let pane1Bottom = try XCTUnwrap(panel.viewport(forMapAt: 0))
         XCTAssertEqual(pane1Bottom.upperBound, 100_000)
-        XCTAssertEqual(panel.viewport(forMapAt: 1), 0..<64,
-                       "scrolling one pane leaves the other pane's rectangle alone")
+        _ = pumpUntil(2.0) { panel.viewport(forMapAt: 1)?.isEmpty ?? true }
+        XCTAssertTrue(panel.viewport(forMapAt: 1)?.isEmpty ?? true,
+                      "the short pane scrolled along and has no bytes left to show")
+        XCTAssertTrue(panel.visibleCells(forMapAt: 1).isEmpty,
+                      "so its map draws nothing at this window position")
+        XCTAssertFalse(panel.visibleCells(forMapAt: 0).isEmpty,
+                       "while the long file's map still has content there")
     }
 
     // MARK: - Viewport band geometry
@@ -1052,6 +1060,57 @@ final class MinimapTests: XCTestCase {
         split.setPanelVisible(true, animated: false)
         window.layoutIfNeeded()
         XCTAssertEqual(panel.accessibilityValue() as? String, "No file open.")
+    }
+
+
+    // MARK: - The short file's tail is empty (§9)
+
+    /// With files of different lengths both panes scroll over the longer file, so
+    /// the shorter pane ends up past its own EOF. What it must show there is
+    /// nothing at all — no bytes, no offsets, no EOF hatch: the hatch marks the
+    /// end on the last partial row, and repeating it for thousands of rows would
+    /// be noise. Rendered through the real `draw(_:)` and checked for uniformity.
+    func testShortFileTailRendersEmpty() throws {
+        let (_, window) = try makeComparisonWindow(vertical: true, sizes: (8_000, 64))
+        window.layoutIfNeeded()
+        let hexViews = descendants(of: window.contentView!, HexView.self)
+        XCTAssertEqual(hexViews.count, 2, "two panes")
+        let longHex = hexViews[0], shortHex = hexViews[1]
+
+        // Both documents span the longer file, so the short pane can be scrolled
+        // past its 64 bytes at all.
+        XCTAssertEqual(shortHex.hexContentHeight, longHex.hexContentHeight, accuracy: 0.5,
+                       "the panes share one scrollable extent")
+
+        let clip = try XCTUnwrap(longHex.enclosingScrollView?.contentView)
+        clip.setBoundsOrigin(NSPoint(x: 0, y: max(longHex.hexContentHeight - clip.bounds.height, 0)))
+        window.layoutIfNeeded()
+        _ = pumpUntil(2.0) { shortHex.visibleByteRange().isEmpty }
+
+        XCTAssertTrue(shortHex.visibleByteRange().isEmpty,
+                      "the short pane is scrolled past its own end")
+        XCTAssertFalse(longHex.visibleByteRange().isEmpty,
+                       "while the long pane still has bytes on screen")
+
+        /// Whether every pixel of the view's visible rect is the same colour.
+        func isUniform(_ view: HexView) throws -> Bool {
+            let rect = try XCTUnwrap(view.enclosingScrollView?.documentVisibleRect)
+            guard rect.width > 1, rect.height > 1 else { return true }
+            let rep = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: rect))
+            view.cacheDisplay(in: rect, to: rep)
+            let first = rep.colorAt(x: 0, y: 0)
+            for x in stride(from: 0, to: rep.pixelsWide, by: 3) {
+                for y in stride(from: 0, to: rep.pixelsHigh, by: 3) {
+                    if rep.colorAt(x: x, y: y) != first { return false }
+                }
+            }
+            return true
+        }
+
+        XCTAssertTrue(try isUniform(shortHex),
+                      "the short file's tail is blank — nothing is drawn past its end")
+        XCTAssertFalse(try isUniform(longHex),
+                       "the long file's rows are still drawn, so the check can fail")
     }
 
 }

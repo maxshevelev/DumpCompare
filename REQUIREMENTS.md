@@ -450,7 +450,8 @@ Behavior:
 - scrolling in the active pane scrolls the other pane to the same absolute offset;
 - moving the cursor in the active pane moves the other pane cursor to the same offset if that offset exists;
 - selecting a range in the active pane selects the same absolute range in the other pane where possible;
-- if the synchronized offset is beyond the shorter file’s EOF, the shorter pane shows EOF/missing area;
+- both panes scroll over the same extent — the longer file — so a synchronized offset past the shorter file’s EOF is reachable in both panes and the two never drift apart at the tail;
+- where a row is only partly past the shorter file’s EOF, its missing cells carry the EOF cue (§15); rows entirely past the end are drawn empty — no bytes, no offsets, no cue — since repeating the cue for the whole tail would be noise rather than information;
 - synchronization must not cause crashes for empty files or EOF positions.
 
 In single-file mode, synchronization is not applicable.
@@ -972,7 +973,8 @@ map shows a window onto it, not the whole file.
   at the file's end the window's last row is the file's last row.
 - Both maps share one window, since the panes are synchronized by absolute
   offset (§9): the same offset must sit at the same height on both maps.
-  A map whose file ends earlier simply draws fewer rows.
+  A map whose file ends earlier simply draws fewer rows, so its tail is empty
+  — the same thing its pane shows there (§9).
 - Only the visible rows may be read. Building state for the whole file is
   not permitted — a file of any supported size must cost the same as a
   small one (§13).

@@ -340,6 +340,12 @@ final class PaneViewModel: HexViewDataSource {
 
     var fileSize: UInt64 { document?.size ?? 0 }
 
+    /// The comparison's extent: this pane scrolls as far as the longer of the
+    /// two files, so a synchronized offset past this file's EOF is still
+    /// reachable and shows empty rows (§9). Equal to `fileSize` in single-file
+    /// mode, where there is no companion.
+    var scrollExtent: UInt64 { max(fileSize, companion?.fileSize ?? 0) }
+
     func hexByteStates(in range: Range<UInt64>) -> [HexByteState] {
         guard let doc = document, range.lowerBound < range.upperBound else { return [] }
         let count = Int(range.upperBound - range.lowerBound)
