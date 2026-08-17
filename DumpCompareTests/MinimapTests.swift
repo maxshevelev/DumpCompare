@@ -1552,6 +1552,16 @@ final class MinimapTests: XCTestCase {
         return value
     }
 
+    /// Sends a click to a view at a point in its own coordinates.
+    private func clickMouse(_ view: NSView, at point: NSPoint) {
+        let inWindow = view.convert(point, to: nil)
+        guard let event = NSEvent.mouseEvent(
+            with: .leftMouseDown, location: inWindow, modifierFlags: [], timestamp: 0,
+            windowNumber: view.window?.windowNumber ?? 0, context: nil,
+            eventNumber: 0, clickCount: 1, pressure: 1) else { return }
+        view.mouseDown(with: event)
+    }
+
     private func panelChrome(_ window: NSWindow) throws -> MinimapPanelView {
         try XCTUnwrap(descendants(of: window.contentView!, MinimapPanelView.self).first,
                       "the minimap panel's chrome")
@@ -1593,6 +1603,34 @@ final class MinimapTests: XCTestCase {
         XCTAssertEqual(map.minY, lower.minY, accuracy: 1, "and end at the lower one")
     }
 
+    /// Any frame change gets the stand-in, not just one that re-bins the file:
+    /// dragging the panel's width redraws the same rows at a new width, which is
+    /// as expensive as a height change and just as visible (§19.9).
+    func testAWidthDragUsesTheStandInUntilItSettles() throws {
+        let (_, window, panel) = try makeOverviewWindow([UInt8](repeating: 0x41, count: 1024 * 1024))
+        let (split, _) = try minimapViews(window)
+        panel.displayIfNeeded()
+        let rows = panel.overviewRowCount()
+        let drawnBefore = panel.standInDraws
+
+        split.setPanelWidth(180, animated: false)
+        window.layoutIfNeeded()
+        XCTAssertEqual(panel.overviewRowCount(), rows, "a width change does not re-bin the file")
+        panel.displayIfNeeded()
+        XCTAssertGreaterThan(panel.standInDraws, drawnBefore,
+                             "the drag is drawn by stretching, not cell by cell")
+
+        // Once the drag settles the exact picture comes back on its own.
+        let drawnWhileDragging = panel.standInDraws
+        XCTAssertTrue(pumpUntil(2.0) {
+            panel.displayIfNeeded()
+            return panel.standInDraws == drawnWhileDragging && panel.needsDisplay == false
+        }, "the exact repaint happens after the frame stops moving")
+        panel.displayIfNeeded()
+        XCTAssertEqual(panel.standInDraws, drawnWhileDragging,
+                       "and no stand-in is drawn once it has settled")
+    }
+
     /// The switch in the header is the mode control the menu item duplicates
     /// (§15), so the two have to agree in both directions.
     func testTheHeaderSwitchChangesTheModeAndFollowsTheMenu() throws {
@@ -1600,18 +1638,62 @@ final class MinimapTests: XCTestCase {
             [UInt8](repeating: 0x41, count: 4096))
         let chrome = try panelChrome(window)
         XCTAssertEqual(panel.renderMode, .detail, "the fixture starts local")
-        XCTAssertEqual(chrome.modeSwitch.selectedSegment, 0)
+        XCTAssertEqual(chrome.modeSwitch.mode, .detail)
 
-        chrome.modeSwitch.selectedSegment = 1
-        chrome.modeSwitch.sendAction(chrome.modeSwitch.action, to: chrome.modeSwitch.target)
+        // Clicked in its right half, where "Overview" is.
+        let control = chrome.modeSwitch
+        clickMouse(control, at: NSPoint(x: control.bounds.width * 0.75, y: control.bounds.midY))
+        XCTAssertEqual(control.mode, .overview)
         XCTAssertEqual(panel.renderMode, .overview, "the switch drives the map")
         XCTAssertEqual(isolatedDefaults.string(forKey: MainViewController.minimapRenderModeDefaultsKey),
                        MinimapView.RenderMode.overview.rawValue, "and is remembered")
 
         controller.toggleMinimapOverview()
         XCTAssertEqual(panel.renderMode, .detail)
-        XCTAssertEqual(chrome.modeSwitch.selectedSegment, 0,
+        XCTAssertEqual(chrome.modeSwitch.mode, .detail,
                        "the menu item moves the switch with it")
+    }
+
+    /// The switch has to be *visible*: a stock `NSSegmentedControl` here was laid
+    /// out correctly and still put nothing on screen, which is why this one is
+    /// drawn — so the test samples its pixels rather than its state.
+    func testTheModeSwitchDrawsItselfAndItsSelection() throws {
+        let (_, window, _) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 4096))
+        let control = try panelChrome(window).modeSwitch
+        XCTAssertGreaterThan(control.bounds.width, 40, "it has room to draw in")
+
+        func halves() throws -> (left: NSColor, right: NSColor) {
+            let rep = try XCTUnwrap(control.bitmapImageRepForCachingDisplay(in: control.bounds))
+            control.cacheDisplay(in: control.bounds, to: rep)
+            // Above the labels: the glyphs sit on the centre line, and sampling
+            // them compares letter shapes instead of the fill.
+            let y = max(2, rep.pixelsHigh / 5)
+            let left = try XCTUnwrap(rep.colorAt(x: rep.pixelsWide / 4, y: y))
+            let right = try XCTUnwrap(rep.colorAt(x: rep.pixelsWide * 3 / 4, y: y))
+            return (left, right)
+        }
+        /// How far apart two samples are, per channel. Compared with each other
+        /// rather than with `controlAccentColor`: the cached rep is premultiplied
+        /// and reports the fill's own colour only approximately.
+        func distance(_ a: NSColor, _ b: NSColor) throws -> CGFloat {
+            let x = try XCTUnwrap(a.usingColorSpace(.deviceRGB))
+            let y = try XCTUnwrap(b.usingColorSpace(.deviceRGB))
+            return abs(x.redComponent - y.redComponent)
+                + abs(x.greenComponent - y.greenComponent)
+                + abs(x.blueComponent - y.blueComponent)
+        }
+
+        // Local is selected: one half is filled, the other is the plain track.
+        let (selectedLeft, plainRight) = try halves()
+        XCTAssertGreaterThan(try distance(selectedLeft, plainRight), 0.15,
+                             "the selected half is drawn differently from the other")
+
+        control.showMode(.overview)
+        let (plainLeft, selectedRight) = try halves()
+        XCTAssertLessThan(try distance(selectedRight, selectedLeft), 0.05,
+                          "the fill moved to the right half")
+        XCTAssertLessThan(try distance(plainLeft, plainRight), 0.05,
+                          "and the left half is now the plain track")
     }
 
     /// The status bar carries the rebuild's progress and is empty otherwise.

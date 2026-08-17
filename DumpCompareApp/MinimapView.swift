@@ -234,7 +234,12 @@ final class MinimapView: NSView {
     func setRenderMode(_ mode: RenderMode) {
         guard renderMode != mode else { return }
         renderMode = mode
-        if mode == .detail { overviewSummaries = [] }
+        if mode == .detail {
+            overviewSummaries = []
+            settleTimer?.invalidate()
+            settleTimer = nil
+            geometryIsSettling = false
+        }
         overviewStandIns = [:]
         updateTopRow()
         invalidateAll()
@@ -840,12 +845,11 @@ final class MinimapView: NSView {
               let summary = overviewSummary(forMapAt: index) else { return }
         let rowHeight = overviewRowHeight
         guard rowHeight > 0 else { return }
-        // A resized panel bins the file differently, so the picture in hand is
-        // for the wrong height until the background pass catches up. Rather than
-        // leave the map short (or spilling past it), stretch what is already
-        // known to the new height — the row axis is proportional in both, so a
-        // stretch is the same picture at the wrong precision (§19.9).
-        if summary.rowCount != overviewRowCount() {
+        // While the frame is still moving, or until a resize's background pass
+        // catches up with the new row count, the known picture is stretched over
+        // the map instead of being redrawn cell by cell: exact is thousands of
+        // fills, and a drag delivers a frame change per mouse move (§19.9).
+        if geometryIsSettling || summary.rowCount != overviewRowCount() {
             drawOverviewStandIn(forMapAt: index, in: area)
             return
         }
@@ -908,11 +912,49 @@ final class MinimapView: NSView {
     /// summary or the theme changes.
     private var overviewStandIns: [Int: NSImage] = [:]
 
-    /// Stretches the known picture over the map's current height. Nearest
+    /// Whether the frame is still being changed, and the picture should be
+    /// stretched rather than redrawn. Any frame change counts, not just one that
+    /// re-bins the file: dragging the panel's own width redraws the same rows at
+    /// a new width, which is just as expensive and just as visible (§19.9).
+    private var geometryIsSettling = false
+    private var settleTimer: Timer?
+
+    /// How long after the last frame change the exact picture is drawn. Short
+    /// enough to feel immediate on mouse-up, long enough that a drag's stream of
+    /// changes never pays for an exact repaint.
+    static let geometrySettleDelay: TimeInterval = 0.12
+
+    override func setFrameSize(_ newSize: NSSize) {
+        let changed = newSize != frame.size
+        super.setFrameSize(newSize)
+        guard changed, renderMode == .overview else { return }
+        geometryIsSettling = true
+        settleTimer?.invalidate()
+        let timer = Timer(timeInterval: Self.geometrySettleDelay, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.settleGeometry() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        settleTimer = timer
+    }
+
+    /// The frame has stopped moving: draw the picture properly.
+    private func settleGeometry() {
+        settleTimer = nil
+        guard geometryIsSettling else { return }
+        geometryIsSettling = false
+        invalidateAll()
+    }
+
+    /// How many times the stand-in has been drawn. A test seam: which of the two
+    /// paths a repaint took is otherwise invisible.
+    private(set) var standInDraws = 0
+
+    /// Stretches the known picture over the map's current area. Nearest
     /// neighbour, not smoothing: this stands in for exact pixels, so it should
     /// read as the same picture at a coarser scale rather than as a blur.
     private func drawOverviewStandIn(forMapAt index: Int, in area: NSRect) {
         guard let image = overviewStandIn(forMapAt: index) else { return }
+        standInDraws += 1
         let context = NSGraphicsContext.current
         let interpolation = context?.imageInterpolation ?? .default
         context?.imageInterpolation = .none

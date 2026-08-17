@@ -977,7 +977,9 @@ way to navigate them by pointing.
   as the same file. Whatever moves the bytes (a taller row §6, an open Find
   bar §11) moves the map's edges with them.
   - The header carries the mode switch (§19.4): Local ⇄ Overview, in the
-    band the panes put their file names in.
+    band the panes put their file names in. Which mode is in use must be
+    unmistakable at this width — the selected half is filled, not merely
+    outlined — and the switch must be legible in both themes.
   - The status bar carries the progress of a full overview rebuild (§19.9)
     and is otherwise empty.
   - The map keeps a minimum height: a Search All panel (§11) can take most
@@ -1149,11 +1151,13 @@ The panes' visible slice is drawn as a translucent band over the map.
   appears only if the pass outlives a short delay — a small dump is binned in
   milliseconds, and a bar shown for one frame reads as a glitch — and is
   cleared when the pass ends.
-- A resize re-bins the file, so the picture in hand is for the wrong height
-  until the rebuild lands. Until it does, that picture is stretched over the
-  map's new height rather than left short of it (or spilling past it), so a
-  resize is smooth and only its precision, not its content, lags behind.
-  The stretch keeps the file's orientation and marks its events visibly.
+- Any change to the panel's frame is drawn by stretching the picture in hand,
+  not by redrawing the maps: a height change re-bins the file and needs the
+  background pass, and a width change redraws every cell at a new width. Both
+  arrive as a stream during a drag, so the exact picture is drawn once the
+  frame stops moving. The stretch keeps the file's orientation and marks its
+  events visibly, and never leaves the map short of its area or spilling past
+  it.
 
 19.8 Accessibility
 
