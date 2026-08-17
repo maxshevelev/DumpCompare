@@ -1152,8 +1152,10 @@ The panes' visible slice is drawn as a translucent band over the map.
   concurrently.
 - A rebuild reports progress to the panel's status bar (§19.1). The bar
   appears only if the pass outlives a short delay — a small dump is binned in
-  milliseconds, and a bar shown for one frame reads as a glitch — and is
-  cleared when the pass ends.
+  milliseconds, and a bar shown for one frame reads as a glitch — and it is
+  then held for a minimum showing before it clears, because the pass itself is
+  fast: two 16 MB dumps are binned in ~150 ms, so a bar that vanished the
+  instant the pass ended was never seen at all.
 - Any change to the panel's frame is drawn by stretching the picture in hand,
   not by redrawing the maps: a height change re-bins the file and needs the
   background pass, and a width change redraws every cell at a new width. Both

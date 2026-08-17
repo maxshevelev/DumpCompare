@@ -42,6 +42,8 @@ final class MinimapTests: XCTestCase {
 
     override func tearDown() {
         removeTempFiles()
+        MainViewController.overviewProgressDelay = .milliseconds(80)
+        MainViewController.overviewProgressMinimumVisible = .milliseconds(300)
         if let savedLayoutIsVertical {
             LayoutSettings.set(isVertical: savedLayoutIsVertical)
         }
@@ -1658,6 +1660,78 @@ final class MinimapTests: XCTestCase {
         let beside = NSPoint(x: 3, y: inside.y)
         XCTAssertGreaterThan(try distance(try sample(inside), try sample(beside)), 0.1,
                              "the switch is still there after the map has drawn")
+    }
+
+    /// The status bar is below the map, so the same unclipped fill hid it. The
+    /// progress bar has to survive the map's paint too.
+    func testTheMapDoesNotPaintOverTheStatusBar() throws {
+        let (_, window, _) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 4096))
+        let chrome = try panelChrome(window)
+        chrome.setRebuildProgress(0.5)
+        window.layoutIfNeeded()
+        let bar = chrome.progressBar
+        XCTAssertFalse(bar.isHidden)
+        XCTAssertGreaterThan(bar.bounds.width, 20, "the bar has room to draw in")
+
+        let rep = try XCTUnwrap(chrome.bitmapImageRepForCachingDisplay(in: chrome.bounds))
+        chrome.cacheDisplay(in: chrome.bounds, to: rep)
+        let scale = CGFloat(rep.pixelsHigh) / chrome.bounds.height
+        func sample(_ point: NSPoint) throws -> NSColor {
+            let x = Int(point.x * scale)
+            let y = Int((chrome.bounds.height - point.y) * scale)
+            return try XCTUnwrap(rep.colorAt(x: min(max(x, 0), rep.pixelsWide - 1),
+                                             y: min(max(y, 0), rep.pixelsHigh - 1)))
+        }
+        func distance(_ a: NSColor, _ b: NSColor) throws -> CGFloat {
+            let x = try XCTUnwrap(a.usingColorSpace(.deviceRGB))
+            let y = try XCTUnwrap(b.usingColorSpace(.deviceRGB))
+            return abs(x.redComponent - y.redComponent) + abs(x.greenComponent - y.greenComponent)
+                + abs(x.blueComponent - y.blueComponent) + abs(x.alphaComponent - y.alphaComponent)
+        }
+
+        // The filled part of the bar, against the status bar's own background
+        // just above it.
+        let inside = bar.convert(NSPoint(x: bar.bounds.width * 0.2, y: bar.bounds.midY), to: chrome)
+        let above = NSPoint(x: inside.x, y: bar.convert(bar.bounds, to: chrome).maxY + 4)
+        XCTAssertGreaterThan(try distance(try sample(inside), try sample(above)), 0.1,
+                             "the progress bar is still there after the map has drawn")
+    }
+
+    /// A rebuild reports its progress in the status bar and then clears it.
+    ///
+    /// The reveal policy is pinned rather than raced: with the real thresholds a
+    /// pass over a test-sized dump finishes inside the 80 ms delay and the bar is
+    /// deliberately never shown (§19.9), and a fixture big enough to outlive the
+    /// delay would make this test depend on how fast the machine is.
+    func testARebuildReportsItsProgressInTheStatusBar() throws {
+        MainViewController.overviewProgressDelay = .zero
+        MainViewController.overviewProgressMinimumVisible = .milliseconds(1500)
+        let (_, window, panel) = try makeOverviewWindow(
+            [UInt8](repeating: 0x41, count: 256 * 1024))
+        let chrome = try panelChrome(window)
+
+        // Ask for a fresh pass, the way a resize does.
+        panel.onOverviewRowCountChanged?()
+        XCTAssertTrue(pumpUntil(5.0) { !chrome.progressBar.isHidden },
+                      "the rebuild reports itself")
+        XCTAssertGreaterThan(chrome.progressBar.doubleValue, 0)
+        XCTAssertFalse(chrome.progressLabel.isHidden, "with its caption")
+        XCTAssertTrue(pumpUntil(10.0) { chrome.progressBar.isHidden },
+                      "and the bar goes away when the pass is over")
+    }
+
+    /// The status bar is empty while nothing is being rebuilt.
+    func testTheStatusBarIsEmptyWhileIdle() throws {
+        let (_, window, _) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 4096))
+        let chrome = try panelChrome(window)
+        XCTAssertTrue(chrome.progressBar.isHidden)
+        XCTAssertTrue(chrome.progressLabel.isHidden)
+        chrome.setRebuildProgress(0.5)
+        XCTAssertFalse(chrome.progressBar.isHidden)
+        XCTAssertEqual(chrome.progressBar.doubleValue, 0.5, accuracy: 0.001)
+        chrome.setRebuildProgress(nil)
+        XCTAssertTrue(chrome.progressBar.isHidden)
+        XCTAssertTrue(chrome.progressLabel.isHidden)
     }
 
     /// The switch in the header is the mode control the menu item duplicates

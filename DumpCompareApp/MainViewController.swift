@@ -637,20 +637,32 @@ final class MainViewController: NSViewController {
     /// How long a rebuild has to run before its progress is worth showing. A
     /// small dump is binned in a few milliseconds, and a bar that appeared for
     /// one frame would read as a glitch rather than as progress.
-    static let overviewProgressDelay: Duration = .milliseconds(150)
+    /// Injectable so a test can pin the policy instead of racing a real pass.
+    static var overviewProgressDelay: Duration = .milliseconds(80)
+
+    /// Once the bar is up it stays up this long, even if the pass finishes
+    /// first. Binning two 16 MB dumps takes ~150 ms, so hiding the bar the
+    /// instant the pass ended made it flash for a few frames — visible as a
+    /// flicker, unreadable as progress.
+    static var overviewProgressMinimumVisible: Duration = .milliseconds(300)
 
     /// The rebuild's latest progress, or nil when nothing is running.
     private var overviewProgress: Double?
     private var overviewProgressReveal: Task<Void, Never>?
+    private var overviewProgressHide: Task<Void, Never>?
+    private var overviewProgressShown: ContinuousClock.Instant?
 
     /// Starts watching a rebuild: the bar appears only if the pass is still
     /// going when the delay is up.
     private func beginOverviewProgress() {
         overviewProgress = 0
+        overviewProgressHide?.cancel()
+        overviewProgressHide = nil
         overviewProgressReveal?.cancel()
         overviewProgressReveal = Task { [weak self] in
             try? await Task.sleep(for: Self.overviewProgressDelay)
             guard !Task.isCancelled, let self, let fraction = self.overviewProgress else { return }
+            self.overviewProgressShown = .now
             self.minimapPanel.setRebuildProgress(fraction)
         }
     }
@@ -661,13 +673,37 @@ final class MainViewController: NSViewController {
         guard let fraction else {
             overviewProgressReveal?.cancel()
             overviewProgressReveal = nil
-            minimapPanel.setRebuildProgress(nil)
+            hideOverviewProgress()
             return
         }
         // Only move a bar that is already up; whether it appears at all is the
         // reveal task's decision.
         guard !minimapPanel.progressBar.isHidden else { return }
         minimapPanel.setRebuildProgress(fraction)
+    }
+
+    /// Takes the bar down, holding it for the rest of its minimum showing.
+    private func hideOverviewProgress() {
+        guard let shown = overviewProgressShown else {
+            minimapPanel.setRebuildProgress(nil)
+            return
+        }
+        let remaining = Self.overviewProgressMinimumVisible - shown.duration(to: .now)
+        guard remaining > .zero else {
+            overviewProgressShown = nil
+            minimapPanel.setRebuildProgress(nil)
+            return
+        }
+        // Finish the bar off at 100 % while it waits out its minimum.
+        minimapPanel.setRebuildProgress(1)
+        overviewProgressHide?.cancel()
+        overviewProgressHide = Task { [weak self] in
+            try? await Task.sleep(for: remaining)
+            guard !Task.isCancelled, let self else { return }
+            self.overviewProgressShown = nil
+            self.overviewProgressHide = nil
+            self.minimapPanel.setRebuildProgress(nil)
+        }
     }
 
     /// Re-aligns the panel's chrome with the dump (§19.2). The panel measures the
