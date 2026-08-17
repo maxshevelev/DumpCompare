@@ -24,12 +24,12 @@ import Cocoa
 /// the cells (`selectionFill`), mirroring the selection fill in the panes.
 ///
 /// A small file keeps one mini row per hex row and is drawn at the map's top
-/// (byte height 2 pt), leaving the rest of the map empty; a large file
+/// (byte height 4 pt), leaving the rest of the map empty; a large file
 /// collapses groups of hex rows onto as many mini rows as fit the map's height
 /// (`rowCapacity(areaHeight:)`), each cell's state aggregating its group's
 /// bytes. The viewport and selection overlays are measured against the map's
-/// full height and run edge to edge, independent of how much of it the cells
-/// actually fill.
+/// content height and run edge to edge, independent of how much of it the
+/// cells actually fill.
 final class MinimapView: NSView {
     /// How the panel is divided into maps for the open file(s).
     enum MapLayout {
@@ -73,9 +73,9 @@ final class MinimapView: NSView {
     /// Render density comes from the map's height, not a fixed constant: a byte
     /// cell is at most this tall, with `rowGap` breathing room between rows, so
     /// a map can hold `rowCapacity` mini rows. A file small enough for its hex
-    /// rows to fit 1:1 never fills the map (cells stay 2 pt tall, rows drawn
+    /// rows to fit 1:1 never fills the map (cells stay 4 pt tall, rows drawn
     /// from the top); a larger file aggregates hex rows down to the capacity.
-    static let byteHeight: CGFloat = 2
+    static let byteHeight: CGFloat = 4
     static let rowGap: CGFloat = 1
 
     /// How many mini rows fit a map `areaHeight` tall: every row costs
