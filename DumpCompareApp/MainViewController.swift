@@ -90,7 +90,7 @@ final class MainViewController: NSViewController {
         }
         // Re-evaluate navigation availability on every index-state transition
         // (build starts/completes/cancels/stops, edits applied) (§10.3). The
-        // index also feeds the minimap's difference stripes, so an index change
+        // index also feeds the minimap's difference cells, so an index change
         // re-merges them (cheap — no file re-read, §N).
         comparisonCoordinator.onStateChanged = { [weak self] in
             self?.refreshDiffNavigation()
@@ -149,7 +149,16 @@ final class MainViewController: NSViewController {
             minimapSplit.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
         ])
         minimapView.onRowCapacityChanged = { [weak self] in
-            self?.scheduleMinimapCapacityRebuild()
+            self?.scheduleMinimapRebuild()
+        }
+        // A hidden panel builds no maps, so showing it is what triggers the
+        // build — including whatever was edited while it was away (§ N).
+        minimapSplit.onPanelVisibilityChanged = { [weak self] visible in
+            guard let self, visible else { return }
+            self.updateMinimapLayout()
+            self.rebuildMinimap(full: true)
+            self.updateMinimapViewports()
+            self.updateMinimapSelections()
         }
 
         apply(mode: .empty)
@@ -194,14 +203,19 @@ final class MainViewController: NSViewController {
                 self?.cancelSearchAll(from: pane)
             }
             // The minimap's single map mirrors this pane: edits rebuild its
-            // stripes, a moved caret moves the selection overlay, and scrolling
+            // cells, a moved caret moves the selection overlay, and scrolling
             // moves the viewport rectangle (§ N).
             trackMinimapViewport(for: pane)
             paneModel.onEdit = { [weak self] _ in
-                self?.rebuildMinimap(full: true)
+                self?.scheduleMinimapRebuild()
             }
             paneModel.onFullInvalidation = { [weak self] in
-                self?.rebuildMinimap(full: true)
+                self?.scheduleMinimapRebuild()
+            }
+            // A save moves the on-disk reference, so the map's red cells have to
+            // clear even though no byte changed (§ N).
+            paneModel.onSavedStateChanged = { [weak self] in
+                self?.scheduleMinimapRebuild()
             }
             paneModel.onCaretChanged = { [weak self] in
                 self?.updateMinimapSelections()
@@ -299,21 +313,30 @@ final class MainViewController: NSViewController {
         windowModel.pane2.companion = windowModel.pane1
         windowModel.pane1.onEdit = { [weak self] edit in
             self?.comparisonCoordinator.record(edit: edit)
-            // A byte edit can change a stripe's significance, so rebuild the
-            // minimap's maps (§ N).
-            self?.rebuildMinimap(full: true)
+            // A byte edit can change a cell's significance, so rebuild the
+            // minimap's maps — debounced, so held-down typing costs one pass
+            // (§ N).
+            self?.scheduleMinimapRebuild()
         }
         windowModel.pane2.onEdit = { [weak self] edit in
             self?.comparisonCoordinator.record(edit: edit)
-            self?.rebuildMinimap(full: true)
+            self?.scheduleMinimapRebuild()
         }
         windowModel.pane1.onFullInvalidation = { [weak self] in
             self?.comparisonCoordinator.rebuild()
-            self?.rebuildMinimap(full: true)
+            self?.scheduleMinimapRebuild()
         }
         windowModel.pane2.onFullInvalidation = { [weak self] in
             self?.comparisonCoordinator.rebuild()
-            self?.rebuildMinimap(full: true)
+            self?.scheduleMinimapRebuild()
+        }
+        // A save clears modified state without changing a byte, so the minimap's
+        // cached red cells rebuild from it (§ N).
+        windowModel.pane1.onSavedStateChanged = { [weak self] in
+            self?.scheduleMinimapRebuild()
+        }
+        windowModel.pane2.onSavedStateChanged = { [weak self] in
+            self?.scheduleMinimapRebuild()
         }
         // A moved caret changes whether a next/previous block still exists from
         // the new position, so navigation enablement follows it (§10.3); the
@@ -335,6 +358,8 @@ final class MainViewController: NSViewController {
         windowModel.pane2.onEdit = nil
         windowModel.pane1.onFullInvalidation = nil
         windowModel.pane2.onFullInvalidation = nil
+        windowModel.pane1.onSavedStateChanged = nil
+        windowModel.pane2.onSavedStateChanged = nil
     }
 
     private func setContentView(_ newView: NSView) {
@@ -378,37 +403,66 @@ final class MainViewController: NSViewController {
 
     // MARK: - Minimap data (§ N)
 
-    /// The last built significance cells per map (indexed like the current
-    /// maps). Kept apart from the difference cells so an index-only refresh can
-    /// re-derive the diff overlay without re-reading the file bytes.
+    /// One pane's inputs for a minimap build, snapshotted on the main thread
+    /// before the background pass touches any bytes. `Sendable` because the
+    /// snapshot is what crosses to the detached build task; the storages behind
+    /// it are lock-guarded and safe to read from either side.
+    private struct MinimapSource: Sendable {
+        let storage: (any ByteStorage)?
+        /// The file's bytes on disk; nil when there is none (a brand new
+        /// untitled document).
+        let saved: (any ByteStorage)?
+        let size: UInt64
+        /// Where the edit overlay has written — the only offsets a modified byte
+        /// can sit at, so the modified pass reads these ranges and nothing else.
+        let edited: [Range<UInt64>]
+        /// An untitled document has no on-disk reference, so nothing counts as
+        /// modified — matching the panes, which skip the red foreground there.
+        let isUntitled: Bool
+    }
+
+    /// The last built cells per map (indexed like the current maps), carrying
+    /// significance and modified flags but not the difference flags. Kept apart
+    /// from the diff so an index-only refresh can re-derive the difference
+    /// overlay without re-reading a byte.
     private var minimapSignificance: [[MinimapView.ByteRow]] = []
     /// The in-flight background rebuild; cancelled and replaced on the next
     /// full rebuild.
     private var minimapBuildTask: Task<Void, Never>?
-    /// The debounced rebuild triggered when the panel's height or layout moved
-    /// the row density the maps should be built at; cancelled and re-armed on
-    /// each move so a resize storm settles into one rebuild.
-    private var minimapCapacityRebuildTask: Task<Void, Never>?
+    /// The debounced full rebuild. Edits, resizes, and divider drags all arrive
+    /// in bursts, and each rebuild costs file reads, so they are coalesced:
+    /// cancelled and re-armed on every event so a burst settles into one build.
+    private var minimapRebuildTask: Task<Void, Never>?
+
+    /// Debounces a full rebuild, so a run of keystrokes or a resize storm costs
+    /// one file pass instead of one per event (§ N).
+    private func scheduleMinimapRebuild() {
+        guard minimapSplit.panelVisible else { return }
+        minimapRebuildTask?.cancel()
+        minimapRebuildTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard !Task.isCancelled else { return }
+            self?.rebuildMinimap(full: true)
+        }
+    }
 
     /// Rebuilds the minimap maps. `full: true` re-reads the file bytes for the
-    /// significance stripes and is triggered by opening/reverting/editing;
+    /// significance cells and is triggered by opening/reverting/editing;
     /// `full: false` (a comparison index change) only re-merges the difference
-    /// stripes on top of the last significance — cheap, so it can fire on every
+    /// cells on top of the last significance — cheap, so it can fire on every
     /// index refresh without stalling the main thread.
     private func rebuildMinimap(full: Bool) {
-        // Snapshot the inputs on the main thread before leaving it. The saved
-        // storage is the file's bytes on disk; nil when there is none (a brand
-        // new untitled document), in which case nothing is modified.
-        let source: [(storage: (any ByteStorage)?, saved: (any ByteStorage)?, size: UInt64)]
+        // A hidden panel builds nothing: the maps cost file reads and the
+        // minimap is hidden by default, so a user who never opens it must never
+        // pay for it. Showing the panel rebuilds from scratch (§ N).
+        guard minimapSplit.panelVisible else { return }
+        // Snapshot the inputs on the main thread before leaving it.
+        let source: [MinimapSource]
         switch mode {
         case .singleFile:
-            source = [(windowModel.pane1.byteStorage, windowModel.pane1.savedStorage,
-                       windowModel.pane1.fileSize)]
+            source = [minimapSource(windowModel.pane1)]
         case .comparison:
-            source = [(windowModel.pane1.byteStorage, windowModel.pane1.savedStorage,
-                       windowModel.pane1.fileSize),
-                      (windowModel.pane2.byteStorage, windowModel.pane2.savedStorage,
-                       windowModel.pane2.fileSize)]
+            source = [minimapSource(windowModel.pane1), minimapSource(windowModel.pane2)]
         case .empty:
             source = []
         }
@@ -420,22 +474,22 @@ final class MainViewController: NSViewController {
         if full {
             minimapBuildTask?.cancel()
             minimapBuildTask = Task.detached(priority: .utility) { [weak self] in
+                // The byte passes are the slow part and touch nothing but the
+                // lock-guarded storages, so they run off the main actor.
                 let significance: [[MinimapView.ByteRow]] = source.indices.map { i in
-                    let item = source[i]
-                    return Self.buildSignificanceRows(storage: item.storage, saved: item.saved,
-                                                      fileSize: item.size,
-                                                      rowCapacity: capacities.indices.contains(i) ? capacities[i] : 0)
+                    Self.buildCellRows(source: source[i],
+                                       rowCapacity: capacities.indices.contains(i) ? capacities[i] : 0)
                 }
                 guard !Task.isCancelled else { return }
-                // Read the freshest index after the (slow) significance pass so
-                // a rebuild racing an index refresh still lands on the new diff.
-                let index = await MainActor.run { self?.comparisonCoordinator.index }
-                guard !Task.isCancelled else { return }
-                let maps = Self.mergedMaps(significance: significance,
-                                           sizes: source.map(\.size),
-                                           index: index)
-                await MainActor.run {
+                await MainActor.run { [weak self] in
                     guard let self, !Task.isCancelled else { return }
+                    // Merge against the freshest index once back on the actor
+                    // that owns it, so a build racing an index refresh still
+                    // lands on the new diff. The merge is index lookups only —
+                    // cheap next to the byte passes above.
+                    let maps = Self.mergedMaps(significance: significance,
+                                               sizes: source.map(\.size),
+                                               index: self.comparisonCoordinator.index)
                     self.minimapSignificance = significance
                     self.minimapView.setMaps(maps)
                     self.updateMinimapSelections()
@@ -451,16 +505,10 @@ final class MainViewController: NSViewController {
         }
     }
 
-    /// Re-runs the minimap data build after the panel's height or layout moved
-    /// the row density it should be built at. Debounced so a resize or divider
-    /// drag settles into a single rebuild instead of one per layout pass.
-    private func scheduleMinimapCapacityRebuild() {
-        minimapCapacityRebuildTask?.cancel()
-        minimapCapacityRebuildTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 150_000_000)
-            guard !Task.isCancelled else { return }
-            self?.rebuildMinimap(full: true)
-        }
+    private func minimapSource(_ pane: PaneViewModel) -> MinimapSource {
+        MinimapSource(storage: pane.byteStorage, saved: pane.savedStorage,
+                      size: pane.fileSize, edited: pane.editedRanges,
+                      isUntitled: pane.isUntitled)
     }
 
     /// Moves each map's selection overlay to its pane's current selection.
@@ -504,7 +552,7 @@ final class MainViewController: NSViewController {
     }
 
     /// Moves each map's viewport rectangle to its pane's visible byte range.
-    /// Cheap (an overlay repaint, no stripe rebuild), so it rides the scroll
+    /// Cheap (an overlay repaint, no cell rebuild), so it rides the scroll
     /// and resize notifications.
     private func updateMinimapViewports() {
         let viewports: [Range<UInt64>?]
@@ -526,57 +574,34 @@ final class MainViewController: NSViewController {
         minimapView.setViewports(viewports)
     }
 
-    /// Builds a file's significance cells: a cell is significant when any byte
-    /// it covers is not a 0x00/0xFF fill. One mini row per hex row up to
-    /// `rowCapacity` (the panel's current density); a larger file aggregates
-    /// groups of hex rows onto exactly that many rows, each cell's state
-    /// merging its group's bytes in that column. Reads in chunks and stops a
-    /// row's scan as soon as every cell is significant.
-    private static func buildSignificanceRows(storage: (any ByteStorage)?,
-                                              saved: (any ByteStorage)?,
-                                              fileSize: UInt64,
-                                              rowCapacity: Int) -> [MinimapView.ByteRow] {
-        guard let storage, fileSize > 0 else { return [] }
+    /// How much of a file is read in one go by the minimap's passes.
+    nonisolated private static let minimapChunkSize = 64 * 1024
+
+    /// Builds a file's cells: significant when any byte the cell covers is not a
+    /// 0x00/0xFF fill, modified when any of them was edited since the file was
+    /// read from disk. One mini row per hex row up to `rowCapacity` (the panel's
+    /// current density); a larger file aggregates groups of hex rows onto
+    /// exactly that many rows, each cell's state merging its group's bytes in
+    /// that column.
+    nonisolated private static func buildCellRows(source: MinimapSource,
+                                      rowCapacity: Int) -> [MinimapView.ByteRow] {
+        guard let storage = source.storage, source.size > 0 else { return [] }
+        let fileSize = source.size
         let hexRows = (fileSize + 15) / 16
         let count = Int(min(hexRows, UInt64(max(1, rowCapacity))))
-        // When there is a saved copy on disk, a modified byte hiding past an
-        // early significant exit would drop off the map, so the scan runs to the
-        // range's end instead of stopping as soon as every cell is significant.
-        let needsModified = saved != nil
+        // An untitled document has no on-disk reference, so nothing is modified.
+        let edited = source.isUntitled ? [] : source.edited
+        let savedSize = source.saved?.size ?? 0
         var rows: [MinimapView.ByteRow] = []
         rows.reserveCapacity(count)
-        let chunkSize = 64 * 1024
         for i in 0..<count {
             let byteRange = Self.rowByteRange(row: i, count: count, hexRows: hexRows, fileSize: fileSize)
             let cellCount = Int(min(UInt64(16), byteRange.upperBound - byteRange.lowerBound))
-            var significant = [Bool](repeating: false, count: cellCount)
-            var cellsLeft = cellCount
-            var modified = [Bool](repeating: false, count: cellCount)
-            let start = byteRange.lowerBound
-            var offset = start
-            while offset < byteRange.upperBound, cellsLeft > 0 || needsModified {
-                let length = Int(min(UInt64(chunkSize), byteRange.upperBound - offset))
-                guard let bytes = try? storage.read(at: offset, length: length), !bytes.isEmpty else { break }
-                // The saved slice for the same span; bytes past its end (appended
-                // since the file was last read from disk) count as modified.
-                let savedBytes = saved.flatMap { try? $0.read(at: offset, length: length) } ?? []
-                for (k, byte) in bytes.enumerated() {
-                    let col = Int((offset + UInt64(k) - start) % 16)
-                    guard col < cellCount else { continue }
-                    if byte != 0x00, byte != 0xFF, !significant[col] {
-                        significant[col] = true
-                        cellsLeft -= 1
-                        if cellsLeft == 0, !needsModified { break }
-                    }
-                    if needsModified, !modified[col] {
-                        let isModified = savedBytes.indices.contains(k)
-                            ? savedBytes[k] != byte
-                            : true  // appended past the saved file
-                        if isModified { modified[col] = true }
-                    }
-                }
-                offset += UInt64(bytes.count)
-            }
+            let significant = Self.significantColumns(in: byteRange, cellCount: cellCount,
+                                                      storage: storage)
+            let modified = Self.modifiedColumns(in: byteRange, cellCount: cellCount,
+                                                storage: storage, saved: source.saved,
+                                                savedSize: savedSize, edited: edited)
             let cells = (0..<cellCount).map { j in
                 MinimapView.CellState(isSignificant: significant[j],
                                       isModified: modified[j],
@@ -587,11 +612,84 @@ final class MainViewController: NSViewController {
         return rows
     }
 
+    /// Which columns of one mini row hold a byte that is not a 0x00/0xFF fill.
+    /// Reads in chunks and stops as soon as every column is significant, so a
+    /// row of real content costs one read no matter how many bytes it spans.
+    nonisolated private static func significantColumns(in rowRange: Range<UInt64>, cellCount: Int,
+                                           storage: any ByteStorage) -> [Bool] {
+        var significant = [Bool](repeating: false, count: cellCount)
+        guard cellCount > 0 else { return significant }
+        var columnsLeft = cellCount
+        let start = rowRange.lowerBound
+        var offset = start
+        while offset < rowRange.upperBound, columnsLeft > 0 {
+            let length = Int(min(UInt64(Self.minimapChunkSize), rowRange.upperBound - offset))
+            guard let bytes = try? storage.read(at: offset, length: length), !bytes.isEmpty else { break }
+            for (k, byte) in bytes.enumerated() {
+                guard byte != 0x00, byte != 0xFF else { continue }
+                let col = Int((offset + UInt64(k) - start) % 16)
+                guard col < cellCount, !significant[col] else { continue }
+                significant[col] = true
+                columnsLeft -= 1
+                if columnsLeft == 0 { break }
+            }
+            offset += UInt64(bytes.count)
+        }
+        return significant
+    }
+
+    /// Which columns of one mini row hold a byte modified since the file was
+    /// last read from disk.
+    ///
+    /// A byte can only differ from the saved copy where the edit overlay wrote,
+    /// so the scan visits the intersection of the row with `edited` instead of
+    /// the whole row: after a keystroke that is a handful of bytes, where
+    /// comparing the row against `saved` byte by byte meant reading the entire
+    /// file (twice) on every edit — untenable on the large dumps this app is for.
+    /// Bytes past the saved file's end (appended since it was read) count as
+    /// modified, matching `PaneViewModel.hexByteStates`.
+    nonisolated private static func modifiedColumns(in rowRange: Range<UInt64>, cellCount: Int,
+                                        storage: any ByteStorage, saved: (any ByteStorage)?,
+                                        savedSize: UInt64,
+                                        edited: [Range<UInt64>]) -> [Bool] {
+        var modified = [Bool](repeating: false, count: cellCount)
+        guard cellCount > 0, !edited.isEmpty else { return modified }
+        var columnsLeft = cellCount
+        let start = rowRange.lowerBound
+        for range in edited {
+            let lower = max(range.lowerBound, rowRange.lowerBound)
+            let upper = min(range.upperBound, rowRange.upperBound)
+            guard lower < upper else { continue }
+            var offset = lower
+            while offset < upper, columnsLeft > 0 {
+                let length = Int(min(UInt64(Self.minimapChunkSize), upper - offset))
+                guard let bytes = try? storage.read(at: offset, length: length),
+                      !bytes.isEmpty else { break }
+                // Reads clamp at EOF, so a short slice means the rest is append.
+                let savedBytes: [UInt8] = saved.flatMap { try? $0.read(at: offset, length: length) } ?? []
+                for (k, byte) in bytes.enumerated() {
+                    let absolute = offset + UInt64(k)
+                    let col = Int((absolute - start) % 16)
+                    guard col < cellCount, !modified[col] else { continue }
+                    let isModified = absolute >= savedSize
+                        || (savedBytes.indices.contains(k) ? savedBytes[k] != byte : true)
+                    guard isModified else { continue }
+                    modified[col] = true
+                    columnsLeft -= 1
+                    if columnsLeft == 0 { break }
+                }
+                offset += UInt64(bytes.count)
+            }
+            if columnsLeft == 0 { break }
+        }
+        return modified
+    }
+
     /// Merges the significance cells with the comparison index's difference
     /// cells: any cell whose column holds a differing byte gets the
     /// `isDifferent` flag set (the orange background), keeping whatever
     /// significance and modification flags it already carries.
-    private static func mergedMaps(significance: [[MinimapView.ByteRow]],
+    nonisolated private static func mergedMaps(significance: [[MinimapView.ByteRow]],
                                    sizes: [UInt64],
                                    index: DiffBlockIndex?) -> [MinimapView.Map] {
         var maps: [MinimapView.Map] = []
@@ -623,7 +721,7 @@ final class MainViewController: NSViewController {
     /// The byte range a minimap row covers. Row `row` of `count` rows spans hex
     /// rows `[floor(row·H/C), floor((row+1)·H/C))`, converted to byte offsets
     /// and clamped to the file.
-    private static func rowByteRange(row: Int, count: Int, hexRows: UInt64, fileSize: UInt64) -> Range<UInt64> {
+    nonisolated private static func rowByteRange(row: Int, count: Int, hexRows: UInt64, fileSize: UInt64) -> Range<UInt64> {
         let start = hexRows * UInt64(row) / UInt64(count) * 16
         let end = hexRows * UInt64(row + 1) / UInt64(count) * 16
         return min(start, fileSize)..<min(end, fileSize)
@@ -635,19 +733,25 @@ final class MainViewController: NSViewController {
     /// a `.different` state at any of them wins. A `.same` run is skipped in
     /// one jump to its end, so a long identical stretch costs one lookup, not
     /// one per byte.
-    private static func containsDifferent(inColumn j: Int, start: UInt64, end: UInt64,
-                                          index: DiffBlockIndex) -> Bool {
-        var offset = start + UInt64(j)
+    ///
+    /// Internal, not private, so the tests can drive the column walk directly
+    /// against a hand-built index.
+    nonisolated static func containsDifferent(inColumn j: Int, start: UInt64, end: UInt64,
+                                  index: DiffBlockIndex) -> Bool {
+        // The column's slots are `base + 16·m`, so a skip has to round up from
+        // `base` — rounding up from `start` (ignoring j) overshot by a whole row
+        // whenever the same block ended within the row's first j+1 columns, and
+        // a difference sitting in the skipped slot went unpainted.
+        let base = start + UInt64(j)
+        var offset = base
         while offset < end {
             guard let kind = index.state(at: offset) else { return false }  // past the longer file
             if kind == .different { return true }
             // Inside a same block running to the next block's start; land the
-            // column on its next slot past that run.
+            // column on its first slot at or past the end of that run.
             let blockEnd = index.firstBlock(after: offset)?.range.lowerBound ?? index.maxSize
-            let slots = (blockEnd - start + 15) / 16
-            let next = start + slots * 16 + UInt64(j)
-            guard next > offset else { return false }
-            offset = next
+            let next = blockEnd > base ? base + (blockEnd - base + 15) / 16 * 16 : offset + 16
+            offset = max(next, offset + 16)  // never stall on a degenerate block
         }
         return false
     }

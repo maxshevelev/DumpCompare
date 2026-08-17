@@ -2,11 +2,12 @@ import DumpCompareCore
 import XCTest
 @testable import DumpCompare
 
-/// § Minimap stage 1: the right-edge toolbar toggle ("sidebar.right"), the
-/// fixed spacer between it and the diff navigation block, and the animated
-/// show/hide of the empty vertical panel. The panel starts hidden, keeps a
-/// minimum width of 80 pt and never exceeds a quarter of the screen, and its
-/// width is persisted so the next show restores the user's drag.
+/// § Minimap: the right-edge toolbar toggle ("sidebar.right"), the fixed spacer
+/// between it and the diff navigation block, the animated show/hide of the
+/// vertical panel, and the maps it fills with. The panel starts hidden, stays
+/// within `MinimapSplitView.minPanelWidth...maxPanelWidth` (120...240 pt)
+/// through both drags and window resizes, and its width is persisted so the
+/// next show restores the user's drag.
 @MainActor
 final class MinimapTests: XCTestCase {
     /// A throwaway defaults domain, one per test run, so the tests never read or
@@ -232,10 +233,11 @@ final class MinimapTests: XCTestCase {
 
     /// Opens two files and applies comparison mode at the given pane
     /// arrangement (vertical = side-by-side, horizontal = stacked).
-    private func makeComparisonWindow(vertical: Bool) throws -> (MainViewController, NSWindow) {
+    private func makeComparisonWindow(vertical: Bool,
+                                      sizes: (Int, Int) = (256, 128)) throws -> (MainViewController, NSWindow) {
         LayoutSettings.set(isVertical: vertical)
-        let url1 = try tempFile([UInt8](repeating: 0x41, count: 256))
-        let url2 = try tempFile([UInt8](repeating: 0x42, count: 128))
+        let url1 = try tempFile([UInt8](repeating: 0x41, count: sizes.0))
+        let url2 = try tempFile([UInt8](repeating: 0x42, count: sizes.1))
         let (controller, window) = try makeController()
         try controller.windowModel.pane1.open(url: url1)
         try controller.windowModel.pane2.open(url: url2)
@@ -318,7 +320,7 @@ final class MinimapTests: XCTestCase {
         XCTAssertEqual(fraction, 0.5, accuracy: 0.001)
     }
 
-    // MARK: - Stage 3: stripes
+    // MARK: - Stage 3: byte cells
 
     /// Opens one file in single-file mode and waits for the minimap's async
     /// significance build to land.
@@ -527,5 +529,329 @@ final class MinimapTests: XCTestCase {
         XCTAssertEqual(pane1Bottom.upperBound, 100_000)
         XCTAssertEqual(panel.viewport(forMapAt: 1), 0..<64,
                        "scrolling one pane leaves the other pane's rectangle alone")
+    }
+
+    // MARK: - Viewport band geometry
+
+    /// Side-by-side panes scroll in lockstep by absolute offset (§9), so the
+    /// viewport is ONE rectangle across the whole panel — a band per map left
+    /// the gutter cut out of it and read as a broken overlay.
+    func testSideBySideDrawsOneViewportBandAcrossBothMaps() throws {
+        let (_, window) = try makeComparisonWindow(vertical: true)
+        let (split, panel) = try minimapViews(window)
+        split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+        _ = pumpUntil(2.0) { panel.viewportRects().count == 1 }
+
+        let rects = panel.viewportRects()
+        XCTAssertEqual(rects.count, 1, "one band, not one per map")
+        let band = try XCTUnwrap(rects.first)
+        XCTAssertEqual(band.minX, 0, accuracy: 0.5, "the band starts at the panel's edge")
+        XCTAssertEqual(band.width, panel.bounds.width, accuracy: 0.5,
+                       "the band spans the whole panel, crossing the gutter between the maps")
+        XCTAssertGreaterThan(band.height, 0)
+    }
+
+    /// The geometry above says the band spans the panel; this pins that it also
+    /// *looks* unbroken. The divider between the maps is drawn after the band, so
+    /// a plain 1 pt line would paint the seam straight back in — inside the
+    /// band's rows the line has to yield. Rendered through the real `draw(_:)`
+    /// via `cacheDisplay`, then sampled across the divider's x.
+    func testTheSharedBandHasNoDividerSeamThroughIt() throws {
+        let (_, window) = try makeComparisonWindow(vertical: true, sizes: (8_000, 4_000))
+        let (split, panel) = try minimapViews(window)
+        split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+        _ = pumpUntil(2.0) { panel.viewportRects().count == 1 }
+        let band = try XCTUnwrap(panel.viewportRects().first)
+        XCTAssertGreaterThan(band.height, 4, "need a few rows of band to sample")
+
+        let rep = try XCTUnwrap(panel.bitmapImageRepForCachingDisplay(in: panel.bounds),
+                                "no bitmap rep")
+        panel.cacheDisplay(in: panel.bounds, to: rep)
+        let scaleX = CGFloat(rep.pixelsWide) / panel.bounds.width
+        let scaleY = CGFloat(rep.pixelsHigh) / panel.bounds.height
+
+        /// The luminance at a point in the view's (flipped) coordinates.
+        func luminance(x: CGFloat, y: CGFloat) throws -> CGFloat {
+            let px = min(max(Int(x * scaleX), 0), rep.pixelsWide - 1)
+            let py = min(max(Int(y * scaleY), 0), rep.pixelsHigh - 1)
+            let color = try XCTUnwrap(rep.colorAt(x: px, y: py))
+            return color.usingColorSpace(.deviceRGB).map {
+                0.299 * $0.redComponent + 0.587 * $0.greenComponent + 0.114 * $0.blueComponent
+            } ?? -1
+        }
+
+        // Sample the middle row of the band: on the divider's x and in the
+        // gutter just beside it. Inside the band the two must match — the line
+        // is not painted there.
+        let midBandY = band.midY
+        let onDivider = try luminance(x: panel.bounds.midX, y: midBandY)
+        let besideDivider = try luminance(x: panel.bounds.midX - 3, y: midBandY)
+        XCTAssertEqual(onDivider, besideDivider, accuracy: 0.02,
+                       "no divider seam across the band")
+
+        // Below the band the divider is still drawn, so the same two samples
+        // must now differ — otherwise the test above would pass on a panel that
+        // simply lost its divider.
+        let belowBandY = min(band.maxY + 6, panel.bounds.height - 1)
+        let onDividerBelow = try luminance(x: panel.bounds.midX, y: belowBandY)
+        let besideDividerBelow = try luminance(x: panel.bounds.midX - 3, y: belowBandY)
+        XCTAssertNotEqual(onDividerBelow, besideDividerBelow, accuracy: 0.02,
+                          "outside the band the maps are still divided by a line")
+    }
+
+    /// Stacked maps sit above each other, so their bands are at different y by
+    /// construction — one rectangle over both would swallow the divider.
+    func testStackedKeepsABandPerMap() throws {
+        let (_, window) = try makeComparisonWindow(vertical: false)
+        let (split, panel) = try minimapViews(window)
+        split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+        _ = pumpUntil(2.0) { panel.viewportRects().count == 2 }
+
+        let rects = panel.viewportRects()
+        XCTAssertEqual(rects.count, 2, "stacked panes keep a band each")
+        // The second band sits in the lower half, below the panes' divider.
+        let sorted = rects.sorted { $0.minY < $1.minY }
+        XCTAssertLessThan(sorted[0].minY, panel.bounds.height / 2)
+        XCTAssertGreaterThanOrEqual(sorted[1].minY, panel.bounds.height / 2 - 1)
+    }
+
+    /// The shared band runs on one offset axis — the longer file's size over its
+    /// map's content height — so the same absolute offset means one y for the
+    /// whole panel. Both files here are far taller than the viewport, so the
+    /// band is a genuine partial slice: measuring it against the shorter file
+    /// (50 KB against 100 KB) would put it at twice the offset and twice the
+    /// height, which the assertions below separate.
+    func testSharedBandIsMeasuredAgainstTheLongerFile() throws {
+        // Sizes chosen so the visible slice is a large fraction of the file:
+        // the band is then far taller than `viewportMinHeight`, so the
+        // hair-thin-slice clamp never muddies the arithmetic below.
+        let (_, window) = try makeComparisonWindow(vertical: true, sizes: (8_000, 4_000))
+        let (split, panel) = try minimapViews(window)
+        split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+        _ = pumpUntil(2.0) { panel.viewportRects().count == 1 && panel.maps.count == 2 }
+
+        // Scroll into the middle so a wrong scale cannot coincide with the
+        // right one at offset 0.
+        let hexView = try XCTUnwrap(descendants(of: window.contentView!, HexView.self).first)
+        let clip = try XCTUnwrap(hexView.enclosingScrollView?.contentView)
+        clip.setBoundsOrigin(NSPoint(x: 0, y: (hexView.hexContentHeight - clip.bounds.height) / 2))
+        window.layoutIfNeeded()
+        _ = pumpUntil(2.0) { (panel.viewport(forMapAt: 0)?.lowerBound ?? 0) > 0 }
+
+        let longer = try XCTUnwrap(panel.maps.max(by: { $0.fileSize < $1.fileSize }))
+        let shorter = try XCTUnwrap(panel.maps.min(by: { $0.fileSize < $1.fileSize }))
+        XCTAssertEqual(longer.fileSize, 8_000, "the longer file is the reference")
+
+        // The band covers what both panes have on screen: synchronized scrolling
+        // reports the same offsets, but the shorter file clamps at its own EOF.
+        let ranges = [panel.viewport(forMapAt: 0), panel.viewport(forMapAt: 1)]
+            .compactMap { $0 }.filter { !$0.isEmpty }
+        let lower = try XCTUnwrap(ranges.map(\.lowerBound).min())
+        let upper = try XCTUnwrap(ranges.map(\.upperBound).max())
+        XCTAssertGreaterThan(lower, 0, "the panes are scrolled off the top")
+        XCTAssertLessThan(upper, longer.fileSize, "and show only a slice")
+
+        func contentHeight(_ map: MinimapView.Map) -> CGFloat {
+            CGFloat(map.rows.count) * (MinimapView.byteHeight + MinimapView.rowGap) - MinimapView.rowGap
+        }
+        let axis = contentHeight(longer)
+        let band = try XCTUnwrap(panel.viewportRects().first)
+        XCTAssertGreaterThan(band.height, MinimapView.viewportMinHeight,
+                             "the slice is big enough that the min-height clamp stays out of it")
+        XCTAssertEqual(band.minY, CGFloat(lower) / CGFloat(longer.fileSize) * axis,
+                       accuracy: 1, "the band's offset comes from the longer file's scale")
+        XCTAssertEqual(band.height, CGFloat(upper - lower) / CGFloat(longer.fileSize) * axis,
+                       accuracy: 1, "and so does its height")
+        // Guard against the scale silently flipping to the shorter file.
+        let wrongY = CGFloat(min(lower, shorter.fileSize)) / CGFloat(shorter.fileSize)
+            * contentHeight(shorter)
+        XCTAssertNotEqual(band.minY, wrongY, accuracy: 1,
+                          "the shorter file's scale would place the band elsewhere")
+    }
+
+    // MARK: - Difference lookup
+
+    /// The column walk used to paint difference cells skips whole `.same` runs
+    /// in one jump. The jump used to round up from the row's start instead of
+    /// from the column's own first slot, which overshot by a full hex row
+    /// whenever the same block ended inside the row's first j+1 columns — a
+    /// short difference landing in the skipped slot was never painted.
+    func testShortUnalignedDifferenceIsFoundInEveryColumnItTouches() {
+        // 48 bytes = 3 hex rows collapsed onto one mini row; the files differ
+        // only over [20, 25), i.e. columns 4...8 of the middle hex row.
+        let index = DiffBlockIndex(leftSize: 48, rightSize: 48, blocks: [
+            DiffBlock(kind: .same, range: 0..<20),
+            DiffBlock(kind: .different, range: 20..<25),
+            DiffBlock(kind: .same, range: 25..<48),
+        ])
+        for column in 4...8 {
+            XCTAssertTrue(
+                MainViewController.containsDifferent(inColumn: column, start: 0, end: 48, index: index),
+                "column \(column) covers a differing byte at offset \(20 + column - 4)")
+        }
+        for column in [0, 1, 2, 3, 9, 15] {
+            XCTAssertFalse(
+                MainViewController.containsDifferent(inColumn: column, start: 0, end: 48, index: index),
+                "column \(column) covers no differing byte")
+        }
+    }
+
+    /// The same walk, cross-checked against the obvious per-slot scan over a
+    /// set of block layouts — including runs that end mid-row and rows that do
+    /// not start at offset 0 (an aggregated map row).
+    func testDifferenceLookupMatchesAPerSlotScan() {
+        let layouts: [[DiffBlock]] = [
+            [.init(kind: .same, range: 0..<20), .init(kind: .different, range: 20..<25),
+             .init(kind: .same, range: 25..<96)],
+            [.init(kind: .different, range: 0..<1), .init(kind: .same, range: 1..<96)],
+            [.init(kind: .same, range: 0..<47), .init(kind: .different, range: 47..<49),
+             .init(kind: .same, range: 49..<96)],
+            [.init(kind: .same, range: 0..<96)],
+            [.init(kind: .same, range: 0..<33), .init(kind: .different, range: 33..<34),
+             .init(kind: .same, range: 34..<95), .init(kind: .different, range: 95..<96)],
+        ]
+        for (layoutIndex, blocks) in layouts.enumerated() {
+            let index = DiffBlockIndex(leftSize: 96, rightSize: 96, blocks: blocks)
+            for row in [(start: UInt64(0), end: UInt64(48)), (start: UInt64(48), end: UInt64(96))] {
+                for column in 0..<16 {
+                    let expected = stride(from: row.start + UInt64(column), to: row.end, by: 16)
+                        .contains { index.state(at: $0) == .different }
+                    XCTAssertEqual(
+                        MainViewController.containsDifferent(inColumn: column, start: row.start,
+                                                             end: row.end, index: index),
+                        expected,
+                        "layout \(layoutIndex), row [\(row.start), \(row.end)), column \(column)")
+                }
+            }
+        }
+    }
+
+    // MARK: - Hidden panel does no work
+
+    /// The maps cost a file scan, and the panel is hidden by default, so nothing
+    /// is built until it is shown — a user who never opens the minimap never
+    /// pays for it.
+    func testHiddenPanelBuildsNoMapsUntilShown() throws {
+        let url = try tempFile([UInt8](repeating: 0x41, count: 64))
+        let (controller, window) = try makeController()
+        try controller.windowModel.pane1.open(url: url)
+        controller.apply(mode: .singleFile)
+        window.layoutIfNeeded()
+        let (split, panel) = try minimapViews(window)
+
+        XCTAssertFalse(split.panelVisible, "the panel starts hidden")
+        // Give a build every chance to land, then assert none ever did.
+        _ = pumpUntil(0.5) { !panel.maps.isEmpty }
+        XCTAssertTrue(panel.maps.isEmpty, "a hidden panel scans nothing")
+
+        split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+        _ = pumpUntil(2.0) { panel.maps.first.map { !$0.rows.isEmpty } ?? false }
+        XCTAssertEqual(panel.maps.count, 1, "showing the panel builds the map")
+        XCTAssertFalse(try XCTUnwrap(panel.maps.first).rows.isEmpty)
+    }
+
+    // MARK: - Modified cells
+
+    /// Modified cells come from the edit overlay's changed ranges, but still
+    /// compare the bytes: overwriting a byte with the value it already held is
+    /// not a modification, exactly as the panes' red foreground rule has it.
+    func testRetypingTheSameValueLeavesTheCellUnmodified() throws {
+        let bytes = [UInt8](repeating: 0x41, count: 16)
+        let (controller, _, panel) = try makeSingleFileWindow(bytes)
+        let pane = controller.windowModel.pane1
+
+        // Column 3 gets its own value back; column 1 gets a new one, so waiting
+        // for column 1 proves the rebuild that covers both actually landed.
+        pane.moveCaret(to: 3)
+        pane.typeASCII(0x41)
+        pane.moveCaret(to: 1)
+        pane.typeASCII(0x42)
+        _ = pumpUntil(2.0) {
+            guard let map = panel.maps.first, !map.rows.isEmpty else { return false }
+            return map.rows[0].cells[1].isModified
+        }
+        let map = try XCTUnwrap(panel.maps.first)
+        XCTAssertTrue(map.rows[0].cells[1].isModified, "0x42 over 0x41 is a modification")
+        XCTAssertFalse(map.rows[0].cells[3].isModified,
+                       "0x41 over 0x41 leaves the byte as it was on disk")
+    }
+
+    /// Saving clears modified state without changing a byte. The panes re-read
+    /// their state on every draw so they drop the red foreground by themselves;
+    /// the minimap caches its cells, so it has to be told — otherwise the map
+    /// kept red cells for a file that is fully written to disk.
+    func testSavingClearsModifiedCells() throws {
+        let bytes = [UInt8](repeating: 0x41, count: 16)
+        let (controller, _, panel) = try makeSingleFileWindow(bytes)
+        let pane = controller.windowModel.pane1
+
+        pane.moveCaret(to: 1)
+        pane.typeASCII(0x42)
+        _ = pumpUntil(2.0) {
+            panel.maps.first.map { !$0.rows.isEmpty && $0.rows[0].cells[1].isModified } ?? false
+        }
+        XCTAssertTrue(try XCTUnwrap(panel.maps.first).rows[0].cells[1].isModified,
+                      "the edit shows as a modified cell")
+
+        try pane.save()
+        _ = pumpUntil(2.0) {
+            panel.maps.first.map { !$0.rows.isEmpty && !$0.rows[0].cells[1].isModified } ?? false
+        }
+        let map = try XCTUnwrap(panel.maps.first)
+        XCTAssertFalse(map.rows[0].cells.contains(where: \.isModified),
+                       "a saved file has no modified bytes left to paint")
+        XCTAssertTrue(map.rows[0].cells[1].isSignificant,
+                      "the byte itself is still there — only its modified flag cleared")
+    }
+
+    // MARK: - Width clamp across a window resize
+
+    /// `constrainMin/MaxCoordinate` govern a divider *drag* only; NSSplitView's
+    /// default resize is proportional, so a wide window used to carry the panel
+    /// far past its maximum (a 2600 pt window opened it to ~390 pt). The panel
+    /// holds its width instead and the hex panes absorb the delta.
+    func testPanelHoldsItsWidthWhenTheWindowGrows() throws {
+        let (_, window) = try makeController()
+        let (split, panel) = try minimapViews(window)
+        split.setPanelVisible(true, animated: false)
+        split.setPanelWidth(150, animated: false)
+        window.layoutIfNeeded()
+        XCTAssertEqual(panel.frame.width, 150, accuracy: 1)
+
+        for width in [1200.0, 1800.0, 2600.0] {
+            window.setContentSize(NSSize(width: width, height: 600))
+            window.layoutIfNeeded()
+            XCTAssertLessThanOrEqual(panel.frame.width, MinimapSplitView.maxPanelWidth,
+                                     "the panel never grows past its maximum at \(width) pt wide")
+            XCTAssertEqual(panel.frame.width, 150, accuracy: 1,
+                           "a window resize leaves the panel's width alone at \(width) pt wide")
+        }
+    }
+
+    /// A show that lands before the split has any bounds must still open at the
+    /// panel's own width: `setPanelWidth` cannot place a divider in a zero-width
+    /// split, so the width is parked and applied by the first real layout.
+    func testShowBeforeFirstLayoutOpensAtThePanelWidth() throws {
+        let controller = MainViewController()
+        let split = try XCTUnwrap(descendants(of: controller.view, MinimapSplitView.self).first)
+        XCTAssertEqual(split.bounds.width, 0, "no layout has run yet")
+        split.setPanelVisible(true, animated: false)
+
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.contentViewController = controller
+        window.setContentSize(NSSize(width: 800, height: 600))
+        window.layoutIfNeeded()
+
+        let panel = try XCTUnwrap(descendants(of: window.contentView!, MinimapView.self).first)
+        XCTAssertLessThanOrEqual(panel.frame.width, MinimapSplitView.maxPanelWidth,
+                                 "not NSSplitView's default half-the-window split")
+        XCTAssertGreaterThanOrEqual(panel.frame.width, MinimapSplitView.minPanelWidth - 1,
+                                    "the parked width is applied by the first layout")
     }
 }

@@ -10,19 +10,22 @@ import Cocoa
 /// `isHidden`); hidden just means the divider sits at the right edge so the
 /// panel is zero-width and natively collapsed.
 ///
-/// The additions on top of the plain split are the width setter, the
-/// show/hide animation, and a one-shot initial-layout pin. `setPanelWidth` is
-/// the programmatic width setter the controller (and tests) use: it moves the
-/// divider to give the panel `width` points, clamped by the delegate. The
-/// show/hide animation is a manual timer easing the divider from its current
-/// position to the target, so a toggle glides instead of snapping — the same
-/// pattern `ProportionalSplitView` uses for its fraction animation (§3.3). The
-/// fitting-size overrides report no intrinsic size because a plain vertical
-/// NSSplitView computes a concrete fitting width from its panes' content (the
-/// empty minimap has none), which would let the first layout collapse this
-/// split to a sliver. The pin is needed because NSSplitView's default initial
-/// distribution ignores the delegate's clamp and would give the minimap
-/// roughly half the content area.
+/// The additions on top of the plain split are the width setter, the show/hide
+/// animation, a one-shot initial-layout pin, and a resize override.
+/// `setPanelWidth` is the programmatic width setter the controller (and tests)
+/// use: it moves the divider to give the panel `width` points, clamped by the
+/// delegate. The show/hide animation is a manual timer easing the divider from
+/// its current position to the target, so a toggle glides instead of snapping —
+/// the same pattern `ProportionalSplitView` uses for its fraction animation
+/// (§3.3). The fitting-size overrides report no intrinsic size because a plain
+/// vertical NSSplitView computes a concrete fitting width from its panes'
+/// content (the empty minimap has none), which would let the first layout
+/// collapse this split to a sliver. The pin is needed because NSSplitView's
+/// default initial distribution ignores the delegate's clamp and would give the
+/// minimap roughly half the content area. The resize override is needed for the
+/// same reason one step later: the delegate's clamp governs a divider *drag*
+/// only, so the default proportional resize carried the panel past its maximum
+/// on a wide window.
 final class MinimapSplitView: NSSplitView {
     /// The minimap keeps at least this width when shown (§ N).
     static let minPanelWidth: CGFloat = 120
@@ -50,11 +53,23 @@ final class MinimapSplitView: NSSplitView {
     /// the panel sits at zero width and the hex panes reclaim the content area.
     private(set) var panelVisible = false
 
+    /// Invoked whenever the panel is shown or hidden, with the new state. The
+    /// controller rebuilds the maps on a show: while the panel is hidden it
+    /// builds nothing, so the data has to be (re)made when it appears (§ N).
+    var onPanelVisibilityChanged: ((Bool) -> Void)?
+
     /// True after the first real layout pinned the divider. The pin is the
     /// initial hidden state: NSSplitView distributes new panes ignoring the
     /// delegate's clamp, so without it the panel would open at roughly half
     /// the content area instead of collapsed (the minimap is hidden on launch).
     private var didPinInitialLayout = false
+
+    /// A width asked for before the split had any bounds to place a divider in.
+    /// `setPanelWidth` cannot act on a zero-width split, so it parks the value
+    /// here and the first real layout applies it — otherwise a show that lands
+    /// before the first layout leaves NSSplitView's default ~50/50 split in
+    /// place and the panel opens at half the content area.
+    private var pendingPanelWidth: CGFloat?
 
     /// Duration of a show/hide toggle's divider animation.
     private static let animationDuration: TimeInterval = 0.2
@@ -70,12 +85,48 @@ final class MinimapSplitView: NSSplitView {
 
     override func layout() {
         super.layout()
-        // Pin only the very first layout that has room, and only while the
-        // panel should be collapsed. A show that ran before any layout already
-        // placed the divider, so leave it in place.
-        guard !didPinInitialLayout, bounds.width > 0, !panelVisible else { return }
+        // Pin the very first layout that has room: NSSplitView distributes new
+        // panes ignoring the delegate's clamp. Normally that means collapsing
+        // the panel (the minimap is hidden on launch); a show that ran before
+        // any layout parked its width in `pendingPanelWidth` and lands here.
+        guard !didPinInitialLayout, bounds.width > 0 else { return }
         didPinInitialLayout = true
-        setPanelWidthDirect(0)
+        setPanelWidthDirect(pendingPanelWidth ?? (panelVisible ? preferredPanelWidth : 0))
+        pendingPanelWidth = nil
+    }
+
+    /// Keeps the panel's width across a window resize instead of letting it
+    /// grow with the window: the hex panes absorb the whole delta.
+    ///
+    /// NSSplitView's default distribution is proportional, and
+    /// `constrainMin/MaxCoordinate` only govern a divider *drag* — so on a wide
+    /// window the default carried the panel far past `maxPanelWidth` (a 2600 pt
+    /// window opened it to ~390 pt). Re-clamping here is what actually holds
+    /// the documented [min, max] band. Mid-animation frames are left alone so a
+    /// show/hide glide is not snapped to its end state.
+    override func resizeSubviews(withOldSize oldSize: NSSize) {
+        guard isVertical, arrangedSubviews.count == 2 else {
+            super.resizeSubviews(withOldSize: oldSize)
+            return
+        }
+        // The width the panel had before this pass — what it should keep.
+        let previousPanelWidth = arrangedSubviews[1].frame.width
+        // Let the split do its own work first (heights, divider bookkeeping);
+        // only the widths are then put back.
+        super.resizeSubviews(withOldSize: oldSize)
+        guard bounds.width > 0, panelWidthTimer == nil else { return }  // mid-toggle: leave the glide alone
+        let content = arrangedSubviews[0]
+        let panel = arrangedSubviews[1]
+        let room = max(0, bounds.width - dividerThickness)
+        let target = panelVisible
+            ? min(min(max(previousPanelWidth, Self.minPanelWidth), Self.maxPanelWidth), room)
+            : 0
+        guard abs(panel.frame.width - target) > 0.5 else { return }
+        let contentWidth = max(0, bounds.width - target - dividerThickness)
+        content.frame = NSRect(x: 0, y: content.frame.minY,
+                               width: contentWidth, height: content.frame.height)
+        panel.frame = NSRect(x: contentWidth + dividerThickness, y: panel.frame.minY,
+                             width: target, height: panel.frame.height)
     }
 
     /// The panel width the user last chose (or the built-in minimum), clamped
@@ -92,8 +143,10 @@ final class MinimapSplitView: NSSplitView {
     /// Shows or hides the panel, animating the divider unless the user prefers
     /// reduced motion (then it snaps).
     func setPanelVisible(_ visible: Bool, animated: Bool = true) {
+        let changed = panelVisible != visible
         panelVisible = visible
         setPanelWidth(visible ? preferredPanelWidth : 0, animated: animated)
+        if changed { onPanelVisibilityChanged?(visible) }
     }
 
     /// Toggles the panel's visibility (§ N).
@@ -108,7 +161,11 @@ final class MinimapSplitView: NSSplitView {
         panelWidthTimer?.invalidate()
         panelWidthTimer = nil
         let total = bounds.width
-        guard total > 0 else { return }
+        // No bounds yet: park the width for the first layout to apply.
+        guard total > 0 else {
+            pendingPanelWidth = max(0, width)
+            return
+        }
         let target = max(0, min(width, total - dividerThickness))
         let start = currentPanelWidth()
         if animated, window != nil,

@@ -30,6 +30,11 @@ import Cocoa
 /// bytes. The viewport and selection overlays are measured against the map's
 /// content height and run edge to edge, independent of how much of it the
 /// cells actually fill.
+///
+/// The viewport band is per map — except side-by-side, which draws a single
+/// rectangle across the whole panel on a shared offset axis, because the panes
+/// scroll in lockstep and a band interrupted by the gutter read as broken. See
+/// `viewportRects()`.
 final class MinimapView: NSView {
     /// How the panel is divided into maps for the open file(s).
     enum MapLayout {
@@ -149,7 +154,7 @@ final class MinimapView: NSView {
         needsDisplay = true
     }
 
-    /// Replaces the maps' contents (file sizes + stripes). The panel keeps the
+    /// Replaces the maps' contents (file sizes + byte cells). The panel keeps the
     /// current selections unless `updateSelection` is called afterwards — a
     /// rebuild and a selection change race, so the caller re-applies them.
     func setMaps(_ maps: [Map]) {
@@ -206,7 +211,7 @@ final class MinimapView: NSView {
     static let viewportMinHeight: CGFloat = 4
 
     /// The viewport rectangle's fill — a translucent grey that reads as a
-    /// "you are here" band over the stripes without hiding them. Lightened in
+    /// "you are here" band over the cells without hiding them. Lightened in
     /// dark appearance so it lifts off the near-black paper.
     private static let viewportFill = NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
@@ -222,12 +227,31 @@ final class MinimapView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        layer?.backgroundColor = Self.background.cgColor
+        applyBackgroundColor()
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        // The layer background is a *resolved* CGColor, so the one baked in
+        // `init` — before the view is in a window — keeps the launch theme's
+        // pixels through a light/dark switch. Re-resolve it against the current
+        // appearance, the same way the Find bar and the results panel do
+        // (§3.1). The dynamic colours used in `draw` resolve per paint already.
+        applyBackgroundColor()
+        needsDisplay = true
+    }
+
+    /// Resolves the panel's paper colour against the current appearance and
+    /// paints the layer with it.
+    private func applyBackgroundColor() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = Self.background.cgColor
+        }
     }
 
     override func layout() {
@@ -240,27 +264,35 @@ final class MinimapView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
+        // Three passes rather than one per map: side-by-side draws a single
+        // viewport band across *both* maps, so the band cannot belong to a
+        // per-map pass. Splitting the passes also keeps the layering a per-map
+        // loop used to give for free — cells, then the band, then the selection
+        // on top of it, so a selection inside the viewport stays readable.
         for (index, map) in maps.enumerated() {
-            let area = area(forMapAt: index)
             // The map's content (cells, selection) sits in a 10 pt side frame
             // away from the panel's side edges; the viewport rectangle
             // deliberately runs edge to edge past it (§ N).
-            let content = contentArea(within: area, forMapAt: index)
-            drawByteGrid(of: map, in: content, dirtyRect: dirtyRect)
-            // The overlays mirror the map's actual rows: a small file's map
-            // fills only the top of the panel, so the viewport and selection
-            // are measured against the rows' real extent, not the panel height.
-            let contentHeight = contentHeight(of: map)
-            drawViewport(viewport: viewport(forMapAt: index), fileSize: map.fileSize,
-                         in: area, contentHeight: contentHeight, dirtyRect: dirtyRect)
+            drawByteGrid(of: map, in: contentArea(within: area(forMapAt: index), forMapAt: index),
+                         dirtyRect: dirtyRect)
+        }
+        drawViewports(dirtyRect: dirtyRect)
+        for (index, map) in maps.enumerated() {
+            // The overlay mirrors the map's actual rows: a small file's map
+            // fills only the top of the panel, so the selection is measured
+            // against the rows' real extent, not the panel height.
             drawSelection(map.selection, fileSize: map.fileSize,
-                          in: content, contentHeight: contentHeight, dirtyRect: dirtyRect)
+                          in: contentArea(within: area(forMapAt: index), forMapAt: index),
+                          contentHeight: contentHeight(of: map), dirtyRect: dirtyRect)
         }
         switch mapLayout {
         case .single:
             break
         case .sideBySide:
-            drawVerticalDivider(at: bounds.midX, in: dirtyRect)
+            // The band is a single rectangle *over* both maps, so the divider
+            // yields to it: a 1 pt line painted across the band would put back
+            // exactly the seam the shared band exists to remove (§ N).
+            drawVerticalDivider(at: bounds.midX, in: dirtyRect, yielding: viewportRects())
         case .stacked(let fraction):
             let y = min(max(fraction, 0), 1) * bounds.height
             drawHorizontalDivider(at: y, in: dirtyRect)
@@ -425,22 +457,79 @@ final class MinimapView: NSView {
         return CGFloat(map.rows.count) * (Self.byteHeight + Self.rowGap) - Self.rowGap
     }
 
-    /// Draws the pane's visible slice as a grey band over the map — the
-    /// minimap's "you are here" rectangle. The band runs edge to edge on every
-    /// side: full map width (poking past the padded cells) and the file
-    /// fraction against the map's `contentHeight`, so on a small file that
-    /// fills only the top of the panel the band hugs the rows instead of
-    /// stretching to the panel's height. A visible page of a huge file
-    /// measures less than a pixel, so the band is given at least
-    /// `viewportMinHeight` (kept inside the rows' extent) — the overlay still
-    /// reads as a hair-thin slice that moves as the pane scrolls. Drawn under
-    /// the selection overlay so a selection inside the viewport stays readable.
-    private func drawViewport(viewport: Range<UInt64>?, fileSize: UInt64,
-                              in area: NSRect, contentHeight: CGFloat, dirtyRect: NSRect) {
-        guard let viewport, !viewport.isEmpty, fileSize > 0, contentHeight > 0 else { return }
+    /// The "you are here" band(s) the panel draws, as rectangles — the geometry
+    /// `draw` fills. Internal so tests can assert the band's shape and position
+    /// without reading pixels.
+    ///
+    /// Side-by-side returns exactly ONE rectangle spanning the whole panel: the
+    /// panes scroll in lockstep by absolute offset (§9), so a band per map — cut
+    /// in two by the gutter between them — read as a broken overlay rather than
+    /// one viewport. The single band runs on a shared offset axis: the longer
+    /// file's size over its map's content height, which is the app's
+    /// absolute-offset rule applied to the panel. A consequence worth knowing:
+    /// when the two files differ in size, the band sits where those bytes are on
+    /// the longer file's map, and not where the shorter map draws them — the
+    /// maps' own rows still run on each file's own scale.
+    ///
+    /// Single-file and stacked return one band per map. Stacked cannot share a
+    /// band: its maps sit above each other, so the two bands are at different y
+    /// by construction and one rectangle over both would swallow the divider and
+    /// everything between them.
+    func viewportRects() -> [NSRect] {
+        switch mapLayout {
+        case .single, .stacked:
+            return maps.indices.compactMap { index in
+                viewportRect(viewport: viewport(forMapAt: index),
+                             fileSize: maps[index].fileSize,
+                             in: area(forMapAt: index),
+                             contentHeight: contentHeight(of: maps[index]))
+            }
+        case .sideBySide:
+            guard let reference = referenceMapIndex() else { return [] }
+            let rect = viewportRect(viewport: unifiedViewport(),
+                                    fileSize: maps[reference].fileSize,
+                                    in: bounds,
+                                    contentHeight: contentHeight(of: maps[reference]))
+            return rect.map { [$0] } ?? []
+        }
+    }
+
+    /// The map the shared band is measured against: the one holding the longer
+    /// file. Its map is also the taller one — more bytes means at least as many
+    /// hex rows, hence at least as many mini rows — so the band is measured over
+    /// the full offset axis of the comparison.
+    private func referenceMapIndex() -> Int? {
+        maps.indices.max(by: { maps[$0].fileSize < maps[$1].fileSize })
+    }
+
+    /// The visible byte range across both panes. Synchronized scrolling reports
+    /// the same offsets in both (§9), except the shorter file clamps its range
+    /// at its own EOF, so the union is what the two panes actually have on
+    /// screen. Robust if the two ever drift apart: the band then covers both.
+    private func unifiedViewport() -> Range<UInt64>? {
+        let ranges = viewports.compactMap { $0 }.filter { !$0.isEmpty }
+        guard !ranges.isEmpty else { return nil }
+        let lower = ranges.map(\.lowerBound).min() ?? 0
+        let upper = ranges.map(\.upperBound).max() ?? 0
+        guard lower < upper else { return nil }
+        return lower..<upper
+    }
+
+    /// One band's rectangle: the visible slice as a fraction of `fileSize`, laid
+    /// over `contentHeight` inside `area`. It runs edge to edge on every side —
+    /// the full width of `area` (poking past the padded cells) and the file
+    /// fraction against `contentHeight`, so on a small file that fills only the
+    /// top of the panel the band hugs the rows instead of stretching to the
+    /// panel's height. A visible page of a huge file measures less than a pixel,
+    /// so the band is given at least `viewportMinHeight` (kept inside the rows'
+    /// extent) — the overlay still reads as a hair-thin slice that moves as the
+    /// pane scrolls. Nil when there is nothing to draw.
+    private func viewportRect(viewport: Range<UInt64>?, fileSize: UInt64,
+                              in area: NSRect, contentHeight: CGFloat) -> NSRect? {
+        guard let viewport, !viewport.isEmpty, fileSize > 0, contentHeight > 0 else { return nil }
         let startFraction = CGFloat(min(viewport.lowerBound, fileSize)) / CGFloat(fileSize)
         let endFraction = CGFloat(min(viewport.upperBound, fileSize)) / CGFloat(fileSize)
-        guard endFraction > startFraction else { return }
+        guard endFraction > startFraction else { return nil }
         var y0 = area.minY + startFraction * contentHeight
         var y1 = area.minY + endFraction * contentHeight
         let minHeight = min(Self.viewportMinHeight, contentHeight)
@@ -448,10 +537,18 @@ final class MinimapView: NSView {
             y1 = min(y0 + minHeight, area.minY + contentHeight)
             y0 = max(y1 - minHeight, area.minY)
         }
-        let rect = NSRect(x: area.minX, y: y0, width: area.width, height: y1 - y0)
-        guard rect.maxY >= dirtyRect.minY, rect.minY <= dirtyRect.maxY else { return }
+        return NSRect(x: area.minX, y: y0, width: area.width, height: y1 - y0)
+    }
+
+    /// Fills the bands that intersect the repaint region. Drawn under the
+    /// selection overlay so a selection inside the viewport stays readable.
+    private func drawViewports(dirtyRect: NSRect) {
+        let rects = viewportRects()
+        guard !rects.isEmpty else { return }
         Self.viewportFill.setFill()
-        rect.fill()
+        for rect in rects where rect.maxY >= dirtyRect.minY && rect.minY <= dirtyRect.maxY {
+            rect.fill()
+        }
     }
 
     private func drawSelection(_ selection: Range<UInt64>?, fileSize: UInt64,
@@ -467,13 +564,29 @@ final class MinimapView: NSView {
         NSRect(x: area.minX, y: y0, width: area.width, height: y1 - y0).fill()
     }
 
-    private func drawVerticalDivider(at x: CGFloat, in dirtyRect: NSRect) {
+    /// Draws the 1 pt line between two side-by-side maps, broken wherever one of
+    /// `yielding` crosses it — the viewport band, which is drawn as one
+    /// rectangle over both maps and must read as unbroken. The line resumes
+    /// below the band, so the split between the maps is still legible.
+    private func drawVerticalDivider(at x: CGFloat, in dirtyRect: NSRect,
+                                     yielding gaps: [NSRect] = []) {
         guard x >= dirtyRect.minX - 1, x <= dirtyRect.maxX + 1 else { return }
         Self.dividerFill.setFill()
         let top = min(dirtyRect.maxY, bounds.maxY)
         let bottom = max(dirtyRect.minY, bounds.minY)
         guard top > bottom else { return }
-        NSRect(x: x, y: bottom, width: 1, height: top - bottom).fill()
+        // Walk down the line, emitting the segments the gaps leave behind. Only
+        // gaps that actually cross this x can break it.
+        var y = bottom
+        for gap in gaps.filter({ $0.minX <= x && $0.maxX >= x }).sorted(by: { $0.minY < $1.minY }) {
+            if gap.minY > y {
+                NSRect(x: x, y: y, width: 1, height: min(gap.minY, top) - y).fill()
+            }
+            y = max(y, gap.maxY)
+            if y >= top { return }
+        }
+        guard top > y else { return }
+        NSRect(x: x, y: y, width: 1, height: top - y).fill()
     }
 
     private func drawHorizontalDivider(at y: CGFloat, in dirtyRect: NSRect) {

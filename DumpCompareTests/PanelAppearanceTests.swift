@@ -49,4 +49,22 @@ final class PanelAppearanceTests: XCTestCase {
         XCTAssertGreaterThan(backgroundComponent(results.layer?.backgroundColor), 0.5,
                             "the results panel must return to the light plate in light mode")
     }
+
+    /// The minimap paints its paper onto a layer the same way, from
+    /// `textBackgroundColor` — white in light, near-black in dark — so it needs
+    /// the same re-resolve or the panel keeps the launch theme's paper.
+    func testMinimapBackgroundFollowsAppearance() {
+        let minimap = MinimapView(frame: NSRect(x: 0, y: 0, width: 120, height: 400))
+        defer { minimap.removeFromSuperview() }
+
+        minimap.appearance = NSAppearance(named: .darkAqua)
+        minimap.viewDidChangeEffectiveAppearance()
+        XCTAssertLessThan(backgroundComponent(minimap.layer?.backgroundColor), 0.5,
+                          "the minimap must use the dark paper in dark mode")
+
+        minimap.appearance = NSAppearance(named: .aqua)
+        minimap.viewDidChangeEffectiveAppearance()
+        XCTAssertGreaterThan(backgroundComponent(minimap.layer?.backgroundColor), 0.5,
+                            "the minimap must return to the light paper in light mode")
+    }
 }
