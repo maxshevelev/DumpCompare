@@ -53,13 +53,30 @@ final class FindBarView: NSView {
     /// active pane's results panel (§11).
     private let findAllButton = NSButton()
 
-    /// Whether this search matches bytes exactly. Hex patterns are ALWAYS
-    /// exact: the toggle is disabled for hex, but its state (off by default =
-    /// case-insensitive, like TextEdit) would otherwise leak in and fold the
-    /// hex bytes — "4545" (= EE) matching "Ee"/"eE" (§11).
+    /// Whether this search matches bytes exactly. Only the encodings whose case
+    /// rules a *byte* fold can model are ever matched case-insensitively; for the
+    /// rest this is always true, because the toggle's remembered state (off by
+    /// default = case-insensitive, like TextEdit) would otherwise leak in and
+    /// fold bytes that must not fold (§11).
     var isCaseSensitive: Bool {
-        guard currentEncoding() != .hex else { return true }
+        guard Self.supportsCaseFolding(currentEncoding()) else { return true }
         return caseButton.state == .on
+    }
+
+    /// Whether case-insensitive matching is meaningful for `encoding`.
+    ///
+    /// The scan folds ASCII letter bytes, which models case exactly for a
+    /// single-byte ASCII-compatible encoding and nothing else:
+    /// - hex is a byte sequence, so folding would make "41" match the byte 0x61
+    ///   ("4545" = EE would match "Ee");
+    /// - UTF-16 stores two bytes per code unit and the fold cannot tell them
+    ///   apart, so a search for U+6100 (61 00) would also match U+4100 (41 00).
+    /// Internal so the tests can pin the rule per encoding.
+    static func supportsCaseFolding(_ encoding: SearchEncoding) -> Bool {
+        switch encoding {
+        case .ascii, .utf8: return true
+        case .hex, .utf16LE, .utf16BE: return false
+        }
     }
 
     override init(frame frameRect: NSRect) {
@@ -470,9 +487,11 @@ final class FindBarView: NSView {
     }
 
     private func updateCaseButtonEnabled() {
-        // Case sensitivity is meaningful only for text encodings; hex digits
-        // are already parsed case-insensitively, so the toggle is disabled.
-        caseButton.isEnabled = currentEncoding() != .hex
+        // Only offered where a byte fold models the encoding's case rules
+        // (see `supportsCaseFolding`): hex digits are already parsed
+        // case-insensitively, and UTF-16 would fold the high byte of a code
+        // unit, matching unrelated characters.
+        caseButton.isEnabled = Self.supportsCaseFolding(currentEncoding())
     }
 
     // MARK: - Display

@@ -575,6 +575,18 @@ Text search semantics:
 - Do not add BOM automatically unless the user explicitly includes it.
 - Search is binary-exact over encoded bytes.
 
+Case-insensitive matching:
+
+- Offered for ASCII and UTF-8 only, and withheld (the control disabled, the
+  search forced exact) for hex and for UTF-16.
+- The scan folds ASCII letter bytes, which models case exactly for a
+  single-byte ASCII-compatible encoding and nothing else: for hex it would
+  make the pattern 41 match the byte 61, and for UTF-16 it would fold the
+  high byte of a code unit, so a search for U+6100 (61 00) would also match
+  U+4100 (41 00).
+- A remembered "case insensitive" state must never leak into an encoding that
+  cannot support it.
+
 Search navigation:
 
 - Find Next.
@@ -584,7 +596,25 @@ Search navigation:
   - select the matched byte range;
   - synchronize the other pane in comparison mode;
   - ensure match is visible.
-- If no match is found, show status message.
+- If no match is found, show a status message. The scan is directional and
+  does not wrap, so the message must say which way it looked — otherwise a
+  caret past the last match is indistinguishable from a file with no match at
+  all.
+
+Search All (results panel):
+
+- Every occurrence is listed in a panel belonging to the pane that was
+  searched, filling as the scan streams matches in rather than at the end.
+- The panel caps how many results it lists. The header must distinguish a
+  search that filled the cap exactly (a complete result) from one that had
+  more matches than the cap (reported as too many results).
+- The panel has its own close control, which stops the scan behind it.
+  Dismissing the Find bar must not close the panel or cancel its scan; a
+  change of window mode must, since the pane it belongs to is rebuilt.
+- Starting another Search All supersedes the previous one: the older scan must
+  not touch the newer one's panel, nor disable its close control.
+- Excerpts and offsets are read from the pane's live content, so they follow
+  edits made while the panel is open.
 
 Optional but recommended:
 

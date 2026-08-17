@@ -43,7 +43,12 @@ final class SearchResultsView: NSView {
     /// Decodes the excerpt bytes into the same characters the hex dump shows.
     private var textDecoder: (any TextDecoder)?
     /// The pane's file size, for clamping excerpt windows.
-    private var fileSize: UInt64 = 0
+    /// Reads the pane's current file size. A closure, not a snapshot: the panel
+    /// stays open across edits, and a size taken once would clamp the excerpt
+    /// windows (and size the offset column) against a length the file no longer
+    /// has (§11).
+    private var fileSizeProvider: (() -> UInt64)?
+    private var fileSize: UInt64 { fileSizeProvider?() ?? 0 }
 
     /// How many leading/trailing bytes an excerpt adds around a match.
     private static let excerptPadding: UInt64 = 8
@@ -205,11 +210,11 @@ final class SearchResultsView: NSView {
     func configure(matches: [Range<UInt64>],
                    byteProvider: @escaping (UInt64, Int) -> [UInt8],
                    textDecoder: any TextDecoder,
-                   fileSize: UInt64) {
+                   fileSize: @escaping () -> UInt64) {
         self.matches = matches
         self.byteProvider = byteProvider
         self.textDecoder = textDecoder
-        self.fileSize = fileSize
+        self.fileSizeProvider = fileSize
         isSearching = false
         isTruncated = false
         updateHeader()
@@ -221,9 +226,14 @@ final class SearchResultsView: NSView {
     /// results, so the table fills while the scan is still running (§11).
     func append(matches newMatches: [Range<UInt64>]) {
         guard !newMatches.isEmpty else { return }
+        let first = matches.count
         matches.append(contentsOf: newMatches)
         updateHeader()
-        tableView.reloadData()
+        // Insert just the new rows. A `reloadData()` per streamed match rebuilt
+        // every visible row — and re-read its bytes — on each of up to a
+        // thousand appends; inserting costs only the rows that arrived (§11).
+        tableView.insertRows(at: IndexSet(integersIn: first..<matches.count),
+                             withAnimation: [])
     }
 
     /// Marks whether a Search All is still scanning. While true the header's
@@ -259,6 +269,7 @@ final class SearchResultsView: NSView {
     func clear() {
         matches = []
         byteProvider = nil
+        fileSizeProvider = nil
         textDecoder = nil
         isSearching = false
         isTruncated = false

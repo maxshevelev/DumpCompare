@@ -175,6 +175,14 @@ final class MainViewController: NSViewController {
     func apply(mode: WindowMode) {
         self.mode = mode
         unwireComparison()
+        // The panes are about to be rebuilt, so an in-flight Search All would
+        // stream into an orphaned view (and its × would be gone). Stop it here:
+        // `hideFindBar` deliberately leaves a Search All running (§11).
+        if searchAllPane != nil {
+            findTask?.cancel()
+            findOperation?.finish()
+            searchAllPane = nil
+        }
         // Panes are rebuilt on every apply, so the viewport mirrors must start
         // empty and fill in as the new panes report their visible ranges (§19).
         minimapViewports.removeAll()
@@ -1547,8 +1555,13 @@ final class MainViewController: NSViewController {
         findBar.isHidden = true
         contentTopToFindBar.isActive = false
         contentTopToView.isActive = true
-        findTask?.cancel()
-        findOperation?.finish()
+        // A Search All outlives the bar: its results live in the pane's own
+        // panel, with its own × to stop it, so dismissing the bar must not wipe
+        // them (§11). A single find has nothing to leave behind, so it stops.
+        if searchAllPane == nil {
+            findTask?.cancel()
+            findOperation?.finish()
+        }
         focusActiveHexView()
     }
 
@@ -1572,7 +1585,12 @@ final class MainViewController: NSViewController {
             operation.finish()
             guard !Task.isCancelled else { return }
             if !found {
-                self.showFindMessage("No match found.")
+                // The scan is directional and does not wrap, so say which way it
+                // looked — "No match found." left the user unable to tell an
+                // empty file from a caret past the last match (§11).
+                self.showFindMessage(direction == .forward
+                    ? "No matches after the cursor."
+                    : "No matches before the cursor.")
             }
         }
     }
@@ -1658,11 +1676,14 @@ final class MainViewController: NSViewController {
                 let count = try await self.streamFindAll(pattern: pattern, caseSensitive: caseSensitive,
                                                          operation: operation, into: paneView)
                 // The scan completed: settle the header's count (drop the "…"),
-                // or — when it stopped at the match cap — say the search
-                // returned too many results instead of a final count (§11).
+                // or — when there turned out to be more matches than the panel
+                // shows — say the search returned too many results instead of a
+                // final count (§11). The scan is asked for one match beyond the
+                // display cap precisely so this is exact: a file with exactly
+                // `defaultMaxResults` matches used to be labelled "too many".
                 if self.searchAllGeneration == generation, let paneView {
                     let view = paneView.searchResultsView
-                    if count >= SearchEngine.defaultMaxResults {
+                    if count > SearchEngine.defaultMaxResults {
                         view.setTruncated(true)
                     }
                     view.setSearching(false)
@@ -1680,9 +1701,15 @@ final class MainViewController: NSViewController {
                 }
             }
             operation.finish()
-            // The search is over (completed, cancelled, or superseded); a later
-            // close of a results panel must not cancel anything else.
-            self.searchAllPane = nil
+            // This search is over (completed, cancelled, or superseded); a later
+            // close of a results panel must not cancel anything else. Guarded by
+            // the generation like every other write here: a *superseded* search
+            // reaches this line after the newer one has already claimed
+            // `searchAllPane`, and clearing it then would leave the newer
+            // search's panel unable to cancel it (its × checks this pointer).
+            if self.searchAllGeneration == generation {
+                self.searchAllPane = nil
+            }
         }
         findTask = task
     }
@@ -1715,15 +1742,21 @@ final class MainViewController: NSViewController {
         guard let paneView, let storage = paneView.viewModel.byteStorage else {
             throw CancellationError()
         }
+        // One past the display cap: the extra match is never shown, it only
+        // proves there were more, so "too many results" is exact rather than
+        // inferred from hitting the cap.
+        let displayCap = SearchEngine.defaultMaxResults
         let stream = SearchEngine.findAllStream(
             pattern: pattern.bytes, in: storage, caseSensitive: caseSensitive,
+            maxResults: displayCap + 1,
             shouldCancel: { Task.isCancelled },
             progress: { operation.report($0) }
         )
         var count = 0
         for try await match in stream {
-            paneView.searchResultsView.append(matches: [match])
             count += 1
+            guard count <= displayCap else { break }
+            paneView.searchResultsView.append(matches: [match])
         }
         // Distinguish a finished scan from a cancelled one: on this platform a
         // cancelled task's `next()` can return nil (a normal end) instead of

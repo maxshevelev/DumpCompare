@@ -615,7 +615,7 @@ final class FilePaneView: NSView {
                 return (try? storage.read(at: offset, length: length)) ?? []
             },
             textDecoder: viewModel.textDecoder,
-            fileSize: viewModel.fileSize)
+            fileSize: { [weak viewModel] in viewModel?.fileSize ?? 0 })
         searchResultsSplit.resultsPanelVisible = true
         applySearchResultsHeight()
     }

@@ -142,7 +142,7 @@ final class FindFlowTests: XCTestCase {
     }
 
     /// Whether any text field in the window shows `text` (e.g. a transient
-    /// "No match found." in the pane's status bar).
+    /// "No matches after the cursor." in the pane's status bar).
     private func hasStatus(_ text: String, in window: NSWindow) -> Bool {
         descendants(of: window.contentView!, NSTextField.self).contains { $0.stringValue == text }
     }
@@ -225,8 +225,8 @@ final class FindFlowTests: XCTestCase {
         combo.stringValue = "FF FF FF FF FF"
         try clickFindNext(window)
 
-        XCTAssertTrue(pumpUntil(2) { self.hasStatus("No match found.", in: window) },
-                      "the status bar must show No match found.")
+        XCTAssertTrue(pumpUntil(2) { self.hasStatus("No matches after the cursor.", in: window) },
+                      "the status bar must say there is nothing after the cursor")
         XCTAssertFalse(try findBar(window).isHidden,
                        "the find bar must stay open when there is no match")
     }
@@ -581,7 +581,7 @@ final class FindFlowTests: XCTestCase {
         // Case-sensitive "hI" exists nowhere → No match found.
         combo.stringValue = "hI"
         try clickFindNext(window)
-        XCTAssertTrue(pumpUntil(2) { self.hasStatus("No match found.", in: window) },
+        XCTAssertTrue(pumpUntil(2) { self.hasStatus("No matches after the cursor.", in: window) },
                       "case-sensitive search must not match mixed case")
     }
 
@@ -772,8 +772,16 @@ final class FindFlowTests: XCTestCase {
     /// its "searching" state, and the count/table settle once the scan finishes.
     /// Previously the panel only appeared after the whole scan completed.
     func testSearchAllShowsPanelImmediately() throws {
-        let bytes: [UInt8] = [0xDE, 0xAD, 0x00, 0x00, 0x00, 0x00, 0xDE, 0xAD, 0x00, 0x00,
-                              0x00, 0x00, 0xDE, 0xAD, 0x00, 0x00, 0x00, 0x00, 0xDE, 0xAD]
+        // Big enough that the scan cannot finish inside the click: `performClick`
+        // spins the run loop for the button's highlight, and over a 20-byte file
+        // the scan used to complete there — so the "still searching" assertion
+        // below failed about half the time. Several default 1 MB chunks make it
+        // deterministic.
+        var bytes = [UInt8](repeating: 0x00, count: 6 * SearchEngine.defaultChunkSize)
+        for i in stride(from: 0, to: bytes.count, by: SearchEngine.defaultChunkSize) {
+            bytes[i] = 0xDE
+            bytes[i + 1] = 0xAD
+        }
         let (controller, window, url) = try makeController(bytes)
         defer { cleanup(controller, url) }
 
@@ -794,8 +802,8 @@ final class FindFlowTests: XCTestCase {
         // It fills dynamically and settles once the scan completes.
         XCTAssertTrue(pumpUntil(5) { !paneView.searchResultsView.isSearching },
                       "the scan must eventually finish")
-        XCTAssertEqual(paneView.searchResultsView.tableView.numberOfRows, 4,
-                       "one row per match after the scan settles")
+        XCTAssertEqual(paneView.searchResultsView.tableView.numberOfRows, 6,
+                       "one row per match after the scan settles — one per chunk")
     }
 
     /// The panel's count and table update live as a search streams in: each
@@ -1242,10 +1250,123 @@ final class FindFlowTests: XCTestCase {
                           "a long search must not stall the main thread")
 
         // The scan completes: the no-match message shows and the strip hides.
-        XCTAssertTrue(pumpUntil(30) { self.hasStatus("No match found.", in: window) },
+        XCTAssertTrue(pumpUntil(30) { self.hasStatus("No matches after the cursor.", in: window) },
                       "the full-file scan must complete")
         XCTAssertTrue(pumpUntil(5) { paneView.operationView.isHidden },
                       "the strip must hide once the search finishes")
+    }
+
+
+    // MARK: - Case folding is offered only where it is correct (§11)
+
+    /// The scan folds ASCII letter *bytes*, which models case only for a
+    /// single-byte ASCII-compatible encoding. The toggle must therefore be
+    /// offered for ASCII and UTF-8 and withheld for hex and both UTF-16s.
+    func testCaseToggleOfferedOnlyForASCIIAndUTF8() throws {
+        XCTAssertTrue(FindBarView.supportsCaseFolding(.ascii))
+        XCTAssertTrue(FindBarView.supportsCaseFolding(.utf8))
+        XCTAssertFalse(FindBarView.supportsCaseFolding(.hex))
+        XCTAssertFalse(FindBarView.supportsCaseFolding(.utf16LE))
+        XCTAssertFalse(FindBarView.supportsCaseFolding(.utf16BE))
+
+        let bytes: [UInt8] = [0x41, 0x42]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+        controller.findPattern()
+        let (_, encoding, _, caseToggle) = try barControls(window)
+
+        for (mode, expected) in [(SearchEncoding.utf8, true), (.utf16LE, false),
+                                 (.utf16BE, false), (.hex, false)] {
+            encoding.selectItem(at: SearchEncoding.allCases.firstIndex(of: mode)!)
+            encoding.sendAction(encoding.action, to: encoding.target)
+            XCTAssertEqual(caseToggle.isEnabled, expected,
+                           "the toggle's availability for \(mode)")
+        }
+    }
+
+    /// A UTF-16 search stays byte-exact whatever the toggle remembers. Folding a
+    /// code unit's high byte made a search for U+6100 (61 00) also match
+    /// U+4100 (41 00) — a different character entirely.
+    func testUTF16SearchIsExactDespiteTheRememberedCaseState() throws {
+        // The file holds only U+4100 in UTF-16BE.
+        let (controller, window, url) = try makeController([0x41, 0x00])
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let (combo, encoding, _, caseToggle) = try barControls(window)
+        encoding.selectItem(at: SearchEncoding.allCases.firstIndex(of: .utf16BE)!)
+        encoding.sendAction(encoding.action, to: encoding.target)
+        XCTAssertFalse(caseToggle.isEnabled, "no case folding is offered for UTF-16")
+
+        combo.stringValue = "\u{6100}"
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(2) { self.hasStatus("No matches after the cursor.", in: window) },
+                      "U+6100 must not match U+4100")
+        XCTAssertTrue(controller.windowModel.pane1.hexSelection().isEmpty,
+                      "and nothing is selected")
+    }
+
+    // MARK: - "Too many results" is exact (§11)
+
+    /// A file with exactly as many matches as the panel shows is complete, not
+    /// truncated: the count used to be compared with `>=` against the cap, so an
+    /// exact hit was labelled "too many results".
+    func testExactlyTheResultCapIsNotReportedAsTruncated() throws {
+        let cap = SearchEngine.defaultMaxResults
+        // "AB" repeated `cap` times: exactly `cap` non-overlapping matches.
+        let bytes = [UInt8](repeating: 0, count: 0) + (0..<cap).flatMap { _ -> [UInt8] in [0x41, 0x42] }
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let view = try runSearchAll("41 42", in: window)
+        XCTAssertEqual(view.tableView.numberOfRows, cap, "every match is listed")
+        let header = try XCTUnwrap(descendants(of: view, NSTextField.self).first {
+            $0.stringValue.hasPrefix("Search results")
+        })
+        XCTAssertEqual(header.stringValue, "Search results (\(cap))",
+                       "an exact cap is a finished search, not a truncated one")
+    }
+
+    /// One match past the cap is truncated: the panel shows the cap and says so.
+    func testMoreThanTheResultCapIsReportedAsTruncated() throws {
+        let cap = SearchEngine.defaultMaxResults
+        let bytes = (0..<(cap + 1)).flatMap { _ -> [UInt8] in [0x41, 0x42] }
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let view = try runSearchAll("41 42", in: window)
+        XCTAssertEqual(view.tableView.numberOfRows, cap, "the panel shows at most the cap")
+        let header = try XCTUnwrap(descendants(of: view, NSTextField.self).first {
+            $0.stringValue.hasPrefix("Search results")
+        })
+        XCTAssertEqual(header.stringValue, "Search results (\(cap)) — too many results")
+    }
+
+    // MARK: - The results panel outlives the Find bar (§11)
+
+    /// The results live in the pane's own panel, with its own ×, so dismissing
+    /// the Find bar must leave them alone.
+    func testClosingTheFindBarKeepsTheResultsPanel() throws {
+        let bytes: [UInt8] = [0xDE, 0xAD, 0x00, 0xDE, 0xAD, 0x00]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let view = try runSearchAll("DE AD", in: window)
+        XCTAssertEqual(view.tableView.numberOfRows, 2)
+
+        let (_, _, done, _) = try barControls(window)
+        done.performClick(nil)
+        // `findBar(_:)` only finds a *visible* bar, so look it up directly.
+        let bar = try XCTUnwrap(descendants(of: window.contentView!, FindBarView.self).first)
+        XCTAssertTrue(bar.isHidden, "the bar is dismissed")
+
+        let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
+        XCTAssertTrue(paneView.searchResultsSplit.resultsPanelVisible,
+                      "the results panel stays open")
+        XCTAssertEqual(view.tableView.numberOfRows, 2, "with its rows intact")
     }
 
 }

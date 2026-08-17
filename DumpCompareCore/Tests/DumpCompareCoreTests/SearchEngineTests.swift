@@ -472,4 +472,55 @@ private final class Flag: @unchecked Sendable {
     private var _value = false
     var value: Bool { _value }
     func set() { _value = true }
+
+    // MARK: - Progress contract (0...1)
+
+    /// Windows overlap by `patternLength - 1`, so summing their lengths
+    /// overshoots the file: the forward scan used to report up to 1.36.
+    func testForwardProgressNeverExceedsOne() throws {
+        let data = MemoryBackedStorage(bytes: [UInt8](repeating: 0x00, count: 100))
+        var reported: [Double] = []
+        _ = try SearchEngine.find(pattern: [0xFF, 0xFF, 0xFF, 0xFF, 0xFF], in: data,
+                                  chunkSize: 10, progress: { reported.append($0) })
+        XCTAssertFalse(reported.isEmpty, "a multi-chunk scan reports progress")
+        XCTAssertLessThanOrEqual(reported.max() ?? 0, 1.0, "progress stays within its contract")
+        XCTAssertGreaterThanOrEqual(reported.min() ?? 1, 0.0)
+        XCTAssertEqual(reported.last, 1.0, "a completed scan ends at 100 %")
+    }
+
+    /// A backward search covers `[0, caret)`, so its progress must be measured
+    /// over that span. Measured against the whole file it opened at 91 % for a
+    /// caret at 10 % and crawled to 100 %.
+    func testBackwardProgressMeasuresTheSearchedSpan() throws {
+        let data = MemoryBackedStorage(bytes: [UInt8](repeating: 0x00, count: 1000))
+        var reported: [Double] = []
+        _ = try SearchEngine.find(pattern: [0xFF], in: data, from: 100, direction: .backward,
+                                  chunkSize: 10, progress: { reported.append($0) })
+        XCTAssertFalse(reported.isEmpty)
+        XCTAssertLessThan(reported.first ?? 1, 0.2,
+                          "a scan that has just begun must not report near-completion")
+        XCTAssertLessThanOrEqual(reported.max() ?? 0, 1.0)
+        XCTAssertEqual(reported.last, 1.0, "and it still ends at 100 %")
+    }
+
+    // MARK: - Byte folding is byte-level (§11)
+
+    /// `find` is encoding-blind, so a caller that asks for case-insensitive
+    /// matching gets ASCII letter *bytes* folded wherever they sit. This pins the
+    /// hazard the callers must avoid: the Find bar only offers case-insensitive
+    /// matching for ASCII and UTF-8 for exactly this reason.
+    func testCaseInsensitiveFoldingIsByteLevel() throws {
+        let data = MemoryBackedStorage(bytes: [0x41, 0x00])   // UTF-16BE U+4100
+
+        // A UTF-16BE pattern for U+6100 is 61 00 — a different character.
+        let pattern = try SearchEngine.parsePattern("\u{6100}", encoding: .utf16BE)
+        XCTAssertEqual(pattern.bytes, [0x61, 0x00])
+
+        XCTAssertNil(try SearchEngine.find(pattern: pattern.bytes, in: data, caseSensitive: true),
+                     "exact matching keeps the two characters apart")
+        XCTAssertNotNil(try SearchEngine.find(pattern: pattern.bytes, in: data, caseSensitive: false),
+                        "folding cannot tell a code unit's high byte from a letter — "
+                        + "which is why UTF-16 is never searched case-insensitively")
+    }
+
 }

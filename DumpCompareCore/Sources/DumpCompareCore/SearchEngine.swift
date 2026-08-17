@@ -67,11 +67,15 @@ public enum SearchEngine {
     /// - Forward: the first match whose start is `>= from`.
     /// - Backward: the last match whose end is `<= from`.
     ///
-    /// When `caseSensitive` is false, ASCII letters compare equal regardless of
-    /// case (a file "Hi" matches a pattern "HI"). This is exactly right for the
-    /// text encodings — ASCII, UTF-8's ASCII subset, and the ASCII letters of
-    /// UTF-16 — and never affects hex patterns or non-ASCII letters (é, ж, …),
-    /// whose bytes are always matched exactly.
+    /// When `caseSensitive` is false, ASCII letter *bytes* compare equal
+    /// regardless of case (a file "Hi" matches a pattern "HI"). The folding is
+    /// byte-level and encoding-blind — this function only ever sees bytes — so
+    /// it is correct only for single-byte ASCII-compatible patterns (ASCII,
+    /// UTF-8). Callers must pass `caseSensitive: true` for anything else:
+    /// - hex, where folding would make the pattern 41 match the byte 61;
+    /// - UTF-16, where folding hits the high byte of a code unit, so a pattern
+    ///   for U+6100 (61 00) would match U+4100 (41 00).
+    /// Non-ASCII letters (é, ж, …) are always matched exactly.
     ///
     /// Returns `nil` when there is no match (or the pattern cannot fit). Throws
     /// `CancellationError` when `shouldCancel` returns true between chunks.
@@ -114,8 +118,9 @@ public enum SearchEngine {
     /// Finds every non-overlapping occurrence of `pattern` in `storage`, in
     /// file order (the Search All feature, §11).
     ///
-    /// Shares `find`'s byte-domain semantics — case-insensitive ASCII folding
-    /// for text encodings, exact bytes for hex — and its chunked scanning: each
+    /// Shares `find`'s byte-domain semantics — including the caller's duty to
+    /// ask for exact matching wherever byte-level folding does not model the
+    /// encoding's case rules — and its chunked scanning: each
     /// window is `chunkSize + patternLength - 1` bytes so a match crossing a
     /// boundary is still found, and only matches starting in a window's fresh
     /// portion are recorded (a match starting in the overlap is found by the
@@ -255,6 +260,10 @@ public enum SearchEngine {
     /// unchanged. Two bytes compare equal case-insensitively exactly when their
     /// folded forms are equal, so folding both sides lets the case-insensitive
     /// scan reuse `Data.range(of:)` instead of a byte-by-byte comparison.
+    ///
+    /// This is a byte operation with no notion of the encoding above it: any
+    /// byte in 0x41...0x5A folds, wherever it sits. That is why case-insensitive
+    /// matching is offered only for ASCII and UTF-8 (see `find`).
     static func foldByte(_ b: UInt8) -> UInt8 {
         let lower = b | 0x20
         return (lower >= 0x61 && lower <= 0x7A) ? lower : b
@@ -351,7 +360,10 @@ public enum SearchEngine {
             }
 
             cursor += UInt64(chunkSize)
-            processed += UInt64(bytes.count)
+            // Windows overlap by `patternLength - 1`, so summing their lengths
+            // overshoots the file (it reported up to 1.36); report the ground
+            // actually covered instead.
+            processed = min(cursor, size)
             if size > 0 { progress(Double(processed) / Double(size)) }
         }
         if size > 0 { progress(1) }
@@ -374,6 +386,10 @@ public enum SearchEngine {
         // caret is excluded — otherwise Find Previous from a caret sitting on a
         // match would keep re-finding that same match instead of moving back.
         let end = min(from, size)
+        // Progress is measured over the region actually being searched — [0, end)
+        // — not the whole file: a backward search from a caret near the start
+        // otherwise opened at 91 % and crawled to 100 %.
+        let span = end
         let windowLength = UInt64(chunkSize) + patternLength - 1
         var endExclusive = end
 
@@ -392,9 +408,9 @@ public enum SearchEngine {
 
             let step = UInt64(chunkSize)
             endExclusive = endExclusive > step ? endExclusive - step : 0
-            if size > 0 { progress(1 - Double(endExclusive) / Double(size)) }
+            if span > 0 { progress(Double(span - endExclusive) / Double(span)) }
         }
-        if size > 0 { progress(1) }
+        if span > 0 { progress(1) }
         return nil
     }
 }
