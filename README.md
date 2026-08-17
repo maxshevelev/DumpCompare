@@ -4,6 +4,9 @@ A macOS hex editor and binary-file comparator, written in Swift/AppKit for macOS
 
 DumpCompare grew out of bench work on BIOS and EC dumps, so the comparison model stays deliberately simple: a byte at offset N is compared to the byte at offset N, nothing more. That is exactly the question a repair bench asks — *is this chip's content the same as the one that works?* — and the app is built around answering it fast, on files of the size a programmer clip actually pulls off a board.
 
+<img width="1516" height="1049" alt="Screenshot 2026-08-18 at 00 21 57" src="https://github.com/user-attachments/assets/d90588f0-0dee-4b7b-b408-958588a70e7d" />
+
+
 ## Download
 
 [**DumpCompare 0.1**](https://github.com/maxshevelev/DumpCompare/releases/latest) — a universal `.dmg` (Apple silicon and Intel), macOS 14 or later.
