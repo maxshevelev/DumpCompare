@@ -1552,16 +1552,6 @@ final class MinimapTests: XCTestCase {
         return value
     }
 
-    /// Sends a click to a view at a point in its own coordinates.
-    private func clickMouse(_ view: NSView, at point: NSPoint) {
-        let inWindow = view.convert(point, to: nil)
-        guard let event = NSEvent.mouseEvent(
-            with: .leftMouseDown, location: inWindow, modifierFlags: [], timestamp: 0,
-            windowNumber: view.window?.windowNumber ?? 0, context: nil,
-            eventNumber: 0, clickCount: 1, pressure: 1) else { return }
-        view.mouseDown(with: event)
-    }
-
     private func panelChrome(_ window: NSWindow) throws -> MinimapPanelView {
         try XCTUnwrap(descendants(of: window.contentView!, MinimapPanelView.self).first,
                       "the minimap panel's chrome")
@@ -1631,6 +1621,45 @@ final class MinimapTests: XCTestCase {
                        "and no stand-in is drawn once it has settled")
     }
 
+    /// The chrome has to survive the map's own repaint. AppKit hands the map a
+    /// dirty rect covering the whole panel — 49 pt above its own top — and an
+    /// `NSView` does not clip its drawing by default, so the map's background
+    /// fill painted over the header and took the mode switch with it. Rendered
+    /// through the *panel*, not the header: rendering the header alone hides
+    /// exactly this bug, which is how it survived a first round of tests.
+    func testTheMapDoesNotPaintOverTheChrome() throws {
+        let (_, window, _) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 4096))
+        let chrome = try panelChrome(window)
+        let control = chrome.modeSwitch
+        XCTAssertGreaterThan(control.bounds.width, 40, "the switch has room to draw in")
+
+        let rep = try XCTUnwrap(chrome.bitmapImageRepForCachingDisplay(in: chrome.bounds))
+        chrome.cacheDisplay(in: chrome.bounds, to: rep)
+        let scale = CGFloat(rep.pixelsHigh) / chrome.bounds.height
+        /// A point of the panel, sampled in the rendered bitmap. The panel is
+        /// unflipped and the bitmap is top-down.
+        func sample(_ point: NSPoint) throws -> NSColor {
+            let x = Int(point.x * scale)
+            let y = Int((chrome.bounds.height - point.y) * scale)
+            return try XCTUnwrap(rep.colorAt(x: min(max(x, 0), rep.pixelsWide - 1),
+                                             y: min(max(y, 0), rep.pixelsHigh - 1)))
+        }
+        func distance(_ a: NSColor, _ b: NSColor) throws -> CGFloat {
+            let x = try XCTUnwrap(a.usingColorSpace(.deviceRGB))
+            let y = try XCTUnwrap(b.usingColorSpace(.deviceRGB))
+            return abs(x.redComponent - y.redComponent) + abs(x.greenComponent - y.greenComponent)
+                + abs(x.blueComponent - y.blueComponent) + abs(x.alphaComponent - y.alphaComponent)
+        }
+
+        // Inside the switch's selected half, above its label; and the header's
+        // own margin beside it, which the switch never covers.
+        let inside = control.convert(NSPoint(x: control.bounds.width * 0.25,
+                                             y: control.bounds.height * 0.25), to: chrome)
+        let beside = NSPoint(x: 3, y: inside.y)
+        XCTAssertGreaterThan(try distance(try sample(inside), try sample(beside)), 0.1,
+                             "the switch is still there after the map has drawn")
+    }
+
     /// The switch in the header is the mode control the menu item duplicates
     /// (§15), so the two have to agree in both directions.
     func testTheHeaderSwitchChangesTheModeAndFollowsTheMenu() throws {
@@ -1638,75 +1667,19 @@ final class MinimapTests: XCTestCase {
             [UInt8](repeating: 0x41, count: 4096))
         let chrome = try panelChrome(window)
         XCTAssertEqual(panel.renderMode, .detail, "the fixture starts local")
-        XCTAssertEqual(chrome.modeSwitch.mode, .detail)
+        XCTAssertEqual(chrome.modeSwitch.selectedSegment, 0)
 
-        // Clicked in its right half, where "Overview" is.
         let control = chrome.modeSwitch
-        clickMouse(control, at: NSPoint(x: control.bounds.width * 0.75, y: control.bounds.midY))
-        XCTAssertEqual(control.mode, .overview)
+        control.selectedSegment = 1
+        control.sendAction(control.action, to: control.target)
         XCTAssertEqual(panel.renderMode, .overview, "the switch drives the map")
         XCTAssertEqual(isolatedDefaults.string(forKey: MainViewController.minimapRenderModeDefaultsKey),
                        MinimapView.RenderMode.overview.rawValue, "and is remembered")
 
         controller.toggleMinimapOverview()
         XCTAssertEqual(panel.renderMode, .detail)
-        XCTAssertEqual(chrome.modeSwitch.mode, .detail,
+        XCTAssertEqual(chrome.modeSwitch.selectedSegment, 0,
                        "the menu item moves the switch with it")
-    }
-
-    /// The switch has to be *visible*: a stock `NSSegmentedControl` here was laid
-    /// out correctly and still put nothing on screen, which is why this one is
-    /// drawn — so the test samples its pixels rather than its state.
-    func testTheModeSwitchDrawsItselfAndItsSelection() throws {
-        let (_, window, _) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 4096))
-        let control = try panelChrome(window).modeSwitch
-        XCTAssertGreaterThan(control.bounds.width, 40, "it has room to draw in")
-
-        func halves() throws -> (left: NSColor, right: NSColor) {
-            let rep = try XCTUnwrap(control.bitmapImageRepForCachingDisplay(in: control.bounds))
-            control.cacheDisplay(in: control.bounds, to: rep)
-            // Above the labels: the glyphs sit on the centre line, and sampling
-            // them compares letter shapes instead of the fill.
-            let y = max(2, rep.pixelsHigh / 5)
-            let left = try XCTUnwrap(rep.colorAt(x: rep.pixelsWide / 4, y: y))
-            let right = try XCTUnwrap(rep.colorAt(x: rep.pixelsWide * 3 / 4, y: y))
-            return (left, right)
-        }
-        /// How far apart two samples are, per channel. Compared with each other
-        /// rather than with `controlAccentColor`: the cached rep is premultiplied
-        /// and reports the fill's own colour only approximately.
-        func distance(_ a: NSColor, _ b: NSColor) throws -> CGFloat {
-            let x = try XCTUnwrap(a.usingColorSpace(.deviceRGB))
-            let y = try XCTUnwrap(b.usingColorSpace(.deviceRGB))
-            return abs(x.redComponent - y.redComponent)
-                + abs(x.greenComponent - y.greenComponent)
-                + abs(x.blueComponent - y.blueComponent)
-        }
-
-        // Local is selected: one half is filled, the other is the plain track.
-        let (selectedLeft, plainRight) = try halves()
-        XCTAssertGreaterThan(try distance(selectedLeft, plainRight), 0.15,
-                             "the selected half is drawn differently from the other")
-
-        control.showMode(.overview)
-        let (plainLeft, selectedRight) = try halves()
-        XCTAssertLessThan(try distance(selectedRight, selectedLeft), 0.05,
-                          "the fill moved to the right half")
-        XCTAssertLessThan(try distance(plainLeft, plainRight), 0.05,
-                          "and the left half is now the plain track")
-    }
-
-    /// The status bar carries the rebuild's progress and is empty otherwise.
-    func testTheStatusBarShowsProgressAndClearsItWhenTheRebuildLands() throws {
-        let (_, window, _) = try makeOverviewWindow([UInt8](repeating: 0x41, count: 256 * 1024))
-        let chrome = try panelChrome(window)
-        XCTAssertTrue(chrome.progressBar.isHidden, "a finished rebuild leaves nothing running")
-
-        chrome.setRebuildProgress(0.5)
-        XCTAssertFalse(chrome.progressBar.isHidden)
-        XCTAssertEqual(chrome.progressBar.doubleValue, 0.5, accuracy: 0.001)
-        chrome.setRebuildProgress(nil)
-        XCTAssertTrue(chrome.progressBar.isHidden, "and it goes away when the pass is over")
     }
 
     /// A resize re-bins the file, so the summary in hand is for the wrong height

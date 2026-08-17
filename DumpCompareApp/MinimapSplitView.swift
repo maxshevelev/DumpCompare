@@ -238,7 +238,8 @@ final class MinimapPanelView: NSView {
     let mapView: MinimapView
 
     /// Local ⇄ Overview (§19.4). Internal so tests can click it.
-    let modeSwitch = MinimapModeSwitch()
+    let modeSwitch = NSSegmentedControl(labels: ["Local", "Overview"],
+                                       trackingMode: .selectOne, target: nil, action: nil)
 
     /// The status bar's progress bar and its caption, shown only while a rebuild
     /// is running (§19.9).
@@ -269,7 +270,14 @@ final class MinimapPanelView: NSView {
         // activated below, and a moment spent in autoresizing mode with a zero
         // frame makes them unsatisfiable.
         translatesAutoresizingMaskIntoConstraints = false
-        modeSwitch.onChange = { [weak self] mode in self?.onModeChange?(mode) }
+        modeSwitch.controlSize = .small
+        modeSwitch.segmentDistribution = .fillEqually
+        modeSwitch.font = .systemFont(ofSize: 10)
+        modeSwitch.target = self
+        modeSwitch.action = #selector(modeChanged)
+        modeSwitch.selectedSegment = 0
+        modeSwitch.setAccessibilityLabel("Minimap mode")
+        modeSwitch.toolTip = "Whether the minimap shows the bytes around the caret or the whole file"
         modeSwitch.translatesAutoresizingMaskIntoConstraints = false
         // A narrow panel must be allowed to squeeze the labels rather than push
         // the panel wider than its clamp (§19.2).
@@ -324,8 +332,6 @@ final class MinimapPanelView: NSView {
                                                           constant: 8)),
             breakable(modeSwitch.trailingAnchor.constraint(equalTo: header.trailingAnchor,
                                                            constant: -8)),
-            breakable(modeSwitch.heightAnchor.constraint(
-                equalToConstant: MinimapModeSwitch.height)),
 
             mapView.topAnchor.constraint(equalTo: header.bottomAnchor),
             mapView.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -408,7 +414,9 @@ final class MinimapPanelView: NSView {
 
     /// Reflects the mode the map is actually in, without reporting a change back.
     func showMode(_ mode: MinimapView.RenderMode) {
-        modeSwitch.showMode(mode)
+        let segment = mode == .overview ? 1 : 0
+        guard modeSwitch.selectedSegment != segment else { return }
+        modeSwitch.selectedSegment = segment
     }
 
     /// Shows a rebuild's progress, or hides the status bar's contents when there
@@ -425,121 +433,7 @@ final class MinimapPanelView: NSView {
         progressLabel.isHidden = false
     }
 
-}
-
-/// The minimap's Local ⇄ Overview switch (§19.4), drawn rather than assembled
-/// from an `NSSegmentedControl`.
-///
-/// A stock segmented control did not appear in the panel at all: on this macOS
-/// its artwork is drawn by an internal SwiftUI hosting view, and while every
-/// check from inside the process said the control was laid out, enabled, on top
-/// at its own centre and had its text layers, nothing of it reached the screen.
-/// This app draws its own hex grid, column header and minimap already, so a
-/// drawn switch is both in keeping and free of that indirection — and, unlike a
-/// hosted control, it can be verified by sampling pixels in a test.
-final class MinimapModeSwitch: NSView {
-    /// Fired when the user picks a mode; not fired by `showMode`.
-    var onChange: ((MinimapView.RenderMode) -> Void)?
-
-    private(set) var mode: MinimapView.RenderMode = .detail
-
-    /// The two halves, in order.
-    private static let modes: [(mode: MinimapView.RenderMode, title: String)] =
-        [(.detail, "Local"), (.overview, "Overview")]
-
-    private static let font = NSFont.systemFont(ofSize: 10, weight: .medium)
-    private static let cornerRadius: CGFloat = 5
-    static let height: CGFloat = 20
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        setAccessibilityRole(.radioGroup)
-        setAccessibilityLabel("Minimap mode")
-        toolTip = "Whether the minimap shows the bytes around the caret or the whole file"
+    @objc private func modeChanged() {
+        onModeChange?(modeSwitch.selectedSegment == 1 ? .overview : .detail)
     }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) is not supported")
-    }
-
-    override var intrinsicContentSize: NSSize {
-        NSSize(width: NSView.noIntrinsicMetric, height: Self.height)
-    }
-
-    override var isFlipped: Bool { true }
-
-    /// Adopts a mode without reporting it back — for reflecting the map's state
-    /// when something else (the View menu, a file that defaults to overview)
-    /// changed it.
-    func showMode(_ mode: MinimapView.RenderMode) {
-        guard self.mode != mode else { return }
-        self.mode = mode
-        setAccessibilityValue(title(of: mode))
-        needsDisplay = true
-    }
-
-    private func title(of mode: MinimapView.RenderMode) -> String {
-        Self.modes.first { $0.mode == mode }?.title ?? ""
-    }
-
-    /// The half a mode occupies.
-    private func rect(of mode: MinimapView.RenderMode) -> NSRect {
-        let index = Self.modes.firstIndex { $0.mode == mode } ?? 0
-        let width = bounds.width / CGFloat(Self.modes.count)
-        return NSRect(x: bounds.minX + width * CGFloat(index), y: bounds.minY,
-                      width: width, height: bounds.height)
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        guard bounds.width > 4, bounds.height > 4 else { return }
-        let track = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5),
-                                 xRadius: Self.cornerRadius, yRadius: Self.cornerRadius)
-        NSColor.controlColor.setFill()
-        track.fill()
-        NSColor.separatorColor.setStroke()
-        track.lineWidth = 1
-        track.stroke()
-
-        // The selected half is a filled pill in the accent colour: on a panel
-        // this narrow the selection has to be unmistakable at a glance.
-        let selected = rect(of: mode).insetBy(dx: 1, dy: 1)
-        NSColor.controlAccentColor.setFill()
-        NSBezierPath(roundedRect: selected, xRadius: Self.cornerRadius - 1,
-                     yRadius: Self.cornerRadius - 1).fill()
-
-        for (mode, title) in Self.modes {
-            let isSelected = mode == self.mode
-            let attributes: [NSAttributedString.Key: Any] = [
-                .font: Self.font,
-                .foregroundColor: isSelected ? NSColor.white : NSColor.secondaryLabelColor,
-            ]
-            let size = (title as NSString).size(withAttributes: attributes)
-            let half = rect(of: mode)
-            // Clipped to its own half, so a narrow panel truncates a label
-            // instead of letting the two collide.
-            NSGraphicsContext.saveGraphicsState()
-            NSBezierPath(rect: half).setClip()
-            (title as NSString).draw(
-                at: NSPoint(x: half.midX - size.width / 2, y: half.midY - size.height / 2),
-                withAttributes: attributes)
-            NSGraphicsContext.restoreGraphicsState()
-        }
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
-        guard bounds.contains(point) else { return }
-        let index = point.x < bounds.midX ? 0 : 1
-        let picked = Self.modes[index].mode
-        guard picked != mode else { return }
-        showMode(picked)
-        onChange?(picked)
-    }
-
-    /// Keyboard and VoiceOver reach the same choice through the View menu (§15),
-    /// so the switch itself is not a focus stop — but it must still describe
-    /// itself to a reader.
-    override func isAccessibilityElement() -> Bool { true }
 }

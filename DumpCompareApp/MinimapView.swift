@@ -488,6 +488,12 @@ final class MinimapView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
+        // The map must not paint past its own edges. AppKit hands it a dirty
+        // rect covering the *panel* — measured 49 pt above the map's own top,
+        // the height of the header — and `clipsToBounds` is false by default,
+        // so the background fill below reached the chrome and painted the mode
+        // switch out of existence (§19.2).
+        clipsToBounds = true
         applyBackgroundColor()
     }
 
@@ -544,7 +550,9 @@ final class MinimapView: NSView {
         // scroll moved away from would stay behind. Clipped to the repaint
         // region, so this is one small fill, not a full-panel one.
         Self.background.setFill()
-        dirtyRect.fill()
+        // Clipped explicitly as well as by `clipsToBounds`: the rect AppKit
+        // passes here is the panel's, not the map's.
+        dirtyRect.intersection(bounds).fill()
         // Three passes rather than one per map: side-by-side draws a single
         // viewport band across *both* maps, so the band cannot belong to a
         // per-map pass. Splitting the passes also keeps the layering — cells,

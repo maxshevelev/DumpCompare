@@ -977,9 +977,12 @@ way to navigate them by pointing.
   as the same file. Whatever moves the bytes (a taller row §6, an open Find
   bar §11) moves the map's edges with them.
   - The header carries the mode switch (§19.4): Local ⇄ Overview, in the
-    band the panes put their file names in. Which mode is in use must be
-    unmistakable at this width — the selected half is filled, not merely
-    outlined — and the switch must be legible in both themes.
+    band the panes put their file names in. It is a standard segmented
+    control: native appearance and behaviour are the point (§1).
+  - The map draws inside its own area and nowhere else. It is handed a
+    repaint region belonging to the whole panel, and drawing to it
+    unclipped paints over the chrome — which is exactly what hid the mode
+    switch until the map was clipped to its bounds.
   - The status bar carries the progress of a full overview rebuild (§19.9)
     and is otherwise empty.
   - The map keeps a minimum height: a Search All panel (§11) can take most
