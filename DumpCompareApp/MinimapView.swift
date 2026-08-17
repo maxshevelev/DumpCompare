@@ -240,10 +240,14 @@ final class MinimapView: NSView {
             // deliberately runs edge to edge past it (§ N).
             let content = contentArea(within: area, forMapAt: index)
             drawByteGrid(of: map, in: content, dirtyRect: dirtyRect)
+            // The overlays mirror the map's actual rows: a small file's map
+            // fills only the top of the panel, so the viewport and selection
+            // are measured against the rows' real extent, not the panel height.
+            let contentHeight = contentHeight(of: map)
             drawViewport(viewport: viewport(forMapAt: index), fileSize: map.fileSize,
-                         in: area, dirtyRect: dirtyRect)
+                         in: area, contentHeight: contentHeight, dirtyRect: dirtyRect)
             drawSelection(map.selection, fileSize: map.fileSize,
-                          in: content, dirtyRect: dirtyRect)
+                          in: content, contentHeight: contentHeight, dirtyRect: dirtyRect)
         }
         switch mapLayout {
         case .single:
@@ -395,25 +399,39 @@ final class MinimapView: NSView {
         }
     }
 
+    /// The vertical extent the map's rows actually occupy, from the map's top:
+    /// `rows.count` mini rows each `byteHeight + rowGap` tall, minus the
+    /// trailing gap. A small file whose hex rows fit 1:1 draws only this tall;
+    /// a large file aggregates to the panel's row capacity, so its extent
+    /// matches the panel's height. The viewport and selection overlays are
+    /// measured against this extent — not the panel's full height — so they
+    /// mirror the real picture on the map.
+    private func contentHeight(of map: Map) -> CGFloat {
+        guard !map.rows.isEmpty else { return 0 }
+        return CGFloat(map.rows.count) * (Self.byteHeight + Self.rowGap) - Self.rowGap
+    }
+
     /// Draws the pane's visible slice as a grey band over the map — the
     /// minimap's "you are here" rectangle. The band runs edge to edge on every
     /// side: full map width (poking past the padded cells) and the file
-    /// fraction against the map's full height. A visible page of a huge file
+    /// fraction against the map's `contentHeight`, so on a small file that
+    /// fills only the top of the panel the band hugs the rows instead of
+    /// stretching to the panel's height. A visible page of a huge file
     /// measures less than a pixel, so the band is given at least
-    /// `viewportMinHeight` (kept inside the map's bounds) — the overlay still
+    /// `viewportMinHeight` (kept inside the rows' extent) — the overlay still
     /// reads as a hair-thin slice that moves as the pane scrolls. Drawn under
     /// the selection overlay so a selection inside the viewport stays readable.
     private func drawViewport(viewport: Range<UInt64>?, fileSize: UInt64,
-                              in area: NSRect, dirtyRect: NSRect) {
-        guard let viewport, !viewport.isEmpty, fileSize > 0 else { return }
+                              in area: NSRect, contentHeight: CGFloat, dirtyRect: NSRect) {
+        guard let viewport, !viewport.isEmpty, fileSize > 0, contentHeight > 0 else { return }
         let startFraction = CGFloat(min(viewport.lowerBound, fileSize)) / CGFloat(fileSize)
         let endFraction = CGFloat(min(viewport.upperBound, fileSize)) / CGFloat(fileSize)
         guard endFraction > startFraction else { return }
-        var y0 = area.minY + startFraction * area.height
-        var y1 = area.minY + endFraction * area.height
-        let minHeight = min(Self.viewportMinHeight, area.height)
+        var y0 = area.minY + startFraction * contentHeight
+        var y1 = area.minY + endFraction * contentHeight
+        let minHeight = min(Self.viewportMinHeight, contentHeight)
         if y1 - y0 < minHeight {
-            y1 = min(y0 + minHeight, area.maxY)
+            y1 = min(y0 + minHeight, area.minY + contentHeight)
             y0 = max(y1 - minHeight, area.minY)
         }
         let rect = NSRect(x: area.minX, y: y0, width: area.width, height: y1 - y0)
@@ -423,13 +441,13 @@ final class MinimapView: NSView {
     }
 
     private func drawSelection(_ selection: Range<UInt64>?, fileSize: UInt64,
-                               in area: NSRect, dirtyRect: NSRect) {
-        guard let selection, !selection.isEmpty, fileSize > 0 else { return }
+                               in area: NSRect, contentHeight: CGFloat, dirtyRect: NSRect) {
+        guard let selection, !selection.isEmpty, fileSize > 0, contentHeight > 0 else { return }
         let startFraction = CGFloat(min(selection.lowerBound, fileSize)) / CGFloat(fileSize)
         let endFraction = CGFloat(min(selection.upperBound, fileSize)) / CGFloat(fileSize)
         guard endFraction > startFraction else { return }
-        let y0 = area.minY + startFraction * area.height
-        let y1 = area.minY + endFraction * area.height
+        let y0 = area.minY + startFraction * contentHeight
+        let y1 = area.minY + endFraction * contentHeight
         guard y1 > y0, y1 >= dirtyRect.minY, y0 <= dirtyRect.maxY else { return }
         HexTheme.selectionFill.setFill()
         NSRect(x: area.minX, y: y0, width: area.width, height: y1 - y0).fill()
