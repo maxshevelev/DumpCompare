@@ -148,6 +148,9 @@ final class MainViewController: NSViewController {
             minimapSplit.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor),
             minimapSplit.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
         ])
+        minimapView.onRowCapacityChanged = { [weak self] in
+            self?.scheduleMinimapCapacityRebuild()
+        }
 
         apply(mode: .empty)
     }
@@ -375,13 +378,17 @@ final class MainViewController: NSViewController {
 
     // MARK: - Minimap data (§ N)
 
-    /// The last built significance stripes per map (indexed like the current
-    /// maps). Kept apart from the difference stripes so an index-only refresh
-    /// can re-derive the diff overlay without re-reading the file bytes.
-    private var minimapSignificance: [[MinimapView.Row]] = []
+    /// The last built significance cells per map (indexed like the current
+    /// maps). Kept apart from the difference cells so an index-only refresh can
+    /// re-derive the diff overlay without re-reading the file bytes.
+    private var minimapSignificance: [[MinimapView.ByteRow]] = []
     /// The in-flight background rebuild; cancelled and replaced on the next
     /// full rebuild.
     private var minimapBuildTask: Task<Void, Never>?
+    /// The debounced rebuild triggered when the panel's height or layout moved
+    /// the row density the maps should be built at; cancelled and re-armed on
+    /// each move so a resize storm settles into one rebuild.
+    private var minimapCapacityRebuildTask: Task<Void, Never>?
 
     /// Rebuilds the minimap maps. `full: true` re-reads the file bytes for the
     /// significance stripes and is triggered by opening/reverting/editing;
@@ -400,11 +407,19 @@ final class MainViewController: NSViewController {
         case .empty:
             source = []
         }
+        // The row density each map should be built at, derived from the panel's
+        // current height. A file small enough for its hex rows to fit 1:1 stops
+        // at its own row count either way.
+        let capacities = source.isEmpty ? [] : minimapView.rowCapacities()
 
         if full {
             minimapBuildTask?.cancel()
             minimapBuildTask = Task.detached(priority: .utility) { [weak self] in
-                let significance = source.map { Self.buildSignificanceRows(storage: $0.storage, fileSize: $0.size) }
+                let significance: [[MinimapView.ByteRow]] = source.indices.map { i in
+                    let item = source[i]
+                    return Self.buildSignificanceRows(storage: item.storage, fileSize: item.size,
+                                                      rowCapacity: capacities.indices.contains(i) ? capacities[i] : 0)
+                }
                 guard !Task.isCancelled else { return }
                 // Read the freshest index after the (slow) significance pass so
                 // a rebuild racing an index refresh still lands on the new diff.
@@ -427,6 +442,18 @@ final class MainViewController: NSViewController {
                                        index: comparisonCoordinator.index)
             minimapView.setMaps(maps)
             updateMinimapSelections()
+        }
+    }
+
+    /// Re-runs the minimap data build after the panel's height or layout moved
+    /// the row density it should be built at. Debounced so a resize or divider
+    /// drag settles into a single rebuild instead of one per layout pass.
+    private func scheduleMinimapCapacityRebuild() {
+        minimapCapacityRebuildTask?.cancel()
+        minimapCapacityRebuildTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard !Task.isCancelled else { return }
+            self?.rebuildMinimap(full: true)
         }
     }
 
@@ -493,40 +520,53 @@ final class MainViewController: NSViewController {
         minimapView.setViewports(viewports)
     }
 
-    /// Builds a file's significance stripes: a stripe is significant when any
-    /// byte it covers is not a 0x00/0xFF fill. One stripe per hex row up to
-    /// `maxRenderRows`, so a huge file collapses onto a fixed stripe count.
-    /// Reads in chunks and stops a stripe's scan as soon as a significant byte
-    /// is found.
+    /// Builds a file's significance cells: a cell is significant when any byte
+    /// it covers is not a 0x00/0xFF fill. One mini row per hex row up to
+    /// `rowCapacity` (the panel's current density); a larger file aggregates
+    /// groups of hex rows onto exactly that many rows, each cell's state
+    /// merging its group's bytes in that column. Reads in chunks and stops a
+    /// row's scan as soon as every cell is significant.
     private static func buildSignificanceRows(storage: (any ByteStorage)?,
-                                              fileSize: UInt64) -> [MinimapView.Row] {
+                                              fileSize: UInt64,
+                                              rowCapacity: Int) -> [MinimapView.ByteRow] {
         guard let storage, fileSize > 0 else { return [] }
         let hexRows = (fileSize + 15) / 16
-        let count = Int(min(hexRows, UInt64(MinimapView.maxRenderRows)))
-        var rows = [MinimapView.Row](repeating: .insignificant, count: count)
+        let count = Int(min(hexRows, UInt64(max(1, rowCapacity))))
+        var rows: [MinimapView.ByteRow] = []
+        rows.reserveCapacity(count)
         let chunkSize = 64 * 1024
         for i in 0..<count {
             let byteRange = Self.rowByteRange(row: i, count: count, hexRows: hexRows, fileSize: fileSize)
-            var offset = byteRange.lowerBound
-            var significant = false
-            while offset < byteRange.upperBound {
+            let cellCount = Int(min(UInt64(16), byteRange.upperBound - byteRange.lowerBound))
+            var significant = [Bool](repeating: false, count: cellCount)
+            var cellsLeft = cellCount
+            let start = byteRange.lowerBound
+            var offset = start
+            while offset < byteRange.upperBound, cellsLeft > 0 {
                 let length = Int(min(UInt64(chunkSize), byteRange.upperBound - offset))
                 guard let bytes = try? storage.read(at: offset, length: length), !bytes.isEmpty else { break }
-                if bytes.contains(where: { $0 != 0x00 && $0 != 0xFF }) {
-                    significant = true
-                    break
+                for (k, byte) in bytes.enumerated() {
+                    guard byte != 0x00, byte != 0xFF else { continue }
+                    let col = Int((offset + UInt64(k) - start) % 16)
+                    guard col < cellCount, !significant[col] else { continue }
+                    significant[col] = true
+                    cellsLeft -= 1
+                    if cellsLeft == 0 { break }
                 }
                 offset += UInt64(bytes.count)
             }
-            if significant { rows[i] = .significant }
+            let cells = (0..<cellCount).map {
+                significant[$0] ? MinimapView.CellState.significant : MinimapView.CellState.insignificant
+            }
+            rows.append(MinimapView.ByteRow(cells: cells))
         }
         return rows
     }
 
-    /// Merges the significance stripes with the comparison index's difference
-    /// stripes: any stripe overlapping a `.different` block becomes `.different`
-    /// (the orange wins), the rest keep their significance.
-    private static func mergedMaps(significance: [[MinimapView.Row]],
+    /// Merges the significance cells with the comparison index's difference
+    /// cells: any cell with a `.different` byte becomes `.different` (the
+    /// orange wins), the rest keep their significance.
+    private static func mergedMaps(significance: [[MinimapView.ByteRow]],
                                    sizes: [UInt64],
                                    index: DiffBlockIndex?) -> [MinimapView.Map] {
         var maps: [MinimapView.Map] = []
@@ -534,38 +574,54 @@ final class MainViewController: NSViewController {
             let size = sizes.indices.contains(i) ? sizes[i] : 0
             let hexRows = (size + 15) / 16
             let count = sig.count
-            let rows: [MinimapView.Row]
+            var rows = sig
             if let index, size > 0 {
                 rows = (0..<count).map { row in
                     let range = Self.rowByteRange(row: row, count: count, hexRows: hexRows, fileSize: size)
-                    return Self.containsDifferent(index, in: range) ? .different : sig[row]
+                    let source = sig[row].cells
+                    let cells = (0..<source.count).map { j in
+                        Self.containsDifferent(inColumn: j, start: range.lowerBound,
+                                               end: range.upperBound, index: index)
+                            ? MinimapView.CellState.different : source[j]
+                    }
+                    return MinimapView.ByteRow(cells: cells)
                 }
-            } else {
-                rows = sig
             }
             maps.append(MinimapView.Map(fileSize: size, rows: rows))
         }
         return maps
     }
 
-    /// The byte range a minimap stripe covers. Stripe `row` of `count` stripes
-    /// spans hex rows `[floor(row·H/C), floor((row+1)·H/C))`, converted to byte
-    /// offsets and clamped to the file.
+    /// The byte range a minimap row covers. Row `row` of `count` rows spans hex
+    /// rows `[floor(row·H/C), floor((row+1)·H/C))`, converted to byte offsets
+    /// and clamped to the file.
     private static func rowByteRange(row: Int, count: Int, hexRows: UInt64, fileSize: UInt64) -> Range<UInt64> {
         let start = hexRows * UInt64(row) / UInt64(count) * 16
         let end = hexRows * UInt64(row + 1) / UInt64(count) * 16
         return min(start, fileSize)..<min(end, fileSize)
     }
 
-    /// Whether any `.different` block of the index overlaps `range`. Blocks tile
-    /// `[0, maxSize)`, so checking the two boundary bytes plus the first
-    /// difference after the range's start decides it without a linear scan.
-    private static func containsDifferent(_ index: DiffBlockIndex, in range: Range<UInt64>) -> Bool {
-        guard range.lowerBound < range.upperBound else { return false }
-        if index.state(at: range.lowerBound) == .different { return true }
-        if index.state(at: range.upperBound - 1) == .different { return true }
-        guard let next = index.nextDifference(from: range.lowerBound) else { return false }
-        return next.range.lowerBound < range.upperBound
+    /// Whether the index has a `.different` block overlapping any byte of
+    /// `column` `j` of the row spanning `[start, end)`. The column's bytes sit
+    /// every 16 offsets from `start + j` (one per hex row the mini row covers);
+    /// a `.different` state at any of them wins. A `.same` run is skipped in
+    /// one jump to its end, so a long identical stretch costs one lookup, not
+    /// one per byte.
+    private static func containsDifferent(inColumn j: Int, start: UInt64, end: UInt64,
+                                          index: DiffBlockIndex) -> Bool {
+        var offset = start + UInt64(j)
+        while offset < end {
+            guard let kind = index.state(at: offset) else { return false }  // past the longer file
+            if kind == .different { return true }
+            // Inside a same block running to the next block's start; land the
+            // column on its next slot past that run.
+            let blockEnd = index.firstBlock(after: offset)?.range.lowerBound ?? index.maxSize
+            let slots = (blockEnd - start + 15) / 16
+            let next = start + slots * 16 + UInt64(j)
+            guard next > offset else { return false }
+            offset = next
+        }
+        return false
     }
 
     // MARK: - Helpers
@@ -1909,13 +1965,22 @@ extension MainViewController: NSWindowDelegate {
         let contentHeight = standardContentHeight()
         guard contentWidth > 0, contentHeight > 0 else { return defaultFrame }
 
+        // A visible minimap panel shares the content area, so the fitted window
+        // must make room for it on top of the hex grids: the hex panes keep
+        // their fitted width and the panel takes its preferred width (plus the
+        // divider) beside them. A hidden panel adds nothing.
+        let minimapWidth = minimapSplit.panelVisible
+            ? minimapSplit.preferredPanelWidth + minimapSplit.dividerThickness
+            : 0
+        let fitWidth = contentWidth + minimapWidth
+
         var frame = window.frame
         let oldTop = frame.origin.y + frame.height
         let screen = window.screen ?? NSScreen.main
         // Convert the needed content height to a window-frame height (adds the
         // title bar, the only chrome outside the pane itself).
         let frameHeight = window.frameRect(forContentRect: NSRect(x: 0, y: 0, width: 0, height: contentHeight)).height
-        frame.size.width = min(contentWidth, screen?.visibleFrame.width ?? contentWidth)
+        frame.size.width = min(fitWidth, screen?.visibleFrame.width ?? fitWidth)
         frame.size.height = min(frameHeight, screen?.visibleFrame.height ?? frameHeight)
         // Anchor the top edge and keep the window fully on the visible screen.
         frame.origin.y = oldTop - frame.size.height

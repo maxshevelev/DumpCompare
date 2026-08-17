@@ -25,17 +25,11 @@ import Cocoa
 /// roughly half the content area.
 final class MinimapSplitView: NSSplitView {
     /// The minimap keeps at least this width when shown (§ N).
-    static let minPanelWidth: CGFloat = 80
+    static let minPanelWidth: CGFloat = 120
 
-    /// The minimap never grows beyond a quarter of the screen's visible width
-    /// (§ N), so the hex dump keeps at least three quarters of the screen even
-    /// at a huge divider drag. In a headless test host there is no screen; the
-    /// generous fallback keeps the divider draggable there.
-    static var maxPanelWidth: CGFloat {
-        let screenWidth = NSScreen.main?.visibleFrame.width ?? 0
-        guard screenWidth > 0 else { return 2000 }
-        return screenWidth / 4
-    }
+    /// The minimap never grows beyond this width (§ N), so it stays a compact
+    /// overview column beside the hex panes no matter how wide the window gets.
+    static let maxPanelWidth: CGFloat = 240
 
     /// `UserDefaults` key for the user's chosen minimap width (§ N).
     static let widthDefaultsKey = "MinimapPanelWidth"
@@ -85,14 +79,14 @@ final class MinimapSplitView: NSSplitView {
     }
 
     /// The panel width the user last chose (or the built-in minimum), clamped
-    /// to what the current split can actually hold — the panel can never be
-    /// wider than the content area, so a width persisted from a wider window
-    /// shrinks to fit.
+    /// to the legal [min, max] band. The caller is responsible for clamping to
+    /// what the split can actually hold (`setPanelWidth` already does), so this
+    /// also serves zoom-to-fit, which wants the preferred width regardless of
+    /// how small the window is right now.
     var preferredPanelWidth: CGFloat {
-        let total = bounds.width
         let stored = Self.defaults.object(forKey: Self.widthDefaultsKey) as? NSNumber
         let preferred = stored.map { CGFloat($0.doubleValue) } ?? Self.minPanelWidth
-        return min(max(preferred, Self.minPanelWidth), max(0, total - dividerThickness))
+        return min(max(preferred, Self.minPanelWidth), Self.maxPanelWidth)
     }
 
     /// Shows or hides the panel, animating the divider unless the user prefers

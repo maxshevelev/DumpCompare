@@ -8,16 +8,28 @@ import Cocoa
 /// comparison splits it with a horizontal divider that mirrors the panes'
 /// draggable divider — the line moves as the panes' divider moves.
 ///
-/// Stage 3 fills the maps with the files' contents as horizontal stripes, one
-/// per `maxRenderRows` slot regardless of file size (a huge file collapses onto
-/// a fixed number of stripes instead of one stripe per hex row). A stripe is
-/// coloured by the state of the bytes it covers — the same colours the hex
+/// Stage 3 fills the maps with the files' contents as a miniature hex dump:
+/// the hex column only (no offset, no ASCII), each byte a small rectangle at
+/// most `byteHeight` tall, with `rowGap` between rows, so the panel reads as a
+/// grid of pixels. Columns keep the hex dump's proportions (two characters per
+/// byte, one-character gaps between words, two-character gap between the 8-byte
+/// groups) scaled to the content width. A row of the dump is one `ByteRow` of
+/// up to 16 per-byte cells; the last row can be shorter for a partial hex row.
+/// A cell is coloured by what its byte(s) hold — the same colours the hex
 /// panes use:
-/// - every byte a 0x00/0xFF fill → muted (`mutedByteText`);
-/// - at least one significant byte → ink (`byteText`);
-/// - at least one differing byte → orange (`differenceFill`);
+/// - the byte is a 0x00/0xFF fill → muted (`mutedByteText`);
+/// - the byte is significant → ink (`byteText`);
+/// - the byte differs from the companion → orange (`differenceFill`);
 /// and the current selection is drawn as a translucent blue overlay on top of
-/// the stripes (`selectionFill`), mirroring the selection fill in the panes.
+/// the cells (`selectionFill`), mirroring the selection fill in the panes.
+///
+/// A small file keeps one mini row per hex row and is drawn at the map's top
+/// (byte height 2 pt), leaving the rest of the map empty; a large file
+/// collapses groups of hex rows onto as many mini rows as fit the map's height
+/// (`rowCapacity(areaHeight:)`), each cell's state aggregating its group's
+/// bytes. The viewport and selection overlays are measured against the map's
+/// full height and run edge to edge, independent of how much of it the cells
+/// actually fill.
 final class MinimapView: NSView {
     /// How the panel is divided into maps for the open file(s).
     enum MapLayout {
@@ -31,49 +43,95 @@ final class MinimapView: NSView {
         case stacked(fraction: CGFloat)
     }
 
-    /// One map: the file's size (for byte→stripe mapping) and its precomputed
-    /// stripes. `rows` always has exactly `maxRenderRows` entries.
+    /// One map: the file's size (for byte→cell mapping) and its precomputed
+    /// mini hex rows. A row per hex row up to the map's `rowCapacity`; a larger
+    /// file collapses onto exactly that many rows.
     struct Map {
         let fileSize: UInt64
-        let rows: [Row]
+        let rows: [ByteRow]
         /// The file's current selection, drawn as an overlay on top of the
-        /// stripes; nil (or empty) when the caret sits alone.
+        /// cells; nil (or empty) when the caret sits alone.
         var selection: Range<UInt64>?
     }
 
-    /// How a stripe is coloured, by what the bytes it covers contain.
-    enum Row {
-        /// No significant byte and no difference — all 0x00/0xFF fill.
+    /// One mini hex row of the map: the per-byte state of each of its 1...16
+    /// cells (the last row holds fewer when the file's final hex row is short).
+    struct ByteRow {
+        let cells: [CellState]
+    }
+
+    /// How a byte cell is coloured, by what the byte(s) it covers contain.
+    enum CellState {
+        /// The byte is a 0x00/0xFF fill and differs from nothing.
         case insignificant
-        /// At least one byte that is not a 0x00/0xFF fill.
+        /// The byte is not a 0x00/0xFF fill.
         case significant
-        /// At least one byte that differs from the companion file.
+        /// The byte differs from the companion file.
         case different
     }
 
-    /// Fixed render density: at most this many stripes per map regardless of
-    /// file size, so a giant file collapses onto a few thousand stripes instead
-    /// of one per hex row (which would be millions for a big file).
-    static let maxRenderRows = 2048
+    /// Render density comes from the map's height, not a fixed constant: a byte
+    /// cell is at most this tall, with `rowGap` breathing room between rows, so
+    /// a map can hold `rowCapacity` mini rows. A file small enough for its hex
+    /// rows to fit 1:1 never fills the map (cells stay 2 pt tall, rows drawn
+    /// from the top); a larger file aggregates hex rows down to the capacity.
+    static let byteHeight: CGFloat = 2
+    static let rowGap: CGFloat = 1
 
-    /// Side inset of the maps' content from the panel's edges — the stripes sit
+    /// How many mini rows fit a map `areaHeight` tall: every row costs
+    /// `byteHeight` plus a trailing `rowGap` except the last. Small heights
+    /// collapse to zero rows (nothing fits).
+    static func rowCapacity(areaHeight: CGFloat) -> Int {
+        guard areaHeight > 0 else { return 0 }
+        return max(0, Int(floor((areaHeight + rowGap) / (byteHeight + rowGap))))
+    }
+
+    /// Side inset of the maps' content from the panel's edges — the cells sit
     /// in a 10 pt frame on either side, matching the breathing room the hex
-    /// panes give their dumps. Only horizontal: the lines run edge to edge
-    /// top and bottom. The viewport rectangle deliberately ignores this inset
-    /// and runs edge to edge too (§ N).
+    /// panes give their dumps. Only horizontal: the rows run edge to edge top
+    /// and bottom. The viewport rectangle deliberately ignores this inset and
+    /// runs edge to edge too (§ N).
     static let contentPadding: CGFloat = 10
 
+    /// In side-by-side mode the two maps sit on either side of an inner gutter
+    /// this wide — a fraction of the panel's full width — so the minimap's
+    /// split echoes the gap between the two side-by-side panes and the gap
+    /// scales with the panel's own width.
+    static let sideBySideGutterFraction: CGFloat = 0.01
+
     private(set) var mapLayout: MapLayout = .single
-    /// The maps currently drawn (file sizes + stripes). Updated by `setMaps`
-    /// after a background rebuild; readable so tests can inspect the stripes.
+    /// The maps currently drawn (file sizes + byte cells). Updated by `setMaps`
+    /// after a background rebuild; readable so tests can inspect the cells.
     private(set) var maps: [Map] = []
 
     /// The byte range each map's pane currently has visible, by map index —
     /// what the grey viewport rectangle mirrors. A nil entry (or an empty
     /// range) means that pane's scroll viewport is empty (no file, or the pane
     /// shows no bytes). Kept separate from the maps so a scroll only moves the
-    /// overlay and never rebuilds the stripes.
+    /// overlay and never rebuilds the cells.
     private(set) var viewports: [Range<UInt64>?] = []
+
+    /// Invoked when a resize changes the row density the maps should be built
+    /// with — e.g. the panel grew tall enough to fit more rows, or a stacked
+    /// divider dragged the top map shorter. The caller re-runs the data build
+    /// with `rowCapacities()`; the map's own resize handling only repaints.
+    var onRowCapacityChanged: (() -> Void)?
+
+    /// The number of mini rows each map's data should be built with, derived
+    /// from the current layout and bounds. Indexed like `maps`.
+    func rowCapacities() -> [Int] {
+        switch mapLayout {
+        case .single:
+            return [Self.rowCapacity(areaHeight: bounds.height)]
+        case .sideBySide:
+            return [Self.rowCapacity(areaHeight: bounds.height),
+                    Self.rowCapacity(areaHeight: bounds.height)]
+        case .stacked(let fraction):
+            let frac = min(max(fraction, 0), 1)
+            return [Self.rowCapacity(areaHeight: bounds.height * frac),
+                    Self.rowCapacity(areaHeight: bounds.height * (1 - frac))]
+        }
+    }
 
     /// Adopts a new map split, redrawing the divider lines only when the split
     /// actually changed (a stacked fraction can move by a hair on every pane
@@ -92,7 +150,7 @@ final class MinimapView: NSView {
         needsDisplay = true
     }
 
-    /// Moves one map's selection overlay. Cheap — no stripe rebuild — so it is
+    /// Moves one map's selection overlay. Cheap — no data rebuild — so it is
     /// safe to call on every caret/selection change (e.g. a mouse drag).
     func updateSelection(_ selection: Range<UInt64>?, forMapAt index: Int) {
         guard maps.indices.contains(index) else { return }
@@ -114,8 +172,8 @@ final class MinimapView: NSView {
     }
 
     /// Moves the maps' viewport rectangles. A scroll reports the visible byte
-    /// range of each pane; the panel redraws only the overlay — no stripe
-    /// rebuild, no file read — so it is cheap enough for live scrolling.
+    /// range of each pane; the panel redraws only the overlay — no data rebuild,
+    /// no file read — so it is cheap enough for live scrolling.
     func setViewports(_ viewports: [Range<UInt64>?]) {
         guard viewports != self.viewports else { return }
         self.viewports = viewports
@@ -133,6 +191,12 @@ final class MinimapView: NSView {
             ? NSColor(white: 0.32, alpha: 1)
             : NSColor(white: 0.80, alpha: 1)
     }
+
+    /// The minimum height of the viewport band. On a huge file one visible page
+    /// is a hair-thin slice of the whole — thinner than a pixel on a ~600 pt
+    /// map — so the band is clamped to at least this tall or it reads as a
+    /// missing overlay.
+    static let viewportMinHeight: CGFloat = 4
 
     /// The viewport rectangle's fill — a translucent grey that reads as a
     /// "you are here" band over the stripes without hiding them. Lightened in
@@ -164,20 +228,22 @@ final class MinimapView: NSView {
         // A resize re-derives the divider's position from the new bounds (the
         // centered vertical line, or the fraction × new height), so repaint.
         needsDisplay = true
+        notifyRowCapacityChangeIfNeeded()
     }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         for (index, map) in maps.enumerated() {
             let area = area(forMapAt: index)
-            // The map's content (stripes, selection) sits in a 10 pt side frame
+            // The map's content (cells, selection) sits in a 10 pt side frame
             // away from the panel's side edges; the viewport rectangle
             // deliberately runs edge to edge past it (§ N).
             let content = contentArea(within: area)
-            drawStripes(of: map, in: content, dirtyRect: dirtyRect)
+            drawByteGrid(of: map, in: content, dirtyRect: dirtyRect)
             drawViewport(viewport: viewport(forMapAt: index), fileSize: map.fileSize,
                          in: area, dirtyRect: dirtyRect)
-            drawSelection(map.selection, fileSize: map.fileSize, in: content, dirtyRect: dirtyRect)
+            drawSelection(map.selection, fileSize: map.fileSize,
+                          in: content, dirtyRect: dirtyRect)
         }
         switch mapLayout {
         case .single:
@@ -190,7 +256,27 @@ final class MinimapView: NSView {
         }
     }
 
-    // MARK: - Stripes
+    /// Whether the density the maps were built with no longer matches what the
+    /// current height/layout asks for. Only meaningful when the data is built:
+    /// a small file whose hex rows already fit 1:1 (rows == hex rows) is done
+    /// regardless of how much taller the map gets; a file past its capacity is
+    /// re-collapsed when the capacity moves. Fires at most once per layout pass
+    /// (the rebuild lands the count back in sync, so the next pass is quiet).
+    private func notifyRowCapacityChangeIfNeeded() {
+        guard !maps.isEmpty else { return }
+        let capacities = rowCapacities()
+        guard capacities.count == maps.count else { return }
+        for (map, capacity) in zip(maps, capacities) {
+            let hexRows = (map.fileSize + 15) / 16
+            let desiredCount = min(Int(hexRows), capacity)
+            if map.rows.count != desiredCount {
+                onRowCapacityChanged?()
+                return
+            }
+        }
+    }
+
+    // MARK: - Byte grid
 
     private func area(forMapAt index: Int) -> NSRect {
         let width = bounds.width
@@ -199,11 +285,17 @@ final class MinimapView: NSView {
         case .single:
             return bounds
         case .sideBySide:
-            let half = width / 2
+            // The two maps flank a 1 % gutter of the panel's full width,
+            // centered on the panel; the divider line sits at the gutter's
+            // centre (the panel's centre). Basing it on the whole width (not
+            // the padded content) makes the gap scale with the panel's width.
+            let innerGap = Self.sideBySideGutterFraction * max(0, width)
+            let half = (width - innerGap) / 2
             if index == 0 {
                 return NSRect(x: 0, y: 0, width: half, height: height)
             }
-            return NSRect(x: half, y: 0, width: width - half, height: height)
+            return NSRect(x: half + innerGap, y: 0,
+                          width: width - half - innerGap, height: height)
         case .stacked(let fraction):
             let split = min(max(fraction, 0), 1) * height
             if index == 0 {
@@ -224,46 +316,93 @@ final class MinimapView: NSView {
                       height: area.height)
     }
 
-    private func drawStripes(of map: Map, in area: NSRect, dirtyRect: NSRect) {
+    /// The byte cells' geometry for a content region `areaWidth` wide: the x
+    /// origin of each of the 16 byte columns and the shared cell width, both in
+    /// the hex dump's proportions (two chars per byte, one-char word gap,
+    /// two-char gap between the 8-byte groups) scaled so the full hex column
+    /// spans the region exactly.
+    private func byteColumnLayout(contentWidth: CGFloat)
+        -> (origins: [CGFloat], cellWidth: CGFloat) {
+        let wordSize = max(1, WordSize.current.rawValue)
+        let bytesPerGroup = 8
+        let wordsPerGroup = bytesPerGroup / wordSize
+        let byteWidth: CGFloat = 2
+        let wordGap: CGFloat = 1
+        let groupGap: CGFloat = 2
+        let wordWidth = CGFloat(wordSize) * byteWidth
+        let groupWidth = CGFloat(wordsPerGroup) * wordWidth
+            + CGFloat(wordsPerGroup - 1) * wordGap
+        let hexColumnsWidth = 2 * groupWidth + groupGap
+        let scale = hexColumnsWidth > 0 ? contentWidth / hexColumnsWidth : 0
+
+        var origins: [CGFloat] = []
+        origins.reserveCapacity(16)
+        for column in 0..<16 {
+            let group = column / bytesPerGroup
+            let inGroup = column % bytesPerGroup
+            let word = inGroup / wordSize
+            let inWord = inGroup % wordSize
+            let hexX = CGFloat(group) * (groupWidth + groupGap)
+                + CGFloat(word) * (wordWidth + wordGap)
+                + CGFloat(inWord) * byteWidth
+            origins.append(hexX * scale)
+        }
+        return (origins, byteWidth * scale)
+    }
+
+    private func drawByteGrid(of map: Map, in area: NSRect, dirtyRect: NSRect) {
         let rows = map.rows
-        guard !rows.isEmpty, area.height > 0 else { return }
-        let stripeHeight = area.height / CGFloat(rows.count)
-        // The map's stripes only cover the area rows that intersect the dirty
-        // region; clip to it so a scroll-adjacent repaint doesn't re-fill the
-        // whole panel.
-        let firstStripe = max(0, Int((dirtyRect.minY - area.minY) / max(stripeHeight, 0.0001)))
-        let lastStripe = min(rows.count - 1,
-                             Int((dirtyRect.maxY - area.minY) / max(stripeHeight, 0.0001)))
-        guard lastStripe >= firstStripe else { return }
-        for i in firstStripe...lastStripe {
-            let color: NSColor
-            switch rows[i] {
-            case .insignificant: color = HexTheme.mutedByteText
-            case .significant: color = HexTheme.byteText
-            case .different: color = HexTheme.differenceFill
+        guard !rows.isEmpty, area.height > 0, area.width > 0 else { return }
+        let (origins, cellWidth) = byteColumnLayout(contentWidth: area.width)
+        guard cellWidth > 0 else { return }
+        let rowStep = Self.byteHeight + Self.rowGap
+        // Draw only the rows that intersect the dirty region, so a scroll-
+        // adjacent repaint doesn't re-fill the whole panel.
+        let firstRow = max(0, Int(floor((dirtyRect.minY - area.minY) / rowStep)))
+        let lastRow = min(rows.count - 1,
+                          Int(floor((dirtyRect.maxY - area.minY) / rowStep)))
+        guard lastRow >= firstRow else { return }
+        for i in firstRow...lastRow {
+            let y = area.minY + CGFloat(i) * rowStep
+            let row = rows[i]
+            for (j, state) in row.cells.enumerated() {
+                guard j < origins.count else { break }
+                let color: NSColor
+                switch state {
+                case .insignificant: color = HexTheme.mutedByteText
+                case .significant: color = HexTheme.byteText
+                case .different: color = HexTheme.differenceFill
+                }
+                color.setFill()
+                NSRect(x: area.minX + origins[j],
+                       y: y,
+                       width: cellWidth,
+                       height: Self.byteHeight).fill()
             }
-            color.setFill()
-            NSRect(x: area.minX,
-                   y: area.minY + CGFloat(i) * stripeHeight,
-                   width: area.width,
-                   height: stripeHeight).fill()
         }
     }
 
     /// Draws the pane's visible slice as a grey band over the map — the
-    /// minimap's "you are here" rectangle. Unlike the stripes, the band runs
-    /// edge to edge: full map width, and the file fraction against the map's
-    /// full height, so it pokes past the padded lines on either side. Drawn
-    /// under the selection overlay so a selection inside the viewport stays
-    /// readable.
+    /// minimap's "you are here" rectangle. The band runs edge to edge on every
+    /// side: full map width (poking past the padded cells) and the file
+    /// fraction against the map's full height. A visible page of a huge file
+    /// measures less than a pixel, so the band is given at least
+    /// `viewportMinHeight` (kept inside the map's bounds) — the overlay still
+    /// reads as a hair-thin slice that moves as the pane scrolls. Drawn under
+    /// the selection overlay so a selection inside the viewport stays readable.
     private func drawViewport(viewport: Range<UInt64>?, fileSize: UInt64,
                               in area: NSRect, dirtyRect: NSRect) {
         guard let viewport, !viewport.isEmpty, fileSize > 0 else { return }
         let startFraction = CGFloat(min(viewport.lowerBound, fileSize)) / CGFloat(fileSize)
         let endFraction = CGFloat(min(viewport.upperBound, fileSize)) / CGFloat(fileSize)
         guard endFraction > startFraction else { return }
-        let y0 = area.minY + startFraction * area.height
-        let y1 = area.minY + endFraction * area.height
+        var y0 = area.minY + startFraction * area.height
+        var y1 = area.minY + endFraction * area.height
+        let minHeight = min(Self.viewportMinHeight, area.height)
+        if y1 - y0 < minHeight {
+            y1 = min(y0 + minHeight, area.maxY)
+            y0 = max(y1 - minHeight, area.minY)
+        }
         let rect = NSRect(x: area.minX, y: y0, width: area.width, height: y1 - y0)
         guard rect.maxY >= dirtyRect.minY, rect.minY <= dirtyRect.maxY else { return }
         Self.viewportFill.setFill()

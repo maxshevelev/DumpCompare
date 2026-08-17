@@ -140,17 +140,17 @@ final class MinimapTests: XCTestCase {
         XCTAssertEqual(panel.frame.width, 150, accuracy: 1,
                        "an in-range width is applied as dragged")
 
-        // Below the minimum the delegate clamps the divider back up to 80 pt.
+        // Below the minimum the delegate clamps the divider back up to 120 pt.
         split.setPanelWidth(10, animated: false)
         window.layoutIfNeeded()
         XCTAssertGreaterThanOrEqual(panel.frame.width, MinimapSplitView.minPanelWidth,
                                     "the panel never shrinks below its minimum")
 
-        // Above the maximum the panel stops at a quarter of the screen.
+        // Above the maximum the panel stops at 240 pt.
         split.setPanelWidth(10_000, animated: false)
         window.layoutIfNeeded()
         XCTAssertLessThanOrEqual(panel.frame.width, MinimapSplitView.maxPanelWidth,
-                                 "the panel never grows past a quarter of the screen")
+                                 "the panel never grows past its maximum width")
 
         // The in-range drag is persisted for the next show.
         split.setPanelWidth(150, animated: false)
@@ -168,10 +168,10 @@ final class MinimapTests: XCTestCase {
         let (_, window) = try makeController()
         let (split, panel) = try minimapViews(window)
 
-        // First show: drag to 200 (persisted).
+        // First show: drag to 150 (persisted).
         split.setPanelVisible(true, animated: false)
         window.layoutIfNeeded()
-        split.setPanelWidth(200, animated: false)
+        split.setPanelWidth(150, animated: false)
         window.layoutIfNeeded()
 
         // Hide, then show again — the persisted width wins over the default.
@@ -181,7 +181,7 @@ final class MinimapTests: XCTestCase {
 
         split.setPanelVisible(true, animated: false)
         window.layoutIfNeeded()
-        XCTAssertEqual(panel.frame.width, 200, accuracy: 1,
+        XCTAssertEqual(panel.frame.width, 150, accuracy: 1,
                        "the second show restores the dragged width")
     }
 
@@ -335,7 +335,7 @@ final class MinimapTests: XCTestCase {
         return (controller, window, panel)
     }
 
-    func testSignificanceStripesMarkSignificantBytes() throws {
+    func testSignificanceCellsMarkSignificantBytes() throws {
         // 3 hex rows: row 0 has a significant byte, row 1 is all fill, row 2
         // has a significant byte.
         let bytes: [UInt8] = [0x00, 0x41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -347,24 +347,46 @@ final class MinimapTests: XCTestCase {
         let (_, _, panel) = try makeSingleFileWindow(bytes)
         let map = try XCTUnwrap(panel.maps.first)
         XCTAssertEqual(map.fileSize, UInt64(bytes.count))
-        XCTAssertEqual(map.rows.count, 3, "48 bytes = 3 hex rows → 3 stripes")
-        XCTAssertEqual(map.rows[0], .significant, "row 0 holds byte 0x41")
-        XCTAssertEqual(map.rows[1], .insignificant, "row 1 is all 0x00/0xFF fill")
-        XCTAssertEqual(map.rows[2], .significant, "row 2 holds byte 0x42")
+        XCTAssertEqual(map.rows.count, 3, "48 bytes = 3 hex rows → 3 mini rows")
+        XCTAssertEqual(map.rows[0].cells.count, 16, "a full hex row keeps 16 cells")
+        XCTAssertEqual(map.rows[0].cells[1], .significant, "row 0 holds 0x41 at column 1")
+        XCTAssertEqual(map.rows[0].cells.filter { $0 == .significant }.count, 1,
+                       "only 0x41 is significant in row 0")
+        XCTAssertTrue(map.rows[1].cells.allSatisfy { $0 == .insignificant },
+                      "row 1 is all 0x00/0xFF fill")
+        XCTAssertEqual(map.rows[2].cells[2], .significant, "row 2 holds 0x42 at column 2")
+        XCTAssertEqual(map.rows[2].cells.filter { $0 == .significant }.count, 1,
+                       "only 0x42 is significant in row 2")
     }
 
-    func testStripeCountCollapsesLargeFiles() throws {
-        // More hex rows than maxRenderRows → exactly maxRenderRows stripes.
-        let size = MinimapView.maxRenderRows * 16 + 100
+    func testPartialLastRowKeepsOnlyItsBytes() throws {
+        // 3 bytes = one partial hex row → one mini row with exactly 3 cells.
+        let (_, _, panel) = try makeSingleFileWindow([0x41, 0x00, 0x42])
+        let map = try XCTUnwrap(panel.maps.first)
+        XCTAssertEqual(map.rows.count, 1)
+        XCTAssertEqual(map.rows[0].cells.count, 3, "the partial row holds only its bytes")
+        XCTAssertEqual(map.rows[0].cells[0], .significant)
+        XCTAssertEqual(map.rows[0].cells[1], .insignificant)
+        XCTAssertEqual(map.rows[0].cells[2], .significant)
+    }
+
+    func testRowCountCollapsesLargeFiles() throws {
+        // A probe file gives the panel its real height, so the expected density
+        // matches the row capacity that height implies.
+        let (_, _, probe) = try makeSingleFileWindow([0x41])
+        let capacity = MinimapView.rowCapacity(areaHeight: probe.bounds.height)
+        XCTAssertGreaterThan(capacity, 1, "the test window must fit a few rows")
+        // More hex rows than the capacity → exactly the capacity mini rows.
+        let size = capacity * 16 + 100
         let bytes = [UInt8](repeating: 0x00, count: size)
         let (_, _, panel) = try makeSingleFileWindow(bytes)
         let map = try XCTUnwrap(panel.maps.first)
-        XCTAssertEqual(map.rows.count, MinimapView.maxRenderRows,
-                       "a file larger than the render density collapses to maxRenderRows stripes")
+        XCTAssertEqual(map.rows.count, capacity,
+                       "a file larger than the render density collapses to the panel's row capacity")
     }
 
-    func testComparisonDifferenceStripesWin() throws {
-        // Two files that differ everywhere → every stripe is a difference stripe.
+    func testComparisonDifferenceCellsWin() throws {
+        // Two files that differ everywhere → every cell is a difference cell.
         let url1 = try tempFile([UInt8](repeating: 0x41, count: 64))
         let url2 = try tempFile([UInt8](repeating: 0x42, count: 64))
         let (controller, window) = try makeController()
@@ -377,9 +399,11 @@ final class MinimapTests: XCTestCase {
         window.layoutIfNeeded()
 
         _ = pumpUntil(2.0) { panel.maps.count == 2 && !panel.maps[0].rows.isEmpty }
-        // The background index needs to land before the diff stripes appear.
+        // The background index needs to land before the diff cells appear.
         _ = pumpUntil(3.0) {
-            panel.maps.allSatisfy { map in !map.rows.isEmpty && map.rows.allSatisfy { $0 == .different } }
+            panel.maps.allSatisfy { map in
+                !map.rows.isEmpty && map.rows.allSatisfy { row in row.cells.allSatisfy { $0 == .different } }
+            }
         }
         XCTAssertEqual(panel.maps.count, 2, "one map per pane")
     }

@@ -134,6 +134,37 @@ final class ZoomToFitTests: XCTestCase {
         XCTAssertEqual(window.frame.origin.x, before.origin.x, accuracy: 0.5, "x must be kept")
     }
 
+    /// A visible minimap panel shares the content area, so zoom-to-fit adds the
+    /// panel's preferred width (plus the divider) to the hex grid's fit.
+    func testZoomAccountsForVisibleMinimapPanel() throws {
+        let url = try tempFile([UInt8](repeating: 0x41, count: 256))
+        let controller = makeController()
+        let window = controller.window!
+        let mainVC = controller.mainViewController
+        defer { cleanup(mainVC, url) }
+        try mainVC.windowModel.pane1.open(url: url)
+        mainVC.apply(mode: .singleFile)
+        window.layoutIfNeeded()
+
+        let split = mainVC.minimapSplit
+        let pane = try XCTUnwrap(findPane(in: mainVC.view))
+
+        // Without the panel the fitted width is just the hex grid.
+        let hidden = mainVC.windowWillUseStandardFrame(
+            window, defaultFrame: NSRect(x: 0, y: 0, width: 3000, height: 2000))
+        XCTAssertEqual(hidden.width, expectedFrameWidth(for: pane.contentFitWidth, window: window),
+                       accuracy: 1, "a hidden panel adds nothing")
+
+        // Shown at its preferred width, the fit grows by panel + divider.
+        split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+        let shown = mainVC.windowWillUseStandardFrame(
+            window, defaultFrame: NSRect(x: 0, y: 0, width: 3000, height: 2000))
+        let expected = pane.contentFitWidth + split.preferredPanelWidth + split.dividerThickness
+        XCTAssertEqual(shown.width, expectedFrameWidth(for: expected, window: window),
+                       accuracy: 1, "the fit makes room for the visible panel")
+    }
+
     /// Side-by-side: the width must fit both grids plus the divider, the height
     /// the taller of the two files.
     func testComparisonVerticalFitsBothPanes() throws {
