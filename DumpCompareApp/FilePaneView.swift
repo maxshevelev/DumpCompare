@@ -607,7 +607,7 @@ final class FilePaneView: NSView {
     /// Shows the Search All results panel with every match of the pattern, read
     /// lazily from the pane's live storage so edits since the scan are
     /// reflected in the excerpts.
-    func showSearchResults(matches: [Range<UInt64>]) {
+    func showSearchResults(matches: [Range<UInt64>], matchLength: Int) {
         searchResultsView.configure(
             matches: matches,
             byteProvider: { [weak viewModel] offset, length in
@@ -615,7 +615,8 @@ final class FilePaneView: NSView {
                 return (try? storage.read(at: offset, length: length)) ?? []
             },
             textDecoder: viewModel.textDecoder,
-            fileSize: { [weak viewModel] in viewModel?.fileSize ?? 0 })
+            fileSize: { [weak viewModel] in viewModel?.fileSize ?? 0 },
+            matchLength: matchLength)
         searchResultsSplit.resultsPanelVisible = true
         applySearchResultsHeight()
     }

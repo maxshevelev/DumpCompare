@@ -1664,7 +1664,7 @@ final class MainViewController: NSViewController {
         let paneView = filePaneView(for: pane)
         searchAllPane = paneView
         // Open the panel empty before any scanning; matches stream in below.
-        paneView?.showSearchResults(matches: [])
+        paneView?.showSearchResults(matches: [], matchLength: pattern.bytes.count)
         paneView?.searchResultsView.setSearching(true)
         activeFilePane?.beginOperation(operation)
         searchAllGeneration += 1

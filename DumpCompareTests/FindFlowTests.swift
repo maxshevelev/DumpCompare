@@ -816,7 +816,7 @@ final class FindFlowTests: XCTestCase {
         controller.findPattern()
         let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
         let view = paneView.searchResultsView
-        paneView.showSearchResults(matches: [])
+        paneView.showSearchResults(matches: [], matchLength: 2)
         view.setSearching(true)
 
         XCTAssertEqual(view.tableView.numberOfRows, 0)
@@ -1367,6 +1367,74 @@ final class FindFlowTests: XCTestCase {
         XCTAssertTrue(paneView.searchResultsSplit.resultsPanelVisible,
                       "the results panel stays open")
         XCTAssertEqual(view.tableView.numberOfRows, 2, "with its rows intact")
+    }
+
+    // MARK: - Column widths follow the values (§11)
+
+    /// The value font is monospaced and every value has a known length, so a
+    /// column's default width is computed from a template rather than left at a
+    /// hand-picked constant: wide enough for the widest value it can hold, and
+    /// not materially wider.
+    func testColumnWidthsFitTheWidestValue() throws {
+        // 4-byte pattern, file big enough that an excerpt is never clamped.
+        let pattern: [UInt8] = [0xDE, 0xAD, 0xBE, 0xEF]
+        var bytes = [UInt8](repeating: 0x41, count: 200)
+        bytes.replaceSubrange(100..<104, with: pattern)
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let view = try runSearchAll("DE AD BE EF", in: window)
+        XCTAssertEqual(view.tableView.numberOfRows, 1)
+
+        let font = AppearanceSettings.font(size: 13)
+        func width(_ text: String) -> CGFloat {
+            ceil((text as NSString).size(withAttributes: [.font: font]).width)
+        }
+        // 8 bytes of padding either side of a 4-byte match.
+        let excerptBytes = 8 + pattern.count + 8
+        let expected: [(String, String)] = [
+            ("offset", String(repeating: "0", count: 8)),
+            ("hex", [String](repeating: "FF", count: excerptBytes).joined(separator: " ")),
+            ("text", String(repeating: "W", count: excerptBytes)),
+        ]
+        for (id, template) in expected {
+            let column = try XCTUnwrap(view.tableView.tableColumns.first {
+                $0.identifier.rawValue == id
+            }, "column \(id)")
+            let value = width(template)
+            XCTAssertGreaterThanOrEqual(column.width, value,
+                                        "\(id) must fit its widest value (\(value) pt)")
+            // The only additions are the cell's two 4 pt insets and 1 pt of
+            // rounding slack — anything more would be a hand-picked constant.
+            XCTAssertLessThanOrEqual(column.width, value + 2 * SearchResultCellView.labelInset + 1,
+                                     "\(id) must not be wider than its content needs")
+        }
+    }
+
+    /// A longer pattern means longer excerpts, so the excerpt columns grow with
+    /// it while the offset column — whose values are a fixed digit count — does not.
+    func testExcerptColumnsGrowWithThePatternLength() throws {
+        var bytes = [UInt8](repeating: 0x41, count: 300)
+        bytes.replaceSubrange(100..<108, with: [UInt8](repeating: 0x5A, count: 8))
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+        controller.findPattern()
+
+        func widths(_ patternText: String) throws -> (offset: CGFloat, hex: CGFloat) {
+            let view = try runSearchAll(patternText, in: window)
+            func column(_ id: String) throws -> NSTableColumn {
+                try XCTUnwrap(view.tableView.tableColumns.first { $0.identifier.rawValue == id })
+            }
+            return (try column("offset").width, try column("hex").width)
+        }
+
+        let short = try widths("5A 5A")
+        let long = try widths("5A 5A 5A 5A 5A 5A")
+        XCTAssertGreaterThan(long.hex, short.hex,
+                             "a longer pattern makes a longer hex excerpt")
+        XCTAssertEqual(long.offset, short.offset, accuracy: 0.5,
+                       "the offset column's values are a fixed width")
     }
 
 }

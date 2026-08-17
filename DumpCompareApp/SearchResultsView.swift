@@ -47,6 +47,11 @@ final class SearchResultsView: NSView {
     /// stays open across edits, and a size taken once would clamp the excerpt
     /// windows (and size the offset column) against a length the file no longer
     /// has (§11).
+    /// The pattern's length in bytes for the search on show. Every excerpt
+    /// covers `2 * excerptPadding + matchLength` bytes, so it fixes the widest
+    /// value each column can hold.
+    private var matchLength = 1
+
     private var fileSizeProvider: (() -> UInt64)?
     private var fileSize: UInt64 { fileSizeProvider?() ?? 0 }
 
@@ -170,18 +175,22 @@ final class SearchResultsView: NSView {
     }
 
     private func setUpTable() {
+        // The widths here are placeholders: `configure` sizes every column to
+        // the widest value it can actually hold for the search being shown
+        // (§11). `minWidth` is only a floor for the user's own dragging, and it
+        // is lowered when the content turns out narrower than it.
         let offsetColumn = NSTableColumn(identifier: ColumnID.offset)
         offsetColumn.title = "Offset"
         offsetColumn.width = 90
-        offsetColumn.minWidth = 70
+        offsetColumn.minWidth = 40
         let hexColumn = NSTableColumn(identifier: ColumnID.hex)
         hexColumn.title = "Excerpt Hex"
         hexColumn.width = 300
-        hexColumn.minWidth = 160
+        hexColumn.minWidth = 60
         let textColumn = NSTableColumn(identifier: ColumnID.text)
         textColumn.title = "Excerpt Text"
         textColumn.width = 200
-        textColumn.minWidth = 80
+        textColumn.minWidth = 40
         tableView.addTableColumn(offsetColumn)
         tableView.addTableColumn(hexColumn)
         tableView.addTableColumn(textColumn)
@@ -204,19 +213,24 @@ final class SearchResultsView: NSView {
 
     // MARK: - Content
 
-    /// Shows `matches` for the current search: updates the header's count and
-    /// reloads the table. `byteProvider` reads the pane's live storage and
-    /// `textDecoder` decodes the excerpt the same way the dump does.
+    /// Shows `matches` for the current search: sizes the columns, updates the
+    /// header's count and reloads the table. `byteProvider` reads the pane's live
+    /// storage and `textDecoder` decodes the excerpt the same way the dump does.
+    /// `matchLength` is the pattern's length in bytes — it fixes how wide the
+    /// excerpt columns need to be (§11).
     func configure(matches: [Range<UInt64>],
                    byteProvider: @escaping (UInt64, Int) -> [UInt8],
                    textDecoder: any TextDecoder,
-                   fileSize: @escaping () -> UInt64) {
+                   fileSize: @escaping () -> UInt64,
+                   matchLength: Int) {
         self.matches = matches
         self.byteProvider = byteProvider
         self.textDecoder = textDecoder
         self.fileSizeProvider = fileSize
+        self.matchLength = matchLength
         isSearching = false
         isTruncated = false
+        sizeColumnsToContent()
         updateHeader()
         tableView.reloadData()
     }
@@ -252,6 +266,40 @@ final class SearchResultsView: NSView {
         guard isTruncated != truncated else { return }
         isTruncated = truncated
         updateHeader()
+    }
+
+    /// Sets each column's width to the widest value it can hold for this search.
+    ///
+    /// No row is measured. The value font is monospaced and every value has a
+    /// known length: the offset is zero-padded to a fixed number of hex digits,
+    /// and an excerpt covers at most `2 * excerptPadding + matchLength` bytes —
+    /// "FF FF …" in the hex column, one glyph per byte in the text one. So the
+    /// widest value per column is a template string, measured once (§11).
+    ///
+    /// The text column is exact for ASCII-ish decodings; a decoder that yields
+    /// wide glyphs (CJK) can still overflow, and those values truncate with "…"
+    /// as they always did. A total wider than the panel gets a horizontal
+    /// scroller rather than clipping.
+    private func sizeColumnsToContent() {
+        let bytes = Int(Self.excerptPadding) * 2 + max(1, matchLength)
+        let offsetDigits = max(8, String(fileSize, radix: 16).count)
+        let templates: [NSUserInterfaceItemIdentifier: String] = [
+            ColumnID.offset: String(repeating: "0", count: offsetDigits),
+            ColumnID.hex: [String](repeating: "FF", count: bytes).joined(separator: " "),
+            ColumnID.text: String(repeating: "W", count: bytes),
+        ]
+        let font = regularFont
+        for column in tableView.tableColumns {
+            guard let template = templates[column.identifier] else { continue }
+            let value = (template as NSString).size(withAttributes: [.font: font]).width
+            // For a short pattern the header title can be the wider of the two.
+            let header = column.headerCell.attributedStringValue.size().width
+            let width = ceil(max(value, header)) + 2 * SearchResultCellView.labelInset + 1
+            // `width` is clamped to `minWidth`, so a column whose content is
+            // narrower than its hand-picked floor needs the floor lowered.
+            column.minWidth = min(column.minWidth, width)
+            column.width = width
+        }
     }
 
     private func updateHeader() {
@@ -386,6 +434,10 @@ extension SearchResultsView: NSTableViewDataSource, NSTableViewDelegate {
 /// renders it on exactly one line, truncating the tail with "…" against the
 /// column's current width (§11).
 final class SearchResultCellView: NSTableCellView {
+    /// The label's inset from each side of the cell. Read by the column sizing,
+    /// so a value's measured width and the room it gets cannot drift apart.
+    static let labelInset: CGFloat = 4
+
     private let label = NSTextField(labelWithString: "")
 
     init(identifier: NSUserInterfaceItemIdentifier) {
@@ -404,8 +456,8 @@ final class SearchResultCellView: NSTableCellView {
         label.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.labelInset),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Self.labelInset),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }

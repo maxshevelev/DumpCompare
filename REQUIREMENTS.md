@@ -615,6 +615,11 @@ Search All (results panel):
   not touch the newer one's panel, nor disable its close control.
 - Excerpts and offsets are read from the pane's live content, so they follow
   edits made while the panel is open.
+- Column widths default to the width of the values they hold, not to fixed
+  constants. The value font is monospaced and every value has a known length
+  (a zero-padded offset; an excerpt of a fixed byte count), so the widths are
+  computed from template strings rather than measured per row. A total wider
+  than the panel scrolls horizontally.
 
 Optional but recommended:
 
