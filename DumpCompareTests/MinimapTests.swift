@@ -608,7 +608,7 @@ final class MinimapTests: XCTestCase {
         let paneRows = (visible.upperBound - visible.lowerBound + 15) / 16
         let band = try XCTUnwrap(panel.viewportRects().first)
         XCTAssertEqual(band.height, CGFloat(paneRows) * MinimapView.rowStep, accuracy: MinimapView.rowStep,
-                       "the band is exactly the pane's rows at 4 pt each")
+                       "the band is exactly the pane's rows at one row-step each")
         XCTAssertEqual(band.minY,
                        CGFloat(visible.lowerBound / 16 - panel.topRow) * MinimapView.rowStep,
                        accuracy: 1, "and starts at the pane's first row within the window")

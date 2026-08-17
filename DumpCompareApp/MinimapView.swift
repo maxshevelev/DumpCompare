@@ -21,8 +21,8 @@ import Cocoa
 /// (`byteText`), muted for a 0x00/0xFF fill (`mutedByteText`). The selection is a
 /// translucent blue overlay on top (`selectionFill`), mirroring the panes.
 ///
-/// **The scale is fixed**, so the file does *not* fit the panel: 4 pt per hex row
-/// means a 1 MB file is ~262 000 pt tall while the panel shows ~150 rows. The map
+/// **The scale is fixed**, so the file does *not* fit the panel: 3 pt per hex row
+/// means a 1 MB file is ~197 000 pt tall while the panel shows ~200 rows. The map
 /// is therefore a window onto the file, `topRow` being the first hex row drawn,
 /// and it is *virtualized* — no cells are stored and only the visible rows are
 /// ever read (`byteStates`), so a 4 GB file costs exactly what a 4 KB one does.
@@ -96,7 +96,7 @@ final class MinimapView: NSView {
     /// The render scale, fixed by design: a byte cell is `byteHeight` tall with
     /// `rowGap` between rows, so one hex row costs `rowStep` no matter how large
     /// the file is. This is what makes the map a window rather than an overview.
-    static let byteHeight: CGFloat = 3
+    static let byteHeight: CGFloat = 2
     static let rowGap: CGFloat = 1
     static var rowStep: CGFloat { byteHeight + rowGap }
 
