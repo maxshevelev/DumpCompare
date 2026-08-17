@@ -1689,16 +1689,13 @@ final class MainViewController: NSViewController {
                     view.setSearching(false)
                 }
             } catch is CancellationError {
-                // The × button or a newer search superseded this one. Hide the
-                // panel only if it is still the current search's — a superseded
-                // search must not clobber a newer search's live results.
-                if self.searchAllGeneration == generation {
-                    paneView?.hideSearchResults()
-                }
+                // The × button, the status-strip stop, or a newer search ended
+                // this one. End it, hiding its panel only when that cannot
+                // clobber a newer search's live results (§11).
+                self.endSearchAllTask(generation: generation, paneView: paneView)
             } catch {
-                if self.searchAllGeneration == generation {
-                    paneView?.hideSearchResults()
-                }
+                // A scan error (e.g. a storage read failure) aborts the search.
+                self.endSearchAllTask(generation: generation, paneView: paneView)
             }
             operation.finish()
             // This search is over (completed, cancelled, or superseded); a later
@@ -1723,6 +1720,20 @@ final class MainViewController: NSViewController {
         guard searchAllPane === pane else { return }
         findTask?.cancel()
         findOperation?.finish()
+    }
+
+    /// Ends a Search All that did not complete (cancelled or errored). When it
+    /// is still the current search, its results panel is hidden (the handle is
+    /// cleared later, at the task's end). When a newer search superseded it,
+    /// the newer search's panel is left alone — but this task's own panel, in a
+    /// different pane, is still collapsed so it is not left behind with a
+    /// forever-hanging "…" count (§11).
+    private func endSearchAllTask(generation: Int, paneView: FilePaneView?) {
+        if searchAllGeneration == generation {
+            paneView?.hideSearchResults()
+        } else if let paneView, paneView !== searchAllPane {
+            paneView.hideSearchResults()
+        }
     }
 
     /// Streams every match of `pattern` from the pane's live storage into the
