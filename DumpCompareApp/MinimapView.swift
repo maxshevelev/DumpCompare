@@ -16,15 +16,15 @@ import Cocoa
 /// groups) scaled to the content width. A row of the dump is one `ByteRow` of
 /// up to 16 per-byte cells; the last row can be shorter for a partial hex row.
 /// A cell is coloured by what its byte(s) hold — the same colours the hex
-/// panes use:
-/// - the byte is a 0x00/0xFF fill → muted (`mutedByteText`);
-/// - the byte is significant → ink (`byteText`);
-/// - the byte differs from the companion → orange (`differenceFill`);
-/// and the current selection is drawn as a translucent blue overlay on top of
-/// the cells (`selectionFill`), mirroring the selection fill in the panes.
+/// panes use, layered the same way: a byte that differs from the companion
+/// gets an orange background over the whole cell, and the byte itself is drawn
+/// on top — red when modified (`modifiedText`), ink when significant
+/// (`byteText`), muted for a 0x00/0xFF fill (`mutedByteText`). The current
+/// selection is drawn as a translucent blue overlay on top of the cells
+/// (`selectionFill`), mirroring the selection fill in the panes.
 ///
 /// A small file keeps one mini row per hex row and is drawn at the map's top
-/// (byte height 4 pt), leaving the rest of the map empty; a large file
+/// (byte height 3 pt), leaving the rest of the map empty; a large file
 /// collapses groups of hex rows onto as many mini rows as fit the map's height
 /// (`rowCapacity(areaHeight:)`), each cell's state aggregating its group's
 /// bytes. The viewport and selection overlays are measured against the map's
@@ -60,22 +60,29 @@ final class MinimapView: NSView {
         let cells: [CellState]
     }
 
-    /// How a byte cell is coloured, by what the byte(s) it covers contain.
-    enum CellState {
-        /// The byte is a 0x00/0xFF fill and differs from nothing.
-        case insignificant
+    /// The flags that colour a byte cell, by what the byte(s) it covers contain.
+    /// A cell can carry any combination: a byte can be significant and modified,
+    /// differ from the companion, and so on — the renderer layers them (diff is
+    /// a background, the byte itself is drawn on top), matching the hex panes,
+    /// which show modified (red ink) and difference (background) together.
+    struct CellState: Equatable {
         /// The byte is not a 0x00/0xFF fill.
-        case significant
+        var isSignificant: Bool
+        /// The byte was modified since the file was last read from disk.
+        var isModified: Bool
         /// The byte differs from the companion file.
-        case different
+        var isDifferent: Bool
+
+        static let insignificant = CellState(isSignificant: false, isModified: false, isDifferent: false)
+        static let significant = CellState(isSignificant: true, isModified: false, isDifferent: false)
     }
 
     /// Render density comes from the map's height, not a fixed constant: a byte
     /// cell is at most this tall, with `rowGap` breathing room between rows, so
     /// a map can hold `rowCapacity` mini rows. A file small enough for its hex
-    /// rows to fit 1:1 never fills the map (cells stay 4 pt tall, rows drawn
+    /// rows to fit 1:1 never fills the map (cells stay 3 pt tall, rows drawn
     /// from the top); a larger file aggregates hex rows down to the capacity.
-    static let byteHeight: CGFloat = 4
+    static let byteHeight: CGFloat = 3
     static let rowGap: CGFloat = 1
 
     /// How many mini rows fit a map `areaHeight` tall: every row costs
@@ -384,17 +391,24 @@ final class MinimapView: NSView {
             let row = rows[i]
             for (j, state) in row.cells.enumerated() {
                 guard j < origins.count else { break }
-                let color: NSColor
-                switch state {
-                case .insignificant: color = HexTheme.mutedByteText
-                case .significant: color = HexTheme.byteText
-                case .different: color = HexTheme.differenceFill
+                let rect = NSRect(x: area.minX + origins[j],
+                                  y: y,
+                                  width: cellWidth,
+                                  height: Self.byteHeight)
+                // Difference is a background over the whole cell (the byte
+                // columns stay separate — the gaps between cells show the
+                // panel's paper, so a diff read as dotted, not a solid stripe).
+                if state.isDifferent {
+                    HexTheme.differenceFill.setFill()
+                    rect.fill()
                 }
+                // The byte itself is drawn on top of that background, so a
+                // modified byte shows as red ink on orange, exactly as the hex
+                // panes draw it.
+                let color = state.isModified ? HexTheme.modifiedText
+                    : (state.isSignificant ? HexTheme.byteText : HexTheme.mutedByteText)
                 color.setFill()
-                NSRect(x: area.minX + origins[j],
-                       y: y,
-                       width: cellWidth,
-                       height: Self.byteHeight).fill()
+                rect.fill()
             }
         }
     }

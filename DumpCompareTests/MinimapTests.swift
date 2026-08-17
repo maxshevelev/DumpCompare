@@ -370,6 +370,31 @@ final class MinimapTests: XCTestCase {
         XCTAssertEqual(map.rows[0].cells[2], .significant)
     }
 
+    func testModifiedCellsMarkEditedBytes() throws {
+        // A freshly opened file has nothing modified; editing a byte turns its
+        // cell's isModified flag on (the map rebuilds on every edit).
+        let bytes: [UInt8] = [0x00, 0x41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                              0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+        let (controller, _, panel) = try makeSingleFileWindow(bytes)
+        let mapBefore = try XCTUnwrap(panel.maps.first)
+        XCTAssertFalse(mapBefore.rows[0].cells.contains(where: \.isModified),
+                       "no edits yet → no modified cells")
+
+        controller.windowModel.pane1.moveCaret(to: 1)
+        controller.windowModel.pane1.typeASCII(0x42)
+        _ = pumpUntil(2.0) {
+            guard let map = panel.maps.first, !map.rows.isEmpty else { return false }
+            return map.rows[0].cells[1].isModified
+        }
+        let mapAfter = try XCTUnwrap(panel.maps.first)
+        XCTAssertEqual(mapAfter.rows[0].cells[1],
+                       MinimapView.CellState(isSignificant: true, isModified: true,
+                                             isDifferent: false),
+                       "the typed byte is significant and modified")
+        XCTAssertFalse(mapAfter.rows[0].cells[0].isModified,
+                       "untouched bytes stay unmodified")
+    }
+
     func testRowCountCollapsesLargeFiles() throws {
         // A probe file gives the panel its real height, so the expected density
         // matches the row capacity that height implies.
@@ -402,7 +427,7 @@ final class MinimapTests: XCTestCase {
         // The background index needs to land before the diff cells appear.
         _ = pumpUntil(3.0) {
             panel.maps.allSatisfy { map in
-                !map.rows.isEmpty && map.rows.allSatisfy { row in row.cells.allSatisfy { $0 == .different } }
+                !map.rows.isEmpty && map.rows.allSatisfy { row in row.cells.allSatisfy(\.isDifferent) }
             }
         }
         XCTAssertEqual(panel.maps.count, 2, "one map per pane")

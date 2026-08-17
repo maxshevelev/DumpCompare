@@ -62,7 +62,9 @@ final class PaneViewModel: HexViewDataSource {
     /// modified-byte detection. Recreated whenever the on-disk content is known
     /// to have changed (save, save as, revert) so a stale chunk cache can't
     /// misreport.
-    private var savedStorage: FileBackedStorage?
+    /// The file's bytes as last read from disk, for painting modified (unsaved)
+    /// bytes. Read by the minimap so modified cells show on the map too.
+    private(set) var savedStorage: FileBackedStorage?
     /// True while the pane holds an untitled in-memory document (File > New
     /// File) that has never been saved to disk. Such a document has no URL to
     /// watch and no on-disk reference for modified-byte detection; the header

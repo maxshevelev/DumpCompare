@@ -396,14 +396,19 @@ final class MainViewController: NSViewController {
     /// stripes on top of the last significance — cheap, so it can fire on every
     /// index refresh without stalling the main thread.
     private func rebuildMinimap(full: Bool) {
-        // Snapshot the inputs on the main thread before leaving it.
-        let source: [(storage: (any ByteStorage)?, size: UInt64)]
+        // Snapshot the inputs on the main thread before leaving it. The saved
+        // storage is the file's bytes on disk; nil when there is none (a brand
+        // new untitled document), in which case nothing is modified.
+        let source: [(storage: (any ByteStorage)?, saved: (any ByteStorage)?, size: UInt64)]
         switch mode {
         case .singleFile:
-            source = [(windowModel.pane1.byteStorage, windowModel.pane1.fileSize)]
+            source = [(windowModel.pane1.byteStorage, windowModel.pane1.savedStorage,
+                       windowModel.pane1.fileSize)]
         case .comparison:
-            source = [(windowModel.pane1.byteStorage, windowModel.pane1.fileSize),
-                      (windowModel.pane2.byteStorage, windowModel.pane2.fileSize)]
+            source = [(windowModel.pane1.byteStorage, windowModel.pane1.savedStorage,
+                       windowModel.pane1.fileSize),
+                      (windowModel.pane2.byteStorage, windowModel.pane2.savedStorage,
+                       windowModel.pane2.fileSize)]
         case .empty:
             source = []
         }
@@ -417,7 +422,8 @@ final class MainViewController: NSViewController {
             minimapBuildTask = Task.detached(priority: .utility) { [weak self] in
                 let significance: [[MinimapView.ByteRow]] = source.indices.map { i in
                     let item = source[i]
-                    return Self.buildSignificanceRows(storage: item.storage, fileSize: item.size,
+                    return Self.buildSignificanceRows(storage: item.storage, saved: item.saved,
+                                                      fileSize: item.size,
                                                       rowCapacity: capacities.indices.contains(i) ? capacities[i] : 0)
                 }
                 guard !Task.isCancelled else { return }
@@ -527,11 +533,16 @@ final class MainViewController: NSViewController {
     /// merging its group's bytes in that column. Reads in chunks and stops a
     /// row's scan as soon as every cell is significant.
     private static func buildSignificanceRows(storage: (any ByteStorage)?,
+                                              saved: (any ByteStorage)?,
                                               fileSize: UInt64,
                                               rowCapacity: Int) -> [MinimapView.ByteRow] {
         guard let storage, fileSize > 0 else { return [] }
         let hexRows = (fileSize + 15) / 16
         let count = Int(min(hexRows, UInt64(max(1, rowCapacity))))
+        // When there is a saved copy on disk, a modified byte hiding past an
+        // early significant exit would drop off the map, so the scan runs to the
+        // range's end instead of stopping as soon as every cell is significant.
+        let needsModified = saved != nil
         var rows: [MinimapView.ByteRow] = []
         rows.reserveCapacity(count)
         let chunkSize = 64 * 1024
@@ -540,23 +551,36 @@ final class MainViewController: NSViewController {
             let cellCount = Int(min(UInt64(16), byteRange.upperBound - byteRange.lowerBound))
             var significant = [Bool](repeating: false, count: cellCount)
             var cellsLeft = cellCount
+            var modified = [Bool](repeating: false, count: cellCount)
             let start = byteRange.lowerBound
             var offset = start
-            while offset < byteRange.upperBound, cellsLeft > 0 {
+            while offset < byteRange.upperBound, cellsLeft > 0 || needsModified {
                 let length = Int(min(UInt64(chunkSize), byteRange.upperBound - offset))
                 guard let bytes = try? storage.read(at: offset, length: length), !bytes.isEmpty else { break }
+                // The saved slice for the same span; bytes past its end (appended
+                // since the file was last read from disk) count as modified.
+                let savedBytes = saved.flatMap { try? $0.read(at: offset, length: length) } ?? []
                 for (k, byte) in bytes.enumerated() {
-                    guard byte != 0x00, byte != 0xFF else { continue }
                     let col = Int((offset + UInt64(k) - start) % 16)
-                    guard col < cellCount, !significant[col] else { continue }
-                    significant[col] = true
-                    cellsLeft -= 1
-                    if cellsLeft == 0 { break }
+                    guard col < cellCount else { continue }
+                    if byte != 0x00, byte != 0xFF, !significant[col] {
+                        significant[col] = true
+                        cellsLeft -= 1
+                        if cellsLeft == 0, !needsModified { break }
+                    }
+                    if needsModified, !modified[col] {
+                        let isModified = savedBytes.indices.contains(k)
+                            ? savedBytes[k] != byte
+                            : true  // appended past the saved file
+                        if isModified { modified[col] = true }
+                    }
                 }
                 offset += UInt64(bytes.count)
             }
-            let cells = (0..<cellCount).map {
-                significant[$0] ? MinimapView.CellState.significant : MinimapView.CellState.insignificant
+            let cells = (0..<cellCount).map { j in
+                MinimapView.CellState(isSignificant: significant[j],
+                                      isModified: modified[j],
+                                      isDifferent: false)
             }
             rows.append(MinimapView.ByteRow(cells: cells))
         }
@@ -564,8 +588,9 @@ final class MainViewController: NSViewController {
     }
 
     /// Merges the significance cells with the comparison index's difference
-    /// cells: any cell with a `.different` byte becomes `.different` (the
-    /// orange wins), the rest keep their significance.
+    /// cells: any cell whose column holds a differing byte gets the
+    /// `isDifferent` flag set (the orange background), keeping whatever
+    /// significance and modification flags it already carries.
     private static func mergedMaps(significance: [[MinimapView.ByteRow]],
                                    sizes: [UInt64],
                                    index: DiffBlockIndex?) -> [MinimapView.Map] {
@@ -579,10 +604,13 @@ final class MainViewController: NSViewController {
                 rows = (0..<count).map { row in
                     let range = Self.rowByteRange(row: row, count: count, hexRows: hexRows, fileSize: size)
                     let source = sig[row].cells
-                    let cells = (0..<source.count).map { j in
-                        Self.containsDifferent(inColumn: j, start: range.lowerBound,
-                                               end: range.upperBound, index: index)
-                            ? MinimapView.CellState.different : source[j]
+                    let cells = (0..<source.count).map { j -> MinimapView.CellState in
+                        var cell = source[j]
+                        if Self.containsDifferent(inColumn: j, start: range.lowerBound,
+                                                  end: range.upperBound, index: index) {
+                            cell.isDifferent = true
+                        }
+                        return cell
                     }
                     return MinimapView.ByteRow(cells: cells)
                 }
