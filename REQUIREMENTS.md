@@ -41,6 +41,17 @@ App model:
 
 The app must not require multiple windows in MVP, but architecture should not make future multi-window support impossible.
 
+App icon:
+- The icon shows a chip from above with two hex bytes on it, the second marked
+  the way the hex view marks a difference: dark glyphs on the difference orange
+  (§6). A line down the chip's centre stands for the two files.
+- It is generated, not hand-drawn: `Design/AppIcon.swift` draws the 1024 pt
+  master and `Design/render-appicon.sh` slices it into the asset catalog, so a
+  change to the artwork is a change to code.
+- Only a clean build proves the icon actually ships — an incremental build
+  restores the compiled catalog from its intermediates even when the artwork is
+  gone.
+
 =====================================================================
 3. WINDOW, PANES, AND LAYOUT
 =====================================================================

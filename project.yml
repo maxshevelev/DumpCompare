@@ -29,6 +29,9 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: dev.maxik.DumpCompare
         PRODUCT_NAME: DumpCompare
         GENERATE_INFOPLIST_FILE: YES
+        # The icon lives in Assets.xcassets; Design/render-appicon.sh regenerates
+        # its images from Design/AppIcon.swift.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_CFBundleDisplayName: DumpCompare
         INFOPLIST_KEY_NSHumanReadableCopyright: "Copyright © 2026"
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
