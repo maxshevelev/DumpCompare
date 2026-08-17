@@ -97,7 +97,7 @@ final class MinimapView: NSView {
     /// this wide — a fraction of the panel's full width — so the minimap's
     /// split echoes the gap between the two side-by-side panes and the gap
     /// scales with the panel's own width.
-    static let sideBySideGutterFraction: CGFloat = 0.01
+    static let sideBySideGutterFraction: CGFloat = 0.05
 
     private(set) var mapLayout: MapLayout = .single
     /// The maps currently drawn (file sizes + byte cells). Updated by `setMaps`
@@ -285,7 +285,7 @@ final class MinimapView: NSView {
         case .single:
             return bounds
         case .sideBySide:
-            // The two maps flank a 1 % gutter of the panel's full width,
+            // The two maps flank a 5 % gutter of the panel's full width,
             // centered on the panel; the divider line sits at the gutter's
             // centre (the panel's centre). Basing it on the whole width (not
             // the padded content) makes the gap scale with the panel's width.
@@ -310,7 +310,7 @@ final class MinimapView: NSView {
     /// away from the panel's side edges while running edge to edge top and
     /// bottom. In side-by-side mode each map keeps only its outer padding: the
     /// inner edges drop the inset so the two dumps meet at the gutter and the
-    /// visible gap between them is exactly the 1 % gutter — which scales with
+    /// visible gap between them is exactly the 5 % gutter — which scales with
     /// the panel — rather than the gutter plus two fixed pads. Never negative
     /// (a tiny map just collapses to no content).
     private func contentArea(within area: NSRect, forMapAt index: Int) -> NSRect {
