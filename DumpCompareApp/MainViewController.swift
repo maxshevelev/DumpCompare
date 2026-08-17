@@ -886,6 +886,24 @@ final class MainViewController: NSViewController {
             }
         }
 
+        // A cell past this file's own end holds none of its bytes, so it can
+        // neither differ nor be modified — whatever the comparison index says.
+        // The index is built over the *union* of the two files (§9), so every
+        // byte past the shorter file's end counts as a difference there; drawn
+        // as such it painted the shorter map's empty tail solid. The tail is
+        // empty, exactly as it is in detail mode.
+        for row in 0..<rowCount where modified[row] != 0 || different[row] != 0 {
+            var covered: UInt16 = 0
+            let rowStart = extent * UInt64(row) / UInt64(rowCount)
+            let span = extent * UInt64(row + 1) / UInt64(rowCount) - rowStart
+            for column in 0..<columns
+            where rowStart + span * UInt64(column) / UInt64(columns) < source.size {
+                covered |= UInt16(1) << UInt16(column)
+            }
+            modified[row] &= covered
+            different[row] &= covered
+        }
+
         return MinimapView.OverviewSummary(extent: extent, rowCount: rowCount,
                                           density: density, modified: modified,
                                           different: different)

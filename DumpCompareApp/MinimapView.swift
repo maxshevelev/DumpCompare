@@ -891,9 +891,11 @@ final class MinimapView: NSView {
                 // it, even an all-fill slice is drawn muted, the way the dump
                 // draws a 0x00/0xFF byte (§19.4.2).
                 let sliceStart = rowStart + span * UInt64(column) / UInt64(columns)
-                let covered = sliceStart < fileSize
+                // Past this file's end there is nothing of it to draw — not a
+                // fill, not an event. That is what leaves the shorter file's
+                // tail empty (§9).
+                guard sliceStart < fileSize else { continue }
                 let isEvent = modified & bit != 0 || different & bit != 0
-                guard covered || isEvent else { continue }
                 // An event is one cell of a one-pixel row, invisible inside a
                 // dense region, so it is drawn two pixels tall — it spills into
                 // the next row rather than disappearing.
@@ -1018,16 +1020,19 @@ final class MinimapView: NSView {
                 let density = summary.density.indices.contains(densityIndex)
                     ? summary.density[densityIndex] : 0
                 let sliceStart = rowStart + span * UInt64(column) / UInt64(columns)
-                let isEvent = modified & bit != 0 || different & bit != 0
+                // Coverage first: past this file's end the cell is paper, even if
+                // the comparison called those bytes different (§9).
+                let covered = sliceStart < fileSize
+                let isEvent = covered && (modified & bit != 0 || different & bit != 0)
                 let colour: (r: UInt8, g: UInt8, b: UInt8)
-                if modified & bit != 0 {
+                if !covered {
+                    colour = paper
+                } else if modified & bit != 0 {
                     colour = modifiedInk
                 } else if different & bit != 0 {
                     colour = differentInk
-                } else if sliceStart < fileSize {
-                    colour = tones[Int(density)]
                 } else {
-                    colour = paper
+                    colour = tones[Int(density)]
                 }
                 // An event covers its own row and the one below, the way the
                 // exact renderer draws it two pixels tall (§19.4.2): a single

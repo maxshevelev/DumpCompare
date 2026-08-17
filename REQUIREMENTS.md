@@ -1069,6 +1069,11 @@ resolution is used and nothing is spent on gaps.
   the difference is still legible across the rest of the region.
 - Rows are binned over the comparison's extent, so the same height is the same
   absolute offset on both maps (§9); rows past a shorter file's end stay empty.
+  Empty means empty: the difference index is built over the extent, so every
+  byte past the shorter file's end counts as a difference in it, and a map must
+  not paint those on the file that ended — its tail carries no shading, no
+  difference and no modification. The longer file's map does mark that region,
+  because it holds bytes the other file does not (§9).
 - The picture must be computed off the main thread and cached: every row is on
   screen at once, so it cannot be read per repaint. It must be recomputed when
   the bins change (a resize), when the bytes change, and when the comparison

@@ -1326,6 +1326,63 @@ final class MinimapTests: XCTestCase {
         XCTAssertEqual(item.state, .on)
     }
 
+    /// The shorter file's tail is empty in overview, the way it already is in
+    /// detail (§9). The comparison index spans the *union* of the two files, so
+    /// every byte past the shorter file's end is a difference in it — painted as
+    /// one, the shorter map's tail came out solid diff instead of blank.
+    func testOverviewLeavesTheShortFilesTailEmpty() throws {
+        isolatedDefaults.set(MinimapView.RenderMode.overview.rawValue,
+                             forKey: MainViewController.minimapRenderModeDefaultsKey)
+        // Identical content where both files have bytes: the only "differences"
+        // are the ones the missing tail creates.
+        let long = (0..<(256 * 1024)).map { UInt8(0x20 + ($0 % 90)) }
+        let short = [UInt8](long[0..<(128 * 1024)])
+        let url1 = try tempFile(long), url2 = try tempFile(short)
+        let (controller, window) = try makeController()
+        try controller.windowModel.pane1.open(url: url1)
+        try controller.windowModel.pane2.open(url: url2)
+        LayoutSettings.set(isVertical: true)
+        controller.apply(mode: .comparison)
+        window.layoutIfNeeded()
+        let (split, panel) = try minimapViews(window)
+        split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+        XCTAssertTrue(pumpUntil(10.0) {
+            (panel.overviewSummaries.last?.rowCount ?? 0) == panel.overviewRowCount()
+        }, "the overview arrives")
+
+        // The shorter file is the second map; its summary must claim nothing
+        // beyond its own half of the extent.
+        let summary = try XCTUnwrap(panel.overviewSummaries.last)
+        let ownRows = summary.rowCount / 2
+        for row in (ownRows + 1)..<summary.rowCount {
+            XCTAssertEqual(summary.different[row], 0, "row \(row) is past the file's end")
+            XCTAssertEqual(summary.modified[row], 0, "row \(row) is past the file's end")
+        }
+        // The longer file's own map keeps those differences: past the shorter
+        // file's end it holds bytes the other file does not have, which is a
+        // difference on *its* map — the same asymmetry the panes show.
+        let longSummary = try XCTUnwrap(panel.overviewSummaries.first)
+        XCTAssertTrue(longSummary.different[(ownRows + 2)...].contains { $0 != 0 },
+                      "the longer file's tail differs, because the other file ends")
+
+        // Pixels: the shorter map's tail carries no orange, while the longer
+        // map's tail at the same height does.
+        let tail = try sampleRowColours(panel, y: panel.bounds.height * 0.85,
+                                        from: panel.bounds.width * 0.55,
+                                        to: panel.bounds.width - MinimapView.contentPadding - 2)
+        XCTAssertGreaterThan(tail.count, 20, "enough pixels to judge")
+        let longTail = try sampleRowColours(panel, y: panel.bounds.height * 0.85,
+                                            from: MinimapView.contentPadding + 2,
+                                            to: panel.bounds.width * 0.45)
+        let shortMax = tail.map(orangeness).max() ?? 0
+        let longMax = longTail.map(orangeness).max() ?? 0
+        XCTAssertLessThan(shortMax, 0.02,
+                          "the short file's tail is blank, not a difference: \(shortMax)")
+        XCTAssertGreaterThan(longMax, 0.05,
+                             "while the longer file's tail is marked as one: \(longMax)")
+    }
+
     // MARK: - Overview tone and overlays (§19.4.2, §19.6)
 
     /// The shading stays inside the tonal band the dump itself occupies: a slice
@@ -1343,6 +1400,29 @@ final class MinimapTests: XCTestCase {
         XCTAssertEqual(steps, steps.sorted(), "tone rises with density")
         XCTAssertGreaterThan(MinimapView.overviewTone(density: 20) - MinimapView.overviewMinTone,
                             0.03, "a sparse slice is distinguishable from empty")
+    }
+
+    /// The same line as `sampleRow`, as colours rather than brightness. Needed
+    /// where the thing being told apart is a *hue*: the difference fill is a
+    /// translucent orange, whose brightness over white paper is within a few
+    /// percent of the paper's own.
+    private func sampleRowColours(_ panel: MinimapView, y: CGFloat,
+                                  from: CGFloat, to: CGFloat) throws -> [NSColor] {
+        let rep = try XCTUnwrap(panel.bitmapImageRepForCachingDisplay(in: panel.bounds))
+        panel.cacheDisplay(in: panel.bounds, to: rep)
+        let scaleX = CGFloat(rep.pixelsWide) / panel.bounds.width
+        let scaleY = CGFloat(rep.pixelsHigh) / panel.bounds.height
+        let py = min(max(Int(y * scaleY), 0), rep.pixelsHigh - 1)
+        let first = max(0, Int((from * scaleX).rounded(.down)))
+        let last = min(rep.pixelsWide - 1, Int((to * scaleX).rounded(.up)))
+        guard last >= first else { return [] }
+        return (first...last).compactMap { rep.colorAt(x: $0, y: py)?.usingColorSpace(.deviceRGB) }
+    }
+
+    /// How orange a sample is compared with the panel's paper — the difference
+    /// fill's giveaway, since it is orange over paper.
+    private func orangeness(_ colour: NSColor) -> CGFloat {
+        colour.redComponent - colour.blueComponent
     }
 
     /// Samples a horizontal line of the rendered panel inside one map's content.
