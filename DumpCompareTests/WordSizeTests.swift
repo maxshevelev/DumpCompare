@@ -42,6 +42,8 @@ final class WordSizeTests: XCTestCase {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("word-size-\(UUID().uuidString).bin")
         try Data([UInt8](repeating: 0xAB, count: 64)).write(to: url)
+        // Sandboxed test host: an undeleted file stays in the app's container.
+        defer { try? FileManager.default.removeItem(at: url) }
         let vm = PaneViewModel()
         try vm.open(url: url)
         let pane = FilePaneView(viewModel: vm)
