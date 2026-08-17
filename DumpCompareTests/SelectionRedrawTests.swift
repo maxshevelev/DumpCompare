@@ -159,6 +159,41 @@ final class SelectionRedrawTests: XCTestCase {
         XCTAssertEqual(rows(rects, rowHeight: rowHeight), [0, 1, 2, 3])
     }
 
+    /// Typing into a selection consumes it one byte at a time from its leading
+    /// edge (§7.4): each keystroke moves the caret one byte forward while the
+    /// selection stays non-empty. The span XOR alone invalidates only the byte
+    /// that stopped being selected, so the caret's new row would not repaint —
+    /// the caret must be drawn (and its rows invalidated) at the leading edge
+    /// even while a selection is held.
+    func testTypingIntoSelectionInvalidatesCaretRow() throws {
+        let (hexView, url) = try makePane([UInt8](repeating: 0, count: 200))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let rowHeight = hexView.hexLayout.rowHeight
+
+        // Selection [8, 40) loses its first byte: the caret moves 8 → 9, both
+        // in row 0. The selected-byte XOR covers byte 8's row; the caret-move
+        // rule covers both caret rows (the same row here).
+        let rects = hexView.changedSelectionRects(
+            from: selection(8, 40, size: 200),
+            to: selection(9, 40, size: 200))
+        XCTAssertEqual(rows(rects, rowHeight: rowHeight), [0, 1])
+    }
+
+    /// The row-boundary case: typing consumes byte 15 (last of row 0), the
+    /// caret lands on byte 16 (first of row 1). The span XOR only invalidates
+    /// byte 15, so without the caret-move rule the new caret row would never
+    /// repaint and the bar would vanish mid-typing.
+    func testTypingAcrossRowBoundaryInvalidatesBothCaretRows() throws {
+        let (hexView, url) = try makePane([UInt8](repeating: 0, count: 200))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let rowHeight = hexView.hexLayout.rowHeight
+
+        let rects = hexView.changedSelectionRects(
+            from: selection(15, 40, size: 200),
+            to: selection(16, 40, size: 200))
+        XCTAssertEqual(rows(rects, rowHeight: rowHeight), [0, 1, 2])
+    }
+
     func testUnchangedSelectionInvalidatesNothing() throws {
         let (hexView, url) = try makePane([UInt8](repeating: 0, count: 200))
         defer { try? FileManager.default.removeItem(at: url) }

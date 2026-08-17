@@ -67,10 +67,11 @@ final class HexView: NSView {
     var onVisibleRangeChanged: ((Range<UInt64>) -> Void)?
 
     /// Whether this hex view is the active pane. The caret is drawn only on the
-    /// active pane, and only when there is no selection (§3.3); both panes draw
-    /// closed contours mirroring the *other* pane's selection, and the inactive
-    /// pane additionally traces the active pane's bare caret as a single-byte
-    /// contour. Defaults to true (single-file mode).
+    /// active pane, at the next typed byte — the caret when there is no
+    /// selection, the selection's leading edge while one is held (§7.4); both
+    /// panes draw closed contours mirroring the *other* pane's selection, and
+    /// the inactive pane additionally traces the active pane's bare caret as a
+    /// single-byte contour. Defaults to true (single-file mode).
     var isActive = true {
         didSet { needsDisplay = true }
     }
@@ -408,6 +409,17 @@ final class HexView: NSView {
         // its span coincides with the other side's (§3.3).
         if old.isEmpty { rows.insert(Int(old.start / UInt64(HexLayout.bytesPerRow))) }
         if new.isEmpty { rows.insert(Int(new.start / UInt64(HexLayout.bytesPerRow))) }
+        // The caret draws on the leading edge of a selection too (§7.4), so a
+        // start that moved — typing consumes a byte, or a drag pulls the edge
+        // up — must repaint both rows it left and entered. The span XOR alone
+        // misses it when the move is a single byte: the old span's head and the
+        // new span's head share the same body, so only the byte that stopped
+        // being selected is in the symmetric difference, and the caret's new
+        // row (at the new start) never repaints.
+        if old.start != new.start {
+            rows.insert(Int(old.start / UInt64(HexLayout.bytesPerRow)))
+            rows.insert(Int(new.start / UInt64(HexLayout.bytesPerRow)))
+        }
 
         guard !rows.isEmpty else { return [] }
         // The selection's outline — the mirrored contour, the caret bar, the
@@ -655,14 +667,19 @@ final class HexView: NSView {
             )
         }
 
-        // Caret: only on the active pane, and only when there is no selection.
-        if isActive && selection.isEmpty {
+        // Caret: on the active pane always, at the byte the next typed
+        // character lands on. With no selection that is the caret itself; with
+        // a selection it is the selection's leading edge — the spot a Fill or a
+        // typed byte consumes next, so the user can see where input goes (§7.4).
+        // The bar draws over the selection fill, which is exactly the point.
+        if isActive {
             drawCaret(offset: selection.start, layout: layout, nibble: nibble, region: region, rowCount: rowCount)
         }
 
         // Cross-column link: with no selection, the active caret outlines the
         // byte in the column it is not in, linking the hex and ASCII views of
-        // the same byte — the same rounded contour the mirrors use (§3.3).
+        // the same byte — the same rounded contour the mirrors use (§3.3). A
+        // selection already fills both columns, so the link stays selection-free.
         if isActive && selection.isEmpty {
             drawCrossColumnLink()
         }
