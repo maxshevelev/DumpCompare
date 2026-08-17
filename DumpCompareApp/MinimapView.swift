@@ -56,6 +56,12 @@ final class MinimapView: NSView {
     /// of one per hex row (which would be millions for a big file).
     static let maxRenderRows = 2048
 
+    /// Inset of the maps' content from the panel's edges — the stripes sit in a
+    /// 6 pt frame on every side, matching the breathing room the hex panes give
+    /// their dumps. The viewport rectangle deliberately ignores this inset and
+    /// runs edge to edge (§ N).
+    static let contentPadding: CGFloat = 6
+
     private(set) var mapLayout: MapLayout = .single
     /// The maps currently drawn (file sizes + stripes). Updated by `setMaps`
     /// after a background rebuild; readable so tests can inspect the stripes.
@@ -136,11 +142,6 @@ final class MinimapView: NSView {
             : NSColor(white: 0.15, alpha: 0.14)
     }
 
-    /// How far the viewport rectangle pokes out beyond the map's lines on
-    /// every side, so the band reads as an overlay sitting on top of the
-    /// stripes rather than a stripe of its own.
-    private static let viewportOverhang: CGFloat = 2
-
     /// The maps draw top-down, matching the stacked panes' flipped coordinates
     /// (first pane on top), so a stacked divider lands at the same y as the
     /// panes' divider.
@@ -168,10 +169,14 @@ final class MinimapView: NSView {
         super.draw(dirtyRect)
         for (index, map) in maps.enumerated() {
             let area = area(forMapAt: index)
-            drawStripes(of: map, in: area, dirtyRect: dirtyRect)
+            // The map's content (stripes, selection) sits in a 6 pt frame away
+            // from the panel's edges; the viewport rectangle deliberately runs
+            // edge to edge past it (§ N).
+            let content = contentArea(within: area)
+            drawStripes(of: map, in: content, dirtyRect: dirtyRect)
             drawViewport(viewport: viewport(forMapAt: index), fileSize: map.fileSize,
                          in: area, dirtyRect: dirtyRect)
-            drawSelection(map.selection, fileSize: map.fileSize, in: area, dirtyRect: dirtyRect)
+            drawSelection(map.selection, fileSize: map.fileSize, in: content, dirtyRect: dirtyRect)
         }
         switch mapLayout {
         case .single:
@@ -207,6 +212,17 @@ final class MinimapView: NSView {
         }
     }
 
+    /// The padded region a map's content is drawn in: `area` inset by
+    /// `contentPadding` on every side, so the file's lines sit in a frame away
+    /// from the panel's edges — matching the breathing room the hex panes give
+    /// their dumps. Never negative (a tiny map just collapses to no content).
+    private func contentArea(within area: NSRect) -> NSRect {
+        let pad = Self.contentPadding
+        return NSRect(x: area.minX + pad, y: area.minY + pad,
+                      width: max(0, area.width - pad * 2),
+                      height: max(0, area.height - pad * 2))
+    }
+
     private func drawStripes(of map: Map, in area: NSRect, dirtyRect: NSRect) {
         let rows = map.rows
         guard !rows.isEmpty, area.height > 0 else { return }
@@ -233,11 +249,12 @@ final class MinimapView: NSView {
         }
     }
 
-    /// Draws the pane's visible slice as a grey band over the map's stripes —
-    /// the minimap's "you are here" rectangle. The band is the fraction of the
-    /// file the pane has scrolled to, poking `viewportOverhang` pt past the
-    /// map's lines on each side. Drawn under the selection overlay so a
-    /// selection inside the viewport stays readable.
+    /// Draws the pane's visible slice as a grey band over the map — the
+    /// minimap's "you are here" rectangle. Unlike the stripes, the band runs
+    /// edge to edge: full map width, and the file fraction against the map's
+    /// full height, so it pokes past the padded lines on every side. Drawn
+    /// under the selection overlay so a selection inside the viewport stays
+    /// readable.
     private func drawViewport(viewport: Range<UInt64>?, fileSize: UInt64,
                               in area: NSRect, dirtyRect: NSRect) {
         guard let viewport, !viewport.isEmpty, fileSize > 0 else { return }
@@ -246,9 +263,7 @@ final class MinimapView: NSView {
         guard endFraction > startFraction else { return }
         let y0 = area.minY + startFraction * area.height
         let y1 = area.minY + endFraction * area.height
-        let overhang = Self.viewportOverhang
-        let rect = NSRect(x: area.minX - overhang, y: y0 - overhang,
-                          width: area.width + overhang * 2, height: y1 - y0 + overhang * 2)
+        let rect = NSRect(x: area.minX, y: y0, width: area.width, height: y1 - y0)
         guard rect.maxY >= dirtyRect.minY, rect.minY <= dirtyRect.maxY else { return }
         Self.viewportFill.setFill()
         rect.fill()
