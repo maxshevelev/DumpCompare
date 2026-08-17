@@ -1165,9 +1165,15 @@ The panes' visible slice is drawn as a translucent band over the map.
   not by redrawing the maps: a height change re-bins the file and needs the
   background pass, and a width change redraws every cell at a new width. Both
   arrive as a stream during a drag, so the exact picture is drawn once the
-  frame stops moving. The stretch keeps the file's orientation and marks its
+  frame stops moving. The stretch keeps the file's orientation, marks its
   events visibly, and never leaves the map short of its area or spilling past
   it.
+- The stretched picture must carry the same weight as the exact one. Events are
+  drawn two device pixels tall, so each one also tints the row below it and a
+  run of them composites twice over: a stretch built from one pass per pixel
+  drew a solid difference column — what a long file compared against a much
+  shorter one looks like — at roughly 0.35 alpha instead of 0.58, which reads
+  as the map going pale while the panel is resized.
 
 19.8 Accessibility
 

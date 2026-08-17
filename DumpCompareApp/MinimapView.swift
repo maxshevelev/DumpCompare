@@ -986,64 +986,75 @@ final class MinimapView: NSView {
         let rows = summary.rowCount
         guard rows > 0, columns > 0 else { return nil }
 
-        /// The cell colours, flattened onto the panel's paper: the image is
-        /// opaque, so the translucent inks have to be composited here.
-        func flatten(_ colour: NSColor) -> (r: UInt8, g: UInt8, b: UInt8) {
-            let paper = Self.background.usingColorSpace(.deviceRGB) ?? .white
-            guard let ink = colour.usingColorSpace(.deviceRGB) else { return (0, 0, 0) }
-            let alpha = ink.alphaComponent
-            func mix(_ over: CGFloat, _ under: CGFloat) -> UInt8 {
-                UInt8(min(255, max(0, (over * alpha + under * (1 - alpha)) * 255)))
-            }
-            return (mix(ink.redComponent, paper.redComponent),
-                    mix(ink.greenComponent, paper.greenComponent),
-                    mix(ink.blueComponent, paper.blueComponent))
+        /// One colour's components in 0...1.
+        func components(_ colour: NSColor) -> (r: CGFloat, g: CGFloat, b: CGFloat, a: CGFloat) {
+            guard let resolved = colour.usingColorSpace(.deviceRGB) else { return (0, 0, 0, 1) }
+            return (resolved.redComponent, resolved.greenComponent,
+                    resolved.blueComponent, resolved.alphaComponent)
         }
-        let ink = HexTheme.byteText
-        let tones = (0...255).map { flatten(ink.withAlphaComponent(Self.overviewTone(density: UInt8($0)))) }
-        let modifiedInk = flatten(HexTheme.modifiedText)
-        let differentInk = flatten(HexTheme.differenceFill)
-        let paper = flatten(Self.background)
+        /// Lays one translucent colour over another, the way a fill does.
+        func over(_ ink: (r: CGFloat, g: CGFloat, b: CGFloat, a: CGFloat),
+                  _ base: (r: CGFloat, g: CGFloat, b: CGFloat, a: CGFloat))
+            -> (r: CGFloat, g: CGFloat, b: CGFloat, a: CGFloat) {
+            (ink.r * ink.a + base.r * (1 - ink.a),
+             ink.g * ink.a + base.g * (1 - ink.a),
+             ink.b * ink.a + base.b * (1 - ink.a), 1)
+        }
+
+        let paper = components(Self.background)
+        let inkColour = HexTheme.byteText
+        let tones = (0...255).map {
+            components(inkColour.withAlphaComponent(Self.overviewTone(density: UInt8($0))))
+        }
+        let modifiedInk = components(HexTheme.modifiedText)
+        let differentInk = components(HexTheme.differenceFill)
 
         var pixels = [UInt8](repeating: 0, count: columns * rows * 4)
         let fileSize = maps.indices.contains(index) ? maps[index].fileSize : 0
         let extent = max(summary.extent, 1)
-        for row in 0..<rows {
+
+        /// What one cell contributes, or nil where the file has already ended.
+        /// An event replaces the shading rather than layering over it, exactly the
+        /// choice the exact renderer makes.
+        func cellInk(row: Int, column: Int)
+            -> (ink: (r: CGFloat, g: CGFloat, b: CGFloat, a: CGFloat), isEvent: Bool)? {
+            guard row >= 0, row < rows else { return nil }
+            let bit = UInt16(1) << UInt16(column)
+            let rowStart = extent * UInt64(row) / UInt64(rows)
+            let span = extent * UInt64(row + 1) / UInt64(rows) - rowStart
+            guard rowStart + span * UInt64(column) / UInt64(columns) < fileSize else { return nil }
             let modified = summary.modified.indices.contains(row) ? summary.modified[row] : 0
             let different = summary.different.indices.contains(row) ? summary.different[row] : 0
-            let rowStart = extent * UInt64(row) / UInt64(rows)
-            let rowEnd = extent * UInt64(row + 1) / UInt64(rows)
-            let span = rowEnd - rowStart
+            if modified & bit != 0 { return (modifiedInk, true) }
+            if different & bit != 0 { return (differentInk, true) }
+            let densityIndex = row * columns + column
+            let density = summary.density.indices.contains(densityIndex)
+                ? summary.density[densityIndex] : 0
+            return (tones[Int(density)], false)
+        }
+
+        for row in 0..<rows {
             for column in 0..<columns {
-                let bit = UInt16(1) << UInt16(column)
-                let densityIndex = row * columns + column
-                let density = summary.density.indices.contains(densityIndex)
-                    ? summary.density[densityIndex] : 0
-                let sliceStart = rowStart + span * UInt64(column) / UInt64(columns)
-                // Coverage first: past this file's end the cell is paper, even if
-                // the comparison called those bytes different (§9).
-                let covered = sliceStart < fileSize
-                let isEvent = covered && (modified & bit != 0 || different & bit != 0)
-                let colour: (r: UInt8, g: UInt8, b: UInt8)
-                if !covered {
-                    colour = paper
-                } else if modified & bit != 0 {
-                    colour = modifiedInk
-                } else if different & bit != 0 {
-                    colour = differentInk
-                } else {
-                    colour = tones[Int(density)]
+                // The exact renderer draws an event two device pixels tall
+                // (§19.4.2), so the row above spills onto this one and its
+                // translucent fill composites twice — which is most of the
+                // colour a dense difference region actually has. One flat pass
+                // instead left the stand-in visibly paler than the picture it
+                // stands in for, so the map looked like it faded during a
+                // resize. The passes are replayed here in the renderer's own
+                // order: the row above's spill, then this row's own cell.
+                var colour = paper
+                if let above = cellInk(row: row - 1, column: column), above.isEvent {
+                    colour = over(above.ink, colour)
                 }
-                // An event covers its own row and the one below, the way the
-                // exact renderer draws it two pixels tall (§19.4.2): a single
-                // row of a thousand is what a downscale drops first.
-                for target in isEvent ? [row, min(rows - 1, row + 1)] : [row] {
-                    let offset = (target * columns + column) * 4
-                    pixels[offset] = colour.r
-                    pixels[offset + 1] = colour.g
-                    pixels[offset + 2] = colour.b
-                    pixels[offset + 3] = 255
+                if let own = cellInk(row: row, column: column) {
+                    colour = over(own.ink, colour)
                 }
+                let offset = (row * columns + column) * 4
+                pixels[offset] = UInt8(min(255, max(0, colour.r * 255)))
+                pixels[offset + 1] = UInt8(min(255, max(0, colour.g * 255)))
+                pixels[offset + 2] = UInt8(min(255, max(0, colour.b * 255)))
+                pixels[offset + 3] = 255
             }
         }
 

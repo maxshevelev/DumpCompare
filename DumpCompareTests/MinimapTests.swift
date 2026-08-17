@@ -1326,6 +1326,63 @@ final class MinimapTests: XCTestCase {
         XCTAssertEqual(item.state, .on)
     }
 
+    /// The stand-in must not pale the picture out. Comparing a long file with a
+    /// much shorter one makes the long file's tail one solid column of
+    /// differences, and there the exact renderer's marks — two device pixels
+    /// tall (§19.4.2) — overlap row on row, so the translucent fill composites
+    /// twice. A stand-in that laid a single pass per pixel drew that column at
+    /// roughly 0.35 alpha instead of 0.58, which is the "diffs go pale while
+    /// resizing" this test exists for (§19.9).
+    func testTheStandInKeepsTheStrengthOfASolidDifferenceColumn() throws {
+        isolatedDefaults.set(MinimapView.RenderMode.overview.rawValue,
+                             forKey: MainViewController.minimapRenderModeDefaultsKey)
+        // A long file and a very short one: everything past the short file's end
+        // differs, so the long map's tail is solid.
+        let long = (0..<(512 * 1024)).map { UInt8(0x20 + ($0 % 90)) }
+        let short = [UInt8](long[0..<(32 * 1024)])
+        let url1 = try tempFile(long), url2 = try tempFile(short)
+        let (controller, window) = try makeController()
+        try controller.windowModel.pane1.open(url: url1)
+        try controller.windowModel.pane2.open(url: url2)
+        LayoutSettings.set(isVertical: true)
+        controller.apply(mode: .comparison)
+        window.layoutIfNeeded()
+        let (split, panel) = try minimapViews(window)
+        split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+        XCTAssertTrue(pumpUntil(10.0) {
+            panel.overviewSummaries.first?.rowCount == panel.overviewRowCount()
+                && (panel.overviewSummaries.first?.different.contains { $0 != 0 } ?? false)
+        }, "the exact picture with its difference column arrives")
+
+        /// The mean orangeness across the long map's tail — the solid column.
+        func columnStrength() throws -> CGFloat {
+            var samples: [CGFloat] = []
+            for step in 0..<12 {
+                let y = panel.bounds.height * (0.45 + 0.04 * CGFloat(step))
+                samples += try sampleRowColours(panel, y: y,
+                                                from: MinimapView.contentPadding + 2,
+                                                to: panel.bounds.width * 0.45)
+                    .map(orangeness)
+            }
+            XCTAssertGreaterThan(samples.count, 100, "enough pixels to judge")
+            return samples.reduce(0, +) / CGFloat(samples.count)
+        }
+        let exact = try columnStrength()
+        XCTAssertGreaterThan(exact, 0.1, "the tail really is a solid difference: \(exact)")
+
+        // Resize so the stand-in takes over, and measure the same column.
+        var frame = window.frame
+        frame.size.height += 40
+        window.setFrame(frame, display: false)
+        window.layoutIfNeeded()
+        XCTAssertNotEqual(panel.overviewSummaries.first?.rowCount, panel.overviewRowCount(),
+                          "the summary is stale, so the stand-in is what draws")
+        let stretched = try columnStrength()
+        XCTAssertEqual(stretched, exact, accuracy: exact * 0.15,
+                       "the stand-in draws the column just as strongly: \(stretched) vs \(exact)")
+    }
+
     /// The shorter file's tail is empty in overview, the way it already is in
     /// detail (§9). The comparison index spans the *union* of the two files, so
     /// every byte past the shorter file's end is a difference in it — painted as
