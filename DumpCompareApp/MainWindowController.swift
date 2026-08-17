@@ -198,6 +198,13 @@ final class MainWindowController: NSWindowController {
         viewMenu.addItem(withTitle: "Show Minimap",
                          action: #selector(MainViewController.toggleMinimap),
                          keyEquivalent: "M")
+        // Whole-file overview vs the detail window around the caret (§19.4). A
+        // checked item, not a flipping title: both modes show a minimap, so the
+        // check reads as "which one" rather than "on or off".
+        let overviewItem = viewMenu.addItem(withTitle: "Minimap Overview",
+                                           action: #selector(MainViewController.toggleMinimapOverview),
+                                           keyEquivalent: "m")
+        overviewItem.keyEquivalentModifierMask = [.command, .option]
         viewMenu.addItem(.separator())
 
         func addNavigationItem(_ title: String, _ action: Selector, _ key: String, _ modifiers: NSEvent.ModifierFlags) {

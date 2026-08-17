@@ -93,6 +93,56 @@ final class MinimapView: NSView {
         }
     }
 
+    /// How a map draws its file (§19.4).
+    enum RenderMode: String {
+        /// One cell per byte at a fixed scale: the map is a window onto the file
+        /// around the panes' position. Reads like a miniature hex dump.
+        case detail
+        /// The whole file at once, one device pixel per row: the map is an
+        /// overview of the dump's layout. A cell is a *slice* of the row's bytes
+        /// coloured by how much of it is real content, so erased 0xFF padding,
+        /// code and mixed regions separate at a glance.
+        case overview
+    }
+
+    /// The overview's precomputed picture of one file: it cannot be pulled per
+    /// repaint the way `detail` pulls its window, because every row is on screen
+    /// at once — an 8 MB dump would be read on every draw. The controller
+    /// computes this in the background and hands it over.
+    ///
+    /// Rows are binned over the *comparison's* extent (the longer of the open
+    /// files), not each file's own length, so the same height means the same
+    /// absolute offset on both maps (§9). Rows past a shorter file's end simply
+    /// carry no content.
+    struct OverviewSummary: Equatable {
+        /// The extent the rows are binned over — the longest open file.
+        let extent: UInt64
+        let rowCount: Int
+        /// `rowCount * 16` values, row-major: the share of bytes in that cell's
+        /// slice that are not a 0x00/0xFF fill, 0...255.
+        var density: [UInt8]
+        /// Per row, a bit per column holding at least one modified byte.
+        var modified: [UInt16]
+        /// Per row, a bit per column holding at least one byte that differs from
+        /// the companion.
+        var different: [UInt16]
+
+        static let empty = OverviewSummary(extent: 0, rowCount: 0, density: [],
+                                          modified: [], different: [])
+    }
+
+    /// How dark the overview draws its content. Deliberately short of full ink:
+    /// the dump itself renders a dense row as *glyphs* on paper, which reads as a
+    /// mid grey, and a byte that is a 0x00/0xFF fill is drawn muted rather than
+    /// left blank. Mapping "all content" to solid black and "all padding" to bare
+    /// paper turned the map into black islands on white; these bounds put it in
+    /// the tonal range the dump beside it actually occupies (§19.4.2).
+    static let overviewMinTone: CGFloat = 0.10
+    static let overviewMaxTone: CGFloat = 0.55
+    /// Lifts the low end so a sparse slice separates from an empty one instead of
+    /// vanishing into the floor.
+    static let overviewToneGamma: CGFloat = 0.75
+
     /// The render scale, fixed by design: a byte cell is `byteHeight` tall with
     /// `rowGap` between rows, so one hex row costs `rowStep` no matter how large
     /// the file is. This is what makes the map a window rather than an overview.
@@ -100,8 +150,9 @@ final class MinimapView: NSView {
     static let rowGap: CGFloat = 1
     static var rowStep: CGFloat { byteHeight + rowGap }
 
-    /// Bytes per hex row — the dump's row width, and the map's.
-    static let bytesPerRow: UInt64 = 16
+    /// Bytes per hex row — the dump's row width, and the map's. `nonisolated`
+    /// because the overview's background pass bins by it.
+    nonisolated static let bytesPerRow: UInt64 = 16
 
     /// How many hex rows a map `areaHeight` tall can show: every row costs
     /// `byteHeight` plus a trailing `rowGap` except the last. Small heights
@@ -141,6 +192,23 @@ final class MinimapView: NSView {
     /// never set from outside.
     private(set) var topRow: UInt64 = 0
 
+    /// The store the render mode is remembered in. Injectable so tests can pin a
+    /// mode in an isolated suite instead of reading the user's own preference.
+    static var defaults: UserDefaults = .standard
+
+    /// Which way the maps draw. Detail is the historical behaviour; overview is
+    /// chosen for files too large for detail to say anything useful (§19.4).
+    private(set) var renderMode: RenderMode = .detail
+
+    /// The overview's data, by map index. Empty in detail mode, or while a
+    /// background pass is still computing it.
+    private(set) var overviewSummaries: [OverviewSummary] = []
+
+    /// Fired when the number of overview rows the panel can show changes — a
+    /// resize, a layout flip, or a switch into overview — so the controller can
+    /// recompute the summary at the new density.
+    var onOverviewRowCountChanged: (() -> Void)?
+
     /// Supplies the per-byte state the map paints, for one byte range of one
     /// map. Called from `draw` for the visible rows only — the map stores no
     /// cells, so this is the whole data path.
@@ -158,15 +226,131 @@ final class MinimapView: NSView {
         guard !mapLayout.equivalent(to: layout) else { return }
         mapLayout = layout
         updateTopRow()
-        needsDisplay = true
+        invalidateAll()
+    }
+
+    /// Switches how the maps draw. The overview's data is dropped on the way
+    /// out and requested on the way in, so a stale picture is never shown.
+    func setRenderMode(_ mode: RenderMode) {
+        guard renderMode != mode else { return }
+        renderMode = mode
+        if mode == .detail { overviewSummaries = [] }
+        updateTopRow()
+        invalidateAll()
+        if mode == .overview { onOverviewRowCountChanged?() }
+    }
+
+    /// Adopts a freshly computed overview picture.
+    func setOverviewSummaries(_ summaries: [OverviewSummary]) {
+        guard overviewSummaries != summaries else { return }
+        let damage = overviewDamage(from: overviewSummaries, to: summaries)
+        overviewSummaries = summaries
+        if let damage { invalidate(damage) } else { invalidateAll() }
+    }
+
+    /// The rows two overview pictures disagree on, as rectangles — or nil when
+    /// they are not comparable row for row (first picture, new file, resized
+    /// panel) and the whole panel has to be repainted.
+    ///
+    /// A byte edit moves a handful of rows out of a thousand, so this is what
+    /// keeps editing a big dump from repainting its whole picture (§19.9).
+    private func overviewDamage(from old: [OverviewSummary],
+                                to new: [OverviewSummary]) -> [NSRect]? {
+        guard renderMode == .overview, old.count == new.count, maps.count == new.count,
+              !new.isEmpty else { return nil }
+        let rowHeight = overviewRowHeight
+        guard rowHeight > 0 else { return nil }
+        var rects: [NSRect] = []
+        for index in new.indices {
+            let (before, after) = (old[index], new[index])
+            guard before.rowCount == after.rowCount, before.extent == after.extent,
+                  before.density.count == after.density.count,
+                  before.modified.count == after.modified.count,
+                  before.different.count == after.different.count else { return nil }
+            guard before != after else { continue }
+            let area = contentArea(within: area(forMapAt: index), forMapAt: index)
+            var row = 0
+            while row < after.rowCount {
+                guard Self.overviewRow(row, differsIn: before, and: after) else {
+                    row += 1
+                    continue
+                }
+                let start = row
+                while row < after.rowCount,
+                      Self.overviewRow(row, differsIn: before, and: after) { row += 1 }
+                // An event cell is drawn two pixels tall, so the last changed
+                // row also dirties the pixel row below it.
+                rects.append(NSRect(x: area.minX,
+                                    y: area.minY + CGFloat(start) * rowHeight,
+                                    width: area.width,
+                                    height: CGFloat(row - start + 1) * rowHeight))
+            }
+        }
+        return rects
+    }
+
+    /// Whether one row's cells differ between two pictures of the same shape.
+    private static func overviewRow(_ row: Int, differsIn before: OverviewSummary,
+                                    and after: OverviewSummary) -> Bool {
+        guard before.modified.indices.contains(row) else { return false }
+        if before.modified[row] != after.modified[row] { return true }
+        if before.different[row] != after.different[row] { return true }
+        let columns = Int(bytesPerRow)
+        let start = row * columns
+        guard start + columns <= before.density.count else { return false }
+        for column in start..<(start + columns) where before.density[column] != after.density[column] {
+            return true
+        }
+        return false
+    }
+
+    /// One device pixel in this view's coordinates — the overview's row height,
+    /// so a row is exactly as thin as the display can draw.
+    var overviewRowHeight: CGFloat {
+        1 / (window?.backingScaleFactor ?? 2)
+    }
+
+    /// How many overview rows the shortest map can show. Shared by both maps so
+    /// the offset axis stays common (§9).
+    func overviewRowCount() -> Int {
+        guard !maps.isEmpty else { return 0 }
+        let height = maps.indices.map { area(forMapAt: $0).height }.min() ?? 0
+        guard height > 0, overviewRowHeight > 0 else { return 0 }
+        return max(0, Int(floor(height / overviewRowHeight)))
+    }
+
+    /// Whether the detail window can show the whole file at once. False means
+    /// detail would only ever show a sliver of it, which is when the overview
+    /// earns its place (§19.4).
+    func detailWindowFitsWholeFile() -> Bool {
+        let rows = referenceRowCount()
+        return rows == 0 || rows <= UInt64(max(0, windowRowCount()))
+    }
+
+    /// The overview picture for one map, if it is current.
+    private func overviewSummary(forMapAt index: Int) -> OverviewSummary? {
+        guard overviewSummaries.indices.contains(index) else { return nil }
+        let summary = overviewSummaries[index]
+        return summary.rowCount > 0 ? summary : nil
     }
 
     /// Replaces the maps (file sizes). Selections are re-applied by the caller
     /// afterwards — a rebuild and a selection change race.
     func setMaps(_ maps: [Map]) {
+        // This runs on every edit, and an edit almost never changes a file's
+        // size: bail out before the full repaint, and keep the selections the
+        // fresh maps would otherwise drop until the caller re-applies them.
+        guard maps.map(\.fileSize) != self.maps.map(\.fileSize) else { return }
+        let extentChanged = maps.map(\.fileSize).max() != self.maps.map(\.fileSize).max()
         self.maps = maps
         updateTopRow()
-        needsDisplay = true
+        invalidateAll()
+        // The overview's bins are built over the longest file, so a new file
+        // invalidates them.
+        if renderMode == .overview, extentChanged {
+            overviewSummaries = []
+            onOverviewRowCountChanged?()
+        }
     }
 
     /// Moves one map's selection overlay. Cheap — no data rebuild — so it is
@@ -174,8 +358,22 @@ final class MinimapView: NSView {
     func updateSelection(_ selection: Range<UInt64>?, forMapAt index: Int) {
         guard maps.indices.contains(index) else { return }
         guard maps[index].selection != selection else { return }
+        let vacated = selectionRect(forMapAt: index)
         maps[index].selection = selection
-        needsDisplay = true
+        invalidate([vacated, selectionRect(forMapAt: index)].compactMap { $0 })
+    }
+
+    /// The strip one map's selection overlay covers, if any — the same geometry
+    /// `drawSelection` paints, so an invalidation of it is exact.
+    private func selectionRect(forMapAt index: Int) -> NSRect? {
+        guard maps.indices.contains(index), let selection = maps[index].selection,
+              !selection.isEmpty else { return nil }
+        let area = contentArea(within: area(forMapAt: index), forMapAt: index)
+        guard area.height > 0 else { return nil }
+        let y0 = max(y(of: selection.lowerBound, in: area), area.minY)
+        let y1 = min(y(of: selection.upperBound, in: area), area.maxY)
+        guard y1 > y0 else { return nil }
+        return NSRect(x: area.minX, y: y0, width: area.width, height: y1 - y0)
     }
 
     /// The selection currently overlaid on a map (for tests).
@@ -194,9 +392,55 @@ final class MinimapView: NSView {
     /// slides the map's window, since the window is derived from the panes.
     func setViewports(_ viewports: [Range<UInt64>?]) {
         guard viewports != self.viewports else { return }
+        // The area the old overlay occupied has to be repainted whether or not
+        // the new one lands anywhere near it, so it is measured before the move.
+        let vacated = viewportDamage()
         self.viewports = viewports
-        updateTopRow()
+        if updateTopRow() {
+            invalidateAll()
+        } else {
+            invalidate(vacated + viewportDamage())
+        }
+    }
+
+    /// Marks only these rectangles for repaint. Scrolling calls into the panel
+    /// on every wheel tick, and the maps themselves do not change between edits:
+    /// in overview a full repaint would redraw a whole dump's picture — 16 cells
+    /// per device pixel row — to move a 7 pt chevron (§19.9).
+    ///
+    /// Correctness rests on `draw` painting *everything* that intersects the
+    /// repaint region, which it does: each pass clips itself to `dirtyRect`, so
+    /// a vacated strip comes back with its cells, divider and selection intact.
+    private func invalidate(_ rects: [NSRect]) {
+        lastRepaintRequest = rects.filter { !$0.isEmpty }
+        for rect in rects where !rect.isEmpty {
+            // A pixel of slack on each side covers the anti-aliased edge of a
+            // chevron or a band that does not land on a pixel boundary.
+            setNeedsDisplay(rect.insetBy(dx: -1, dy: -1).intersection(bounds))
+        }
+    }
+
+    /// Repaints the whole panel — for the changes that genuinely move every
+    /// pixel: a new file, a mode or layout switch, a resize, a theme change.
+    private func invalidateAll() {
+        lastRepaintRequest = nil
         needsDisplay = true
+    }
+
+    /// What the last change asked to repaint: the rectangles, or nil for the
+    /// whole panel. Exists so the dirty-region rules can be asserted (§19.9) —
+    /// "a scroll does not repaint the maps" is otherwise invisible to a test.
+    private(set) var lastRepaintRequest: [NSRect]?
+
+    /// Where the viewport overlay actually puts ink: the band itself in detail,
+    /// and in overview only the two margin chevrons — the rest of the band is
+    /// deliberately never drawn there (§19.6).
+    private func viewportDamage() -> [NSRect] {
+        let rects = viewportRects()
+        switch renderMode {
+        case .detail: return rects
+        case .overview: return rects.flatMap { overviewMarkerRects(for: $0) }
+        }
     }
 
     /// The panel's quiet background — the same paper the hex dumps sit on, so
@@ -218,6 +462,14 @@ final class MinimapView: NSView {
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             ? NSColor(white: 0.95, alpha: 0.16)
             : NSColor(white: 0.15, alpha: 0.14)
+    }
+
+    /// The viewport band's edges in overview, where the translucent fill alone
+    /// is too faint to find: the same grey at full strength.
+    private static let viewportEdge = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(white: 0.95, alpha: 0.75)
+            : NSColor(white: 0.15, alpha: 0.65)
     }
 
     /// The maps draw top-down, matching the stacked panes' flipped coordinates
@@ -244,7 +496,7 @@ final class MinimapView: NSView {
         // appearance, the same way the Find bar and the results panel do
         // (§3.1). The dynamic colours used in `draw` resolve per paint already.
         applyBackgroundColor()
-        needsDisplay = true
+        invalidateAll()
     }
 
     /// Resolves the panel's paper colour against the current appearance and
@@ -260,11 +512,29 @@ final class MinimapView: NSView {
         // A resize changes how many rows fit, which moves the window, and
         // re-derives the divider's position from the new bounds.
         updateTopRow()
-        needsDisplay = true
+        invalidateAll()
+        // The overview bins the file into one row per pixel, so a height change
+        // changes the bins themselves: the summary has to be recomputed.
+        guard renderMode == .overview else { return }
+        let rows = overviewRowCount()
+        guard rows != lastReportedOverviewRowCount else { return }
+        lastReportedOverviewRowCount = rows
+        onOverviewRowCountChanged?()
     }
+
+    /// The row count the controller last computed a summary for, so a layout
+    /// pass that changes nothing does not ask for a rebuild.
+    private var lastReportedOverviewRowCount = 0
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
+        // Since only the changed rectangles are invalidated (§19.9), a repaint
+        // has to start from the panel's paper rather than from whatever the
+        // previous frame left in the backing store — otherwise the chevron a
+        // scroll moved away from would stay behind. Clipped to the repaint
+        // region, so this is one small fill, not a full-panel one.
+        Self.background.setFill()
+        dirtyRect.fill()
         // Three passes rather than one per map: side-by-side draws a single
         // viewport band across *both* maps, so the band cannot belong to a
         // per-map pass. Splitting the passes also keeps the layering — cells,
@@ -274,9 +544,11 @@ final class MinimapView: NSView {
             // The map's content (cells, selection) sits in a 10 pt side frame
             // away from the panel's side edges; the viewport band deliberately
             // runs edge to edge past it (§19).
-            drawCells(forMapAt: index,
-                      in: contentArea(within: area(forMapAt: index), forMapAt: index),
-                      dirtyRect: dirtyRect)
+            let content = contentArea(within: area(forMapAt: index), forMapAt: index)
+            switch renderMode {
+            case .detail: drawCells(forMapAt: index, in: content, dirtyRect: dirtyRect)
+            case .overview: drawOverviewRows(forMapAt: index, in: content, dirtyRect: dirtyRect)
+            }
         }
         drawViewports(dirtyRect: dirtyRect)
         for index in maps.indices {
@@ -291,7 +563,10 @@ final class MinimapView: NSView {
             // The band is a single rectangle *over* both maps, so the divider
             // yields to it: a 1 pt line painted across the band would put back
             // exactly the seam the shared band exists to remove (§19).
-            drawVerticalDivider(at: bounds.midX, in: dirtyRect, yielding: viewportRects())
+            // Only the detail band crosses the divider; the overview marks its
+            // position in the margins, so the line stays whole there.
+            drawVerticalDivider(at: bounds.midX, in: dirtyRect,
+                                yielding: renderMode == .detail ? viewportRects() : [])
         case .stacked(let fraction):
             let y = min(max(fraction, 0), 1) * bounds.height
             drawHorizontalDivider(at: y, in: dirtyRect)
@@ -323,14 +598,21 @@ final class MinimapView: NSView {
     /// it travels the map's height exactly once over the whole file — and it is
     /// how VS Code positions its minimap. A file short enough to fit sits at
     /// row 0 and the band moves inside it directly.
-    private func updateTopRow() {
+    /// Returns whether the window actually moved. A moved window slides the
+    /// whole picture, so the caller has to repaint everything; an unmoved one
+    /// leaves the cells where they are, and only the overlay that prompted the
+    /// call needs redrawing (§19.9).
+    @discardableResult
+    private func updateTopRow() -> Bool {
         let newTop = derivedTopRow()
-        guard newTop != topRow else { return }
+        guard newTop != topRow else { return false }
         topRow = newTop
-        needsDisplay = true
+        return true
     }
 
     private func derivedTopRow() -> UInt64 {
+        // Overview shows the whole file, so there is no window to position.
+        guard renderMode == .detail else { return 0 }
         let totalRows = referenceRowCount()
         let windowRows = UInt64(max(0, windowRowCount()))
         guard windowRows > 0, totalRows > windowRows else { return 0 }
@@ -363,6 +645,9 @@ final class MinimapView: NSView {
     /// The cells a map is showing, row by row — what `draw` paints. Internal so
     /// tests can assert the picture without reading pixels.
     func visibleCells(forMapAt index: Int) -> [ByteRow] {
+        // Detail draws per-byte cells; overview has no such thing — it draws
+        // density over slices, from a precomputed summary.
+        guard renderMode == .detail else { return [] }
         let range = windowByteRange(forMapAt: index)
         guard !range.isEmpty, let states = byteStates?(index, range) else { return [] }
         var rows: [ByteRow] = []
@@ -429,6 +714,33 @@ final class MinimapView: NSView {
                           width: max(0, area.width - pad),
                           height: area.height)
         }
+    }
+
+    /// The overview's column geometry: 16 *contiguous* cells across the content
+    /// width. Deliberately not the hex dump's proportions — a column here is a
+    /// slice of the row's bytes, not a byte column, and the dump's word and group
+    /// gaps turn into hard vertical bars once a row is one pixel tall, which made
+    /// the map read as a barcode instead of a field. The columns stay decorative,
+    /// so what is left is a continuous surface with faint seams (§19.4).
+    private func overviewColumnLayout(in content: NSRect) -> [(x: CGFloat, width: CGFloat)] {
+        let columns = Int(Self.bytesPerRow)
+        guard content.width > 0, columns > 0 else { return [] }
+        // Snapped to the device pixel grid in *absolute* coordinates, and each
+        // cell measured to the next boundary rather than given one shared width.
+        //
+        // Both details matter, and each caused the same symptom — hairline
+        // vertical stripes down a solid region. A shared width leaves gaps where
+        // the snapped boundaries sit a pixel further apart; snapping relative to
+        // the content instead of the view puts every boundary of the *second*
+        // map mid-pixel, because its content starts after a gutter that is a
+        // fraction of the panel's width.
+        let pixel = overviewRowHeight
+        func snap(_ column: Int) -> CGFloat {
+            let x = content.minX + content.width * CGFloat(column) / CGFloat(columns)
+            return (x / pixel).rounded() * pixel
+        }
+        let edges = (0...columns).map(snap)
+        return (0..<columns).map { (x: edges[$0], width: max(pixel, edges[$0 + 1] - edges[$0])) }
     }
 
     /// The byte cells' geometry for a content region `areaWidth` wide: the x
@@ -509,14 +821,104 @@ final class MinimapView: NSView {
         }
     }
 
+    /// Draws one map's overview: a row per device pixel, each row's 16 cells
+    /// shaded by how much real content their slice of bytes holds, with the rare
+    /// and actionable states painted over the shading.
+    ///
+    /// Priority is density, then difference, then modified. A cell that is both
+    /// differing and modified shows as modified: at hundreds of bytes per cell
+    /// the two overlap often, and the red is the signal the user just created —
+    /// the difference is still legible in the neighbouring cells of the same
+    /// region. In detail mode both show at once, which is where that matters.
+    private func drawOverviewRows(forMapAt index: Int, in area: NSRect, dirtyRect: NSRect) {
+        guard area.width > 0, area.height > 0,
+              let summary = overviewSummary(forMapAt: index) else { return }
+        let rowHeight = overviewRowHeight
+        guard rowHeight > 0 else { return }
+        let cells = overviewColumnLayout(in: area)
+        guard !cells.isEmpty else { return }
+        let first = max(0, Int(floor((dirtyRect.minY - area.minY) / rowHeight)))
+        let last = min(summary.rowCount - 1, Int(floor((dirtyRect.maxY - area.minY) / rowHeight)))
+        guard last >= first else { return }
+        // The tone ramp, resolved once per pass rather than per cell: a full
+        // overview is ~19 000 cells, and deriving each one's colour from the ink
+        // was most of the cost of drawing it. Rebuilt every pass, so a theme
+        // change still lands (the ink is a dynamic colour).
+        let ink = HexTheme.byteText
+        let tones = (0...255).map { ink.withAlphaComponent(Self.overviewTone(density: UInt8($0))) }
+        let columns = Int(Self.bytesPerRow)
+        let fileSize = maps.indices.contains(index) ? maps[index].fileSize : 0
+        let extent = max(summary.extent, 1)
+        for row in first...last {
+            let y = area.minY + CGFloat(row) * rowHeight
+            let modified = summary.modified.indices.contains(row) ? summary.modified[row] : 0
+            let different = summary.different.indices.contains(row) ? summary.different[row] : 0
+            let rowStart = extent * UInt64(row) / UInt64(summary.rowCount)
+            let rowEnd = extent * UInt64(row + 1) / UInt64(summary.rowCount)
+            let span = rowEnd - rowStart
+            for column in 0..<columns {
+                let bit = UInt16(1) << UInt16(column)
+                let densityIndex = row * columns + column
+                let density = summary.density.indices.contains(densityIndex)
+                    ? summary.density[densityIndex] : 0
+                // Past this file's end there is nothing to draw at all; inside
+                // it, even an all-fill slice is drawn muted, the way the dump
+                // draws a 0x00/0xFF byte (§19.4.2).
+                let sliceStart = rowStart + span * UInt64(column) / UInt64(columns)
+                let covered = sliceStart < fileSize
+                let isEvent = modified & bit != 0 || different & bit != 0
+                guard covered || isEvent else { continue }
+                // An event is one cell of a one-pixel row, invisible inside a
+                // dense region, so it is drawn two pixels tall — it spills into
+                // the next row rather than disappearing.
+                let rect = NSRect(x: cells[column].x, y: y,
+                                  width: cells[column].width,
+                                  height: isEvent ? rowHeight * 2 : rowHeight)
+                if modified & bit != 0 {
+                    HexTheme.modifiedText.setFill()
+                } else if different & bit != 0 {
+                    HexTheme.differenceFill.setFill()
+                } else {
+                    tones[Int(density)].setFill()
+                }
+                rect.fill()
+            }
+        }
+    }
+
+    /// The ink alpha for a cell holding `density` content, mapped into the tonal
+    /// band the dump itself occupies rather than the full paper-to-black range.
+    static func overviewTone(density: UInt8) -> CGFloat {
+        let fraction = CGFloat(density) / 255
+        let shaped = fraction > 0 ? pow(fraction, overviewToneGamma) : 0
+        return overviewMinTone + (overviewMaxTone - overviewMinTone) * shaped
+    }
+
     // MARK: - Overlays
 
     /// The y a byte offset sits at inside a map, in the map's own coordinates.
     /// Offsets above the window come out negative and below it past the map's
     /// height — the callers clip.
     private func y(of offset: UInt64, in area: NSRect) -> CGFloat {
-        let row = Double(offset) / Double(Self.bytesPerRow)
-        return area.minY + CGFloat(row - Double(topRow)) * Self.rowStep
+        switch renderMode {
+        case .detail:
+            let row = Double(offset) / Double(Self.bytesPerRow)
+            return area.minY + CGFloat(row - Double(topRow)) * Self.rowStep
+        case .overview:
+            // The whole extent spans the drawn rows, so an offset is a fraction
+            // of it. Binned over the *longest* file so both maps share the axis.
+            let extent = overviewExtent()
+            let rows = overviewRowCount()
+            guard extent > 0, rows > 0 else { return area.minY }
+            let fraction = min(1, Double(offset) / Double(extent))
+            return area.minY + CGFloat(fraction) * CGFloat(rows) * overviewRowHeight
+        }
+    }
+
+    /// The byte extent the overview's rows are binned over: the longest open
+    /// file, so the same height means the same absolute offset on both maps.
+    private func overviewExtent() -> UInt64 {
+        maps.map(\.fileSize).max() ?? 0
     }
 
     /// The "you are here" band(s) the panel draws, as rectangles — the geometry
@@ -566,8 +968,19 @@ final class MinimapView: NSView {
     /// row gets one row), and the pane always shows several.
     private func viewportRect(_ viewport: Range<UInt64>?, in area: NSRect) -> NSRect? {
         guard let viewport, !viewport.isEmpty, area.height > 0 else { return nil }
-        let y0 = max(y(of: viewport.lowerBound, in: area), area.minY)
-        let y1 = min(y(of: viewport.upperBound, in: area), area.maxY)
+        var y0 = max(y(of: viewport.lowerBound, in: area), area.minY)
+        var y1 = min(y(of: viewport.upperBound, in: area), area.maxY)
+        if renderMode == .overview {
+            // A visible page of an 8 MB dump is a small fraction of a pixel, so
+            // in overview the band gets a floor — two device pixels, enough to
+            // carry its edge lines — and reads as a position marker rather than
+            // an extent (§19.6).
+            let floorHeight = 2 * overviewRowHeight
+            if y1 - y0 < floorHeight {
+                y1 = min(y0 + floorHeight, area.maxY)
+                y0 = max(y1 - floorHeight, area.minY)
+            }
+        }
         guard y1 > y0 else { return nil }
         return NSRect(x: area.minX, y: y0, width: area.width, height: y1 - y0)
     }
@@ -577,10 +990,56 @@ final class MinimapView: NSView {
     private func drawViewports(dirtyRect: NSRect) {
         let rects = viewportRects()
         guard !rects.isEmpty else { return }
-        Self.viewportFill.setFill()
-        for rect in rects where rect.maxY >= dirtyRect.minY && rect.minY <= dirtyRect.maxY {
-            rect.fill()
+        let visible = rects.filter { $0.maxY >= dirtyRect.minY && $0.minY <= dirtyRect.maxY }
+        guard !visible.isEmpty else { return }
+        switch renderMode {
+        case .detail:
+            Self.viewportFill.setFill()
+            for rect in visible { rect.fill() }
+        case .overview:
+            // Nothing is drawn across the content: a line spanning the panel
+            // costs a whole row of the picture, and on a dump every row counts.
+            // The position is marked by a chevron in each side margin instead,
+            // where there is nothing to hide (§19.6).
+            drawOverviewViewportMarkers(visible, dirtyRect: dirtyRect)
         }
+    }
+
+    /// Marks the viewport's position with a chevron in each outer margin, pointing
+    /// inward, level with the middle of the visible slice. The margins are the
+    /// `contentPadding` frame the cells never reach, so the markers cost no
+    /// detail.
+    private func drawOverviewViewportMarkers(_ rects: [NSRect], dirtyRect: NSRect) {
+        Self.viewportEdge.setFill()
+        for band in rects {
+            for (slot, box) in overviewMarkerRects(for: band).enumerated() {
+                guard box.maxY >= dirtyRect.minY, box.minY <= dirtyRect.maxY else { continue }
+                // The left chevron points right, the right one points left: both
+                // aim at the content between them.
+                let apexX = slot == 0 ? box.maxX : box.minX
+                let baseX = slot == 0 ? box.minX : box.maxX
+                let path = NSBezierPath()
+                path.move(to: NSPoint(x: baseX, y: box.minY))
+                path.line(to: NSPoint(x: apexX, y: box.midY))
+                path.line(to: NSPoint(x: baseX, y: box.maxY))
+                path.close()
+                path.fill()
+            }
+        }
+    }
+
+    private static let overviewMarkerHeight: CGFloat = 7
+
+    /// The two boxes the chevrons occupy, level with the middle of the band and
+    /// inside the side margins, so they never overlap a cell. Shared by drawing
+    /// and by invalidation, which is what keeps a scroll's repaint this small.
+    private func overviewMarkerRects(for band: NSRect) -> [NSRect] {
+        let width = min(Self.contentPadding - 2, 5)
+        guard width > 1 else { return [] }
+        let height = Self.overviewMarkerHeight
+        let y = band.midY - height / 2
+        return [NSRect(x: band.minX, y: y, width: width, height: height),
+                NSRect(x: band.maxX - width, y: y, width: width, height: height)]
     }
 
     private func drawSelection(_ selection: Range<UInt64>?, in area: NSRect, dirtyRect: NSRect) {
@@ -713,6 +1172,7 @@ final class MinimapView: NSView {
     /// every map, or past the file's end. Internal so tests can assert the
     /// mapping without synthesizing clicks.
     func byteOffset(at point: NSPoint) -> (mapIndex: Int, offset: UInt64)? {
+        if renderMode == .overview { return overviewByteOffset(at: point) }
         for index in maps.indices {
             let area = area(forMapAt: index)
             guard area.contains(point) else { continue }
@@ -740,6 +1200,34 @@ final class MinimapView: NSView {
         return nil
     }
 
+    /// The byte an overview point stands for. The row gives the slice of the
+    /// extent, and the column narrows it within that slice — the columns are
+    /// decorative here, but using them turns a 7 KB row into a 437 byte target.
+    private func overviewByteOffset(at point: NSPoint) -> (mapIndex: Int, offset: UInt64)? {
+        let extent = overviewExtent()
+        let rows = overviewRowCount()
+        guard extent > 0, rows > 0 else { return nil }
+        for index in maps.indices {
+            let area = area(forMapAt: index)
+            guard area.contains(point) else { continue }
+            let content = contentArea(within: area, forMapAt: index)
+            let row = min(rows - 1, max(0, Int(floor((point.y - area.minY) / overviewRowHeight))))
+            let rowStart = extent * UInt64(row) / UInt64(rows)
+            let rowEnd = extent * UInt64(row + 1) / UInt64(rows)
+            let cells = overviewColumnLayout(in: content)
+            var column = 0
+            for (j, cell) in cells.enumerated() where point.x >= cell.x {
+                column = j
+            }
+            let slice = (rowEnd - rowStart) * UInt64(column) / Self.bytesPerRow
+            let offset = rowStart + slice
+            let fileSize = maps[index].fileSize
+            guard fileSize > 0 else { return nil }
+            return (index, min(offset, fileSize - 1))
+        }
+        return nil
+    }
+
     override func mouseUp(with event: NSEvent) {
         dragGrabOffset = nil
     }
@@ -754,10 +1242,27 @@ final class MinimapView: NSView {
     private func requestScroll(bandTop: CGFloat, bandHeight: CGFloat) {
         guard let onScrollToOffset, !maps.isEmpty else { return }
         let totalRows = referenceRowCount()
-        let windowRows = UInt64(max(0, windowRowCount()))
-        guard totalRows > 0, windowRows > 0 else { return }
+        guard totalRows > 0 else { return }
         let offsetInMap = max(0, bandTop - area(forMapAt: 0).minY)
 
+        if renderMode == .overview {
+            // The map is the whole file, so it is a plain proportional scroll
+            // bar. The band sits at its pixel floor here and so cannot say how
+            // tall a page is — take that from the panes' own visible range.
+            let rows = overviewRowCount()
+            let paneRows = unifiedViewport()
+                .map { max(1, ($0.upperBound - $0.lowerBound + Self.bytesPerRow - 1) / Self.bytesPerRow) } ?? 1
+            let maxPaneTop = totalRows > paneRows ? totalRows - paneRows : 0
+            let travel = CGFloat(rows) * overviewRowHeight - bandHeight
+            guard rows > 0, travel > 0, maxPaneTop > 0 else { return }
+            let fraction = min(1, max(0, Double(offsetInMap / travel)))
+            let target = UInt64((fraction * Double(maxPaneTop)).rounded())
+            onScrollToOffset(min(target, totalRows - 1) * Self.bytesPerRow)
+            return
+        }
+
+        let windowRows = UInt64(max(0, windowRowCount()))
+        guard windowRows > 0 else { return }
         let row: UInt64
         if totalRows <= windowRows {
             row = UInt64(max(0, (offsetInMap / Self.rowStep).rounded()))

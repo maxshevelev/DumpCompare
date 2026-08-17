@@ -12,10 +12,26 @@ import XCTest
 /// conversion flips the y-axis, which would silently invert a stacked drag.
 @MainActor
 final class DividerDragTests: XCTestCase {
+    override func tearDown() {
+        removeTempFiles()
+        super.tearDown()
+    }
+
+    /// Every file this class writes, deleted in `tearDown`: the test host is
+    /// sandboxed, so these land in the app's own container and stay there — a
+    /// few thousand of them had piled up before this was added.
+    private var tempFiles: [URL] = []
+
+    private func removeTempFiles() {
+        for url in tempFiles { try? FileManager.default.removeItem(at: url) }
+        tempFiles = []
+    }
+
     private func tempFile(_ bytes: [UInt8]) throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("drag-test-\(UUID().uuidString).bin")
         try Data(bytes).write(to: url)
+        tempFiles.append(url)
         return url
     }
 

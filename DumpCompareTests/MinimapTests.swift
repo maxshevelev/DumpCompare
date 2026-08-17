@@ -25,6 +25,12 @@ final class MinimapTests: XCTestCase {
         // Route the minimap's width persistence at the isolated store; restored
         // to .standard in tearDown.
         MinimapSplitView.defaults = isolatedDefaults
+        // Pin the render mode too: most tests here exercise the detail window,
+        // and the automatic choice would put a file too large for it into
+        // overview (§19.4). Overview tests opt in explicitly.
+        MinimapView.defaults = isolatedDefaults
+        isolatedDefaults.set(MinimapView.RenderMode.detail.rawValue,
+                             forKey: MainViewController.minimapRenderModeDefaultsKey)
         // Deterministic: clear any autosaved window frame and force the layout
         // start so the window opens at a known size.
         UserDefaults.standard.removeObject(forKey: "NSWindow Frame MainWindow")
@@ -35,20 +41,33 @@ final class MinimapTests: XCTestCase {
     }
 
     override func tearDown() {
+        removeTempFiles()
         if let savedLayoutIsVertical {
             LayoutSettings.set(isVertical: savedLayoutIsVertical)
         }
         NSApp.mainMenu = savedMainMenu
         isolatedDefaults.removePersistentDomain(forName: isolatedSuiteName)
         MinimapSplitView.defaults = .standard
+        MinimapView.defaults = .standard
         isolatedDefaults = nil
         super.tearDown()
+    }
+
+    /// Every file this class writes, deleted in `tearDown`: the test host is
+    /// sandboxed, so these land in the app's own container and stay there — a
+    /// few thousand of them had piled up before this was added.
+    private var tempFiles: [URL] = []
+
+    private func removeTempFiles() {
+        for url in tempFiles { try? FileManager.default.removeItem(at: url) }
+        tempFiles = []
     }
 
     private func tempFile(_ bytes: [UInt8]) throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("minimap-\(UUID().uuidString).bin")
         try Data(bytes).write(to: url)
+        tempFiles.append(url)
         return url
     }
 
@@ -1111,6 +1130,414 @@ final class MinimapTests: XCTestCase {
                       "the short file's tail is blank — nothing is drawn past its end")
         XCTAssertFalse(try isUniform(longHex),
                        "the long file's rows are still drawn, so the check can fail")
+    }
+
+
+    // MARK: - Overview mode (§19.4)
+
+    /// A file with a 0xFF-padded half and a content half, big enough that the
+    /// detail window could only ever show a sliver of it.
+    private func makeOverviewWindow(_ bytes: [UInt8]) throws -> (MainViewController, NSWindow, MinimapView) {
+        let (controller, window, panel) = try makeSingleFileWindow(bytes)
+        controller.setMinimapRenderModeForTesting(.overview)
+        window.layoutIfNeeded()
+        _ = pumpUntil(3.0) { (panel.overviewSummaries.first?.rowCount ?? 0) > 0 }
+        return (controller, window, panel)
+    }
+
+    /// The overview shades each cell by how much real content its slice holds, so
+    /// erased padding and programmed regions separate — the thing a boolean
+    /// "any significant byte" aggregation could not show on a large dump.
+    func testOverviewShadesPaddingAndContentDifferently() throws {
+        // 256 KB: first half erased flash (0xFF), second half content.
+        let half = 128 * 1024
+        var bytes = [UInt8](repeating: 0xFF, count: half)
+        bytes += (0..<half).map { UInt8(0x41 + ($0 % 26)) }
+        let (_, _, panel) = try makeOverviewWindow(bytes)
+
+        let summary = try XCTUnwrap(panel.overviewSummaries.first)
+        XCTAssertEqual(summary.extent, UInt64(bytes.count))
+        XCTAssertGreaterThan(summary.rowCount, 100, "the panel bins the file into pixel rows")
+        XCTAssertEqual(summary.density.count, summary.rowCount * 16)
+
+        func rowDensity(_ row: Int) -> Int {
+            (0..<16).map { Int(summary.density[row * 16 + $0]) }.reduce(0, +)
+        }
+        // A row well inside the erased half carries nothing; one inside the
+        // content half is saturated.
+        let paddingRow = summary.rowCount / 4
+        let contentRow = summary.rowCount * 3 / 4
+        XCTAssertEqual(rowDensity(paddingRow), 0, "0xFF padding reads as empty")
+        XCTAssertGreaterThan(rowDensity(contentRow), 16 * 200, "content reads as dense")
+    }
+
+    /// The detail window cannot say anything useful about a file it can only show
+    /// a sliver of, so such a file opens in overview; a small one opens in detail.
+    func testModeDefaultsToOverviewOnlyForFilesDetailCannotShow() throws {
+        // No stored preference: the choice comes from the file.
+        isolatedDefaults.removeObject(forKey: MainViewController.minimapRenderModeDefaultsKey)
+
+        let (_, _, small) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 256))
+        XCTAssertTrue(small.detailWindowFitsWholeFile(), "16 rows fit the window")
+        XCTAssertEqual(small.renderMode, .detail, "a small file opens in detail")
+
+        let (_, _, big) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 256 * 1024))
+        XCTAssertFalse(big.detailWindowFitsWholeFile())
+        XCTAssertEqual(big.renderMode, .overview, "a dump-sized file opens in overview")
+    }
+
+    /// An explicit choice sticks: it survives opening another file, whatever its
+    /// size, and is remembered for the next launch.
+    func testAnExplicitModeChoiceOverridesTheFileSize() throws {
+        isolatedDefaults.removeObject(forKey: MainViewController.minimapRenderModeDefaultsKey)
+        let (controller, window, panel) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 256 * 1024))
+        XCTAssertEqual(panel.renderMode, .overview, "auto picks overview for this size")
+
+        controller.toggleMinimapOverview()
+        XCTAssertEqual(panel.renderMode, .detail, "the toggle switches to detail")
+        XCTAssertEqual(isolatedDefaults.string(forKey: MainViewController.minimapRenderModeDefaultsKey),
+                       "detail", "and the choice is remembered")
+
+        // Another large file must not silently go back to overview.
+        let url = try tempFile([UInt8](repeating: 0x42, count: 512 * 1024))
+        try controller.windowModel.pane1.open(url: url)
+        controller.apply(mode: .singleFile)
+        window.layoutIfNeeded()
+        XCTAssertEqual(panel.renderMode, .detail, "the remembered choice wins over the size")
+    }
+
+    /// Differences come from the comparison index rather than from re-reading
+    /// both files, and land on the rows that cover them.
+    func testOverviewMarksDifferencesFromTheIndex() throws {
+        isolatedDefaults.set(MinimapView.RenderMode.overview.rawValue,
+                             forKey: MainViewController.minimapRenderModeDefaultsKey)
+        let size = 256 * 1024
+        let a = [UInt8](repeating: 0x41, count: size)
+        var b = a
+        // Differ over the middle eighth of the file.
+        for i in (size / 2)..<(size * 5 / 8) { b[i] = 0x42 }
+        let url1 = try tempFile(a), url2 = try tempFile(b)
+        let (controller, window) = try makeController()
+        try controller.windowModel.pane1.open(url: url1)
+        try controller.windowModel.pane2.open(url: url2)
+        controller.apply(mode: .comparison)
+        window.layoutIfNeeded()
+        let (split, panel) = try minimapViews(window)
+        split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+
+        _ = pumpUntil(5.0) {
+            guard let summary = panel.overviewSummaries.first, summary.rowCount > 0 else { return false }
+            return summary.different.contains { $0 != 0 }
+        }
+        let summary = try XCTUnwrap(panel.overviewSummaries.first)
+        let marked = summary.different.enumerated().filter { $0.element != 0 }.map(\.offset)
+        XCTAssertFalse(marked.isEmpty, "the differing region is marked")
+        let firstMarked = try XCTUnwrap(marked.min())
+        let lastMarked = try XCTUnwrap(marked.max())
+        let rows = Double(summary.rowCount)
+        XCTAssertEqual(Double(firstMarked) / rows, 0.5, accuracy: 0.02,
+                       "marks start where the region does")
+        XCTAssertEqual(Double(lastMarked) / rows, 0.625, accuracy: 0.02,
+                       "and end where it ends")
+        XCTAssertTrue(summary.modified.allSatisfy { $0 == 0 }, "nothing was edited")
+    }
+
+    /// A typed byte marks its cell, without a whole-file comparison.
+    func testOverviewMarksAModifiedByte() throws {
+        let (controller, _, panel) = try makeOverviewWindow([UInt8](repeating: 0x41, count: 256 * 1024))
+        XCTAssertTrue(try XCTUnwrap(panel.overviewSummaries.first).modified.allSatisfy { $0 == 0 })
+
+        let offset: UInt64 = 200 * 1024
+        controller.windowModel.pane1.moveCaret(to: offset)
+        controller.windowModel.pane1.typeASCII(0x5A)
+        _ = pumpUntil(3.0) {
+            panel.overviewSummaries.first?.modified.contains { $0 != 0 } ?? false
+        }
+        let summary = try XCTUnwrap(panel.overviewSummaries.first)
+        let marked = summary.modified.enumerated().filter { $0.element != 0 }.map(\.offset)
+        XCTAssertEqual(marked.count, 1, "one cell, not a smear")
+        let row = try XCTUnwrap(marked.first)
+        XCTAssertEqual(Double(row) / Double(summary.rowCount),
+                       Double(offset) / Double(256 * 1024), accuracy: 0.01,
+                       "on the row that covers the edited byte")
+    }
+
+    /// A visible page is a fraction of a pixel on a dump, so in overview the band
+    /// gets a floor and reads as a position marker.
+    func testOverviewViewportBandHasAPixelFloor() throws {
+        let (_, _, panel) = try makeOverviewWindow([UInt8](repeating: 0x41, count: 256 * 1024))
+        _ = pumpUntil(2.0) { !panel.viewportRects().isEmpty }
+        let band = try XCTUnwrap(panel.viewportRects().first)
+        // A page of this file measures a shade over one pixel, so the floor is
+        // not what decides the height here — but the band must never fall below
+        // it, which is the guarantee that keeps it findable on a real dump.
+        XCTAssertGreaterThanOrEqual(band.height, 2 * panel.overviewRowHeight)
+        XCTAssertLessThan(band.height, 5, "and it stays a marker, not a slab")
+        XCTAssertEqual(band.minY, 0, accuracy: panel.overviewRowHeight,
+                       "sitting at the top while the pane is at the file's start")
+    }
+
+    /// Clicking the overview means the byte at that height, so the caret lands
+    /// proportionally into the file — the map is the whole of it.
+    func testClickingTheOverviewJumpsProportionally() throws {
+        let size = 256 * 1024
+        let (controller, window, panel) = try makeOverviewWindow([UInt8](repeating: 0x41, count: size))
+        let target = try XCTUnwrap(panel.byteOffset(at: NSPoint(x: panel.bounds.midX,
+                                                               y: panel.bounds.height * 0.75)))
+        XCTAssertEqual(Double(target.offset) / Double(size), 0.75, accuracy: 0.02,
+                       "three quarters down the map is three quarters into the file")
+
+        panel.mouseDown(with: try mouseEvent(.leftMouseDown,
+                                            at: NSPoint(x: panel.bounds.midX,
+                                                        y: panel.bounds.height * 0.75),
+                                            in: panel))
+        panel.mouseUp(with: try mouseEvent(.leftMouseUp,
+                                          at: NSPoint(x: panel.bounds.midX,
+                                                      y: panel.bounds.height * 0.75),
+                                          in: panel))
+        window.layoutIfNeeded()
+        XCTAssertEqual(controller.windowModel.pane1.hexSelection().start, target.offset,
+                       "and the caret goes there")
+    }
+
+    /// The View menu carries the mode as a checked item — both modes are a
+    /// minimap, so the check reads as "which one".
+    func testViewMenuChecksTheOverviewMode() throws {
+        let wc = MainWindowController()
+        defer { wc.close() }
+        let controller = try XCTUnwrap(wc.mainViewController)
+        let viewMenu = try XCTUnwrap(NSApp.mainMenu?.items
+            .compactMap(\.submenu).first { $0.title == "View" })
+        let item = try XCTUnwrap(viewMenu.items.first {
+            $0.action == #selector(MainViewController.toggleMinimapOverview)
+        }, "a View item switching the minimap's mode")
+        XCTAssertEqual(item.keyEquivalent, "m")
+        XCTAssertEqual(item.keyEquivalentModifierMask, [.command, .option])
+
+        controller.setMinimapRenderModeForTesting(.detail)
+        XCTAssertTrue(controller.validateMenuItem(item))
+        XCTAssertEqual(item.state, .off)
+
+        controller.setMinimapRenderModeForTesting(.overview)
+        XCTAssertTrue(controller.validateMenuItem(item))
+        XCTAssertEqual(item.state, .on)
+    }
+
+    // MARK: - Overview tone and overlays (§19.4.2, §19.6)
+
+    /// The shading stays inside the tonal band the dump itself occupies: a slice
+    /// of pure padding is drawn muted rather than left blank, and a full slice
+    /// stops well short of solid ink. Black-on-white read nothing like the dump.
+    func testOverviewToneStaysInTheDumpsRange() {
+        XCTAssertEqual(MinimapView.overviewTone(density: 0), MinimapView.overviewMinTone,
+                       accuracy: 0.001, "padding inside the file is muted, not blank")
+        XCTAssertEqual(MinimapView.overviewTone(density: 255), MinimapView.overviewMaxTone,
+                       accuracy: 0.001, "a full slice stops short of solid ink")
+        XCTAssertLessThan(MinimapView.overviewMaxTone, 0.7, "never near-black")
+        XCTAssertGreaterThan(MinimapView.overviewMinTone, 0.0, "never bare paper")
+        // Monotonic, and a sparse slice separates from an empty one.
+        let steps = (0...255).map { MinimapView.overviewTone(density: UInt8($0)) }
+        XCTAssertEqual(steps, steps.sorted(), "tone rises with density")
+        XCTAssertGreaterThan(MinimapView.overviewTone(density: 20) - MinimapView.overviewMinTone,
+                            0.03, "a sparse slice is distinguishable from empty")
+    }
+
+    /// Samples a horizontal line of the rendered panel inside one map's content.
+    /// Every *device* pixel of the line, not every point: a seam between two
+    /// cells is one pixel wide, so sampling by points steps straight over it —
+    /// which is how the first version of this test passed against the bug it was
+    /// written for.
+    private func sampleRow(_ panel: MinimapView, y: CGFloat,
+                           from: CGFloat, to: CGFloat) throws -> [CGFloat] {
+        let rep = try XCTUnwrap(panel.bitmapImageRepForCachingDisplay(in: panel.bounds))
+        panel.cacheDisplay(in: panel.bounds, to: rep)
+        let scaleX = CGFloat(rep.pixelsWide) / panel.bounds.width
+        let scaleY = CGFloat(rep.pixelsHigh) / panel.bounds.height
+        let py = min(max(Int(y * scaleY), 0), rep.pixelsHigh - 1)
+        let firstPixel = max(0, Int((from * scaleX).rounded(.down)))
+        let lastPixel = min(rep.pixelsWide - 1, Int((to * scaleX).rounded(.up)))
+        guard lastPixel >= firstPixel else { return [] }
+        return (firstPixel...lastPixel).compactMap { px -> CGFloat? in
+            guard let colour = rep.colorAt(x: px, y: py)?.usingColorSpace(.deviceRGB) else { return nil }
+            return colour.brightnessComponent
+        }
+    }
+
+    /// A solid region must render solid. The cells are snapped to the pixel grid
+    /// in absolute coordinates and each measured to the next boundary; a shared
+    /// width, or snapping relative to the content, left hairline gaps that read as
+    /// vertical stripes — and only on the second map, whose content starts after a
+    /// fractional gutter.
+    func testOverviewRendersASolidRegionWithoutStripes() throws {
+        isolatedDefaults.set(MinimapView.RenderMode.overview.rawValue,
+                             forKey: MainViewController.minimapRenderModeDefaultsKey)
+        // Every byte is content, so every cell of every row is fully dense.
+        let bytes = (0..<(256 * 1024)).map { UInt8(0x20 + ($0 % 90)) }
+        let url1 = try tempFile(bytes), url2 = try tempFile(bytes)
+        let (controller, window) = try makeController()
+        try controller.windowModel.pane1.open(url: url1)
+        try controller.windowModel.pane2.open(url: url2)
+        LayoutSettings.set(isVertical: true)
+        controller.apply(mode: .comparison)
+        window.layoutIfNeeded()
+        let (split, panel) = try minimapViews(window)
+        split.setPanelVisible(true, animated: false)
+        // A width whose sixteenth is not a whole number of pixels — the case that
+        // produced the stripes.
+        split.setPanelWidth(203, animated: false)
+        window.layoutIfNeeded()
+        _ = pumpUntil(10.0) { (panel.overviewSummaries.last?.rowCount ?? 0) > 0 }
+
+        // Sample across the *second* map, away from the viewport marker's rows.
+        let y = panel.bounds.height * 0.6
+        let start = panel.bounds.width * 0.55
+        let end = panel.bounds.width - MinimapView.contentPadding - 2
+        let samples = try sampleRow(panel, y: y, from: start, to: end)
+        XCTAssertGreaterThan(samples.count, 20, "enough pixels to judge")
+        let spread = (samples.max() ?? 0) - (samples.min() ?? 0)
+        // Measured: 0.0 with pixel-snapped absolute edges and per-column widths;
+        // 0.037 with edges snapped relative to the content (the second map's
+        // fractional origin puts every boundary mid-pixel, and two half-covered
+        // fills of one colour compose lighter than one solid fill); 0.257 with a
+        // single shared width, which leaves real gaps. A loose threshold passed
+        // all three, so it is pinned just above zero.
+        XCTAssertLessThan(spread, 0.01, "a solid region has no seams: spread \(spread)")
+    }
+
+    /// The overview marks the viewport with a chevron in each margin and draws
+    /// nothing across the content: on a dump every row of the picture counts, and
+    /// a band spanning the panel costs one.
+    func testOverviewViewportDoesNotCoverContent() throws {
+        let bytes = (0..<(256 * 1024)).map { UInt8(0x20 + ($0 % 90)) }
+        let (_, _, panel) = try makeOverviewWindow(bytes)
+        _ = pumpUntil(3.0) { !panel.viewportRects().isEmpty }
+        let band = try XCTUnwrap(panel.viewportRects().first)
+
+        // Inside the content, the band's own rows look like every other row.
+        let left = MinimapView.contentPadding + 2
+        let right = panel.bounds.width * 0.4
+        let onBand = try sampleRow(panel, y: band.midY, from: left, to: right)
+        let elsewhere = try sampleRow(panel, y: band.midY + 20, from: left, to: right)
+        let onBandMean = onBand.reduce(0, +) / CGFloat(max(1, onBand.count))
+        let elsewhereMean = elsewhere.reduce(0, +) / CGFloat(max(1, elsewhere.count))
+        XCTAssertEqual(onBandMean, elsewhereMean, accuracy: 0.05,
+                       "the content under the viewport is not dimmed by a band")
+
+        // The margin at that height carries the marker instead.
+        let margin = try sampleRow(panel, y: band.midY, from: 0, to: MinimapView.contentPadding - 2)
+        let marginMin = margin.min() ?? 1
+        let cleanMargin = try sampleRow(panel, y: band.midY + 20, from: 0,
+                                        to: MinimapView.contentPadding - 2).min() ?? 1
+        XCTAssertLessThan(marginMin, cleanMargin - 0.1,
+                          "a chevron is drawn in the margin at the viewport's height")
+    }
+
+
+    // TEMPORARY performance probe on the real dumps.
+    // MARK: - Repainting (§19.9)
+
+    /// Counting significant bytes eight at a time must agree with counting them
+    /// one at a time — for every byte value, at every alignment. The word trick
+    /// is what makes the overview arrive in a fraction of a second instead of
+    /// seconds; a wrong count would mis-shade whole regions of a dump.
+    func testSignificantByteCountMatchesAByteAtATimeCount() {
+        var bytes: [UInt8] = []
+        for value in UInt8.min...UInt8.max {
+            bytes += [0x00, value, 0xFF, value, value, 0xFF, 0x00, 0x00, value]
+        }
+        bytes += (0..<4096).map { _ in UInt8.random(in: .min ... .max) }
+        bytes.withUnsafeBufferPointer { buffer in
+            for from in 0..<17 {
+                for length in [0, 1, 7, 8, 9, 15, 16, 437, bytes.count - from]
+                where from + length <= bytes.count {
+                    let naive = bytes[from..<(from + length)]
+                        .filter { $0 != 0x00 && $0 != 0xFF }.count
+                    XCTAssertEqual(
+                        MainViewController.significantByteCount(buffer, from: from,
+                                                               to: from + length),
+                        naive, "over bytes [\(from), \(from + length))")
+                }
+            }
+        }
+    }
+
+    /// A scroll must not repaint the maps. In overview the whole dump is on
+    /// screen — ~19 000 cells — and all a scroll changes is a 7 pt chevron in
+    /// each margin, so only those boxes are invalidated. Repainting the panel
+    /// instead cost 54 ms per wheel tick, which is what made scrolling lag.
+    func testOverviewScrollRepaintsOnlyTheViewportMarkers() throws {
+        let (_, _, panel) = try makeOverviewWindow([UInt8](repeating: 0x41, count: 1024 * 1024))
+        panel.setViewports([0..<560])
+        panel.displayIfNeeded()
+        let before = try XCTUnwrap(panel.viewportRects().first)
+
+        panel.setViewports([600_000..<600_560])
+        let after = try XCTUnwrap(panel.viewportRects().first)
+        XCTAssertNotEqual(before.midY, after.midY, "the band has to have moved")
+
+        let rects = try XCTUnwrap(panel.lastRepaintRequest,
+                                  "a scroll asked for a full repaint of the panel")
+        let damaged = rects.reduce(0) { $0 + $1.width * $1.height }
+        XCTAssertLessThan(damaged, panel.bounds.width * panel.bounds.height * 0.05,
+                          "a scroll costs a sliver of the panel, not the whole picture")
+        // Both the box the chevron left and the one it moved to are repainted —
+        // the first is what erases it, so a stale chevron cannot stay behind.
+        for band in [before, after] {
+            for x in [band.minX + 1, band.maxX - 1] {
+                XCTAssertTrue(rects.contains { $0.contains(NSPoint(x: x, y: band.midY)) },
+                              "the chevron's own box at y=\(band.midY), x=\(x)")
+            }
+        }
+    }
+
+    /// An edit repaints the rows it changed, not the picture: the summary is
+    /// diffed row by row against the one on screen.
+    func testAnEditRepaintsOnlyTheOverviewRowsItChanged() throws {
+        let (controller, _, panel) =
+            try makeOverviewWindow([UInt8](repeating: 0x41, count: 1024 * 1024))
+        panel.displayIfNeeded()
+
+        controller.windowModel.pane1.moveCaret(to: 500_000)
+        controller.windowModel.pane1.typeASCII(0x5A)
+        XCTAssertTrue(pumpUntil(3.0) {
+            panel.overviewSummaries.first?.modified.contains { $0 != 0 } ?? false
+        }, "the edit reached the overview")
+
+        let rects = try XCTUnwrap(panel.lastRepaintRequest,
+                                  "one byte asked for a full repaint of the panel")
+        XCTAssertFalse(rects.isEmpty, "the row it changed is repainted")
+        let height = rects.reduce(0) { $0 + $1.height }
+        XCTAssertLessThan(height, panel.bounds.height * 0.05,
+                          "a byte dirties its own rows, not a thousand of them")
+        let row = try XCTUnwrap(panel.overviewSummaries.first?.modified
+            .enumerated().first { $0.element != 0 }?.offset)
+        let y = CGFloat(row) * panel.overviewRowHeight
+        XCTAssertTrue(rects.contains { $0.minY <= y + 1 && $0.maxY >= y },
+                      "and it is the marked row that is repainted")
+    }
+
+    /// The same rule in detail mode: while the window stays put, a scroll moves
+    /// only the band, so the cells outside it keep their pixels.
+    func testDetailScrollRepaintsOnlyTheBandWhileTheWindowStaysPut() throws {
+        let (_, _, panel) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 2048))
+        XCTAssertTrue(panel.detailWindowFitsWholeFile(),
+                      "the premise: a file this short leaves the window at row 0")
+        panel.setViewports([0..<560])
+        panel.displayIfNeeded()
+        let before = try XCTUnwrap(panel.viewportRects().first)
+
+        panel.setViewports([1024..<1584])
+        let rects = try XCTUnwrap(panel.lastRepaintRequest,
+                                  "the window did not move, so this was not a full repaint")
+        let after = try XCTUnwrap(panel.viewportRects().first)
+        let damaged = rects.reduce(0) { $0 + $1.height }
+        XCTAssertLessThan(damaged, before.height + after.height + 8,
+                          "only the band it left and the band it moved to")
+        for band in [before, after] {
+            XCTAssertTrue(rects.contains { $0.minY <= band.midY && $0.maxY >= band.midY },
+                          "the band's own rows at y=\(band.midY)")
+        }
     }
 
 }

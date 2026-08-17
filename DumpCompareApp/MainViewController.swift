@@ -95,6 +95,10 @@ final class MainViewController: NSViewController {
         // index never feeds it (§19).
         comparisonCoordinator.onStateChanged = { [weak self] in
             self?.refreshDiffNavigation()
+            // Detail reads difference state per byte from the panes, but the
+            // overview takes it from this index — one query per block beats
+            // re-reading both files (§19.4).
+            self?.scheduleOverviewRebuild()
         }
 
         findBar.translatesAutoresizingMaskIntoConstraints = false
@@ -159,13 +163,20 @@ final class MainViewController: NSViewController {
         minimapView.onSelectOffset = { [weak self] mapIndex, offset in
             self?.selectMinimapOffset(mapIndex: mapIndex, offset: offset)
         }
+        // The overview bins the file into one row per pixel, so a resize changes
+        // the bins and the summary has to be recomputed (§19.4).
+        minimapView.onOverviewRowCountChanged = { [weak self] in
+            self?.scheduleOverviewRebuild()
+        }
         // Showing the panel needs the current picture: while hidden it drew
         // nothing, so its maps and viewport are stale (§19).
         minimapSplit.onPanelVisibilityChanged = { [weak self] visible in
             guard let self, visible else { return }
             self.updateMinimapLayout()
             self.refreshMinimapMaps()
+            self.applyPreferredMinimapMode()
             self.updateMinimapViewports()
+            self.rebuildOverview()
         }
 
         apply(mode: .empty)
@@ -307,6 +318,9 @@ final class MainViewController: NSViewController {
         }
         updateMinimapLayout()
         refreshMinimapMaps()
+        // A different file can call for a different mode — a dump too large for
+        // the detail window opens in overview (§19.4).
+        applyPreferredMinimapMode()
         refreshDiffNavigation()
     }
 
@@ -422,6 +436,298 @@ final class MainViewController: NSViewController {
         refreshDiffNavigation()
     }
 
+    // MARK: - Minimap overview (§19.4)
+
+    /// `UserDefaults` key for the minimap's render mode. Absent means "decide
+    /// from the file": a dump too large for the detail window to say anything
+    /// useful opens in overview, and an explicit toggle sticks from then on.
+    static let minimapRenderModeDefaultsKey = "MinimapRenderMode"
+
+    /// The in-flight overview computation; cancelled and replaced by the next.
+    private var overviewTask: Task<Void, Never>?
+
+    /// One pane's inputs for an overview summary, snapshotted on the main thread
+    /// before the background pass reads anything.
+    private struct OverviewSource: Sendable {
+        let storage: (any ByteStorage)?
+        let saved: (any ByteStorage)?
+        let size: UInt64
+        /// Where the edit overlay has written — the only offsets a modified byte
+        /// can sit at.
+        let edited: [Range<UInt64>]
+        let isUntitled: Bool
+        /// The comparison's differing ranges, taken from the background index
+        /// rather than by re-reading the companion: the index is maintained
+        /// anyway, and block granularity is finer than a summary cell (§8).
+        let differences: [Range<UInt64>]
+    }
+
+    /// The mode the minimap should be in for the file(s) now open: the user's
+    /// explicit choice if they made one, otherwise detail while the whole file
+    /// fits the detail window and overview once it does not.
+    private func preferredMinimapMode() -> MinimapView.RenderMode {
+        if let raw = MinimapView.defaults.string(forKey: Self.minimapRenderModeDefaultsKey),
+           let mode = MinimapView.RenderMode(rawValue: raw) {
+            return mode
+        }
+        return minimapView.detailWindowFitsWholeFile() ? .detail : .overview
+    }
+
+    /// Puts the minimap in the mode the current file calls for. Called whenever
+    /// the open files change; an explicit choice is never overridden.
+    private func applyPreferredMinimapMode() {
+        setMinimapRenderMode(preferredMinimapMode(), remember: false)
+    }
+
+    /// Switches the minimap's mode, optionally recording the choice as the user's
+    /// own so it survives the next file and the next launch.
+    private func setMinimapRenderMode(_ mode: MinimapView.RenderMode, remember: Bool) {
+        if remember {
+            MinimapView.defaults.set(mode.rawValue, forKey: Self.minimapRenderModeDefaultsKey)
+        }
+        guard minimapView.renderMode != mode else { return }
+        minimapView.setRenderMode(mode)
+        if mode == .overview {
+            scheduleOverviewRebuild()
+        } else {
+            overviewTask?.cancel()
+        }
+    }
+
+    /// Puts the minimap in `mode` without recording it as the user's choice.
+    /// Exposed (internal) so tests can exercise a mode directly.
+    func setMinimapRenderModeForTesting(_ mode: MinimapView.RenderMode) {
+        setMinimapRenderMode(mode, remember: false)
+    }
+
+    /// Toggles between the whole-file overview and the detail window, and
+    /// remembers the choice (§19.4).
+    @objc func toggleMinimapOverview() {
+        setMinimapRenderMode(minimapView.renderMode == .overview ? .detail : .overview,
+                             remember: true)
+    }
+
+    /// Recomputes the overview after a change that alters what it shows. Every
+    /// row of an overview is on screen at once, so unlike the detail window it
+    /// cannot be pulled per repaint — it is computed in the background and
+    /// debounced, so a burst of edits costs one pass (§19.4).
+    private func scheduleOverviewRebuild() {
+        guard minimapSplit.panelVisible, minimapView.renderMode == .overview else { return }
+        overviewTask?.cancel()
+        overviewTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard !Task.isCancelled else { return }
+            self?.rebuildOverview()
+        }
+    }
+
+    private func rebuildOverview() {
+        guard minimapSplit.panelVisible, minimapView.renderMode == .overview else { return }
+        let rowCount = minimapView.overviewRowCount()
+        let sources: [OverviewSource]
+        switch mode {
+        case .singleFile:
+            sources = [overviewSource(windowModel.pane1)]
+        case .comparison:
+            sources = [overviewSource(windowModel.pane1), overviewSource(windowModel.pane2)]
+        case .empty:
+            sources = []
+        }
+        let extent = sources.map(\.size).max() ?? 0
+        guard rowCount > 0, extent > 0, !sources.isEmpty else {
+            minimapView.setOverviewSummaries([])
+            return
+        }
+        overviewTask?.cancel()
+        // The user is waiting for the picture, so this is user-initiated work,
+        // and the two files are independent passes — running them together
+        // halves the wait on a comparison.
+        overviewTask = Task.detached(priority: .userInitiated) { [weak self] in
+            let summaries = await withTaskGroup(
+                of: (Int, MinimapView.OverviewSummary).self
+            ) { group -> [MinimapView.OverviewSummary] in
+                for (index, source) in sources.enumerated() {
+                    group.addTask {
+                        (index, Self.overviewSummary(source: source, extent: extent,
+                                                     rowCount: rowCount,
+                                                     shouldCancel: { Task.isCancelled }))
+                    }
+                }
+                var built: [(Int, MinimapView.OverviewSummary)] = []
+                for await pair in group { built.append(pair) }
+                return built.sorted { $0.0 < $1.0 }.map(\.1)
+            }
+            guard !Task.isCancelled else { return }
+            await MainActor.run { [weak self] in
+                guard let self, !Task.isCancelled,
+                      self.minimapView.renderMode == .overview else { return }
+                self.minimapView.setOverviewSummaries(summaries)
+            }
+        }
+    }
+
+    private func overviewSource(_ pane: PaneViewModel) -> OverviewSource {
+        OverviewSource(storage: pane.byteStorage, saved: pane.savedStorage, size: pane.fileSize,
+                       edited: pane.editedRanges, isUntitled: pane.isUntitled,
+                       differences: comparisonCoordinator.index?.differenceBlocks.map(\.range) ?? [])
+    }
+
+    /// How many of `buffer[from..<to]` are neither 0x00 nor 0xFF — how "full"
+    /// a cell's slice of the file is.
+    ///
+    /// The pass walks the whole file — every byte of a 16 MB dump, twice over for
+    /// a comparison — so it counts eight bytes at a time instead of one, over a
+    /// raw buffer. Through `Array`'s bounds-checked subscript, one byte at a
+    /// time, this took 1.9 s per file in a debug build: the overview arrived
+    /// seconds after it was asked for.
+    nonisolated static func significantByteCount(
+        _ buffer: UnsafeBufferPointer<UInt8>, from: Int, to: Int
+    ) -> Int {
+        guard let base = buffer.baseAddress else { return 0 }
+        let word = 8
+        var index = from
+        var count = 0
+        while index + word <= to {
+            let bits = UnsafeRawPointer(base + index).loadUnaligned(as: UInt64.self)
+            count += word - fillByteFlags(bits).nonzeroBitCount
+            index += word
+        }
+        while index < to {
+            if base[index] != 0x00, base[index] != 0xFF { count += 1 }
+            index += 1
+        }
+        return count
+    }
+
+    /// One bit per byte of `word` that is a 0x00/0xFF fill — the byte's high bit,
+    /// so `nonzeroBitCount` is the number of fill bytes in the word.
+    ///
+    /// `(b & 0x7F) + 0x7F` sets a byte's high bit exactly when `b` has any low bit
+    /// set, and cannot carry into the next byte (0x7F + 0x7F = 0xFE); OR-ing `b`
+    /// back in contributes its own high bit. So the high bit of each byte of that
+    /// expression is set iff the byte is non-zero — inverted, iff it is 0x00. The
+    /// same test on `~word` finds the 0xFF bytes, and no byte can be both.
+    nonisolated private static func fillByteFlags(_ word: UInt64) -> UInt64 {
+        let low: UInt64 = 0x7F7F_7F7F_7F7F_7F7F
+        let high: UInt64 = 0x8080_8080_8080_8080
+        let zeros = ~(((word & low) &+ low) | word) & high
+        let inverted = ~word
+        let ones = ~(((inverted & low) &+ low) | inverted) & high
+        return zeros | ones
+    }
+
+    /// Bins one file into `rowCount` rows of 16 cells: how full each cell's slice
+    /// of bytes is, and which cells hold a modified or differing byte.
+    ///
+    /// Rows are binned over `extent` — the longest open file — so the same row
+    /// means the same absolute offset on both maps (§9); rows past this file's
+    /// own end stay empty. One read per row keeps the pass sequential and bounded
+    /// by the file's size.
+    nonisolated private static func overviewSummary(
+        source: OverviewSource, extent: UInt64, rowCount: Int,
+        shouldCancel: () -> Bool
+    ) -> MinimapView.OverviewSummary {
+        let columns = Int(MinimapView.bytesPerRow)
+        var density = [UInt8](repeating: 0, count: rowCount * columns)
+        var modified = [UInt16](repeating: 0, count: rowCount)
+        var different = [UInt16](repeating: 0, count: rowCount)
+        let empty = MinimapView.OverviewSummary(extent: extent, rowCount: rowCount,
+                                               density: density, modified: modified,
+                                               different: different)
+        guard let storage = source.storage, extent > 0, rowCount > 0 else { return empty }
+
+        /// The row a byte offset falls in, and the cell within that row.
+        func cell(of offset: UInt64) -> (row: Int, column: Int)? {
+            guard offset < extent else { return nil }
+            let row = Int(offset * UInt64(rowCount) / extent)
+            guard row < rowCount else { return nil }
+            let rowStart = extent * UInt64(row) / UInt64(rowCount)
+            let rowEnd = extent * UInt64(row + 1) / UInt64(rowCount)
+            let span = rowEnd - rowStart
+            guard span > 0 else { return (row, 0) }
+            let column = Int(min(UInt64(columns - 1), (offset - rowStart) * UInt64(columns) / span))
+            return (row, column)
+        }
+
+        // Density: one read per row, counting the bytes that are not a fill.
+        for row in 0..<rowCount {
+            if shouldCancel() { return empty }
+            let rowStart = extent * UInt64(row) / UInt64(rowCount)
+            let rowEnd = extent * UInt64(row + 1) / UInt64(rowCount)
+            let contentEnd = min(rowEnd, source.size)
+            guard rowStart < contentEnd, rowEnd > rowStart else { continue }
+            guard let bytes = try? storage.read(at: rowStart, length: Int(contentEnd - rowStart)),
+                  !bytes.isEmpty else { continue }
+            let span = rowEnd - rowStart
+            bytes.withUnsafeBufferPointer { buffer in
+                for column in 0..<columns {
+                    let sliceStart = rowStart + span * UInt64(column) / UInt64(columns)
+                    let sliceEnd = rowStart + span * UInt64(column + 1) / UInt64(columns)
+                    let from = Int(sliceStart - rowStart)
+                    let to = Int(min(sliceEnd, contentEnd) - rowStart)
+                    guard from < to, to <= buffer.count else { continue }
+                    let significant = significantByteCount(buffer, from: from, to: to)
+                    guard significant > 0 else { continue }
+                    density[row * columns + column] =
+                        UInt8(min(255, max(1, significant * 255 / (to - from))))
+                }
+            }
+        }
+
+        // Modified: only where the edit overlay wrote, and only where the byte
+        // really differs from the saved copy — the same rule the panes paint by.
+        if !source.isUntitled {
+            let savedSize = source.saved?.size ?? 0
+            for range in source.edited {
+                if shouldCancel() { return empty }
+                var offset = range.lowerBound
+                let upper = min(range.upperBound, source.size)
+                while offset < upper {
+                    let length = Int(min(UInt64(64 * 1024), upper - offset))
+                    guard let bytes = try? storage.read(at: offset, length: length),
+                          !bytes.isEmpty else { break }
+                    let savedBytes: [UInt8] =
+                        source.saved.flatMap { try? $0.read(at: offset, length: length) } ?? []
+                    for (k, byte) in bytes.enumerated() {
+                        let absolute = offset + UInt64(k)
+                        let isModified = absolute >= savedSize
+                            || (savedBytes.indices.contains(k) ? savedBytes[k] != byte : true)
+                        guard isModified, let spot = cell(of: absolute) else { continue }
+                        modified[spot.row] |= UInt16(1) << UInt16(spot.column)
+                    }
+                    offset += UInt64(bytes.count)
+                }
+            }
+        }
+
+        // Differences: walk the index's blocks and mark the cells they cover. A
+        // block spanning whole rows marks every column of them.
+        for range in source.differences {
+            if shouldCancel() { return empty }
+            guard range.lowerBound < extent, let first = cell(of: range.lowerBound),
+                  let last = cell(of: min(range.upperBound - 1, extent - 1)) else { continue }
+            if first.row == last.row {
+                for column in first.column...last.column {
+                    different[first.row] |= UInt16(1) << UInt16(column)
+                }
+                continue
+            }
+            for column in first.column..<columns {
+                different[first.row] |= UInt16(1) << UInt16(column)
+            }
+            if last.row > first.row + 1 {
+                for row in (first.row + 1)..<last.row { different[row] = .max }
+            }
+            for column in 0...last.column {
+                different[last.row] |= UInt16(1) << UInt16(column)
+            }
+        }
+
+        return MinimapView.OverviewSummary(extent: extent, rowCount: rowCount,
+                                          density: density, modified: modified,
+                                          different: different)
+    }
+
     // MARK: - Minimap data (§19)
 
     /// Feeds the minimap the per-byte state of the rows it is showing.
@@ -459,6 +765,10 @@ final class MainViewController: NSViewController {
         }
         minimapView.setMaps(sizes.map { MinimapView.Map(fileSize: $0) })
         updateMinimapSelections()
+        // The bytes moved, so an overview summary of them is stale. The *mode* is
+        // deliberately not re-decided here: this runs on every edit, and the
+        // choice belongs where the open files change (§19.4).
+        scheduleOverviewRebuild()
     }
 
     /// The bytes under the map changed — an edit, a save, a fresh comparison
@@ -466,7 +776,12 @@ final class MainViewController: NSViewController {
     /// from the panes as they are drawn, so this costs one repaint of the visible
     /// window and never a file pass.
     private func repaintMinimap() {
-        minimapView.needsDisplay = true
+        // Detail reads its bytes as it draws, so it repaints. Overview draws
+        // nothing but its summary, which is recomputed in the background and then
+        // repaints only the rows that actually changed (§19.9) — a blanket
+        // repaint here would undo that.
+        if minimapView.renderMode == .detail { minimapView.needsDisplay = true }
+        scheduleOverviewRebuild()
     }
 
     /// Moves the caret to the byte clicked on a map and centres the pane on it.
@@ -2017,6 +2332,11 @@ extension MainViewController: NSWindowDelegate {
 extension MainViewController: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
+        case #selector(toggleMinimapOverview):
+            // A check, because both modes are a minimap; enabled with no file
+            // open too, so the choice can be made before opening one (§19.4).
+            menuItem.state = minimapView.renderMode == .overview ? .on : .off
+            return true
         case #selector(toggleMinimap):
             // A Show/Hide item names what it will do, so the title flips with
             // the panel's state (§19). Always enabled: the minimap works with

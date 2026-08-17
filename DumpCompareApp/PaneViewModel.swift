@@ -61,8 +61,9 @@ final class PaneViewModel: HexViewDataSource {
     /// Disk bytes as of the last open/save/revert — the "saved" reference for
     /// modified-byte detection. Recreated whenever the on-disk content is known
     /// to have changed (save, save as, revert) so a stale chunk cache can't
-    /// misreport.
-    private var savedStorage: FileBackedStorage?
+    /// misreport. Readable because the minimap's overview compares against the
+    /// same reference the panes do when it marks modified cells (§19.4).
+    private(set) var savedStorage: FileBackedStorage?
     /// True while the pane holds an untitled in-memory document (File > New
     /// File) that has never been saved to disk. Such a document has no URL to
     /// watch and no on-disk reference for modified-byte detection; the header
@@ -284,6 +285,16 @@ final class PaneViewModel: HexViewDataSource {
     /// The document's live byte storage — the same class instance across edits,
     /// so a comparison coordinator can hold it and always read current bytes.
     var byteStorage: (any ByteStorage)? { document?.storage }
+
+    /// The byte ranges the edit overlay has written since the file was last read
+    /// from disk — the only places a modified byte can be. The save path already
+    /// uses these extents to decide what to patch (`StorageSaver`); the minimap's
+    /// overview uses them so marking modified cells costs a few small reads
+    /// instead of comparing the whole file against `savedStorage` (§19.4). Empty
+    /// when nothing was edited.
+    var editedRanges: [Range<UInt64>] {
+        (document?.storage as? EditOverlayStorage)?.changedRanges ?? []
+    }
 
     private func refreshSavedStorage() {
         defer { onSavedStateChanged?() }

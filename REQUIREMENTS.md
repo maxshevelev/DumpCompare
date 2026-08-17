@@ -963,6 +963,9 @@ way to navigate them by pointing.
 - It is hidden by default. Toggling it is available from the toolbar (an
   item at the far right) and from the View menu, whose item names the
   action it will perform ("Show Minimap" / "Hide Minimap").
+- A second View item switches the render mode (§19.4). It is a checked item,
+  not a flipping title: both modes are a minimap, so the check reads as which
+  one is in use.
 - The panel is never removed from the view hierarchy; hidden means its
   width is zero.
 
@@ -985,10 +988,18 @@ The panel is divided into maps that mirror the pane arrangement:
 - comparison, stacked panes: two maps, split by a horizontal line that
   mirrors the panes' divider and moves with it.
 
-19.4 Rendering
+19.4 Rendering: two modes
 
-A map draws its file as a miniature hex dump — the hex column only, no
-offset column and no decoded text.
+A map draws its file one of two ways, switched from the View menu and
+remembered. Which one a file opens in is decided by whether detail mode could
+say anything useful about it: a file whose rows all fit the panel opens in
+detail, a dump that would only ever show a sliver of itself opens in overview.
+An explicit choice by the user overrides that from then on.
+
+19.4.1 Detail mode
+
+A miniature hex dump — the hex column only, no offset column and no decoded
+text.
 
 - The scale is fixed: a byte cell is 2 pt tall with 1 pt between rows, so
   one hex row costs 3 pt regardless of the file's size.
@@ -1006,10 +1017,50 @@ offset column and no decoded text.
 - Byte state must come from the same per-byte source the panes paint from,
   so the map cannot disagree with the dump beside it.
 
-19.5 The window onto the file
+19.4.2 Overview mode
 
-Because the scale is fixed, a file taller than the panel does not fit: the
-map shows a window onto it, not the whole file.
+The whole file at once: one row per device pixel, so the panel's full vertical
+resolution is used and nothing is spent on gaps.
+
+- A row covers a slice of the file; its 16 cells cover equal sub-slices. The
+  columns are decorative here — a cell is a range of bytes, not a byte column —
+  and are drawn contiguously, snapped to the pixel grid. The hex dump's word and
+  group gaps must not be reproduced: at one pixel per row they turn the map into
+  a barcode.
+- A cell is shaded by *how much* of its slice is real content, not by whether
+  any of it is. A boolean "contains a significant byte" test saturates on a
+  large dump and hides the layout; shading separates erased 0xFF padding from
+  code and from mixed regions at a glance.
+- The shading stays inside the tonal range the dump itself occupies. A slice of
+  pure 0x00/0xFF fill inside the file is drawn muted rather than left blank —
+  the dump draws such a byte muted too — and a full slice stops well short of
+  solid ink, because a dense row of the dump is glyphs on paper and reads as a
+  mid grey. Mapping content to black and padding to bare paper made the map a
+  set of black islands on white, nothing like the file beside it. Rows past the
+  file's own end are the only ones left blank.
+- Cell boundaries are snapped to the device pixel grid in the panel's own
+  coordinates, and each cell reaches the next boundary rather than sharing one
+  width. Otherwise a solid region shows hairline vertical stripes: a shared
+  width leaves gaps where snapped boundaries fall further apart, and snapping
+  within a map's content puts every boundary of the second map mid-pixel,
+  because its content begins after a gutter that is a fraction of the panel.
+- Difference and modification are drawn over the shading, and at least two
+  pixels tall so a single byte among thousands stays visible. Where a cell is
+  both, modified wins: at hundreds of bytes per cell the two overlap often, and
+  the difference is still legible across the rest of the region.
+- Rows are binned over the comparison's extent, so the same height is the same
+  absolute offset on both maps (§9); rows past a shorter file's end stay empty.
+- The picture must be computed off the main thread and cached: every row is on
+  screen at once, so it cannot be read per repaint. It must be recomputed when
+  the bins change (a resize), when the bytes change, and when the comparison
+  index changes — difference marks come from that index rather than from
+  re-reading both files.
+
+19.5 The window onto the file (detail mode)
+
+Because the detail scale is fixed, a file taller than the panel does not fit:
+the map shows a window onto it, not the whole file. Overview mode has no
+window — it shows everything.
 
 - The window's position is derived from the panes; the minimap has no
   scroll position of its own and no scroll bar.
@@ -1035,6 +1086,12 @@ The panes' visible slice is drawn as a translucent band over the map.
 - In stacked comparison each map keeps its own band.
 - The band is drawn under the selection overlay, so a selection inside it
   stays readable.
+- In overview a visible page is a fraction of a pixel, so nothing is drawn
+  across the content at all: the position is marked by a chevron in each outer
+  margin, level with the middle of the visible slice, pointing inward. A band or
+  line spanning the panel would cost a whole row of the picture, and on a dump
+  every row carries information. The marker states a position and must not
+  pretend to show an extent.
 
 19.7 Navigation
 
@@ -1045,10 +1102,35 @@ The panes' visible slice is drawn as a translucent band over the map.
 - Clicking the map away from the band moves the caret to the byte drawn at
   that point — row from the vertical position, column from the horizontal
   one — and centres the pane on it. In comparison mode the click also makes
-  the clicked map's pane active.
+  the clicked map's pane active. In overview the same rule lands the caret
+  proportionally into the file, the column narrowing the target within the
+  row's slice.
 - Clicking the band itself begins a drag and must leave the caret alone.
 - A scroll wheel over the panel scrolls the panes.
 - Navigation by pointer must clamp at the file's start and end.
+
+19.9 Repainting
+
+- The maps are static between changes to the bytes: a scroll moves only the
+  viewport overlay, and a selection change only the selection overlay. Each
+  change must therefore repaint the area its overlay covers — the area it
+  vacated and the area it moved to — and not the panel.
+  - In detail mode the exception is a scroll that slides the window
+    (§19.5): the whole picture moves, so the whole panel repaints.
+  - In overview mode a scroll never slides the window, so a scroll repaints
+    the two chevron boxes (§19.6) and nothing else. A full repaint there is
+    ~19 000 cells and takes tens of milliseconds, which is felt as lag on
+    every wheel tick.
+- An edit repaints the rows it changed. The overview's picture is compared
+  row by row against the one on screen, and only the differing rows are
+  repainted; an event cell is two pixels tall, so the row below a changed
+  row is repainted with it.
+- A repaint must start from the panel's background, since it can no longer
+  rely on the whole panel being redrawn.
+- Rebuilding the overview's picture walks the whole file and must not run on
+  the main thread, must be debounced, and must be cancelled when superseded.
+  The two files of a comparison are independent passes and are computed
+  concurrently.
 
 19.8 Accessibility
 
