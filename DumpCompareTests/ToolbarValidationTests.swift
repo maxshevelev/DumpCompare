@@ -1,0 +1,107 @@
+import DumpCompareCore
+import XCTest
+@testable import DumpCompare
+
+/// §10.3: the toolbar's Prev/Next Difference arrows dim with the menu items they
+/// mirror — no file open, no index yet, or no change in that direction.
+///
+/// The mechanism matters: AppKit revalidates every visible toolbar item on its
+/// own schedule and the default validation only asks "does the target respond to
+/// the action", which is always true here. Pushing `isEnabled` onto the items is
+/// therefore undone on the next pass; the state has to come from
+/// `validateToolbarItem` on the target. These tests read the rendered buttons, so
+/// they fail if that stops being true.
+@MainActor
+final class ToolbarValidationTests: XCTestCase {
+    private func tempFile(_ bytes: [UInt8]) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("toolbar-valid-\(UUID().uuidString).bin")
+        try Data(bytes).write(to: url)
+        return url
+    }
+
+    @discardableResult
+    private func pumpUntil(_ timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+        }
+        return condition()
+    }
+
+    private func descendants(of view: NSView) -> [NSView] {
+        view.subviews + view.subviews.flatMap(descendants(of:))
+    }
+
+    /// The rendered arrow buttons, by the labels their toolbar items carry.
+    /// The group has no view of its own — AppKit builds the buttons — so the
+    /// accessibility label is the handle onto them.
+    private func arrowButtons(_ window: NSWindow) throws -> (prev: NSButton, next: NSButton) {
+        let root = try XCTUnwrap(window.contentView?.superview)
+        let buttons = descendants(of: root).compactMap { $0 as? NSButton }
+        let prev = try XCTUnwrap(buttons.first { $0.accessibilityLabel() == "Prev Diff" },
+                                 "the toolbar shows the Prev Diff button")
+        let next = try XCTUnwrap(buttons.first { $0.accessibilityLabel() == "Next Diff" },
+                                 "the toolbar shows the Next Diff button")
+        return (prev, next)
+    }
+
+    /// A window controller with the toolbar realised and its items validated.
+    private func makeWindow() -> MainWindowController {
+        let wc = MainWindowController()
+        wc.showWindow(nil)
+        let window = wc.window!
+        window.setFrame(NSRect(x: 100, y: 100, width: 1080, height: 720), display: true)
+        _ = pumpUntil(2) { window.toolbar?.items.count == 4 }
+        window.layoutIfNeeded()
+        window.toolbar?.validateVisibleItems()
+        return wc
+    }
+
+    /// Empty mode: there is nothing to navigate, so both arrows are dim.
+    func testTheArrowsAreDisabledWithNoFilesOpen() throws {
+        let wc = makeWindow()
+        defer { wc.close() }
+        let (prev, next) = try arrowButtons(wc.window!)
+
+        XCTAssertFalse(prev.isEnabled, "Prev Diff must be dim in empty mode")
+        XCTAssertFalse(next.isEnabled, "Next Diff must be dim in empty mode")
+    }
+
+    /// In a comparison, each arrow is enabled exactly when it has somewhere to
+    /// go — and follows the caret without waiting for AppKit's idle pass.
+    func testTheArrowsFollowTheCaretsPositionInTheComparison() throws {
+        let wc = makeWindow()
+        let window = wc.window!
+        let controller = wc.mainViewController
+        var left = [UInt8](repeating: 0x11, count: 300 * 16)
+        var right = left
+        left[100 * 16] = 0xDE
+        right[100 * 16] = 0x00
+        let urlA = try tempFile(left)
+        let urlB = try tempFile(right)
+        defer {
+            controller.windowModel.pane1.close()
+            controller.windowModel.pane2.close()
+            wc.close()
+            try? FileManager.default.removeItem(at: urlA)
+            try? FileManager.default.removeItem(at: urlB)
+        }
+        try controller.windowModel.pane1.open(url: urlA)
+        try controller.windowModel.pane2.open(url: urlB)
+        controller.apply(mode: .comparison)
+        window.layoutIfNeeded()
+
+        let (prev, next) = try arrowButtons(window)
+        // The index has to land before navigation is possible at all (§10.3).
+        XCTAssertTrue(pumpUntil(5) { next.isEnabled },
+                      "Next Diff must enable once the index is built and a change lies ahead")
+        XCTAssertFalse(prev.isEnabled, "nothing lies behind the caret at offset 0")
+
+        // Jump past the only change: now the arrows swap.
+        controller.windowModel.pane1.moveCaret(to: UInt64(left.count))
+        XCTAssertTrue(pumpUntil(2) { prev.isEnabled && !next.isEnabled },
+                      "at EOF the change lies behind the caret, not ahead")
+    }
+}

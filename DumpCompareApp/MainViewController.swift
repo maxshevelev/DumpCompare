@@ -2098,7 +2098,12 @@ final class MainViewController: NSViewController {
             state.previousSameBlock = exists(.same, .backward)
             state.nextSameBlock = exists(.same, .forward)
         }
+        guard state != diffNavigationState else { return }
         diffNavigationState = state
+        // Menu items are validated when the menu opens, but the toolbar's arrows
+        // are on screen the whole time: AppKit revalidates them on its own idle
+        // schedule, so ask for it here and they follow the caret at once (§10.3).
+        viewIfLoaded?.window?.toolbar?.validateVisibleItems()
     }
 
     private func navigateBlock(kind: DiffBlock.Kind, direction: SearchDirection) {
@@ -2660,6 +2665,29 @@ extension MainViewController: NSWindowDelegate {
             return true
         default:
             return false
+        }
+    }
+}
+
+// MARK: - Toolbar validation
+
+extension MainViewController: NSToolbarItemValidation {
+    /// The toolbar's Prev/Next Difference arrows follow the menu items they
+    /// mirror (§10.3).
+    ///
+    /// Pushing `isEnabled` onto the items from our own state does not work:
+    /// AppKit revalidates every visible item on each run-loop pass, and the
+    /// default validation sets the state back to "the target responds to the
+    /// action" — always true here. The state has to be answered where validation
+    /// asks for it.
+    func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
+        switch item.action {
+        case #selector(nextDifference):
+            return diffNavigationState.nextDifference
+        case #selector(previousDifference):
+            return diffNavigationState.previousDifference
+        default:
+            return true
         }
     }
 }

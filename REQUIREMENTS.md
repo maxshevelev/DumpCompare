@@ -541,6 +541,13 @@ Requirements:
 - If no further block exists in the requested direction:
   - show a status message or unobtrusive feedback;
   - do not silently wrap by default.
+- The menu items and the toolbar's arrows must both be disabled whenever the
+  command would find nothing — wrong mode, index still building, or no target
+  in that direction from the caret. Toolbar items are validated by the target,
+  not by pushing their enabled state: the framework revalidates visible items
+  on its own schedule and would undo a pushed value. The arrows must also be
+  revalidated when the availability changes, so they follow the caret at once
+  instead of on the next idle pass.
 - If the full-file diff index is still being computed:
   - navigation may perform on-demand scanning;
   - show progress for long scans;
