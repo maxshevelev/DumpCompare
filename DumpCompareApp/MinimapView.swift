@@ -255,6 +255,41 @@ final class MinimapView: NSView {
         if let damage { invalidate(damage) } else { invalidateAll() }
     }
 
+    /// Replaces the values for `rows` in one map's picture and repaints just
+    /// them. This is how an edit reaches the overview: the rows a byte lands in
+    /// are recomputed from the file, and the rest of the picture — the whole dump
+    /// either side of it — is left alone (§19.9).
+    func updateOverviewRows(_ rows: ClosedRange<Int>, density: [UInt8],
+                            modified: [UInt16], different: [UInt16], forMapAt index: Int) {
+        guard renderMode == .overview, overviewSummaries.indices.contains(index) else { return }
+        let columns = Int(Self.bytesPerRow)
+        var summary = overviewSummaries[index]
+        guard rows.lowerBound >= 0, rows.upperBound < summary.rowCount,
+              density.count == rows.count * columns, modified.count == rows.count,
+              different.count == rows.count,
+              summary.density.count >= (rows.upperBound + 1) * columns,
+              summary.modified.count > rows.upperBound,
+              summary.different.count > rows.upperBound else { return }
+        summary.density.replaceSubrange((rows.lowerBound * columns)..<((rows.upperBound + 1) * columns),
+                                        with: density)
+        summary.modified.replaceSubrange(rows, with: modified)
+        summary.different.replaceSubrange(rows, with: different)
+        guard summary != overviewSummaries[index] else { return }
+        overviewSummaries[index] = summary
+        // The stretched stand-in for this map is now the old picture.
+        overviewStandIns[index] = nil
+
+        let area = contentArea(within: area(forMapAt: index), forMapAt: index)
+        let rowHeight = overviewRowHeight
+        guard rowHeight > 0, area.height > 0 else { return }
+        let y = area.minY + CGFloat(rows.lowerBound) * rowHeight
+        // One row of slack below: an event mark is two pixels tall, so a mark in
+        // the last patched row paints into the row after it (§19.4.2).
+        let height = min(CGFloat(rows.count + 1) * rowHeight, area.maxY - y)
+        guard height > 0 else { return }
+        invalidate([NSRect(x: area.minX, y: y, width: area.width, height: height)])
+    }
+
     /// The rows two overview pictures disagree on, as rectangles — or nil when
     /// they are not comparable row for row (first picture, new file, resized
     /// panel) and the whole panel has to be repainted.

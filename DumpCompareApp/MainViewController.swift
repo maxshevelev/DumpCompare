@@ -102,7 +102,7 @@ final class MainViewController: NSViewController {
             // Detail reads difference state per byte from the panes, but the
             // overview takes it from this index — one query per block beats
             // re-reading both files (§19.4).
-            self?.scheduleOverviewRebuild()
+            self?.overviewFollowIndexChange()
         }
 
         findBar.translatesAutoresizingMaskIntoConstraints = false
@@ -264,7 +264,6 @@ final class MainViewController: NSViewController {
             trackMinimapViewport(for: pane)
             paneModel.onEdit = { [weak self] edit in
                 self?.repaintMinimap(after: edit)
-                self?.refreshMinimapMaps()
             }
             paneModel.onFullInvalidation = { [weak self] in
                 self?.minimapView.invalidateCells()
@@ -365,16 +364,11 @@ final class MainViewController: NSViewController {
         windowModel.pane2.companion = windowModel.pane1
         windowModel.pane1.onEdit = { [weak self] edit in
             self?.comparisonCoordinator.record(edit: edit)
-            // The edited rows are repainted at once; a byte edit can also change
-            // a cell's significance, so the overview's summary is rebuilt behind
-            // it — debounced, so held-down typing costs one pass (§19).
             self?.repaintMinimap(after: edit)
-            self?.refreshMinimapMaps()
         }
         windowModel.pane2.onEdit = { [weak self] edit in
             self?.comparisonCoordinator.record(edit: edit)
             self?.repaintMinimap(after: edit)
-            self?.refreshMinimapMaps()
         }
         windowModel.pane1.onFullInvalidation = { [weak self] in
             self?.comparisonCoordinator.rebuild()
@@ -484,10 +478,22 @@ final class MainViewController: NSViewController {
 
     /// The in-flight overview computation; cancelled and replaced by the next.
     private var overviewTask: Task<Void, Never>?
+    /// Edited ranges whose difference marks are still waiting for the comparison
+    /// index to absorb them (§19.9).
+    private var overviewRowsAwaitingIndex: [Range<UInt64>] = []
+    /// The index build this controller's overview was derived from.
+    private var overviewIndexBuildCount = 0
+    /// How many full overview passes and how many row patches have run — the
+    /// seam for "an edit does not walk the file" (§19.9).
+    private(set) var overviewRebuilds = 0
+    private(set) var overviewPatches = 0
+    /// Full passes that finished and published their picture.
+    private(set) var overviewRebuildsCompleted = 0
 
     /// One pane's inputs for an overview summary, snapshotted on the main thread
-    /// before the background pass reads anything.
-    private struct OverviewSource: Sendable {
+    /// before the background pass reads anything. Internal so a test can drive
+    /// the row engine directly.
+    struct OverviewSource: Sendable {
         let storage: (any ByteStorage)?
         let saved: (any ByteStorage)?
         let size: UInt64
@@ -537,6 +543,12 @@ final class MainViewController: NSViewController {
         }
     }
 
+    /// Runs a full overview pass now, so a test can compare a patched picture
+    /// against the one a full pass builds.
+    func rebuildOverviewForTesting() {
+        rebuildOverview()
+    }
+
     /// Puts the minimap in `mode` without recording it as the user's choice.
     /// Exposed (internal) so tests can exercise a mode directly.
     func setMinimapRenderModeForTesting(_ mode: MinimapView.RenderMode) {
@@ -567,21 +579,14 @@ final class MainViewController: NSViewController {
     private func rebuildOverview() {
         guard minimapSplit.panelVisible, minimapView.renderMode == .overview else { return }
         let rowCount = minimapView.overviewRowCount()
-        let sources: [OverviewSource]
-        switch mode {
-        case .singleFile:
-            sources = [overviewSource(windowModel.pane1)]
-        case .comparison:
-            sources = [overviewSource(windowModel.pane1), overviewSource(windowModel.pane2)]
-        case .empty:
-            sources = []
-        }
+        let sources = overviewSources()
         let extent = sources.map(\.size).max() ?? 0
         guard rowCount > 0, extent > 0, !sources.isEmpty else {
             minimapView.setOverviewSummaries([])
             return
         }
         overviewTask?.cancel()
+        overviewRebuilds += 1
         beginOverviewProgress()
         let progress = OverviewProgressSink(total: rowCount * sources.count) { [weak self] fraction in
             self?.reportOverviewProgress(fraction)
@@ -611,6 +616,7 @@ final class MainViewController: NSViewController {
                 self.reportOverviewProgress(nil)
                 guard !Task.isCancelled, self.minimapView.renderMode == .overview else { return }
                 self.minimapView.setOverviewSummaries(summaries)
+                self.overviewRebuildsCompleted += 1
             }
         }
     }
@@ -791,44 +797,81 @@ final class MainViewController: NSViewController {
         rowsDone: (Int) -> Void = { _ in }
     ) -> MinimapView.OverviewSummary {
         let columns = Int(MinimapView.bytesPerRow)
-        var density = [UInt8](repeating: 0, count: rowCount * columns)
-        var modified = [UInt16](repeating: 0, count: rowCount)
-        var different = [UInt16](repeating: 0, count: rowCount)
-        let empty = MinimapView.OverviewSummary(extent: extent, rowCount: rowCount,
-                                               density: density, modified: modified,
-                                               different: different)
-        guard let storage = source.storage, extent > 0, rowCount > 0 else { return empty }
+        let rows = max(0, rowCount)
+        let empty = MinimapView.OverviewSummary(
+            extent: extent, rowCount: rowCount,
+            density: [UInt8](repeating: 0, count: rows * columns),
+            modified: [UInt16](repeating: 0, count: rows),
+            different: [UInt16](repeating: 0, count: rows)
+        )
+        guard rowCount > 0, extent > 0,
+              let all = overviewRows(source: source, extent: extent, rowCount: rowCount,
+                                     rows: 0...(rowCount - 1),
+                                     shouldCancel: shouldCancel, rowsDone: rowsDone)
+        else { return empty }
+        return MinimapView.OverviewSummary(extent: extent, rowCount: rowCount,
+                                          density: all.density, modified: all.modified,
+                                          different: all.different)
+    }
+
+    /// The overview's values for `rows` alone: the density of their cells and
+    /// their modified/difference bits. A whole picture is this over every row; a
+    /// byte edit is this over the one or two rows it lands in, which is why the
+    /// engine takes a row range rather than always walking the file (§19.9).
+    ///
+    /// Returns nil when cancelled or when `rows` is not inside the picture.
+    nonisolated static func overviewRows(
+        source: OverviewSource, extent: UInt64, rowCount: Int, rows: ClosedRange<Int>,
+        shouldCancel: () -> Bool = { false },
+        rowsDone: (Int) -> Void = { _ in }
+    ) -> (density: [UInt8], modified: [UInt16], different: [UInt16])? {
+        let columns = Int(MinimapView.bytesPerRow)
+        guard rowCount > 0, extent > 0, rows.lowerBound >= 0, rows.upperBound < rowCount else {
+            return nil
+        }
+        var density = [UInt8](repeating: 0, count: rows.count * columns)
+        var modified = [UInt16](repeating: 0, count: rows.count)
+        var different = [UInt16](repeating: 0, count: rows.count)
+        guard let storage = source.storage else { return (density, modified, different) }
+
+        /// The first byte of a row's slice of the file.
+        func start(ofRow row: Int) -> UInt64 { extent * UInt64(row) / UInt64(rowCount) }
 
         /// The row a byte offset falls in, and the cell within that row.
         func cell(of offset: UInt64) -> (row: Int, column: Int)? {
             guard offset < extent else { return nil }
             let row = Int(offset * UInt64(rowCount) / extent)
-            guard row < rowCount else { return nil }
-            let rowStart = extent * UInt64(row) / UInt64(rowCount)
-            let rowEnd = extent * UInt64(row + 1) / UInt64(rowCount)
-            let span = rowEnd - rowStart
+            guard rows.contains(row) else { return nil }
+            let rowStart = start(ofRow: row)
+            let span = start(ofRow: row + 1) - rowStart
             guard span > 0 else { return (row, 0) }
             let column = Int(min(UInt64(columns - 1), (offset - rowStart) * UInt64(columns) / span))
             return (row, column)
         }
 
+        // The byte range these rows cover, so the passes below read and scan
+        // only what belongs to them.
+        let windowStart = start(ofRow: rows.lowerBound)
+        let windowEnd = start(ofRow: rows.upperBound + 1)
+
         // Density: one read per row, counting the bytes that are not a fill.
         // Progress is reported in blocks of rows, which is granular enough for a
         // bar and rare enough not to matter to the pass.
-        var reportedRow = 0
-        for row in 0..<rowCount {
-            if shouldCancel() { return empty }
+        var reportedRow = rows.lowerBound
+        for row in rows {
+            if shouldCancel() { return nil }
             if row - reportedRow >= 64 {
                 rowsDone(row - reportedRow)
                 reportedRow = row
             }
-            let rowStart = extent * UInt64(row) / UInt64(rowCount)
-            let rowEnd = extent * UInt64(row + 1) / UInt64(rowCount)
+            let rowStart = start(ofRow: row)
+            let rowEnd = start(ofRow: row + 1)
             let contentEnd = min(rowEnd, source.size)
             guard rowStart < contentEnd, rowEnd > rowStart else { continue }
             guard let bytes = try? storage.read(at: rowStart, length: Int(contentEnd - rowStart)),
                   !bytes.isEmpty else { continue }
             let span = rowEnd - rowStart
+            let base = (row - rows.lowerBound) * columns
             bytes.withUnsafeBufferPointer { buffer in
                 for column in 0..<columns {
                     let sliceStart = rowStart + span * UInt64(column) / UInt64(columns)
@@ -838,22 +881,22 @@ final class MainViewController: NSViewController {
                     guard from < to, to <= buffer.count else { continue }
                     let significant = significantByteCount(buffer, from: from, to: to)
                     guard significant > 0 else { continue }
-                    density[row * columns + column] =
+                    density[base + column] =
                         UInt8(min(255, max(1, significant * 255 / (to - from))))
                 }
             }
         }
 
-        rowsDone(rowCount - reportedRow)
+        rowsDone(rows.upperBound + 1 - reportedRow)
 
         // Modified: only where the edit overlay wrote, and only where the byte
         // really differs from the saved copy — the same rule the panes paint by.
         if !source.isUntitled {
             let savedSize = source.saved?.size ?? 0
             for range in source.edited {
-                if shouldCancel() { return empty }
-                var offset = range.lowerBound
-                let upper = min(range.upperBound, source.size)
+                if shouldCancel() { return nil }
+                var offset = max(range.lowerBound, windowStart)
+                let upper = min(min(range.upperBound, source.size), windowEnd)
                 while offset < upper {
                     let length = Int(min(UInt64(64 * 1024), upper - offset))
                     guard let bytes = try? storage.read(at: offset, length: length),
@@ -865,7 +908,7 @@ final class MainViewController: NSViewController {
                         let isModified = absolute >= savedSize
                             || (savedBytes.indices.contains(k) ? savedBytes[k] != byte : true)
                         guard isModified, let spot = cell(of: absolute) else { continue }
-                        modified[spot.row] |= UInt16(1) << UInt16(spot.column)
+                        modified[spot.row - rows.lowerBound] |= UInt16(1) << UInt16(spot.column)
                     }
                     offset += UInt64(bytes.count)
                 }
@@ -875,23 +918,25 @@ final class MainViewController: NSViewController {
         // Differences: walk the index's blocks and mark the cells they cover. A
         // block spanning whole rows marks every column of them.
         for range in source.differences {
-            if shouldCancel() { return empty }
-            guard range.lowerBound < extent, let first = cell(of: range.lowerBound),
-                  let last = cell(of: min(range.upperBound - 1, extent - 1)) else { continue }
+            if shouldCancel() { return nil }
+            let lower = max(range.lowerBound, windowStart)
+            let upper = min(range.upperBound, min(windowEnd, extent))
+            guard lower < upper, let first = cell(of: lower), let last = cell(of: upper - 1)
+            else { continue }
             if first.row == last.row {
                 for column in first.column...last.column {
-                    different[first.row] |= UInt16(1) << UInt16(column)
+                    different[first.row - rows.lowerBound] |= UInt16(1) << UInt16(column)
                 }
                 continue
             }
             for column in first.column..<columns {
-                different[first.row] |= UInt16(1) << UInt16(column)
+                different[first.row - rows.lowerBound] |= UInt16(1) << UInt16(column)
             }
             if last.row > first.row + 1 {
-                for row in (first.row + 1)..<last.row { different[row] = .max }
+                for row in (first.row + 1)..<last.row { different[row - rows.lowerBound] = .max }
             }
             for column in 0...last.column {
-                different[last.row] |= UInt16(1) << UInt16(column)
+                different[last.row - rows.lowerBound] |= UInt16(1) << UInt16(column)
             }
         }
 
@@ -901,21 +946,21 @@ final class MainViewController: NSViewController {
         // byte past the shorter file's end counts as a difference there; drawn
         // as such it painted the shorter map's empty tail solid. The tail is
         // empty, exactly as it is in detail mode.
-        for row in 0..<rowCount where modified[row] != 0 || different[row] != 0 {
+        for row in rows {
+            let slot = row - rows.lowerBound
+            guard modified[slot] != 0 || different[slot] != 0 else { continue }
             var covered: UInt16 = 0
-            let rowStart = extent * UInt64(row) / UInt64(rowCount)
-            let span = extent * UInt64(row + 1) / UInt64(rowCount) - rowStart
+            let rowStart = start(ofRow: row)
+            let span = start(ofRow: row + 1) - rowStart
             for column in 0..<columns
             where rowStart + span * UInt64(column) / UInt64(columns) < source.size {
                 covered |= UInt16(1) << UInt16(column)
             }
-            modified[row] &= covered
-            different[row] &= covered
+            modified[slot] &= covered
+            different[slot] &= covered
         }
 
-        return MinimapView.OverviewSummary(extent: extent, rowCount: rowCount,
-                                          density: density, modified: modified,
-                                          different: different)
+        return (density, modified, different)
     }
 
     // MARK: - Minimap data (§19)
@@ -944,16 +989,7 @@ final class MainViewController: NSViewController {
     /// Hands the minimap the open files' sizes. That is all it needs to lay its
     /// maps out — everything it draws it pulls per repaint.
     private func refreshMinimapMaps() {
-        let sizes: [UInt64]
-        switch mode {
-        case .singleFile:
-            sizes = [windowModel.pane1.fileSize]
-        case .comparison:
-            sizes = [windowModel.pane1.fileSize, windowModel.pane2.fileSize]
-        case .empty:
-            sizes = []
-        }
-        minimapView.setMaps(sizes.map { MinimapView.Map(fileSize: $0) })
+        minimapView.setMaps(currentFileSizes().map { MinimapView.Map(fileSize: $0) })
         updateMinimapSelections()
         // The bytes moved, so an overview summary of them is stale. The *mode* is
         // deliberately not re-decided here: this runs on every edit, and the
@@ -961,22 +997,110 @@ final class MainViewController: NSViewController {
         scheduleOverviewRebuild()
     }
 
-    /// The bytes under the maps changed, and the change names a range: repaint
-    /// the rows that draw it. There is nothing to rebuild — detail mode pulls its
-    /// cells from the panes as it draws — so this costs one repaint of a few rows
-    /// and never a file pass. Overview ignores it: its summary is rebuilt in the
-    /// background and invalidates its own rows (§19.9).
+    /// The bytes under the maps changed. An overwrite names a bounded range, so
+    /// both modes update in place and at once: detail repaints the rows that draw
+    /// it (its cells are pulled from the panes as it draws), and overview
+    /// recomputes those rows of its picture instead of walking the file again —
+    /// a typed byte moves one row of a thousand (§19.9).
     ///
     /// Both maps, because a byte edited in one file changes the difference state
     /// the other one paints at that same offset (§9).
     private func repaintMinimap(after edit: DiffEdit) {
         switch edit {
         case .overwrite(let range):
+            // Typing past EOF grows the file, which re-bins the overview: that is
+            // a new picture, not a patch.
+            guard minimapView.maps.map(\.fileSize) == currentFileSizes() else {
+                minimapView.invalidateCells()
+                refreshMinimapMaps()
+                return
+            }
             minimapView.invalidateBytes(in: range)
+            patchOverviewRows(covering: range)
+            // The difference marks come from the comparison index, which absorbs
+            // the edit in the background: these rows are patched again when it
+            // does, instead of the whole picture being rebuilt (§19.9).
+            if mode == .comparison { overviewRowsAwaitingIndex.append(range) }
         case .insert, .delete:
             // Every byte after the change moved, so no range describes it.
             minimapView.invalidateCells()
+            refreshMinimapMaps()
         }
+    }
+
+    /// Recomputes the overview rows that `range` falls in, on every map, and
+    /// leaves the rest of the picture untouched. Falls back to a full rebuild
+    /// when the picture on screen was binned differently from what these rows
+    /// would be (a resize or a new file landed in between).
+    private func patchOverviewRows(covering range: Range<UInt64>) {
+        guard minimapSplit.panelVisible, minimapView.renderMode == .overview else { return }
+        let summaries = minimapView.overviewSummaries
+        let sources = overviewSources()
+        guard !summaries.isEmpty, summaries.count == sources.count,
+              let extent = summaries.first?.extent, extent > 0,
+              let rowCount = summaries.first?.rowCount, rowCount > 0,
+              summaries.allSatisfy({ $0.extent == extent && $0.rowCount == rowCount }),
+              rowCount == minimapView.overviewRowCount(),
+              extent == sources.map(\.size).max() ?? 0 else {
+            scheduleOverviewRebuild()
+            return
+        }
+        let last = min(range.upperBound &- 1, extent - 1)
+        guard range.lowerBound <= last else { return }
+        let firstRow = Int(range.lowerBound * UInt64(rowCount) / extent)
+        let lastRow = min(rowCount - 1, Int(last * UInt64(rowCount) / extent))
+        guard firstRow <= lastRow else { return }
+        let rows = firstRow...lastRow
+        for (index, source) in sources.enumerated() {
+            guard let patch = Self.overviewRows(source: source, extent: extent,
+                                                rowCount: rowCount, rows: rows) else { continue }
+            minimapView.updateOverviewRows(rows, density: patch.density, modified: patch.modified,
+                                           different: patch.different, forMapAt: index)
+        }
+        overviewPatches += 1
+    }
+
+    /// The open files' sizes, in map order.
+    private func currentFileSizes() -> [UInt64] {
+        switch mode {
+        case .singleFile: return [windowModel.pane1.fileSize]
+        case .comparison: return [windowModel.pane1.fileSize, windowModel.pane2.fileSize]
+        case .empty: return []
+        }
+    }
+
+    /// One snapshot per map, in map order.
+    private func overviewSources() -> [OverviewSource] {
+        switch mode {
+        case .singleFile: return [overviewSource(windowModel.pane1)]
+        case .comparison: return [overviewSource(windowModel.pane1), overviewSource(windowModel.pane2)]
+        case .empty: return []
+        }
+    }
+
+    /// The comparison index changed. When what changed is the edits this
+    /// controller recorded, the overview patches their rows; anything else — a
+    /// fresh index, a build starting, a cancel — means the derived picture is
+    /// stale as a whole and is rebuilt (§19.9).
+    private func overviewFollowIndexChange() {
+        guard minimapSplit.panelVisible, minimapView.renderMode == .overview else {
+            overviewRowsAwaitingIndex.removeAll()
+            return
+        }
+        let build = comparisonCoordinator.indexBuildCount
+        guard build == overviewIndexBuildCount else {
+            overviewIndexBuildCount = build
+            overviewRowsAwaitingIndex.removeAll()
+            scheduleOverviewRebuild()
+            return
+        }
+        guard !overviewRowsAwaitingIndex.isEmpty else {
+            scheduleOverviewRebuild()
+            return
+        }
+        let ranges = overviewRowsAwaitingIndex
+        overviewRowsAwaitingIndex.removeAll()
+        for range in ranges { patchOverviewRows(covering: range) }
     }
 
     /// Moves the caret to the byte clicked on a map and centres the pane on it.

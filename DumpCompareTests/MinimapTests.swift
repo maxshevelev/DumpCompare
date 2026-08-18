@@ -1773,6 +1773,52 @@ final class MinimapTests: XCTestCase {
         XCTAssertNotEqual(onRow[0].minX, onRow[1].minX, "and they are the two side-by-side maps")
     }
 
+    /// A typed byte lands in one row of a thousand, so it must not send the
+    /// overview back over the whole file: the rows it falls in are recomputed and
+    /// the rest of the picture is left alone (§19.9).
+    func testAnEditPatchesTheOverviewInsteadOfRebuildingIt() throws {
+        let (controller, _, panel) =
+            try makeOverviewWindow([UInt8](repeating: 0x41, count: 1024 * 1024))
+        panel.displayIfNeeded()
+        let rebuildsBefore = controller.overviewRebuilds
+        let patchesBefore = controller.overviewPatches
+
+        controller.windowModel.pane1.moveCaret(to: 500_000)
+        controller.windowModel.pane1.typeASCII(0x00)
+
+        XCTAssertEqual(controller.overviewPatches, patchesBefore + 1,
+                       "the edit patched its rows, synchronously")
+        XCTAssertTrue(panel.overviewSummaries.first?.modified.contains { $0 != 0 } ?? false,
+                      "and the mark is on the picture at once, with no waiting")
+        XCTAssertEqual(controller.overviewRebuilds, rebuildsBefore,
+                       "no full pass over the file")
+        // A debounced rebuild would arrive a little later; nothing may schedule one.
+        _ = pumpUntil(1.0) { controller.overviewRebuilds > rebuildsBefore }
+        XCTAssertEqual(controller.overviewRebuilds, rebuildsBefore,
+                       "and none is queued behind it either")
+    }
+
+    /// The patch has to produce exactly what a full pass would: same density,
+    /// same marks. Otherwise editing would slowly drift the picture away from the
+    /// file it describes.
+    func testAPatchedOverviewMatchesAFullRebuild() throws {
+        var bytes = [UInt8](repeating: 0xFF, count: 256 * 1024)
+        bytes += (0..<(256 * 1024)).map { UInt8(0x41 + ($0 % 26)) }
+        let (controller, _, panel) = try makeOverviewWindow(bytes)
+        panel.displayIfNeeded()
+
+        controller.windowModel.pane1.moveCaret(to: 100_000)
+        controller.windowModel.pane1.typeASCII(0x42)   // content inside erased padding
+        let patched = try XCTUnwrap(panel.overviewSummaries.first)
+
+        let published = controller.overviewRebuildsCompleted
+        controller.rebuildOverviewForTesting()
+        XCTAssertTrue(pumpUntil(5.0) { controller.overviewRebuildsCompleted > published },
+                      "the full pass published its picture")
+        let rebuilt = try XCTUnwrap(panel.overviewSummaries.first)
+        XCTAssertEqual(patched, rebuilt, "the patched picture is the picture a full pass builds")
+    }
+
     /// The other half of the same question: overview mode paints a precomputed
     /// picture, so an edit reaches it only through a rebuild. That path exists —
     /// but the difference marks come from the comparison index, which is updated

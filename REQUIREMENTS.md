@@ -1185,10 +1185,26 @@ The panes' visible slice is drawn as a translucent band over the map.
     change and the maps repaint whole.
 - A repaint must start from the panel's background, since it can no longer
   rely on the whole panel being redrawn.
-- Rebuilding the overview's picture walks the whole file and must not run on
-  the main thread, must be debounced, and must be cancelled when superseded.
-  The two files of a comparison are independent passes and are computed
-  concurrently.
+- An edit must not rebuild the overview's picture. A byte lands in one row of
+  a thousand, so the rows its range falls in are recomputed — from the file for
+  their density, from the edit overlay for their modified marks, from the
+  comparison index for their differences — and the rest of the picture is left
+  as it is. The patch runs on the main thread: it reads one row's slice per map
+  (tens of kilobytes), so the mark appears with the keystroke, with no debounce
+  to wait out. A patched picture must equal the picture a full pass would
+  build; anything else drifts the map away from the file as editing goes on.
+  - The difference marks come from the comparison index, which absorbs the edit
+    in its own background pass. Those rows are therefore patched twice: once
+    with the keystroke, once when the index reports the change.
+  - An index change that is *not* the absorption of a recorded edit — a fresh
+    build, a cancel, a stop — invalidates the whole derived picture, so that
+    still rebuilds.
+- A full rebuild is for the changes no row range describes: a new file, a
+  resize that re-bins the rows, an insert or delete, a save (which clears every
+  modified mark), a fresh comparison index. It walks the whole file and must
+  not run on the main thread, must be debounced, and must be cancelled when
+  superseded. The two files of a comparison are independent passes and are
+  computed concurrently.
 - A rebuild reports progress to the panel's status bar (§19.1). The bar
   appears only if the pass outlives a short delay — a small dump is binned in
   milliseconds, and a bar shown for one frame reads as a glitch — and it is

@@ -36,6 +36,11 @@ final class ComparisonCoordinator {
 
     /// Latest completed index, or nil while building/after `stop`.
     private(set) var index: DiffBlockIndex?
+    /// Bumped every time a *fresh* index replaces the old one, as opposed to one
+    /// that absorbed a recorded edit. A consumer holding a picture derived from
+    /// the index (the minimap's overview, §19.4.2) reads this to tell "patch the
+    /// rows I edited" from "everything you derived is stale".
+    private(set) var indexBuildCount = 0
     /// True while a full-file index is not yet available.
     private(set) var isBuilding = false
 
@@ -230,6 +235,7 @@ final class ComparisonCoordinator {
             // operation this coordinator no longer owns — leave it untouched.
             guard gen == self.generation else { return }
             self.index = built
+            self.indexBuildCount += 1
             self.isBuilding = false
             self.endBuildOperation()
             self.onStateChanged?()
