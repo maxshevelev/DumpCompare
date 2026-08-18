@@ -1773,6 +1773,41 @@ final class MinimapTests: XCTestCase {
         XCTAssertNotEqual(onRow[0].minX, onRow[1].minX, "and they are the two side-by-side maps")
     }
 
+    /// The other half of the same question: overview mode paints a precomputed
+    /// picture, so an edit reaches it only through a rebuild. That path exists —
+    /// but the difference marks come from the comparison index, which is updated
+    /// in the background, so the check runs the whole way: type a byte that
+    /// creates a difference and wait for both maps to show it (§19.4.2).
+    func testAnEditReachesTheOverviewsDifferenceMarks() throws {
+        let content = (0..<8192).map { UInt8(0x41 + ($0 % 26)) }
+        let url1 = try tempFile(content)
+        let url2 = try tempFile(content)
+        let (controller, window) = try makeController()
+        try controller.windowModel.pane1.open(url: url1)
+        try controller.windowModel.pane2.open(url: url2)
+        controller.apply(mode: .comparison)
+        window.layoutIfNeeded()
+        let (split, panel) = try minimapViews(window)
+        split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+        controller.setMinimapRenderModeForTesting(.overview)
+
+        XCTAssertTrue(pumpUntil(3.0) { panel.overviewSummaries.count == 2 },
+                      "both maps have a picture")
+        XCTAssertTrue(panel.overviewSummaries.allSatisfy { $0.different.allSatisfy { $0 == 0 } },
+                      "the premise: the two files are the same, so nothing is marked")
+
+        controller.windowModel.pane1.moveCaret(to: 4096)
+        controller.windowModel.pane1.typeASCII(0x00)
+
+        XCTAssertTrue(pumpUntil(5.0) {
+            panel.overviewSummaries.allSatisfy { $0.different.contains { $0 != 0 } }
+        }, "the new difference reaches both maps without a scroll or a resize")
+        XCTAssertTrue(pumpUntil(5.0) {
+            panel.overviewSummaries.first?.modified.contains { $0 != 0 } ?? false
+        }, "and so does the edited byte's own red mark")
+    }
+
     /// The same rule in detail mode: while the window stays put, a scroll moves
     /// only the band, so the cells outside it keep their pixels.
     func testDetailScrollRepaintsOnlyTheBandWhileTheWindowStaysPut() throws {
