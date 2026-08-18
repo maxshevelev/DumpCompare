@@ -555,6 +555,46 @@ Suggested shortcuts:
 
 Shortcuts may be adjusted, but must be discoverable in menus.
 
+10.3.1 Difference grouping for navigation
+
+The unit navigation steps by is a difference *hunk*, not a byte-exact
+difference block.
+
+- A hunk is a maximal run of difference blocks in which every two neighbours
+  are separated by a matching run shorter than the grouping distance. A
+  matching run of at least the grouping distance separates two hunks.
+- A hunk's bounds are its first and last differing byte. Forward navigation
+  lands on the first, backward navigation on the last, so navigation never
+  lands on a byte that does not differ.
+- Grouping is by distance only. It must not be defined on the 16-byte row grid:
+  row grouping makes the effective threshold depend on where the differing
+  bytes fall inside a row (bytes 30 apart in two adjacent rows would merge
+  while bytes 16 apart across one clean row would not), so the same spacing
+  would group differently depending on alignment.
+- Same-block navigation is the complement of the hunks: the matching runs
+  between hunks, plus the leading and trailing runs of the comparison extent.
+  A matching run swallowed by a hunk is not a navigation target — it is inside
+  a change. The leading and trailing runs may be shorter than the grouping
+  distance; nothing was merged across them.
+- A caret inside a hunk — including inside a run the hunk swallowed — belongs
+  to that hunk: the next/previous target is the neighbouring hunk, never a
+  fragment of the current one.
+- The grouping distance is user-configurable (Settings > Comparison), offering
+  16 / 32 / 64 / 256 bytes, defaulting to 256. A change applies to an open
+  comparison immediately and must re-derive the hunks from the existing block
+  index — grouping changes nothing about the comparison itself, so the files
+  are not rescanned.
+- Grouping affects navigation only:
+  - byte highlighting stays per byte (§8.2);
+  - the difference/same byte counts in the status bar stay per byte;
+  - the block index keeps its byte-exact semantics (§8.1); the hunks are
+    derived from it.
+- Enabling/disabling the navigation commands must use the same grouped unit as
+  the commands themselves, so a command is enabled exactly when it would move.
+- The derivation is a linear pass over the blocks and must not run on the main
+  thread: a pair of files whose differing bytes alternate with matching ones
+  holds a block per byte.
+
 =====================================================================
 11. SEARCH
 =====================================================================

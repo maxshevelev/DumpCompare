@@ -424,6 +424,15 @@ public actor DiffIndexBuilder {
         )
     }
 
+    /// Groups an index's difference blocks into navigation hunks (§10.3.1).
+    ///
+    /// Lives on the actor so the pass runs off the main thread: it is linear in
+    /// the block count, and a pair of files whose differing bytes alternate with
+    /// matching ones holds a block per byte.
+    public func hunks(for index: DiffBlockIndex, gap: UInt64) -> DiffHunkIndex {
+        DiffHunkIndex(index: index, gap: gap)
+    }
+
     /// On-demand block search while a full index is still building (§10.3).
     /// Chunked and cancellable; see `DiffEngine.findBlock`.
     public func scanForBlock(
