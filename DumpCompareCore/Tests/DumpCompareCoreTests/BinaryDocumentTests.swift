@@ -202,6 +202,60 @@ final class BinaryDocumentTests: XCTestCase {
         XCTAssertEqual(doc.selection.start, 3, "redo restores the post-insert caret (at+count)")
     }
 
+    func testUndoRestoresTheSelectionTheEditStartedFrom() throws {
+        let (doc, _) = try makeDocument([0x00, 0x01, 0x02, 0x03, 0x04])
+        doc.setSelection(SelectionModel(start: 1, end: 4, fileSize: doc.size))
+        try doc.overwrite(range: 1..<2, with: [0xFF])
+
+        try doc.undo()
+        XCTAssertEqual(doc.selection, SelectionModel(start: 1, end: 4, fileSize: doc.size),
+                       "undo restores the whole selection, not just its caret")
+    }
+
+    func testRedoRestoresTheSelectionTheCommandLeft() throws {
+        let (doc, _) = try makeDocument([0x00, 0x01, 0x02, 0x03, 0x04])
+        doc.setSelection(SelectionModel(start: 1, end: 4, fileSize: doc.size))
+        try doc.overwrite(range: 1..<2, with: [0xFF])
+        // What typing into a selection leaves: the unconsumed remainder.
+        doc.setSelection(SelectionModel(start: 2, end: 4, fileSize: doc.size))
+        doc.noteSelectionAfterEdit()
+
+        try doc.undo()
+        try doc.redo()
+        XCTAssertEqual(doc.selection, SelectionModel(start: 2, end: 4, fileSize: doc.size),
+                       "redo returns to the state the command left, remainder included")
+    }
+
+    func testANoteAfterAnUndoDoesNotTouchTheOlderTransaction() throws {
+        let (doc, _) = try makeDocument([0x00, 0x01, 0x02, 0x03])
+        try doc.overwrite(range: 0..<1, with: [0xAA])
+        try doc.overwrite(range: 1..<2, with: [0xBB])
+        try doc.undo()   // the second edit is now on the redo stack
+
+        // A stray note (a selection change after the undo) must not be attached
+        // to the first edit as if it were its outcome.
+        doc.setSelection(SelectionModel(start: 3, end: 4, fileSize: doc.size))
+        doc.noteSelectionAfterEdit()
+
+        try doc.undo()
+        try doc.redo()
+        XCTAssertEqual(doc.selection, SelectionModel.empty(at: 1, fileSize: doc.size),
+                       "the first edit still redoes to its own end")
+    }
+
+    func testUndoOfACoalescedTypingGroupRestoresTheSelectionAtItsStart() throws {
+        let (doc, _) = try makeDocument([0x00, 0x01, 0x02, 0x03, 0x04])
+        doc.setSelection(SelectionModel(start: 2, end: 5, fileSize: doc.size))
+        doc.beginEditGroup()
+        try doc.overwrite(range: 2..<3, with: [0xF0])
+        try doc.overwrite(range: 2..<3, with: [0xFF])   // the second nibble
+        doc.endEditGroup()
+
+        try doc.undo()
+        XCTAssertEqual(doc.selection, SelectionModel(start: 2, end: 5, fileSize: doc.size),
+                       "the group's whole selection comes back, not the caret alone")
+    }
+
     func testFillCaretOverrideUsedOnUndoRedo() throws {
         let (doc, _) = try makeDocument([0x00, 0x01, 0x02, 0x03])
         doc.setSelection(SelectionModel(start: 1, end: 3, fileSize: doc.size))

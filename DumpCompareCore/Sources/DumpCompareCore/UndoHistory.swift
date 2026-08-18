@@ -33,19 +33,44 @@ public enum UndoOperation: Equatable, Sendable {
     }
 }
 
-/// A committed undo step: the ops applied as a unit, plus the caret positions
-/// that bracket it — where the caret was when the edit started (`caretBefore`,
-/// restored by undo) and where it ended up after it (`caretAfter`, restored by
-/// redo). Captured by `BinaryDocument` at record time.
+/// A committed undo step: the ops applied as a unit, plus the selections that
+/// bracket it — what was selected when the edit started (`selectionBefore`,
+/// restored by undo) and what the edit left selected (`selectionAfter`,
+/// restored by redo). Captured by `BinaryDocument` at record time.
+///
+/// The whole selection is stored, not just the caret: typing into a selection
+/// consumes it byte by byte, and an undo that dropped the selection would make
+/// the two directions asymmetric — the state undo returns to would be one the
+/// editing never passed through (§7.5).
 public struct UndoTransaction: Equatable, Sendable {
     public let ops: [UndoOperation]
-    public let caretBefore: UInt64
-    public let caretAfter: UInt64
+    public let selectionBefore: SelectionModel
+    /// Set at record time from the edit's natural end, then refined by
+    /// `noteSelectionAfterOnLast` once the command that made the edit has left
+    /// the selection where it wants it.
+    public private(set) var selectionAfter: SelectionModel
 
-    public init(ops: [UndoOperation], caretBefore: UInt64, caretAfter: UInt64) {
+    /// Where the caret sits in each bracketing state — an empty selection is a
+    /// caret, and a non-empty one's caret is its start.
+    public var caretBefore: UInt64 { selectionBefore.start }
+    public var caretAfter: UInt64 { selectionAfter.start }
+
+    public init(ops: [UndoOperation], selectionBefore: SelectionModel, selectionAfter: SelectionModel) {
         self.ops = ops
-        self.caretBefore = caretBefore
-        self.caretAfter = caretAfter
+        self.selectionBefore = selectionBefore
+        self.selectionAfter = selectionAfter
+    }
+
+    /// Caret-only form, for edits recorded without a selection to speak of.
+    public init(ops: [UndoOperation], caretBefore: UInt64, caretAfter: UInt64,
+                fileSize: UInt64 = .max) {
+        self.init(ops: ops,
+                  selectionBefore: .empty(at: caretBefore, fileSize: fileSize),
+                  selectionAfter: .empty(at: caretAfter, fileSize: fileSize))
+    }
+
+    fileprivate mutating func setSelectionAfter(_ selection: SelectionModel) {
+        selectionAfter = selection
     }
 }
 
@@ -74,16 +99,37 @@ public final class UndoHistory: @unchecked Sendable {
     public var undoDepth: Int { cursor }
 
     /// Records a transaction of ops applied to storage. Any undone transactions
-    /// (the redo stack) are discarded, because the state has diverged. The caret
-    /// pair records where the edit started and left the caret, so undo/redo can
-    /// restore it.
-    public func record(_ ops: [UndoOperation], caretBefore: UInt64 = 0, caretAfter: UInt64 = 0) {
+    /// (the redo stack) are discarded, because the state has diverged. The
+    /// selection pair records what the edit started from and what it left, so
+    /// undo/redo can restore it.
+    public func record(_ ops: [UndoOperation],
+                       selectionBefore: SelectionModel,
+                       selectionAfter: SelectionModel) {
         guard !ops.isEmpty else { return }
         if cursor < history.count {
             history.removeSubrange(cursor...)
         }
-        history.append(UndoTransaction(ops: ops, caretBefore: caretBefore, caretAfter: caretAfter))
+        history.append(UndoTransaction(ops: ops,
+                                       selectionBefore: selectionBefore,
+                                       selectionAfter: selectionAfter))
         cursor = history.count
+    }
+
+    /// Caret-only form of `record`, for edits with no selection to restore.
+    public func record(_ ops: [UndoOperation], caretBefore: UInt64 = 0, caretAfter: UInt64 = 0,
+                       fileSize: UInt64 = .max) {
+        record(ops,
+               selectionBefore: .empty(at: caretBefore, fileSize: fileSize),
+               selectionAfter: .empty(at: caretAfter, fileSize: fileSize))
+    }
+
+    /// Refines the last recorded transaction's post-edit selection, so redo
+    /// restores what the editing command left on screen rather than the bare
+    /// end of the byte range it wrote. Ignored unless the last transaction is
+    /// the current one (nothing has been undone since it was recorded).
+    public func noteSelectionAfterOnLast(_ selection: SelectionModel) {
+        guard cursor == history.count, cursor > 0 else { return }
+        history[cursor - 1].setSelectionAfter(selection)
     }
 
     /// Reverts the most recent committed transaction, returning it (ops in

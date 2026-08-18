@@ -132,28 +132,41 @@ public final class BinaryDocument: @unchecked Sendable {
     // MARK: - Undo / Redo
 
     /// Reverts the most recent transaction: applies its inverse ops to storage
-    /// (each op's `inverted` in reverse order), restores the caret to where it
-    /// was when the edit started, and returns the net `DiffEdit` describing the
-    /// storage change — so a comparison can update incrementally instead of
-    /// re-scanning both files. `nil` when there is nothing to undo.
+    /// (each op's `inverted` in reverse order), restores the selection the edit
+    /// started from, and returns the net `DiffEdit` describing the storage
+    /// change — so a comparison can update incrementally instead of re-scanning
+    /// both files. `nil` when there is nothing to undo.
     @discardableResult
     public func undo() throws -> DiffEdit? {
         guard let txn = undoHistory.undo() else { return nil }
         let applied = txn.ops.reversed().map(\.inverted)
         for op in applied { try applyForward(op) }
-        selection = SelectionModel.empty(at: min(txn.caretBefore, storage.size), fileSize: storage.size)
+        selection = txn.selectionBefore.clamped(to: storage.size)
+        transactionAwaitingSelection = false
         return DiffEdit.netDiffEdit(ops: applied)
     }
 
     /// Reapplies the next undone transaction in its original order, restores the
-    /// caret to where the edit left it, and returns the net `DiffEdit` for the
-    /// storage change (see `undo()`). `nil` when there is nothing to redo.
+    /// selection the edit left, and returns the net `DiffEdit` for the storage
+    /// change (see `undo()`). `nil` when there is nothing to redo.
     @discardableResult
     public func redo() throws -> DiffEdit? {
         guard let txn = undoHistory.redo() else { return nil }
         for op in txn.ops { try applyForward(op) }
-        selection = SelectionModel.empty(at: min(txn.caretAfter, storage.size), fileSize: storage.size)
+        selection = txn.selectionAfter.clamped(to: storage.size)
+        transactionAwaitingSelection = false
         return DiffEdit.netDiffEdit(ops: txn.ops)
+    }
+
+    /// Records the selection as the state the last edit left behind, so redo
+    /// returns to it. Called by the editing command once it has placed the
+    /// selection — the document itself cannot know whether a command collapses
+    /// the selection (a fill does) or keeps consuming what is left of it
+    /// (typing does). A no-op unless an edit was recorded since the last call.
+    public func noteSelectionAfterEdit() {
+        guard transactionAwaitingSelection else { return }
+        transactionAwaitingSelection = false
+        undoHistory.noteSelectionAfterOnLast(selection)
     }
 
     // MARK: - Save / Revert
@@ -191,13 +204,14 @@ public final class BinaryDocument: @unchecked Sendable {
         identity = FileIdentity(url: url)
         readOnly = !FileManager.default.isWritableFile(atPath: url.path)
         undoHistory.reset()
+        transactionAwaitingSelection = false
         selection = SelectionModel.empty(at: 0, fileSize: base.size)
     }
 
     // MARK: - Edit grouping (typing sessions coalesce into one undo)
 
     public func beginEditGroup() {
-        if groupDepth == 0 { groupStartCaret = selection.start }
+        if groupDepth == 0 { groupStartSelection = selection }
         groupDepth += 1
     }
 
@@ -206,11 +220,12 @@ public final class BinaryDocument: @unchecked Sendable {
         if groupDepth == 0, !pendingGroupOps.isEmpty {
             undoHistory.record(
                 pendingGroupOps,
-                caretBefore: groupStartCaret ?? selection.start,
-                caretAfter: naturalCaretAfter(pendingGroupOps)
+                selectionBefore: groupStartSelection ?? selection,
+                selectionAfter: .empty(at: naturalCaretAfter(pendingGroupOps), fileSize: storage.size)
             )
+            transactionAwaitingSelection = true
             pendingGroupOps.removeAll()
-            groupStartCaret = nil
+            groupStartSelection = nil
         }
     }
 
@@ -224,20 +239,28 @@ public final class BinaryDocument: @unchecked Sendable {
 
     private var groupDepth = 0
     private var pendingGroupOps: [UndoOperation] = []
-    /// The caret when the open edit group began (undo of a coalesced typing
-    /// session returns here).
-    private var groupStartCaret: UInt64?
+    /// The selection when the open edit group began (undo of a coalesced typing
+    /// session returns to it).
+    private var groupStartSelection: SelectionModel?
+    /// True between recording a transaction and `noteSelectionAfterEdit`, so a
+    /// note cannot attach the selection to an older transaction.
+    private var transactionAwaitingSelection = false
 
-    /// Records ops as one transaction, capturing the caret pair: `caretBefore`
-    /// is the current selection start (mutations never move the caret before
-    /// recording), `caretAfter` is the override or the natural post-edit
-    /// position of the final op.
+    /// Records ops as one transaction, capturing the selection pair:
+    /// `selectionBefore` is the current selection (mutations never move it
+    /// before recording), `selectionAfter` the override or the natural
+    /// post-edit caret of the final op, until the command refines it.
     private func record(_ ops: [UndoOperation], caretAfter: UInt64? = nil) {
         guard !ops.isEmpty else { return }
         if groupDepth > 0 {
             pendingGroupOps.append(contentsOf: ops)
         } else {
-            undoHistory.record(ops, caretBefore: selection.start, caretAfter: caretAfter ?? naturalCaretAfter(ops))
+            undoHistory.record(
+                ops,
+                selectionBefore: selection,
+                selectionAfter: .empty(at: caretAfter ?? naturalCaretAfter(ops), fileSize: storage.size)
+            )
+            transactionAwaitingSelection = true
         }
     }
 

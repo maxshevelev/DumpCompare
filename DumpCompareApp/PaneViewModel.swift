@@ -552,6 +552,7 @@ final class PaneViewModel: HexViewDataSource {
         endTypingGroup()
         try doc.delete(range: range)
         doc.setSelection(SelectionModel.empty(at: range.lowerBound, fileSize: doc.size))
+        doc.noteSelectionAfterEdit()
         nibble = 0
         overwriteSelection = nil
         onEdit?(.delete(range: range))
@@ -583,6 +584,7 @@ final class PaneViewModel: HexViewDataSource {
         let at = doc.selection.start
         try doc.insert(at: at, bytes: bytes)
         doc.setSelection(SelectionModel.empty(at: at + UInt64(bytes.count), fileSize: doc.size))
+        doc.noteSelectionAfterEdit()
         resetEditingState()
         onEdit?(.insert(at: at, length: UInt64(bytes.count)))
         notify()
@@ -810,6 +812,10 @@ final class PaneViewModel: HexViewDataSource {
     /// whole pane; when the size grew or shrank, a full change, because the
     /// layout (frame height, caret row) must rebuild.
     private func notifyAfterEdit(range: Range<UInt64>, sizeBefore: UInt64) {
+        // The command has placed the selection by now — hand it to the undo
+        // history so redo returns to this state, not to the bare end of the
+        // range it wrote (§7.5).
+        document?.noteSelectionAfterEdit()
         if document?.size == sizeBefore {
             notify(contentChange: .bytes(in: range))
         } else {

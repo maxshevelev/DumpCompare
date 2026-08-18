@@ -381,8 +381,15 @@ A separate explicit menu command, e.g. Edit > Delete Bytes, performs true length
   - byte contents;
   - file length;
   - dirty state where applicable;
-  - selection/cursor reasonably.
-- Redo must reapply the operation.
+  - the selection, not merely the caret: the state the edit started from, whole.
+    Typing into a selection consumes it byte by byte (§7.4), so an undo that
+    dropped the selection would land on a state the editing never passed
+    through, and the next keystroke would then overwrite a single byte instead
+    of resuming the sequence.
+- Redo must reapply the operation and restore the selection the command left —
+  the remainder still to be typed over, or the collapsed caret a fill leaves.
+  The document cannot derive this from the byte range alone, so the command
+  that made the edit states it after placing the selection.
 - Undo history may be bounded by memory/disk resources, but must be sufficient for practical editing sessions.
 
 =====================================================================

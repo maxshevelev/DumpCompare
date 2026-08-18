@@ -231,6 +231,63 @@ final class PaneViewModelTests: XCTestCase {
         XCTAssertEqual(fullInvalidations, 0, "undo/redo must not trigger a full-file comparison rebuild")
     }
 
+    func testUndoRestoresTheSelectionTypingWasConsuming() throws {
+        let (pane, url) = try openPane([0x00, 0x11, 0x22, 0x33, 0x44])
+        defer { try? FileManager.default.removeItem(at: url) }
+        let size = pane.fileSize
+        pane.setSelection(SelectionModel(start: 1, end: 5, fileSize: size))
+
+        // Typing eats the selection from its start, one byte per pair of nibbles.
+        pane.typeHexNibble(0xA); pane.typeHexNibble(0xA)
+        XCTAssertEqual(pane.hexSelection(), SelectionModel(start: 2, end: 5, fileSize: size),
+                       "the first byte is consumed, three are left selected")
+        pane.typeHexNibble(0xB); pane.typeHexNibble(0xB)
+        XCTAssertEqual(pane.hexSelection(), SelectionModel(start: 3, end: 5, fileSize: size))
+
+        try pane.undo()
+        XCTAssertEqual(pane.hexSelection(), SelectionModel(start: 2, end: 5, fileSize: size),
+                       "undo puts back the selection the second byte was typed into")
+        XCTAssertEqual(pane.hexByteStates(in: 1..<3).map(\.byte), [0xAA, 0x22])
+
+        try pane.undo()
+        XCTAssertEqual(pane.hexSelection(), SelectionModel(start: 1, end: 5, fileSize: size),
+                       "the second undo returns the selection the typing began with")
+        XCTAssertEqual(pane.hexByteStates(in: 1..<3).map(\.byte), [0x11, 0x22])
+
+        try pane.redo()
+        XCTAssertEqual(pane.hexSelection(), SelectionModel(start: 2, end: 5, fileSize: size),
+                       "redo returns to the state that keystroke left, remainder included")
+    }
+
+    func testUndoOfATypedByteOutsideASelectionLeavesNoSelection() throws {
+        let (pane, url) = try openPane([0x00, 0x11])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.typeHexNibble(0xA); pane.typeHexNibble(0xA)
+
+        try pane.undo()
+        XCTAssertTrue(pane.hexSelection().isEmpty,
+                      "an edit that began with a bare caret undoes back to a bare caret")
+        XCTAssertEqual(pane.caretOffset, 0)
+    }
+
+    func testUndoOfAFillPutsTheSelectionBack() throws {
+        let (pane, url) = try openPane([0x00, 0x01, 0x02, 0x03, 0x04])
+        defer { try? FileManager.default.removeItem(at: url) }
+        let size = pane.fileSize
+        pane.setSelection(SelectionModel(start: 1, end: 4, fileSize: size))
+        pane.fillSelection(with: [0xFF])
+        XCTAssertTrue(pane.hexSelection().isEmpty, "the fill collapses the selection")
+
+        try pane.undo()
+        XCTAssertEqual(pane.hexSelection(), SelectionModel(start: 1, end: 4, fileSize: size),
+                       "undo re-selects the region the fill covered")
+
+        try pane.redo()
+        XCTAssertTrue(pane.hexSelection().isEmpty,
+                      "redo leaves what the fill left — a caret at the range start")
+        XCTAssertEqual(pane.caretOffset, 1)
+    }
+
     func testFillUndoRedoRestoreCaretToSelectionStart() throws {
         let (pane, url) = try openPane([0x00, 0x01, 0x02, 0x03, 0x04])
         defer { try? FileManager.default.removeItem(at: url) }
