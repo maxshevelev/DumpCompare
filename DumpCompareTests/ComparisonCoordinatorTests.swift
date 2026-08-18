@@ -88,12 +88,12 @@ final class ComparisonCoordinatorTests: XCTestCase {
     /// The grouping distance is a setting (§10.3.1): changing it re-groups the
     /// blocks the coordinator already holds — same index, no rescan.
     func testChangingTheGroupingGapRegroupsWithoutRescanning() async throws {
-        // 512 bytes, single-byte differences 0xF0 apart: one change at the
-        // default distance (0x100), two at 64.
+        // 512 bytes, single-byte differences 0x30 apart: one change at the
+        // default distance (64 bytes), two at 16.
         var left = [UInt8](repeating: 0xAA, count: 512)
         var right = left
         left[0x10] = 0x01; right[0x10] = 0x02
-        left[0x100] = 0x03; right[0x100] = 0x04
+        left[0x40] = 0x03; right[0x40] = 0x04
         let (coordinator, _, _, urlA, urlB) = try makeCoordinator(left, right)
         defer {
             coordinator.stop()
@@ -106,18 +106,18 @@ final class ComparisonCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.groupingGap, ComparisonSettings.groupingGap,
                        "the coordinator starts from the configured distance")
         XCTAssertEqual(coordinator.findBlock(kind: .different, direction: .forward, from: 0)?.range,
-                       0x10..<0x101, "0xF0 apart is one change at the default distance")
+                       0x10..<0x41, "0x30 apart is one change at the default distance")
 
         let blocksBefore = coordinator.index
         let buildsBefore = coordinator.indexBuildCount
-        coordinator.groupingGap = 64
-        let regrouped = await waitUntil { coordinator.hunkIndex?.gap == 64 }
+        coordinator.groupingGap = 16
+        let regrouped = await waitUntil { coordinator.hunkIndex?.gap == 16 }
         XCTAssertTrue(regrouped, "hunks never re-derived")
 
         XCTAssertEqual(coordinator.findBlock(kind: .different, direction: .forward, from: 0)?.range,
-                       0x10..<0x11, "at 64 bytes the two differences are separate changes")
+                       0x10..<0x11, "at 16 bytes the two differences are separate changes")
         XCTAssertEqual(coordinator.findBlock(kind: .different, direction: .forward, from: 0x10)?.range,
-                       0x100..<0x101)
+                       0x40..<0x41)
         XCTAssertEqual(coordinator.index, blocksBefore, "the byte-exact blocks must not change")
         XCTAssertEqual(coordinator.indexBuildCount, buildsBefore, "re-grouping must not rescan the files")
     }

@@ -580,7 +580,7 @@ difference block.
   to that hunk: the next/previous target is the neighbouring hunk, never a
   fragment of the current one.
 - The grouping distance is user-configurable (Settings > Comparison), offering
-  16 / 32 / 64 / 256 bytes, defaulting to 256. A change applies to an open
+  16 / 32 / 64 / 256 bytes, defaulting to 64. A change applies to an open
   comparison immediately and must re-derive the hunks from the existing block
   index — grouping changes nothing about the comparison itself, so the files
   are not rescanned.

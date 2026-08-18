@@ -16,9 +16,9 @@ enum ComparisonSettings {
     /// sixteen hex rows.
     static let groupingGapChoices: [UInt64] = [16, 32, 64, 256]
 
-    /// Sixteen rows: roughly a third of a screenful, so the next press moves to
-    /// a change that isn't already in front of you.
-    static let defaultGroupingGap: UInt64 = 256
+    /// Four rows: close enough that a press moves to a change you were not
+    /// already looking at, without folding neighbouring changes into one.
+    static let defaultGroupingGap: UInt64 = 64
 
     /// The configured distance, falling back to the default for an unset or
     /// unrecognised value.

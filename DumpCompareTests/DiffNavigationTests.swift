@@ -257,13 +257,13 @@ final class DiffNavigationTests: XCTestCase {
     }
 
     /// The Comparison settings tab's grouping distance reaches an open
-    /// comparison live (§10.3.1): two differences 100 bytes apart are one change
+    /// comparison live (§10.3.1): two differences 40 bytes apart are one change
     /// at the default distance and two changes at 16 bytes — without reopening
     /// the files.
     func testTheGroupingSettingChangesWhatCountsAsOneChange() throws {
         var left = [UInt8](repeating: 0x11, count: 300 * 16)
         var right = left
-        for offset in [100 * 16, 100 * 16 + 100] {
+        for offset in [100 * 16, 100 * 16 + 40] {
             left[offset] = 0xDE
             right[offset] = 0x00
         }
@@ -286,7 +286,7 @@ final class DiffNavigationTests: XCTestCase {
         // queue, which re-derives the hunks in the background.
         XCTAssertTrue(pumpUntil(5) {
             controller.nextDifference()
-            return controller.windowModel.pane1.caretOffset == UInt64(100 * 16 + 100)
+            return controller.windowModel.pane1.caretOffset == UInt64(100 * 16 + 40)
         }, "at 16 bytes the second difference must become its own change")
     }
 

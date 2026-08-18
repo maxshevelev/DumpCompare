@@ -3,7 +3,7 @@ import XCTest
 @testable import DumpCompare
 
 /// The Comparison settings (§10.3.1): the distance that decides what Next /
-/// Previous Difference treats as one change. Defaults to 256 bytes, persists to
+/// Previous Difference treats as one change. Defaults to 64 bytes, persists to
 /// UserDefaults, notifies so an open comparison re-groups live, and is offered
 /// as its own Settings tab.
 @MainActor
@@ -18,8 +18,8 @@ final class ComparisonSettingsTests: XCTestCase {
         super.tearDown()
     }
 
-    func testDefaultsToSixteenRows() {
-        XCTAssertEqual(ComparisonSettings.groupingGap, 256)
+    func testDefaultsToFourRows() {
+        XCTAssertEqual(ComparisonSettings.groupingGap, 64)
         XCTAssertEqual(ComparisonSettings.groupingGap, ComparisonSettings.defaultGroupingGap)
         XCTAssertEqual(ComparisonSettings.groupingGapChoices, [16, 32, 64, 256])
     }
@@ -48,7 +48,7 @@ final class ComparisonSettingsTests: XCTestCase {
     }
 
     func testResetRestoresTheDefault() {
-        ComparisonSettings.set(groupingGap: 16)
+        ComparisonSettings.set(groupingGap: 256)
         ComparisonSettings.resetToDefaults()
         XCTAssertEqual(ComparisonSettings.groupingGap, ComparisonSettings.defaultGroupingGap)
     }
@@ -74,10 +74,11 @@ final class ComparisonSettingsTests: XCTestCase {
         controller.loadView()
         let popup = try XCTUnwrap(descendants(of: controller.view, NSPopUpButton.self).first)
 
-        popup.selectItem(withTitle: "64 bytes (4 rows)")
+        // Not the default, so the assertion needs the write to have happened.
+        popup.selectItem(withTitle: "256 bytes (16 rows)")
         NSApp.sendAction(popup.action!, to: popup.target, from: popup)
 
-        XCTAssertEqual(ComparisonSettings.groupingGap, 64)
+        XCTAssertEqual(ComparisonSettings.groupingGap, 256)
     }
 
     /// The Settings window offers the tab and switches to it.
