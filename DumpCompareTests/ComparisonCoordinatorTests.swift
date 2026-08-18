@@ -43,8 +43,10 @@ final class ComparisonCoordinatorTests: XCTestCase {
         return (coordinator, paneA, paneB, urlA, urlB)
     }
 
+    /// The hunks are published in the same step as the index (§10.3.1), so
+    /// waiting on both also asserts that invariant for every test below.
     private func awaitBuild(_ coordinator: ComparisonCoordinator) async -> Bool {
-        await waitUntil { !coordinator.isBuilding && coordinator.index != nil }
+        await waitUntil { !coordinator.isBuilding && coordinator.index != nil && coordinator.hunkIndex != nil }
     }
 
     // MARK: - Build + navigation
@@ -66,16 +68,58 @@ final class ComparisonCoordinatorTests: XCTestCase {
         XCTAssertEqual(index.blocks.map(\.kind), [.same, .different, .same, .different])
         XCTAssertEqual(index.blocks[1].range, 2..<4)
 
-        // Navigation against the built index.
+        // Navigation steps by grouped hunks (§10.3.1): the two difference
+        // blocks are two matching bytes apart, well inside the default grouping
+        // distance, so they are one change.
         let nextDiff = coordinator.findBlock(kind: .different, direction: .forward, from: 0)
-        XCTAssertEqual(nextDiff?.range, 2..<4)
-        // `same` block at 0..<2 starts exactly at the search offset → not strictly after.
-        let nextSame = coordinator.findBlock(kind: .same, direction: .forward, from: 0)
-        XCTAssertEqual(nextSame?.range, 4..<6)
+        XCTAssertEqual(nextDiff?.range, 2..<8)
         let prevDiff = coordinator.findBlock(kind: .different, direction: .backward, from: index.maxSize)
-        XCTAssertEqual(prevDiff?.range, 6..<8)
+        XCTAssertEqual(prevDiff?.range, 2..<8)
+        // The matching run at 4..<6 was swallowed by that hunk, so it is not a
+        // same-block target; the leading run starts at 0, which is not strictly
+        // after the search offset, and the hunk runs to EOF — nothing forward.
+        XCTAssertNil(coordinator.findBlock(kind: .same, direction: .forward, from: 0))
+        XCTAssertEqual(coordinator.findBlock(kind: .same, direction: .backward, from: index.maxSize)?.range,
+                       0..<2)
         let noneAfterEOF = coordinator.findBlock(kind: .different, direction: .forward, from: index.maxSize)
         XCTAssertNil(noneAfterEOF)
+    }
+
+    /// The grouping distance is a setting (§10.3.1): changing it re-groups the
+    /// blocks the coordinator already holds — same index, no rescan.
+    func testChangingTheGroupingGapRegroupsWithoutRescanning() async throws {
+        // 512 bytes, single-byte differences 0xF0 apart: one change at the
+        // default distance (0x100), two at 64.
+        var left = [UInt8](repeating: 0xAA, count: 512)
+        var right = left
+        left[0x10] = 0x01; right[0x10] = 0x02
+        left[0x100] = 0x03; right[0x100] = 0x04
+        let (coordinator, _, _, urlA, urlB) = try makeCoordinator(left, right)
+        defer {
+            coordinator.stop()
+            try? FileManager.default.removeItem(at: urlA)
+            try? FileManager.default.removeItem(at: urlB)
+        }
+        coordinator.start()
+        let built = await awaitBuild(coordinator)
+        XCTAssertTrue(built, "index never built")
+        XCTAssertEqual(coordinator.groupingGap, ComparisonSettings.groupingGap,
+                       "the coordinator starts from the configured distance")
+        XCTAssertEqual(coordinator.findBlock(kind: .different, direction: .forward, from: 0)?.range,
+                       0x10..<0x101, "0xF0 apart is one change at the default distance")
+
+        let blocksBefore = coordinator.index
+        let buildsBefore = coordinator.indexBuildCount
+        coordinator.groupingGap = 64
+        let regrouped = await waitUntil { coordinator.hunkIndex?.gap == 64 }
+        XCTAssertTrue(regrouped, "hunks never re-derived")
+
+        XCTAssertEqual(coordinator.findBlock(kind: .different, direction: .forward, from: 0)?.range,
+                       0x10..<0x11, "at 64 bytes the two differences are separate changes")
+        XCTAssertEqual(coordinator.findBlock(kind: .different, direction: .forward, from: 0x10)?.range,
+                       0x100..<0x101)
+        XCTAssertEqual(coordinator.index, blocksBefore, "the byte-exact blocks must not change")
+        XCTAssertEqual(coordinator.indexBuildCount, buildsBefore, "re-grouping must not rescan the files")
     }
 
     /// While the index is building, navigation must not fire: `findBlock` has

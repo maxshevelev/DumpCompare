@@ -37,6 +37,7 @@ The workflows the app is shaped around:
 - Differing bytes get an orange fill, with theme-appropriate intensities for light and dark mode; the shorter file's EOF tail counts as a difference too.
 - The status bar shows a live summary — `12 differing · 2048 same` — updating as you edit.
 - **Next/Previous Difference** (⌘⌥→ / ⌘⌥←) and **Next/Previous Same Block** (⌘⌥⇧→ / ⌘⌥⇧←): forward lands on a block's start, backward on its last byte, and the result is centered in the view.
+- Diff navigation steps between *changes*, not bytes: differing bytes closer together than the grouping distance (256 bytes by default, configurable in Settings) are one target. A holey region — a rewritten NVRAM area where changed bytes alternate with unchanged ones — is one press instead of hundreds, while highlighting stays per byte.
 - A selection in one pane is outlined in the other (mirror contour), so the two halves of the same offset read as one.
 - **View > Toggle Pane Layout** (⌘⌥L) switches side-by-side and stacked; **Swap Panels** exchanges the two files without reopening them.
 
@@ -99,6 +100,7 @@ The workflows the app is shaped around:
 
 - **⌘,** opens a standard macOS settings window with toolbar tabs.
 - **Appearance:** the monospaced font and row density; changes apply live to open dumps.
+- **Comparison:** the grouping distance for diff navigation (16 / 32 / 64 / 256 bytes) — how far apart differing bytes may sit and still count as one change. Applies to an open comparison immediately, without rescanning.
 - **Text Decoding:** the decoding table (Windows-1252 by default, ISO-8859-1, Strict ASCII), a placeholder character for non-printable bytes, and a live grid of all 256 byte values.
 
 ### Reliability

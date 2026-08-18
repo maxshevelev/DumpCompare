@@ -124,16 +124,18 @@ final class AppearanceSettingsViewController: NSViewController {
 }
 
 /// The app's Settings window — a standard toolbar-tabbed preference dialog,
-/// with an Appearance tab (§3.2), a Layout tab (§6) and a Text Decoding tab
-/// (§3.4). Owned by `MainWindowController`; the App menu's "Settings…" item
-/// shows it.
+/// with an Appearance tab (§3.2), a Layout tab (§6), a Comparison tab (§10.3.1)
+/// and a Text Decoding tab (§3.4). Owned by `MainWindowController`; the App
+/// menu's "Settings…" item shows it.
 final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     private let appearanceController = AppearanceSettingsViewController()
     private let layoutController = LayoutSettingsViewController()
+    private let comparisonController = ComparisonSettingsViewController()
     private let textDecodingController = TextDecodingSettingsViewController()
 
     private static let appearanceItemID = NSToolbarItem.Identifier("Appearance")
     private static let layoutItemID = NSToolbarItem.Identifier("Layout")
+    private static let comparisonItemID = NSToolbarItem.Identifier("Comparison")
     private static let textDecodingItemID = NSToolbarItem.Identifier("TextDecoding")
 
     init() {
@@ -175,11 +177,11 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     // MARK: - NSToolbarDelegate
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.appearanceItemID, Self.layoutItemID, Self.textDecodingItemID]
+        [Self.appearanceItemID, Self.layoutItemID, Self.comparisonItemID, Self.textDecodingItemID]
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.appearanceItemID, Self.layoutItemID, Self.textDecodingItemID]
+        [Self.appearanceItemID, Self.layoutItemID, Self.comparisonItemID, Self.textDecodingItemID]
     }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
@@ -198,6 +200,13 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
             item.image = NSImage(systemSymbolName: "rectangle.split.2x1", accessibilityDescription: "Layout")
             item.target = self
             item.action = #selector(layoutTabTapped)
+        case Self.comparisonItemID:
+            item.label = "Comparison"
+            item.paletteLabel = "Comparison"
+            item.image = NSImage(systemSymbolName: "arrow.left.arrow.right",
+                                 accessibilityDescription: "Comparison")
+            item.target = self
+            item.action = #selector(comparisonTabTapped)
         case Self.textDecodingItemID:
             item.label = "Text Decoding"
             item.paletteLabel = "Text Decoding"
@@ -216,6 +225,10 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
 
     @objc private func layoutTabTapped() {
         window?.contentViewController = layoutController
+    }
+
+    @objc private func comparisonTabTapped() {
+        window?.contentViewController = comparisonController
     }
 
     @objc private func textDecodingTabTapped() {

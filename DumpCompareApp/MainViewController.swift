@@ -58,6 +58,7 @@ final class MainViewController: NSViewController {
     /// Reacts to the Layout settings tab changing the default direction: an open
     /// comparison re-lays out live, like the Word Size/Appearance settings (§6).
     private var layoutSettingsObserver: NSObjectProtocol?
+    private var comparisonSettingsObserver: NSObjectProtocol?
 
     /// Builds the background block index for comparison mode. The provider
     /// returns the current storages on every start/rebuild, so a revert that
@@ -91,6 +92,20 @@ final class MainViewController: NSViewController {
             // The pane arrangement changed (View menu or the Settings tab), so
             // the minimap's internal split flips with it (§19).
             self.updateMinimapLayout()
+        }
+        // The Comparison settings tab's grouping distance decides what counts as
+        // one change for diff navigation (§10.3.1). Applied live: the coordinator
+        // re-groups the blocks it already has, without rescanning the files.
+        comparisonSettingsObserver = NotificationCenter.default.addObserver(
+            forName: ComparisonSettings.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            // The observer runs on the main queue, but the closure is not
+            // statically main-actor isolated.
+            MainActor.assumeIsolated {
+                self?.comparisonCoordinator.groupingGap = ComparisonSettings.groupingGap
+            }
         }
         // Re-evaluate navigation availability on every index-state transition
         // (build starts/completes/cancels/stops, edits applied) (§10.3). The
@@ -2071,14 +2086,17 @@ final class MainViewController: NSViewController {
     /// `validateMenuItem` (§10.3).
     private func refreshDiffNavigation() {
         var state = DiffNavigationState()
-        if mode == .comparison,
-           let index = comparisonCoordinator.index,
-           !comparisonCoordinator.isBuilding {
+        if mode == .comparison, !comparisonCoordinator.isBuilding {
+            // Ask through the coordinator, so enablement and the action itself
+            // agree on the unit they step by — grouped hunks (§10.3.1).
             let from = windowModel.activePane.caretOffset
-            state.previousDifference = index.previousDifference(from: from) != nil
-            state.nextDifference = index.nextDifference(from: from) != nil
-            state.previousSameBlock = index.previousSame(from: from) != nil
-            state.nextSameBlock = index.nextSame(from: from) != nil
+            func exists(_ kind: DiffBlock.Kind, _ direction: SearchDirection) -> Bool {
+                comparisonCoordinator.findBlock(kind: kind, direction: direction, from: from) != nil
+            }
+            state.previousDifference = exists(.different, .backward)
+            state.nextDifference = exists(.different, .forward)
+            state.previousSameBlock = exists(.same, .backward)
+            state.nextSameBlock = exists(.same, .forward)
         }
         diffNavigationState = state
     }

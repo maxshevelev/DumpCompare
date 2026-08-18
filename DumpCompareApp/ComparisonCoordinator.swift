@@ -36,6 +36,13 @@ final class ComparisonCoordinator {
 
     /// Latest completed index, or nil while building/after `stop`.
     private(set) var index: DiffBlockIndex?
+    /// The navigation hunks derived from `index` (§10.3.1) — always in step with
+    /// it: both are published in the same main-actor step, so a non-nil `index`
+    /// implies a non-nil `hunkIndex`.
+    private(set) var hunkIndex: DiffHunkIndex?
+    /// Bumped on every `index` assignment, so a background hunk pass that lost
+    /// the race against a newer index drops its result.
+    private var indexVersion = 0
     /// Bumped every time a *fresh* index replaces the old one, as opposed to one
     /// that absorbed a recorded edit. A consumer holding a picture derived from
     /// the index (the minimap's overview, §19.4.2) reads this to tell "patch the
@@ -61,6 +68,18 @@ final class ComparisonCoordinator {
     /// stop, build failure).
     var onStateChanged: (() -> Void)?
 
+    /// How far apart differing bytes may sit and still count as one change for
+    /// navigation (§10.3.1). Seeded from the Comparison settings tab; the view
+    /// controller assigns the new value when the setting changes, and the hunks
+    /// are re-derived from the existing index — the byte-exact comparison is
+    /// unaffected, so no rescan is needed.
+    var groupingGap: UInt64 = ComparisonSettings.groupingGap {
+        didSet {
+            guard groupingGap != oldValue else { return }
+            regroup()
+        }
+    }
+
     /// Bumped on every start/rebuild/stop so stale background results are dropped.
     private var generation = 0
     /// Edits that arrived while the first build was in flight.
@@ -84,7 +103,7 @@ final class ComparisonCoordinator {
         currentLeft = left
         currentRight = right
         generation += 1
-        index = nil
+        setIndex(nil)
         pendingEdits = []
         queuedEdits = []
         applying = false
@@ -117,7 +136,7 @@ final class ComparisonCoordinator {
     /// any in-flight scan.
     func stop() {
         generation += 1
-        index = nil
+        setIndex(nil)
         currentLeft = nil
         currentRight = nil
         pendingEdits = []
@@ -164,12 +183,15 @@ final class ComparisonCoordinator {
         let gen = generation
         let edits = queuedEdits
         queuedEdits.removeAll()
+        let gap = groupingGap
         Task {
             var working = base
+            let hunks: DiffHunkIndex
             do {
                 for edit in edits {
                     working = try await self.builder.apply(edit, to: working, left: left, right: right)
                 }
+                hunks = await self.builder.hunks(for: working, gap: gap)
             } catch {
                 // Cancellation (superseded build) or a storage failure. A stale
                 // generation is handled by the caller restarting; otherwise put
@@ -180,7 +202,7 @@ final class ComparisonCoordinator {
                 return
             }
             guard gen == self.generation else { return }
-            self.index = working
+            self.setIndex(working, hunks: hunks)
             self.applying = false
             self.onStateChanged?()
             if !self.queuedEdits.isEmpty {
@@ -193,26 +215,57 @@ final class ComparisonCoordinator {
 
     // MARK: - Navigation (§10.3)
 
-    /// Finds the next/previous block of `kind` from `offset`, matching
-    /// `DiffBlockIndex` semantics (forward: `lowerBound > offset`; backward:
-    /// `upperBound <= offset`). Requires the built index: while the index is
-    /// still building (`index == nil`) it returns nil, so navigation reports
-    /// "not found" instead of racing the build with a scan (§10.3).
+    /// Finds the next/previous block of `kind` from `offset` (forward:
+    /// `lowerBound > offset`; backward: `upperBound <= offset`).
+    ///
+    /// The unit is a navigation hunk, not a byte-exact block (§10.3.1): nearby
+    /// differences are one target, so a dump whose differing bytes alternate
+    /// with matching ones takes one press per change instead of one per byte.
+    /// Requires the derived hunks: while the index is still building they are
+    /// nil, so navigation reports "not found" instead of racing the build with a
+    /// scan (§10.3).
     func findBlock(
         kind: DiffBlock.Kind,
         direction: SearchDirection,
         from offset: UInt64
     ) -> DiffBlock? {
-        guard let index else { return nil }
+        guard let hunkIndex else { return nil }
+        let range: Range<UInt64>?
         switch (kind, direction) {
-        case (.different, .forward): return index.nextDifference(from: offset)
-        case (.different, .backward): return index.previousDifference(from: offset)
-        case (.same, .forward): return index.nextSame(from: offset)
-        case (.same, .backward): return index.previousSame(from: offset)
+        case (.different, .forward): range = hunkIndex.nextDifference(from: offset)
+        case (.different, .backward): range = hunkIndex.previousDifference(from: offset)
+        case (.same, .forward): range = hunkIndex.nextSame(from: offset)
+        case (.same, .backward): range = hunkIndex.previousSame(from: offset)
         }
+        return range.map { DiffBlock(kind: kind, range: $0) }
     }
 
     // MARK: - Internals
+
+    /// Publishes an index together with the hunks derived from it, so navigation
+    /// never reads hunks that belong to an older set of blocks (§10.3.1).
+    private func setIndex(_ newIndex: DiffBlockIndex?, hunks: DiffHunkIndex? = nil) {
+        index = newIndex
+        hunkIndex = newIndex == nil ? nil : hunks
+        indexVersion += 1
+    }
+
+    /// Re-derives the hunks after `groupingGap` changed. The blocks are already
+    /// correct — only their grouping moved — so this never rescans the files.
+    private func regroup() {
+        guard let index else { return }
+        let gen = generation
+        let version = indexVersion
+        let gap = groupingGap
+        Task {
+            let hunks = await self.builder.hunks(for: index, gap: gap)
+            // A newer index (an applied edit, a restart) has already published
+            // hunks for the current gap; this pass is stale.
+            guard gen == self.generation, version == self.indexVersion else { return }
+            self.hunkIndex = hunks
+            self.onStateChanged?()
+        }
+    }
 
     private func runInitialBuild(left: ByteStorage, right: ByteStorage, generation gen: Int, operation op: BackgroundOperation) async {
         // Poll the actor's progress so the status bar's operation indicator
@@ -230,11 +283,12 @@ final class ComparisonCoordinator {
 
         do {
             let built = try await builder.build(left: left, right: right)
+            let hunks = await builder.hunks(for: built, gap: groupingGap)
             progressTask.cancel()
             // A stale build (superseded by start/rebuild/cancel) belongs to an
             // operation this coordinator no longer owns — leave it untouched.
             guard gen == self.generation else { return }
-            self.index = built
+            self.setIndex(built, hunks: hunks)
             self.indexBuildCount += 1
             self.isBuilding = false
             self.endBuildOperation()

@@ -202,6 +202,94 @@ final class DiffNavigationTests: XCTestCase {
                       "a repeated previousDifference must find the block before the current one")
     }
 
+    /// Two 300-row files with a "holey" change: three single-byte differences
+    /// inside 0x15 bytes at row 100, plus one far away at row 250. Grouping
+    /// (§10.3.1) makes the cluster one target, so Next Difference steps change to
+    /// change instead of byte to byte.
+    private func makeHoleyLayout() -> (left: [UInt8], right: [UInt8]) {
+        var left = [UInt8](repeating: 0x11, count: 300 * 16)
+        var right = left
+        for offset in [100 * 16, 100 * 16 + 5, 101 * 16 + 4, 250 * 16] {
+            left[offset] = 0xDE
+            right[offset] = 0x00
+        }
+        return (left, right)
+    }
+
+    /// The cluster at row 100 is one press, not three: the second press leaves it
+    /// entirely and lands on the far change at row 250 (§10.3.1).
+    func testNextDifferenceTreatsNearbyDifferencesAsOneChange() throws {
+        let (left, right) = makeHoleyLayout()
+        let (controller, window, urlA, urlB) = try makeComparison(left, right)
+        defer { cleanup(controller, urlA, urlB) }
+        XCTAssertTrue(waitForIndex(window), "the index must finish building before navigation")
+
+        controller.nextDifference()
+        XCTAssertTrue(pumpUntil(5) { controller.windowModel.pane1.caretOffset == UInt64(100 * 16) },
+                      "the first press must land on the cluster's first differing byte")
+        controller.nextDifference()
+        XCTAssertTrue(pumpUntil(5) { controller.windowModel.pane1.caretOffset == UInt64(250 * 16) },
+                      "the second press must skip the rest of the cluster and find the far change")
+    }
+
+    /// Backward: the cluster's LAST differing byte (row 101, byte 4) is one
+    /// target, reached in a single press from the far change.
+    func testPreviousDifferenceLandsOnTheClustersLastDifferingByte() throws {
+        let (left, right) = makeHoleyLayout()
+        let (controller, window, urlA, urlB) = try makeComparison(left, right)
+        defer { cleanup(controller, urlA, urlB) }
+        XCTAssertTrue(waitForIndex(window), "the index must finish building before navigation")
+        controller.windowModel.pane1.moveCaret(to: UInt64(left.count))
+        controller.windowModel.pane2.moveCaret(to: UInt64(left.count))
+
+        controller.previousDifference()
+        XCTAssertTrue(pumpUntil(5) { controller.windowModel.pane1.caretOffset == UInt64(250 * 16) },
+                      "the first press must land on the far change")
+        controller.previousDifference()
+        XCTAssertTrue(pumpUntil(5) { controller.windowModel.pane1.caretOffset == UInt64(101 * 16 + 4) },
+                      "the second press must land on the cluster's last differing byte")
+        // A third press has nowhere to go: the cluster is one change, so the two
+        // earlier differing bytes inside it are not separate targets.
+        controller.previousDifference()
+        pumpUntil(0.5) { controller.windowModel.pane1.caretOffset != UInt64(101 * 16 + 4) }
+        XCTAssertEqual(controller.windowModel.pane1.caretOffset, UInt64(101 * 16 + 4),
+                       "the bytes inside the cluster must not be separate targets")
+    }
+
+    /// The Comparison settings tab's grouping distance reaches an open
+    /// comparison live (§10.3.1): two differences 100 bytes apart are one change
+    /// at the default distance and two changes at 16 bytes — without reopening
+    /// the files.
+    func testTheGroupingSettingChangesWhatCountsAsOneChange() throws {
+        var left = [UInt8](repeating: 0x11, count: 300 * 16)
+        var right = left
+        for offset in [100 * 16, 100 * 16 + 100] {
+            left[offset] = 0xDE
+            right[offset] = 0x00
+        }
+        let (controller, window, urlA, urlB) = try makeComparison(left, right)
+        defer {
+            ComparisonSettings.resetToDefaults()
+            cleanup(controller, urlA, urlB)
+        }
+        XCTAssertTrue(waitForIndex(window), "the index must finish building before navigation")
+
+        controller.nextDifference()
+        XCTAssertTrue(pumpUntil(5) { controller.windowModel.pane1.caretOffset == UInt64(100 * 16) })
+        controller.nextDifference()
+        pumpUntil(0.5) { controller.windowModel.pane1.caretOffset != UInt64(100 * 16) }
+        XCTAssertEqual(controller.windowModel.pane1.caretOffset, UInt64(100 * 16),
+                       "at the default distance the two differences are one change — nowhere to go")
+
+        ComparisonSettings.set(groupingGap: 16)
+        // The observer hands the new distance to the coordinator on the main
+        // queue, which re-derives the hunks in the background.
+        XCTAssertTrue(pumpUntil(5) {
+            controller.nextDifference()
+            return controller.windowModel.pane1.caretOffset == UInt64(100 * 16 + 100)
+        }, "at 16 bytes the second difference must become its own change")
+    }
+
     /// Same for Previous Same Block: repeated presses walk backward through the
     /// same blocks instead of re-finding the one the caret already sits on.
     func testRepeatedPreviousSameBlockSkipsTheFoundBlock() throws {
