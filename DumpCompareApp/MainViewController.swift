@@ -262,15 +262,18 @@ final class MainViewController: NSViewController {
             // cells, a moved caret moves the selection overlay, and scrolling
             // moves the viewport rectangle (§19).
             trackMinimapViewport(for: pane)
-            paneModel.onEdit = { [weak self] _ in
+            paneModel.onEdit = { [weak self] edit in
+                self?.repaintMinimap(after: edit)
                 self?.refreshMinimapMaps()
             }
             paneModel.onFullInvalidation = { [weak self] in
+                self?.minimapView.invalidateCells()
                 self?.refreshMinimapMaps()
             }
             // A save moves the on-disk reference, so the map's red cells have to
             // clear even though no byte changed (§19).
             paneModel.onSavedStateChanged = { [weak self] in
+                self?.minimapView.invalidateCells()
                 self?.refreshMinimapMaps()
             }
             paneModel.onCaretChanged = { [weak self] in
@@ -362,29 +365,35 @@ final class MainViewController: NSViewController {
         windowModel.pane2.companion = windowModel.pane1
         windowModel.pane1.onEdit = { [weak self] edit in
             self?.comparisonCoordinator.record(edit: edit)
-            // A byte edit can change a cell's significance, so rebuild the
-            // minimap's maps — debounced, so held-down typing costs one pass
-            // (§19).
+            // The edited rows are repainted at once; a byte edit can also change
+            // a cell's significance, so the overview's summary is rebuilt behind
+            // it — debounced, so held-down typing costs one pass (§19).
+            self?.repaintMinimap(after: edit)
             self?.refreshMinimapMaps()
         }
         windowModel.pane2.onEdit = { [weak self] edit in
             self?.comparisonCoordinator.record(edit: edit)
+            self?.repaintMinimap(after: edit)
             self?.refreshMinimapMaps()
         }
         windowModel.pane1.onFullInvalidation = { [weak self] in
             self?.comparisonCoordinator.rebuild()
+            self?.minimapView.invalidateCells()
             self?.refreshMinimapMaps()
         }
         windowModel.pane2.onFullInvalidation = { [weak self] in
             self?.comparisonCoordinator.rebuild()
+            self?.minimapView.invalidateCells()
             self?.refreshMinimapMaps()
         }
         // A save clears modified state without changing a byte, so the minimap's
-        // cached red cells rebuild from it (§19).
+        // red cells have to go even though the bytes stayed put (§19).
         windowModel.pane1.onSavedStateChanged = { [weak self] in
+            self?.minimapView.invalidateCells()
             self?.refreshMinimapMaps()
         }
         windowModel.pane2.onSavedStateChanged = { [weak self] in
+            self?.minimapView.invalidateCells()
             self?.refreshMinimapMaps()
         }
         // A moved caret changes whether a next/previous block still exists from
@@ -952,17 +961,22 @@ final class MainViewController: NSViewController {
         scheduleOverviewRebuild()
     }
 
-    /// The bytes under the map changed — an edit, a save, a fresh comparison
-    /// index — so it repaints. There is nothing to rebuild: the cells are pulled
-    /// from the panes as they are drawn, so this costs one repaint of the visible
-    /// window and never a file pass.
-    private func repaintMinimap() {
-        // Detail reads its bytes as it draws, so it repaints. Overview draws
-        // nothing but its summary, which is recomputed in the background and then
-        // repaints only the rows that actually changed (§19.9) — a blanket
-        // repaint here would undo that.
-        if minimapView.renderMode == .detail { minimapView.needsDisplay = true }
-        scheduleOverviewRebuild()
+    /// The bytes under the maps changed, and the change names a range: repaint
+    /// the rows that draw it. There is nothing to rebuild — detail mode pulls its
+    /// cells from the panes as it draws — so this costs one repaint of a few rows
+    /// and never a file pass. Overview ignores it: its summary is rebuilt in the
+    /// background and invalidates its own rows (§19.9).
+    ///
+    /// Both maps, because a byte edited in one file changes the difference state
+    /// the other one paints at that same offset (§9).
+    private func repaintMinimap(after edit: DiffEdit) {
+        switch edit {
+        case .overwrite(let range):
+            minimapView.invalidateBytes(in: range)
+        case .insert, .delete:
+            // Every byte after the change moved, so no range describes it.
+            minimapView.invalidateCells()
+        }
     }
 
     /// Moves the caret to the byte clicked on a map and centres the pane on it.

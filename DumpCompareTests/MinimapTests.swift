@@ -1691,6 +1691,88 @@ final class MinimapTests: XCTestCase {
                       "and it is the marked row that is repainted")
     }
 
+    /// An edit has to show on the map when it happens. The map pulls its cells
+    /// from the pane as it draws, so nothing appeared until something else
+    /// happened to repaint it — a scroll or a resize (§19.9).
+    func testAnEditRepaintsTheDetailRowsItChanged() throws {
+        let (controller, _, panel) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 2048))
+        panel.displayIfNeeded()
+        XCTAssertEqual(panel.renderMode, .detail, "the premise: a short file opens in detail")
+
+        let offset: UInt64 = 16 * 5 + 3          // row 5
+        controller.windowModel.pane1.moveCaret(to: offset)
+        panel.displayIfNeeded()
+        controller.windowModel.pane1.typeASCII(0x5A)
+
+        let rects = try XCTUnwrap(panel.lastRepaintRequest, "the edit asked for a repaint")
+        XCTAssertFalse(rects.isEmpty)
+        let y = panel.bounds.minY + CGFloat(5) * MinimapView.rowStep
+        XCTAssertTrue(rects.contains { $0.minY <= y + 1 && $0.maxY >= y + MinimapView.rowStep - 1 },
+                      "the row holding the edited byte is repainted")
+        let height = rects.reduce(0) { $0 + $1.height }
+        XCTAssertLessThan(height, panel.bounds.height * 0.5,
+                          "and it is a row, not the whole map")
+    }
+
+    /// Undo and redo change the same cells an edit does, so they must repaint
+    /// them too — the caret alone moving is not enough (§19.9).
+    func testUndoAndRedoRepaintTheDetailRowsTheyChange() throws {
+        let (controller, _, panel) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 2048))
+        panel.displayIfNeeded()
+        let pane = controller.windowModel.pane1
+        pane.moveCaret(to: 16 * 7)
+        pane.typeASCII(0x5A)
+        panel.displayIfNeeded()
+
+        try pane.undo()
+        let undoRects = try XCTUnwrap(panel.lastRepaintRequest, "undo asked for a repaint")
+        let y = panel.bounds.minY + CGFloat(7) * MinimapView.rowStep
+        XCTAssertTrue(undoRects.contains { $0.minY <= y + 1 && $0.maxY >= y + MinimapView.rowStep - 1 },
+                      "the row the undo restored is repainted")
+
+        panel.displayIfNeeded()
+        try pane.redo()
+        let redoRects = try XCTUnwrap(panel.lastRepaintRequest, "redo asked for a repaint")
+        XCTAssertTrue(redoRects.contains { $0.minY <= y + 1 && $0.maxY >= y + MinimapView.rowStep - 1 },
+                      "and so is the row the redo changed back")
+    }
+
+    /// A save leaves every byte where it was and still changes the map: the red
+    /// cells clear, because the on-disk reference moved (§19).
+    func testASaveRepaintsTheMap() throws {
+        let (controller, _, panel) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 2048))
+        panel.displayIfNeeded()
+        let pane = controller.windowModel.pane1
+        pane.typeASCII(0x5A)
+        panel.displayIfNeeded()
+        let before = panel.repaintRequests
+
+        try pane.save()
+        XCTAssertGreaterThan(panel.repaintRequests, before,
+                             "the save asked the map to repaint its cells")
+    }
+
+    /// In comparison mode an edit in one file changes the difference state the
+    /// *other* map paints at that offset, so both repaint (§9).
+    func testAnEditRepaintsBothMapsRows() throws {
+        let (controller, window) = try makeComparisonWindow(vertical: true, sizes: (2048, 2048))
+        let (split, panel) = try minimapViews(window)
+        split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+        controller.setMinimapRenderModeForTesting(.detail)
+        panel.displayIfNeeded()
+
+        controller.windowModel.pane1.moveCaret(to: 16 * 4)
+        panel.displayIfNeeded()
+        controller.windowModel.pane1.typeASCII(0x5A)
+
+        let rects = try XCTUnwrap(panel.lastRepaintRequest)
+        let y = panel.bounds.minY + CGFloat(4) * MinimapView.rowStep
+        let onRow = rects.filter { $0.minY <= y + 1 && $0.maxY >= y + MinimapView.rowStep - 1 }
+        XCTAssertEqual(onRow.count, 2, "one rectangle per map, both on the edited row")
+        XCTAssertNotEqual(onRow[0].minX, onRow[1].minX, "and they are the two side-by-side maps")
+    }
+
     /// The same rule in detail mode: while the window stays put, a scroll moves
     /// only the band, so the cells outside it keep their pixels.
     func testDetailScrollRepaintsOnlyTheBandWhileTheWindowStaysPut() throws {

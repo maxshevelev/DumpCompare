@@ -384,6 +384,39 @@ final class MinimapView: NSView {
         return NSRect(x: area.minX, y: y0, width: area.width, height: y1 - y0)
     }
 
+    /// Repaints the cells that draw `range` of one map's file — the bytes an
+    /// edit, an undo or a save just changed underneath the map. Detail mode
+    /// pulls its cells from the panes as it draws, so a repaint is all it takes;
+    /// overview paints a precomputed summary instead, and its own rebuild
+    /// invalidates the rows that moved (§19.9).
+    func invalidateBytes(in range: Range<UInt64>) {
+        guard renderMode == .detail, !range.isEmpty else { return }
+        // Whole rows, on every map: one byte is drawn as a cell in a row, and a
+        // byte edited in one file changes the difference state the other map
+        // paints at that same offset (§9).
+        let firstRow = range.lowerBound / Self.bytesPerRow
+        let lastRow = (range.upperBound - 1) / Self.bytesPerRow
+        var rects: [NSRect] = []
+        for index in maps.indices {
+            let area = contentArea(within: area(forMapAt: index), forMapAt: index)
+            guard area.height > 0 else { continue }
+            let y0 = max(y(of: firstRow * Self.bytesPerRow, in: area), area.minY)
+            let y1 = min(y(of: (lastRow + 1) * Self.bytesPerRow, in: area), area.maxY)
+            guard y1 > y0 else { continue }   // the change is outside the window
+            rects.append(NSRect(x: area.minX, y: y0, width: area.width, height: y1 - y0))
+        }
+        guard !rects.isEmpty else { return }
+        invalidate(rects)
+    }
+
+    /// Repaints every cell of every map — for a change no byte range describes:
+    /// an insert or delete that shifted the file, a save that cleared the red
+    /// cells, a fresh comparison index.
+    func invalidateCells() {
+        guard renderMode == .detail else { return }
+        invalidateAll()
+    }
+
     /// The selection currently overlaid on a map (for tests).
     func selection(forMapAt index: Int) -> Range<UInt64>? {
         guard maps.indices.contains(index) else { return nil }
@@ -421,6 +454,7 @@ final class MinimapView: NSView {
     /// a vacated strip comes back with its cells, divider and selection intact.
     private func invalidate(_ rects: [NSRect]) {
         lastRepaintRequest = rects.filter { !$0.isEmpty }
+        repaintRequests += 1
         for rect in rects where !rect.isEmpty {
             // A pixel of slack on each side covers the anti-aliased edge of a
             // chevron or a band that does not land on a pixel boundary.
@@ -432,6 +466,7 @@ final class MinimapView: NSView {
     /// pixel: a new file, a mode or layout switch, a resize, a theme change.
     private func invalidateAll() {
         lastRepaintRequest = nil
+        repaintRequests += 1
         needsDisplay = true
     }
 
@@ -439,6 +474,12 @@ final class MinimapView: NSView {
     /// whole panel. Exists so the dirty-region rules can be asserted (§19.9) —
     /// "a scroll does not repaint the maps" is otherwise invisible to a test.
     private(set) var lastRepaintRequest: [NSRect]?
+
+    /// How many repaints have been asked for, ever. `lastRepaintRequest` says
+    /// *what*, but it is overwritten by the next request — and a change can
+    /// reach the map as several — so a test that only needs "the map was told
+    /// to repaint at all" watches this instead.
+    private(set) var repaintRequests = 0
 
     /// Where the viewport overlay actually puts ink: the band itself in detail,
     /// and in overview only the two margin chevrons — the rest of the band is

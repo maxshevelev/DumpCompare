@@ -1171,6 +1171,18 @@ The panes' visible slice is drawn as a translucent band over the map.
   row by row against the one on screen, and only the differing rows are
   repainted; an event cell is two pixels tall, so the row below a changed
   row is repainted with it.
+  - Detail mode has no picture to compare: it pulls its cells from the panes
+    as it draws, so *something must ask it to repaint* those rows. Every
+    change to what the map shows counts — a typed byte, an undo, a redo, and
+    a save (which changes no byte but clears the modified marks). Without
+    that request the map keeps its old pixels until some unrelated event
+    repaints it, which is how modified bytes and differences came to appear
+    only on the next scroll or resize.
+  - An edit repaints its rows on *both* maps: comparison is by absolute
+    offset (§9), so a byte edited in one file changes the difference state
+    the other map draws at that offset.
+  - An insert or delete moves every byte after it, so no range describes the
+    change and the maps repaint whole.
 - A repaint must start from the panel's background, since it can no longer
   rely on the whole panel being redrawn.
 - Rebuilding the overview's picture walks the whole file and must not run on
