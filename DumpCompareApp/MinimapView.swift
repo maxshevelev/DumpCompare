@@ -1381,11 +1381,15 @@ final class MinimapView: NSView {
         // Off the band: the click means the byte drawn under it, so the caret
         // goes there and the pane centres on it. The drag then continues from
         // the band's middle, so the press can still turn into a scroll.
-        guard let band = bands.first else { return }
         if let (mapIndex, offset) = byteOffset(at: point) {
             onSelectOffset?(mapIndex, offset)
         }
-        dragGrabOffset = band.height / 2
+        // The band comes from the panes' reported visible range, so it can be
+        // missing while the map itself is already drawing cells. That must not
+        // swallow the click — it is the gesture that says "take me here" — so
+        // only the drag depends on a band, measured after the click has moved
+        // the panes.
+        dragGrabOffset = (bands.first ?? viewportRects().first).map { $0.height / 2 }
     }
 
     override func mouseDragged(with event: NSEvent) {

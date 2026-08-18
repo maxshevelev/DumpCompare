@@ -724,6 +724,33 @@ final class MinimapTests: XCTestCase {
         XCTAssertLessThan(panel.topRow, totalRows - rows)
     }
 
+    /// A click on the map means the byte drawn under it, whether or not a
+    /// viewport band happens to be there. The band comes from the panes' reported
+    /// visible range, so it can be missing while the map is already drawing
+    /// cells — and the click used to be dropped entirely in that state.
+    func testAClickLandsEvenWithNoViewportBandOnTheMap() throws {
+        let bytes = [UInt8](repeating: 0x41, count: 100_000)
+        let (controller, window, panel) = try makeSingleFileWindow(bytes)
+        _ = pumpUntil(2.0) { panel.viewport(forMapAt: 0) != nil }
+        controller.windowModel.pane1.moveCaret(to: 0)
+        // A pane reporting no visible range: no band, but the same cells.
+        panel.setViewports([nil])
+        XCTAssertTrue(panel.viewportRects().isEmpty, "no band to grab in this state")
+
+        let point = NSPoint(x: panel.bounds.midX, y: panel.bounds.midY)
+        let target = try XCTUnwrap(panel.byteOffset(at: point), "the map draws a byte there")
+        XCTAssertGreaterThan(target.offset, 0, "and it is not the byte the caret already sits on")
+        let event = try XCTUnwrap(NSEvent.mouseEvent(
+            with: .leftMouseDown, location: panel.convert(point, to: nil),
+            modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber, context: nil,
+            eventNumber: 0, clickCount: 1, pressure: 1))
+        panel.mouseDown(with: event)
+
+        XCTAssertEqual(controller.windowModel.pane1.caretOffset, target.offset,
+                       "the click moved the caret to the byte it landed on")
+    }
+
     /// Every byte gets its own cell: a mini row is one hex row, never a group of
     /// them. The file below puts a single significant byte in column `row % 16`,
     /// so an aggregating map would smear several columns into one row.
