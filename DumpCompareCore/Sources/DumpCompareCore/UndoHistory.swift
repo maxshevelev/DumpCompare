@@ -89,26 +89,46 @@ public struct UndoTransaction: Equatable, Sendable {
 /// into individual byte steps on the undo stack, so byte-by-byte rollback is
 /// available again after a redo.
 ///
-/// Dirty state is defined entirely by the committed transaction count vs a
-/// saved checkpoint (counted in transactions, not steps — unfolding a batch
-/// on redo does not change the count): `isDirty` is true when the count is
-/// not where the last `markSaved()` left it. Undoing back to the saved state
-/// clears dirty; redoing past it sets it again (§5.1, §17.7).
+/// Dirty state compares the *state* the document is in with the one the last
+/// `markSaved()` checkpointed, not how many edits stand. Every recorded
+/// transaction gets a serial that is handed out once and never reused, and the
+/// serial of the newest committed transaction names the current state (0 for an
+/// empty history). Undoing back to the saved state clears dirty; redoing past it
+/// sets it again (§5.1, §17.7).
+///
+/// Counting instead — the depth of the history, as this class used to — makes
+/// two different states with as many edits look identical: undo one edit, make a
+/// different one, and the document claimed to match the file on disk. Closing or
+/// replacing it then discarded the change with no prompt (§7.5).
 ///
 /// This class is confined to a single thread (the document it belongs to).
 public final class UndoHistory: @unchecked Sendable {
+    /// A recorded transaction and the state it produced. The serial travels with
+    /// the transaction through undo and redo, so returning to a state returns to
+    /// its serial — that is what lets the saved checkpoint be recognised.
+    private struct Entry {
+        var transaction: UndoTransaction
+        var serial: UInt64
+    }
+
     /// One undo gesture: a transaction (a normal edit or one entered byte)
     /// or a batch of transactions (the rest of a series removed by one fast
     /// press). `seriesID` links the steps of one typing series; nil is
     /// outside a series.
     private struct Step {
-        var transactions: [UndoTransaction]   // in recording order (first..last)
+        var entries: [Entry]                  // in recording order (first..last)
         var seriesID: UInt64?
+
+        var transactions: [UndoTransaction] { entries.map(\.transaction) }
     }
 
     private var undoSteps: [Step] = []
     private var redoSteps: [Step] = []
-    private var savedTransactionIndex = 0     // dirty control: transaction count
+    /// Handed out on every `record`, never reused — not even after `reset`, so a
+    /// serial can never name two different states in one document's lifetime.
+    private var nextSerial: UInt64 = 1
+    /// The serial `markSaved()` checkpointed; 0 means "the file as opened".
+    private var savedSerial: UInt64 = 0
     private var undoTransactionCount = 0
 
     // Fast-rollback state:
@@ -118,9 +138,13 @@ public final class UndoHistory: @unchecked Sendable {
     public var canUndo: Bool { !undoSteps.isEmpty }
     public var canRedo: Bool { !redoSteps.isEmpty }
     /// True when the current state differs from the last saved state.
-    public var isDirty: Bool { undoTransactionCount != savedTransactionIndex }
+    public var isDirty: Bool { currentSerial != savedSerial }
     /// Number of committed transactions.
     public var undoDepth: Int { undoTransactionCount }
+
+    /// The serial of the newest committed transaction — the name of the state the
+    /// document is in. Zero with nothing committed: the file as it was opened.
+    private var currentSerial: UInt64 { undoSteps.last?.entries.last?.serial ?? 0 }
 
     /// Records a transaction of ops applied to storage. Any undone steps
     /// (the redo stack) are discarded, because the state has diverged. The
@@ -135,10 +159,12 @@ public final class UndoHistory: @unchecked Sendable {
                        seriesID: UInt64? = nil) {
         guard !ops.isEmpty else { return }
         redoSteps.removeAll()
-        undoSteps.append(Step(transactions: [UndoTransaction(ops: ops,
-                                                             selectionBefore: selectionBefore,
-                                                             selectionAfter: selectionAfter)],
-                              seriesID: seriesID))
+        let entry = Entry(transaction: UndoTransaction(ops: ops,
+                                                      selectionBefore: selectionBefore,
+                                                      selectionAfter: selectionAfter),
+                          serial: nextSerial)
+        nextSerial += 1
+        undoSteps.append(Step(entries: [entry], seriesID: seriesID))
         undoTransactionCount += 1
         lastUndoWasSeriesByte = false
         lastUndoSeriesID = nil
@@ -158,8 +184,9 @@ public final class UndoHistory: @unchecked Sendable {
     /// end of the byte range it wrote. Ignored unless the last transaction is
     /// the current one (nothing has been undone since it was recorded).
     public func noteSelectionAfterOnLast(_ selection: SelectionModel) {
-        guard redoSteps.isEmpty, let step = undoSteps.indices.last else { return }
-        undoSteps[step].transactions[undoSteps[step].transactions.count - 1].setSelectionAfter(selection)
+        guard redoSteps.isEmpty, let step = undoSteps.indices.last,
+              let entry = undoSteps[step].entries.indices.last else { return }
+        undoSteps[step].entries[entry].transaction.setSelectionAfter(selection)
     }
 
     /// Reverts the most recent step, returning its transactions in recording
@@ -176,12 +203,12 @@ public final class UndoHistory: @unchecked Sendable {
                 collected.append(next)
             }
         }
-        let ordered = collected.reversed().flatMap(\.transactions)   // recording order
+        let ordered = collected.reversed().flatMap(\.entries)   // recording order
         undoTransactionCount -= ordered.count
-        redoSteps.append(Step(transactions: ordered, seriesID: last.seriesID))
+        redoSteps.append(Step(entries: ordered, seriesID: last.seriesID))
         lastUndoWasSeriesByte = (collected.count == 1 && last.seriesID != nil)
         lastUndoSeriesID = last.seriesID
-        return ordered
+        return ordered.map(\.transaction)
     }
 
     /// Reapplies the next undone step, returning its transactions in
@@ -192,26 +219,31 @@ public final class UndoHistory: @unchecked Sendable {
     @discardableResult
     public func redo() -> [UndoTransaction]? {
         guard let step = redoSteps.popLast() else { return nil }
-        for txn in step.transactions {
-            undoSteps.append(Step(transactions: [txn], seriesID: step.seriesID))
+        // Each transaction goes back with the serial it was recorded under, so a
+        // redo that lands on the saved state is recognised as clean again.
+        for entry in step.entries {
+            undoSteps.append(Step(entries: [entry], seriesID: step.seriesID))
         }
-        undoTransactionCount += step.transactions.count
+        undoTransactionCount += step.entries.count
         lastUndoWasSeriesByte = false
         lastUndoSeriesID = nil
         return step.transactions
     }
 
-    /// Marks the current transaction count as the saved state (called after a
+    /// Marks the state the document is in as the saved one (called after a
     /// successful save).
     public func markSaved() {
-        savedTransactionIndex = undoTransactionCount
+        savedSerial = currentSerial
     }
 
     /// Discards all history and the dirty checkpoint.
     public func reset() {
         undoSteps.removeAll()
         redoSteps.removeAll()
-        savedTransactionIndex = 0
+        // `nextSerial` deliberately keeps counting: the history is empty, so the
+        // current state is 0 again, and no future serial can collide with one a
+        // caller still remembers.
+        savedSerial = 0
         undoTransactionCount = 0
         lastUndoWasSeriesByte = false
         lastUndoSeriesID = nil

@@ -48,6 +48,49 @@ final class UndoHistoryTests: XCTestCase {
         XCTAssertTrue(history.isDirty)
     }
 
+    /// The saved checkpoint names a *state*, not a depth: undo an edit, make a
+    /// different one, and the document must still be dirty even though as many
+    /// edits stand as when it was saved (§7.5). Counting them reported clean, and
+    /// closing the file would have discarded the change with no prompt.
+    func testADifferentEditAtTheSameDepthIsNotTheSavedState() {
+        let history = UndoHistory()
+        history.record([op(0)])
+        history.record([op(1)])
+        history.markSaved()
+        XCTAssertFalse(history.isDirty)
+
+        history.undo()
+        XCTAssertTrue(history.isDirty, "one edit short of the saved state")
+
+        history.record([op(2)])          // a different second edit
+        XCTAssertTrue(history.isDirty,
+                      "as many edits stand, but not the ones that were saved")
+
+        history.undo()
+        XCTAssertTrue(history.isDirty, "and the state it replaced is gone for good")
+    }
+
+    /// The same rule through a series batch: the serials come back with the
+    /// transactions, so a redo that lands on the saved state is clean again,
+    /// while fresh bytes of the same count are not.
+    func testABatchAndFreshBytesOfTheSameCountAreDifferentStates() {
+        let history = UndoHistory()
+        for i in 0..<3 { history.record([op(UInt64(i))], seriesID: 1) }
+        history.markSaved()
+
+        history.undo(batch: false)
+        history.undo(batch: true)        // the rest of the series, in one step
+        XCTAssertTrue(history.isDirty)
+        history.redo()                   // unfolds — back to the saved state
+        history.redo()
+        XCTAssertFalse(history.isDirty, "the saved state is reachable again")
+
+        history.undo(batch: false)
+        history.undo(batch: true)
+        for i in 10..<13 { history.record([op(UInt64(i))], seriesID: 2) }
+        XCTAssertTrue(history.isDirty, "three other bytes are not the three saved ones")
+    }
+
     func testNewEditClearsRedoStack() {
         let history = UndoHistory()
         history.record([op(0)])
