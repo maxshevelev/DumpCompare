@@ -376,7 +376,8 @@ A separate explicit menu command, e.g. Edit > Delete Bytes, performs true length
   - paste insert;
   - delete bytes;
   - any other mutating operation.
-- Undo/Redo should group logically, e.g. one typing sequence, one paste, one delete command.
+- One undo gesture is one *step*. Steps group logically: a paste, a fill, a
+  delete command are one step each; typed input is grouped into series (§7.5.1).
 - Undo must restore:
   - byte contents;
   - file length;
@@ -390,7 +391,49 @@ A separate explicit menu command, e.g. Edit > Delete Bytes, performs true length
   the remainder still to be typed over, or the collapsed caret a fill leaves.
   The document cannot derive this from the byte range alone, so the command
   that made the edit states it after placing the selection.
+- Dirty state must track the document's content against the last saved state,
+  not the number of edits standing. Two different edits at the same depth of the
+  history are not the same state: undoing an edit and making a different one
+  leaves the document dirty, even though as many edits stand as when it was
+  saved. Reporting it clean would let closing or replacing the file discard the
+  change without a prompt (§5.1, §17.7).
 - Undo history may be bounded by memory/disk resources, but must be sufficient for practical editing sessions.
+
+7.5.1 Typed input: series and segmented undo
+
+Typing byte after byte must cost neither one undo press per byte nor a single
+press for a whole session: a typo at the end of a run has to be correctable on
+its own, and a long run has to be removable without holding the key down.
+
+- A *series* is a run of completed bytes typed in one input region. Each byte is
+  its own step; the steps of one series are linked as one.
+- A series is broken by:
+  - a pause longer than the series-break threshold since the last typed event;
+  - a change of input region (hex ↔ text);
+  - caret movement by the user — arrows, a click, block navigation, a search
+    result;
+  - any other mutating command: delete, fill, paste write, paste insert;
+  - a selection change, an undo, or a redo;
+  - a save. The saved state is a checkpoint the user must be able to return to
+    in one press, so no series and therefore no batch may span it.
+  The caret advancing by itself after a completed byte does not break a series,
+  and neither does the two-nibble pair of one hex byte.
+- Rollback of a series:
+  - the first undo removes its last byte;
+  - a repeat within the fast-undo window removes the rest of the series as one
+    step;
+  - a repeat after that window removes one more byte.
+- Redo is symmetric: what one press removed, one press restores, and a restored
+  batch becomes byte-by-byte steps again — so correcting a single byte stays
+  available after a redo.
+- A batch restores the selection the series started from, and its redo the
+  selection the series' last byte left (§7.5).
+- Both thresholds are fixed constants of the build — a series break of about
+  0.7 s, a fast-undo window of about 0.5 s — not user settings. The fast-undo
+  window must be no shorter than the system's key-repeat delay, or holding the
+  undo key never reaches the batch.
+- A batch is one change to the storage: the comparison and the minimap update
+  from the single net edit it reports, not once per byte (§8.3, §19.9).
 
 =====================================================================
 8. COMPARISON MODEL

@@ -61,6 +61,7 @@ The workflows the app is shaped around:
 ### Editing
 
 - Type hex digits or text — bytes overwrite in place, with per-pane Undo/Redo (⌘Z / ⇧⌘Z).
+- Undo is segmented for typed input: the first ⌘Z takes back the last byte (fix a typo), a quick second ⌘Z takes back the rest of the run in one step, and after a pause it is one byte per press again. ⇧⌘Z puts it all back. A pause, a caret move, a hex↔text switch, another command or a save all end a run, so a save is never skipped over.
 - ⌘V with the hex dump focused overwrites bytes from the clipboard (raw bytes are the primary format, hex text the fallback); ⌘V in a text field is the standard system paste.
 - **Paste Insert…** inserts bytes with a shift (confirmed first), **Delete Bytes…** deletes with confirmation, **Fill Selection with…** repeats a pattern across the selection — the fast way to blank a region to `0xFF`.
 - Modified bytes are drawn red; cells past EOF carry hatching, so the end of the file is readable without color.
