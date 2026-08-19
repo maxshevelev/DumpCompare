@@ -482,7 +482,7 @@ final class MinimapView: NSView {
     /// Marks only these rectangles for repaint. Scrolling calls into the panel
     /// on every wheel tick, and the maps themselves do not change between edits:
     /// in overview a full repaint would redraw a whole dump's picture — 16 cells
-    /// per device pixel row — to move a 7 pt chevron (§19.9).
+    /// per device pixel row — to move the viewport marker (§19.9).
     ///
     /// Correctness rests on `draw` painting *everything* that intersects the
     /// repaint region, which it does: each pass clips itself to `dirtyRect`, so
@@ -546,14 +546,6 @@ final class MinimapView: NSView {
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             ? NSColor(white: 0.95, alpha: 0.16)
             : NSColor(white: 0.15, alpha: 0.14)
-    }
-
-    /// The viewport band's edges in overview, where the translucent fill alone
-    /// is too faint to find: the same grey at full strength.
-    private static let viewportEdge = NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            ? NSColor(white: 0.95, alpha: 0.75)
-            : NSColor(white: 0.15, alpha: 0.65)
     }
 
     /// The maps draw top-down, matching the stacked panes' flipped coordinates
@@ -1233,11 +1225,14 @@ final class MinimapView: NSView {
     }
 
     /// Marks the viewport's position with a chevron in each outer margin, pointing
-    /// inward, level with the middle of the visible slice. The margins are the
-    /// `contentPadding` frame the cells never reach, so the markers cost no
-    /// detail.
+    /// inward, level with the middle of the visible slice. The chevrons run
+    /// almost the whole `contentPadding` margin, stopping `overviewMarkerInset`
+    /// short of the map's content edge — the arrow points *at* the map it marks
+    /// without touching it, and a sliver of paper keeps it from crowding the
+    /// cells. Painted the caret blue (§6) at 80 %, so the "you are here" echoes
+    /// the panel's cursor without shouting over the map's picture.
     private func drawOverviewViewportMarkers(_ rects: [NSRect], dirtyRect: NSRect) {
-        Self.viewportEdge.setFill()
+        Self.overviewMarkerFill.setFill()
         for band in rects {
             for (slot, box) in overviewMarkerRects(for: band).enumerated() {
                 guard box.maxY >= dirtyRect.minY, box.minY <= dirtyRect.maxY else { continue }
@@ -1255,13 +1250,27 @@ final class MinimapView: NSView {
         }
     }
 
-    private static let overviewMarkerHeight: CGFloat = 7
+    /// The viewport marker's fill: the caret blue at 80 % — recognisably the
+    /// cursor's colour, but with the map's picture still readable beneath it.
+    private static let overviewMarkerFill = NSColor(name: nil) { appearance in
+        HexTheme.caretColor.withAlphaComponent(0.8)
+    }
 
-    /// The two boxes the chevrons occupy, level with the middle of the band and
-    /// inside the side margins, so they never overlap a cell. Shared by drawing
+    /// How tall the viewport marker is — big enough to find at a glance on a
+    /// full-dump overview, small enough to stay an index rather than a cover.
+    private static let overviewMarkerHeight: CGFloat = 11
+
+    /// The paper left between the marker's apex and the map's content edge.
+    /// The arrow points at the map without reaching it, so the marker costs the
+    /// map no detail. Internal so tests can sample around the marker.
+    static let overviewMarkerInset: CGFloat = 2
+
+    /// The two boxes the chevrons occupy, level with the middle of the band.
+    /// Each spans the full side margin minus `overviewMarkerInset`, so the
+    /// chevron's apex stops short of the map's content edge. Shared by drawing
     /// and by invalidation, which is what keeps a scroll's repaint this small.
     private func overviewMarkerRects(for band: NSRect) -> [NSRect] {
-        let width = min(Self.contentPadding - 2, 5)
+        let width = Self.contentPadding - Self.overviewMarkerInset
         guard width > 1 else { return [] }
         let height = Self.overviewMarkerHeight
         let y = band.midY - height / 2
