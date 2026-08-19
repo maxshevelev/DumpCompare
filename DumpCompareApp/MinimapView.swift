@@ -1225,14 +1225,14 @@ final class MinimapView: NSView {
     }
 
     /// Marks the viewport's position with a chevron in each outer margin, pointing
-    /// inward, level with the middle of the visible slice. The chevrons run the
-    /// full `contentPadding` margin and their apexes reach `overviewMarkerReach`
-    /// past the map's content edge, so the arrowhead sits *in* the map it marks —
-    /// no gap between marker and map, not even an antialiased hairline — and are
-    /// painted the same accent blue as the caret cursor (§6), so the "you are
-    /// here" reads in the panel's own language.
+    /// inward, level with the middle of the visible slice. The chevrons run
+    /// almost the whole `contentPadding` margin, stopping `overviewMarkerInset`
+    /// short of the map's content edge — the arrow points *at* the map it marks
+    /// without touching it, and a sliver of paper keeps it from crowding the
+    /// cells. Painted the caret blue (§6) at 80 %, so the "you are here" echoes
+    /// the panel's cursor without shouting over the map's picture.
     private func drawOverviewViewportMarkers(_ rects: [NSRect], dirtyRect: NSRect) {
-        HexTheme.caretColor.setFill()
+        Self.overviewMarkerFill.setFill()
         for band in rects {
             for (slot, box) in overviewMarkerRects(for: band).enumerated() {
                 guard box.maxY >= dirtyRect.minY, box.minY <= dirtyRect.maxY else { continue }
@@ -1250,23 +1250,27 @@ final class MinimapView: NSView {
         }
     }
 
-    /// How tall the viewport marker is — a chunky arrowhead, not a sliver, so
-    /// it reads at a glance on a full-dump overview.
-    private static let overviewMarkerHeight: CGFloat = 15
+    /// The viewport marker's fill: the caret blue at 80 % — recognisably the
+    /// cursor's colour, but with the map's picture still readable beneath it.
+    private static let overviewMarkerFill = NSColor(name: nil) { appearance in
+        HexTheme.caretColor.withAlphaComponent(0.8)
+    }
 
-    /// How far the marker's apex passes the map's content edge, into the map.
-    /// The apex reaching *into* the map is what kills the gap: a triangle whose
-    /// tip only touches the edge leaves an antialiased hairline between marker
-    /// and map, and at one pixel per row that reads as the marker floating.
-    /// Internal so tests can sample around the marker's reach.
-    static let overviewMarkerReach: CGFloat = 4
+    /// How tall the viewport marker is — big enough to find at a glance on a
+    /// full-dump overview, small enough to stay an index rather than a cover.
+    private static let overviewMarkerHeight: CGFloat = 11
+
+    /// The paper left between the marker's apex and the map's content edge.
+    /// The arrow points at the map without reaching it, so the marker costs the
+    /// map no detail. Internal so tests can sample around the marker.
+    static let overviewMarkerInset: CGFloat = 2
 
     /// The two boxes the chevrons occupy, level with the middle of the band.
-    /// Each spans the full side margin plus `overviewMarkerReach` into the map,
-    /// so the chevron's apex lands inside the map it marks. Shared by drawing
+    /// Each spans the full side margin minus `overviewMarkerInset`, so the
+    /// chevron's apex stops short of the map's content edge. Shared by drawing
     /// and by invalidation, which is what keeps a scroll's repaint this small.
     private func overviewMarkerRects(for band: NSRect) -> [NSRect] {
-        let width = Self.contentPadding + Self.overviewMarkerReach
+        let width = Self.contentPadding - Self.overviewMarkerInset
         guard width > 1 else { return [] }
         let height = Self.overviewMarkerHeight
         let y = band.midY - height / 2
