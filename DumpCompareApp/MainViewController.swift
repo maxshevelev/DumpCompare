@@ -644,9 +644,12 @@ final class MainViewController: NSViewController {
         private let total: Int
         private var done = 0
         private var reportedStep = -1
-        private let onChange: @Sendable (Double) -> Void
+        // The callback is always invoked on the main actor — `advance` hops there
+        // before firing it — so it is declared main-actor isolated; otherwise a
+        // caller updating the panel from it would warn.
+        private let onChange: @Sendable @MainActor (Double) -> Void
 
-        init(total: Int, onChange: @escaping @Sendable (Double) -> Void) {
+        init(total: Int, onChange: @escaping @Sendable @MainActor (Double) -> Void) {
             self.total = max(1, total)
             self.onChange = onChange
         }
