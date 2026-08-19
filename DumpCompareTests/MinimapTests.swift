@@ -1616,7 +1616,10 @@ final class MinimapTests: XCTestCase {
         let band = try XCTUnwrap(panel.viewportRects().first)
 
         // Inside the content, the band's own rows look like every other row.
-        let left = MinimapView.contentPadding + 2
+        // Sampling starts past the marker's reach: the chevron's apex pokes
+        // `overviewMarkerReach` points into the map, so the first few content
+        // pixels at the band's height carry the blue arrowhead, not the map.
+        let left = MinimapView.contentPadding + MinimapView.overviewMarkerReach + 2
         let right = panel.bounds.width * 0.4
         let onBand = try sampleRow(panel, y: band.midY, from: left, to: right)
         let elsewhere = try sampleRow(panel, y: band.midY + 20, from: left, to: right)
@@ -1625,13 +1628,25 @@ final class MinimapTests: XCTestCase {
         XCTAssertEqual(onBandMean, elsewhereMean, accuracy: 0.05,
                        "the content under the viewport is not dimmed by a band")
 
-        // The margin at that height carries the marker instead.
-        let margin = try sampleRow(panel, y: band.midY, from: 0, to: MinimapView.contentPadding - 2)
-        let marginMin = margin.min() ?? 1
-        let cleanMargin = try sampleRow(panel, y: band.midY + 20, from: 0,
-                                        to: MinimapView.contentPadding - 2).min() ?? 1
-        XCTAssertLessThan(marginMin, cleanMargin - 0.1,
-                          "a chevron is drawn in the margin at the viewport's height")
+        // The margin at that height carries the marker instead, reaching
+        // `overviewMarkerReach` past the content edge into the map. The marker
+        // is accent blue (the caret colour), a bright blue whose HSB brightness
+        // is the same as the paper's — blueness (blue − red) is what separates it.
+        let markerEnd = MinimapView.contentPadding + MinimapView.overviewMarkerReach - 1
+        let margin = try sampleRowColours(panel, y: band.midY, from: 0, to: markerEnd)
+        let cleanMargin = try sampleRowColours(panel, y: band.midY + 20, from: 0, to: markerEnd)
+        let marginBlueness = margin.map { $0.blueComponent - $0.redComponent }.max() ?? 0
+        let cleanBlueness = cleanMargin.map { $0.blueComponent - $0.redComponent }.max() ?? 0
+        XCTAssertGreaterThan(marginBlueness, cleanBlueness + 0.1,
+                             "a chevron is drawn in the margin at the viewport's height")
+        // And the apex has to be the blue end of the reach — it reaches *into*
+        // the map, not stopping short of it.
+        let apex = try sampleRowColours(panel, y: band.midY,
+                                        from: MinimapView.contentPadding - 1,
+                                        to: markerEnd)
+        let apexBlueness = apex.map { $0.blueComponent - $0.redComponent }.max() ?? 0
+        XCTAssertGreaterThan(apexBlueness, cleanBlueness + 0.1,
+                             "the arrowhead reaches into the map, past the content edge")
     }
 
 

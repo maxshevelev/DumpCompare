@@ -482,7 +482,7 @@ final class MinimapView: NSView {
     /// Marks only these rectangles for repaint. Scrolling calls into the panel
     /// on every wheel tick, and the maps themselves do not change between edits:
     /// in overview a full repaint would redraw a whole dump's picture — 16 cells
-    /// per device pixel row — to move a 7 pt chevron (§19.9).
+    /// per device pixel row — to move the viewport marker (§19.9).
     ///
     /// Correctness rests on `draw` painting *everything* that intersects the
     /// repaint region, which it does: each pass clips itself to `dirtyRect`, so
@@ -546,14 +546,6 @@ final class MinimapView: NSView {
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             ? NSColor(white: 0.95, alpha: 0.16)
             : NSColor(white: 0.15, alpha: 0.14)
-    }
-
-    /// The viewport band's edges in overview, where the translucent fill alone
-    /// is too faint to find: the same grey at full strength.
-    private static let viewportEdge = NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            ? NSColor(white: 0.95, alpha: 0.75)
-            : NSColor(white: 0.15, alpha: 0.65)
     }
 
     /// The maps draw top-down, matching the stacked panes' flipped coordinates
@@ -1233,11 +1225,14 @@ final class MinimapView: NSView {
     }
 
     /// Marks the viewport's position with a chevron in each outer margin, pointing
-    /// inward, level with the middle of the visible slice. The margins are the
-    /// `contentPadding` frame the cells never reach, so the markers cost no
-    /// detail.
+    /// inward, level with the middle of the visible slice. The chevrons run the
+    /// full `contentPadding` margin and their apexes reach `overviewMarkerReach`
+    /// past the map's content edge, so the arrowhead sits *in* the map it marks —
+    /// no gap between marker and map, not even an antialiased hairline — and are
+    /// painted the same accent blue as the caret cursor (§6), so the "you are
+    /// here" reads in the panel's own language.
     private func drawOverviewViewportMarkers(_ rects: [NSRect], dirtyRect: NSRect) {
-        Self.viewportEdge.setFill()
+        HexTheme.caretColor.setFill()
         for band in rects {
             for (slot, box) in overviewMarkerRects(for: band).enumerated() {
                 guard box.maxY >= dirtyRect.minY, box.minY <= dirtyRect.maxY else { continue }
@@ -1255,13 +1250,23 @@ final class MinimapView: NSView {
         }
     }
 
-    private static let overviewMarkerHeight: CGFloat = 7
+    /// How tall the viewport marker is — a chunky arrowhead, not a sliver, so
+    /// it reads at a glance on a full-dump overview.
+    private static let overviewMarkerHeight: CGFloat = 15
 
-    /// The two boxes the chevrons occupy, level with the middle of the band and
-    /// inside the side margins, so they never overlap a cell. Shared by drawing
+    /// How far the marker's apex passes the map's content edge, into the map.
+    /// The apex reaching *into* the map is what kills the gap: a triangle whose
+    /// tip only touches the edge leaves an antialiased hairline between marker
+    /// and map, and at one pixel per row that reads as the marker floating.
+    /// Internal so tests can sample around the marker's reach.
+    static let overviewMarkerReach: CGFloat = 4
+
+    /// The two boxes the chevrons occupy, level with the middle of the band.
+    /// Each spans the full side margin plus `overviewMarkerReach` into the map,
+    /// so the chevron's apex lands inside the map it marks. Shared by drawing
     /// and by invalidation, which is what keeps a scroll's repaint this small.
     private func overviewMarkerRects(for band: NSRect) -> [NSRect] {
-        let width = min(Self.contentPadding - 2, 5)
+        let width = Self.contentPadding + Self.overviewMarkerReach
         guard width > 1 else { return [] }
         let height = Self.overviewMarkerHeight
         let y = band.midY - height / 2
