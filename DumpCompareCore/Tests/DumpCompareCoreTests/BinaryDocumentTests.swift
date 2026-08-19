@@ -256,6 +256,72 @@ final class BinaryDocumentTests: XCTestCase {
                        "the group's whole selection comes back, not the caret alone")
     }
 
+    // MARK: - Typing series (segmented undo, Variant B)
+
+    func testTypingSeriesUndoByteThenBatch() throws {
+        let (doc, _) = try makeDocument([0x00, 0x01, 0x02, 0x03])
+        doc.beginSeries(1)
+        // The caret advances between bytes, as the view model does.
+        try doc.overwrite(range: 0..<1, with: [0xA0])
+        doc.setSelection(SelectionModel.empty(at: 1, fileSize: doc.size))
+        try doc.overwrite(range: 1..<2, with: [0xA1])
+        doc.setSelection(SelectionModel.empty(at: 2, fileSize: doc.size))
+        try doc.overwrite(range: 2..<3, with: [0xA2])
+        doc.setSelection(SelectionModel.empty(at: 3, fileSize: doc.size))
+        doc.endSeries()
+
+        // The first undo removes only the last byte of the series.
+        try doc.undo(batch: false)
+        XCTAssertEqual(try readAll(doc), [0xA0, 0xA1, 0x02, 0x03])
+        XCTAssertEqual(doc.selection.start, 2, "caret lands where the removed byte was")
+
+        // A fast second undo removes the rest of the series in one step.
+        try doc.undo(batch: true)
+        XCTAssertEqual(try readAll(doc), [0x00, 0x01, 0x02, 0x03])
+        XCTAssertEqual(doc.selection.start, 0, "caret at the start of the series")
+        XCTAssertFalse(doc.canUndo)
+
+        // Redo is symmetric: the batch comes back in one press (caret at the
+        // batch's end), then the single byte (caret at the series' end).
+        try doc.redo()
+        XCTAssertEqual(try readAll(doc), [0xA0, 0xA1, 0x02, 0x03])
+        XCTAssertEqual(doc.selection.start, 2)
+        try doc.redo()
+        XCTAssertEqual(try readAll(doc), [0xA0, 0xA1, 0xA2, 0x03])
+        XCTAssertEqual(doc.selection.start, 3)
+    }
+
+    func testTypingSeriesBatchUndoRestoresTheConsumedSelection() throws {
+        let (doc, _) = try makeDocument([0x00, 0x01, 0x02, 0x03, 0x04])
+        doc.setSelection(SelectionModel(start: 2, end: 5, fileSize: doc.size))
+        doc.beginSeries(1)
+        // Typing into a selection consumes it byte by byte.
+        try doc.replace(range: 2..<3, with: [0xF0])
+        doc.setSelection(SelectionModel(start: 3, end: 5, fileSize: doc.size))
+        doc.noteSelectionAfterEdit()
+        try doc.replace(range: 3..<4, with: [0xF1])
+        doc.setSelection(SelectionModel(start: 4, end: 5, fileSize: doc.size))
+        doc.noteSelectionAfterEdit()
+        try doc.replace(range: 4..<5, with: [0xF2])
+        doc.setSelection(SelectionModel.empty(at: 5, fileSize: doc.size))
+        doc.noteSelectionAfterEdit()
+        doc.endSeries()
+
+        try doc.undo(batch: false)
+        XCTAssertEqual(doc.selection, SelectionModel(start: 4, end: 5, fileSize: doc.size),
+                       "the last byte's consumed selection comes back with it")
+
+        try doc.undo(batch: true)
+        XCTAssertEqual(doc.selection, SelectionModel(start: 2, end: 5, fileSize: doc.size),
+                       "the batch restores the full selection the series started from")
+
+        try doc.redo()
+        XCTAssertEqual(doc.selection, SelectionModel(start: 4, end: 5, fileSize: doc.size),
+                       "the batch redo returns to the state after its last byte")
+        try doc.redo()
+        XCTAssertEqual(doc.selection, SelectionModel.empty(at: 5, fileSize: doc.size))
+    }
+
     func testFillCaretOverrideUsedOnUndoRedo() throws {
         let (doc, _) = try makeDocument([0x00, 0x01, 0x02, 0x03])
         doc.setSelection(SelectionModel(start: 1, end: 3, fileSize: doc.size))

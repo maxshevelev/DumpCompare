@@ -131,31 +131,44 @@ public final class BinaryDocument: @unchecked Sendable {
 
     // MARK: - Undo / Redo
 
-    /// Reverts the most recent transaction: applies its inverse ops to storage
-    /// (each op's `inverted` in reverse order), restores the selection the edit
-    /// started from, and returns the net `DiffEdit` describing the storage
-    /// change — so a comparison can update incrementally instead of re-scanning
-    /// both files. `nil` when there is nothing to undo.
+    /// Reverts the most recent undo step: applies the inverse ops of every
+    /// transaction in the gesture (transactions in reverse recording order,
+    /// each op's `inverted` in reverse order), restores the selection the
+    /// gesture's first edit started from, and returns the net `DiffEdit`
+    /// describing the storage change — so a comparison can update
+    /// incrementally instead of re-scanning both files.
+    ///
+    /// `batch == true` asks the history to remove the rest of the current
+    /// typing series as one step (the fast-undo window, decided by
+    /// `UndoHistory`). `nil` when there is nothing to undo.
     @discardableResult
-    public func undo() throws -> DiffEdit? {
-        guard let txn = undoHistory.undo() else { return nil }
-        let applied = txn.ops.reversed().map(\.inverted)
+    public func undo(batch: Bool = false) throws -> DiffEdit? {
+        guard let txns = undoHistory.undo(batch: batch) else { return nil }
+        var applied: [UndoOperation] = []
+        for txn in txns.reversed() {
+            applied.append(contentsOf: txn.ops.reversed().map(\.inverted))
+        }
         for op in applied { try applyForward(op) }
-        selection = txn.selectionBefore.clamped(to: storage.size)
+        selection = txns.first!.selectionBefore.clamped(to: storage.size)
         transactionAwaitingSelection = false
         return DiffEdit.netDiffEdit(ops: applied)
     }
 
-    /// Reapplies the next undone transaction in its original order, restores the
-    /// selection the edit left, and returns the net `DiffEdit` for the storage
-    /// change (see `undo()`). `nil` when there is nothing to redo.
+    /// Reapplies the next undone step in its original order (all of a batch's
+    /// transactions, in recording order), restores the selection the gesture's
+    /// last edit left, and returns the net `DiffEdit` for the storage change
+    /// (see `undo(batch:)`). `nil` when there is nothing to redo.
     @discardableResult
     public func redo() throws -> DiffEdit? {
-        guard let txn = undoHistory.redo() else { return nil }
-        for op in txn.ops { try applyForward(op) }
-        selection = txn.selectionAfter.clamped(to: storage.size)
+        guard let txns = undoHistory.redo() else { return nil }
+        var applied: [UndoOperation] = []
+        for txn in txns {
+            applied.append(contentsOf: txn.ops)
+        }
+        for op in applied { try applyForward(op) }
+        selection = txns.last!.selectionAfter.clamped(to: storage.size)
         transactionAwaitingSelection = false
-        return DiffEdit.netDiffEdit(ops: txn.ops)
+        return DiffEdit.netDiffEdit(ops: applied)
     }
 
     /// Records the selection as the state the last edit left behind, so redo
@@ -204,6 +217,7 @@ public final class BinaryDocument: @unchecked Sendable {
         identity = FileIdentity(url: url)
         readOnly = !FileManager.default.isWritableFile(atPath: url.path)
         undoHistory.reset()
+        currentSeriesID = nil
         transactionAwaitingSelection = false
         selection = SelectionModel.empty(at: 0, fileSize: base.size)
     }
@@ -221,12 +235,31 @@ public final class BinaryDocument: @unchecked Sendable {
             undoHistory.record(
                 pendingGroupOps,
                 selectionBefore: groupStartSelection ?? selection,
-                selectionAfter: .empty(at: naturalCaretAfter(pendingGroupOps), fileSize: storage.size)
+                selectionAfter: .empty(at: naturalCaretAfter(pendingGroupOps), fileSize: storage.size),
+                seriesID: currentSeriesID
             )
             transactionAwaitingSelection = true
             pendingGroupOps.removeAll()
             groupStartSelection = nil
         }
+    }
+
+    // MARK: - Typing series (segmented undo, Variant B)
+
+    /// The id of the typing series currently open, stamped onto every
+    /// transaction recorded while it lasts. `nil` outside a series.
+    private var currentSeriesID: UInt64?
+
+    /// Opens a typing series: transactions recorded until `endSeries()` share
+    /// `id`, so a fast undo can roll the series back in one batch.
+    public func beginSeries(_ id: UInt64) {
+        currentSeriesID = id
+    }
+
+    /// Closes the current typing series (a breaker fired, or the input simply
+    /// ended).
+    public func endSeries() {
+        currentSeriesID = nil
     }
 
     // MARK: - Selection
@@ -258,7 +291,8 @@ public final class BinaryDocument: @unchecked Sendable {
             undoHistory.record(
                 ops,
                 selectionBefore: selection,
-                selectionAfter: .empty(at: caretAfter ?? naturalCaretAfter(ops), fileSize: storage.size)
+                selectionAfter: .empty(at: caretAfter ?? naturalCaretAfter(ops), fileSize: storage.size),
+                seriesID: currentSeriesID
             )
             transactionAwaitingSelection = true
         }

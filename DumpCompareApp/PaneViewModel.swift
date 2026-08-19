@@ -82,6 +82,27 @@ final class PaneViewModel: HexViewDataSource {
     /// into a single undo step; see `beginTypingGroup`/`endTypingGroup`).
     private var typingGroupOpen = false
 
+    /// Time injection so tests can drive the series-break and fast-undo
+    /// windows deterministically (the pattern of `MinimapSplitView.defaults`).
+    static var clock: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    /// A pause between typed bytes longer than this breaks the typing series.
+    static let seriesBreakThreshold: TimeInterval = 0.7
+    /// A repeat undo within this window of a series-byte undo removes the rest
+    /// of the series in one step (the fast-undo window).
+    static let fastUndoWindow: TimeInterval = 0.5
+
+    /// Whether a typing series is open (bytes recorded under one series id).
+    private var typingSeriesOpen = false
+    /// Monotonic id handed to `BinaryDocument.beginSeries` for each new series.
+    private var seriesCounter: UInt64 = 0
+    /// When the last typed nibble/character landed; the interval to the next
+    /// byte is measured from the last event, so a type-pair never breaks.
+    private var lastTypingTime: TimeInterval = 0
+    /// The input region the open series was typed in; a region change breaks it.
+    private var lastTypingMode: HexInputRegion?
+    /// When the last undo ran (the fast-undo window); nil until the first undo.
+    private var lastUndoTime: TimeInterval?
+
     /// The other pane in comparison mode. Selections are independent per pane
     /// (§3.3): this pane reads the companion's selection only to mirror it with
     /// frames, and tells the companion when its own selection changed so the
@@ -326,7 +347,7 @@ final class PaneViewModel: HexViewDataSource {
     }
 
     private func resetEditingState() {
-        endTypingGroup()
+        breakTypingSeries()
         nibble = 0
         inputRegion = .hex
         overwriteSelection = nil
@@ -338,6 +359,10 @@ final class PaneViewModel: HexViewDataSource {
     func setInputRegion(_ region: HexInputRegion) {
         guard inputRegion != region else { return }
         inputRegion = region
+        // A region change breaks the typing series (the next typed byte starts
+        // a fresh one) but must not flush a half-typed byte — the nibble group
+        // keeps its current behavior.
+        closeTypingSeries()
         // A region change only moves the caret bar between the hex and ASCII
         // columns — the bytes are unchanged, so a selection-only redraw
         // suffices (§3.3). The guard matters on the drag hot path:
@@ -463,11 +488,13 @@ final class PaneViewModel: HexViewDataSource {
         let offset: UInt64
         if nibble == 0 {
             prepareForTyping()
+            ensureTypingSeries(mode: inputRegion)
             offset = typingOffset(doc)
             let old = byteAt(offset) ?? 0
             beginTypingGroup()
             try? doc.overwrite(range: offset..<offset + 1, with: [(UInt8(digit) << 4) | (old & 0x0F)])
             nibble = 1
+            lastTypingTime = Self.clock()
             onEdit?(.overwrite(range: offset..<offset + 1))
         } else {
             offset = typingOffset(doc)
@@ -476,6 +503,7 @@ final class PaneViewModel: HexViewDataSource {
             nibble = 0
             endTypingGroup()
             advanceAfterByte()
+            lastTypingTime = Self.clock()
             onEdit?(.overwrite(range: offset..<offset + 1))
         }
         notifyAfterEdit(range: offset..<offset + 1, sizeBefore: sizeBefore)
@@ -490,10 +518,12 @@ final class PaneViewModel: HexViewDataSource {
         let sizeBefore = doc.size
         endTypingGroup()
         prepareForTyping()
+        ensureTypingSeries(mode: inputRegion)
         let offset = typingOffset(doc)
         try? doc.overwrite(range: offset..<offset + 1, with: [byte])
         nibble = 0
         advanceAfterByte()
+        lastTypingTime = Self.clock()
         onEdit?(.overwrite(range: offset..<offset + 1))
         notifyAfterEdit(range: offset..<offset + 1, sizeBefore: sizeBefore)
     }
@@ -501,7 +531,7 @@ final class PaneViewModel: HexViewDataSource {
     /// Delete: fill the selection (or the current byte) with 0x00 (§7.3).
     func deleteForward() {
         guard let doc = document else { return }
-        endTypingGroup()
+        breakTypingSeries()
         if !doc.selection.isEmpty {
             fillSelection()
             return
@@ -520,7 +550,7 @@ final class PaneViewModel: HexViewDataSource {
     /// the caret back (§7.3).
     func deleteBackward() {
         guard let doc = document else { return }
-        endTypingGroup()
+        breakTypingSeries()
         if !doc.selection.isEmpty {
             fillSelection()
             return
@@ -541,7 +571,7 @@ final class PaneViewModel: HexViewDataSource {
     /// selection.
     func fillSelection(with pattern: [UInt8]) {
         guard let doc = document, !doc.selection.isEmpty, !pattern.isEmpty else { return }
-        endTypingGroup()
+        breakTypingSeries()
         fillSelection(pattern: pattern)
     }
 
@@ -549,7 +579,7 @@ final class PaneViewModel: HexViewDataSource {
     /// the UI before calling).
     func deleteBytes(in range: Range<UInt64>) throws {
         guard let doc = document else { return }
-        endTypingGroup()
+        breakTypingSeries()
         try doc.delete(range: range)
         doc.setSelection(SelectionModel.empty(at: range.lowerBound, fileSize: doc.size))
         doc.noteSelectionAfterEdit()
@@ -564,6 +594,9 @@ final class PaneViewModel: HexViewDataSource {
     /// past EOF without confirmation (§7.1, §12.2).
     func pasteWrite(_ bytes: [UInt8]) throws {
         guard let doc = document, !bytes.isEmpty else { return }
+        // Break the series BEFORE recording: the paste's own transaction must
+        // not inherit the typing series' id.
+        breakTypingSeries()
         let sizeBefore = doc.size
         let start = doc.selection.start
         let range = start..<start + UInt64(bytes.count)
@@ -581,6 +614,9 @@ final class PaneViewModel: HexViewDataSource {
     /// Paste Insert: insert before the caret (confirmed by the UI, §7.2/§12.3).
     func pasteInsert(_ bytes: [UInt8]) throws {
         guard let doc = document, !bytes.isEmpty else { return }
+        // Break the series BEFORE recording: the paste's own transaction must
+        // not inherit the typing series' id.
+        breakTypingSeries()
         let at = doc.selection.start
         try doc.insert(at: at, bytes: bytes)
         doc.setSelection(SelectionModel.empty(at: at + UInt64(bytes.count), fileSize: doc.size))
@@ -619,6 +655,10 @@ final class PaneViewModel: HexViewDataSource {
 
     func moveCaret(to offset: UInt64, extendSelection: Bool = false) {
         guard let doc = document else { return }
+        // Caret movement breaks the typing series (the next typed byte starts
+        // a fresh one) but must not flush a half-typed byte — the nibble group
+        // keeps its current behavior.
+        closeTypingSeries()
         let clamped = min(offset, doc.size)
         if extendSelection {
             let anchor = selectionAnchor
@@ -673,7 +713,13 @@ final class PaneViewModel: HexViewDataSource {
         // committed so undo reverts it (and keeps the redo stack intact) instead
         // of skipping it for an older edit.
         resetEditingState()
-        let edit = try doc.undo()   // restores the caret to where the edit began
+        // The fast-undo window: a repeat press within `fastUndoWindow` of a
+        // series-byte undo asks the history to remove the rest of the series in
+        // one step (whether that happens is decided by `UndoHistory`).
+        let now = Self.clock()
+        let fast = lastUndoTime.map { now - $0 < Self.fastUndoWindow } ?? false
+        lastUndoTime = now
+        let edit = try doc.undo(batch: fast)   // restores the caret to where the edit began
         if let edit {
             // Undo mutates the storage in place, so the net DiffEdit updates the
             // comparison incrementally — no full-file re-scan (§8.3).
@@ -688,6 +734,9 @@ final class PaneViewModel: HexViewDataSource {
     func redo() throws -> Bool {
         guard let doc = document else { return false }
         resetEditingState()
+        // Redo does not inherit the fast window: a redo followed quickly by an
+        // undo is not a "repeat undo".
+        lastUndoTime = nil
         let edit = try doc.redo()   // restores the caret to where the edit left it
         if let edit {
             onEdit?(edit)
@@ -737,6 +786,46 @@ final class PaneViewModel: HexViewDataSource {
         guard let doc = document, typingGroupOpen else { return }
         doc.endEditGroup()
         typingGroupOpen = false
+    }
+
+    /// Opens (or continues) the typing series for the byte about to be
+    /// completed in `mode` — called at the start of each byte (the high-nibble
+    /// branch of hex input, the start of an ASCII character). A series breaks
+    /// on a pause longer than `seriesBreakThreshold` since the last typed
+    /// event, or on a change of input region; each new series gets a fresh id
+    /// from the document so a fast undo can roll it back in one batch.
+    private func ensureTypingSeries(mode: HexInputRegion) {
+        guard let doc = document else { return }
+        let now = Self.clock()
+        if !typingSeriesOpen
+            || now - lastTypingTime > Self.seriesBreakThreshold
+            || lastTypingMode != mode {
+            doc.endSeries()
+            seriesCounter += 1
+            doc.beginSeries(seriesCounter)
+            typingSeriesOpen = true
+        }
+        lastTypingMode = mode
+        lastTypingTime = now
+    }
+
+    /// Closes the typing series without touching the nibble group: caret
+    /// movement and input-region changes break the series (the next typed byte
+    /// starts a fresh one) but must not flush a half-typed byte.
+    private func closeTypingSeries() {
+        guard typingSeriesOpen, let doc = document else { return }
+        doc.endSeries()
+        typingSeriesOpen = false
+        lastTypingMode = nil
+    }
+
+    /// Breaks the typing series: closes a half-typed byte (flushing its edit
+    /// group) and ends the series on the document, so the next typed byte
+    /// starts a fresh series. Called by every command that is not plain typing
+    /// (delete, fill, paste, selection changes, undo/redo).
+    private func breakTypingSeries() {
+        endTypingGroup()
+        closeTypingSeries()
     }
 
     /// After a complete typed byte, advance one byte through a consuming

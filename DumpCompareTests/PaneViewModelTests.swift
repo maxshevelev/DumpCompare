@@ -302,6 +302,198 @@ final class PaneViewModelTests: XCTestCase {
         XCTAssertEqual(pane.caretOffset, 1, "redo lands where the fill left the caret")
     }
 
+    // MARK: - Typing series (segmented undo, Variant B)
+
+    /// Substitutes `PaneViewModel.clock` with a controllable time source for
+    /// the duration of `body`; `body` receives a closure that advances the
+    /// fake clock, so the series-break and fast-undo windows are deterministic.
+    private func withControllableClock(
+        _ body: (_ advance: (TimeInterval) -> Void) throws -> Void
+    ) rethrows {
+        var now: TimeInterval = 1000
+        let real = PaneViewModel.clock
+        PaneViewModel.clock = { now }
+        defer { PaneViewModel.clock = real }
+        try body { now += $0 }
+    }
+
+    func testFastUndoRemovesTheRestOfTheTypingSeries() throws {
+        let (pane, url) = try openPane([0x00, 0x00, 0x00, 0x00])
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        try withControllableClock { advance in
+            pane.typeASCII(0x41)               // 'A'
+            advance(0.05)
+            pane.typeASCII(0x42)               // 'B'
+            advance(0.05)
+            pane.typeASCII(0x43)               // 'C'
+            XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0x41, 0x42, 0x43])
+
+            // First undo: the last byte of the series.
+            XCTAssertTrue(try pane.undo())
+            XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0x41, 0x42, 0x00])
+            XCTAssertEqual(pane.caretOffset, 2)
+
+            // Fast second undo: the rest of the series in one step.
+            advance(0.1)                       // within fastUndoWindow (0.5)
+            XCTAssertTrue(try pane.undo())
+            XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0x00, 0x00, 0x00])
+            XCTAssertEqual(pane.caretOffset, 0)
+            XCTAssertFalse(pane.status.canUndo)
+
+            // Redo is symmetric: the batch comes back in one press...
+            advance(0.1)
+            XCTAssertTrue(try pane.redo())
+            XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0x41, 0x42, 0x00])
+            // ...and the single byte in the next.
+            advance(0.1)
+            XCTAssertTrue(try pane.redo())
+            XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0x41, 0x42, 0x43])
+            XCTAssertEqual(pane.caretOffset, 3)
+        }
+    }
+
+    func testUndoAfterAPauseRemovesOneByteAgain() throws {
+        let (pane, url) = try openPane([0x00, 0x00, 0x00, 0x00])
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        try withControllableClock { advance in
+            pane.typeASCII(0x41)
+            advance(0.05)
+            pane.typeASCII(0x42)
+            advance(0.05)
+            pane.typeASCII(0x43)
+
+            XCTAssertTrue(try pane.undo())     // byte 3
+            XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0x41, 0x42, 0x00])
+
+            advance(1.0)                       // longer than fastUndoWindow
+            XCTAssertTrue(try pane.undo())     // byte 2 — no batch
+            XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0x41, 0x00, 0x00])
+            XCTAssertEqual(pane.caretOffset, 1)
+        }
+    }
+
+    func testAPauseBetweenBytesBreaksTheSeries() throws {
+        let (pane, url) = try openPane([0x00, 0x00, 0x00, 0x00])
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        try withControllableClock { advance in
+            pane.typeASCII(0x41)               // series 1
+            advance(1.0)                       // longer than seriesBreakThreshold
+            pane.typeASCII(0x42)               // series 2
+            advance(0.05)
+            pane.typeASCII(0x43)
+            XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0x41, 0x42, 0x43])
+
+            // Undo walks back series 2: C, then the batch of the rest of
+            // series 2 (B only — the pause kept A in its own series).
+            XCTAssertTrue(try pane.undo())
+            XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0x41, 0x42, 0x00])
+            advance(0.1)
+            XCTAssertTrue(try pane.undo())
+            XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0x41, 0x00, 0x00])
+            // A fast third undo still stops at the series boundary: A comes
+            // back only on its own press.
+            advance(0.1)
+            XCTAssertTrue(try pane.undo())
+            XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0x00, 0x00, 0x00])
+        }
+    }
+
+    func testCaretMovementBreaksTheSeries() throws {
+        let (pane, url) = try openPane([0x00, 0x00, 0x00, 0x00])
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        try withControllableClock { advance in
+            pane.typeASCII(0x41)               // series 1, caret now at 1
+            pane.moveCaret(to: 2)              // breaks the series
+            pane.typeASCII(0x42)               // series 2, at offset 2
+            advance(0.05)
+            pane.typeASCII(0x43)               // series 2, at offset 3
+            XCTAssertEqual(pane.hexByteStates(in: 0..<4).map(\.byte), [0x41, 0x00, 0x42, 0x43])
+
+            // The batch stays inside series 2: C, then B — A survives both.
+            XCTAssertTrue(try pane.undo())
+            XCTAssertEqual(pane.hexByteStates(in: 0..<4).map(\.byte), [0x41, 0x00, 0x42, 0x00])
+            advance(0.1)
+            XCTAssertTrue(try pane.undo())
+            XCTAssertEqual(pane.hexByteStates(in: 0..<4).map(\.byte), [0x41, 0x00, 0x00, 0x00])
+        }
+    }
+
+    func testInputRegionChangeBreaksTheSeries() throws {
+        let (pane, url) = try openPane([0x00, 0x00, 0x00, 0x00])
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        try withControllableClock { advance in
+            pane.typeHexNibble(0x4)            // hex series: high nibble
+            pane.typeHexNibble(0x1)            // → 0x41, caret 1
+            pane.setInputRegion(.ascii)        // breaks the series
+            pane.typeASCII(0x42)               // ascii series, at offset 1
+            advance(0.05)
+            pane.typeASCII(0x43)               // ascii series, at offset 2
+            XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0x41, 0x42, 0x43])
+
+            // The batch stays inside the ASCII series: C, then B — the hex
+            // byte 0x41 survives both.
+            XCTAssertTrue(try pane.undo())
+            XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0x41, 0x42, 0x00])
+            advance(0.1)
+            XCTAssertTrue(try pane.undo())
+            XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0x41, 0x00, 0x00])
+        }
+    }
+
+    func testAutoRepeatTypingIsOneSeries() throws {
+        let (pane, url) = try openPane([UInt8](repeating: 0, count: 8))
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        try withControllableClock { advance in
+            // A held-down key: 30–90 ms between characters — well under the
+            // break threshold, so the whole run is one series.
+            let bytes: [UInt8] = [0x41, 0x42, 0x43, 0x44]
+            for (i, byte) in bytes.enumerated() {
+                pane.typeASCII(byte)
+                advance(i.isMultiple(of: 2) ? 0.03 : 0.09)
+            }
+            XCTAssertEqual(pane.hexByteStates(in: 0..<4).map(\.byte), [0x41, 0x42, 0x43, 0x44])
+
+            // One byte, then the whole rest in the fast second press.
+            XCTAssertTrue(try pane.undo())
+            XCTAssertEqual(pane.hexByteStates(in: 0..<4).map(\.byte), [0x41, 0x42, 0x43, 0x00])
+            advance(0.1)
+            XCTAssertTrue(try pane.undo())
+            XCTAssertEqual(pane.hexByteStates(in: 0..<4).map(\.byte), [0x00, 0x00, 0x00, 0x00])
+            XCTAssertFalse(pane.status.canUndo)
+        }
+    }
+
+    func testFastUndoDoesNotBatchSeparateEdits() throws {
+        let (pane, url) = try openPane([0xFF, 0xFF, 0xFF, 0xFF])
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        try withControllableClock { advance in
+            pane.typeASCII(0x41)               // series 1: byte 0 → 'A', caret 1
+            pane.deleteForward()               // breaker: fills byte 1 with 0x00
+            advance(0.1)
+            pane.typeASCII(0x42)               // series 2: byte 1 → 'B'
+
+            // Each press undoes exactly one transaction: the typing byte...
+            XCTAssertTrue(try pane.undo())
+            XCTAssertEqual(pane.hexByteStates(in: 0..<4).map(\.byte), [0x41, 0x00, 0xFF, 0xFF])
+            // ...the delete (no series of its own — a fast repeat does not
+            // batch it with the typing series below it)...
+            advance(0.1)
+            XCTAssertTrue(try pane.undo())
+            XCTAssertEqual(pane.hexByteStates(in: 0..<4).map(\.byte), [0x41, 0xFF, 0xFF, 0xFF])
+            // ...and the first typed byte.
+            advance(0.1)
+            XCTAssertTrue(try pane.undo())
+            XCTAssertEqual(pane.hexByteStates(in: 0..<4).map(\.byte), [0xFF, 0xFF, 0xFF, 0xFF])
+        }
+    }
+
     // MARK: - Save / revert / modified detection
 
     func testSaveClearsDirtyAndRevertRestores() throws {

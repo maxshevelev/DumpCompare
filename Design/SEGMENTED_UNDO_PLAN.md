@@ -217,7 +217,7 @@ the batch `lastUndoWasSeriesByte == false`).
 
 **New core tests (`UndoHistoryTests.swift`):**
 1. First undo of a series is one byte: `record(t1, t2, t3, seriesID: 1)`; `undo(batch: false)` → `[t3]`.
-2. Fast second undo removes the rest of the series: `undo(batch: true)` → `[t2, t1]`
+2. Fast second undo removes the rest of the series: `undo(batch: true)` → `[t1, t2]`
    (recording order), `canUndo == false`.
 3. Undo after a pause is again one byte: `undo(batch: false)` twice in a row → `[t3]`, then `[t2]`.
 4. A batch does not cross a series boundary: `s1(seriesID: 1)`, `s2(seriesID: 2)`;

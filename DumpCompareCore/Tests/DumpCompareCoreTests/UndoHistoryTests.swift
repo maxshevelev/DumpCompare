@@ -6,13 +6,18 @@ final class UndoHistoryTests: XCTestCase {
         .overwrite(range: i..<(i + 1), before: [0], after: [1])
     }
 
+    /// The ops of each returned transaction, for comparing gesture results.
+    private func ops(_ txns: [UndoTransaction]?) -> [[UndoOperation]] {
+        txns?.map(\.ops) ?? []
+    }
+
     func testUndoRedoCycle() {
         let history = UndoHistory()
         history.record([op(0)])
         history.record([op(1)])
 
-        XCTAssertEqual(history.undo()?.ops.count, 1)
-        XCTAssertEqual(history.undo()?.ops.count, 1)
+        XCTAssertEqual(history.undo()?.count, 1)
+        XCTAssertEqual(history.undo()?.count, 1)
         XCTAssertNil(history.undo())
         XCTAssertFalse(history.canUndo)
         XCTAssertTrue(history.canRedo)
@@ -52,8 +57,8 @@ final class UndoHistoryTests: XCTestCase {
 
         history.record([op(2)])          // diverges: redo stack (t1) discarded
         XCTAssertFalse(history.canRedo)
-        XCTAssertEqual(history.undo()?.ops.count, 1)  // t2
-        XCTAssertEqual(history.undo()?.ops.count, 1)  // t0 still committed
+        XCTAssertEqual(history.undo()?.count, 1)  // t2
+        XCTAssertEqual(history.undo()?.count, 1)  // t0 still committed
         XCTAssertNil(history.undo())
     }
 
@@ -83,7 +88,7 @@ final class UndoHistoryTests: XCTestCase {
         let history = UndoHistory()
         history.record([op(0), op(1), op(2)])  // one transaction, three ops
         XCTAssertTrue(history.canUndo)
-        XCTAssertEqual(history.undo()?.ops.count, 3) // all three revert together
+        XCTAssertEqual(history.undo()?[0].ops.count, 3) // all three revert together
         XCTAssertFalse(history.canUndo)
     }
 
@@ -93,17 +98,122 @@ final class UndoHistoryTests: XCTestCase {
         history.record([op(1)], caretBefore: 7, caretAfter: 8)
 
         let undone = history.undo()
-        XCTAssertEqual(undone?.ops, [op(1)])
-        XCTAssertEqual(undone?.caretBefore, 7)
-        XCTAssertEqual(undone?.caretAfter, 8)
+        XCTAssertEqual(undone?[0].ops, [op(1)])
+        XCTAssertEqual(undone?[0].caretBefore, 7)
+        XCTAssertEqual(undone?[0].caretAfter, 8)
 
         let redone = history.redo()
-        XCTAssertEqual(redone?.ops, [op(1)])
-        XCTAssertEqual(redone?.caretBefore, 7)
-        XCTAssertEqual(redone?.caretAfter, 8)
+        XCTAssertEqual(redone?[0].ops, [op(1)])
+        XCTAssertEqual(redone?[0].caretBefore, 7)
+        XCTAssertEqual(redone?[0].caretAfter, 8)
 
         // Caret-less records (legacy callers) default to 0/0.
         history.record([op(2)])
-        XCTAssertEqual(history.undo()?.caretBefore, 0)
+        XCTAssertEqual(history.undo()?[0].caretBefore, 0)
+    }
+
+    // MARK: - Typing series (segmented undo, Variant B)
+
+    func testFirstUndoOfASeriesRemovesOneByte() {
+        let history = UndoHistory()
+        history.record([op(0)], seriesID: 1)
+        history.record([op(1)], seriesID: 1)
+        history.record([op(2)], seriesID: 1)
+
+        XCTAssertEqual(ops(history.undo(batch: false)), [[op(2)]])
+        XCTAssertTrue(history.canUndo)
+    }
+
+    func testFastSecondUndoRemovesTheRestOfTheSeries() {
+        let history = UndoHistory()
+        history.record([op(0)], seriesID: 1)
+        history.record([op(1)], seriesID: 1)
+        history.record([op(2)], seriesID: 1)
+
+        XCTAssertEqual(ops(history.undo(batch: false)), [[op(2)]])
+        // The fast repeat removes the rest of the series, in recording order.
+        XCTAssertEqual(ops(history.undo(batch: true)), [[op(0)], [op(1)]])
+        XCTAssertFalse(history.canUndo)
+    }
+
+    func testUndoAfterAPauseRemovesOneByteAgain() {
+        let history = UndoHistory()
+        history.record([op(0)], seriesID: 1)
+        history.record([op(1)], seriesID: 1)
+        history.record([op(2)], seriesID: 1)
+
+        XCTAssertEqual(ops(history.undo(batch: false)), [[op(2)]])
+        XCTAssertEqual(ops(history.undo(batch: false)), [[op(1)]])
+    }
+
+    func testBatchDoesNotCrossASeriesBoundary() {
+        let history = UndoHistory()
+        history.record([op(0)], seriesID: 1)
+        history.record([op(1)], seriesID: 2)
+
+        XCTAssertEqual(ops(history.undo(batch: false)), [[op(1)]])
+        // The top is series 1, the last undo was series 2 → no batch.
+        XCTAssertEqual(ops(history.undo(batch: true)), [[op(0)]])
+    }
+
+    func testBatchDoesNotApplyAfterANonSeriesUndo() {
+        let history = UndoHistory()
+        history.record([op(0)])                    // no series
+        history.record([op(1)], seriesID: 1)
+
+        XCTAssertEqual(ops(history.undo(batch: false)), [[op(1)]])
+        // The top has no seriesID → no batch.
+        XCTAssertEqual(ops(history.undo(batch: true)), [[op(0)]])
+    }
+
+    func testNewRecordClearsTheFastRollbackState() {
+        let history = UndoHistory()
+        history.record([op(0)], seriesID: 1)
+        history.record([op(1)], seriesID: 1)
+
+        XCTAssertEqual(ops(history.undo(batch: false)), [[op(1)]])
+        history.record([op(2)])                    // a new edit breaks the fast window
+        XCTAssertEqual(ops(history.undo(batch: true)), [[op(2)]])
+    }
+
+    func testRedoOfABatchRestoresByteByByteStructure() {
+        let history = UndoHistory()
+        history.record([op(0)], seriesID: 1)
+        history.record([op(1)], seriesID: 1)
+        history.record([op(2)], seriesID: 1)
+
+        XCTAssertEqual(ops(history.undo(batch: false)), [[op(2)]])
+        XCTAssertEqual(ops(history.undo(batch: true)), [[op(0)], [op(1)]])
+        // Redo is symmetric with undo: one press restores one step — first
+        // the batch, unfolded back into individual byte steps on the undo
+        // stack, then the single byte.
+        XCTAssertEqual(ops(history.redo()), [[op(0)], [op(1)]])
+        XCTAssertEqual(ops(history.redo()), [[op(2)]])
+        XCTAssertEqual(history.undoDepth, 3)
+
+        // The series is byte-by-byte again: a plain undo removes the last byte.
+        XCTAssertEqual(ops(history.undo(batch: false)), [[op(2)]])
+        XCTAssertEqual(history.undoDepth, 2)
+    }
+
+    func testDirtyControlAcrossABatch() {
+        let history = UndoHistory()
+        history.record([op(0)], seriesID: 1)
+        history.record([op(1)], seriesID: 1)
+        history.record([op(2)], seriesID: 1)
+        history.markSaved()
+        XCTAssertFalse(history.isDirty)
+
+        history.undo(batch: false)
+        history.undo(batch: true)
+        XCTAssertTrue(history.isDirty)
+
+        // Redo restores one step at a time: the batch step brings back two
+        // transactions, still short of the saved count (dirty is counted in
+        // transactions, not steps).
+        history.redo()
+        XCTAssertTrue(history.isDirty)
+        history.redo()
+        XCTAssertFalse(history.isDirty)
     }
 }

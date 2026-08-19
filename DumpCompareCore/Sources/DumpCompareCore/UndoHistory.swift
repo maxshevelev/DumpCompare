@@ -76,51 +76,81 @@ public struct UndoTransaction: Equatable, Sendable {
 
 /// Linear undo/redo history with a dirty checkpoint (decision D4).
 ///
-/// The history is a list of transactions (each transaction is one or more
-/// `UndoOperation`s applied as a unit — a typing session coalesces into one).
-/// A cursor separates committed ops (before it) from undone ops (after it).
+/// The history is a list of *steps* — one step is one undo gesture: either a
+/// single transaction (a normal edit, or one entered byte of a typing series)
+/// or a batch of transactions (the rest of a series removed by one fast
+/// Cmd+Z). A step's `seriesID` links the steps of one typing series; `nil`
+/// means the step is outside a series.
 ///
-/// Dirty state is defined entirely by the cursor vs a saved checkpoint:
-/// `isDirty` is true when the cursor is not where the last `markSaved()` left
-/// it. Undoing back to the saved state clears dirty; redoing past it sets it
-/// again (§5.1, §17.7).
+/// `undo(batch: true)` removes one step, but when the previous undo removed a
+/// single series byte and the top step belongs to the same series, it removes
+/// every remaining step of that series as one batch — the "coalescing window"
+/// of segmented undo. `redo()` restores one step; a batch is unfolded back
+/// into individual byte steps on the undo stack, so byte-by-byte rollback is
+/// available again after a redo.
+///
+/// Dirty state is defined entirely by the committed transaction count vs a
+/// saved checkpoint (counted in transactions, not steps — unfolding a batch
+/// on redo does not change the count): `isDirty` is true when the count is
+/// not where the last `markSaved()` left it. Undoing back to the saved state
+/// clears dirty; redoing past it sets it again (§5.1, §17.7).
 ///
 /// This class is confined to a single thread (the document it belongs to).
 public final class UndoHistory: @unchecked Sendable {
-    private var history: [UndoTransaction] = []
-    private var cursor = 0
-    private var savedIndex = 0
+    /// One undo gesture: a transaction (a normal edit or one entered byte)
+    /// or a batch of transactions (the rest of a series removed by one fast
+    /// press). `seriesID` links the steps of one typing series; nil is
+    /// outside a series.
+    private struct Step {
+        var transactions: [UndoTransaction]   // in recording order (first..last)
+        var seriesID: UInt64?
+    }
 
-    public var canUndo: Bool { cursor > 0 }
-    public var canRedo: Bool { cursor < history.count }
+    private var undoSteps: [Step] = []
+    private var redoSteps: [Step] = []
+    private var savedTransactionIndex = 0     // dirty control: transaction count
+    private var undoTransactionCount = 0
+
+    // Fast-rollback state:
+    private var lastUndoWasSeriesByte = false
+    private var lastUndoSeriesID: UInt64?
+
+    public var canUndo: Bool { !undoSteps.isEmpty }
+    public var canRedo: Bool { !redoSteps.isEmpty }
     /// True when the current state differs from the last saved state.
-    public var isDirty: Bool { cursor != savedIndex }
-    /// Number of committed transactions (the cursor position).
-    public var undoDepth: Int { cursor }
+    public var isDirty: Bool { undoTransactionCount != savedTransactionIndex }
+    /// Number of committed transactions.
+    public var undoDepth: Int { undoTransactionCount }
 
-    /// Records a transaction of ops applied to storage. Any undone transactions
+    /// Records a transaction of ops applied to storage. Any undone steps
     /// (the redo stack) are discarded, because the state has diverged. The
     /// selection pair records what the edit started from and what it left, so
-    /// undo/redo can restore it.
+    /// undo/redo can restore it. `seriesID` marks the transaction as part of a
+    /// typing series (nil for everything else). A new record also breaks the
+    /// fast-rollback window — a fresh edit is never batched with a previous
+    /// undo.
     public func record(_ ops: [UndoOperation],
                        selectionBefore: SelectionModel,
-                       selectionAfter: SelectionModel) {
+                       selectionAfter: SelectionModel,
+                       seriesID: UInt64? = nil) {
         guard !ops.isEmpty else { return }
-        if cursor < history.count {
-            history.removeSubrange(cursor...)
-        }
-        history.append(UndoTransaction(ops: ops,
-                                       selectionBefore: selectionBefore,
-                                       selectionAfter: selectionAfter))
-        cursor = history.count
+        redoSteps.removeAll()
+        undoSteps.append(Step(transactions: [UndoTransaction(ops: ops,
+                                                             selectionBefore: selectionBefore,
+                                                             selectionAfter: selectionAfter)],
+                              seriesID: seriesID))
+        undoTransactionCount += 1
+        lastUndoWasSeriesByte = false
+        lastUndoSeriesID = nil
     }
 
     /// Caret-only form of `record`, for edits with no selection to restore.
     public func record(_ ops: [UndoOperation], caretBefore: UInt64 = 0, caretAfter: UInt64 = 0,
-                       fileSize: UInt64 = .max) {
+                       fileSize: UInt64 = .max, seriesID: UInt64? = nil) {
         record(ops,
                selectionBefore: .empty(at: caretBefore, fileSize: fileSize),
-               selectionAfter: .empty(at: caretAfter, fileSize: fileSize))
+               selectionAfter: .empty(at: caretAfter, fileSize: fileSize),
+               seriesID: seriesID)
     }
 
     /// Refines the last recorded transaction's post-edit selection, so redo
@@ -128,39 +158,62 @@ public final class UndoHistory: @unchecked Sendable {
     /// end of the byte range it wrote. Ignored unless the last transaction is
     /// the current one (nothing has been undone since it was recorded).
     public func noteSelectionAfterOnLast(_ selection: SelectionModel) {
-        guard cursor == history.count, cursor > 0 else { return }
-        history[cursor - 1].setSelectionAfter(selection)
+        guard redoSteps.isEmpty, let step = undoSteps.indices.last else { return }
+        undoSteps[step].transactions[undoSteps[step].transactions.count - 1].setSelectionAfter(selection)
     }
 
-    /// Reverts the most recent committed transaction, returning it (ops in
-    /// committed order, for the caller to apply in reverse). Returns `nil` if
-    /// there is nothing to undo.
+    /// Reverts the most recent step, returning its transactions in recording
+    /// order (for the caller to apply in reverse). With `batch == true`, a
+    /// fast repeat of a series-byte undo removes the rest of that series as
+    /// one step instead. Returns `nil` if there is nothing to undo.
     @discardableResult
-    public func undo() -> UndoTransaction? {
-        guard canUndo else { return nil }
-        cursor -= 1
-        return history[cursor]
+    public func undo(batch: Bool = false) -> [UndoTransaction]? {
+        guard let last = undoSteps.popLast() else { return nil }
+        var collected = [last]
+        if batch, let sid = last.seriesID, sid == lastUndoSeriesID, lastUndoWasSeriesByte {
+            while let next = undoSteps.last, next.seriesID == sid {
+                undoSteps.removeLast()
+                collected.append(next)
+            }
+        }
+        let ordered = collected.reversed().flatMap(\.transactions)   // recording order
+        undoTransactionCount -= ordered.count
+        redoSteps.append(Step(transactions: ordered, seriesID: last.seriesID))
+        lastUndoWasSeriesByte = (collected.count == 1 && last.seriesID != nil)
+        lastUndoSeriesID = last.seriesID
+        return ordered
     }
 
-    /// Reapplies the next undone transaction, returning it for the caller to
-    /// apply in order. Returns `nil` if there is nothing to redo.
+    /// Reapplies the next undone step, returning its transactions in
+    /// recording order for the caller to apply in order. A batch step is
+    /// unfolded back into individual byte steps on the undo stack, restoring
+    /// the series' byte-by-byte structure. Returns `nil` if there is nothing
+    /// to redo.
     @discardableResult
-    public func redo() -> UndoTransaction? {
-        guard canRedo else { return nil }
-        defer { cursor += 1 }
-        return history[cursor]
+    public func redo() -> [UndoTransaction]? {
+        guard let step = redoSteps.popLast() else { return nil }
+        for txn in step.transactions {
+            undoSteps.append(Step(transactions: [txn], seriesID: step.seriesID))
+        }
+        undoTransactionCount += step.transactions.count
+        lastUndoWasSeriesByte = false
+        lastUndoSeriesID = nil
+        return step.transactions
     }
 
-    /// Marks the current cursor position as the saved state (called after a
+    /// Marks the current transaction count as the saved state (called after a
     /// successful save).
     public func markSaved() {
-        savedIndex = cursor
+        savedTransactionIndex = undoTransactionCount
     }
 
     /// Discards all history and the dirty checkpoint.
     public func reset() {
-        history.removeAll()
-        cursor = 0
-        savedIndex = 0
+        undoSteps.removeAll()
+        redoSteps.removeAll()
+        savedTransactionIndex = 0
+        undoTransactionCount = 0
+        lastUndoWasSeriesByte = false
+        lastUndoSeriesID = nil
     }
 }
