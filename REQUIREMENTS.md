@@ -1158,6 +1158,16 @@ resolution is used and nothing is spent on gaps.
   and are drawn contiguously, snapped to the pixel grid. The hex dump's word and
   group gaps must not be reproduced: at one pixel per row they turn the map into
   a barcode.
+- The mapping must hold in both directions. A row covers fewer bytes than it has
+  cells whenever the file is smaller than 16 bytes per pixel row, and covers a
+  *fraction* of a byte once the file is smaller than the panel has rows. Each
+  byte is then stretched over the cells it covers — a row standing for one byte
+  is that byte across its whole width — and a row thinner than a byte still
+  draws the byte its position falls in. Slicing per cell in that regime leaves
+  every cell but the last with an empty byte range: the file collapses into a
+  stripe down the map's right edge and the rest of the panel is a pale field.
+  The same stretch applies to the difference and modification marks, so a byte
+  marks the cells it occupies rather than only the first of them.
 - A cell is shaded by *how much* of its slice is real content, not by whether
   any of it is. A boolean "contains a significant byte" test saturates on a
   large dump and hides the layout; shading separates erased 0xFF padding from

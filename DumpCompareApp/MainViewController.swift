@@ -855,16 +855,37 @@ final class MainViewController: NSViewController {
         /// The first byte of a row's slice of the file.
         func start(ofRow row: Int) -> UInt64 { extent * UInt64(row) / UInt64(rowCount) }
 
-        /// The row a byte offset falls in, and the cell within that row.
-        func cell(of offset: UInt64) -> (row: Int, column: Int)? {
+        /// The cells one byte of a row's slice occupies, when the slice is
+        /// thinner than the row's 16 cells: the byte is stretched over the cells
+        /// it covers, so `index` 0 of a one-byte slice fills the row.
+        ///
+        /// A row covers fewer bytes than it has cells whenever the file is
+        /// smaller than 16 bytes per pixel row — under ~25 KB on a full-height
+        /// panel — and covers a *fraction* of a byte once the file is smaller
+        /// than the panel has rows. Slicing per cell there gave every cell but
+        /// the last an empty byte range: the picture came out a pale field with
+        /// the whole file collapsed into a stripe down its right edge (§19.4.2).
+        func stretchedColumns(forByteAt index: UInt64, ofSpan span: UInt64) -> ClosedRange<Int> {
+            let effective = max(span, 1)
+            let clamped = min(index, effective - 1)
+            let first = Int(clamped * UInt64(columns) / effective)
+            let last = Int((clamped + 1) * UInt64(columns) / effective) - 1
+            return first...max(first, min(columns - 1, last))
+        }
+
+        /// The row a byte offset falls in, and the cells it occupies there.
+        func cells(of offset: UInt64) -> (row: Int, columns: ClosedRange<Int>)? {
             guard offset < extent else { return nil }
             let row = Int(offset * UInt64(rowCount) / extent)
             guard rows.contains(row) else { return nil }
             let rowStart = start(ofRow: row)
             let span = start(ofRow: row + 1) - rowStart
-            guard span > 0 else { return (row, 0) }
+            guard span >= UInt64(columns) else {
+                let index = offset > rowStart ? offset - rowStart : 0
+                return (row, stretchedColumns(forByteAt: index, ofSpan: span))
+            }
             let column = Int(min(UInt64(columns - 1), (offset - rowStart) * UInt64(columns) / span))
-            return (row, column)
+            return (row, column...column)
         }
 
         // The byte range these rows cover, so the passes below read and scan
@@ -884,18 +905,34 @@ final class MainViewController: NSViewController {
             }
             let rowStart = start(ofRow: row)
             let rowEnd = start(ofRow: row + 1)
-            let contentEnd = min(rowEnd, source.size)
-            guard rowStart < contentEnd, rowEnd > rowStart else { continue }
-            guard let bytes = try? storage.read(at: rowStart, length: Int(contentEnd - rowStart)),
-                  !bytes.isEmpty else { continue }
             let span = rowEnd - rowStart
+            // A row whose slice is thinner than a byte still stands for the byte
+            // its position falls in — read that one, rather than leaving the row
+            // blank as it used to be.
+            let readEnd = min(max(rowEnd, rowStart + 1), source.size)
+            guard rowStart < readEnd else { continue }
+            guard let bytes = try? storage.read(at: rowStart, length: Int(readEnd - rowStart)),
+                  !bytes.isEmpty else { continue }
             let base = (row - rows.lowerBound) * columns
             bytes.withUnsafeBufferPointer { buffer in
+                guard span >= UInt64(columns) else {
+                    // Fewer bytes than cells: each byte fills the cells it
+                    // covers, so the row reads as a coarse picture of those
+                    // bytes instead of one inked cell at its right edge.
+                    let count = min(buffer.count, Int(max(span, 1)))
+                    for index in 0..<count {
+                        guard significantByteCount(buffer, from: index, to: index + 1) > 0 else { continue }
+                        for column in stretchedColumns(forByteAt: UInt64(index), ofSpan: span) {
+                            density[base + column] = 255
+                        }
+                    }
+                    return
+                }
                 for column in 0..<columns {
                     let sliceStart = rowStart + span * UInt64(column) / UInt64(columns)
                     let sliceEnd = rowStart + span * UInt64(column + 1) / UInt64(columns)
                     let from = Int(sliceStart - rowStart)
-                    let to = Int(min(sliceEnd, contentEnd) - rowStart)
+                    let to = Int(min(sliceEnd, readEnd) - rowStart)
                     guard from < to, to <= buffer.count else { continue }
                     let significant = significantByteCount(buffer, from: from, to: to)
                     guard significant > 0 else { continue }
@@ -925,8 +962,10 @@ final class MainViewController: NSViewController {
                         let absolute = offset + UInt64(k)
                         let isModified = absolute >= savedSize
                             || (savedBytes.indices.contains(k) ? savedBytes[k] != byte : true)
-                        guard isModified, let spot = cell(of: absolute) else { continue }
-                        modified[spot.row - rows.lowerBound] |= UInt16(1) << UInt16(spot.column)
+                        guard isModified, let spot = cells(of: absolute) else { continue }
+                        for column in spot.columns {
+                            modified[spot.row - rows.lowerBound] |= UInt16(1) << UInt16(column)
+                        }
                     }
                     offset += UInt64(bytes.count)
                 }
@@ -939,21 +978,23 @@ final class MainViewController: NSViewController {
             if shouldCancel() { return nil }
             let lower = max(range.lowerBound, windowStart)
             let upper = min(range.upperBound, min(windowEnd, extent))
-            guard lower < upper, let first = cell(of: lower), let last = cell(of: upper - 1)
+            guard lower < upper, let first = cells(of: lower), let last = cells(of: upper - 1)
             else { continue }
             if first.row == last.row {
-                for column in first.column...last.column {
+                let from = min(first.columns.lowerBound, last.columns.lowerBound)
+                let to = max(first.columns.upperBound, last.columns.upperBound)
+                for column in from...to {
                     different[first.row - rows.lowerBound] |= UInt16(1) << UInt16(column)
                 }
                 continue
             }
-            for column in first.column..<columns {
+            for column in first.columns.lowerBound..<columns {
                 different[first.row - rows.lowerBound] |= UInt16(1) << UInt16(column)
             }
             if last.row > first.row + 1 {
                 for row in (first.row + 1)..<last.row { different[row - rows.lowerBound] = .max }
             }
-            for column in 0...last.column {
+            for column in 0...last.columns.upperBound {
                 different[last.row - rows.lowerBound] |= UInt16(1) << UInt16(column)
             }
         }

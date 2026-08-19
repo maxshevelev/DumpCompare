@@ -1209,6 +1209,93 @@ final class MinimapTests: XCTestCase {
     /// The overview shades each cell by how much real content its slice holds, so
     /// erased padding and programmed regions separate — the thing a boolean
     /// "any significant byte" aggregation could not show on a large dump.
+    /// The overview picture for `bytes` binned into `rowCount` pixel rows, taken
+    /// from the binning pass itself so the row count is exact rather than
+    /// whatever the test window happens to give the panel.
+    private func overviewPicture(bytes: [UInt8], rowCount: Int,
+                                 differences: [Range<UInt64>] = [])
+        -> (density: [UInt8], modified: [UInt16], different: [UInt16])? {
+        let source = MainViewController.OverviewSource(
+            storage: MemoryBackedStorage(bytes: bytes), saved: nil,
+            size: UInt64(bytes.count), edited: [], isUntitled: true,
+            differences: differences
+        )
+        return MainViewController.overviewRows(source: source, extent: UInt64(bytes.count),
+                                               rowCount: rowCount, rows: 0...(rowCount - 1))
+    }
+
+    /// A file smaller than the panel's pixel rows: every row stands for a
+    /// fraction of a byte, so the picture must be that byte across the row's
+    /// full width. Slicing the row per cell gave every cell but the last an
+    /// empty byte range — the whole file collapsed into a stripe down the right
+    /// edge, with the rest of the panel a pale field (§19.4.2).
+    func testATinyFilesOverviewFillsTheRowWidth() throws {
+        let columns = Int(MinimapView.bytesPerRow)
+        let bytes = (0..<399).map { UInt8(0x41 + ($0 % 26)) }   // all significant
+        let rowCount = 1560                                     // a full-height panel
+        let picture = try XCTUnwrap(overviewPicture(bytes: bytes, rowCount: rowCount))
+
+        var inkPerColumn = [Int](repeating: 0, count: columns)
+        var blankRows = 0
+        for row in 0..<rowCount {
+            var inked = 0
+            for column in 0..<columns where picture.density[row * columns + column] > 0 {
+                inkPerColumn[column] += 1
+                inked += 1
+            }
+            if inked == 0 { blankRows += 1 }
+        }
+        XCTAssertEqual(blankRows, 0, "a dense file leaves no row of the picture empty")
+        XCTAssertEqual(inkPerColumn.first, inkPerColumn.last,
+                       "the ink spreads across the row instead of collecting at its right edge")
+        XCTAssertEqual(Set(inkPerColumn).count, 1, "every column carries the same picture here")
+    }
+
+    /// The stretch must not simply paint everything: a small file's erased half
+    /// stays pale and only its content half takes ink, and a one-byte difference
+    /// marks the row it owns across the full width (at this scale one byte *is*
+    /// the row).
+    func testATinyFileKeepsFillAndContentApart() throws {
+        let columns = Int(MinimapView.bytesPerRow)
+        let bytes = [UInt8](repeating: 0xFF, count: 200)
+            + (0..<199).map { UInt8(0x41 + ($0 % 26)) }
+        let rowCount = 1560
+        let boundary = 200 * rowCount / bytes.count
+        let picture = try XCTUnwrap(overviewPicture(bytes: bytes, rowCount: rowCount,
+                                                    differences: [210..<211]))
+
+        func inked(_ row: Int) -> Bool {
+            (0..<columns).contains { picture.density[row * columns + $0] > 0 }
+        }
+        XCTAssertFalse((0..<(boundary - 1)).contains(where: inked),
+                       "the erased half stays pale")
+        XCTAssertTrue(((boundary + 1)..<rowCount).allSatisfy(inked),
+                      "the content half takes ink")
+
+        let marked = picture.different.enumerated().filter { $0.element != 0 }
+        XCTAssertEqual(marked.count, 1, "one differing byte marks one row of the picture")
+        XCTAssertEqual(marked.first?.element, UInt16.max,
+                       "and marks it across the width, not as a single cell at column 0")
+    }
+
+    /// A row that covers fewer bytes than it has cells, but more than one: the
+    /// bytes divide the row's width between them (~15 bytes per row is what a
+    /// few-KB dump gives a full-height panel).
+    func testARowThinnerThanItsCellsDividesItsWidth() throws {
+        let columns = Int(MinimapView.bytesPerRow)
+        // 15 bytes per row, and only the first byte of each row is significant.
+        let rowCount = 20
+        var bytes = [UInt8](repeating: 0x00, count: rowCount * 15)
+        for row in 0..<rowCount { bytes[row * 15] = 0x41 }
+        let picture = try XCTUnwrap(overviewPicture(bytes: bytes, rowCount: rowCount))
+
+        for row in 0..<rowCount {
+            let inked = (0..<columns).filter { picture.density[row * columns + $0] > 0 }
+            XCTAssertEqual(inked, [0],
+                           "the significant byte inks the left of the row, row \(row)")
+        }
+    }
+
     func testOverviewShadesPaddingAndContentDifferently() throws {
         // 256 KB: first half erased flash (0xFF), second half content.
         let half = 128 * 1024
