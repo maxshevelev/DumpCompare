@@ -517,13 +517,17 @@ final class MinimapView: NSView {
     private(set) var repaintRequests = 0
 
     /// Where the viewport overlay actually puts ink: the band itself in detail,
-    /// and in overview only the two margin chevrons — the rest of the band is
+    /// and in overview either the band (when it is tall enough to be drawn as a
+    /// rectangle) or the two margin chevrons — a sliver's rest of the band is
     /// deliberately never drawn there (§19.6).
     private func viewportDamage() -> [NSRect] {
         let rects = viewportRects()
         switch renderMode {
         case .detail: return rects
-        case .overview: return rects.flatMap { overviewMarkerRects(for: $0) }
+        case .overview:
+            return rects.flatMap { band in
+                band.height > Self.overviewBandThreshold ? [band] : overviewMarkerRects(for: band)
+            }
         }
     }
 
@@ -546,6 +550,14 @@ final class MinimapView: NSView {
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             ? NSColor(white: 0.95, alpha: 0.16)
             : NSColor(white: 0.15, alpha: 0.14)
+    }
+
+    /// The viewport band's edges in overview, where the translucent fill alone
+    /// is too faint to find: the same grey at full strength.
+    private static let viewportEdge = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(white: 0.95, alpha: 0.75)
+            : NSColor(white: 0.15, alpha: 0.65)
     }
 
     /// The maps draw top-down, matching the stacked panes' flipped coordinates
@@ -1216,11 +1228,20 @@ final class MinimapView: NSView {
             Self.viewportFill.setFill()
             for rect in visible { rect.fill() }
         case .overview:
-            // Nothing is drawn across the content: a line spanning the panel
-            // costs a whole row of the picture, and on a dump every row counts.
-            // The position is marked by a chevron in each side margin instead,
-            // where there is nothing to hide (§19.6).
-            drawOverviewViewportMarkers(visible, dirtyRect: dirtyRect)
+            // A band tall enough to carry its own edges is drawn as a real
+            // rectangle over the content, exactly like the detail band: the
+            // cells stay visible through the translucent fill. Only a sliver —
+            // a large file's visible page is less than a row — falls back to
+            // the margin chevrons, where a rectangle would hide a row of the
+            // picture for nothing (§19.6).
+            Self.viewportFill.setFill()
+            for rect in visible where rect.height > Self.overviewBandThreshold {
+                rect.fill()
+            }
+            let chevronBands = visible.filter { $0.height <= Self.overviewBandThreshold }
+            if !chevronBands.isEmpty {
+                drawOverviewViewportMarkers(chevronBands, dirtyRect: dirtyRect)
+            }
         }
     }
 
@@ -1229,10 +1250,10 @@ final class MinimapView: NSView {
     /// almost the whole `contentPadding` margin, stopping `overviewMarkerInset`
     /// short of the map's content edge — the arrow points *at* the map it marks
     /// without touching it, and a sliver of paper keeps it from crowding the
-    /// cells. Painted the caret blue (§6) at 80 %, so the "you are here" echoes
-    /// the panel's cursor without shouting over the map's picture.
+    /// cells. Painted the same grey as the band's edges, so the marker belongs
+    /// to the viewport overlay rather than to the file's picture.
     private func drawOverviewViewportMarkers(_ rects: [NSRect], dirtyRect: NSRect) {
-        Self.overviewMarkerFill.setFill()
+        Self.viewportEdge.setFill()
         for band in rects {
             for (slot, box) in overviewMarkerRects(for: band).enumerated() {
                 guard box.maxY >= dirtyRect.minY, box.minY <= dirtyRect.maxY else { continue }
@@ -1250,11 +1271,13 @@ final class MinimapView: NSView {
         }
     }
 
-    /// The viewport marker's fill: the caret blue at 80 % — recognisably the
-    /// cursor's colour, but with the map's picture still readable beneath it.
-    private static let overviewMarkerFill = NSColor(name: nil) { appearance in
-        HexTheme.caretColor.withAlphaComponent(0.8)
-    }
+    /// A band in overview whose natural height reaches this reads as a real
+    /// rectangle over the content, drawn like the detail band. Below it the
+    /// position is marked by the margin chevrons instead — a band that thin
+    /// cannot carry its own edges, and a rectangle there would hide a row of
+    /// the picture for nothing. Internal so tests can pick a file size that
+    /// lands on either side of the split.
+    static let overviewBandThreshold: CGFloat = 4
 
     /// How tall the viewport marker is — big enough to find at a glance on a
     /// full-dump overview, small enough to stay an index rather than a cover.
