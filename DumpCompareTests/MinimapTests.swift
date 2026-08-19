@@ -1421,6 +1421,29 @@ final class MinimapTests: XCTestCase {
         XCTAssertTrue(controller.validateMenuItem(item))
     }
 
+    /// The offer follows the *file's* size too, not just the panel's height: an
+    /// insert can carry a file across the line where the overview stops
+    /// magnifying it, and a delete can carry it back (§19.4).
+    func testAnEditThatChangesTheFileSizeUpdatesTheOffer() throws {
+        let (controller, window, panel) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 400))
+        let chrome = try XCTUnwrap(descendants(of: window.contentView!, MinimapPanelView.self).first)
+        XCTAssertFalse(chrome.modeSwitch.isEnabled(forSegment: 1), "400 bytes would be magnified")
+
+        try controller.windowModel.pane1.pasteInsert([UInt8](repeating: 0x42, count: 64 * 1024))
+        window.layoutIfNeeded()
+        XCTAssertTrue(panel.overviewIsInformative())
+        XCTAssertTrue(chrome.modeSwitch.isEnabled(forSegment: 1),
+                      "a file grown to 64 KB is worth an overview")
+
+        // And back: cut it down again, from overview this time.
+        controller.setMinimapRenderModeForTesting(.overview)
+        try controller.windowModel.pane1.deleteBytes(in: 0..<(64 * 1024))
+        window.layoutIfNeeded()
+        XCTAssertFalse(chrome.modeSwitch.isEnabled(forSegment: 1),
+                       "shrunk back, the overview has nothing to compress")
+        XCTAssertEqual(panel.renderMode, .detail, "so the map leaves it")
+    }
+
     /// A panel grown tall enough to magnify the file it is showing must not stay
     /// in overview: the map leaves it, so the panel is never parked in a view its
     /// own switch refuses to offer (§19.4). The file is sized from the panel's own

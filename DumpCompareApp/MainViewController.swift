@@ -1062,9 +1062,13 @@ final class MainViewController: NSViewController {
     private func refreshMinimapMaps() {
         minimapView.setMaps(currentFileSizes().map { MinimapView.Map(fileSize: $0) })
         updateMinimapSelections()
-        // The bytes moved, so an overview summary of them is stale. The *mode* is
-        // deliberately not re-decided here: this runs on every edit, and the
-        // choice belongs where the open files change (§19.4).
+        // An insert or a delete can carry the file across the line where the
+        // overview stops magnifying it, so the offer follows the size as well as
+        // the panel's height (§19.4). The *mode* is deliberately not re-decided
+        // here: this runs on every edit, and the choice belongs where the open
+        // files change.
+        updateOverviewAvailability()
+        // The bytes moved, so an overview summary of them is stale.
         scheduleOverviewRebuild()
     }
 

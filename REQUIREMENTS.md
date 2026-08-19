@@ -1137,8 +1137,13 @@ switch by hand holds only until the open files change.
   must stand for at least one byte. Below that each byte is stretched over
   several rows — a magnified smear of a file that detail shows whole, with real
   per-byte state — so the mode switch's Overview half and the View menu item are
-  disabled there, and the panel leaves overview if a resize makes it so. The
-  panel must never be parked in a view its own switch refuses to offer.
+  disabled there, and the panel leaves overview if it becomes so. The panel must
+  never be parked in a view its own switch refuses to offer.
+- The offer is recomputed whenever either side of that comparison moves: the
+  panel's height (a window resize, in both directions — the choice comes back
+  when it shrinks again) and the file's size (an insert or a delete can carry a
+  file across the line). Leaving the mode is forced; returning to it stays the
+  user's choice.
 
 19.4.1 Detail mode
 
