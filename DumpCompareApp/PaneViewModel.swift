@@ -221,6 +221,8 @@ final class PaneViewModel: HexViewDataSource {
         // "Untitled" with the new-file glyph instead of the loaded file (§4/§5).
         isUntitled = false
         refreshSavedStorage()
+        // Ends the typing series, so a batch undo cannot span this checkpoint
+        // (§7.5.1) — see `save()`.
         resetEditingState()
         startWatching(url)
         // Announce the new document so the header glyph/name and the hex view
@@ -267,6 +269,10 @@ final class PaneViewModel: HexViewDataSource {
         guard !isUntitled else { throw PaneSaveError.requiresSaveAs }
         try doc.save()
         refreshSavedStorage()
+        // The reset is load-bearing here, not housekeeping: it ends the typing
+        // series, so no batch undo can span the checkpoint this save just set
+        // and the user can always come back to the saved state in one press
+        // (§7.5.1).
         resetEditingState()
         rearmWatcher()
         // The dirty state just cleared — the header glyph and status bar must
