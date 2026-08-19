@@ -199,10 +199,6 @@ final class MinimapView: NSView {
     /// never set from outside.
     private(set) var topRow: UInt64 = 0
 
-    /// The store the render mode is remembered in. Injectable so tests can pin a
-    /// mode in an isolated suite instead of reading the user's own preference.
-    static var defaults: UserDefaults = .standard
-
     /// Which way the maps draw. Detail is the historical behaviour; overview is
     /// chosen for files too large for detail to say anything useful (§19.4).
     private(set) var renderMode: RenderMode = .detail
@@ -215,6 +211,12 @@ final class MinimapView: NSView {
     /// resize, a layout flip, or a switch into overview — so the controller can
     /// recompute the summary at the new density.
     var onOverviewRowCountChanged: (() -> Void)?
+
+    /// Fired when the panel's height changes what the overview could say about
+    /// the open file — it is worth showing only while a pixel row stands for at
+    /// least one byte (§19.4). Unlike `onOverviewRowCountChanged` this fires in
+    /// both modes, because the answer decides whether overview may be *entered*.
+    var onOverviewUsefulnessChanged: (() -> Void)?
 
     /// Supplies the per-byte state the map paints, for one byte range of one
     /// map. Called from `draw` for the visible rows only — the map stores no
@@ -377,6 +379,28 @@ final class MinimapView: NSView {
     func detailWindowFitsWholeFile() -> Bool {
         let rows = referenceRowCount()
         return rows == 0 || rows <= UInt64(max(0, windowRowCount()))
+    }
+
+    /// The size up to which detail is the more informative view, and a file
+    /// opens in it (§19.4). A few hundred hex rows: a panel of any usual height
+    /// shows most of such a file byte by byte, while the overview would have
+    /// little left to compress. Fixed rather than derived from the panel's
+    /// current height, so which mode a file opens in does not depend on the
+    /// window's size at that moment.
+    static let detailPreferredMaxSize: UInt64 = 4 * 1024
+
+    /// Whether the overview would compress the file rather than magnify it: it
+    /// is worth showing while every pixel row stands for at least one byte.
+    ///
+    /// Below that each byte is stretched over several rows — a blown-up smear of
+    /// a file that detail shows whole, byte by byte, with real per-byte state. So
+    /// the mode is not offered there at all (§19.4). An unlaid-out panel has no
+    /// answer yet and counts as useful, so the switch is never disabled on the
+    /// strength of geometry that does not exist.
+    func overviewIsInformative() -> Bool {
+        let rows = overviewRowCount()
+        guard rows > 0 else { return true }
+        return (maps.map(\.fileSize).max() ?? 0) >= UInt64(rows)
     }
 
     /// The overview picture for one map, if it is current.
@@ -635,6 +659,13 @@ final class MinimapView: NSView {
         // re-derives the divider's position from the new bounds.
         updateTopRow()
         invalidateAll()
+        // A height change moves the line between a whole-file picture and a
+        // magnified one, which decides whether overview is offered at all.
+        let informative = overviewIsInformative()
+        if informative != lastReportedOverviewUsefulness {
+            lastReportedOverviewUsefulness = informative
+            onOverviewUsefulnessChanged?()
+        }
         // The overview bins the file into one row per pixel, so a height change
         // changes the bins themselves: the summary has to be recomputed.
         guard renderMode == .overview else { return }
@@ -643,6 +674,10 @@ final class MinimapView: NSView {
         lastReportedOverviewRowCount = rows
         onOverviewRowCountChanged?()
     }
+
+    /// Tracks the last answer reported, so a layout pass that changes nothing
+    /// does not churn the controller.
+    private var lastReportedOverviewUsefulness = true
 
     /// The row count the controller last computed a summary for, so a layout
     /// pass that changes nothing does not ask for a rebuild.

@@ -190,8 +190,13 @@ final class MainViewController: NSViewController {
         minimapView.onOverviewRowCountChanged = { [weak self] in
             self?.scheduleOverviewRebuild()
         }
+        // A panel tall enough to magnify the open file takes the Overview choice
+        // away, and gives it back when it shrinks again (§19.4).
+        minimapView.onOverviewUsefulnessChanged = { [weak self] in
+            self?.updateOverviewAvailability()
+        }
         minimapPanel.onModeChange = { [weak self] mode in
-            self?.setMinimapRenderMode(mode, remember: true)
+            self?.setMinimapRenderMode(mode)
         }
         // The panel aligns its own chrome with the dump, and asks where the dump
         // is on every layout pass (§19.2).
@@ -219,7 +224,10 @@ final class MainViewController: NSViewController {
             guard let self, visible else { return }
             self.updateMinimapLayout()
             self.refreshMinimapMaps()
-            self.applyPreferredMinimapMode()
+            // The mode was decided when the file opened, panel or no panel
+            // (§19.4) — showing the panel must not undo a choice made in it, only
+            // settle whether overview is on offer now that it has a height.
+            self.updateOverviewAvailability()
             self.updateMinimapViewports()
             self.rebuildOverview()
         }
@@ -486,11 +494,6 @@ final class MainViewController: NSViewController {
 
     // MARK: - Minimap overview (§19.4)
 
-    /// `UserDefaults` key for the minimap's render mode. Absent means "decide
-    /// from the file": a dump too large for the detail window to say anything
-    /// useful opens in overview, and an explicit toggle sticks from then on.
-    static let minimapRenderModeDefaultsKey = "MinimapRenderMode"
-
     /// The in-flight overview computation; cancelled and replaced by the next.
     private var overviewTask: Task<Void, Never>?
     /// Edited ranges whose difference marks are still waiting for the comparison
@@ -522,31 +525,40 @@ final class MainViewController: NSViewController {
         let differences: [Range<UInt64>]
     }
 
-    /// The mode the minimap should be in for the file(s) now open: the user's
-    /// explicit choice if they made one, otherwise detail while the whole file
-    /// fits the detail window and overview once it does not.
+    /// The mode the file(s) now open call for: detail for a file small enough
+    /// that it is the more informative view, overview for a dump detail could
+    /// only ever show a sliver of (§19.4). Nothing is remembered — every open
+    /// decides afresh, because the answer is a property of the file, not a
+    /// preference; a toggle by the user holds only until the open files change.
     private func preferredMinimapMode() -> MinimapView.RenderMode {
-        if let raw = MinimapView.defaults.string(forKey: Self.minimapRenderModeDefaultsKey),
-           let mode = MinimapView.RenderMode(rawValue: raw) {
-            return mode
-        }
-        return minimapView.detailWindowFitsWholeFile() ? .detail : .overview
+        let size = [windowModel.pane1, windowModel.pane2]
+            .compactMap { $0.isOpen ? $0.status.fileSize : nil }
+            .max() ?? 0
+        return size <= MinimapView.detailPreferredMaxSize ? .detail : .overview
     }
 
     /// Puts the minimap in the mode the current file calls for. Called whenever
-    /// the open files change; an explicit choice is never overridden.
+    /// the open files change.
     private func applyPreferredMinimapMode() {
-        setMinimapRenderMode(preferredMinimapMode(), remember: false)
+        setMinimapRenderMode(preferredMinimapMode())
+        updateOverviewAvailability()
     }
 
-    /// Switches the minimap's mode, optionally recording the choice as the user's
-    /// own so it survives the next file and the next launch.
-    private func setMinimapRenderMode(_ mode: MinimapView.RenderMode, remember: Bool) {
-        if remember {
-            MinimapView.defaults.set(mode.rawValue, forKey: Self.minimapRenderModeDefaultsKey)
+    /// Keeps the Overview control in step with what the overview could say about
+    /// the open file, and leaves the mode if it has nothing left to say — the
+    /// panel is never parked in a view its own switch refuses to offer (§19.4).
+    private func updateOverviewAvailability() {
+        let available = minimapView.overviewIsInformative()
+        minimapPanel.setOverviewAvailable(available)
+        if !available, minimapView.renderMode == .overview {
+            setMinimapRenderMode(.detail)
         }
+    }
+
+    /// Switches the minimap's mode and reflects it in the header switch.
+    private func setMinimapRenderMode(_ mode: MinimapView.RenderMode) {
         // The switch reflects the map's state whatever changed it — the menu
-        // item (§15), a file that defaults to overview, or the switch itself.
+        // item (§15), a file that calls for overview, or the switch itself.
         minimapPanel.showMode(mode)
         guard minimapView.renderMode != mode else { return }
         minimapView.setRenderMode(mode)
@@ -564,17 +576,17 @@ final class MainViewController: NSViewController {
         rebuildOverview()
     }
 
-    /// Puts the minimap in `mode` without recording it as the user's choice.
-    /// Exposed (internal) so tests can exercise a mode directly.
+    /// Puts the minimap in `mode`, the way the header switch does. Exposed
+    /// (internal) so tests can exercise a mode directly.
     func setMinimapRenderModeForTesting(_ mode: MinimapView.RenderMode) {
-        setMinimapRenderMode(mode, remember: false)
+        setMinimapRenderMode(mode)
     }
 
-    /// Toggles between the whole-file overview and the detail window, and
-    /// remembers the choice (§19.4).
+    /// Toggles between the whole-file overview and the detail window. The choice
+    /// holds until the open files change, which decides afresh (§19.4).
     @objc func toggleMinimapOverview() {
-        setMinimapRenderMode(minimapView.renderMode == .overview ? .detail : .overview,
-                             remember: true)
+        guard minimapView.renderMode == .overview || minimapView.overviewIsInformative() else { return }
+        setMinimapRenderMode(minimapView.renderMode == .overview ? .detail : .overview)
     }
 
     /// Recomputes the overview after a change that alters what it shows. Every
@@ -2742,10 +2754,11 @@ extension MainViewController: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
         case #selector(toggleMinimapOverview):
-            // A check, because both modes are a minimap; enabled with no file
-            // open too, so the choice can be made before opening one (§19.4).
+            // A check, because both modes are a minimap. Disabled for a file the
+            // overview could only magnify — the same rule that greys out the
+            // header switch's Overview half (§19.4).
             menuItem.state = minimapView.renderMode == .overview ? .on : .off
-            return true
+            return minimapView.renderMode == .overview || minimapView.overviewIsInformative()
         case #selector(toggleMinimap):
             // A Show/Hide item names what it will do, so the title flips with
             // the panel's state (§19). Always enabled: the minimap works with

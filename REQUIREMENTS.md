@@ -1121,11 +1121,24 @@ The panel is divided into maps that mirror the pane arrangement:
 
 19.4 Rendering: two modes
 
-A map draws its file one of two ways, switched from the View menu and
-remembered. Which one a file opens in is decided by whether detail mode could
-say anything useful about it: a file whose rows all fit the panel opens in
-detail, a dump that would only ever show a sliver of itself opens in overview.
-An explicit choice by the user overrides that from then on.
+A map draws its file one of two ways, switched from the View menu or the panel's
+header. Which one a file opens in is a property of the file, not a preference,
+so nothing is remembered: every open picks the more informative view, and a
+switch by hand holds only until the open files change.
+
+- Up to a few kilobytes — a size the detail window shows most or all of, byte by
+  byte — a file opens in detail. Above it, where detail could only ever show a
+  sliver, it opens in overview. The threshold is a fixed size, not the panel's
+  current row capacity: which view a file opens in must not depend on how the
+  window happened to be sized at that moment.
+- In comparison mode the longer file decides, since it is the comparison's
+  extent (§9).
+- Overview is offered only while it would *compress* the file: every pixel row
+  must stand for at least one byte. Below that each byte is stretched over
+  several rows — a magnified smear of a file that detail shows whole, with real
+  per-byte state — so the mode switch's Overview half and the View menu item are
+  disabled there, and the panel leaves overview if a resize makes it so. The
+  panel must never be parked in a view its own switch refuses to offer.
 
 19.4.1 Detail mode
 

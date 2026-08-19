@@ -419,6 +419,14 @@ final class MinimapPanelView: NSView {
         modeSwitch.selectedSegment = segment
     }
 
+    /// Greys out the Overview half of the switch for a file the overview could
+    /// only magnify (§19.4): the choice is not offered where it would say less
+    /// than the map already shows, rather than offered and then disappointing.
+    func setOverviewAvailable(_ available: Bool) {
+        guard modeSwitch.isEnabled(forSegment: 1) != available else { return }
+        modeSwitch.setEnabled(available, forSegment: 1)
+    }
+
     /// Shows a rebuild's progress, or hides the status bar's contents when there
     /// is nothing running. `fraction` is nil while idle.
     func setRebuildProgress(_ fraction: Double?) {

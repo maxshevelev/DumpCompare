@@ -25,12 +25,6 @@ final class MinimapTests: XCTestCase {
         // Route the minimap's width persistence at the isolated store; restored
         // to .standard in tearDown.
         MinimapSplitView.defaults = isolatedDefaults
-        // Pin the render mode too: most tests here exercise the detail window,
-        // and the automatic choice would put a file too large for it into
-        // overview (§19.4). Overview tests opt in explicitly.
-        MinimapView.defaults = isolatedDefaults
-        isolatedDefaults.set(MinimapView.RenderMode.detail.rawValue,
-                             forKey: MainViewController.minimapRenderModeDefaultsKey)
         // Deterministic: clear any autosaved window frame and force the layout
         // start so the window opens at a known size.
         UserDefaults.standard.removeObject(forKey: "NSWindow Frame MainWindow")
@@ -50,7 +44,6 @@ final class MinimapTests: XCTestCase {
         NSApp.mainMenu = savedMainMenu
         isolatedDefaults.removePersistentDomain(forName: isolatedSuiteName)
         MinimapSplitView.defaults = .standard
-        MinimapView.defaults = .standard
         isolatedDefaults = nil
         super.tearDown()
     }
@@ -296,6 +289,10 @@ final class MinimapTests: XCTestCase {
         try controller.windowModel.pane2.open(url: url2)
         controller.apply(mode: .comparison)
         window.layoutIfNeeded()
+        // These tests exercise the detail window; a pair large enough to need one
+        // opens in overview (§19.4), so pin detail the way the header switch does.
+        controller.setMinimapRenderModeForTesting(.detail)
+        window.layoutIfNeeded()
         return (controller, window)
     }
 
@@ -386,6 +383,11 @@ final class MinimapTests: XCTestCase {
         window.layoutIfNeeded()
         let (split, panel) = try minimapViews(window)
         split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+        // Most tests here exercise the detail window, and a file large enough to
+        // need one opens in overview (§19.4) — so pin detail, the way a user's
+        // click on the header switch would.
+        controller.setMinimapRenderModeForTesting(.detail)
         window.layoutIfNeeded()
         return (controller, window, panel)
     }
@@ -531,6 +533,9 @@ final class MinimapTests: XCTestCase {
         window.layoutIfNeeded()
         let (split, panel) = try minimapViews(window)
         split.setPanelVisible(true, animated: false)
+        // A 100 KB pair opens in overview (§19.4); this test is about the detail
+        // window's per-pane maps.
+        controller.setMinimapRenderModeForTesting(.detail)
         window.layoutIfNeeded()
 
         // Both panes report a viewport: pane 2's whole file is visible, pane 1
@@ -1319,46 +1324,135 @@ final class MinimapTests: XCTestCase {
         XCTAssertGreaterThan(rowDensity(contentRow), 16 * 200, "content reads as dense")
     }
 
-    /// The detail window cannot say anything useful about a file it can only show
-    /// a sliver of, so such a file opens in overview; a small one opens in detail.
-    func testModeDefaultsToOverviewOnlyForFilesDetailCannotShow() throws {
-        // No stored preference: the choice comes from the file.
-        isolatedDefaults.removeObject(forKey: MainViewController.minimapRenderModeDefaultsKey)
+    /// Which mode a file opens in comes from the file itself (§19.4): a dump goes
+    /// to the whole-file overview, a few hundred bytes to the per-byte detail
+    /// window. Nothing is remembered, so however the panel was left, the next
+    /// file decides again.
+    func testTheModeIsChosenFromTheFileSize() throws {
+        let smallURL = try tempFile([UInt8](repeating: 0x41, count: 399))
+        let bigURL = try tempFile([UInt8](repeating: 0x41, count: 256 * 1024))
+        let (controller, window) = try makeController()
+        let (split, panel) = try minimapViews(window)
+        split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
 
-        let (_, _, small) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 256))
-        XCTAssertTrue(small.detailWindowFitsWholeFile(), "16 rows fit the window")
-        XCTAssertEqual(small.renderMode, .detail, "a small file opens in detail")
+        try controller.windowModel.pane1.open(url: bigURL)
+        controller.apply(mode: .singleFile)
+        window.layoutIfNeeded()
+        XCTAssertEqual(panel.renderMode, .overview, "a dump opens in overview")
 
-        let (_, _, big) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 256 * 1024))
-        XCTAssertFalse(big.detailWindowFitsWholeFile())
-        XCTAssertEqual(big.renderMode, .overview, "a dump-sized file opens in overview")
+        try controller.windowModel.pane1.open(url: smallURL)
+        controller.apply(mode: .singleFile)
+        window.layoutIfNeeded()
+        XCTAssertEqual(panel.renderMode, .detail,
+                       "and a small file opens in detail, however the panel was left")
     }
 
-    /// An explicit choice sticks: it survives opening another file, whatever its
-    /// size, and is remembered for the next launch.
-    func testAnExplicitModeChoiceOverridesTheFileSize() throws {
-        isolatedDefaults.removeObject(forKey: MainViewController.minimapRenderModeDefaultsKey)
-        let (controller, window, panel) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 256 * 1024))
-        XCTAssertEqual(panel.renderMode, .overview, "auto picks overview for this size")
+    /// The size rule decides on its own account, not just where the overview
+    /// would magnify: a couple of kilobytes is a file the overview *could*
+    /// compress, and detail is still the better view of it (§19.4).
+    func testAFileTheOverviewCouldCompressStillOpensInDetail() throws {
+        let bytes = [UInt8](repeating: 0x41, count: 2 * 1024)
+        XCTAssertLessThanOrEqual(UInt64(bytes.count), MinimapView.detailPreferredMaxSize)
+        let url = try tempFile(bytes)
+        let (controller, window) = try makeController()
+        let (split, panel) = try minimapViews(window)
+        split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
 
+        try controller.windowModel.pane1.open(url: url)
+        controller.apply(mode: .singleFile)
+        window.layoutIfNeeded()
+
+        XCTAssertTrue(panel.overviewIsInformative(),
+                      "2 KB over this panel's rows is still a compression, so the "
+                      + "availability gate is not what decides here")
+        XCTAssertEqual(panel.renderMode, .detail, "the size rule picks detail")
+    }
+
+    /// A choice by hand holds while the file does, and nothing is remembered
+    /// beyond it: the next file decides for itself again (§19.4). The screenshot
+    /// that started this was a 399-byte file opening in overview, because a toggle
+    /// made for some earlier dump had been persisted.
+    func testAModeChoiceHoldsForTheFileAndIsNotRemembered() throws {
+        let (controller, window, panel) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 256 * 1024))
+        controller.setMinimapRenderModeForTesting(.overview)
         controller.toggleMinimapOverview()
         XCTAssertEqual(panel.renderMode, .detail, "the toggle switches to detail")
-        XCTAssertEqual(isolatedDefaults.string(forKey: MainViewController.minimapRenderModeDefaultsKey),
-                       "detail", "and the choice is remembered")
 
-        // Another large file must not silently go back to overview.
+        // Another dump: the size decides again, the earlier choice is gone.
         let url = try tempFile([UInt8](repeating: 0x42, count: 512 * 1024))
         try controller.windowModel.pane1.open(url: url)
         controller.apply(mode: .singleFile)
         window.layoutIfNeeded()
-        XCTAssertEqual(panel.renderMode, .detail, "the remembered choice wins over the size")
+        XCTAssertEqual(panel.renderMode, .overview, "the new file's size decides")
+    }
+
+    /// Overview is not offered for a file it could only magnify: below one byte
+    /// per pixel row it stretches each byte over several rows and says less than
+    /// the detail window, which shows such a file whole (§19.4). The switch's
+    /// Overview half and the menu item are both disabled, and the command does
+    /// nothing.
+    func testOverviewIsNotOfferedForAFileItWouldMagnify() throws {
+        let (controller, window, panel) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 399))
+        let chrome = try XCTUnwrap(descendants(of: window.contentView!, MinimapPanelView.self).first)
+        XCTAssertFalse(panel.overviewIsInformative(),
+                       "399 bytes over a panel's worth of pixel rows is magnification")
+        XCTAssertFalse(chrome.modeSwitch.isEnabled(forSegment: 1),
+                       "the Overview half of the switch is greyed out")
+        let item = NSMenuItem(title: "Minimap Overview",
+                              action: #selector(MainViewController.toggleMinimapOverview),
+                              keyEquivalent: "")
+        XCTAssertFalse(controller.validateMenuItem(item), "and so is the menu item")
+
+        controller.toggleMinimapOverview()
+        XCTAssertEqual(panel.renderMode, .detail, "the command cannot enter it either")
+    }
+
+    /// And it is offered for a dump, which it compresses.
+    func testOverviewIsOfferedForADumpItCompresses() throws {
+        let (controller, window, panel) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 256 * 1024))
+        let chrome = try XCTUnwrap(descendants(of: window.contentView!, MinimapPanelView.self).first)
+        XCTAssertTrue(panel.overviewIsInformative())
+        XCTAssertTrue(chrome.modeSwitch.isEnabled(forSegment: 1))
+        let item = NSMenuItem(title: "Minimap Overview",
+                              action: #selector(MainViewController.toggleMinimapOverview),
+                              keyEquivalent: "")
+        XCTAssertTrue(controller.validateMenuItem(item))
+    }
+
+    /// A panel grown tall enough to magnify the file it is showing must not stay
+    /// in overview: the map leaves it, so the panel is never parked in a view its
+    /// own switch refuses to offer (§19.4). The file is sized from the panel's own
+    /// row counts, so the test does not depend on the chrome's exact height.
+    func testGrowingThePanelPastTheFileLeavesOverview() throws {
+        let (controller, window, panel) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 256 * 1024))
+        let shortRows = panel.overviewRowCount()
+        window.setContentSize(NSSize(width: 800, height: 1100))
+        window.layoutIfNeeded()
+        let tallRows = panel.overviewRowCount()
+        XCTAssertGreaterThan(tallRows, shortRows, "the taller window bins more rows")
+
+        // A file the short panel compresses and the tall one would magnify.
+        let size = (shortRows + tallRows) / 2
+        let url = try tempFile([UInt8](repeating: 0x41, count: size))
+        window.setContentSize(NSSize(width: 800, height: 600))
+        window.layoutIfNeeded()
+        try controller.windowModel.pane1.open(url: url)
+        controller.apply(mode: .singleFile)
+        window.layoutIfNeeded()
+        controller.setMinimapRenderModeForTesting(.overview)
+        XCTAssertEqual(panel.renderMode, .overview, "the short panel still compresses it")
+
+        window.setContentSize(NSSize(width: 800, height: 1100))
+        window.layoutIfNeeded()
+        XCTAssertTrue(pumpUntil(1.0) { panel.renderMode == .detail },
+                      "grown past the file, the map leaves overview")
     }
 
     /// Differences come from the comparison index rather than from re-reading
     /// both files, and land on the rows that cover them.
     func testOverviewMarksDifferencesFromTheIndex() throws {
-        isolatedDefaults.set(MinimapView.RenderMode.overview.rawValue,
-                             forKey: MainViewController.minimapRenderModeDefaultsKey)
         let size = 256 * 1024
         let a = [UInt8](repeating: 0x41, count: size)
         var b = a
@@ -1481,8 +1575,6 @@ final class MinimapTests: XCTestCase {
     /// tall) and compositing in a generic colour space rather than the window's
     /// (too saturated). Both were visible to the eye during a resize (§19.9).
     func testTheStandInMatchesTheExactColourOfASolidDifferenceColumn() throws {
-        isolatedDefaults.set(MinimapView.RenderMode.overview.rawValue,
-                             forKey: MainViewController.minimapRenderModeDefaultsKey)
         let long = (0..<(512 * 1024)).map { UInt8(0x20 + ($0 % 90)) }
         let short = [UInt8](long[0..<(32 * 1024)])
         let url1 = try tempFile(long), url2 = try tempFile(short)
@@ -1537,8 +1629,6 @@ final class MinimapTests: XCTestCase {
     /// every byte past the shorter file's end is a difference in it — painted as
     /// one, the shorter map's tail came out solid diff instead of blank.
     func testOverviewLeavesTheShortFilesTailEmpty() throws {
-        isolatedDefaults.set(MinimapView.RenderMode.overview.rawValue,
-                             forKey: MainViewController.minimapRenderModeDefaultsKey)
         // Identical content where both files have bytes: the only "differences"
         // are the ones the missing tail creates.
         let long = (0..<(256 * 1024)).map { UInt8(0x20 + ($0 % 90)) }
@@ -1658,8 +1748,6 @@ final class MinimapTests: XCTestCase {
     /// vertical stripes — and only on the second map, whose content starts after a
     /// fractional gutter.
     func testOverviewRendersASolidRegionWithoutStripes() throws {
-        isolatedDefaults.set(MinimapView.RenderMode.overview.rawValue,
-                             forKey: MainViewController.minimapRenderModeDefaultsKey)
         // Every byte is content, so every cell of every row is fully dense.
         let bytes = (0..<(256 * 1024)).map { UInt8(0x20 + ($0 % 90)) }
         let url1 = try tempFile(bytes), url2 = try tempFile(bytes)
@@ -2310,8 +2398,6 @@ final class MinimapTests: XCTestCase {
         control.selectedSegment = 1
         control.sendAction(control.action, to: control.target)
         XCTAssertEqual(panel.renderMode, .overview, "the switch drives the map")
-        XCTAssertEqual(isolatedDefaults.string(forKey: MainViewController.minimapRenderModeDefaultsKey),
-                       MinimapView.RenderMode.overview.rawValue, "and is remembered")
 
         controller.toggleMinimapOverview()
         XCTAssertEqual(panel.renderMode, .detail)

@@ -44,6 +44,7 @@ The workflows the app is shaped around:
 ### Minimap
 
 - A column beside the dumps, from the toolbar button at the far right or **View > Show Minimap** (⇧⌘M). Its header carries a **Local ⇄ Overview** switch (also **View > Minimap Overview**, ⌘⌥M); its status bar carries the progress of a rebuild.
+- The mode is chosen for the file you open: a dump goes to Overview, a few kilobytes to Local — the view that actually says something about it. Nothing is remembered, so a switch by hand lasts until the next file. For a file the Overview could only magnify, that half of the switch is simply greyed out.
 - **Local** mode is a miniature hex dump around the caret: one cell per byte, three points per row, so what you see there is literally the rows of the dump.
 - **Overview** mode is the whole file at once — one row per device pixel. Each cell is shaded by how much of its slice is real content rather than fill, which is what makes erased regions, tables and code distinguishable at a glance.
 - Differences and unsaved edits are drawn over the shading and at least two pixels tall, so a single changed byte among millions stays visible.
