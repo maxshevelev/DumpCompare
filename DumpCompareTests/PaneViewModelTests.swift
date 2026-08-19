@@ -469,6 +469,44 @@ final class PaneViewModelTests: XCTestCase {
         }
     }
 
+    /// A save is a checkpoint the user must be able to come back to in one press
+    /// (§7.5.1), so a series never spans it: the bytes typed after a save are
+    /// their own series, and the fast second undo stops at the saved state
+    /// instead of rolling past it.
+    func testASaveBreaksTheTypingSeries() throws {
+        let (pane, url) = try openPane([0x00, 0x00, 0x00, 0x00, 0x00])
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        try withControllableClock { advance in
+            pane.typeASCII(0x41)
+            advance(0.05)
+            pane.typeASCII(0x42)
+            advance(0.05)
+            pane.typeASCII(0x43)
+            try pane.save()
+            XCTAssertFalse(pane.status.isDirty, "the three typed bytes are on disk")
+
+            // Two more bytes, close enough in time to continue a series if the
+            // save had not ended it.
+            advance(0.05)
+            pane.typeASCII(0x44)
+            advance(0.05)
+            pane.typeASCII(0x45)
+            XCTAssertEqual(pane.hexByteStates(in: 0..<5).map(\.byte),
+                           [0x41, 0x42, 0x43, 0x44, 0x45])
+            XCTAssertTrue(pane.status.isDirty)
+
+            XCTAssertTrue(try pane.undo())     // the last byte
+            advance(0.1)                       // inside the fast-undo window
+            XCTAssertTrue(try pane.undo())     // the rest of the post-save series
+            XCTAssertEqual(pane.hexByteStates(in: 0..<5).map(\.byte),
+                           [0x41, 0x42, 0x43, 0x00, 0x00],
+                           "the batch must stop at the save, not roll through it")
+            XCTAssertFalse(pane.status.isDirty,
+                           "which lands exactly on the saved state")
+        }
+    }
+
     func testFastUndoDoesNotBatchSeparateEdits() throws {
         let (pane, url) = try openPane([0xFF, 0xFF, 0xFF, 0xFF])
         defer { try? FileManager.default.removeItem(at: url) }

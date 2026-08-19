@@ -56,9 +56,30 @@ final class AppIconTests: XCTestCase {
                 }
             }
         }
-        XCTAssertGreaterThan(opaque, 3000, "the icon is a filled tile, not an empty image")
+        XCTAssertGreaterThan(opaque, 3000, "the chip covers the tile, not an empty image")
         XCTAssertGreaterThan(orange, 150,
                              "the marked byte's orange cell is part of the artwork")
+
+        // The package is free-standing: no plate behind it (§2). Probing empty
+        // corners would not say that — the chip now fills nearly the whole tile,
+        // and the plate this replaced left its corners clear too. What says it is
+        // the row through the leads: five separate runs of artwork with the
+        // background showing between them. Any ground behind the chip fills those
+        // gaps, and the widest row of the tile becomes a single run.
+        var mostRuns = 0
+        for y in 0..<rep.pixelsHigh {
+            var runs = 0
+            var inRun = false
+            for x in 0..<rep.pixelsWide {
+                let isOpaque = (rep.colorAt(x: x, y: y)?.alphaComponent ?? 0) > 0.5
+                if isOpaque, !inRun { runs += 1 }
+                inRun = isOpaque
+            }
+            mostRuns = max(mostRuns, runs)
+        }
+        XCTAssertGreaterThanOrEqual(mostRuns, 5,
+                                    "the leads stand clear of one another: the chip is "
+                                    + "drawn on nothing, not on a plate")
     }
 
     func testTheIconIsSuppliedUpToTheLargestSize() throws {

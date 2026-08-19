@@ -44,7 +44,15 @@ The app must not require multiple windows in MVP, but architecture should not ma
 App icon:
 - The icon shows a chip from above with two hex bytes on it, the second marked
   the way the hex view marks a difference: dark glyphs on the difference orange
-  (§6). A line down the chip's centre stands for the two files.
+  (§6). Nothing is drawn between them — the marked cell is the separation.
+- The package is the icon's shape: a black moulded body with a light sheen,
+  spanning the full width of the tile, with one row of five polished metal leads
+  above it and one below. There is no plate or rounded-square ground behind it,
+  so the background is transparent.
+- The package is deep enough that body and leads fill most of the square tile,
+  rather than sitting in a band across its middle. The byte size is limited by
+  the tile's width, so the extra depth is plastic around the marking, not bigger
+  type.
 - It is generated, not hand-drawn: `Design/AppIcon.swift` draws the 1024 pt
   master and `Design/render-appicon.sh` slices it into the asset catalog, so a
   change to the artwork is a change to code.
@@ -376,7 +384,8 @@ A separate explicit menu command, e.g. Edit > Delete Bytes, performs true length
   - paste insert;
   - delete bytes;
   - any other mutating operation.
-- Undo/Redo should group logically, e.g. one typing sequence, one paste, one delete command.
+- One undo gesture is one *step*. Steps group logically: a paste, a fill, a
+  delete command are one step each; typed input is grouped into series (§7.5.1).
 - Undo must restore:
   - byte contents;
   - file length;
@@ -390,7 +399,49 @@ A separate explicit menu command, e.g. Edit > Delete Bytes, performs true length
   the remainder still to be typed over, or the collapsed caret a fill leaves.
   The document cannot derive this from the byte range alone, so the command
   that made the edit states it after placing the selection.
+- Dirty state must track the document's content against the last saved state,
+  not the number of edits standing. Two different edits at the same depth of the
+  history are not the same state: undoing an edit and making a different one
+  leaves the document dirty, even though as many edits stand as when it was
+  saved. Reporting it clean would let closing or replacing the file discard the
+  change without a prompt (§5.1, §17.7).
 - Undo history may be bounded by memory/disk resources, but must be sufficient for practical editing sessions.
+
+7.5.1 Typed input: series and segmented undo
+
+Typing byte after byte must cost neither one undo press per byte nor a single
+press for a whole session: a typo at the end of a run has to be correctable on
+its own, and a long run has to be removable without holding the key down.
+
+- A *series* is a run of completed bytes typed in one input region. Each byte is
+  its own step; the steps of one series are linked as one.
+- A series is broken by:
+  - a pause longer than the series-break threshold since the last typed event;
+  - a change of input region (hex ↔ text);
+  - caret movement by the user — arrows, a click, block navigation, a search
+    result;
+  - any other mutating command: delete, fill, paste write, paste insert;
+  - a selection change, an undo, or a redo;
+  - a save. The saved state is a checkpoint the user must be able to return to
+    in one press, so no series and therefore no batch may span it.
+  The caret advancing by itself after a completed byte does not break a series,
+  and neither does the two-nibble pair of one hex byte.
+- Rollback of a series:
+  - the first undo removes its last byte;
+  - a repeat within the fast-undo window removes the rest of the series as one
+    step;
+  - a repeat after that window removes one more byte.
+- Redo is symmetric: what one press removed, one press restores, and a restored
+  batch becomes byte-by-byte steps again — so correcting a single byte stays
+  available after a redo.
+- A batch restores the selection the series started from, and its redo the
+  selection the series' last byte left (§7.5).
+- Both thresholds are fixed constants of the build — a series break of about
+  0.7 s, a fast-undo window of about 0.5 s — not user settings. The fast-undo
+  window must be no shorter than the system's key-repeat delay, or holding the
+  undo key never reaches the batch.
+- A batch is one change to the storage: the comparison and the minimap update
+  from the single net edit it reports, not once per byte (§8.3, §19.9).
 
 =====================================================================
 8. COMPARISON MODEL
@@ -1078,11 +1129,29 @@ The panel is divided into maps that mirror the pane arrangement:
 
 19.4 Rendering: two modes
 
-A map draws its file one of two ways, switched from the View menu and
-remembered. Which one a file opens in is decided by whether detail mode could
-say anything useful about it: a file whose rows all fit the panel opens in
-detail, a dump that would only ever show a sliver of itself opens in overview.
-An explicit choice by the user overrides that from then on.
+A map draws its file one of two ways, switched from the View menu or the panel's
+header. Which one a file opens in is a property of the file, not a preference,
+so nothing is remembered: every open picks the more informative view, and a
+switch by hand holds only until the open files change.
+
+- Up to a few kilobytes — a size the detail window shows most or all of, byte by
+  byte — a file opens in detail. Above it, where detail could only ever show a
+  sliver, it opens in overview. The threshold is a fixed size, not the panel's
+  current row capacity: which view a file opens in must not depend on how the
+  window happened to be sized at that moment.
+- In comparison mode the longer file decides, since it is the comparison's
+  extent (§9).
+- Overview is offered only while it would *compress* the file: every pixel row
+  must stand for at least one byte. Below that each byte is stretched over
+  several rows — a magnified smear of a file that detail shows whole, with real
+  per-byte state — so the mode switch's Overview half and the View menu item are
+  disabled there, and the panel leaves overview if it becomes so. The panel must
+  never be parked in a view its own switch refuses to offer.
+- The offer is recomputed whenever either side of that comparison moves: the
+  panel's height (a window resize, in both directions — the choice comes back
+  when it shrinks again) and the file's size (an insert or a delete can carry a
+  file across the line). Leaving the mode is forced; returning to it stays the
+  user's choice.
 
 19.4.1 Detail mode
 
@@ -1115,6 +1184,16 @@ resolution is used and nothing is spent on gaps.
   and are drawn contiguously, snapped to the pixel grid. The hex dump's word and
   group gaps must not be reproduced: at one pixel per row they turn the map into
   a barcode.
+- The mapping must hold in both directions. A row covers fewer bytes than it has
+  cells whenever the file is smaller than 16 bytes per pixel row, and covers a
+  *fraction* of a byte once the file is smaller than the panel has rows. Each
+  byte is then stretched over the cells it covers — a row standing for one byte
+  is that byte across its whole width — and a row thinner than a byte still
+  draws the byte its position falls in. Slicing per cell in that regime leaves
+  every cell but the last with an empty byte range: the file collapses into a
+  stripe down the map's right edge and the rest of the panel is a pale field.
+  The same stretch applies to the difference and modification marks, so a byte
+  marks the cells it occupies rather than only the first of them.
 - A cell is shaded by *how much* of its slice is real content, not by whether
   any of it is. A boolean "contains a significant byte" test saturates on a
   large dump and hides the layout; shading separates erased 0xFF padding from

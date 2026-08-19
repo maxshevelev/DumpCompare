@@ -190,8 +190,13 @@ final class MainViewController: NSViewController {
         minimapView.onOverviewRowCountChanged = { [weak self] in
             self?.scheduleOverviewRebuild()
         }
+        // A panel tall enough to magnify the open file takes the Overview choice
+        // away, and gives it back when it shrinks again (§19.4).
+        minimapView.onOverviewUsefulnessChanged = { [weak self] in
+            self?.updateOverviewAvailability()
+        }
         minimapPanel.onModeChange = { [weak self] mode in
-            self?.setMinimapRenderMode(mode, remember: true)
+            self?.setMinimapRenderMode(mode)
         }
         // The panel aligns its own chrome with the dump, and asks where the dump
         // is on every layout pass (§19.2).
@@ -219,7 +224,10 @@ final class MainViewController: NSViewController {
             guard let self, visible else { return }
             self.updateMinimapLayout()
             self.refreshMinimapMaps()
-            self.applyPreferredMinimapMode()
+            // The mode was decided when the file opened, panel or no panel
+            // (§19.4) — showing the panel must not undo a choice made in it, only
+            // settle whether overview is on offer now that it has a height.
+            self.updateOverviewAvailability()
             self.updateMinimapViewports()
             self.rebuildOverview()
         }
@@ -486,11 +494,6 @@ final class MainViewController: NSViewController {
 
     // MARK: - Minimap overview (§19.4)
 
-    /// `UserDefaults` key for the minimap's render mode. Absent means "decide
-    /// from the file": a dump too large for the detail window to say anything
-    /// useful opens in overview, and an explicit toggle sticks from then on.
-    static let minimapRenderModeDefaultsKey = "MinimapRenderMode"
-
     /// The in-flight overview computation; cancelled and replaced by the next.
     private var overviewTask: Task<Void, Never>?
     /// Edited ranges whose difference marks are still waiting for the comparison
@@ -522,31 +525,40 @@ final class MainViewController: NSViewController {
         let differences: [Range<UInt64>]
     }
 
-    /// The mode the minimap should be in for the file(s) now open: the user's
-    /// explicit choice if they made one, otherwise detail while the whole file
-    /// fits the detail window and overview once it does not.
+    /// The mode the file(s) now open call for: detail for a file small enough
+    /// that it is the more informative view, overview for a dump detail could
+    /// only ever show a sliver of (§19.4). Nothing is remembered — every open
+    /// decides afresh, because the answer is a property of the file, not a
+    /// preference; a toggle by the user holds only until the open files change.
     private func preferredMinimapMode() -> MinimapView.RenderMode {
-        if let raw = MinimapView.defaults.string(forKey: Self.minimapRenderModeDefaultsKey),
-           let mode = MinimapView.RenderMode(rawValue: raw) {
-            return mode
-        }
-        return minimapView.detailWindowFitsWholeFile() ? .detail : .overview
+        let size = [windowModel.pane1, windowModel.pane2]
+            .compactMap { $0.isOpen ? $0.status.fileSize : nil }
+            .max() ?? 0
+        return size <= MinimapView.detailPreferredMaxSize ? .detail : .overview
     }
 
     /// Puts the minimap in the mode the current file calls for. Called whenever
-    /// the open files change; an explicit choice is never overridden.
+    /// the open files change.
     private func applyPreferredMinimapMode() {
-        setMinimapRenderMode(preferredMinimapMode(), remember: false)
+        setMinimapRenderMode(preferredMinimapMode())
+        updateOverviewAvailability()
     }
 
-    /// Switches the minimap's mode, optionally recording the choice as the user's
-    /// own so it survives the next file and the next launch.
-    private func setMinimapRenderMode(_ mode: MinimapView.RenderMode, remember: Bool) {
-        if remember {
-            MinimapView.defaults.set(mode.rawValue, forKey: Self.minimapRenderModeDefaultsKey)
+    /// Keeps the Overview control in step with what the overview could say about
+    /// the open file, and leaves the mode if it has nothing left to say — the
+    /// panel is never parked in a view its own switch refuses to offer (§19.4).
+    private func updateOverviewAvailability() {
+        let available = minimapView.overviewIsInformative()
+        minimapPanel.setOverviewAvailable(available)
+        if !available, minimapView.renderMode == .overview {
+            setMinimapRenderMode(.detail)
         }
+    }
+
+    /// Switches the minimap's mode and reflects it in the header switch.
+    private func setMinimapRenderMode(_ mode: MinimapView.RenderMode) {
         // The switch reflects the map's state whatever changed it — the menu
-        // item (§15), a file that defaults to overview, or the switch itself.
+        // item (§15), a file that calls for overview, or the switch itself.
         minimapPanel.showMode(mode)
         guard minimapView.renderMode != mode else { return }
         minimapView.setRenderMode(mode)
@@ -564,17 +576,17 @@ final class MainViewController: NSViewController {
         rebuildOverview()
     }
 
-    /// Puts the minimap in `mode` without recording it as the user's choice.
-    /// Exposed (internal) so tests can exercise a mode directly.
+    /// Puts the minimap in `mode`, the way the header switch does. Exposed
+    /// (internal) so tests can exercise a mode directly.
     func setMinimapRenderModeForTesting(_ mode: MinimapView.RenderMode) {
-        setMinimapRenderMode(mode, remember: false)
+        setMinimapRenderMode(mode)
     }
 
-    /// Toggles between the whole-file overview and the detail window, and
-    /// remembers the choice (§19.4).
+    /// Toggles between the whole-file overview and the detail window. The choice
+    /// holds until the open files change, which decides afresh (§19.4).
     @objc func toggleMinimapOverview() {
-        setMinimapRenderMode(minimapView.renderMode == .overview ? .detail : .overview,
-                             remember: true)
+        guard minimapView.renderMode == .overview || minimapView.overviewIsInformative() else { return }
+        setMinimapRenderMode(minimapView.renderMode == .overview ? .detail : .overview)
     }
 
     /// Recomputes the overview after a change that alters what it shows. Every
@@ -855,16 +867,37 @@ final class MainViewController: NSViewController {
         /// The first byte of a row's slice of the file.
         func start(ofRow row: Int) -> UInt64 { extent * UInt64(row) / UInt64(rowCount) }
 
-        /// The row a byte offset falls in, and the cell within that row.
-        func cell(of offset: UInt64) -> (row: Int, column: Int)? {
+        /// The cells one byte of a row's slice occupies, when the slice is
+        /// thinner than the row's 16 cells: the byte is stretched over the cells
+        /// it covers, so `index` 0 of a one-byte slice fills the row.
+        ///
+        /// A row covers fewer bytes than it has cells whenever the file is
+        /// smaller than 16 bytes per pixel row — under ~25 KB on a full-height
+        /// panel — and covers a *fraction* of a byte once the file is smaller
+        /// than the panel has rows. Slicing per cell there gave every cell but
+        /// the last an empty byte range: the picture came out a pale field with
+        /// the whole file collapsed into a stripe down its right edge (§19.4.2).
+        func stretchedColumns(forByteAt index: UInt64, ofSpan span: UInt64) -> ClosedRange<Int> {
+            let effective = max(span, 1)
+            let clamped = min(index, effective - 1)
+            let first = Int(clamped * UInt64(columns) / effective)
+            let last = Int((clamped + 1) * UInt64(columns) / effective) - 1
+            return first...max(first, min(columns - 1, last))
+        }
+
+        /// The row a byte offset falls in, and the cells it occupies there.
+        func cells(of offset: UInt64) -> (row: Int, columns: ClosedRange<Int>)? {
             guard offset < extent else { return nil }
             let row = Int(offset * UInt64(rowCount) / extent)
             guard rows.contains(row) else { return nil }
             let rowStart = start(ofRow: row)
             let span = start(ofRow: row + 1) - rowStart
-            guard span > 0 else { return (row, 0) }
+            guard span >= UInt64(columns) else {
+                let index = offset > rowStart ? offset - rowStart : 0
+                return (row, stretchedColumns(forByteAt: index, ofSpan: span))
+            }
             let column = Int(min(UInt64(columns - 1), (offset - rowStart) * UInt64(columns) / span))
-            return (row, column)
+            return (row, column...column)
         }
 
         // The byte range these rows cover, so the passes below read and scan
@@ -884,18 +917,34 @@ final class MainViewController: NSViewController {
             }
             let rowStart = start(ofRow: row)
             let rowEnd = start(ofRow: row + 1)
-            let contentEnd = min(rowEnd, source.size)
-            guard rowStart < contentEnd, rowEnd > rowStart else { continue }
-            guard let bytes = try? storage.read(at: rowStart, length: Int(contentEnd - rowStart)),
-                  !bytes.isEmpty else { continue }
             let span = rowEnd - rowStart
+            // A row whose slice is thinner than a byte still stands for the byte
+            // its position falls in — read that one, rather than leaving the row
+            // blank as it used to be.
+            let readEnd = min(max(rowEnd, rowStart + 1), source.size)
+            guard rowStart < readEnd else { continue }
+            guard let bytes = try? storage.read(at: rowStart, length: Int(readEnd - rowStart)),
+                  !bytes.isEmpty else { continue }
             let base = (row - rows.lowerBound) * columns
             bytes.withUnsafeBufferPointer { buffer in
+                guard span >= UInt64(columns) else {
+                    // Fewer bytes than cells: each byte fills the cells it
+                    // covers, so the row reads as a coarse picture of those
+                    // bytes instead of one inked cell at its right edge.
+                    let count = min(buffer.count, Int(max(span, 1)))
+                    for index in 0..<count {
+                        guard significantByteCount(buffer, from: index, to: index + 1) > 0 else { continue }
+                        for column in stretchedColumns(forByteAt: UInt64(index), ofSpan: span) {
+                            density[base + column] = 255
+                        }
+                    }
+                    return
+                }
                 for column in 0..<columns {
                     let sliceStart = rowStart + span * UInt64(column) / UInt64(columns)
                     let sliceEnd = rowStart + span * UInt64(column + 1) / UInt64(columns)
                     let from = Int(sliceStart - rowStart)
-                    let to = Int(min(sliceEnd, contentEnd) - rowStart)
+                    let to = Int(min(sliceEnd, readEnd) - rowStart)
                     guard from < to, to <= buffer.count else { continue }
                     let significant = significantByteCount(buffer, from: from, to: to)
                     guard significant > 0 else { continue }
@@ -925,8 +974,10 @@ final class MainViewController: NSViewController {
                         let absolute = offset + UInt64(k)
                         let isModified = absolute >= savedSize
                             || (savedBytes.indices.contains(k) ? savedBytes[k] != byte : true)
-                        guard isModified, let spot = cell(of: absolute) else { continue }
-                        modified[spot.row - rows.lowerBound] |= UInt16(1) << UInt16(spot.column)
+                        guard isModified, let spot = cells(of: absolute) else { continue }
+                        for column in spot.columns {
+                            modified[spot.row - rows.lowerBound] |= UInt16(1) << UInt16(column)
+                        }
                     }
                     offset += UInt64(bytes.count)
                 }
@@ -939,21 +990,23 @@ final class MainViewController: NSViewController {
             if shouldCancel() { return nil }
             let lower = max(range.lowerBound, windowStart)
             let upper = min(range.upperBound, min(windowEnd, extent))
-            guard lower < upper, let first = cell(of: lower), let last = cell(of: upper - 1)
+            guard lower < upper, let first = cells(of: lower), let last = cells(of: upper - 1)
             else { continue }
             if first.row == last.row {
-                for column in first.column...last.column {
+                let from = min(first.columns.lowerBound, last.columns.lowerBound)
+                let to = max(first.columns.upperBound, last.columns.upperBound)
+                for column in from...to {
                     different[first.row - rows.lowerBound] |= UInt16(1) << UInt16(column)
                 }
                 continue
             }
-            for column in first.column..<columns {
+            for column in first.columns.lowerBound..<columns {
                 different[first.row - rows.lowerBound] |= UInt16(1) << UInt16(column)
             }
             if last.row > first.row + 1 {
                 for row in (first.row + 1)..<last.row { different[row - rows.lowerBound] = .max }
             }
-            for column in 0...last.column {
+            for column in 0...last.columns.upperBound {
                 different[last.row - rows.lowerBound] |= UInt16(1) << UInt16(column)
             }
         }
@@ -1009,9 +1062,13 @@ final class MainViewController: NSViewController {
     private func refreshMinimapMaps() {
         minimapView.setMaps(currentFileSizes().map { MinimapView.Map(fileSize: $0) })
         updateMinimapSelections()
-        // The bytes moved, so an overview summary of them is stale. The *mode* is
-        // deliberately not re-decided here: this runs on every edit, and the
-        // choice belongs where the open files change (§19.4).
+        // An insert or a delete can carry the file across the line where the
+        // overview stops magnifying it, so the offer follows the size as well as
+        // the panel's height (§19.4). The *mode* is deliberately not re-decided
+        // here: this runs on every edit, and the choice belongs where the open
+        // files change.
+        updateOverviewAvailability()
+        // The bytes moved, so an overview summary of them is stale.
         scheduleOverviewRebuild()
     }
 
@@ -2701,10 +2758,11 @@ extension MainViewController: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
         case #selector(toggleMinimapOverview):
-            // A check, because both modes are a minimap; enabled with no file
-            // open too, so the choice can be made before opening one (§19.4).
+            // A check, because both modes are a minimap. Disabled for a file the
+            // overview could only magnify — the same rule that greys out the
+            // header switch's Overview half (§19.4).
             menuItem.state = minimapView.renderMode == .overview ? .on : .off
-            return true
+            return minimapView.renderMode == .overview || minimapView.overviewIsInformative()
         case #selector(toggleMinimap):
             // A Show/Hide item names what it will do, so the title flips with
             // the panel's state (§19). Always enabled: the minimap works with

@@ -334,6 +334,31 @@ final class BinaryDocumentTests: XCTestCase {
         XCTAssertEqual(doc.selection.start, 1, "a fill leaves the caret at the range start (override)")
     }
 
+    /// A save, an undo, then a *different* edit: the document differs from the
+    /// file on disk, so it must report itself dirty (§7.5). It used to compare
+    /// the number of edits standing, call that the saved state, and let the
+    /// change be closed away without a prompt.
+    func testADifferentEditAfterUndoLeavesTheDocumentDirty() throws {
+        let (doc, url) = try makeDocument([0x00, 0x00, 0x00])
+        try doc.overwrite(range: 0..<1, with: [0x11])
+        try doc.overwrite(range: 1..<2, with: [0xBB])
+        try doc.save()
+        XCTAssertFalse(doc.isDirty)
+        XCTAssertEqual(try Data(contentsOf: url), Data([0x11, 0xBB, 0x00]))
+
+        try doc.undo()
+        XCTAssertTrue(doc.isDirty, "one edit short of what was written")
+
+        try doc.overwrite(range: 1..<2, with: [0xCC])
+        XCTAssertEqual(try readAll(doc), [0x11, 0xCC, 0x00])
+        XCTAssertTrue(doc.isDirty, "the file on disk holds BB there, not CC")
+
+        // And a save of that state is clean again, byte for byte.
+        try doc.save()
+        XCTAssertFalse(doc.isDirty)
+        XCTAssertEqual(try Data(contentsOf: url), Data([0x11, 0xCC, 0x00]))
+    }
+
     func testRedoStackClearedOnNewEdit() throws {
         let (doc, _) = try makeDocument([0x00])
         try doc.overwrite(range: 0..<1, with: [0xAA])
