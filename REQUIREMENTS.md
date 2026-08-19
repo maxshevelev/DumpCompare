@@ -44,7 +44,15 @@ The app must not require multiple windows in MVP, but architecture should not ma
 App icon:
 - The icon shows a chip from above with two hex bytes on it, the second marked
   the way the hex view marks a difference: dark glyphs on the difference orange
-  (§6). A line down the chip's centre stands for the two files.
+  (§6). Nothing is drawn between them — the marked cell is the separation.
+- The package is the icon's shape: a black moulded body with a light sheen,
+  spanning the full width of the tile, with one row of five polished metal leads
+  above it and one below. There is no plate or rounded-square ground behind it,
+  so the background is transparent.
+- The package is deep enough that body and leads fill most of the square tile,
+  rather than sitting in a band across its middle. The byte size is limited by
+  the tile's width, so the extra depth is plastic around the marking, not bigger
+  type.
 - It is generated, not hand-drawn: `Design/AppIcon.swift` draws the 1024 pt
   master and `Design/render-appicon.sh` slices it into the asset catalog, so a
   change to the artwork is a change to code.

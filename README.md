@@ -154,7 +154,7 @@ xcodebuild build -project DumpCompare.xcodeproj -scheme DumpCompare \
   -configuration Release ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO
 ```
 
-The app icon is generated rather than drawn by hand: `Design/AppIcon.swift` renders the 1024 pt master and `Design/render-appicon.sh` slices it into the asset catalog.
+The app icon — a black flash package on a transparent ground, five leads above and below, `A5` beside a `FF` marked as a difference — is generated rather than drawn by hand: `Design/AppIcon.swift` renders the 1024 pt master and `Design/render-appicon.sh` slices it into the asset catalog.
 
 ## Tests
 
