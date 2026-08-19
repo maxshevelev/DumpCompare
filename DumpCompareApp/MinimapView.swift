@@ -186,6 +186,13 @@ final class MinimapView: NSView {
     /// viewport is empty (no file, or the pane shows no bytes).
     private(set) var viewports: [Range<UInt64>?] = []
 
+    /// Whether the overview viewport is currently drawn as a rectangle over the
+    /// content rather than the margin chevrons. Sticky across the 1 pt of
+    /// overlap between `overviewBandShortHeight` and `overviewBandTallHeight` —
+    /// the hysteresis that keeps a scroll hovering on the boundary from
+    /// flickering between the two looks (§19.6).
+    private var overviewUsesRectangle = false
+
     /// The first hex row drawn at the top of every map. One shared window for
     /// both maps: the panes are synchronized by absolute offset (§9), so the
     /// same offset must sit at the same y on both. Derived from the panes —
@@ -234,6 +241,9 @@ final class MinimapView: NSView {
     func setRenderMode(_ mode: RenderMode) {
         guard renderMode != mode else { return }
         renderMode = mode
+        // A fresh mode starts with a fresh viewport look; the first height
+        // decides it.
+        overviewUsesRectangle = false
         if mode == .detail {
             overviewSummaries = []
             settleTimer?.invalidate()
@@ -517,18 +527,34 @@ final class MinimapView: NSView {
     private(set) var repaintRequests = 0
 
     /// Where the viewport overlay actually puts ink: the band itself in detail,
-    /// and in overview either the band (when it is tall enough to be drawn as a
-    /// rectangle) or the two margin chevrons — a sliver's rest of the band is
-    /// deliberately never drawn there (§19.6).
+    /// and in overview either the band (when it is drawn as a rectangle) or the
+    /// two margin chevrons — a sliver's rest of the band is deliberately never
+    /// drawn there (§19.6).
     private func viewportDamage() -> [NSRect] {
         let rects = viewportRects()
         switch renderMode {
         case .detail: return rects
         case .overview:
             return rects.flatMap { band in
-                band.height > Self.overviewBandThreshold ? [band] : overviewMarkerRects(for: band)
+                overviewUsesRectangle(forHeight: band.height) ? [band] : overviewMarkerRects(for: band)
             }
         }
+    }
+
+    /// The overview viewport's current look for a band of `height` points.
+    /// Below `overviewBandShortHeight` it is the margin chevrons, above
+    /// `overviewBandTallHeight` it is the rectangle over the content, and in
+    /// between it keeps whichever look it already has. The one-point overlap is
+    /// the hysteresis: as a scroll pulls the band's height around the split, the
+    /// style flips only when the height crosses an edge, never every frame
+    /// (§19.6).
+    private func overviewUsesRectangle(forHeight height: CGFloat) -> Bool {
+        if height > Self.overviewBandTallHeight {
+            overviewUsesRectangle = true
+        } else if height < Self.overviewBandShortHeight {
+            overviewUsesRectangle = false
+        }
+        return overviewUsesRectangle
     }
 
     /// The panel's quiet background — the same paper the hex dumps sit on, so
@@ -1233,14 +1259,13 @@ final class MinimapView: NSView {
             // cells stay visible through the translucent fill. Only a sliver —
             // a large file's visible page is less than a row — falls back to
             // the margin chevrons, where a rectangle would hide a row of the
-            // picture for nothing (§19.6).
-            Self.viewportFill.setFill()
-            for rect in visible where rect.height > Self.overviewBandThreshold {
-                rect.fill()
-            }
-            let chevronBands = visible.filter { $0.height <= Self.overviewBandThreshold }
-            if !chevronBands.isEmpty {
-                drawOverviewViewportMarkers(chevronBands, dirtyRect: dirtyRect)
+            // picture for nothing. The split carries hysteresis (§19.6): every
+            // map's band is the same height, so one decision covers them all.
+            if let first = visible.first, overviewUsesRectangle(forHeight: first.height) {
+                Self.viewportFill.setFill()
+                for rect in visible { rect.fill() }
+            } else {
+                drawOverviewViewportMarkers(visible, dirtyRect: dirtyRect)
             }
         }
     }
@@ -1271,13 +1296,16 @@ final class MinimapView: NSView {
         }
     }
 
-    /// A band in overview whose natural height reaches this reads as a real
-    /// rectangle over the content, drawn like the detail band. Below it the
-    /// position is marked by the margin chevrons instead — a band that thin
-    /// cannot carry its own edges, and a rectangle there would hide a row of
-    /// the picture for nothing. Internal so tests can pick a file size that
-    /// lands on either side of the split.
-    static let overviewBandThreshold: CGFloat = 4
+    /// The band heights that switch the overview viewport between its two
+    /// looks. The two edges overlap by 1 pt: a band growing past
+    /// `overviewBandTallHeight` becomes a rectangle over the content (like the
+    /// detail band), shrinking below `overviewBandShortHeight` becomes the
+    /// margin chevrons, and a height between the two keeps whichever look it
+    /// already has. The overlap is the hysteresis that stops a scroll hovering
+    /// on the boundary from flickering between rectangle and chevrons. Internal
+    /// so tests can pick heights on either side.
+    static let overviewBandShortHeight: CGFloat = 4
+    static let overviewBandTallHeight: CGFloat = 5
 
     /// How tall the viewport marker is — big enough to find at a glance on a
     /// full-dump overview, small enough to stay an index rather than a cover.
