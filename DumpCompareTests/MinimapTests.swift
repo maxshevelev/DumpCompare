@@ -1629,25 +1629,56 @@ final class MinimapTests: XCTestCase {
                        "the content under the viewport is not dimmed by a band")
 
         // The margin at that height carries the marker instead, up to
-        // `overviewMarkerInset` before the content edge. The marker is accent
-        // blue (the caret colour), a bright blue whose HSB brightness is the
-        // same as the paper's — blueness (blue − red) is what separates it.
+        // `overviewMarkerInset` before the content edge. The marker is the
+        // band's edge grey, dark against the light paper.
         let markerEnd = MinimapView.contentPadding - MinimapView.overviewMarkerInset - 1
-        let margin = try sampleRowColours(panel, y: band.midY, from: 0, to: markerEnd)
-        let cleanMargin = try sampleRowColours(panel, y: band.midY + 20, from: 0, to: markerEnd)
-        let marginBlueness = margin.map { $0.blueComponent - $0.redComponent }.max() ?? 0
-        let cleanBlueness = cleanMargin.map { $0.blueComponent - $0.redComponent }.max() ?? 0
-        XCTAssertGreaterThan(marginBlueness, cleanBlueness + 0.1,
-                             "a chevron is drawn in the margin at the viewport's height")
+        let margin = try sampleRow(panel, y: band.midY, from: 0, to: markerEnd)
+        let cleanMargin = try sampleRow(panel, y: band.midY + 20, from: 0, to: markerEnd)
+        let marginMin = margin.min() ?? 1
+        let cleanMin = cleanMargin.min() ?? 1
+        XCTAssertLessThan(marginMin, cleanMin - 0.1,
+                          "a chevron is drawn in the margin at the viewport's height")
         // The arrow stops short of the map: the sliver between its apex and the
         // content edge stays paper, so the marker points at the map without
-        // touching it.
-        let gap = try sampleRowColours(panel, y: band.midY,
-                                       from: MinimapView.contentPadding - 1,
-                                       to: MinimapView.contentPadding)
-        let gapBlueness = gap.map { $0.blueComponent - $0.redComponent }.max() ?? 0
-        XCTAssertLessThanOrEqual(gapBlueness, cleanBlueness + 0.05,
-                                 "the apex leaves a gap before the map's edge")
+        // touching it. Sampled one point short of the content edge — the edge
+        // itself is the first cell of the map, whose grey is as dark as ink.
+        let gap = try sampleRow(panel, y: band.midY,
+                                from: MinimapView.contentPadding - 1,
+                                to: MinimapView.contentPadding - 1)
+        let gapMin = gap.min() ?? 0
+        XCTAssertGreaterThan(gapMin, cleanMin - 0.1,
+                             "the apex leaves a gap before the map's edge")
+    }
+
+    /// A small file projects its viewport onto the overview as a band taller
+    /// than `overviewBandThreshold`, so it is drawn as a real rectangle like
+    /// the detail band: the rows under it are dimmed by the translucent fill,
+    /// and no chevron stands in the margin at that height.
+    func testOverviewDrawsTallViewportBandAsARectangle() throws {
+        let (_, _, panel) = try makeOverviewWindow([UInt8](repeating: 0x41, count: 16 * 1024))
+        _ = pumpUntil(3.0) { !panel.viewportRects().isEmpty }
+        let band = try XCTUnwrap(panel.viewportRects().first)
+        XCTAssertGreaterThan(band.height, MinimapView.overviewBandThreshold,
+                             "a 16 KB file's visible page reads as a tall band")
+
+        // The band dims the content under it, like the detail band.
+        let left = MinimapView.contentPadding + 2
+        let right = panel.bounds.width * 0.4
+        let onBand = try sampleRow(panel, y: band.midY, from: left, to: right)
+        let elsewhere = try sampleRow(panel, y: band.midY + 40, from: left, to: right)
+        let onBandMean = onBand.reduce(0, +) / CGFloat(max(1, onBand.count))
+        let elsewhereMean = elsewhere.reduce(0, +) / CGFloat(max(1, elsewhere.count))
+        XCTAssertLessThan(onBandMean, elsewhereMean - 0.02,
+                          "the tall band is a translucent rectangle over the cells")
+
+        // And no chevron stands in the margin at that height: the margin carries
+        // only the same translucent fill over paper, which a full-strength
+        // chevron would be far darker than.
+        let margin = try sampleRowColours(panel, y: band.midY, from: 0,
+                                          to: MinimapView.contentPadding - 1)
+        let marginMin = margin.map { $0.brightnessComponent }.min() ?? 1
+        XCTAssertGreaterThan(marginMin, 0.6,
+                             "the tall band replaced the chevrons in the margin")
     }
 
 
