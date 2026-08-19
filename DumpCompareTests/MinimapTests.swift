@@ -1651,14 +1651,14 @@ final class MinimapTests: XCTestCase {
     }
 
     /// A small file projects its viewport onto the overview as a band taller
-    /// than `overviewBandThreshold`, so it is drawn as a real rectangle like
+    /// than `overviewBandTallHeight`, so it is drawn as a real rectangle like
     /// the detail band: the rows under it are dimmed by the translucent fill,
     /// and no chevron stands in the margin at that height.
     func testOverviewDrawsTallViewportBandAsARectangle() throws {
         let (_, _, panel) = try makeOverviewWindow([UInt8](repeating: 0x41, count: 16 * 1024))
         _ = pumpUntil(3.0) { !panel.viewportRects().isEmpty }
         let band = try XCTUnwrap(panel.viewportRects().first)
-        XCTAssertGreaterThan(band.height, MinimapView.overviewBandThreshold,
+        XCTAssertGreaterThan(band.height, MinimapView.overviewBandTallHeight,
                              "a 16 KB file's visible page reads as a tall band")
 
         // The band dims the content under it, like the detail band.
@@ -1679,6 +1679,73 @@ final class MinimapTests: XCTestCase {
         let marginMin = margin.map { $0.brightnessComponent }.min() ?? 1
         XCTAssertGreaterThan(marginMin, 0.6,
                              "the tall band replaced the chevrons in the margin")
+    }
+
+    /// The rectangle/chevron split is sticky: a band whose height falls between
+    /// the two edges keeps whichever look it already has, so a scroll hovering
+    /// on the boundary does not flip between rectangle and chevrons every frame.
+    /// The band's height is a fraction of the file's extent, so the viewport can
+    /// be driven directly to a height on either side of the hysteresis zone.
+    func testOverviewViewportStyleIsStickyAcrossTheHysteresisZone() throws {
+        let (_, _, panel) = try makeOverviewWindow([UInt8](repeating: 0x41, count: 64 * 1024))
+        let extent = try XCTUnwrap(panel.overviewSummaries.first?.extent)
+        let totalHeight = CGFloat(panel.overviewRowCount()) * panel.overviewRowHeight
+        XCTAssertGreaterThan(totalHeight, MinimapView.overviewBandTallHeight,
+                             "precondition: the map has room for a band above the zone")
+
+        // How many bytes a viewport must show for its band to stand `height` pt
+        // tall: y(of:) scales a fraction of the extent over the whole map, so
+        // height = viewportBytes / extent * totalHeight.
+        func bytes(forHeight height: CGFloat) -> UInt64 {
+            UInt64(CGFloat(extent) * height / totalHeight)
+        }
+
+        func band(forViewport viewport: Range<UInt64>) -> NSRect {
+            panel.setViewports([viewport])
+            return panel.viewportRects().first ?? .zero
+        }
+
+        /// Whether `band` reads as a rectangle over the content: the rows under
+        /// it are dimmed relative to a reference row below it. A sliver drawn as
+        /// chevrons leaves the content untouched.
+        func drawsAsRectangle(_ band: NSRect) throws -> Bool {
+            let left = MinimapView.contentPadding + 2
+            let right = panel.bounds.width * 0.4
+            let onBand = try sampleRow(panel, y: band.midY, from: left, to: right)
+            let reference = try sampleRow(panel, y: band.midY + 40, from: left, to: right)
+            let onMean = onBand.reduce(0, +) / CGFloat(max(1, onBand.count))
+            let referenceMean = reference.reduce(0, +) / CGFloat(max(1, reference.count))
+            return onMean < referenceMean - 0.02
+        }
+
+        // A fresh panel starts with the sliver look. Drive the band far above
+        // the upper edge: it becomes a rectangle.
+        let tall = band(forViewport: 0..<bytes(forHeight: 6))
+        XCTAssertGreaterThan(tall.height, MinimapView.overviewBandTallHeight,
+                             "precondition: a 6 pt band sits above the hysteresis zone")
+        XCTAssertTrue(try drawsAsRectangle(tall), "a band above the zone is a rectangle")
+
+        // Waver back down into the zone: the rectangle sticks.
+        let midDown = band(forViewport: 0..<bytes(forHeight: 4.5))
+        XCTAssertGreaterThan(midDown.height, MinimapView.overviewBandShortHeight)
+        XCTAssertLessThan(midDown.height, MinimapView.overviewBandTallHeight,
+                          "precondition: a 4.5 pt band sits inside the hysteresis zone")
+        XCTAssertTrue(try drawsAsRectangle(midDown),
+                      "a band entering the zone from above keeps the rectangle")
+
+        // Drop below the lower edge: it flips to chevrons.
+        let short = band(forViewport: 0..<bytes(forHeight: 3))
+        XCTAssertLessThan(short.height, MinimapView.overviewBandShortHeight,
+                          "precondition: a 3 pt band sits below the hysteresis zone")
+        XCTAssertFalse(try drawsAsRectangle(short), "a band below the zone is chevrons")
+
+        // And climbing back into the zone from below keeps the chevrons.
+        let midUp = band(forViewport: 0..<bytes(forHeight: 4.5))
+        XCTAssertGreaterThan(midUp.height, MinimapView.overviewBandShortHeight)
+        XCTAssertLessThan(midUp.height, MinimapView.overviewBandTallHeight,
+                          "precondition: a 4.5 pt band sits inside the hysteresis zone")
+        XCTAssertFalse(try drawsAsRectangle(midUp),
+                       "a band entering the zone from below keeps the chevrons")
     }
 
 
