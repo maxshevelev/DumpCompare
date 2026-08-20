@@ -28,8 +28,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.maxik.DumpCompare
         PRODUCT_NAME: DumpCompare
-        MARKETING_VERSION: "0.2"
-        CURRENT_PROJECT_VERSION: "2"
+        MARKETING_VERSION: "0.3"
+        CURRENT_PROJECT_VERSION: "3"
         GENERATE_INFOPLIST_FILE: YES
         # The icon lives in Assets.xcassets; Design/render-appicon.sh regenerates
         # its images from Design/AppIcon.swift.
