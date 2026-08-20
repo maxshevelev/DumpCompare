@@ -960,30 +960,72 @@ final class MainViewController: NSViewController {
 
         rowsDone(rows.upperBound + 1 - reportedRow)
 
-        // Modified: only where the edit overlay wrote, and only where the byte
-        // really differs from the saved copy — the same rule the panes paint by.
-        if !source.isUntitled {
+        // Modified: where the byte differs from the saved copy — the same rule
+        // the panes paint by — inside the rows an edit can have reached.
+        //
+        // Row by row, cell by cell, comparing whole slices rather than bytes: an
+        // insert or a delete shifts every byte after it, so `source.edited`
+        // covers the file's whole tail and a per-byte loop over it took seconds.
+        // Bytes outside the edited ranges cannot differ from the saved copy, so
+        // comparing a cell whole is safe: the untouched part of it compares
+        // equal and contributes nothing.
+        if !source.isUntitled, !source.edited.isEmpty {
             let savedSize = source.saved?.size ?? 0
-            for range in source.edited {
+            for row in rows {
                 if shouldCancel() { return nil }
-                var offset = max(range.lowerBound, windowStart)
-                let upper = min(min(range.upperBound, source.size), windowEnd)
-                while offset < upper {
-                    let length = Int(min(UInt64(64 * 1024), upper - offset))
-                    guard let bytes = try? storage.read(at: offset, length: length),
-                          !bytes.isEmpty else { break }
-                    let savedBytes: [UInt8] =
-                        source.saved.flatMap { try? $0.read(at: offset, length: length) } ?? []
-                    for (k, byte) in bytes.enumerated() {
-                        let absolute = offset + UInt64(k)
-                        let isModified = absolute >= savedSize
-                            || (savedBytes.indices.contains(k) ? savedBytes[k] != byte : true)
-                        guard isModified, let spot = cells(of: absolute) else { continue }
-                        for column in spot.columns {
-                            modified[spot.row - rows.lowerBound] |= UInt16(1) << UInt16(column)
+                let rowStart = start(ofRow: row)
+                let rowEnd = start(ofRow: row + 1)
+                let span = rowEnd - rowStart
+                let readEnd = min(max(rowEnd, rowStart + 1), source.size)
+                guard rowStart < readEnd else { continue }
+                // Rows no edit can have reached are skipped, so a clean file
+                // costs nothing here and a small edit costs one row.
+                guard source.edited.contains(where: {
+                    $0.lowerBound < readEnd && $0.upperBound > rowStart
+                }) else { continue }
+                guard let bytes = try? storage.read(at: rowStart, length: Int(readEnd - rowStart)),
+                      !bytes.isEmpty else { continue }
+                let savedBytes = source.saved
+                    .flatMap { try? $0.read(at: rowStart, length: Int(readEnd - rowStart)) } ?? []
+                let index = row - rows.lowerBound
+
+                guard span >= UInt64(columns) else {
+                    // Fewer bytes than cells: compare the handful of bytes and
+                    // stretch each one over the cells it covers.
+                    for offsetInRow in 0..<bytes.count {
+                        let absolute = rowStart + UInt64(offsetInRow)
+                        let changed = absolute >= savedSize
+                            || (savedBytes.indices.contains(offsetInRow)
+                                ? savedBytes[offsetInRow] != bytes[offsetInRow] : true)
+                        guard changed else { continue }
+                        for column in stretchedColumns(forByteAt: UInt64(offsetInRow), ofSpan: span) {
+                            modified[index] |= UInt16(1) << UInt16(column)
                         }
                     }
-                    offset += UInt64(bytes.count)
+                    continue
+                }
+
+                for column in 0..<columns {
+                    let sliceStart = rowStart + span * UInt64(column) / UInt64(columns)
+                    let sliceEnd = rowStart + span * UInt64(column + 1) / UInt64(columns)
+                    let from = Int(sliceStart - rowStart)
+                    let to = Int(min(sliceEnd, readEnd) - rowStart)
+                    guard from < to, to <= bytes.count else { continue }
+                    // Bytes past the saved file's end are new by definition.
+                    if sliceStart + UInt64(to - from) > savedSize {
+                        modified[index] |= UInt16(1) << UInt16(column)
+                        continue
+                    }
+                    guard savedBytes.count >= to else {
+                        modified[index] |= UInt16(1) << UInt16(column)
+                        continue
+                    }
+                    let differs = bytes.withUnsafeBufferPointer { current in
+                        savedBytes.withUnsafeBufferPointer { saved in
+                            memcmp(current.baseAddress! + from, saved.baseAddress! + from, to - from) != 0
+                        }
+                    }
+                    if differs { modified[index] |= UInt16(1) << UInt16(column) }
                 }
             }
         }

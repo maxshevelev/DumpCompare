@@ -1280,6 +1280,13 @@ resolution is used and nothing is spent on gaps.
   because its content begins after a gutter that is a fraction of the panel.
 - Difference and modification are drawn over the shading, and at least two
   pixels tall so a single byte among thousands stays visible.
+- A byte is modified when it is not the byte the saved file holds at that offset
+  — the rule the panes paint by. An insert or a delete moves every byte after it,
+  so from that offset to the end the file no longer holds what it did there and
+  the whole tail is modified; the map must say so, as the hex view does. Marking
+  only where editing *wrote* was true while overwriting was the only kind of edit
+  and became a lie with insert mode: one inserted byte left the map with a single
+  marked row and the dump beside it entirely red.
 - A modified byte marks its row across the map's whole width — as far as its own
   file reaches — rather than the cell it falls in, and over everything else in
   that row. Two pixels tall in one cell of sixteen, a single edited byte was a

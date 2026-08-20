@@ -54,6 +54,12 @@ public final class EditOverlayStorage: EditableByteStorage, @unchecked Sendable 
     private var added: [UInt8] = []
     private var table: PieceTable
     private var didLengthChange = false
+    /// The lowest offset any insert or delete has moved bytes from, if one has.
+    /// Everything at or after it sits at a different offset than it did in the
+    /// file as opened, so it counts as changed even though editing never wrote
+    /// there — which is what the panes show when they paint the whole tail of a
+    /// file red after one inserted byte.
+    private var shiftedFrom: UInt64?
     /// Ranges overwritten before a materialization folded them into the base.
     /// Without this, collapsing the table would erase the record an in-place
     /// save needs. Meaningful only while `didLengthChange` is false, which is
@@ -122,6 +128,7 @@ public final class EditOverlayStorage: EditableByteStorage, @unchecked Sendable 
         let at = min(offset, table.size)
         table.insert(at: at, addedRange: appendToAddBuffer(bytes))
         didLengthChange = true
+        shiftedFrom = min(shiftedFrom ?? at, at)
         try materializeIfNeeded(lastAddedSize: bytes.count)
     }
 
@@ -133,6 +140,7 @@ public final class EditOverlayStorage: EditableByteStorage, @unchecked Sendable 
         guard end > start else { return }
         table.delete(start..<end)
         didLengthChange = true
+        shiftedFrom = min(shiftedFrom ?? start, start)
         try materializeIfNeeded(lastAddedSize: 0)
     }
 
@@ -162,11 +170,22 @@ public final class EditOverlayStorage: EditableByteStorage, @unchecked Sendable 
         return didLengthChange || !table.addedRanges.isEmpty || !retainedChangedRanges.isEmpty
     }
 
-    /// Ranges that differ from the base (in absolute, non-shifted coordinates).
+    /// Ranges whose bytes are not the bytes the base holds at those offsets.
+    ///
+    /// While nothing has shifted, that is exactly where editing wrote, and those
+    /// offsets are still the file's own — which is what lets a save patch them in
+    /// place. Once an insert or a delete has moved bytes, everything from that
+    /// offset on holds different content than the file did there, so the tail is
+    /// part of the answer; the save path does not use this in that state (it
+    /// rewrites), but the minimap does, to know where a modified byte can be.
     public var changedRanges: [Range<UInt64>] {
         lock.lock()
         defer { lock.unlock() }
-        return Self.merged(retainedChangedRanges + table.addedRanges)
+        var ranges = retainedChangedRanges + table.addedRanges
+        if let from = shiftedFrom, from < table.size {
+            ranges.append(from..<table.size)
+        }
+        return Self.merged(ranges)
     }
 
     /// How many pieces the content is currently described by — the cost of a

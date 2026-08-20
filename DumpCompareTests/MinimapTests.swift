@@ -2529,6 +2529,47 @@ final class MinimapTests: XCTestCase {
         XCTAssertLessThan(ink.y.count, 8, "the mark is a hairline, not a band")
     }
 
+    /// An inserted byte moves every byte after it, so from there to the end the
+    /// file no longer holds what it held at those offsets — which is why the hex
+    /// view paints the whole tail red. The overview has to say the same thing.
+    ///
+    /// It used to mark only the inserted byte's own row: the modified pass looked
+    /// exclusively where the edit overlay had *written*, which was the truth
+    /// while overwriting was the only kind of edit and stopped being the truth
+    /// with insert mode (§19.4).
+    func testAnInsertMarksTheWholeShiftedTailInTheOverview() throws {
+        // Non-uniform bytes: shifting a run of one repeated byte would leave the
+        // same byte at every offset, and nothing would have changed.
+        let size = 256 * 1024
+        let (controller, _, panel) = try makeOverviewWindow((0..<size).map { UInt8($0 % 251) })
+        let rowsBefore = try XCTUnwrap(panel.overviewSummaries.first).rowCount
+        XCTAssertTrue(try XCTUnwrap(panel.overviewSummaries.first).modified.allSatisfy { $0 == 0 })
+
+        let insertAt: UInt64 = 100 * 1024
+        controller.windowModel.pane1.isInsertMode = true
+        controller.windowModel.pane1.moveCaret(to: insertAt)
+        controller.windowModel.pane1.typeASCII(0x5A)
+
+        XCTAssertTrue(pumpUntil(10.0) {
+            guard let summary = panel.overviewSummaries.first, !panel.overviewBinsAreStale else {
+                return false
+            }
+            return summary.modified.contains { $0 != 0 }
+        }, "the picture is recomputed after the insert")
+
+        let summary = try XCTUnwrap(panel.overviewSummaries.first)
+        XCTAssertEqual(summary.rowCount, rowsBefore, "same panel, same rows")
+        let insertRow = Int(insertAt * UInt64(summary.rowCount) / summary.extent)
+
+        let tail = ((insertRow + 1)..<summary.rowCount).filter { summary.modified[$0] != 0 }
+        let tailRows = summary.rowCount - insertRow - 1
+        XCTAssertGreaterThan(Double(tail.count) / Double(tailRows), 0.95,
+                             "the shifted tail is marked: \(tail.count) of \(tailRows) rows")
+        let head = (0..<insertRow).filter { summary.modified[$0] != 0 }
+        XCTAssertTrue(head.isEmpty,
+                      "nothing before the insertion moved, so nothing there is marked: \(head.prefix(5))")
+    }
+
     /// An edit that changes the longest file's length invalidates the overview's
     /// bins — every row covers a different slice of the file now. The picture is
     /// kept and stretched until the background pass replaces it, rather than

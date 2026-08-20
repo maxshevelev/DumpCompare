@@ -354,12 +354,13 @@ final class PaneViewModel: HexViewDataSource {
     /// so a comparison coordinator can hold it and always read current bytes.
     var byteStorage: (any ByteStorage)? { document?.storage }
 
-    /// The byte ranges the edit overlay has written since the file was last read
-    /// from disk — the only places a modified byte can be. The save path already
-    /// uses these extents to decide what to patch (`StorageSaver`); the minimap's
-    /// overview uses them so marking modified cells costs a few small reads
-    /// instead of comparing the whole file against `savedStorage` (§19.4). Empty
-    /// when nothing was edited.
+    /// The byte ranges whose content is no longer the content the file held there
+    /// — where editing wrote, plus everything after an insert or a delete, which
+    /// moved. The save path uses the first kind to decide what to patch
+    /// (`StorageSaver`, which only asks while nothing has shifted); the minimap's
+    /// overview uses the whole answer to know which rows to compare against
+    /// `savedStorage` instead of comparing the entire file (§19.4). Empty when
+    /// nothing was edited.
     var editedRanges: [Range<UInt64>] {
         (document?.storage as? EditOverlayStorage)?.changedRanges ?? []
     }
