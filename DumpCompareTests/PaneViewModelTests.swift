@@ -1026,4 +1026,101 @@ final class PaneViewModelTests: XCTestCase {
         pane.typeHexNibble(0xA)   // warns again (flag cleared on open)
         XCTAssertEqual(calls, 2)
     }
+
+    // MARK: - The nibble group ends with the byte (§7.5.1)
+
+    /// Moving the caret off a half-typed byte closes its edit group, so the byte
+    /// is a committed undo step of its own — not an uncommitted op waiting to be
+    /// glued to whatever byte is typed next, somewhere else entirely.
+    func testCaretMoveCommitsAHalfTypedByteAsItsOwnStep() throws {
+        let (pane, url) = try openPane([0x11, 0x22, 0x33])
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        pane.typeHexNibble(0xA)   // half-typed: 0x11 -> 0xA1
+        pane.moveCaret(to: 2)
+        pane.typeHexNibble(0xB)   // a different byte: 0x33 -> 0xB3
+        pane.moveCaret(to: 0)
+
+        XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0xA1, 0x22, 0xB3])
+
+        // One undo takes back one byte, not both.
+        XCTAssertTrue(try pane.undo())
+        XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0xA1, 0x22, 0x33],
+                       "the second half-typed byte undoes on its own")
+        XCTAssertTrue(try pane.undo())
+        XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0x11, 0x22, 0x33],
+                       "and the first one after it")
+    }
+
+    /// The insert-mode rollback must take back only the byte it is rolling
+    /// back. A half-typed byte left behind by a caret move is committed, so
+    /// Backspace on a *later* pending byte cannot reach it — before the group
+    /// closed on caret movement, cancelling the group reverted both bytes and
+    /// left nothing on the undo stack to recover the first.
+    func testRollbackLeavesAnEarlierHalfTypedByteAlone() throws {
+        let (pane, url) = try openPane([0x11, 0x22, 0x33])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.isInsertMode = true
+
+        pane.typeHexNibble(0xA)   // insert 0xA0 at 0 → [A0 11 22 33]
+        pane.moveCaret(to: 3)
+        pane.typeHexNibble(0xB)   // insert 0xB0 at 3 → [A0 11 22 B0 33]
+        XCTAssertEqual(pane.fileSize, 5)
+
+        pane.deleteBackward()     // roll back the pending byte only
+
+        XCTAssertEqual(pane.fileSize, 4)
+        XCTAssertEqual(pane.hexByteStates(in: 0..<4).map(\.byte), [0xA0, 0x11, 0x22, 0x33],
+                       "the byte typed before the caret moved survives")
+        XCTAssertTrue(pane.status.canUndo, "and it is still on the undo stack")
+        XCTAssertTrue(try pane.undo())
+        XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0x11, 0x22, 0x33])
+    }
+
+    /// The same, for an edit made in overwrite mode before the mode was
+    /// switched on: the rollback of an inserted byte must not revert it.
+    func testRollbackLeavesAnOverwriteModeEditAlone() throws {
+        let (pane, url) = try openPane([0x11, 0x22, 0x33])
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        pane.typeHexNibble(0xA)   // overwrite mode: 0x11 -> 0xA1
+        pane.moveCaret(to: 2)
+        pane.isInsertMode = true
+        pane.typeHexNibble(0xB)   // insert 0xB0 at 2
+        pane.deleteBackward()     // roll the inserted byte back
+
+        XCTAssertEqual(pane.fileSize, 3)
+        XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0xA1, 0x22, 0x33],
+                       "the overwrite-mode edit survives the rollback")
+    }
+
+    /// A rollback leaves the pane and the document agreeing that no group is
+    /// open. When they disagreed, every later byte's two nibbles landed as two
+    /// separate undo steps — in both typing modes, for the rest of the
+    /// document's life.
+    func testTypingStillCoalescesAfterARollback() throws {
+        let (pane, url) = try openPane([0x11, 0x22, 0x33])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.isInsertMode = true
+
+        pane.typeHexNibble(0xA)   // half-typed insert
+        pane.deleteBackward()     // rollback
+
+        pane.typeHexNibble(0xC)   // a whole byte, insert mode
+        pane.typeHexNibble(0xD)
+        XCTAssertEqual(pane.fileSize, 4)
+        XCTAssertTrue(try pane.undo())
+        XCTAssertEqual(pane.fileSize, 3, "the inserted byte undoes in one step, both nibbles")
+        XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0x11, 0x22, 0x33])
+
+        // And in overwrite mode, on the same document.
+        pane.isInsertMode = false
+        pane.moveCaret(to: 0)
+        pane.typeHexNibble(0xC)
+        pane.typeHexNibble(0xD)
+        XCTAssertEqual(pane.hexByteStates(in: 0..<1)[0].byte, 0xCD)
+        XCTAssertTrue(try pane.undo())
+        XCTAssertEqual(pane.hexByteStates(in: 0..<1)[0].byte, 0x11,
+                       "one undo restores the whole byte, not half of it")
+    }
 }

@@ -404,10 +404,11 @@ final class PaneViewModel: HexViewDataSource {
     func setInputRegion(_ region: HexInputRegion) {
         guard inputRegion != region else { return }
         inputRegion = region
-        // A region change breaks the typing series (the next typed byte starts
-        // a fresh one) but must not flush a half-typed byte — the nibble group
-        // keeps its current behavior.
-        closeTypingSeries()
+        // A region change breaks the typing series *and* closes the nibble
+        // group: the byte typed after it is a different byte, so it must not
+        // coalesce into the same undo step as the half-typed one left behind
+        // (see `moveCaret(to:)`).
+        breakTypingSeries()
         // A region change only moves the caret bar between the hex and ASCII
         // columns — the bytes are unchanged, so a selection-only redraw
         // suffices (§3.3). The guard matters on the drag hot path:
@@ -731,6 +732,12 @@ final class PaneViewModel: HexViewDataSource {
         let offset = doc.selection.start
         let sizeBefore = doc.size
         try? doc.cancelEditGroup()
+        // The document has closed the group; the pane must agree, or the next
+        // `beginTypingGroup` skips `beginEditGroup` (it still thinks a group is
+        // open) and the following `endTypingGroup` drives the document's group
+        // depth negative — after which no byte's two nibbles ever coalesce
+        // again, in either mode, for the rest of the document's life.
+        typingGroupOpen = false
         pendingInsertOffset = nil
         nibble = 0
         onEdit?(.delete(range: offset..<offset + 1))
@@ -826,10 +833,17 @@ final class PaneViewModel: HexViewDataSource {
 
     func moveCaret(to offset: UInt64, extendSelection: Bool = false) {
         guard let doc = document else { return }
-        // Caret movement breaks the typing series (the next typed byte starts
-        // a fresh one) but must not flush a half-typed byte — the nibble group
-        // keeps its current behavior.
-        closeTypingSeries()
+        // Caret movement ends the byte being typed: it breaks the typing series
+        // *and* closes the nibble group, so the half-typed byte left behind is
+        // recorded as its own undo step.
+        //
+        // Leaving the group open here (what this used to do) meant a half-typed
+        // byte stayed uncommitted in `pendingGroupOps` and glued itself to
+        // whatever byte was typed next, at a different offset — one undo step
+        // for two unrelated bytes. Worse, insert mode's Backspace rollback
+        // cancels the open group, so it reverted that earlier byte too, with
+        // nothing left on the undo stack to bring it back (§7.5.1).
+        breakTypingSeries()
         let clamped = min(offset, doc.size)
         if extendSelection {
             let anchor = selectionAnchor
@@ -843,8 +857,9 @@ final class PaneViewModel: HexViewDataSource {
         nibble = 0
         overwriteSelection = nil
         // Moving the caret off a half-typed byte detaches it: the inserted byte
-        // stays (it is committed to storage in the open group), but Backspace no
-        // longer rolls it back from the new position.
+        // stays — now as a committed undo step of its own, thanks to the group
+        // closing above — and Backspace no longer rolls it back from the new
+        // position. Undo does.
         pendingInsertOffset = nil
         notify(selectionChangedOnly: true)
     }
