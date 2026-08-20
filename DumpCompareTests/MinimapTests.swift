@@ -2598,77 +2598,7 @@ final class MinimapTests: XCTestCase {
                      "half the file gone re-bins every row: that is a new picture")
     }
 
-    /// An edit belongs to one pane, so the interim marks belong to one map. The
-    /// other file did not move and says nothing about the shift — painting its
-    /// map red too was simply wrong (§19.4).
-    func testTheInterimTailMarkTouchesOnlyTheEditedFilesMap() throws {
-        let size = 256 * 1024
-        let url1 = try tempFile((0..<size).map { UInt8($0 % 251) })
-        let url2 = try tempFile((0..<size).map { UInt8(($0 &+ 5) % 251) })
-        let (controller, window) = try makeController()
-        try controller.windowModel.pane1.open(url: url1)
-        try controller.windowModel.pane2.open(url: url2)
-        controller.apply(mode: .comparison)
-        window.layoutIfNeeded()
-        let (split, panel) = try minimapViews(window)
-        split.setPanelVisible(true, animated: false)
-        window.layoutIfNeeded()
-        controller.setMinimapRenderModeForTesting(.overview)
-        window.layoutIfNeeded()
-        XCTAssertTrue(pumpUntil(10.0) { panel.overviewSummaries.count == 2 },
-                      "both maps have a picture")
 
-        // Edit the second pane only.
-        controller.windowModel.pane2.isInsertMode = true
-        controller.windowModel.pane2.moveCaret(to: 100 * 1024)
-        controller.windowModel.pane2.typeASCII(0x5A)
-
-        let edited = try XCTUnwrap(panel.overviewSummaries.last)
-        let untouched = try XCTUnwrap(panel.overviewSummaries.first)
-        XCTAssertTrue(edited.modified.contains { $0 != 0 },
-                      "the edited file's map marks its shifted tail")
-        XCTAssertTrue(untouched.modified.allSatisfy { $0 == 0 },
-                      "the other file's map is left alone — nothing in it moved")
-    }
-
-    /// While the typing goes on the map is updated for free and no pass runs: a
-    /// pass reads the file whole, and at auto-repeat speed one per keystroke
-    /// starves the main thread of the cache it draws from — the typing sticks.
-    /// A shifting edit marks its tail straight away instead, and the exact pass
-    /// waits for the burst to end (§19.9).
-    func testATypingBurstMarksTheTailWithoutRunningAPass() throws {
-        let (controller, _, panel) = try makeOverviewWindow(
-            (0..<(256 * 1024)).map { UInt8($0 % 251) })
-        let passesBefore = controller.overviewRebuilds
-        let pane = controller.windowModel.pane1
-        pane.isInsertMode = true
-        pane.moveCaret(to: 50 * 1024)
-        let summary = try XCTUnwrap(panel.overviewSummaries.first)
-        let insertRow = Int(50 * 1024 * UInt64(summary.rowCount) / summary.extent)
-
-        // Twenty bytes at auto-repeat speed, well past the debounce in total.
-        for _ in 0..<20 {
-            pane.typeASCII(0x5A)
-            _ = pumpUntil(0.033) { false }
-        }
-
-        // The marks are already there, with no pass having run.
-        XCTAssertEqual(controller.overviewRebuilds, passesBefore,
-                       "no pass ran during the burst")
-        let during = try XCTUnwrap(panel.overviewSummaries.first)
-        XCTAssertTrue(during.modified[(insertRow + 1)...].allSatisfy { $0 != 0 },
-                      "the shifted tail is marked as it is typed")
-        XCTAssertTrue(during.modified[..<insertRow].allSatisfy { $0 == 0 },
-                      "and nothing before the insertion point is")
-
-        // The exact pass lands once the typing stops.
-        XCTAssertTrue(pumpUntil(10.0) { controller.overviewRebuilds > passesBefore },
-                      "the pass runs after the burst")
-        XCTAssertTrue(pumpUntil(10.0) { !panel.overviewBinsAreStale })
-        XCTAssertTrue(try XCTUnwrap(panel.overviewSummaries.first)
-            .modified[(insertRow + 1)...].contains { $0 != 0 },
-                      "and the exact picture agrees the tail is modified")
-    }
 
     /// An inserted byte moves every byte after it, so from there to the end the
     /// file no longer holds what it held at those offsets — which is why the hex

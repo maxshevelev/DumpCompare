@@ -1448,11 +1448,15 @@ The panes' visible slice is drawn as a translucent band over the map.
   is running does not cancel it: it is remembered and honoured when that pass
   lands. The exception is a change to the row count, which makes the running
   pass's result useless — it is binned for a panel height that no longer exists.
-- Waiting is only allowed because the map does not go quiet while it waits. A
-  shifting edit marks its tail modified immediately, without reading a byte: the
-  bytes after it moved, so those rows no longer hold what the file held there.
-  The pass then replaces that with the exact answer, which can be narrower —
-  bytes that coincide after the shift are not modified.
+- While it waits, the map keeps the picture it has. It is a byte or two out of
+  date, which at a row per few kilobytes is invisible, and that is the whole
+  point: an interim answer must not be a *different* picture. Marking the shifted
+  tail red in the meantime was tried and rejected — an edit near the start of a
+  file paints the entire map red, which is worse than a picture slightly behind.
+- Background work — a pass, an index absorbing an edit — runs below the
+  interface's priority. Nothing on screen waits for it: the panes compute the
+  differences they show from the bytes themselves, and the map is already
+  showing something.
 - The picture in hand is never thrown away while its replacement is computed.
   A rebuild is triggered by things that make the picture stale, not wrong to
   look at: an edit that changes the longest file's length re-bins every row, but

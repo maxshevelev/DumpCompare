@@ -657,10 +657,11 @@ final class MainViewController: NSViewController {
         let progress = OverviewProgressSink(total: rowCount * sources.count) { [weak self] fraction in
             self?.reportOverviewProgress(fraction)
         }
-        // The user is waiting for the picture, so this is user-initiated work,
-        // and the two files are independent passes — running them together
-        // halves the wait on a comparison.
-        overviewPassTask = Task.detached(priority: .userInitiated) { [weak self] in
+        // Deliberately below the interface's priority: the picture is worth
+        // waiting a little longer for, and nothing about it is worth competing
+        // with the keystroke being typed. The two files are independent passes
+        // and run together, which halves the wait on a comparison.
+        overviewPassTask = Task.detached(priority: .utility) { [weak self] in
             let summaries = await withTaskGroup(
                 of: (Int, MinimapView.OverviewSummary).self
             ) { group -> [MinimapView.OverviewSummary] in
@@ -1183,17 +1184,16 @@ final class MainViewController: NSViewController {
             // does, instead of the whole picture being rebuilt (§19.9).
             if mode == .comparison { overviewRowsAwaitingIndex.append(range) }
         case .insert, .delete:
-            // Every byte after the change moved, so no range describes it — the
+            // Every byte after the change moved, so no range describes it: the
             // exact picture is a full pass, and that pass waits for the typing to
-            // settle. Until it lands the map still tells the truth about what
-            // matters: from here on, this file no longer holds what it held, so
-            // those rows are marked modified. That costs no reads at all, which
-            // is the point — at auto-repeat speed a pass per keystroke means
-            // re-reading the whole file thirty times a second, and the main
-            // thread feels it (§19.9).
+            // settle. Until it lands the map keeps the picture it has — a byte
+            // or two out of date, which at a row per 13 KB is invisible.
+            //
+            // Marking the shifted tail red in the meantime was tried and is
+            // wrong: from an edit near the start of a file that paints the whole
+            // map red, which is not "the old picture, slightly stale" but a new
+            // and much worse one.
             minimapView.invalidateCells()
-            minimapView.markOverviewRowsModified(from: edit.earliestAffectedOffset,
-                                                 forMapAt: mapIndex)
             refreshMinimapMaps()
         }
     }

@@ -188,7 +188,10 @@ final class ComparisonCoordinator {
         let edits = DiffEdit.collapse(queuedEdits)
         queuedEdits.removeAll()
         let gap = groupingGap
-        Task {
+        // Below the interface's priority: absorbing an edit is background work
+        // whose result nothing on screen is waiting for — the panes compute the
+        // difference they show from the bytes themselves (§8.3).
+        Task(priority: .utility) {
             var working = base
             let hunks: DiffHunkIndex
             do {
