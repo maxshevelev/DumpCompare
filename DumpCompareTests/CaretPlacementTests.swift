@@ -354,6 +354,10 @@ final class CaretPlacementTests: XCTestCase {
         // row's bottom edge, into the next row.
         XCTAssertGreaterThan(try blueness(hexView, y: rowFrame.maxY + 1, x: caretX, width: layout.charWidth), 0.3,
                              "the thick underline overlaps the row below")
+        // And it starts at the row's bottom edge: 3 pt up is clear of it, so the
+        // bar takes 2 pt of its own row and no more.
+        XCTAssertLessThan(try blueness(hexView, y: rowFrame.maxY - 3, x: caretX, width: layout.charWidth), 0.3,
+                          "the bar does not reach further up into its own row")
     }
 
     /// After the first insert-mode digit the caret line shifts to between the

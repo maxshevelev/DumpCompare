@@ -1292,16 +1292,15 @@ final class HexView: NSView {
             // A full-height vertical line.
             rect = CGRect(x: x, y: rowFrame.minY, width: width, height: rowFrame.height)
         } else {
-            // A thick underline at the cell's bottom edge — below the glyph
-            // (whose ink is centred in the row), so it never covers the symbol.
-            // It extends 1px above the 2px bar and 2px below the row's bottom,
-            // so it reads as a solid bar that slightly overlaps the row below
-            // (the byte beneath).
+            // An underline at the cell's bottom edge — below the glyph (whose ink
+            // is centred in the row), so it never covers the symbol. It starts
+            // exactly at the row's last 2 pt and runs 2 pt past the edge, so it
+            // reads as a solid bar overlapping the row below (the byte beneath)
+            // without eating into the row it belongs to.
             let barHeight: CGFloat = 2
-            let extendUp: CGFloat = 1
             let extendDown: CGFloat = 2
-            let y = rowFrame.maxY - barHeight - extendUp
-            rect = CGRect(x: x, y: y, width: width, height: barHeight + extendUp + extendDown)
+            rect = CGRect(x: x, y: rowFrame.maxY - barHeight,
+                          width: width, height: barHeight + extendDown)
         }
         (insertMode ? HexTheme.insertCaretColor : HexTheme.caretColor).setFill()
         NSBezierPath(rect: rect).fill()
