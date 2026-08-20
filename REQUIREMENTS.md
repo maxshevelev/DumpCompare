@@ -469,6 +469,10 @@ typing into insertion. It is a mode, not a command: it changes what the keys of
 - The caret marks the byte boundary the next byte will land on, and is visually
   distinct from the overwrite caret. Switching modes redraws it where it is,
   without scrolling: the caret has not moved.
+- Every pane's status bar shows the mode as INS/OVR (§15). INS is drawn in the
+  same red the insert caret and modified bytes use — in this app red means "not
+  the file you opened", which is what the mode leads to. The indicator keeps its
+  width across both states so the bar does not shift when the mode flips.
 - Backspace on a half-typed byte rolls that byte back — the inserted byte
   disappears and nothing is recorded, as if the nibble had never been entered.
 - Delete and Backspace otherwise remove bytes and shift the tail (Backspace the
@@ -988,7 +992,9 @@ Status bar or equivalent info area should show:
 - dirty state;
 - read-only state;
 - comparison status;
-- background task progress for diff/search when applicable.
+- background task progress for diff/search when applicable;
+- the typing mode as INS/OVR (§7.6), with INS coloured — the mode changes what
+  every keystroke does, so it must be readable without opening a menu.
 
 Accessibility:
 

@@ -35,6 +35,9 @@ struct PaneStatus: Equatable {
     var isUntitled = false
     var canUndo = false
     var canRedo = false
+    /// The typing mode this pane is in (§7.6) — the status bar shows it as
+    /// INS/OVR.
+    var isInsertMode = false
 }
 
 /// Pane-level save error: an untitled document has no file yet, so it needs a
@@ -518,7 +521,9 @@ final class PaneViewModel: HexViewDataSource {
     // MARK: - Status
 
     var status: PaneStatus {
-        guard let doc = document else { return PaneStatus() }
+        // The typing mode belongs to the pane, not to its document: it survives
+        // a file being closed and reopened, so it is reported either way.
+        guard let doc = document else { return PaneStatus(isInsertMode: isInsertMode) }
         let caret = doc.selection.start
         return PaneStatus(
             fileName: isUntitled ? "Untitled" : doc.url.lastPathComponent,
@@ -530,7 +535,8 @@ final class PaneViewModel: HexViewDataSource {
             isReadOnly: doc.readOnly,
             isUntitled: isUntitled,
             canUndo: doc.canUndo,
-            canRedo: doc.canRedo
+            canRedo: doc.canRedo,
+            isInsertMode: isInsertMode
         )
     }
 
