@@ -438,4 +438,56 @@ final class CaretPlacementTests: XCTestCase {
         XCTAssertGreaterThan(try maxInk(hexView, in: lowNibbleCell), 0.5,
                              "a mid-byte click does not blank the low nibble into a placeholder")
     }
+
+    /// The placeholder is part of the row's own string, so it leaves the cell's
+    /// background alone. It used to be painted over the finished row, which
+    /// meant erasing the cell first — and that erase punched a hole of plain
+    /// paper through the difference orange the byte stands on (§6), exactly
+    /// where insert mode is normally used: against a companion file.
+    func testPendingNibbleKeepsTheDifferenceBackground() throws {
+        let urlA = try tempFile([UInt8](repeating: 0x00, count: 32))
+        let urlB = try tempFile([UInt8](repeating: 0xFF, count: 32))
+        defer {
+            try? FileManager.default.removeItem(at: urlA)
+            try? FileManager.default.removeItem(at: urlB)
+        }
+        let paneA = PaneViewModel()
+        let paneB = PaneViewModel()
+        try paneA.open(url: urlA)
+        try paneB.open(url: urlB)
+        paneA.companion = paneB          // every byte differs → orange fill
+        paneB.companion = paneA
+        paneA.isInsertMode = true
+
+        let hexView = HexView()
+        hexView.appearance = NSAppearance(named: .aqua)
+        hexView.dataSource = paneA
+        hexView.delegate = paneA
+        hexView.reloadData()
+        let layout = hexView.hexLayout
+
+        /// The difference fill's giveaway: an orange cell is much warmer than
+        /// paper, which is neutral.
+        func warmth(x: CGFloat, y: CGFloat) throws -> CGFloat {
+            let rep = render(hexView)
+            let scale = CGFloat(rep.pixelsWide) / hexView.bounds.width
+            let colour = rep.colorAt(x: Int(x * scale), y: Int(y * scale))?
+                .usingColorSpace(.deviceRGB)
+            return (colour?.redComponent ?? 0) - (colour?.blueComponent ?? 0)
+        }
+
+        // Sample the low-nibble cell just below the row's top edge, clear of the
+        // glyph ink and of the caret line on the cell's left edge.
+        let x = layout.hexByteX(column: 0) + layout.charWidth * 1.6
+        let y = layout.rowFrame(row: 0).minY + 2
+
+        let before = try warmth(x: x, y: y)
+        XCTAssertGreaterThan(before, 0.1, "the byte stands on the difference fill")
+
+        paneA.typeHexNibble(0xA)         // half-typed insert opens the slot
+        hexView.reloadData()
+
+        XCTAssertGreaterThan(try warmth(x: x, y: y), 0.1,
+                             "the empty low-nibble slot keeps the difference fill under it")
+    }
 }

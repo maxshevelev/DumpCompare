@@ -684,11 +684,6 @@ final class HexView: NSView {
             )
         }
 
-        // Insert mode: a half-typed byte shows a dim `_` in its low-nibble slot
-        // (see `drawPendingInsertNibblePlaceholder`). Drawn before the caret so
-        // the caret line sits on top.
-        drawPendingInsertNibblePlaceholder(layout: layout, nibble: nibble, rowCount: rowCount)
-
         // Caret: on the active pane always, at the byte the next typed
         // character lands on. With no selection that is the caret itself; with
         // a selection it is the selection's leading edge — the spot a Fill or a
@@ -803,7 +798,10 @@ final class HexView: NSView {
         // monospaced too; otherwise it falls back to per-cell drawing so a wide
         // glyph (a substitute font) never drifts its neighbours.
         if drawsHex {
-            let hexString = hexColumnAttributedString(states: states, layout: layout)
+            let hexString = hexColumnAttributedString(
+                states: states, layout: layout,
+                pendingLowNibbleColumn: pendingLowNibbleColumn(rowStart: rowStart, rowEnd: rowEnd,
+                                                              fileSize: fileSize))
             if hexString.length > 0 {
                 hexString.draw(at: NSPoint(x: layout.hexByteX(column: 0), y: rowY + baseline))
             }
@@ -827,7 +825,8 @@ final class HexView: NSView {
     /// every digit on the same cell the per-glyph code used. EOF cells draw
     /// nothing, so the string ends at the first one. Exposed (internal) so tests
     /// can pin the spacing against the layout's own geometry.
-    func hexColumnAttributedString(states: [HexByteState], layout: HexLayout) -> NSAttributedString {
+    func hexColumnAttributedString(states: [HexByteState], layout: HexLayout,
+                                   pendingLowNibbleColumn: Int? = nil) -> NSAttributedString {
         let result = NSMutableAttributedString()
         var currentColor: NSColor?
         var pending = ""
@@ -838,7 +837,22 @@ final class HexView: NSView {
                 appendRun(&pending, to: result, color: currentColor)
                 currentColor = color
             }
-            pending += hexDigits(states[column].byte)
+            if column == pendingLowNibbleColumn {
+                // Insert mode, byte half typed: the low nibble is not a zero the
+                // user entered, it is an empty slot waiting for the second digit.
+                // The dim `_` goes into the row's own string — painting it over
+                // the finished row would have to erase the cell first, and that
+                // erase punched a hole in whatever the cell stood on: the
+                // difference orange, a selection fill, the EOF hatch.
+                let digits = hexDigits(states[column].byte)
+                pending += String(digits.prefix(1))
+                appendRun(&pending, to: result, color: currentColor)
+                var slot = "_"
+                appendRun(&slot, to: result, color: HexTheme.mutedTextColor)
+                currentColor = nil
+            } else {
+                pending += hexDigits(states[column].byte)
+            }
             if column < HexLayout.bytesPerRow - 1 {
                 let inWord = (column % HexLayout.groupSize) % layout.wordSize
                 if inWord == layout.wordSize - 1 {
@@ -1230,32 +1244,21 @@ final class HexView: NSView {
         }
     }
 
-    /// In insert mode, while a byte is half-typed (the high nibble has landed
-    /// and opened the low-nibble slot), the row's hex string has already painted
-    /// the byte as e.g. `A0`. Overpaint the low-nibble cell with a dim `_` so
-    /// the user sees `A_` until the second digit fills the slot (which zeroes
-    /// the nibble and clears the placeholder). Guarded to the active pane,
-    /// insert mode, and a *genuinely pending* insert (`hexHasPendingInsert`) —
-    /// a mid-byte caret a click placed (nibble 1, nothing typed) must keep
-    /// showing the byte's own low nibble, not a blanked slot.
-    private func drawPendingInsertNibblePlaceholder(layout: HexLayout, nibble: Int,
-                                                    rowCount: UInt64) {
-        guard isActive, nibble == 1, dataSource?.hexInsertMode ?? false,
-              dataSource?.hexHasPendingInsert ?? false,
-              let dataSource else { return }
+    /// The column of `rowStart..<rowEnd` whose low nibble is an empty slot: the
+    /// byte a half-typed insert-mode entry has opened (its high nibble landed,
+    /// the second digit is still to come), drawn as a dim `_` inside the row's
+    /// own hex string (§7). Nil on every other row and in every other state.
+    ///
+    /// Guarded to the active pane, insert mode, and a *genuinely pending* insert
+    /// (`hexHasPendingInsert`) — a mid-byte caret a click placed (nibble 1,
+    /// nothing typed) keeps showing the byte's own low nibble.
+    private func pendingLowNibbleColumn(rowStart: UInt64, rowEnd: UInt64,
+                                        fileSize: UInt64) -> Int? {
+        guard isActive, let dataSource, dataSource.hexInsertMode,
+              dataSource.hexHasPendingInsert, dataSource.hexCaretNibble() == 1 else { return nil }
         let offset = dataSource.hexSelection().start
-        guard offset < dataSource.fileSize else { return }
-        let (row, column) = layout.rowColumn(of: offset)
-        guard UInt64(row) < rowCount else { return }
-        let cell = CGRect(x: layout.hexByteX(column: column) + layout.charWidth,
-                          y: layout.rowFrame(row: row).minY,
-                          width: layout.charWidth, height: layout.rowHeight)
-        // Erase the digit the row already painted here (e.g. the "0" of "A0") —
-        // a `_` glyph is too thin to cover it on its own — then draw the dim
-        // placeholder over the clean background so the user reads "A_".
-        NSColor.textBackgroundColor.setFill()
-        NSBezierPath(rect: cell).fill()
-        draw(text: "_", in: cell, baseline: baseline, color: HexTheme.mutedTextColor)
+        guard offset >= rowStart, offset < rowEnd, offset < fileSize else { return nil }
+        return Int(offset - rowStart)
     }
 
     private func drawCaret(offset: UInt64, layout: HexLayout, nibble: Int,
