@@ -860,13 +860,21 @@ Requirements:
 Recommended architecture:
 
 - Original file storage can be memory-mapped or read through chunk cache.
-- Edits are stored as an edit overlay or sparse change log.
-- Insert/delete may require copy-on-write or temporary file materialization.
-- Save can patch in-place for overwrite-only edits where safe.
+- Edits are stored as a piece list over two immutable sources: the file as it was
+  opened, and an append-only buffer of the bytes editing added.
+- No edit may cost work proportional to the file: an insert or a delete is a
+  change to the piece list, not a copy of the content. Materializing the content
+  into a temporary file is allowed only as an amortized valve — an oversized
+  insert, an add buffer past its budget, a piece list long enough to slow reads —
+  and at most one such file may be kept at a time.
+- Save can patch in-place for overwrite-only edits where safe. The ranges it
+  patches must survive a materialization.
 - Save may rewrite file for length-changing edits or Save As.
 
 Performance expectations:
 
+- Editing a byte must cost the same on a 32 MB dump as on a 1 KB file, and the
+  same at either end of it.
 - Scrolling should remain responsive.
 - Visible row rendering should be fast.
 - Visible diff highlighting after edits should be near-instant.

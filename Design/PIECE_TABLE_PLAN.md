@@ -145,6 +145,22 @@ to a crash costs nothing that the crash did not already cost.
 4. Re-measure and record the numbers here; add a test that pins the property
    that matters: N inserts into a large file create no per-insert file copies.
 
+## Measured after the change
+
+| file | insert@0 | insert@middle | insert@EOF | delete | overwrite |
+|---|---|---|---|---|---|
+| 1 MB | 0.046 ms | 0.006 ms | 0.007 ms | 0.007 ms | 0.011 ms |
+| 8 MB | 0.017 ms | 0.007 ms | 0.005 ms | 0.005 ms | 0.006 ms |
+| 32 MB | 0.030 ms | 0.014 ms | 0.008 ms | 0.011 ms | 0.013 ms |
+
+Insert at the start of a 32 MB file: **86.6 ms → 0.030 ms**, and it no longer
+depends on the file's size or on where in the file it lands.
+
+A run of 200 typed bytes into a 32 MB file: 0.89 ms in total (0.0045 ms per
+byte), 3 pieces, **0 temporary files** — the same run used to write 200 full
+copies of the file, 6.4 GB, and to take about 17 seconds of blocked main thread.
+A 4 KB window read after that run costs 0.158 ms, cold cache included.
+
 ## Verification
 
 - `swift test` in `DumpCompareCore` (the storage suite is there), then the app
