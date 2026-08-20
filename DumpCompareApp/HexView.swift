@@ -638,6 +638,7 @@ final class HexView: NSView {
     // MARK: - Drawing
 
     override func draw(_ dirtyRect: NSRect) {
+
         // Confine all drawing to the dirty region: a selection-only redraw
         // invalidates just the affected rows, and the rows outside them keep
         // their previous pixels. Painting the whole bounds here (or drawing

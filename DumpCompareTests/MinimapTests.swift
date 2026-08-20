@@ -2565,6 +2565,72 @@ final class MinimapTests: XCTestCase {
                        columns / 2, "two of the row's four bytes")
     }
 
+    /// A typed byte grows the file by one, which moves the overview's extent by
+    /// one — a fraction of a byte per row, and less than a pixel at the file's
+    /// end. There is nothing to see, so it must not ask for a repaint of the
+    /// panel: doing that on every keystroke cost 25-44 ms of main thread each
+    /// time, which is what the typing stuttered on. What the edit does make
+    /// visible — the marks — invalidates its own rows (§19.9).
+    func testATypedByteDoesNotRepaintTheWholeOverview() throws {
+        let (controller, _, panel) = try makeOverviewWindow(
+            (0..<(512 * 1024)).map { UInt8($0 % 251) })
+        let pane = controller.windowModel.pane1
+        pane.isInsertMode = true
+        pane.moveCaret(to: 200 * 1024)
+
+        pane.typeASCII(0x5A)
+
+        let rects = try XCTUnwrap(panel.lastRepaintRequest,
+                                  "a typed byte repaints rows, not the panel")
+        XCTAssertFalse(rects.isEmpty, "and it does repaint the rows its marks cover")
+        let total = rects.reduce(0.0) { $0 + $1.height }
+        XCTAssertLessThan(total, panel.bounds.height,
+                          "the repaint is bounded by the marked tail, not the whole map")
+
+        // The rule itself, at the level it lives: a size change smaller than a
+        // row's worth of bytes asks for nothing, a big one asks for the panel.
+        let size = panel.maps[0].fileSize
+        panel.setMaps([MinimapView.Map(fileSize: size + 1, selection: nil)])
+        XCTAssertNotNil(panel.lastRepaintRequest,
+                        "one byte moves no pixel: no full repaint")
+        panel.setMaps([MinimapView.Map(fileSize: size / 2, selection: nil)])
+        XCTAssertNil(panel.lastRepaintRequest,
+                     "half the file gone re-bins every row: that is a new picture")
+    }
+
+    /// An edit belongs to one pane, so the interim marks belong to one map. The
+    /// other file did not move and says nothing about the shift — painting its
+    /// map red too was simply wrong (§19.4).
+    func testTheInterimTailMarkTouchesOnlyTheEditedFilesMap() throws {
+        let size = 256 * 1024
+        let url1 = try tempFile((0..<size).map { UInt8($0 % 251) })
+        let url2 = try tempFile((0..<size).map { UInt8(($0 &+ 5) % 251) })
+        let (controller, window) = try makeController()
+        try controller.windowModel.pane1.open(url: url1)
+        try controller.windowModel.pane2.open(url: url2)
+        controller.apply(mode: .comparison)
+        window.layoutIfNeeded()
+        let (split, panel) = try minimapViews(window)
+        split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+        controller.setMinimapRenderModeForTesting(.overview)
+        window.layoutIfNeeded()
+        XCTAssertTrue(pumpUntil(10.0) { panel.overviewSummaries.count == 2 },
+                      "both maps have a picture")
+
+        // Edit the second pane only.
+        controller.windowModel.pane2.isInsertMode = true
+        controller.windowModel.pane2.moveCaret(to: 100 * 1024)
+        controller.windowModel.pane2.typeASCII(0x5A)
+
+        let edited = try XCTUnwrap(panel.overviewSummaries.last)
+        let untouched = try XCTUnwrap(panel.overviewSummaries.first)
+        XCTAssertTrue(edited.modified.contains { $0 != 0 },
+                      "the edited file's map marks its shifted tail")
+        XCTAssertTrue(untouched.modified.allSatisfy { $0 == 0 },
+                      "the other file's map is left alone — nothing in it moved")
+    }
+
     /// While the typing goes on the map is updated for free and no pass runs: a
     /// pass reads the file whole, and at auto-repeat speed one per keystroke
     /// starves the main thread of the cache it draws from — the typing sticks.

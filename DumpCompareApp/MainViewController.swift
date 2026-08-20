@@ -290,7 +290,7 @@ final class MainViewController: NSViewController {
             // moves the viewport rectangle (§19).
             trackMinimapViewport(for: pane)
             paneModel.onEdit = { [weak self] edit in
-                self?.repaintMinimap(after: edit)
+                self?.repaintMinimap(after: edit, mapIndex: 0)
             }
             paneModel.onFullInvalidation = { [weak self] in
                 self?.minimapView.invalidateCells()
@@ -391,11 +391,11 @@ final class MainViewController: NSViewController {
         windowModel.pane2.companion = windowModel.pane1
         windowModel.pane1.onEdit = { [weak self] edit in
             self?.comparisonCoordinator.record(edit: edit)
-            self?.repaintMinimap(after: edit)
+            self?.repaintMinimap(after: edit, mapIndex: 0)
         }
         windowModel.pane2.onEdit = { [weak self] edit in
             self?.comparisonCoordinator.record(edit: edit)
-            self?.repaintMinimap(after: edit)
+            self?.repaintMinimap(after: edit, mapIndex: 1)
         }
         windowModel.pane1.onFullInvalidation = { [weak self] in
             self?.comparisonCoordinator.rebuild()
@@ -503,12 +503,9 @@ final class MainViewController: NSViewController {
     /// arrives while a pass runs must not kill it (see `scheduleOverviewRebuild`).
     private var overviewDebounceTask: Task<Void, Never>?
     private var overviewPassTask: Task<Void, Never>?
-    /// The row count the running pass is binning for. A request that comes in
-    /// with a different one means the panel's height moved and the pass's result
-    /// is for a geometry that no longer exists.
-    private var overviewPassRowCount = 0
-    /// A rebuild asked for while a pass was running, honoured when it lands.
-    private var overviewRebuildPending = false
+    /// The row count the running pass is binning for — a diagnostic seam for the
+    /// tests, and what a future decision about a pass's usefulness would read.
+    private(set) var overviewPassRowCount = 0
     /// Edited ranges whose difference marks are still waiting for the comparison
     /// index to absorb them (§19.9).
     private var overviewRowsAwaitingIndex: [Range<UInt64>] = []
@@ -617,21 +614,15 @@ final class MainViewController: NSViewController {
     /// (`markShiftedTailModified`), and the picture in hand is stretched rather
     /// than dropped. What the pass adds is exactness.
     ///
-    /// A pass already running is not cancelled — the request is remembered and
-    /// honoured when it lands — unless the row count moved under it, which makes
-    /// its result useless: it is binned for a panel height that no longer exists.
+    /// A pass in flight is cancelled: something changed under it, so whatever it
+    /// is halfway through computing is already the wrong picture, and finishing
+    /// it costs the reads that make the typing stick. The request that cancelled
+    /// it starts the wait again.
     private func scheduleOverviewRebuild() {
         guard minimapSplit.panelVisible, minimapView.renderMode == .overview else { return }
-        if overviewPassTask != nil {
-            if overviewPassRowCount != minimapView.overviewRowCount() {
-                overviewPassTask?.cancel()
-                overviewPassTask = nil
-                reportOverviewProgress(nil)
-            } else {
-                overviewRebuildPending = true
-                return
-            }
-        }
+        overviewPassTask?.cancel()
+        overviewPassTask = nil
+        reportOverviewProgress(nil)
         overviewDebounceTask?.cancel()
         overviewDebounceTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 250_000_000)
@@ -648,7 +639,6 @@ final class MainViewController: NSViewController {
         overviewDebounceTask = nil
         overviewPassTask?.cancel()
         overviewPassTask = nil
-        overviewRebuildPending = false
     }
 
     private func rebuildOverview() {
@@ -661,7 +651,6 @@ final class MainViewController: NSViewController {
             return
         }
         overviewPassTask?.cancel()
-        overviewRebuildPending = false
         overviewPassRowCount = rowCount
         overviewRebuilds += 1
         beginOverviewProgress()
@@ -695,12 +684,6 @@ final class MainViewController: NSViewController {
                 guard !Task.isCancelled, self.minimapView.renderMode == .overview else { return }
                 self.minimapView.setOverviewSummaries(summaries)
                 self.overviewRebuildsCompleted += 1
-                // A request that arrived while this pass ran was not allowed to
-                // cancel it; honour it now.
-                if self.overviewRebuildPending {
-                    self.overviewRebuildPending = false
-                    self.scheduleOverviewRebuild()
-                }
             }
         }
     }
@@ -1179,7 +1162,11 @@ final class MainViewController: NSViewController {
     ///
     /// Both maps, because a byte edited in one file changes the difference state
     /// the other one paints at that same offset (§9).
-    private func repaintMinimap(after edit: DiffEdit) {
+    /// `mapIndex` is the map of the pane the edit happened in — the maps mirror
+    /// the panes (§19). Only that map's rows can have moved: a shift in one file
+    /// says nothing about the other, which is what painting both of them red
+    /// wrongly claimed.
+    private func repaintMinimap(after edit: DiffEdit, mapIndex: Int) {
         switch edit {
         case .overwrite(let range):
             // Typing past EOF grows the file, which re-bins the overview: that is
@@ -1205,20 +1192,9 @@ final class MainViewController: NSViewController {
             // re-reading the whole file thirty times a second, and the main
             // thread feels it (§19.9).
             minimapView.invalidateCells()
-            markShiftedTailModified(from: edit.earliestAffectedOffset)
+            minimapView.markOverviewRowsModified(from: edit.earliestAffectedOffset,
+                                                 forMapAt: mapIndex)
             refreshMinimapMaps()
-        }
-    }
-
-    /// Marks every overview row at or after `offset` as modified on the edited
-    /// panes' maps, without reading a byte. An interim truth: a shift moves
-    /// everything after it, so those rows hold different content than the file
-    /// did there. The background pass replaces it with the exact answer, which
-    /// can be narrower — bytes that coincide after the shift are not modified.
-    private func markShiftedTailModified(from offset: UInt64) {
-        guard minimapSplit.panelVisible, minimapView.renderMode == .overview else { return }
-        for index in minimapView.overviewSummaries.indices {
-            minimapView.markOverviewRowsModified(from: offset, forMapAt: index)
         }
     }
 

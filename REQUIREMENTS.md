@@ -1399,8 +1399,17 @@ The panes' visible slice is drawn as a translucent band over the map.
     change and the maps repaint whole.
 - A repaint must start from the panel's background, since it can no longer
   rely on the whole panel being redrawn.
+- The panel is repainted only when the picture can look different. A typed byte
+  moves the extent by one, which moves each row's slice by a fraction of a byte:
+  nothing to see, and asking for a repaint of it on every keystroke cost tens of
+  milliseconds of main thread each time. A map the repaint does not reach is
+  skipped whole, and the theme's inks are resolved to concrete colours once per
+  pass — `setFill` on a dynamic colour resolves it again on every call, which at
+  one call per row was most of the cost of drawing a map.
 - A row one colour covers whole is one fill, and consecutive such rows are one
-  fill together. After an edit that shifts offsets the whole tail is modified —
+  fill together. Neighbouring cells that draw the same thing are one fill too: a
+  dump's rows are largely uniform, sixteen cells of erased padding or of dense
+  content. After an edit that shifts offsets the whole tail is modified —
   and in a comparison differing as well — so nearly every row is in that state:
   drawing them cell by cell put a full repaint of two maps at 138 ms on the main
   thread, once per rebuild, which is felt as the typing stuttering. Rows the
