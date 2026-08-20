@@ -213,6 +213,40 @@ offset at/after the caret), and `advanceAfterByte()` advances the caret past the
   pre-existing overwrite behavior (`moveCaret` calls `closeTypingSeries` but never `endTypingGroup`);
   the insert-mode flow reuses the same group, so the edge is consistent. Not addressed here.
 
+## As built (differences from this plan)
+
+The feature shipped with the following changes; **`REQUIREMENTS.md` §7.6 is the
+specification** — this file is the plan it was built from, kept for its
+reasoning.
+
+- **Shortcut**: the menu item is bound to ⌥⌘I (the plan left it without a key
+  equivalent).
+- **Caret**: insert mode draws the red line on the byte's left boundary before
+  the first digit and between the two nibbles after it. Overwrite mode's caret
+  became a thick underline along the bottom of the nibble cell (it was a 2 pt
+  bar), so the two modes differ in shape as well as colour.
+- **Empty low nibble**: the `_` placeholder is part of the row's own hex string
+  (`hexColumnAttributedString(pendingLowNibbleColumn:)`), not painted over the
+  finished row. Overpainting had to erase the cell first, which punched plain
+  paper through the difference fill, a selection or an EOF cell underneath.
+- **A mid-byte caret placed by a click** is distinguished from a genuinely
+  half-typed byte (`pendingInsertOffset`): it shows the byte's own low nibble and
+  Backspace does not roll anything back.
+- **Backspace/Delete** (§7.6): on a half-typed byte, Backspace rolls that byte
+  back and records nothing. Otherwise both keys delete bytes and shift the tail
+  — the byte before the caret, the byte at it, or the selected span — where
+  overwrite mode fills with `0x00`. All of it goes through the same one-time
+  warning as typing; the rollback does not, since it only takes back the
+  keystroke just made.
+- **Typing with a selection** drops the selection to its start and inserts there.
+  Leaving it standing highlighted bytes that the insert had shifted right.
+- **The second known limitation below is fixed**: a half-typed byte no longer
+  stays pending across a caret move or a region change. Both close the edit
+  group, so the byte becomes its own undo step. Leaving the group open glued two
+  unrelated bytes into one undo step and — because insert mode's rollback
+  cancels the open group — let Backspace revert an earlier byte with nothing left
+  on the undo stack to recover it.
+
 ## Verification
 
 - Targeted: `xcodebuild -project DumpCompare.xcodeproj -scheme DumpCompare -derivedDataPath

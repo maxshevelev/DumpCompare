@@ -327,7 +327,8 @@ The hex dump contains two interactive regions per pane:
 
 7.1 Overwrite-first policy
 
-The default editing model is overwrite.
+The default editing model is overwrite. Insert mode (§7.6) is an optional,
+never-persisted departure from it; everything below describes the default.
 
 - Typing overwrites existing bytes.
 - Paste Write overwrites existing bytes.
@@ -345,7 +346,9 @@ Confirmed length-changing operations include:
 
 - Paste Insert;
 - Delete Bytes / Remove Bytes;
-- any explicit “Insert Bytes” operation if implemented.
+- any explicit “Insert Bytes” operation if implemented;
+- Insert mode (§7.6), where confirmation is once per opened file rather than per
+  keystroke — per-keystroke confirmation would make the mode unusable.
 
 Confirmation dialog must explain:
 
@@ -357,7 +360,8 @@ Confirmation dialog must explain:
 
 7.3 Delete/Backspace default behavior
 
-To avoid accidental structural damage:
+To avoid accidental structural damage (in insert mode these keys delete bytes
+instead — §7.6):
 
 - Delete/Backspace must not change file length by default.
 - They should fill the selected bytes with 0x00.
@@ -369,7 +373,7 @@ A separate explicit menu command, e.g. Edit > Delete Bytes, performs true length
 
 7.4 Selection editing
 
-- If a selection exists and the user types, the selected range is overwritten with typed bytes.
+- If a selection exists and the user types, the selected range is overwritten with typed bytes (in insert mode the selection is dropped and the byte inserted at its start — §7.6).
 - If paste write is invoked with a selection, paste starts at selection start and overwrites bytes; it does not shift existing bytes.
 - Selection can span multiple rows.
 - Cmd+A selects all bytes in the active file.
@@ -442,6 +446,46 @@ its own, and a long run has to be removable without holding the key down.
   undo key never reaches the batch.
 - A batch is one change to the storage: the comparison and the minimap update
   from the single net edit it reports, not once per byte (§8.3, §19.9).
+- A byte left half typed (one nibble entered) ends when the user leaves it — a
+  caret move or a region change — and becomes an undo step of its own. It must
+  never stay pending and coalesce with the next byte typed somewhere else: one
+  press would then take back two unrelated bytes.
+
+7.6 Insert mode
+
+An optional typing mode, off at every launch and never persisted, that turns
+typing into insertion. It is a mode, not a command: it changes what the keys of
+§7 do until it is switched off.
+
+- Scope: one mode for the window, both panes, toggled from Edit > Insert Mode (a
+  checked item) or its key equivalent. The checkmark follows the mode.
+- Typing inserts: a completed byte is inserted at the caret and every byte from
+  there on shifts right; the file grows by one. Hex entry inserts on the first
+  digit with the low nibble still empty, and the second digit fills that nibble
+  in place — the pair is one undo step, as in overwrite mode (§7.5.1).
+- The empty low nibble of a half-typed byte is drawn as a placeholder slot, not
+  as the zero it currently holds, and drawing it must not disturb the cell's
+  background — a difference fill, a selection, an EOF cell keep their own (§6).
+- The caret marks the byte boundary the next byte will land on, and is visually
+  distinct from the overwrite caret. Switching modes redraws it where it is,
+  without scrolling: the caret has not moved.
+- Backspace on a half-typed byte rolls that byte back — the inserted byte
+  disappears and nothing is recorded, as if the nibble had never been entered.
+- Delete and Backspace otherwise remove bytes and shift the tail (Backspace the
+  byte before the caret, Delete the byte at it; with a selection, the selected
+  span). §7.3's fill-with-0x00 rule is the overwrite-mode behavior.
+- Typing with a selection drops the selection to its start and inserts there. It
+  does not consume the selection (§7.4 is an overwrite rule): the selected bytes
+  shift right, so a surviving highlight would name bytes the user never picked.
+- Confirmation: insert mode shifts offsets, so §7.2 applies, but per keystroke
+  it is unusable. The mode asks once per opened file, on the first keystroke or
+  delete that shifts anything, and then stays silent for that file; cancelling
+  swallows the keystroke and leaves the file untouched, and the next one asks
+  again. Opening or closing a file re-arms it. Toggling the mode off and on
+  within the same file does not.
+- Cost: each inserted or deleted byte rewrites the file's storage, so the mode is
+  meant for small edits, not for typing over a chip-sized dump. Buffering typed
+  input is a separate topic (it would cover Paste Insert too).
 
 =====================================================================
 8. COMPARISON MODEL
