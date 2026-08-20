@@ -1395,6 +1395,15 @@ The panes' visible slice is drawn as a translucent band over the map.
   then held for a minimum showing before it clears, because the pass itself is
   fast: two 16 MB dumps are binned in ~150 ms, so a bar that vanished the
   instant the pass ended was never seen at all.
+- The picture in hand is never thrown away while its replacement is computed.
+  A rebuild is triggered by things that make the picture stale, not wrong to
+  look at: an edit that changes the longest file's length re-bins every row, but
+  by a fraction of a percent, so the old picture is stretched over the map (the
+  same stand-in a resize uses) until the pass lands. Blanking the panel instead
+  made every inserted byte blink — and blink asymmetrically, since deleting from
+  the shorter file of a comparison leaves the extent, and therefore the bins,
+  untouched. A stale picture is not patched row by row: its rows cover different
+  slices than the patch measured, so the pass on its way replaces it whole.
 - Any change to the panel's frame is drawn by stretching the picture in hand,
   not by redrawing the maps: a height change re-bins the file and needs the
   background pass, and a width change redraws every cell at a new width. Both

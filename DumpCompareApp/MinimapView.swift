@@ -204,8 +204,19 @@ final class MinimapView: NSView {
     private(set) var renderMode: RenderMode = .detail
 
     /// The overview's data, by map index. Empty in detail mode, or while a
-    /// background pass is still computing it.
+    /// background pass is still computing the first one for a file.
     private(set) var overviewSummaries: [OverviewSummary] = []
+
+    /// True when the picture in `overviewSummaries` was binned over a different
+    /// extent than the files now have — an edit changed the length of the longest
+    /// one, so every row covers a slightly different slice.
+    ///
+    /// The picture is kept and stretched over the map (the same stand-in path a
+    /// resize uses) until the background pass replaces it. Dropping it instead
+    /// blanked the panel on every inserted byte, which is a worse lie than a
+    /// picture that is a fraction of a percent out of date, and an irritating
+    /// one: it blinked (§19.9).
+    private(set) var overviewBinsAreStale = false
 
     /// Fired when the number of overview rows the panel can show changes — a
     /// resize, a layout flip, or a switch into overview — so the controller can
@@ -248,6 +259,7 @@ final class MinimapView: NSView {
         overviewUsesRectangle = false
         if mode == .detail {
             overviewSummaries = []
+            overviewBinsAreStale = false
             settleTimer?.invalidate()
             settleTimer = nil
             geometryIsSettling = false
@@ -260,7 +272,13 @@ final class MinimapView: NSView {
 
     /// Adopts a freshly computed overview picture.
     func setOverviewSummaries(_ summaries: [OverviewSummary]) {
-        guard overviewSummaries != summaries else { return }
+        guard overviewSummaries != summaries else {
+            // Same picture, but it is the current one again: the bins it was
+            // built over are the files' own extent now.
+            overviewBinsAreStale = false
+            return
+        }
+        overviewBinsAreStale = false
         let damage = overviewDamage(from: overviewSummaries, to: summaries)
         overviewSummaries = summaries
         overviewStandIns = [:]
@@ -273,7 +291,11 @@ final class MinimapView: NSView {
     /// either side of it — is left alone (§19.9).
     func updateOverviewRows(_ rows: ClosedRange<Int>, density: [UInt8],
                             modified: [UInt16], different: [UInt16], forMapAt index: Int) {
-        guard renderMode == .overview, overviewSummaries.indices.contains(index) else { return }
+        // A stale picture is not patched: its rows cover different slices of the
+        // file than the caller measured, so the marks would land in the wrong
+        // place. The pass that is already on its way replaces the whole thing.
+        guard renderMode == .overview, !overviewBinsAreStale,
+              overviewSummaries.indices.contains(index) else { return }
         let columns = Int(Self.bytesPerRow)
         var summary = overviewSummaries[index]
         guard rows.lowerBound >= 0, rows.upperBound < summary.rowCount,
@@ -421,11 +443,12 @@ final class MinimapView: NSView {
         self.maps = maps
         updateTopRow()
         invalidateAll()
-        // The overview's bins are built over the longest file, so a new file
-        // invalidates them.
+        // The overview's bins are built over the longest file, so a change to
+        // its length invalidates them — but the picture is kept, stale, and
+        // stretched over the map until the background pass lands. The stand-in
+        // images are built from it, so they are kept too.
         if renderMode == .overview, extentChanged {
-            overviewSummaries = []
-            overviewStandIns = [:]
+            overviewBinsAreStale = true
             onOverviewRowCountChanged?()
         }
     }
@@ -998,7 +1021,7 @@ final class MinimapView: NSView {
         // catches up with the new row count, the known picture is stretched over
         // the map instead of being redrawn cell by cell: exact is thousands of
         // fills, and a drag delivers a frame change per mouse move (§19.9).
-        if geometryIsSettling || summary.rowCount != overviewRowCount() {
+        if geometryIsSettling || summary.rowCount != overviewRowCount() || overviewBinsAreStale {
             drawOverviewStandIn(forMapAt: index, in: area)
             return
         }

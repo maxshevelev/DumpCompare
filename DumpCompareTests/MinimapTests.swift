@@ -2479,4 +2479,53 @@ final class MinimapTests: XCTestCase {
                              "and the exact picture agrees on which half is which")
     }
 
+    /// An edit that changes the longest file's length invalidates the overview's
+    /// bins — every row covers a different slice of the file now. The picture is
+    /// kept and stretched until the background pass replaces it, rather than
+    /// dropped: dropping it blanked the panel on every inserted byte, and in a
+    /// comparison it blanked only for inserts (a delete leaves the companion the
+    /// longest, so the extent, and the bins, are unchanged), which made the
+    /// blink look like a bug in insert mode (§19.9).
+    func testAnInsertKeepsTheOverviewPictureWhileItIsRecomputed() throws {
+        // Erased first half, content second half — so which half is which is
+        // visible in the drawing, stretched or exact.
+        let size = 512 * 1024
+        var bytes = [UInt8](repeating: 0xFF, count: size)
+        for i in (size / 2)..<size { bytes[i] = UInt8(i % 251) }
+        let (controller, window, panel) = try makeOverviewWindow(bytes)
+        let summaryBefore = try XCTUnwrap(panel.overviewSummaries.first)
+        XCTAssertGreaterThan(summaryBefore.rowCount, 0)
+        XCTAssertFalse(panel.overviewBinsAreStale)
+
+        // Insert one byte: the file grows, so the bins no longer match it.
+        controller.windowModel.pane1.isInsertMode = true
+        controller.windowModel.pane1.moveCaret(to: 1000)
+        controller.windowModel.pane1.typeASCII(0x5A)
+
+        XCTAssertTrue(panel.overviewBinsAreStale, "the bins are known to be out of date")
+        XCTAssertEqual(panel.overviewSummaries.first?.rowCount, summaryBefore.rowCount,
+                       "and the picture is still there to draw")
+
+        // It is drawn, not left blank, and it still says the content is in the
+        // bottom half.
+        let paper = paperBrightness(panel)
+        let inset = MinimapView.contentPadding + 2
+        let right = panel.bounds.width - MinimapView.contentPadding - 2
+        func inkiness(atY y: CGFloat) throws -> CGFloat {
+            let samples = try sampleRow(panel, y: y, from: inset, to: right)
+            XCTAssertGreaterThan(samples.count, 20, "enough pixels to judge")
+            return samples.map { abs($0 - paper) }.reduce(0, +) / CGFloat(samples.count)
+        }
+        let bottom = try inkiness(atY: panel.bounds.maxY - 3)
+        let top = try inkiness(atY: panel.bounds.minY + 3)
+        XCTAssertGreaterThan(bottom, 0.05, "the map is still drawn, not blanked")
+        XCTAssertGreaterThan(bottom, top * 2, "top \(top), bottom \(bottom)")
+
+        // And the background pass replaces it, clearing the stale mark.
+        XCTAssertTrue(pumpUntil(10.0) { !panel.overviewBinsAreStale },
+                      "the exact picture arrives and the bins are current again")
+        XCTAssertEqual(panel.overviewSummaries.first?.rowCount, panel.overviewRowCount())
+        _ = window
+    }
+
 }
