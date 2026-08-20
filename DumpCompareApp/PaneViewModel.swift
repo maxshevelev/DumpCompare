@@ -551,6 +551,19 @@ final class PaneViewModel: HexViewDataSource {
         return true
     }
 
+    /// Collapses a selection to its start before an insert-mode byte lands
+    /// there. Insert mode does not consume a selection the way overwrite typing
+    /// does (§7.4 is an overwrite rule), and a selection left standing would go
+    /// on highlighting a span whose bytes have since shifted right — the
+    /// highlight would name bytes the user never selected. Dropping it also
+    /// clears any consuming state a mode switch left behind mid-selection.
+    private func dropSelectionForInsert() {
+        guard let doc = document else { return }
+        overwriteSelection = nil
+        guard !doc.selection.isEmpty else { return }
+        doc.setSelection(SelectionModel.empty(at: doc.selection.start, fileSize: doc.size))
+    }
+
     /// Types one hex digit (0–15) into the current nibble (§7: hex nibble
     /// input; after the second nibble the caret advances to the next byte).
     /// The two nibbles of a byte coalesce into one undo step.
@@ -568,6 +581,7 @@ final class PaneViewModel: HexViewDataSource {
         if isInsertMode {
             // Typing inserts before the caret; it never consumes a selection,
             // so `prepareForTyping` is skipped.
+            if nibble == 0 { dropSelectionForInsert() }
             let offset = typingOffset(doc)
             if nibble == 0 {
                 // High nibble: insert a new byte at the caret with the high
@@ -636,6 +650,7 @@ final class PaneViewModel: HexViewDataSource {
         if isInsertMode {
             // Insert a whole byte at the caret; the tail shifts right. Skip
             // `prepareForTyping` — insert never consumes a selection.
+            dropSelectionForInsert()
             ensureTypingSeries(mode: inputRegion)
             let offset = typingOffset(doc)
             try? doc.insert(at: offset, bytes: [byte])
@@ -658,9 +673,19 @@ final class PaneViewModel: HexViewDataSource {
         notifyAfterEdit(range: offset..<offset + 1, sizeBefore: sizeBefore)
     }
 
-    /// Delete: fill the selection (or the current byte) with 0x00 (§7.3).
+    /// Delete: in overwrite mode it fills the selection (or the current byte)
+    /// with 0x00 (§7.3). In insert mode it removes the selection (or the byte at
+    /// the caret) and shifts the tail left (§7.6) — the same length-changing
+    /// delete Backspace performs there, guarded by the same one-time warning.
     func deleteForward() {
         guard let doc = document else { return }
+        if isInsertMode {
+            guard confirmFirstInsertModeEdit() else { return }
+            breakTypingSeries()
+            guard let range = deletionRange(forward: true) else { return }
+            deleteShiftingTail(range)
+            return
+        }
         breakTypingSeries()
         if !doc.selection.isEmpty {
             fillSelection()
@@ -678,8 +703,8 @@ final class PaneViewModel: HexViewDataSource {
 
     /// Backspace. In overwrite mode it fills the selection (or the previous
     /// byte) with 0x00 and moves the caret back (§7.3). In insert mode it
-    /// deletes the byte before the caret — the tail shifts left and the file
-    /// shrinks by one (§7.2). A half-typed insert-mode byte is rolled back
+    /// removes the selection — or, with none, the byte before the caret — and
+    /// shifts the tail left (§7.6). A half-typed insert-mode byte is rolled back
     /// instead (see `rollbackPendingInsert`).
     func deleteBackward() {
         guard let doc = document else { return }
@@ -687,9 +712,17 @@ final class PaneViewModel: HexViewDataSource {
         // low nibble still pending): Backspace rolls the first nibble back — the
         // inserted byte is removed, the tail shifts left, and the open edit
         // group is cancelled so nothing lands on the undo stack, as if the
-        // first nibble was never entered.
+        // first nibble was never entered. No warning: this takes back the user's
+        // own keystroke, it does not shift anything that was not just shifted.
         if isInsertMode, nibble == 1, pendingInsertOffset == doc.selection.start {
             rollbackPendingInsert()
+            return
+        }
+        if isInsertMode {
+            guard confirmFirstInsertModeEdit() else { return }
+            breakTypingSeries()
+            guard let range = deletionRange(forward: false) else { return }
+            deleteShiftingTail(range)
             return
         }
         breakTypingSeries()
@@ -700,26 +733,47 @@ final class PaneViewModel: HexViewDataSource {
         let sizeBefore = doc.size
         let caret = doc.selection.start
         guard caret > 0 else { return }
-        if isInsertMode {
-            // Insert mode: delete the byte before the caret — the tail shifts
-            // left and the file shrinks by one (a real length-changing delete,
-            // so it records an undo step and repaints the companion's diff).
-            try? doc.delete(range: (caret - 1)..<caret)
-            doc.setSelection(SelectionModel.empty(at: caret - 1, fileSize: doc.size))
-            nibble = 0
-            overwriteSelection = nil
-            onEdit?(.delete(range: (caret - 1)..<caret))
-            notifyAfterEdit(range: (caret - 1)..<caret, sizeBefore: sizeBefore)
-            notifyCompanionContentFullyChanged()
-        } else {
-            // Overwrite mode: fill the previous byte with 0x00 and step back one
-            // — redo must land there too, not at the (unmoved) caret.
-            try? doc.fillZero(in: (caret - 1)..<caret, caretAfter: caret - 1)
-            doc.setSelection(SelectionModel.empty(at: caret - 1, fileSize: doc.size))
-            nibble = 0
-            onEdit?(.overwrite(range: (caret - 1)..<caret))
-            notifyAfterEdit(range: (caret - 1)..<caret, sizeBefore: sizeBefore)
+        // Overwrite mode: fill the previous byte with 0x00 and step back one —
+        // redo must land there too, not at the (unmoved) caret.
+        try? doc.fillZero(in: (caret - 1)..<caret, caretAfter: caret - 1)
+        doc.setSelection(SelectionModel.empty(at: caret - 1, fileSize: doc.size))
+        nibble = 0
+        onEdit?(.overwrite(range: (caret - 1)..<caret))
+        notifyAfterEdit(range: (caret - 1)..<caret, sizeBefore: sizeBefore)
+    }
+
+    /// What an insert-mode Delete or Backspace removes: the selection if there
+    /// is one — in a mode where these keys shift the tail, a selected span goes
+    /// as a whole, the way it would in a text editor — otherwise the single byte
+    /// at (Delete) or before (Backspace) the caret. Nil when there is nothing
+    /// there: Backspace at offset 0, Delete at EOF.
+    private func deletionRange(forward: Bool) -> Range<UInt64>? {
+        guard let doc = document else { return nil }
+        if !doc.selection.isEmpty { return doc.selection.start..<doc.selection.end }
+        let caret = doc.selection.start
+        if forward {
+            guard caret < doc.size else { return nil }
+            return caret..<caret + 1
         }
+        guard caret > 0 else { return nil }
+        return (caret - 1)..<caret
+    }
+
+    /// Removes `range` and shifts the tail left: a real length-changing delete,
+    /// so it records its own undo step and repaints the companion's difference
+    /// background (every offset from here on moved). The caret lands where the
+    /// removed bytes were, which is where redo must put it too.
+    private func deleteShiftingTail(_ range: Range<UInt64>) {
+        guard let doc = document else { return }
+        let sizeBefore = doc.size
+        try? doc.delete(range: range)
+        doc.setSelection(SelectionModel.empty(at: range.lowerBound, fileSize: doc.size))
+        nibble = 0
+        overwriteSelection = nil
+        pendingInsertOffset = nil
+        onEdit?(.delete(range: range))
+        notifyAfterEdit(range: range, sizeBefore: sizeBefore)
+        notifyCompanionContentFullyChanged()
     }
 
     /// Rolls back a half-typed insert-mode byte (Backspace on the pending first

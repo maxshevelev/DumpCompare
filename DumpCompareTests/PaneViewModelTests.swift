@@ -1027,6 +1027,141 @@ final class PaneViewModelTests: XCTestCase {
         XCTAssertEqual(calls, 2)
     }
 
+    // MARK: - Insert mode: deleting and selections (§7.6)
+
+    /// An insert-mode delete shifts the tail, so it is a length-changing edit
+    /// and goes through the same one-time warning as insert-mode typing (§7.2).
+    /// It used to delete with no confirmation ever — the first thing a user did
+    /// in the mode could silently shift the whole file.
+    func testInsertModeBackspaceAsksTheOneTimeWarning() throws {
+        let (pane, url) = try openPane([0x11, 0x22, 0x33])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.isInsertMode = true
+        var calls = 0
+        var allow = false
+        pane.confirmInsertModeWarning = { calls += 1; return allow }
+        pane.moveCaret(to: 2)
+
+        pane.deleteBackward()          // cancelled → nothing happens
+        XCTAssertEqual(calls, 1)
+        XCTAssertEqual(pane.fileSize, 3)
+        XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0x11, 0x22, 0x33])
+        XCTAssertFalse(pane.status.canUndo)
+
+        allow = true
+        pane.deleteBackward()          // confirmed → the byte goes
+        XCTAssertEqual(calls, 2)
+        XCTAssertEqual(pane.fileSize, 2)
+        XCTAssertEqual(pane.hexByteStates(in: 0..<2).map(\.byte), [0x11, 0x33])
+
+        pane.deleteBackward()          // already warned for this file
+        XCTAssertEqual(calls, 2)
+        XCTAssertEqual(pane.fileSize, 1)
+    }
+
+    /// Insert-mode Delete removes the byte at the caret and shifts the tail —
+    /// the forward twin of Backspace, and warned the same way. In overwrite mode
+    /// it still fills with 0x00 (§7.3).
+    func testInsertModeForwardDeleteRemovesTheByteAtTheCaret() throws {
+        let (pane, url) = try openPane([0x11, 0x22, 0x33])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.isInsertMode = true
+        pane.moveCaret(to: 1)
+
+        pane.deleteForward()
+
+        XCTAssertEqual(pane.fileSize, 2)
+        XCTAssertEqual(pane.hexByteStates(in: 0..<2).map(\.byte), [0x11, 0x33])
+        XCTAssertEqual(pane.caretOffset, 1, "the caret stays where the byte was")
+
+        // Overwrite mode is untouched: a fill, not a delete.
+        pane.isInsertMode = false
+        pane.moveCaret(to: 0)
+        pane.deleteForward()
+        XCTAssertEqual(pane.fileSize, 2)
+        XCTAssertEqual(pane.hexByteStates(in: 0..<2).map(\.byte), [0x00, 0x33])
+    }
+
+    /// With a selection, an insert-mode Backspace removes the selected span and
+    /// shifts the tail — a mode whose Backspace deletes bytes cannot fill a
+    /// selection with zeros instead. Overwrite mode keeps filling (§7.3).
+    func testInsertModeBackspaceRemovesTheSelection() throws {
+        let (pane, url) = try openPane([0x11, 0x22, 0x33, 0x44])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.isInsertMode = true
+        pane.setSelection(SelectionModel(start: 1, end: 3, fileSize: 4))
+
+        pane.deleteBackward()
+
+        XCTAssertEqual(pane.fileSize, 2, "two selected bytes are gone")
+        XCTAssertEqual(pane.hexByteStates(in: 0..<2).map(\.byte), [0x11, 0x44])
+        XCTAssertEqual(pane.caretOffset, 1)
+        XCTAssertTrue(try pane.undo())
+        XCTAssertEqual(pane.hexByteStates(in: 0..<4).map(\.byte), [0x11, 0x22, 0x33, 0x44])
+    }
+
+    func testOverwriteModeBackspaceStillFillsTheSelection() throws {
+        let (pane, url) = try openPane([0x11, 0x22, 0x33, 0x44])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.setSelection(SelectionModel(start: 1, end: 3, fileSize: 4))
+
+        pane.deleteBackward()
+
+        XCTAssertEqual(pane.fileSize, 4)
+        XCTAssertEqual(pane.hexByteStates(in: 0..<4).map(\.byte), [0x11, 0x00, 0x00, 0x44])
+    }
+
+    /// Typing in insert mode drops the selection instead of leaving it standing:
+    /// the bytes it covered shift right as the byte lands, so a surviving
+    /// highlight would name bytes the user never selected.
+    func testInsertModeTypingDropsTheSelection() throws {
+        let (pane, url) = try openPane([0x11, 0x22, 0x33, 0x44])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.isInsertMode = true
+        pane.setSelection(SelectionModel(start: 1, end: 3, fileSize: 4))
+
+        pane.typeHexNibble(0xA)        // half-typed byte at the selection's start
+
+        XCTAssertEqual(pane.fileSize, 5)
+        XCTAssertEqual(pane.hexByteStates(in: 0..<5).map(\.byte), [0x11, 0xA0, 0x22, 0x33, 0x44])
+        XCTAssertTrue(pane.hexSelection().isEmpty, "the selection is gone, not left over shifted bytes")
+        XCTAssertEqual(pane.caretOffset, 1)
+
+        pane.typeHexNibble(0xB)
+        XCTAssertEqual(pane.hexByteStates(in: 0..<5).map(\.byte), [0x11, 0xAB, 0x22, 0x33, 0x44])
+        XCTAssertEqual(pane.caretOffset, 2)
+    }
+
+    /// The same end state for an ASCII character: the byte lands at the
+    /// selection's start and nothing stays selected. (This one holds either way
+    /// — a whole byte has no half-typed state to be seen in, and the advance
+    /// past it collapses the selection anyway — so it pins the result, not the
+    /// drop.)
+    func testInsertModeASCIITypingDropsTheSelection() throws {
+        let (pane, url) = try openPane([0x11, 0x22, 0x33, 0x44])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.isInsertMode = true
+        pane.setSelection(SelectionModel(start: 1, end: 3, fileSize: 4))
+
+        pane.typeASCII(0x41)
+
+        XCTAssertEqual(pane.hexByteStates(in: 0..<5).map(\.byte), [0x11, 0x41, 0x22, 0x33, 0x44])
+        XCTAssertTrue(pane.hexSelection().isEmpty)
+    }
+
+    /// Overwrite mode still consumes the selection byte by byte (§7.4).
+    func testOverwriteModeTypingStillConsumesTheSelection() throws {
+        let (pane, url) = try openPane([0x11, 0x22, 0x33, 0x44])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.setSelection(SelectionModel(start: 1, end: 3, fileSize: 4))
+
+        pane.typeASCII(0x41)
+
+        XCTAssertEqual(pane.fileSize, 4)
+        XCTAssertEqual(pane.hexByteStates(in: 0..<4).map(\.byte), [0x11, 0x41, 0x33, 0x44])
+        XCTAssertFalse(pane.hexSelection().isEmpty, "the rest of the selection is still being consumed")
+    }
+
     // MARK: - The nibble group ends with the byte (§7.5.1)
 
     /// Moving the caret off a half-typed byte closes its edit group, so the byte
