@@ -285,6 +285,43 @@ final class MinimapView: NSView {
         if let damage { invalidate(damage) } else { invalidateAll() }
     }
 
+    /// Marks every row from `offset` to the end of one map's picture as modified,
+    /// and repaints them. No bytes are read: an insert or a delete moves
+    /// everything after it, so from that row on the file no longer holds what it
+    /// held there (§19.4). The exact picture — which bytes coincided anyway —
+    /// comes from the background pass.
+    ///
+    /// Applies to a stale picture too: the marks are the point of it, and the
+    /// row the offset lands in is off by at most a row's worth of bytes.
+    func markOverviewRowsModified(from offset: UInt64, forMapAt index: Int) {
+        guard renderMode == .overview, overviewSummaries.indices.contains(index) else { return }
+        var summary = overviewSummaries[index]
+        let extent = max(summary.extent, 1)
+        guard summary.rowCount > 0, offset < extent else { return }
+        let first = Int(offset * UInt64(summary.rowCount) / extent)
+        guard first < summary.modified.count else { return }
+        let fileSize = maps.indices.contains(index) ? maps[index].fileSize : 0
+        var changed = false
+        for row in first..<summary.modified.count {
+            // A row past this file's own end holds nothing of it to mark (§9).
+            let rowStart = extent * UInt64(row) / UInt64(summary.rowCount)
+            guard rowStart < fileSize else { break }
+            if summary.modified[row] != .max {
+                summary.modified[row] = .max
+                changed = true
+            }
+        }
+        guard changed else { return }
+        overviewSummaries[index] = summary
+        overviewStandIns[index] = nil
+        let area = contentArea(within: area(forMapAt: index), forMapAt: index)
+        let rowHeight = overviewRowHeight
+        guard rowHeight > 0, area.height > 0 else { return }
+        let y = area.minY + CGFloat(first) * rowHeight
+        guard area.maxY > y else { return }
+        invalidate([NSRect(x: area.minX, y: y, width: area.width, height: area.maxY - y)])
+    }
+
     /// Replaces the values for `rows` in one map's picture and repaints just
     /// them. This is how an edit reaches the overview: the rows a byte lands in
     /// are recomputed from the file, and the rest of the picture — the whole dump

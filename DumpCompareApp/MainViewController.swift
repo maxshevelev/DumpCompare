@@ -606,18 +606,20 @@ final class MainViewController: NSViewController {
     /// row of an overview is on screen at once, so unlike the detail window it
     /// cannot be pulled per repaint — it is computed in the background and
     /// debounced, so a burst of edits costs one pass (§19.4).
-    /// The debounce is *not* restarted by a later request, and a pass that is
-    /// already running is not cancelled unless the geometry moved under it.
+    /// The pass waits for the edits to stop: each request restarts the delay, so
+    /// a burst of keystrokes — auto-repeat is thirty a second — costs one pass
+    /// after it, not one per keystroke. A pass over two 16 MB dumps reads both
+    /// files whole; doing that thirty times a second starves the main thread of
+    /// the very cache it draws from, which is felt as the typing sticking.
     ///
-    /// Restarting on every request meant nothing ever ran while the user typed:
-    /// each keystroke asked twice — once for the file's new size, once when the
-    /// comparison index absorbed the edit — so the 120 ms wait was pushed back
-    /// past the next keystroke, and the picture only rebuilt after typing
-    /// stopped. Coalescing instead bounds the wait to 120 ms after the *first*
-    /// request, and a request that arrives mid-pass is remembered and honoured
-    /// when that pass lands. A row-count change is the one case where the
-    /// running pass is useless — its result is binned for a panel height that no
-    /// longer exists — so that one does cancel.
+    /// Waiting is only acceptable because the map does not go silent while it
+    /// waits: a shifting edit marks its tail immediately and for free
+    /// (`markShiftedTailModified`), and the picture in hand is stretched rather
+    /// than dropped. What the pass adds is exactness.
+    ///
+    /// A pass already running is not cancelled — the request is remembered and
+    /// honoured when it lands — unless the row count moved under it, which makes
+    /// its result useless: it is binned for a panel height that no longer exists.
     private func scheduleOverviewRebuild() {
         guard minimapSplit.panelVisible, minimapView.renderMode == .overview else { return }
         if overviewPassTask != nil {
@@ -630,9 +632,9 @@ final class MainViewController: NSViewController {
                 return
             }
         }
-        guard overviewDebounceTask == nil else { return }
+        overviewDebounceTask?.cancel()
         overviewDebounceTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 120_000_000)
+            try? await Task.sleep(nanoseconds: 250_000_000)
             guard !Task.isCancelled else { return }
             self?.overviewDebounceTask = nil
             self?.rebuildOverview()
@@ -1194,9 +1196,29 @@ final class MainViewController: NSViewController {
             // does, instead of the whole picture being rebuilt (§19.9).
             if mode == .comparison { overviewRowsAwaitingIndex.append(range) }
         case .insert, .delete:
-            // Every byte after the change moved, so no range describes it.
+            // Every byte after the change moved, so no range describes it — the
+            // exact picture is a full pass, and that pass waits for the typing to
+            // settle. Until it lands the map still tells the truth about what
+            // matters: from here on, this file no longer holds what it held, so
+            // those rows are marked modified. That costs no reads at all, which
+            // is the point — at auto-repeat speed a pass per keystroke means
+            // re-reading the whole file thirty times a second, and the main
+            // thread feels it (§19.9).
             minimapView.invalidateCells()
+            markShiftedTailModified(from: edit.earliestAffectedOffset)
             refreshMinimapMaps()
+        }
+    }
+
+    /// Marks every overview row at or after `offset` as modified on the edited
+    /// panes' maps, without reading a byte. An interim truth: a shift moves
+    /// everything after it, so those rows hold different content than the file
+    /// did there. The background pass replaces it with the exact answer, which
+    /// can be narrower — bytes that coincide after the shift are not modified.
+    private func markShiftedTailModified(from offset: UInt64) {
+        guard minimapSplit.panelVisible, minimapView.renderMode == .overview else { return }
+        for index in minimapView.overviewSummaries.indices {
+            minimapView.markOverviewRowsModified(from: offset, forMapAt: index)
         }
     }
 

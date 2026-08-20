@@ -2565,29 +2565,43 @@ final class MinimapTests: XCTestCase {
                        columns / 2, "two of the row's four bytes")
     }
 
-    /// Typing must not starve the overview. Each keystroke asks for a rebuild
-    /// twice — once for the file's new size, once when the comparison index
-    /// absorbs the edit — and restarting the 120 ms debounce on every request
-    /// pushed the pass past the next keystroke, so nothing rebuilt until typing
-    /// stopped. The wait is now bounded from the *first* request (§19.9).
-    func testTypingDoesNotStarveTheOverviewRebuild() throws {
+    /// While the typing goes on the map is updated for free and no pass runs: a
+    /// pass reads the file whole, and at auto-repeat speed one per keystroke
+    /// starves the main thread of the cache it draws from — the typing sticks.
+    /// A shifting edit marks its tail straight away instead, and the exact pass
+    /// waits for the burst to end (§19.9).
+    func testATypingBurstMarksTheTailWithoutRunningAPass() throws {
         let (controller, _, panel) = try makeOverviewWindow(
             (0..<(256 * 1024)).map { UInt8($0 % 251) })
-        let completedBefore = controller.overviewRebuildsCompleted
-        controller.windowModel.pane1.isInsertMode = true
-        controller.windowModel.pane1.moveCaret(to: 50 * 1024)
+        let passesBefore = controller.overviewRebuilds
+        let pane = controller.windowModel.pane1
+        pane.isInsertMode = true
+        pane.moveCaret(to: 50 * 1024)
+        let summary = try XCTUnwrap(panel.overviewSummaries.first)
+        let insertRow = Int(50 * 1024 * UInt64(summary.rowCount) / summary.extent)
 
-        // Twelve bytes at roughly a keystroke every 60 ms — faster than the
-        // debounce, for well over a second in total.
-        for _ in 0..<12 {
-            controller.windowModel.pane1.typeASCII(0x5A)
-            _ = pumpUntil(0.06) { false }
+        // Twenty bytes at auto-repeat speed, well past the debounce in total.
+        for _ in 0..<20 {
+            pane.typeASCII(0x5A)
+            _ = pumpUntil(0.033) { false }
         }
 
-        XCTAssertGreaterThan(controller.overviewRebuildsCompleted, completedBefore,
-                             "a pass ran while the typing was still going")
-        XCTAssertTrue(panel.overviewSummaries.first?.modified.contains { $0 != 0 } ?? false,
-                      "and it brought the edits into the picture")
+        // The marks are already there, with no pass having run.
+        XCTAssertEqual(controller.overviewRebuilds, passesBefore,
+                       "no pass ran during the burst")
+        let during = try XCTUnwrap(panel.overviewSummaries.first)
+        XCTAssertTrue(during.modified[(insertRow + 1)...].allSatisfy { $0 != 0 },
+                      "the shifted tail is marked as it is typed")
+        XCTAssertTrue(during.modified[..<insertRow].allSatisfy { $0 == 0 },
+                      "and nothing before the insertion point is")
+
+        // The exact pass lands once the typing stops.
+        XCTAssertTrue(pumpUntil(10.0) { controller.overviewRebuilds > passesBefore },
+                      "the pass runs after the burst")
+        XCTAssertTrue(pumpUntil(10.0) { !panel.overviewBinsAreStale })
+        XCTAssertTrue(try XCTUnwrap(panel.overviewSummaries.first)
+            .modified[(insertRow + 1)...].contains { $0 != 0 },
+                      "and the exact picture agrees the tail is modified")
     }
 
     /// An inserted byte moves every byte after it, so from there to the end the
@@ -2649,9 +2663,11 @@ final class MinimapTests: XCTestCase {
         XCTAssertGreaterThan(summaryBefore.rowCount, 0)
         XCTAssertFalse(panel.overviewBinsAreStale)
 
-        // Insert one byte: the file grows, so the bins no longer match it.
+        // Insert one byte: the file grows, so the bins no longer match it. Near
+        // the very end, so the interim modified marks (§19.4) cover only the last
+        // rows and the density picture this test reads is still on screen.
         controller.windowModel.pane1.isInsertMode = true
-        controller.windowModel.pane1.moveCaret(to: 1000)
+        controller.windowModel.pane1.moveCaret(to: UInt64(size) - 8)
         controller.windowModel.pane1.typeASCII(0x5A)
 
         XCTAssertTrue(panel.overviewBinsAreStale, "the bins are known to be out of date")

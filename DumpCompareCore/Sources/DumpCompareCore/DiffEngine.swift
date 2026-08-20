@@ -16,7 +16,7 @@ public enum DiffEdit: Equatable, Sendable {
     case delete(range: Range<UInt64>)
 
     /// The offset from which the comparison is no longer trustworthy.
-    var earliestAffectedOffset: UInt64 {
+    public var earliestAffectedOffset: UInt64 {
         switch self {
         case .overwrite(let range): return range.lowerBound
         case .insert(let at, _): return at
@@ -26,7 +26,7 @@ public enum DiffEdit: Equatable, Sendable {
 
     /// Whether this edit shifts the offsets after it, making everything from
     /// `earliestAffectedOffset` to the end of both files unreliable.
-    var shiftsOffsets: Bool {
+    public var shiftsOffsets: Bool {
         switch self {
         case .overwrite: return false
         case .insert, .delete: return true

@@ -1431,15 +1431,19 @@ The panes' visible slice is drawn as a translucent band over the map.
   then held for a minimum showing before it clears, because the pass itself is
   fast: two 16 MB dumps are binned in ~150 ms, so a bar that vanished the
   instant the pass ended was never seen at all.
-- The rebuild is debounced, and the debounce is not restarted by a later
-  request: the wait is bounded from the first request, not the last. A request
-  that arrives while a pass is running does not cancel it — it is remembered and
-  honoured when that pass lands. The exception is a change to the row count: the
-  running pass is binning for a panel height that no longer exists, so it is
-  cancelled. Restarting on every request starved the rebuild completely while the
-  user typed, because a keystroke asks twice — once for the file's new size, once
-  when the comparison index absorbs the edit — and the second ask always landed
-  inside the wait.
+- The rebuild waits for the edits to stop: every request restarts the delay, so
+  a burst of keystrokes costs one pass after it rather than one per keystroke. A
+  pass reads both files whole, and at auto-repeat speed — thirty keys a second —
+  running one per keystroke starves the main thread of the same caches it draws
+  from, which is felt as the typing sticking. A request that arrives while a pass
+  is running does not cancel it: it is remembered and honoured when that pass
+  lands. The exception is a change to the row count, which makes the running
+  pass's result useless — it is binned for a panel height that no longer exists.
+- Waiting is only allowed because the map does not go quiet while it waits. A
+  shifting edit marks its tail modified immediately, without reading a byte: the
+  bytes after it moved, so those rows no longer hold what the file held there.
+  The pass then replaces that with the exact answer, which can be narrower —
+  bytes that coincide after the shift are not modified.
 - The picture in hand is never thrown away while its replacement is computed.
   A rebuild is triggered by things that make the picture stale, not wrong to
   look at: an edit that changes the longest file's length re-bins every row, but
