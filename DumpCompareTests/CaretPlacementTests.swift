@@ -239,4 +239,203 @@ final class CaretPlacementTests: XCTestCase {
         XCTAssertEqual(pane.hexCaretNibble(), 0)
         XCTAssertEqual(pane.hexInputRegion(), .ascii)
     }
+
+    // MARK: - Insert-mode caret rendering
+
+    /// A real `HexView` backed by a real `PaneViewModel`, rendered straight to a
+    /// bitmap (no window/scroll view), so the test measures the hex view's own
+    /// drawing. Aqua appearance pins the dynamic colours (label → black, accent
+    /// → blue, systemRed → red) for deterministic sampling.
+    private func makeHexView(_ bytes: [UInt8]) throws -> (HexView, PaneViewModel, URL) {
+        let url = try tempFile(bytes)
+        let pane = PaneViewModel()
+        try pane.open(url: url)
+        let hexView = HexView()
+        hexView.appearance = NSAppearance(named: .aqua)
+        hexView.dataSource = pane
+        hexView.delegate = pane
+        hexView.reloadData()
+        return (hexView, pane, url)
+    }
+
+    /// Snapshots the view via `cacheDisplay`, which drives the real flipped
+    /// `draw(_:)` path onto a bitmap at the backing scale.
+    private func render(_ view: HexView) -> NSBitmapImageRep {
+        guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+            XCTFail("no bitmap rep")
+            return NSBitmapImageRep()
+        }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        return rep
+    }
+
+    /// The strongest redness (red − blue) across a horizontal window of the
+    /// rendering — the insert caret's giveaway.
+    private func redness(_ hexView: HexView, y: CGFloat, x: CGFloat, width: CGFloat) throws -> CGFloat {
+        let rep = render(hexView)
+        let scale = CGFloat(rep.pixelsWide) / hexView.bounds.width
+        let py = min(max(Int(y * scale), 0), rep.pixelsHigh - 1)
+        let first = max(0, Int((x * scale).rounded(.down)))
+        let last = min(rep.pixelsWide - 1, Int(((x + width) * scale).rounded(.up)))
+        guard last >= first else { return 0 }
+        return (first...last).compactMap { rep.colorAt(x: $0, y: py)?.usingColorSpace(.deviceRGB) }
+            .map { $0.redComponent - $0.blueComponent }
+            .max() ?? 0
+    }
+
+    /// The strongest blueness (blue − red) across a horizontal window — the
+    /// overwrite caret's giveaway.
+    private func blueness(_ hexView: HexView, y: CGFloat, x: CGFloat, width: CGFloat) throws -> CGFloat {
+        let rep = render(hexView)
+        let scale = CGFloat(rep.pixelsWide) / hexView.bounds.width
+        let py = min(max(Int(y * scale), 0), rep.pixelsHigh - 1)
+        let first = max(0, Int((x * scale).rounded(.down)))
+        let last = min(rep.pixelsWide - 1, Int(((x + width) * scale).rounded(.up)))
+        guard last >= first else { return 0 }
+        return (first...last).compactMap { rep.colorAt(x: $0, y: py)?.usingColorSpace(.deviceRGB) }
+            .map { $0.blueComponent - $0.redComponent }
+            .max() ?? 0
+    }
+
+    /// The strongest "ink" (1 − min(r, g, b)) inside a point-space rect — how
+    /// far the most-coloured pixel is from the paper, regardless of hue. A dim
+    /// gray `_` placeholder reads ≈ 0.35; a filled digit reads well past 0.5
+    /// whether it is black or the red of a modified byte — so this separates
+    /// "empty slot" from "filled slot" without depending on the digit's colour.
+    private func maxInk(_ hexView: HexView, in pointRect: NSRect) throws -> CGFloat {
+        let rep = render(hexView)
+        let scale = CGFloat(rep.pixelsWide) / hexView.bounds.width
+        let startX = max(0, Int(floor(pointRect.minX * scale)))
+        let endX = min(rep.pixelsWide - 1, Int(ceil(pointRect.maxX * scale)))
+        let startY = max(0, Int(floor(pointRect.minY * scale)))
+        let endY = min(rep.pixelsHigh - 1, Int(ceil(pointRect.maxY * scale)))
+        guard endX >= startX, endY >= startY else { return 0 }
+        var maxI = CGFloat(0)
+        for y in startY...endY {
+            for x in startX...endX {
+                guard let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
+                let ink = 1 - min(c.redComponent, min(c.greenComponent, c.blueComponent))
+                maxI = max(maxI, ink)
+            }
+        }
+        return maxI
+    }
+
+    /// In insert mode the caret is a red vertical line at the byte boundary;
+    /// in overwrite mode the same nibble cell carries a thick blue underline
+    /// along the cell's bottom edge — below the glyph, not over it.
+    func testInsertModeCaretIsRedVerticalLine() throws {
+        let (hexView, pane, url) = try makeHexView([UInt8](repeating: 0x11, count: 32))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let layout = hexView.hexLayout
+        let rowFrame = layout.rowFrame(row: 0)
+        let caretX = layout.hexByteX(column: 0)
+
+        // Insert mode: a full-height red vertical line — sampled mid-row.
+        pane.isInsertMode = true
+        hexView.reloadData()
+        XCTAssertGreaterThan(try redness(hexView, y: rowFrame.midY, x: caretX, width: layout.charWidth), 0.3,
+                             "insert-mode caret is a red vertical line")
+
+        // Overwrite mode: a thick blue underline at the cell's bottom edge.
+        pane.isInsertMode = false
+        hexView.reloadData()
+        let underlineY = rowFrame.maxY - 1
+        XCTAssertGreaterThan(try blueness(hexView, y: underlineY, x: caretX, width: layout.charWidth), 0.3,
+                             "overwrite-mode caret is a blue underline")
+        // The underline reaches the nibble cell's right edge.
+        XCTAssertGreaterThan(try blueness(hexView, y: underlineY, x: caretX + layout.charWidth - 3, width: 3), 0.3,
+                             "the underline spans the whole nibble cell")
+        // It sits below the glyph: mid-row (where the digit ink is) has no blue
+        // caret — only the black digit.
+        XCTAssertLessThan(try blueness(hexView, y: rowFrame.midY, x: caretX, width: layout.charWidth), 0.3,
+                          "the underline is under the glyph, not over it")
+        // The bar is thick enough to overlap the row below: blue just past the
+        // row's bottom edge, into the next row.
+        XCTAssertGreaterThan(try blueness(hexView, y: rowFrame.maxY + 1, x: caretX, width: layout.charWidth), 0.3,
+                             "the thick underline overlaps the row below")
+    }
+
+    /// After the first insert-mode digit the caret line shifts to between the
+    /// two nibbles (on the low-nibble side); before it, it sits on the byte's
+    /// left boundary. Sampled near the top of the row, where only the full-
+    /// height caret line is present — a digit glyph is centred lower — so the
+    /// red here is the caret, not the (red, modified) digit.
+    func testInsertCaretShiftsToMidByteAfterFirstNibble() throws {
+        let (hexView, pane, url) = try makeHexView([UInt8](repeating: 0x11, count: 32))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let layout = hexView.hexLayout
+        let y = layout.rowFrame(row: 0).minY + 1
+        let leftEdge = layout.hexByteX(column: 0)
+        let midByte = leftEdge + layout.charWidth
+        pane.isInsertMode = true
+
+        // Before the first digit: the caret line is on the byte's left boundary,
+        // not mid-byte (the byte is unmodified, so the only red is the caret).
+        hexView.reloadData()
+        XCTAssertGreaterThan(try redness(hexView, y: y, x: leftEdge, width: 3), 0.3,
+                             "before the first digit the caret line is on the left boundary")
+        XCTAssertLessThan(try redness(hexView, y: y, x: midByte, width: 3), 0.3,
+                          "before the first digit there is no caret line mid-byte")
+
+        // After the first digit: the caret line shifts to between the two nibbles.
+        pane.typeHexNibble(0xA)
+        hexView.reloadData()
+        XCTAssertGreaterThan(try redness(hexView, y: y, x: midByte, width: 3), 0.3,
+                             "after the first digit the caret line is mid-byte")
+    }
+
+    /// A half-typed insert-mode byte shows a dim `_` in its low-nibble slot
+    /// (muted, near the paper); the second digit fills it with the digit at
+    /// full byte-text contrast.
+    func testInsertModePendingNibbleShowsEmptyLowNibbleSlot() throws {
+        let (hexView, pane, url) = try makeHexView([UInt8](repeating: 0x11, count: 32))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let layout = hexView.hexLayout
+        pane.isInsertMode = true
+
+        // High nibble: a byte 0xA0 is inserted at offset 0, the low nibble is
+        // empty (nibble == 1) and drawn as a dim `_`.
+        pane.typeHexNibble(0xA)
+        hexView.reloadData()
+        // The insert caret now sits on the low-nibble cell's left edge (mid-
+        // byte), so sample a few pixels in from that edge to read the
+        // placeholder glyph's ink without counting the red caret line.
+        let lowNibbleCell = CGRect(x: layout.hexByteX(column: 0) + layout.charWidth + 3,
+                                   y: layout.rowFrame(row: 0).minY,
+                                   width: layout.charWidth - 4, height: layout.rowHeight)
+        XCTAssertLessThan(try maxInk(hexView, in: lowNibbleCell), 0.5,
+                          "the pending low nibble is a dim placeholder, not a filled digit")
+
+        // Second digit: the slot fills with "B" at full byte-text contrast.
+        pane.typeHexNibble(0xB)
+        hexView.reloadData()
+        XCTAssertGreaterThan(try maxInk(hexView, in: lowNibbleCell), 0.5,
+                             "the filled low nibble shows the digit at full contrast")
+    }
+
+    /// A mid-byte caret a *click* placed (nibble 1, nothing typed) is just a
+    /// caret position — it does not open a pending insert, so the low-nibble
+    /// slot keeps showing the byte's own digit at full contrast, not the dim `_`
+    /// placeholder a genuine half-typed insert shows.
+    func testInsertModeClickMidByteKeepsLowNibble() throws {
+        let (hexView, pane, url) = try makeHexView([0xAB, 0xCD, 0xEF, 0x11, 0x22, 0x33, 0x44, 0x55])
+        defer { try? FileManager.default.removeItem(at: url) }
+        let layout = hexView.hexLayout
+        pane.isInsertMode = true
+
+        // A click in the second half of byte 0 places the caret mid-byte
+        // (nibble 1) without typing anything.
+        pane.hexEditor(hexView, didClickAt: 0, region: .hex, extendSelection: false, nibble: 1)
+        hexView.reloadData()
+
+        // The low-nibble slot still shows the byte's own digit ("B") at full
+        // contrast. Sample a few pixels in from the cell's left edge to skip
+        // the red caret line.
+        let lowNibbleCell = CGRect(x: layout.hexByteX(column: 0) + layout.charWidth + 3,
+                                   y: layout.rowFrame(row: 0).minY,
+                                   width: layout.charWidth - 4, height: layout.rowHeight)
+        XCTAssertGreaterThan(try maxInk(hexView, in: lowNibbleCell), 0.5,
+                             "a mid-byte click does not blank the low nibble into a placeholder")
+    }
 }

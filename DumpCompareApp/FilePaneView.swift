@@ -444,6 +444,11 @@ final class FilePaneView: NSView {
         viewModel.onSelectionChanged = { [weak self] in
             self?.refreshSelection()
         }
+        // A typing-mode flip recolors/reshapes the caret in place (its position
+        // did not move): redraw the caret's row without scrolling.
+        viewModel.onCaretAppearanceChanged = { [weak self] in
+            self?.hexView.redrawCaret()
+        }
         // A content change — bytes overwritten in this pane, or its decoder
         // rebuilt: redraw just the affected rows/columns and refresh the chrome
         // that follows the caret, without a full `reloadData` (§3.3 extension).

@@ -58,4 +58,47 @@ final class MainWindowMenuTests: XCTestCase {
         XCTAssertEqual(titles[copyIndex + 1], "Paste")
         XCTAssertEqual(titles[copyIndex + 2], "Paste Insert…")
     }
+
+    // MARK: - Insert Mode toggle
+
+    /// The Edit menu carries the Insert Mode toggle, wired to the controller's
+    /// `toggleInsertMode` (a checked mode item, not a one-shot command), bound
+    /// to ⌥⌘I.
+    func testEditMenuHasInsertModeToggle() {
+        let item = makeEditMenu().items.first { $0.title == "Insert Mode" }
+        XCTAssertNotNil(item, "the Edit menu should offer an Insert Mode toggle")
+        XCTAssertEqual(item?.action, #selector(MainViewController.toggleInsertMode))
+        XCTAssertEqual(item?.keyEquivalent, "i")
+        XCTAssertEqual(item?.keyEquivalentModifierMask, [.command, .option])
+    }
+
+    /// The Insert Mode checkmark follows the mode: off on a fresh controller,
+    /// on after a toggle — which also flips both panes and wires the one-time
+    /// warning into each.
+    func testInsertModeCheckmarkFollowsTheToggle() throws {
+        let wc = MainWindowController()
+        defer { wc.close() }
+        let controller = try XCTUnwrap(wc.mainViewController)
+        let editMenu = try XCTUnwrap(NSApp.mainMenu?.items
+            .compactMap(\.submenu).first { $0.title == "Edit" })
+        let item = try XCTUnwrap(editMenu.items.first {
+            $0.action == #selector(MainViewController.toggleInsertMode)
+        }, "an Edit item toggling insert mode")
+
+        XCTAssertTrue(controller.validateMenuItem(item))
+        XCTAssertEqual(item.state, .off)
+        XCTAssertFalse(controller.windowModel.pane1.isInsertMode)
+        XCTAssertFalse(controller.windowModel.pane2.isInsertMode)
+
+        controller.toggleInsertMode(nil)
+
+        XCTAssertTrue(controller.validateMenuItem(item))
+        XCTAssertEqual(item.state, .on)
+        XCTAssertTrue(controller.windowModel.pane1.isInsertMode)
+        XCTAssertTrue(controller.windowModel.pane2.isInsertMode)
+        XCTAssertNotNil(controller.windowModel.pane1.confirmInsertModeWarning,
+                        "the one-time warning is wired into pane 1")
+        XCTAssertNotNil(controller.windowModel.pane2.confirmInsertModeWarning,
+                        "the one-time warning is wired into pane 2")
+    }
 }

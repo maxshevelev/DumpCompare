@@ -16,6 +16,10 @@ final class MainViewController: NSViewController {
     /// Current diff-navigation availability. Recomputed on every mode, index,
     /// and caret change; the menu items read it via `validateMenuItem` (§10.3).
     private(set) var diffNavigationState = DiffNavigationState()
+    /// Typing mode for both panes: `true` inserts a byte at the caret (the file
+    /// grows), `false` overwrites the byte under the caret. Session-global — it
+    /// is never persisted, so the app always launches in Overwrite mode.
+    private(set) var insertMode = false
     let windowModel = WindowViewModel()
     private weak var activeFilePane: FilePaneView?
     private weak var comparisonView: ComparisonView?
@@ -2131,6 +2135,32 @@ final class MainViewController: NSViewController {
         }
     }
 
+    /// Edit > Insert Mode: flips the typing mode for BOTH panes (a session-global
+    /// mode, never persisted). When on, typing inserts a byte at the caret and
+    /// shifts the tail right; the caret becomes a red vertical line at the byte
+    /// boundary. The one-time "this shifts the file" warning is injected into
+    /// each pane idempotently here — wiring it at toggle (rather than pane
+    /// creation) guarantees the callback exists before any insert-mode keystroke,
+    /// and it is mode-independent, so re-enabling after a toggle-off never
+    /// re-arms it within the same file.
+    @objc func toggleInsertMode(_ sender: Any?) {
+        insertMode.toggle()
+        for pane in [windowModel.pane1, windowModel.pane2] {
+            pane.isInsertMode = insertMode
+            pane.confirmInsertModeWarning = { [weak self, weak pane] in
+                guard let self, let pane else { return true }
+                let offset = pane.caretOffset
+                let response = self.confirmAlert(
+                    title: "Insert?",
+                    message: "Inserting at offset \(String(format: "0x%X", offset)) shifts every byte from here on — the file structure may be affected.",
+                    confirmTitle: "Insert",
+                    destructive: true
+                )
+                return response == .alertFirstButtonReturn
+            }
+        }
+    }
+
     // MARK: - Comparison navigation (§10.3)
 
     @objc func nextDifference() { navigateBlock(kind: .different, direction: .forward) }
@@ -2768,6 +2798,11 @@ extension MainViewController: NSMenuItemValidation {
             // the panel's state (§19). Always enabled: the minimap works with
             // no file open too (it just has nothing to draw).
             menuItem.title = minimapSplit.panelVisible ? "Hide Minimap" : "Show Minimap"
+            return true
+        case #selector(toggleInsertMode):
+            // A checked toggle: the checkmark reads the current mode. Always
+            // enabled — it is a mode switch, meaningful even with no file open.
+            menuItem.state = insertMode ? .on : .off
             return true
         case #selector(saveDocument),
              #selector(saveDocumentAs),

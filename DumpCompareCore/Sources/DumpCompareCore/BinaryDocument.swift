@@ -244,6 +244,22 @@ public final class BinaryDocument: @unchecked Sendable {
         }
     }
 
+    /// Cancels the open edit group: reverts the ops collected so far (in
+    /// reverse order) and clears the group state, recording **no** transaction.
+    /// The selection is restored to the one the group began with. Used to roll
+    /// back a half-typed insert-mode byte as if it never happened — the byte
+    /// disappears and the tail shifts back, leaving nothing on the undo stack.
+    public func cancelEditGroup() throws {
+        guard groupDepth > 0 else { return }
+        for op in pendingGroupOps.reversed() {
+            try applyForward(op.inverted)
+        }
+        pendingGroupOps.removeAll()
+        groupDepth = 0
+        selection = (groupStartSelection ?? selection).clamped(to: storage.size)
+        groupStartSelection = nil
+    }
+
     // MARK: - Typing series (segmented undo, Variant B)
 
     /// The id of the typing series currently open, stamped onto every

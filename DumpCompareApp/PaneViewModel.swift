@@ -74,6 +74,23 @@ final class PaneViewModel: HexViewDataSource {
     private(set) var nibble = 0
     /// The interactive region the caret currently targets (§7).
     private(set) var inputRegion: HexInputRegion = .hex
+    /// Typing mode: `true` inserts a byte at the caret (the file grows), `false`
+    /// overwrites the byte under the caret. Set by the controller for both panes
+    /// at once (a session-global mode, never persisted). The `didSet` repaints
+    /// just the caret's row so the caret instantly changes colour/shape when the
+    /// mode flips — without scrolling, because the caret did not move (a scroll
+    /// would yank the view away from where the user was reading).
+    var isInsertMode = false {
+        didSet { if document != nil { onCaretAppearanceChanged?() } }
+    }
+    /// Presenter for the one-time "inserting shifts the file" warning, injected
+    /// by the controller. Nil under pure unit tests, where typing proceeds
+    /// without asking. Returns `true` to proceed, `false` to swallow the key.
+    var confirmInsertModeWarning: (() -> Bool)?
+    /// Whether this file has already been warned about insert-mode shifting.
+    /// Shown once per opened file; reset on open/close (see `resetEditingState`
+    /// callers) so a new file re-arms it.
+    private var hasWarnedInsertShift = false
     /// When typing over a selection, the selection being consumed (§7.4).
     private var overwriteSelection: SelectionModel?
     /// Anchor for shift-extended selections.
@@ -81,6 +98,12 @@ final class PaneViewModel: HexViewDataSource {
     /// Whether a hex-byte edit group is open (the two nibbles of a byte coalesce
     /// into a single undo step; see `beginTypingGroup`/`endTypingGroup`).
     private var typingGroupOpen = false
+    /// The offset of a byte whose high nibble was just inserted in insert mode
+    /// (the low nibble is still pending, the edit group still open). `nil` once
+    /// the byte is completed or the caret leaves it. Distinguishes a genuine
+    /// half-typed insert (Backspace rolls it back) from a mid-byte caret a click
+    /// placed (Backspace behaves normally).
+    private var pendingInsertOffset: UInt64?
 
     /// Time injection so tests can drive the series-break and fast-undo
     /// windows deterministically (the pattern of `MinimapSplitView.defaults`).
@@ -161,6 +184,13 @@ final class PaneViewModel: HexViewDataSource {
     /// position (§10.3).
     var onCaretChanged: (() -> Void)?
 
+    /// Fired when the caret's *appearance* changes without its position moving —
+    /// the typing-mode flip (overwrite ↔ insert) recolors and reshapes the caret
+    /// in place. The view redraws just the caret's row; it must NOT scroll,
+    /// because the caret did not move (a scroll would yank the view away from
+    /// where the user was reading). Set by `FilePaneView.bind`.
+    var onCaretAppearanceChanged: (() -> Void)?
+
     /// The active text decoder, rebuilt whenever decoding settings change.
     private(set) var textDecoder: any TextDecoder
 
@@ -221,6 +251,9 @@ final class PaneViewModel: HexViewDataSource {
         // "Untitled" with the new-file glyph instead of the loaded file (§4/§5).
         isUntitled = false
         refreshSavedStorage()
+        // A new file re-arms the one-time insert-mode warning (it is per opened
+        // file, not per session).
+        hasWarnedInsertShift = false
         // Ends the typing series, so a batch undo cannot span this checkpoint
         // (§7.5.1) — see `save()`.
         resetEditingState()
@@ -245,6 +278,8 @@ final class PaneViewModel: HexViewDataSource {
         )
         savedStorage = nil
         isUntitled = true
+        // A new file re-arms the one-time insert-mode warning.
+        hasWarnedInsertShift = false
         resetEditingState()
         changeWatcher?.stop()
         changeWatcher = nil
@@ -256,6 +291,9 @@ final class PaneViewModel: HexViewDataSource {
         document = nil
         savedStorage = nil
         isUntitled = false
+        // Closing drops the file, so the one-time insert-mode warning re-arms
+        // for whatever opens next.
+        hasWarnedInsertShift = false
         changeWatcher?.stop()
         changeWatcher = nil
         resetEditingState()
@@ -358,6 +396,7 @@ final class PaneViewModel: HexViewDataSource {
         inputRegion = .hex
         overwriteSelection = nil
         selectionAnchor = nil
+        pendingInsertOffset = nil
     }
 
     /// Moves the caret's input region to `region` (set when the user clicks the
@@ -453,6 +492,20 @@ final class PaneViewModel: HexViewDataSource {
 
     func hexInputRegion() -> HexInputRegion { inputRegion }
 
+    /// The pane's typing mode — the hex view draws the insert-mode caret (a red
+    /// vertical line at the byte boundary) when this is true.
+    var hexInsertMode: Bool { isInsertMode }
+
+    /// Whether the caret sits on a byte whose high nibble was just inserted in
+    /// insert mode and the low nibble is still pending — a genuine half-typed
+    /// byte, as opposed to a mid-byte caret a click placed. The view shows the
+    /// dim `_` placeholder in the low-nibble slot only in this state (§7): a
+    /// click merely places the caret, it does not blank the byte.
+    var hexHasPendingInsert: Bool {
+        guard let doc = document else { return false }
+        return pendingInsertOffset == doc.selection.start
+    }
+
     /// The companion pane's selection, clamped to this pane's file size — what
     /// this pane's hex view frames to mirror the opposite pane (§3.3). Nil in
     /// single-file mode (no companion).
@@ -484,12 +537,67 @@ final class PaneViewModel: HexViewDataSource {
 
     // MARK: - Hex input (§7)
 
+    /// The one-time insert-mode warning. Returns `true` to proceed with the
+    /// keystroke, `false` to swallow it (the user cancelled). Shown once per
+    /// opened file; a cancelled warning does not set the flag, so the next
+    /// keystroke re-asks. A nil presenter (pure unit tests) proceeds without
+    /// asking.
+    private func confirmFirstInsertModeEdit() -> Bool {
+        guard isInsertMode, !hasWarnedInsertShift,
+              let confirm = confirmInsertModeWarning else { return true }
+        guard confirm() else { return false }   // user cancelled → swallow the keystroke
+        hasWarnedInsertShift = true
+        return true
+    }
+
     /// Types one hex digit (0–15) into the current nibble (§7: hex nibble
     /// input; after the second nibble the caret advances to the next byte).
     /// The two nibbles of a byte coalesce into one undo step.
+    ///
+    /// In insert mode the **first** digit inserts a new byte at the caret with
+    /// the high nibble set and the low nibble empty (the tail shifts right),
+    /// and the **second** digit fills the low nibble in place (an overwrite)
+    /// and advances. The pair coalesces into one undo step via the same edit
+    /// group as overwrite mode.
     func typeHexNibble(_ digit: Int) {
-        guard let doc = document, (0...15).contains(digit) else { return }
+        guard let doc = document, (0...15).contains(digit),
+              confirmFirstInsertModeEdit() else { return }
         let sizeBefore = doc.size
+
+        if isInsertMode {
+            // Typing inserts before the caret; it never consumes a selection,
+            // so `prepareForTyping` is skipped.
+            let offset = typingOffset(doc)
+            if nibble == 0 {
+                // High nibble: insert a new byte at the caret with the high
+                // nibble set and the low nibble empty (0); the tail shifts
+                // right. `doc.insert` leaves the caret at `offset` (on the new
+                // byte) so the next digit fills it — no advance here.
+                ensureTypingSeries(mode: inputRegion)
+                beginTypingGroup()
+                try? doc.insert(at: offset, bytes: [UInt8(digit) << 4])
+                nibble = 1
+                pendingInsertOffset = offset
+                lastTypingTime = Self.clock()
+                onEdit?(.insert(at: offset, length: 1))
+                notifyAfterEdit(range: offset..<offset + 1, sizeBefore: sizeBefore)
+                notifyCompanionContentFullyChanged()
+                return
+            } else {
+                // Low nibble: fill the byte's low nibble in place (an
+                // overwrite, no new insertion) and advance past it.
+                let old = byteAt(offset) ?? 0
+                try? doc.overwrite(range: offset..<offset + 1, with: [(old & 0xF0) | UInt8(digit)])
+                nibble = 0
+                pendingInsertOffset = nil
+                endTypingGroup()
+                advanceAfterByte()
+                lastTypingTime = Self.clock()
+                onEdit?(.overwrite(range: offset..<offset + 1))
+                notifyAfterEdit(range: offset..<offset + 1, sizeBefore: sizeBefore)
+                return
+            }
+        }
 
         let offset: UInt64
         if nibble == 0 {
@@ -518,11 +626,26 @@ final class PaneViewModel: HexViewDataSource {
     /// Types one decoded-text character. The HexView validates the character
     /// through `textDecoder.encode(_)` before calling this, so any byte that
     /// arrives here is representable in the current code page. A whole-byte
-    /// edit: one undo step.
+    /// edit: one undo step. In insert mode the byte is inserted at the caret
+    /// (the tail shifts right) instead of overwriting.
     func typeASCII(_ byte: UInt8) {
-        guard let doc = document else { return }
+        guard let doc = document, confirmFirstInsertModeEdit() else { return }
         let sizeBefore = doc.size
         endTypingGroup()
+        if isInsertMode {
+            // Insert a whole byte at the caret; the tail shifts right. Skip
+            // `prepareForTyping` — insert never consumes a selection.
+            ensureTypingSeries(mode: inputRegion)
+            let offset = typingOffset(doc)
+            try? doc.insert(at: offset, bytes: [byte])
+            nibble = 0
+            advanceAfterByte()
+            lastTypingTime = Self.clock()
+            onEdit?(.insert(at: offset, length: 1))
+            notifyAfterEdit(range: offset..<offset + 1, sizeBefore: sizeBefore)
+            notifyCompanionContentFullyChanged()
+            return
+        }
         prepareForTyping()
         ensureTypingSeries(mode: inputRegion)
         let offset = typingOffset(doc)
@@ -552,10 +675,22 @@ final class PaneViewModel: HexViewDataSource {
         notifyAfterEdit(range: caret..<caret + 1, sizeBefore: sizeBefore)
     }
 
-    /// Backspace: fill the selection (or the previous byte) with 0x00 and move
-    /// the caret back (§7.3).
+    /// Backspace. In overwrite mode it fills the selection (or the previous
+    /// byte) with 0x00 and moves the caret back (§7.3). In insert mode it
+    /// deletes the byte before the caret — the tail shifts left and the file
+    /// shrinks by one (§7.2). A half-typed insert-mode byte is rolled back
+    /// instead (see `rollbackPendingInsert`).
     func deleteBackward() {
         guard let doc = document else { return }
+        // Insert mode, caret on a half-typed byte (high nibble just inserted,
+        // low nibble still pending): Backspace rolls the first nibble back — the
+        // inserted byte is removed, the tail shifts left, and the open edit
+        // group is cancelled so nothing lands on the undo stack, as if the
+        // first nibble was never entered.
+        if isInsertMode, nibble == 1, pendingInsertOffset == doc.selection.start {
+            rollbackPendingInsert()
+            return
+        }
         breakTypingSeries()
         if !doc.selection.isEmpty {
             fillSelection()
@@ -564,13 +699,43 @@ final class PaneViewModel: HexViewDataSource {
         let sizeBefore = doc.size
         let caret = doc.selection.start
         guard caret > 0 else { return }
-        // Backspace fills the previous byte and steps back one — redo must land
-        // there too, not at the (unmoved) caret.
-        try? doc.fillZero(in: (caret - 1)..<caret, caretAfter: caret - 1)
-        doc.setSelection(SelectionModel.empty(at: caret - 1, fileSize: doc.size))
+        if isInsertMode {
+            // Insert mode: delete the byte before the caret — the tail shifts
+            // left and the file shrinks by one (a real length-changing delete,
+            // so it records an undo step and repaints the companion's diff).
+            try? doc.delete(range: (caret - 1)..<caret)
+            doc.setSelection(SelectionModel.empty(at: caret - 1, fileSize: doc.size))
+            nibble = 0
+            overwriteSelection = nil
+            onEdit?(.delete(range: (caret - 1)..<caret))
+            notifyAfterEdit(range: (caret - 1)..<caret, sizeBefore: sizeBefore)
+            notifyCompanionContentFullyChanged()
+        } else {
+            // Overwrite mode: fill the previous byte with 0x00 and step back one
+            // — redo must land there too, not at the (unmoved) caret.
+            try? doc.fillZero(in: (caret - 1)..<caret, caretAfter: caret - 1)
+            doc.setSelection(SelectionModel.empty(at: caret - 1, fileSize: doc.size))
+            nibble = 0
+            onEdit?(.overwrite(range: (caret - 1)..<caret))
+            notifyAfterEdit(range: (caret - 1)..<caret, sizeBefore: sizeBefore)
+        }
+    }
+
+    /// Rolls back a half-typed insert-mode byte (Backspace on the pending first
+    /// nibble): reverts the high-nibble insert — the byte disappears and the
+    /// tail shifts left — and cancels the open edit group so no undo step is
+    /// recorded. The caret returns to where it was before the insert, as if the
+    /// first nibble was never entered.
+    private func rollbackPendingInsert() {
+        guard let doc = document else { return }
+        let offset = doc.selection.start
+        let sizeBefore = doc.size
+        try? doc.cancelEditGroup()
+        pendingInsertOffset = nil
         nibble = 0
-        onEdit?(.overwrite(range: (caret - 1)..<caret))
-        notifyAfterEdit(range: (caret - 1)..<caret, sizeBefore: sizeBefore)
+        onEdit?(.delete(range: offset..<offset + 1))
+        notifyAfterEdit(range: offset..<offset + 1, sizeBefore: sizeBefore)
+        notifyCompanionContentFullyChanged()
     }
 
     /// Fill Selection with… (menu command, §7.3): repeats `pattern` across the
@@ -677,6 +842,10 @@ final class PaneViewModel: HexViewDataSource {
         }
         nibble = 0
         overwriteSelection = nil
+        // Moving the caret off a half-typed byte detaches it: the inserted byte
+        // stays (it is committed to storage in the open group), but Backspace no
+        // longer rolls it back from the new position.
+        pendingInsertOffset = nil
         notify(selectionChangedOnly: true)
     }
 
