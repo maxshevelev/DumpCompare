@@ -62,9 +62,11 @@ The workflows the app is shaped around:
 ### Editing
 
 - Type hex digits or text — bytes overwrite in place, with per-pane Undo/Redo (⌘Z / ⇧⌘Z).
+- **Insert Mode** (⌥⌘I, Edit menu) switches typing from overwrite to insertion: the byte lands at the caret and the tail shifts right, the caret becomes a red line on the byte boundary, and Delete/Backspace remove bytes instead of zeroing them. The mode is per pane — one file can be typed into while the other is read — and each pane's status bar shows it as `OVR`/`INS`, with `INS` in red. It shifts every offset from the caret on, so the first keystroke in each file asks once; the mode is off again at every launch. Backspace on a half-typed byte takes that byte back as if it had never been entered.
 - Undo is segmented for typed input: the first ⌘Z takes back the last byte (fix a typo), a quick second ⌘Z takes back the rest of the run in one step, and after a pause it is one byte per press again. ⇧⌘Z puts it all back. A pause, a caret move, a hex↔text switch, another command or a save all end a run, so a save is never skipped over.
 - ⌘V with the hex dump focused overwrites bytes from the clipboard (raw bytes are the primary format, hex text the fallback); ⌘V in a text field is the standard system paste.
 - **Paste Insert…** inserts bytes with a shift (confirmed first), **Delete Bytes…** deletes with confirmation, **Fill Selection with…** repeats a pattern across the selection — the fast way to blank a region to `0xFF`.
+- The confirmations for edits that shift the file can be turned off in **Settings ▸ Editing**, or from the **Do not ask again** checkbox on the dialogs themselves — it is the same switch.
 - Modified bytes are drawn red; cells past EOF carry hatching, so the end of the file is readable without color.
 - **File > New File** (⌘N) opens an empty in-memory document — somewhere to paste a block out of a dump; **Revert to Saved** throws away the session's edits.
 

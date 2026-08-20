@@ -286,7 +286,7 @@ final class MainViewController: NSViewController {
             // moves the viewport rectangle (§19).
             trackMinimapViewport(for: pane)
             paneModel.onEdit = { [weak self] edit in
-                self?.repaintMinimap(after: edit)
+                self?.repaintMinimap(after: edit, mapIndex: 0)
             }
             paneModel.onFullInvalidation = { [weak self] in
                 self?.minimapView.invalidateCells()
@@ -387,11 +387,11 @@ final class MainViewController: NSViewController {
         windowModel.pane2.companion = windowModel.pane1
         windowModel.pane1.onEdit = { [weak self] edit in
             self?.comparisonCoordinator.record(edit: edit)
-            self?.repaintMinimap(after: edit)
+            self?.repaintMinimap(after: edit, mapIndex: 0)
         }
         windowModel.pane2.onEdit = { [weak self] edit in
             self?.comparisonCoordinator.record(edit: edit)
-            self?.repaintMinimap(after: edit)
+            self?.repaintMinimap(after: edit, mapIndex: 1)
         }
         windowModel.pane1.onFullInvalidation = { [weak self] in
             self?.comparisonCoordinator.rebuild()
@@ -494,8 +494,14 @@ final class MainViewController: NSViewController {
 
     // MARK: - Minimap overview (§19.4)
 
-    /// The in-flight overview computation; cancelled and replaced by the next.
-    private var overviewTask: Task<Void, Never>?
+    /// The debounce waiting to start a pass, and the pass itself. Separate
+    /// handles because they are cancelled for different reasons: a request that
+    /// arrives while a pass runs must not kill it (see `scheduleOverviewRebuild`).
+    private var overviewDebounceTask: Task<Void, Never>?
+    private var overviewPassTask: Task<Void, Never>?
+    /// The row count the running pass is binning for — a diagnostic seam for the
+    /// tests, and what a future decision about a pass's usefulness would read.
+    private(set) var overviewPassRowCount = 0
     /// Edited ranges whose difference marks are still waiting for the comparison
     /// index to absorb them (§19.9).
     private var overviewRowsAwaitingIndex: [Range<UInt64>] = []
@@ -519,10 +525,13 @@ final class MainViewController: NSViewController {
         /// can sit at.
         let edited: [Range<UInt64>]
         let isUntitled: Bool
-        /// The comparison's differing ranges, taken from the background index
-        /// rather than by re-reading the companion: the index is maintained
-        /// anyway, and block granularity is finer than a summary cell (§8).
-        let differences: [Range<UInt64>]
+        /// The comparison index, kept whole rather than flattened into a list of
+        /// differing ranges: the rows being computed ask it for the blocks in
+        /// their own window (§8). Flattening it here walked every block in the
+        /// index on every keystroke — a third of the main thread on a 16 MB
+        /// comparison, and the sticking that came with it. Nil in single-file
+        /// mode and before the first index lands.
+        let differences: DiffBlockIndex?
     }
 
     /// The mode the file(s) now open call for: detail for a file small enough
@@ -565,7 +574,7 @@ final class MainViewController: NSViewController {
         if mode == .overview {
             scheduleOverviewRebuild()
         } else {
-            overviewTask?.cancel()
+            cancelOverviewWork()
             reportOverviewProgress(nil)
         }
     }
@@ -593,14 +602,42 @@ final class MainViewController: NSViewController {
     /// row of an overview is on screen at once, so unlike the detail window it
     /// cannot be pulled per repaint — it is computed in the background and
     /// debounced, so a burst of edits costs one pass (§19.4).
+    /// The pass waits for the edits to stop: each request restarts the delay, so
+    /// a burst of keystrokes — auto-repeat is thirty a second — costs one pass
+    /// after it, not one per keystroke. A pass over two 16 MB dumps reads both
+    /// files whole; doing that thirty times a second starves the main thread of
+    /// the very cache it draws from, which is felt as the typing sticking.
+    ///
+    /// Waiting is only acceptable because the map does not go silent while it
+    /// waits: a shifting edit marks its tail immediately and for free
+    /// (`markShiftedTailModified`), and the picture in hand is stretched rather
+    /// than dropped. What the pass adds is exactness.
+    ///
+    /// A pass in flight is cancelled: something changed under it, so whatever it
+    /// is halfway through computing is already the wrong picture, and finishing
+    /// it costs the reads that make the typing stick. The request that cancelled
+    /// it starts the wait again.
     private func scheduleOverviewRebuild() {
         guard minimapSplit.panelVisible, minimapView.renderMode == .overview else { return }
-        overviewTask?.cancel()
-        overviewTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 120_000_000)
+        overviewPassTask?.cancel()
+        overviewPassTask = nil
+        reportOverviewProgress(nil)
+        overviewDebounceTask?.cancel()
+        overviewDebounceTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 250_000_000)
             guard !Task.isCancelled else { return }
+            self?.overviewDebounceTask = nil
             self?.rebuildOverview()
         }
+    }
+
+    /// Cancels whatever the overview has in flight — a waiting debounce and a
+    /// running pass — and forgets any queued request.
+    private func cancelOverviewWork() {
+        overviewDebounceTask?.cancel()
+        overviewDebounceTask = nil
+        overviewPassTask?.cancel()
+        overviewPassTask = nil
     }
 
     private func rebuildOverview() {
@@ -612,16 +649,18 @@ final class MainViewController: NSViewController {
             minimapView.setOverviewSummaries([])
             return
         }
-        overviewTask?.cancel()
+        overviewPassTask?.cancel()
+        overviewPassRowCount = rowCount
         overviewRebuilds += 1
         beginOverviewProgress()
         let progress = OverviewProgressSink(total: rowCount * sources.count) { [weak self] fraction in
             self?.reportOverviewProgress(fraction)
         }
-        // The user is waiting for the picture, so this is user-initiated work,
-        // and the two files are independent passes — running them together
-        // halves the wait on a comparison.
-        overviewTask = Task.detached(priority: .userInitiated) { [weak self] in
+        // Deliberately below the interface's priority: the picture is worth
+        // waiting a little longer for, and nothing about it is worth competing
+        // with the keystroke being typed. The two files are independent passes
+        // and run together, which halves the wait on a comparison.
+        overviewPassTask = Task.detached(priority: .utility) { [weak self] in
             let summaries = await withTaskGroup(
                 of: (Int, MinimapView.OverviewSummary).self
             ) { group -> [MinimapView.OverviewSummary] in
@@ -641,6 +680,7 @@ final class MainViewController: NSViewController {
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.reportOverviewProgress(nil)
+                self.overviewPassTask = nil
                 guard !Task.isCancelled, self.minimapView.renderMode == .overview else { return }
                 self.minimapView.setOverviewSummaries(summaries)
                 self.overviewRebuildsCompleted += 1
@@ -767,7 +807,7 @@ final class MainViewController: NSViewController {
     private func overviewSource(_ pane: PaneViewModel) -> OverviewSource {
         OverviewSource(storage: pane.byteStorage, saved: pane.savedStorage, size: pane.fileSize,
                        edited: pane.editedRanges, isUntitled: pane.isUntitled,
-                       differences: comparisonCoordinator.index?.differenceBlocks.map(\.range) ?? [])
+                       differences: comparisonCoordinator.index)
     }
 
     /// How many of `buffer[from..<to]` are neither 0x00 nor 0xFF — how "full"
@@ -956,38 +996,83 @@ final class MainViewController: NSViewController {
 
         rowsDone(rows.upperBound + 1 - reportedRow)
 
-        // Modified: only where the edit overlay wrote, and only where the byte
-        // really differs from the saved copy — the same rule the panes paint by.
-        if !source.isUntitled {
+        // Modified: where the byte differs from the saved copy — the same rule
+        // the panes paint by — inside the rows an edit can have reached.
+        //
+        // Row by row, cell by cell, comparing whole slices rather than bytes: an
+        // insert or a delete shifts every byte after it, so `source.edited`
+        // covers the file's whole tail and a per-byte loop over it took seconds.
+        // Bytes outside the edited ranges cannot differ from the saved copy, so
+        // comparing a cell whole is safe: the untouched part of it compares
+        // equal and contributes nothing.
+        if !source.isUntitled, !source.edited.isEmpty {
             let savedSize = source.saved?.size ?? 0
-            for range in source.edited {
+            for row in rows {
                 if shouldCancel() { return nil }
-                var offset = max(range.lowerBound, windowStart)
-                let upper = min(min(range.upperBound, source.size), windowEnd)
-                while offset < upper {
-                    let length = Int(min(UInt64(64 * 1024), upper - offset))
-                    guard let bytes = try? storage.read(at: offset, length: length),
-                          !bytes.isEmpty else { break }
-                    let savedBytes: [UInt8] =
-                        source.saved.flatMap { try? $0.read(at: offset, length: length) } ?? []
-                    for (k, byte) in bytes.enumerated() {
-                        let absolute = offset + UInt64(k)
-                        let isModified = absolute >= savedSize
-                            || (savedBytes.indices.contains(k) ? savedBytes[k] != byte : true)
-                        guard isModified, let spot = cells(of: absolute) else { continue }
-                        for column in spot.columns {
-                            modified[spot.row - rows.lowerBound] |= UInt16(1) << UInt16(column)
+                let rowStart = start(ofRow: row)
+                let rowEnd = start(ofRow: row + 1)
+                let span = rowEnd - rowStart
+                let readEnd = min(max(rowEnd, rowStart + 1), source.size)
+                guard rowStart < readEnd else { continue }
+                // Rows no edit can have reached are skipped, so a clean file
+                // costs nothing here and a small edit costs one row.
+                guard source.edited.contains(where: {
+                    $0.lowerBound < readEnd && $0.upperBound > rowStart
+                }) else { continue }
+                guard let bytes = try? storage.read(at: rowStart, length: Int(readEnd - rowStart)),
+                      !bytes.isEmpty else { continue }
+                let savedBytes = source.saved
+                    .flatMap { try? $0.read(at: rowStart, length: Int(readEnd - rowStart)) } ?? []
+                let index = row - rows.lowerBound
+
+                guard span >= UInt64(columns) else {
+                    // Fewer bytes than cells: compare the handful of bytes and
+                    // stretch each one over the cells it covers.
+                    for offsetInRow in 0..<bytes.count {
+                        let absolute = rowStart + UInt64(offsetInRow)
+                        let changed = absolute >= savedSize
+                            || (savedBytes.indices.contains(offsetInRow)
+                                ? savedBytes[offsetInRow] != bytes[offsetInRow] : true)
+                        guard changed else { continue }
+                        for column in stretchedColumns(forByteAt: UInt64(offsetInRow), ofSpan: span) {
+                            modified[index] |= UInt16(1) << UInt16(column)
                         }
                     }
-                    offset += UInt64(bytes.count)
+                    continue
+                }
+
+                for column in 0..<columns {
+                    let sliceStart = rowStart + span * UInt64(column) / UInt64(columns)
+                    let sliceEnd = rowStart + span * UInt64(column + 1) / UInt64(columns)
+                    let from = Int(sliceStart - rowStart)
+                    let to = Int(min(sliceEnd, readEnd) - rowStart)
+                    guard from < to, to <= bytes.count else { continue }
+                    // Bytes past the saved file's end are new by definition.
+                    if sliceStart + UInt64(to - from) > savedSize {
+                        modified[index] |= UInt16(1) << UInt16(column)
+                        continue
+                    }
+                    guard savedBytes.count >= to else {
+                        modified[index] |= UInt16(1) << UInt16(column)
+                        continue
+                    }
+                    let differs = bytes.withUnsafeBufferPointer { current in
+                        savedBytes.withUnsafeBufferPointer { saved in
+                            memcmp(current.baseAddress! + from, saved.baseAddress! + from, to - from) != 0
+                        }
+                    }
+                    if differs { modified[index] |= UInt16(1) << UInt16(column) }
                 }
             }
         }
 
-        // Differences: walk the index's blocks and mark the cells they cover. A
-        // block spanning whole rows marks every column of them.
-        for range in source.differences {
+        // Differences: the index's differing blocks that touch these rows, found
+        // by binary search rather than by flattening the index. A block spanning
+        // whole rows marks every column of them.
+        for block in source.differences?.blocks(in: windowStart..<windowEnd) ?? []
+        where block.kind == .different {
             if shouldCancel() { return nil }
+            let range = block.range
             let lower = max(range.lowerBound, windowStart)
             let upper = min(range.upperBound, min(windowEnd, extent))
             guard lower < upper, let first = cells(of: lower), let last = cells(of: upper - 1)
@@ -1080,7 +1165,11 @@ final class MainViewController: NSViewController {
     ///
     /// Both maps, because a byte edited in one file changes the difference state
     /// the other one paints at that same offset (§9).
-    private func repaintMinimap(after edit: DiffEdit) {
+    /// `mapIndex` is the map of the pane the edit happened in — the maps mirror
+    /// the panes (§19). Only that map's rows can have moved: a shift in one file
+    /// says nothing about the other, which is what painting both of them red
+    /// wrongly claimed.
+    private func repaintMinimap(after edit: DiffEdit, mapIndex: Int) {
         switch edit {
         case .overwrite(let range):
             // Typing past EOF grows the file, which re-bins the overview: that is
@@ -1097,7 +1186,15 @@ final class MainViewController: NSViewController {
             // does, instead of the whole picture being rebuilt (§19.9).
             if mode == .comparison { overviewRowsAwaitingIndex.append(range) }
         case .insert, .delete:
-            // Every byte after the change moved, so no range describes it.
+            // Every byte after the change moved, so no range describes it: the
+            // exact picture is a full pass, and that pass waits for the typing to
+            // settle. Until it lands the map keeps the picture it has — a byte
+            // or two out of date, which at a row per 13 KB is invisible.
+            //
+            // Marking the shifted tail red in the meantime was tried and is
+            // wrong: from an edit near the start of a file that paints the whole
+            // map red, which is not "the old picture, slightly stale" but a new
+            // and much worse one.
             minimapView.invalidateCells()
             refreshMinimapMaps()
         }
@@ -2067,7 +2164,8 @@ final class MainViewController: NSViewController {
             title: "Paste Insert?",
             message: "Insert \(bytes.count) byte(s) at offset \(String(format: "0x%X", offset)). Existing bytes from this offset on will shift.",
             confirmTitle: "Insert",
-            destructive: true
+            destructive: true,
+            suppressible: true
         )
         guard response == .alertFirstButtonReturn else { return }
         do {
@@ -2121,13 +2219,41 @@ final class MainViewController: NSViewController {
             title: "Delete \(count) byte(s)?",
             message: "Bytes from offset \(String(format: "0x%X", start)) will be removed. Subsequent offsets will shift — the file structure may be affected.",
             confirmTitle: "Delete",
-            destructive: true
+            destructive: true,
+            suppressible: true
         )
         guard response == .alertFirstButtonReturn else { return }
         do {
             try pane.deleteBytes(in: start..<(start + count))
         } catch {
             presentError("Delete failed.", error)
+        }
+    }
+
+    /// Edit > Insert Mode: flips the typing mode of the ACTIVE pane. The mode is
+    /// per pane and never persisted — one file can be typed into while the other
+    /// is being read, and each pane's status bar says which mode it is in (§7.6).
+    ///
+    /// When on, typing inserts a byte at the caret and shifts the tail right; the
+    /// caret becomes a red vertical line at the byte boundary. The one-time
+    /// "this shifts the file" warning is injected here rather than at pane
+    /// creation, which guarantees the callback exists before any insert-mode
+    /// keystroke; it is mode-independent, so re-enabling after a toggle-off never
+    /// re-arms it within the same file.
+    @objc func toggleInsertMode(_ sender: Any?) {
+        let pane = activePane
+        pane.isInsertMode.toggle()
+        pane.confirmInsertModeWarning = { [weak self, weak pane] in
+            guard let self, let pane else { return true }
+            let offset = pane.caretOffset
+            let response = self.confirmAlert(
+                title: "Insert?",
+                message: "Inserting at offset \(String(format: "0x%X", offset)) shifts every byte from here on — the file structure may be affected.",
+                confirmTitle: "Insert",
+                destructive: true,
+                suppressible: true
+            )
+            return response == .alertFirstButtonReturn
         }
     }
 
@@ -2529,7 +2655,15 @@ final class MainViewController: NSViewController {
     // MARK: - Alerts
 
     @discardableResult
-    private func confirmAlert(title: String, message: String, confirmTitle: String, destructive: Bool = false) -> NSApplication.ModalResponse {
+    private func confirmAlert(title: String, message: String, confirmTitle: String,
+                              destructive: Bool = false,
+                              suppressible: Bool = false) -> NSApplication.ModalResponse {
+        // A suppressible confirmation is one of the §7.2 shifting-edit warnings.
+        // With the warnings switched off it does not appear at all and the edit
+        // proceeds: the user has said, once, that they know what these edits do.
+        if suppressible, !EditingSettings.warnsBeforeShiftingEdits {
+            return .alertFirstButtonReturn
+        }
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message
@@ -2538,7 +2672,23 @@ final class MainViewController: NSViewController {
         if destructive {
             alert.buttons.first?.hasDestructiveAction = true
         }
-        return Self.presentModal(alert, defaultInTest: .alertSecondButtonReturn)  // Cancel in tests
+        if suppressible {
+            alert.showsSuppressionButton = true
+            alert.suppressionButton?.title = "Do not ask again"
+        }
+        let response = Self.presentModal(alert, defaultInTest: .alertSecondButtonReturn)  // Cancel in tests
+        if suppressible { Self.applySuppression(of: alert) }
+        return response
+    }
+
+    /// Honours an alert's "Do not ask again" checkbox by switching the
+    /// shifting-edit warnings off — the same switch as Settings ▸ Editing.
+    /// Whichever button dismissed the alert: ticking the box and then cancelling
+    /// still means "stop asking me". Internal so a test can pin the wiring,
+    /// which is otherwise unreachable (a test never shows the alert).
+    static func applySuppression(of alert: NSAlert) {
+        guard alert.suppressionButton?.state == .on else { return }
+        EditingSettings.set(warnsBeforeShiftingEdits: false)
     }
 
     @discardableResult
@@ -2768,6 +2918,13 @@ extension MainViewController: NSMenuItemValidation {
             // the panel's state (§19). Always enabled: the minimap works with
             // no file open too (it just has nothing to draw).
             menuItem.title = minimapSplit.panelVisible ? "Hide Minimap" : "Show Minimap"
+            return true
+        case #selector(toggleInsertMode):
+            // A checked toggle reading the ACTIVE pane's mode: the mode is per
+            // pane (§7.6), so the checkmark follows the pane the keys go to.
+            // Always enabled — it is a mode switch, meaningful even with no file
+            // open.
+            menuItem.state = activePane.isInsertMode ? .on : .off
             return true
         case #selector(saveDocument),
              #selector(saveDocumentAs),

@@ -327,7 +327,8 @@ The hex dump contains two interactive regions per pane:
 
 7.1 Overwrite-first policy
 
-The default editing model is overwrite.
+The default editing model is overwrite. Insert mode (§7.6) is an optional,
+never-persisted departure from it; everything below describes the default.
 
 - Typing overwrites existing bytes.
 - Paste Write overwrites existing bytes.
@@ -345,7 +346,18 @@ Confirmed length-changing operations include:
 
 - Paste Insert;
 - Delete Bytes / Remove Bytes;
-- any explicit “Insert Bytes” operation if implemented.
+- any explicit “Insert Bytes” operation if implemented;
+- Insert mode (§7.6), where confirmation is once per opened file rather than per
+  keystroke — per-keystroke confirmation would make the mode unusable.
+
+These confirmations can be switched off, from a setting and from a "Do not ask
+again" checkbox on the dialogs themselves — one switch, reached two ways, so
+dismissing a dialog with the box ticked is reflected in the setting and the
+setting silences the dialogs. Ticking the box counts whichever button dismissed
+the dialog: it says "stop asking", not "and do it". They are on by default: these
+are the edits that quietly ruin a structured dump. With them off the edits still
+record undo steps, and insert mode still announces itself in the status bar and in
+the caret.
 
 Confirmation dialog must explain:
 
@@ -357,7 +369,8 @@ Confirmation dialog must explain:
 
 7.3 Delete/Backspace default behavior
 
-To avoid accidental structural damage:
+To avoid accidental structural damage (in insert mode these keys delete bytes
+instead — §7.6):
 
 - Delete/Backspace must not change file length by default.
 - They should fill the selected bytes with 0x00.
@@ -369,7 +382,7 @@ A separate explicit menu command, e.g. Edit > Delete Bytes, performs true length
 
 7.4 Selection editing
 
-- If a selection exists and the user types, the selected range is overwritten with typed bytes.
+- If a selection exists and the user types, the selected range is overwritten with typed bytes (in insert mode the selection is dropped and the byte inserted at its start — §7.6).
 - If paste write is invoked with a selection, paste starts at selection start and overwrites bytes; it does not shift existing bytes.
 - Selection can span multiple rows.
 - Cmd+A selects all bytes in the active file.
@@ -442,6 +455,53 @@ its own, and a long run has to be removable without holding the key down.
   undo key never reaches the batch.
 - A batch is one change to the storage: the comparison and the minimap update
   from the single net edit it reports, not once per byte (§8.3, §19.9).
+- A byte left half typed (one nibble entered) ends when the user leaves it — a
+  caret move or a region change — and becomes an undo step of its own. It must
+  never stay pending and coalesce with the next byte typed somewhere else: one
+  press would then take back two unrelated bytes.
+
+7.6 Insert mode
+
+An optional typing mode, off at every launch and never persisted, that turns
+typing into insertion. It is a mode, not a command: it changes what the keys of
+§7 do until it is switched off.
+
+- Scope: one mode per pane, toggled for the active pane from Edit > Insert Mode
+  (a checked item) or its key equivalent. The checkmark follows the active pane's
+  mode, and each pane's status bar reports its own — one file can be typed into
+  while the other is being read.
+- Typing inserts: a completed byte is inserted at the caret and every byte from
+  there on shifts right; the file grows by one. Hex entry inserts on the first
+  digit with the low nibble still empty, and the second digit fills that nibble
+  in place — the pair is one undo step, as in overwrite mode (§7.5.1).
+- The empty low nibble of a half-typed byte is drawn as a placeholder slot, not
+  as the zero it currently holds, and drawing it must not disturb the cell's
+  background — a difference fill, a selection, an EOF cell keep their own (§6).
+- The caret marks the byte boundary the next byte will land on, and is visually
+  distinct from the overwrite caret. Switching modes redraws it where it is,
+  without scrolling: the caret has not moved.
+- Every pane's status bar shows the mode as INS/OVR (§15). INS is drawn in the
+  same red the insert caret and modified bytes use — in this app red means "not
+  the file you opened", which is what the mode leads to. The indicator keeps its
+  width across both states so the bar does not shift when the mode flips.
+- Backspace on a half-typed byte rolls that byte back — the inserted byte
+  disappears and nothing is recorded, as if the nibble had never been entered.
+- Delete and Backspace otherwise remove bytes and shift the tail (Backspace the
+  byte before the caret, Delete the byte at it; with a selection, the selected
+  span). §7.3's fill-with-0x00 rule is the overwrite-mode behavior.
+- Typing with a selection drops the selection to its start and inserts there. It
+  does not consume the selection (§7.4 is an overwrite rule): the selected bytes
+  shift right, so a surviving highlight would name bytes the user never picked.
+- Confirmation: insert mode shifts offsets, so §7.2 applies, but per keystroke
+  it is unusable. The mode asks once per opened file, on the first keystroke or
+  delete that shifts anything, and then stays silent for that file; cancelling
+  swallows the keystroke and leaves the file untouched, and the next one asks
+  again. Opening or closing a file re-arms it. Toggling the mode off and on
+  within the same file does not. The confirmation can be switched off for good
+  (§7.2).
+- Cost: each inserted or deleted byte rewrites the file's storage, so the mode is
+  meant for small edits, not for typing over a chip-sized dump. Buffering typed
+  input is a separate topic (it would cover Paste Insert too).
 
 =====================================================================
 8. COMPARISON MODEL
@@ -496,6 +556,22 @@ When edits occur:
 - update visible rows immediately;
 - update background diff index incrementally where possible;
 - insert/delete operations that shift offsets must invalidate from the earliest affected offset onward.
+
+A batch of queued edits is collapsed before it is applied. Applying rescans
+against current bytes, so a shifting edit already covers every edit at or after
+its offset: a run of ten inserted bytes is one rescan of the tail, not ten.
+Overwrites below the shift point survive it, merged where they touch. Only the
+first full build reports progress — an incremental apply is short enough that a
+bar would flash (§19.9 says what that reads as).
+
+Because a shifting edit invalidates everything after it, the scan itself has to
+be fast enough that rescanning a file's tail is not an event: comparing two
+16 MB dumps must cost tens of milliseconds, not seconds. Comparison is by
+absolute offset, so it is a memory comparison — it must be done a machine word
+at a time, with a whole-chunk comparison for the chunks that match (which is
+most of them when the two files are reads of the same chip). A byte-at-a-time
+loop ran at 16 MB/s, which made one inserted byte cost a two-second rescan and a
+run of ten cost twenty.
 
 When one file is closed:
 
@@ -812,13 +888,21 @@ Requirements:
 Recommended architecture:
 
 - Original file storage can be memory-mapped or read through chunk cache.
-- Edits are stored as an edit overlay or sparse change log.
-- Insert/delete may require copy-on-write or temporary file materialization.
-- Save can patch in-place for overwrite-only edits where safe.
+- Edits are stored as a piece list over two immutable sources: the file as it was
+  opened, and an append-only buffer of the bytes editing added.
+- No edit may cost work proportional to the file: an insert or a delete is a
+  change to the piece list, not a copy of the content. Materializing the content
+  into a temporary file is allowed only as an amortized valve — an oversized
+  insert, an add buffer past its budget, a piece list long enough to slow reads —
+  and at most one such file may be kept at a time.
+- Save can patch in-place for overwrite-only edits where safe. The ranges it
+  patches must survive a materialization.
 - Save may rewrite file for length-changing edits or Save As.
 
 Performance expectations:
 
+- Editing a byte must cost the same on a 32 MB dump as on a 1 KB file, and the
+  same at either end of it.
 - Scrolling should remain responsive.
 - Visible row rendering should be fast.
 - Visible diff highlighting after edits should be near-instant.
@@ -944,7 +1028,9 @@ Status bar or equivalent info area should show:
 - dirty state;
 - read-only state;
 - comparison status;
-- background task progress for diff/search when applicable.
+- background task progress for diff/search when applicable;
+- the typing mode as INS/OVR (§7.6), with INS coloured — the mode changes what
+  every keystroke does, so it must be readable without opening a menu.
 
 Accessibility:
 
@@ -1212,9 +1298,23 @@ resolution is used and nothing is spent on gaps.
   within a map's content puts every boundary of the second map mid-pixel,
   because its content begins after a gutter that is a fraction of the panel.
 - Difference and modification are drawn over the shading, and at least two
-  pixels tall so a single byte among thousands stays visible. Where a cell is
-  both, modified wins: at hundreds of bytes per cell the two overlap often, and
-  the difference is still legible across the rest of the region.
+  pixels tall so a single byte among thousands stays visible.
+- A byte is modified when it is not the byte the saved file holds at that offset
+  — the rule the panes paint by. An insert or a delete moves every byte after it,
+  so from that offset to the end the file no longer holds what it did there and
+  the whole tail is modified; the map must say so, as the hex view does. Marking
+  only where editing *wrote* was true while overwriting was the only kind of edit
+  and became a lie with insert mode: one inserted byte left the map with a single
+  marked row and the dump beside it entirely red.
+- A modified byte marks its row across the map's whole width — as far as its own
+  file reaches — rather than the cell it falls in, and over everything else in
+  that row. Two pixels tall in one cell of sixteen, a single edited byte was a
+  couple of dozen pixels in the whole panel and simply not findable, which reads
+  as the overview not marking edits at all. "You changed this" is the rarest
+  thing the map says, and at this scale the column it happened in says almost
+  nothing: one column of a 16 MB dump's row is a kilobyte. Differences keep
+  their per-cell shading — they come in runs, and the shading is what makes a
+  run's shape legible.
 - Rows are binned over the comparison's extent, so the same height is the same
   absolute offset on both maps (§9); rows past a shorter file's end stay empty.
   Empty means empty: the difference index is built over the extent, so every
@@ -1311,6 +1411,21 @@ The panes' visible slice is drawn as a translucent band over the map.
     change and the maps repaint whole.
 - A repaint must start from the panel's background, since it can no longer
   rely on the whole panel being redrawn.
+- The panel is repainted only when the picture can look different. A typed byte
+  moves the extent by one, which moves each row's slice by a fraction of a byte:
+  nothing to see, and asking for a repaint of it on every keystroke cost tens of
+  milliseconds of main thread each time. A map the repaint does not reach is
+  skipped whole, and the theme's inks are resolved to concrete colours once per
+  pass — `setFill` on a dynamic colour resolves it again on every call, which at
+  one call per row was most of the cost of drawing a map.
+- A row one colour covers whole is one fill, and consecutive such rows are one
+  fill together. Neighbouring cells that draw the same thing are one fill too: a
+  dump's rows are largely uniform, sixteen cells of erased padding or of dense
+  content. After an edit that shifts offsets the whole tail is modified —
+  and in a comparison differing as well — so nearly every row is in that state:
+  drawing them cell by cell put a full repaint of two maps at 138 ms on the main
+  thread, once per rebuild, which is felt as the typing stuttering. Rows the
+  file's end falls in are drawn on their own, so a fill never runs past it.
 - An edit must not rebuild the overview's picture. A byte lands in one row of
   a thousand, so the rows its range falls in are recomputed — from the file for
   their density, from the edit overlay for their modified marks, from the
@@ -1319,8 +1434,14 @@ The panes' visible slice is drawn as a translucent band over the map.
   (tens of kilobytes), so the mark appears with the keystroke, with no debounce
   to wait out. A patched picture must equal the picture a full pass would
   build; anything else drifts the map away from the file as editing goes on.
-  - The difference marks come from the comparison index, which absorbs the edit
-    in its own background pass. Those rows are therefore patched twice: once
+  - The difference marks come from the comparison index, and a consumer that
+    needs a few rows of them asks the index for that window, by binary search
+    over its blocks. Flattening the index into a list of differing ranges to
+    find them walks every block in it: two reads of a chip with scattered
+    differences make tens of thousands of blocks, and doing that twice per
+    keystroke — once for the edit, once when the index absorbs it — put a third
+    of the main thread into building arrays, which is what the typing stuck on.
+  - The index absorbs the edit in its own background pass. Those rows are therefore patched twice: once
     with the keystroke, once when the index reports the change.
   - An index change that is *not* the absorption of a recorded edit — a fresh
     build, a cancel, a stop — invalidates the whole derived picture, so that
@@ -1337,6 +1458,32 @@ The panes' visible slice is drawn as a translucent band over the map.
   then held for a minimum showing before it clears, because the pass itself is
   fast: two 16 MB dumps are binned in ~150 ms, so a bar that vanished the
   instant the pass ended was never seen at all.
+- The rebuild waits for the edits to stop: every request restarts the delay, so
+  a burst of keystrokes costs one pass after it rather than one per keystroke. A
+  pass reads both files whole, and at auto-repeat speed — thirty keys a second —
+  running one per keystroke starves the main thread of the same caches it draws
+  from, which is felt as the typing sticking. A request that arrives while a pass
+  is running does not cancel it: it is remembered and honoured when that pass
+  lands. The exception is a change to the row count, which makes the running
+  pass's result useless — it is binned for a panel height that no longer exists.
+- While it waits, the map keeps the picture it has. It is a byte or two out of
+  date, which at a row per few kilobytes is invisible, and that is the whole
+  point: an interim answer must not be a *different* picture. Marking the shifted
+  tail red in the meantime was tried and rejected — an edit near the start of a
+  file paints the entire map red, which is worse than a picture slightly behind.
+- Background work — a pass, an index absorbing an edit — runs below the
+  interface's priority. Nothing on screen waits for it: the panes compute the
+  differences they show from the bytes themselves, and the map is already
+  showing something.
+- The picture in hand is never thrown away while its replacement is computed.
+  A rebuild is triggered by things that make the picture stale, not wrong to
+  look at: an edit that changes the longest file's length re-bins every row, but
+  by a fraction of a percent, so the old picture is stretched over the map (the
+  same stand-in a resize uses) until the pass lands. Blanking the panel instead
+  made every inserted byte blink — and blink asymmetrically, since deleting from
+  the shorter file of a comparison leaves the extent, and therefore the bins,
+  untouched. A stale picture is not patched row by row: its rows cover different
+  slices than the patch measured, so the pass on its way replaces it whole.
 - Any change to the panel's frame is drawn by stretching the picture in hand,
   not by redrawing the maps: a height change re-bins the file and needs the
   background pass, and a width change redraws every cell at a new width. Both

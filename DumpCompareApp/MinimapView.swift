@@ -204,8 +204,19 @@ final class MinimapView: NSView {
     private(set) var renderMode: RenderMode = .detail
 
     /// The overview's data, by map index. Empty in detail mode, or while a
-    /// background pass is still computing it.
+    /// background pass is still computing the first one for a file.
     private(set) var overviewSummaries: [OverviewSummary] = []
+
+    /// True when the picture in `overviewSummaries` was binned over a different
+    /// extent than the files now have — an edit changed the length of the longest
+    /// one, so every row covers a slightly different slice.
+    ///
+    /// The picture is kept and stretched over the map (the same stand-in path a
+    /// resize uses) until the background pass replaces it. Dropping it instead
+    /// blanked the panel on every inserted byte, which is a worse lie than a
+    /// picture that is a fraction of a percent out of date, and an irritating
+    /// one: it blinked (§19.9).
+    private(set) var overviewBinsAreStale = false
 
     /// Fired when the number of overview rows the panel can show changes — a
     /// resize, a layout flip, or a switch into overview — so the controller can
@@ -248,6 +259,7 @@ final class MinimapView: NSView {
         overviewUsesRectangle = false
         if mode == .detail {
             overviewSummaries = []
+            overviewBinsAreStale = false
             settleTimer?.invalidate()
             settleTimer = nil
             geometryIsSettling = false
@@ -260,7 +272,13 @@ final class MinimapView: NSView {
 
     /// Adopts a freshly computed overview picture.
     func setOverviewSummaries(_ summaries: [OverviewSummary]) {
-        guard overviewSummaries != summaries else { return }
+        guard overviewSummaries != summaries else {
+            // Same picture, but it is the current one again: the bins it was
+            // built over are the files' own extent now.
+            overviewBinsAreStale = false
+            return
+        }
+        overviewBinsAreStale = false
         let damage = overviewDamage(from: overviewSummaries, to: summaries)
         overviewSummaries = summaries
         overviewStandIns = [:]
@@ -273,7 +291,11 @@ final class MinimapView: NSView {
     /// either side of it — is left alone (§19.9).
     func updateOverviewRows(_ rows: ClosedRange<Int>, density: [UInt8],
                             modified: [UInt16], different: [UInt16], forMapAt index: Int) {
-        guard renderMode == .overview, overviewSummaries.indices.contains(index) else { return }
+        // A stale picture is not patched: its rows cover different slices of the
+        // file than the caller measured, so the marks would land in the wrong
+        // place. The pass that is already on its way replaces the whole thing.
+        guard renderMode == .overview, !overviewBinsAreStale,
+              overviewSummaries.indices.contains(index) else { return }
         let columns = Int(Self.bytesPerRow)
         var summary = overviewSummaries[index]
         guard rows.lowerBound >= 0, rows.upperBound < summary.rowCount,
@@ -417,15 +439,31 @@ final class MinimapView: NSView {
         // size: bail out before the full repaint, and keep the selections the
         // fresh maps would otherwise drop until the caller re-applies them.
         guard maps.map(\.fileSize) != self.maps.map(\.fileSize) else { return }
-        let extentChanged = maps.map(\.fileSize).max() != self.maps.map(\.fileSize).max()
+        let oldExtent = self.maps.map(\.fileSize).max() ?? 0
+        let newExtent = maps.map(\.fileSize).max() ?? 0
+        let extentChanged = newExtent != oldExtent
         self.maps = maps
         updateTopRow()
-        invalidateAll()
-        // The overview's bins are built over the longest file, so a new file
-        // invalidates them.
+        // A repaint only if the picture can actually look different. In overview
+        // mode a typed byte moves the extent by one, which moves every row's
+        // slice by a fraction of a byte and its own end by less than a pixel:
+        // nothing to see, and repainting the panel for it cost 35-44 ms of main
+        // thread per keystroke on two maps (§19.9). The marks an edit does make
+        // visible invalidate their own rows.
+        let rowSpan = renderMode == .overview
+            ? max(newExtent, oldExtent) / UInt64(max(overviewRowCount(), 1))
+            : 0
+        let pictureMoved = renderMode != .overview
+            || oldExtent.absoluteDifference(to: newExtent) >= max(rowSpan, 1)
+        if pictureMoved {
+            invalidateAll()
+        }
+        // The overview's bins are built over the longest file, so a change to
+        // its length invalidates them — but the picture is kept, stale, and
+        // stretched over the map until the background pass lands. The stand-in
+        // images are built from it, so they are kept too.
         if renderMode == .overview, extentChanged {
-            overviewSummaries = []
-            overviewStandIns = [:]
+            overviewBinsAreStale = true
             onOverviewRowCountChanged?()
         }
     }
@@ -684,6 +722,7 @@ final class MinimapView: NSView {
     private var lastReportedOverviewRowCount = 0
 
     override func draw(_ dirtyRect: NSRect) {
+
         super.draw(dirtyRect)
         // Since only the changed rectangles are invalidated (§19.9), a repaint
         // has to start from the panel's paper rather than from whatever the
@@ -704,6 +743,11 @@ final class MinimapView: NSView {
             // away from the panel's side edges; the viewport band deliberately
             // runs edge to edge past it (§19).
             let content = contentArea(within: area(forMapAt: index), forMapAt: index)
+            // A map the repaint does not reach is skipped whole. Side by side,
+            // one map's rows are invalidated on their own — an edit belongs to
+            // one file — and drawing the other map's thousand rows into a dirty
+            // rect that excludes them cost 30 ms of the main thread (§19.9).
+            guard content.intersects(dirtyRect) else { continue }
             switch renderMode {
             case .detail: drawCells(forMapAt: index, in: content, dirtyRect: dirtyRect)
             case .overview: drawOverviewRows(forMapAt: index, in: content, dirtyRect: dirtyRect)
@@ -998,6 +1042,12 @@ final class MinimapView: NSView {
         // catches up with the new row count, the known picture is stretched over
         // the map instead of being redrawn cell by cell: exact is thousands of
         // fills, and a drag delivers a frame change per mouse move (§19.9).
+        // The stand-in is for a picture whose *geometry* no longer matches the
+        // panel — a resize, a frame still moving. A picture that is merely stale
+        // in its bins (an edit moved the extent) has the right number of rows, so
+        // it is drawn directly: stretching it 1:1 would be the same pixels, and
+        // building the stand-in image costs 20 ms — per keystroke, since an edit
+        // invalidates the cache (§19.9).
         if geometryIsSettling || summary.rowCount != overviewRowCount() {
             drawOverviewStandIn(forMapAt: index, in: area)
             return
@@ -1029,10 +1079,60 @@ final class MinimapView: NSView {
         // overview is ~19 000 cells, and deriving each one's colour from the ink
         // was most of the cost of drawing it. Rebuilt every pass, so a theme
         // change still lands (the ink is a dynamic colour).
+        // Resolved to concrete colours, not just derived once. The theme's inks
+        // are dynamic (they answer per appearance), and `setFill()` on a dynamic
+        // colour resolves it every single time — which, at one call per row of a
+        // thousand-row map, was most of the 13-29 ms a map's cells took to draw.
+        // Resolving here happens inside `draw`, so the appearance in force is
+        // the right one.
+        func resolved(_ colour: NSColor) -> NSColor {
+            colour.usingColorSpace(.deviceRGB) ?? colour
+        }
         let ink = HexTheme.byteText
-        let tones = (0...255).map { ink.withAlphaComponent(Self.overviewTone(density: UInt8($0))) }
+        let tones = (0...255).map {
+            resolved(ink.withAlphaComponent(Self.overviewTone(density: UInt8($0))))
+        }
+        let differenceInk = resolved(HexTheme.differenceFill)
+        let modifiedInk = resolved(HexTheme.modifiedText)
         let columns = Int(Self.bytesPerRow)
         let extent = max(summary.extent, 1)
+        func lastColumnInFile(rowStart: UInt64, span: UInt64) -> Int {
+            Self.lastColumnInFile(rowStart: rowStart, span: span, fileSize: fileSize)
+        }
+
+        /// One fill across a row, up to where the file ends: what a row draws
+        /// when a single colour covers all of it.
+        func fillRow(_ colour: NSColor, y: CGFloat, rowStart: UInt64, span: UInt64) {
+            let last = lastColumnInFile(rowStart: rowStart, span: span)
+            guard last >= 0, let first = cells.first, cells.indices.contains(last) else { return }
+            colour.setFill()
+            NSRect(x: first.x, y: y,
+                   width: cells[last].x + cells[last].width - first.x,
+                   height: rowHeight * 2).fill()
+        }
+
+        // Consecutive rows that are one colour across their whole width are
+        // filled together: an edited file's tail is a thousand red rows, and a
+        // thousand fills of one pixel each cost the same as the picture they
+        // replace. Only rows entirely inside the file join a run — the one or
+        // two rows the file's end falls in are drawn on their own.
+        var runColour: NSColor?
+        var runFirstRow = 0
+        var runLastRow = -1
+        func flushRun() {
+            guard let colour = runColour, runLastRow >= runFirstRow,
+                  let first = cells.first, let last = cells.last else {
+                runColour = nil
+                return
+            }
+            colour.setFill()
+            let y = top + CGFloat(runFirstRow) * rowHeight
+            let height = CGFloat(runLastRow - runFirstRow) * rowHeight + rowHeight * 2
+            NSRect(x: first.x, y: y,
+                   width: last.x + last.width - first.x, height: height).fill()
+            runColour = nil
+        }
+
         for row in rows {
             let y = top + CGFloat(row) * rowHeight
             let modified = summary.modified.indices.contains(row) ? summary.modified[row] : 0
@@ -1040,6 +1140,65 @@ final class MinimapView: NSView {
             let rowStart = extent * UInt64(row) / UInt64(summary.rowCount)
             let rowEnd = extent * UInt64(row + 1) / UInt64(summary.rowCount)
             let span = rowEnd - rowStart
+
+            let wholeRow: NSColor? = modified != 0
+                ? modifiedInk
+                : (different == .max ? differenceInk : nil)
+            if let colour = wholeRow, lastColumnInFile(rowStart: rowStart, span: span) == columns - 1 {
+                if runColour === colour, runLastRow == row - 1 {
+                    runLastRow = row
+                } else {
+                    flushRun()
+                    runColour = colour
+                    runFirstRow = row
+                    runLastRow = row
+                }
+                continue
+            }
+            flushRun()
+
+            // A row holding bytes the user changed is red across its whole width
+            // (§19.4). Per cell the mark was drawn and unfindable: one edited
+            // byte is one cell of sixteen in one row of a thousand, and at this
+            // scale the column it happened in says almost nothing — a column of
+            // a 16 MB dump's row is a kilobyte. Differences keep their per-cell
+            // shading, which is what makes the shape of a run legible, except
+            // when they cover the row whole and there is no shape to show.
+            //
+            // Both cases are also one fill instead of sixteen, which is what
+            // keeps typing smooth: an insert leaves the whole tail modified and,
+            // in a comparison, differing, so nearly every row is one of these —
+            // and a full repaint of two maps' worth of cells took 138 ms on the
+            // main thread, once per rebuild (§19.9).
+            if modified != 0 {
+                fillRow(modifiedInk, y: y, rowStart: rowStart, span: span)
+                continue
+            }
+            if different == .max {
+                fillRow(differenceInk, y: y, rowStart: rowStart, span: span)
+                continue
+            }
+
+            // Neighbouring cells that draw the same thing are one fill. A dump's
+            // rows are mostly uniform — sixteen cells of erased padding, sixteen
+            // of dense content — so this is the difference between 40 000 fills
+            // for two maps and a couple of thousand (§19.9).
+            var cellColour: NSColor?
+            var cellEvent = false
+            var cellFrom = 0
+            var cellTo = -1
+            func flushCells() {
+                guard let colour = cellColour, cellTo >= cellFrom else {
+                    cellColour = nil
+                    return
+                }
+                colour.setFill()
+                NSRect(x: cells[cellFrom].x, y: y,
+                       width: cells[cellTo].x + cells[cellTo].width - cells[cellFrom].x,
+                       height: cellEvent ? rowHeight * 2 : rowHeight).fill()
+                cellColour = nil
+            }
+
             for column in 0..<columns {
                 let bit = UInt16(1) << UInt16(column)
                 let densityIndex = row * columns + column
@@ -1049,24 +1208,42 @@ final class MinimapView: NSView {
                 // Past this file's end there is nothing of it to draw — not a
                 // fill, not an event. That is what leaves the shorter file's
                 // tail empty (§9).
-                guard sliceStart < fileSize else { continue }
-                let isEvent = modified & bit != 0 || different & bit != 0
+                guard sliceStart < fileSize else { break }
                 // An event is one cell of a one-pixel row, invisible inside a
                 // dense region, so it is drawn two pixels tall — it spills into
                 // the next row rather than disappearing.
-                let rect = NSRect(x: cells[column].x, y: y,
-                                  width: cells[column].width,
-                                  height: isEvent ? rowHeight * 2 : rowHeight)
-                if modified & bit != 0 {
-                    HexTheme.modifiedText.setFill()
-                } else if different & bit != 0 {
-                    HexTheme.differenceFill.setFill()
+                let isEvent = different & bit != 0
+                let colour = isEvent ? differenceInk : tones[Int(density)]
+                if cellColour === colour, cellEvent == isEvent, cellTo == column - 1 {
+                    cellTo = column
                 } else {
-                    tones[Int(density)].setFill()
+                    flushCells()
+                    cellColour = colour
+                    cellEvent = isEvent
+                    cellFrom = column
+                    cellTo = column
                 }
-                rect.fill()
             }
+            flushCells()
         }
+        flushRun()
+    }
+
+    /// The last column of a row that still belongs to a file of `fileSize`, for a
+    /// row covering `span` bytes from `rowStart` — where a row-wide fill has to
+    /// stop, because a map draws nothing of its file past its end (§9). Returns
+    /// -1 for a row that begins past the end, and the last column for a row
+    /// entirely inside the file.
+    ///
+    /// Internal so the rule can be tested directly: it decides a couple of cells
+    /// in the single row a file's end falls in, which is not something pixel
+    /// sampling catches reliably.
+    static func lastColumnInFile(rowStart: UInt64, span: UInt64, fileSize: UInt64) -> Int {
+        let columns = Int(bytesPerRow)
+        guard fileSize > rowStart else { return -1 }
+        let bytes = fileSize - rowStart
+        guard bytes < span else { return columns - 1 }
+        return min(columns - 1, Int(bytes * UInt64(columns) / max(span, 1)))
     }
 
     // MARK: - The stand-in picture across a resize (§19.9)
@@ -1637,5 +1814,14 @@ private extension MinimapView.MapLayout {
         default:
             return false
         }
+    }
+}
+
+
+private extension UInt64 {
+    /// The distance between two unsigned values, whichever is larger — the
+    /// subtraction that does not trap.
+    func absoluteDifference(to other: UInt64) -> UInt64 {
+        self > other ? self - other : other - self
     }
 }

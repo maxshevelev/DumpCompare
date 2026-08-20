@@ -716,4 +716,546 @@ final class PaneViewModelTests: XCTestCase {
 
         XCTAssertFalse(fired, "own save triggered an external-change prompt")
     }
+
+    // MARK: - Insert mode typing
+
+    /// The first hex digit in insert mode inserts a new byte at the caret with
+    /// the high nibble set and the low nibble empty; the tail shifts right and
+    /// the caret stays on the new byte so the next digit fills it.
+    func testInsertModeFirstHexNibbleInsertsByteWithEmptyLowNibble() throws {
+        let (pane, url) = try openPane([0x00])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.isInsertMode = true
+
+        pane.typeHexNibble(0xA)   // high nibble → insert 0xA0 at offset 0
+
+        XCTAssertEqual(pane.fileSize, 2)
+        XCTAssertEqual(pane.hexByteStates(in: 0..<2).map(\.byte), [0xA0, 0x00])
+        XCTAssertEqual(pane.caretOffset, 0, "the caret stays on the new byte")
+        XCTAssertEqual(pane.hexCaretNibble(), 1)
+    }
+
+    /// The second hex digit fills the low nibble in place (no new insertion)
+    /// and advances past the completed byte.
+    func testInsertModeSecondHexNibbleFillsInPlaceThenAdvances() throws {
+        let (pane, url) = try openPane([0x00])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.isInsertMode = true
+
+        pane.typeHexNibble(0xA)   // insert 0xA0
+        pane.typeHexNibble(0xB)   // fill low nibble → 0xAB, advance
+
+        XCTAssertEqual(pane.fileSize, 2)
+        XCTAssertEqual(pane.hexByteStates(in: 0..<2).map(\.byte), [0xAB, 0x00])
+        XCTAssertEqual(pane.caretOffset, 1)
+        XCTAssertEqual(pane.hexCaretNibble(), 0)
+    }
+
+    /// An ASCII character in insert mode inserts a whole byte at the caret.
+    func testTypeASCIIInsertModeInsertsByte() throws {
+        let (pane, url) = try openPane([0x00])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.isInsertMode = true
+
+        pane.typeASCII(0x41)   // 'A' → insert at offset 0
+
+        XCTAssertEqual(pane.fileSize, 2)
+        XCTAssertEqual(pane.hexByteStates(in: 0..<2).map(\.byte), [0x41, 0x00])
+        XCTAssertEqual(pane.caretOffset, 1)
+    }
+
+    /// Backspace on a half-typed insert-mode byte (the high nibble was just
+    /// inserted, the low nibble is still pending) rolls the first nibble back:
+    /// the inserted byte disappears, the tail shifts left, the caret returns to
+    /// where it was, and — because the open edit group is cancelled — nothing
+    /// lands on the undo stack, as if the first nibble was never entered.
+    func testInsertModeBackspaceRollsBackFirstNibble() throws {
+        let (pane, url) = try openPane([0x11, 0x22, 0x33])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.isInsertMode = true
+
+        pane.typeHexNibble(0xA)   // insert 0xA0 at offset 0, tail shifts right
+        XCTAssertEqual(pane.fileSize, 4)
+        XCTAssertEqual(pane.hexByteStates(in: 0..<4).map(\.byte), [0xA0, 0x11, 0x22, 0x33])
+        XCTAssertEqual(pane.caretOffset, 0)
+        XCTAssertEqual(pane.hexCaretNibble(), 1)
+
+        pane.deleteBackward()     // roll the first nibble back
+
+        XCTAssertEqual(pane.fileSize, 3, "the inserted byte is removed, tail shifts left")
+        XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0x11, 0x22, 0x33],
+                       "the file is back to its original bytes")
+        XCTAssertEqual(pane.caretOffset, 0, "the caret returns to where it was")
+        XCTAssertEqual(pane.hexCaretNibble(), 0)
+        XCTAssertFalse(pane.status.canUndo, "the cancelled group records no undo step")
+    }
+
+    /// A mid-byte caret a *click* placed (nibble 1, but no pending insert) does
+    /// not trigger the insert rollback — `pendingInsertOffset` is nil, so
+    /// Backspace behaves normally: in insert mode it deletes the byte before
+    /// the caret (the tail shifts left, the file shrinks by one).
+    func testInsertModeBackspaceAfterClickIsNormal() throws {
+        let (pane, url) = try openPane([0x11, 0x22, 0x33])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.isInsertMode = true
+
+        // A click in the second half of byte 2 places the caret mid-byte
+        // (nibble 1) without any pending insert.
+        pane.hexEditor(HexView(), didClickAt: 2, region: .hex, extendSelection: false, nibble: 1)
+        XCTAssertEqual(pane.caretOffset, 2)
+        XCTAssertEqual(pane.hexCaretNibble(), 1)
+
+        pane.deleteBackward()   // normal backspace, not a rollback
+
+        XCTAssertEqual(pane.fileSize, 2, "the byte before the caret was deleted")
+        XCTAssertEqual(pane.hexByteStates(in: 0..<2).map(\.byte), [0x11, 0x33],
+                       "the tail shifted left over the deleted byte")
+        XCTAssertEqual(pane.caretOffset, 1, "the caret takes the deleted byte's place")
+        XCTAssertTrue(pane.status.canUndo, "a real delete records an undo step")
+    }
+
+    /// In insert mode, Backspace on a byte boundary deletes the byte before the
+    /// caret — the tail shifts left and the file shrinks by one (a real delete,
+    /// unlike overwrite mode's fill-with-0) — and undo restores it.
+    func testInsertModeBackspaceDeletesByteBeforeCaret() throws {
+        let (pane, url) = try openPane([0x11, 0x22, 0x33, 0x44])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.isInsertMode = true
+        pane.moveCaret(to: 2)   // caret on the boundary before byte 2
+
+        pane.deleteBackward()   // delete byte 1 (0x22)
+
+        XCTAssertEqual(pane.fileSize, 3, "the file shrinks by one")
+        XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0x11, 0x33, 0x44],
+                       "the byte before the caret is gone, the tail shifted left")
+        XCTAssertEqual(pane.caretOffset, 1, "the caret takes the deleted byte's place")
+        XCTAssertEqual(pane.hexCaretNibble(), 0)
+        XCTAssertTrue(pane.status.canUndo)
+
+        // Undo restores the deleted byte and the original size.
+        XCTAssertTrue(try pane.undo())
+        XCTAssertEqual(pane.fileSize, 4)
+        XCTAssertEqual(pane.hexByteStates(in: 0..<4).map(\.byte), [0x11, 0x22, 0x33, 0x44])
+    }
+
+    /// Toggling the typing mode only changes the caret's *appearance* — its
+    /// position does not move — so it must fire the caret-appearance callback
+    /// (a redraw in place) and NOT the selection-changed callback (which would
+    /// scroll the view to the caret and yank it away from where the user was
+    /// reading).
+    func testInsertModeToggleRedrawsCaretWithoutScrolling() throws {
+        let (pane, url) = try openPane([0x11, 0x22, 0x33, 0x44])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.moveCaret(to: 2)
+
+        var appearanceFired = false
+        var selectionFired = false
+        pane.onCaretAppearanceChanged = { appearanceFired = true }
+        pane.onSelectionChanged = { selectionFired = true }
+
+        pane.isInsertMode = true
+
+        XCTAssertTrue(appearanceFired, "a mode flip repaints the caret in place")
+        XCTAssertFalse(selectionFired, "a mode flip is not a selection move (no scroll)")
+    }
+
+    /// A mid-byte caret a click placed (nibble 1, nothing pending) is just a
+    /// caret position: typing in insert mode overwrites only the low nibble of
+    /// the byte the caret sits on — no new byte is inserted and the file does
+    /// not shift.
+    func testInsertModeTypeAfterMidByteClickOverwritesLowNibbleOnly() throws {
+        let (pane, url) = try openPane([0x11, 0x22, 0x33, 0x44])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.isInsertMode = true
+
+        // A click in the second half of byte 1 places the caret mid-byte
+        // (nibble 1) with nothing pending.
+        pane.hexEditor(HexView(), didClickAt: 1, region: .hex, extendSelection: false, nibble: 1)
+        XCTAssertEqual(pane.hexCaretNibble(), 1)
+
+        pane.typeHexNibble(0x9)   // fills the low nibble of byte 1 in place
+
+        XCTAssertEqual(pane.fileSize, 4, "no byte is inserted — the file does not shift")
+        XCTAssertEqual(pane.hexByteStates(in: 0..<4).map(\.byte), [0x11, 0x29, 0x33, 0x44],
+                       "only the low nibble of the byte is overwritten")
+        XCTAssertEqual(pane.caretOffset, 2, "the caret advances past the byte")
+        XCTAssertEqual(pane.hexCaretNibble(), 0)
+    }
+
+    /// Each insert-mode byte (high-nibble insert + low-nibble fill, coalesced
+    /// into one undo step by the edit group) undoes as a unit; a fast second
+    /// undo rolls back the rest of the series, and redo restores symmetrically.
+    func testInsertSeriesUndoIsSegmented() throws {
+        let (pane, url) = try openPane([0x00, 0x00, 0x00, 0x00])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.isInsertMode = true
+
+        try withControllableClock { advance in
+            pane.typeHexNibble(0x4); pane.typeHexNibble(0x1)   // 0x41
+            advance(0.05)
+            pane.typeHexNibble(0x4); pane.typeHexNibble(0x2)   // 0x42
+            advance(0.05)
+            pane.typeHexNibble(0x4); pane.typeHexNibble(0x3)   // 0x43
+            XCTAssertEqual(pane.fileSize, 7)
+            XCTAssertEqual(pane.hexByteStates(in: 0..<7).map(\.byte),
+                           [0x41, 0x42, 0x43, 0x00, 0x00, 0x00, 0x00])
+
+            // First undo: the last byte of the series (the file shrinks by one).
+            XCTAssertTrue(try pane.undo())
+            XCTAssertEqual(pane.fileSize, 6)
+            XCTAssertEqual(pane.hexByteStates(in: 0..<6).map(\.byte),
+                           [0x41, 0x42, 0x00, 0x00, 0x00, 0x00])
+            XCTAssertEqual(pane.caretOffset, 2)
+
+            // Fast second undo: the rest of the series in one step.
+            advance(0.1)
+            XCTAssertTrue(try pane.undo())
+            XCTAssertEqual(pane.fileSize, 4)
+            XCTAssertEqual(pane.hexByteStates(in: 0..<4).map(\.byte),
+                           [0x00, 0x00, 0x00, 0x00])
+            XCTAssertEqual(pane.caretOffset, 0)
+            XCTAssertFalse(pane.status.canUndo)
+
+            // Redo is symmetric: the batch comes back in one press...
+            advance(0.1)
+            XCTAssertTrue(try pane.redo())
+            XCTAssertEqual(pane.fileSize, 6)
+            XCTAssertEqual(pane.hexByteStates(in: 0..<6).map(\.byte),
+                           [0x41, 0x42, 0x00, 0x00, 0x00, 0x00])
+            // ...and the single byte in the next.
+            advance(0.1)
+            XCTAssertTrue(try pane.redo())
+            XCTAssertEqual(pane.fileSize, 7)
+            XCTAssertEqual(pane.hexByteStates(in: 0..<7).map(\.byte),
+                           [0x41, 0x42, 0x43, 0x00, 0x00, 0x00, 0x00])
+            XCTAssertEqual(pane.caretOffset, 3)
+        }
+    }
+
+    /// Default (no insert mode): typing overwrites in place and the size is
+    /// unchanged — the pre-existing behavior is preserved.
+    func testOverwriteModeStillOverwrites() throws {
+        let (pane, url) = try openPane([0x00])
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        pane.typeHexNibble(0xA)
+        pane.typeHexNibble(0xB)
+
+        XCTAssertEqual(pane.fileSize, 1, "overwrite never grows the file")
+        XCTAssertEqual(pane.hexByteStates(in: 0..<1)[0].byte, 0xAB)
+    }
+
+    // MARK: - Insert mode one-time warning
+
+    /// The one-time warning fires on the first insert-mode edit and never again
+    /// for the same file — not on the second nibble, not on the next byte.
+    func testInsertModeFirstEditWarnsOnce() throws {
+        let (pane, url) = try openPane([0x00])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.isInsertMode = true
+        var calls = 0
+        pane.confirmInsertModeWarning = { calls += 1; return true }
+
+        pane.typeHexNibble(0xA)   // warns, inserts 0xA0
+        XCTAssertEqual(calls, 1)
+        XCTAssertEqual(pane.fileSize, 2)
+
+        pane.typeHexNibble(0x4)   // completes 0xA4 — no re-warn
+        XCTAssertEqual(calls, 1)
+        XCTAssertEqual(pane.hexByteStates(in: 0..<1)[0].byte, 0xA4)
+
+        pane.typeHexNibble(0xB)   // next byte — still no re-warn
+        XCTAssertEqual(calls, 1)
+    }
+
+    /// A cancelled warning swallows the keystroke entirely (no byte, no undo
+    /// step) and does not set the warned flag, so the next keystroke re-asks.
+    func testInsertModeWarningCancelSwallowsKeystroke() throws {
+        let (pane, url) = try openPane([0x00])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.isInsertMode = true
+        var allow = false
+        var calls = 0
+        pane.confirmInsertModeWarning = { calls += 1; return allow }
+
+        pane.typeHexNibble(0xA)   // cancelled → swallowed
+        XCTAssertEqual(calls, 1)
+        XCTAssertEqual(pane.fileSize, 1)
+        XCTAssertEqual(pane.caretOffset, 0)
+        XCTAssertEqual(pane.hexCaretNibble(), 0)
+        XCTAssertFalse(pane.status.canUndo, "nothing was inserted")
+
+        allow = true
+        pane.typeHexNibble(0xA)   // re-asks (the first was cancelled) → inserts
+        XCTAssertEqual(calls, 2)
+        XCTAssertEqual(pane.fileSize, 2)
+        XCTAssertEqual(pane.hexCaretNibble(), 1)
+    }
+
+    /// With no presenter injected (the pure-unit-test path) insert-mode typing
+    /// proceeds without asking.
+    func testInsertModeNilWarningCallbackTypesWithoutAsking() throws {
+        let (pane, url) = try openPane([0x00])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.isInsertMode = true
+        XCTAssertNil(pane.confirmInsertModeWarning)
+
+        pane.typeHexNibble(0xA)
+        pane.typeHexNibble(0xB)
+
+        XCTAssertEqual(pane.fileSize, 2)
+        XCTAssertEqual(pane.hexByteStates(in: 0..<1)[0].byte, 0xAB)
+    }
+
+    /// The warned flag is per opened file: opening a fresh file re-arms the
+    /// one-time warning (the mode itself is session-global and stays on).
+    func testInsertModeWarningRearmsOnNewFile() throws {
+        let (pane, url1) = try openPane([0x00])
+        defer { try? FileManager.default.removeItem(at: url1) }
+        pane.isInsertMode = true
+        var calls = 0
+        pane.confirmInsertModeWarning = { calls += 1; return true }
+
+        pane.typeHexNibble(0xA)   // warns once
+        XCTAssertEqual(calls, 1)
+
+        let url2 = try tempFile([0x00])
+        defer { try? FileManager.default.removeItem(at: url2) }
+        try pane.open(url: url2)
+
+        pane.typeHexNibble(0xA)   // warns again (flag cleared on open)
+        XCTAssertEqual(calls, 2)
+    }
+
+    // MARK: - Insert mode: deleting and selections (§7.6)
+
+    /// An insert-mode delete shifts the tail, so it is a length-changing edit
+    /// and goes through the same one-time warning as insert-mode typing (§7.2).
+    /// It used to delete with no confirmation ever — the first thing a user did
+    /// in the mode could silently shift the whole file.
+    func testInsertModeBackspaceAsksTheOneTimeWarning() throws {
+        let (pane, url) = try openPane([0x11, 0x22, 0x33])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.isInsertMode = true
+        var calls = 0
+        var allow = false
+        pane.confirmInsertModeWarning = { calls += 1; return allow }
+        pane.moveCaret(to: 2)
+
+        pane.deleteBackward()          // cancelled → nothing happens
+        XCTAssertEqual(calls, 1)
+        XCTAssertEqual(pane.fileSize, 3)
+        XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0x11, 0x22, 0x33])
+        XCTAssertFalse(pane.status.canUndo)
+
+        allow = true
+        pane.deleteBackward()          // confirmed → the byte goes
+        XCTAssertEqual(calls, 2)
+        XCTAssertEqual(pane.fileSize, 2)
+        XCTAssertEqual(pane.hexByteStates(in: 0..<2).map(\.byte), [0x11, 0x33])
+
+        pane.deleteBackward()          // already warned for this file
+        XCTAssertEqual(calls, 2)
+        XCTAssertEqual(pane.fileSize, 1)
+    }
+
+    /// Insert-mode Delete removes the byte at the caret and shifts the tail —
+    /// the forward twin of Backspace, and warned the same way. In overwrite mode
+    /// it still fills with 0x00 (§7.3).
+    func testInsertModeForwardDeleteRemovesTheByteAtTheCaret() throws {
+        let (pane, url) = try openPane([0x11, 0x22, 0x33])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.isInsertMode = true
+        pane.moveCaret(to: 1)
+
+        pane.deleteForward()
+
+        XCTAssertEqual(pane.fileSize, 2)
+        XCTAssertEqual(pane.hexByteStates(in: 0..<2).map(\.byte), [0x11, 0x33])
+        XCTAssertEqual(pane.caretOffset, 1, "the caret stays where the byte was")
+
+        // Overwrite mode is untouched: a fill, not a delete.
+        pane.isInsertMode = false
+        pane.moveCaret(to: 0)
+        pane.deleteForward()
+        XCTAssertEqual(pane.fileSize, 2)
+        XCTAssertEqual(pane.hexByteStates(in: 0..<2).map(\.byte), [0x00, 0x33])
+    }
+
+    /// With a selection, an insert-mode Backspace removes the selected span and
+    /// shifts the tail — a mode whose Backspace deletes bytes cannot fill a
+    /// selection with zeros instead. Overwrite mode keeps filling (§7.3).
+    func testInsertModeBackspaceRemovesTheSelection() throws {
+        let (pane, url) = try openPane([0x11, 0x22, 0x33, 0x44])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.isInsertMode = true
+        pane.setSelection(SelectionModel(start: 1, end: 3, fileSize: 4))
+
+        pane.deleteBackward()
+
+        XCTAssertEqual(pane.fileSize, 2, "two selected bytes are gone")
+        XCTAssertEqual(pane.hexByteStates(in: 0..<2).map(\.byte), [0x11, 0x44])
+        XCTAssertEqual(pane.caretOffset, 1)
+        XCTAssertTrue(try pane.undo())
+        XCTAssertEqual(pane.hexByteStates(in: 0..<4).map(\.byte), [0x11, 0x22, 0x33, 0x44])
+    }
+
+    func testOverwriteModeBackspaceStillFillsTheSelection() throws {
+        let (pane, url) = try openPane([0x11, 0x22, 0x33, 0x44])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.setSelection(SelectionModel(start: 1, end: 3, fileSize: 4))
+
+        pane.deleteBackward()
+
+        XCTAssertEqual(pane.fileSize, 4)
+        XCTAssertEqual(pane.hexByteStates(in: 0..<4).map(\.byte), [0x11, 0x00, 0x00, 0x44])
+    }
+
+    /// Typing in insert mode drops the selection instead of leaving it standing:
+    /// the bytes it covered shift right as the byte lands, so a surviving
+    /// highlight would name bytes the user never selected.
+    func testInsertModeTypingDropsTheSelection() throws {
+        let (pane, url) = try openPane([0x11, 0x22, 0x33, 0x44])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.isInsertMode = true
+        pane.setSelection(SelectionModel(start: 1, end: 3, fileSize: 4))
+
+        pane.typeHexNibble(0xA)        // half-typed byte at the selection's start
+
+        XCTAssertEqual(pane.fileSize, 5)
+        XCTAssertEqual(pane.hexByteStates(in: 0..<5).map(\.byte), [0x11, 0xA0, 0x22, 0x33, 0x44])
+        XCTAssertTrue(pane.hexSelection().isEmpty, "the selection is gone, not left over shifted bytes")
+        XCTAssertEqual(pane.caretOffset, 1)
+
+        pane.typeHexNibble(0xB)
+        XCTAssertEqual(pane.hexByteStates(in: 0..<5).map(\.byte), [0x11, 0xAB, 0x22, 0x33, 0x44])
+        XCTAssertEqual(pane.caretOffset, 2)
+    }
+
+    /// The same end state for an ASCII character: the byte lands at the
+    /// selection's start and nothing stays selected. (This one holds either way
+    /// — a whole byte has no half-typed state to be seen in, and the advance
+    /// past it collapses the selection anyway — so it pins the result, not the
+    /// drop.)
+    func testInsertModeASCIITypingDropsTheSelection() throws {
+        let (pane, url) = try openPane([0x11, 0x22, 0x33, 0x44])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.isInsertMode = true
+        pane.setSelection(SelectionModel(start: 1, end: 3, fileSize: 4))
+
+        pane.typeASCII(0x41)
+
+        XCTAssertEqual(pane.hexByteStates(in: 0..<5).map(\.byte), [0x11, 0x41, 0x22, 0x33, 0x44])
+        XCTAssertTrue(pane.hexSelection().isEmpty)
+    }
+
+    /// Overwrite mode still consumes the selection byte by byte (§7.4).
+    func testOverwriteModeTypingStillConsumesTheSelection() throws {
+        let (pane, url) = try openPane([0x11, 0x22, 0x33, 0x44])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.setSelection(SelectionModel(start: 1, end: 3, fileSize: 4))
+
+        pane.typeASCII(0x41)
+
+        XCTAssertEqual(pane.fileSize, 4)
+        XCTAssertEqual(pane.hexByteStates(in: 0..<4).map(\.byte), [0x11, 0x41, 0x33, 0x44])
+        XCTAssertFalse(pane.hexSelection().isEmpty, "the rest of the selection is still being consumed")
+    }
+
+    // MARK: - The nibble group ends with the byte (§7.5.1)
+
+    /// Moving the caret off a half-typed byte closes its edit group, so the byte
+    /// is a committed undo step of its own — not an uncommitted op waiting to be
+    /// glued to whatever byte is typed next, somewhere else entirely.
+    func testCaretMoveCommitsAHalfTypedByteAsItsOwnStep() throws {
+        let (pane, url) = try openPane([0x11, 0x22, 0x33])
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        pane.typeHexNibble(0xA)   // half-typed: 0x11 -> 0xA1
+        pane.moveCaret(to: 2)
+        pane.typeHexNibble(0xB)   // a different byte: 0x33 -> 0xB3
+        pane.moveCaret(to: 0)
+
+        XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0xA1, 0x22, 0xB3])
+
+        // One undo takes back one byte, not both.
+        XCTAssertTrue(try pane.undo())
+        XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0xA1, 0x22, 0x33],
+                       "the second half-typed byte undoes on its own")
+        XCTAssertTrue(try pane.undo())
+        XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0x11, 0x22, 0x33],
+                       "and the first one after it")
+    }
+
+    /// The insert-mode rollback must take back only the byte it is rolling
+    /// back. A half-typed byte left behind by a caret move is committed, so
+    /// Backspace on a *later* pending byte cannot reach it — before the group
+    /// closed on caret movement, cancelling the group reverted both bytes and
+    /// left nothing on the undo stack to recover the first.
+    func testRollbackLeavesAnEarlierHalfTypedByteAlone() throws {
+        let (pane, url) = try openPane([0x11, 0x22, 0x33])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.isInsertMode = true
+
+        pane.typeHexNibble(0xA)   // insert 0xA0 at 0 → [A0 11 22 33]
+        pane.moveCaret(to: 3)
+        pane.typeHexNibble(0xB)   // insert 0xB0 at 3 → [A0 11 22 B0 33]
+        XCTAssertEqual(pane.fileSize, 5)
+
+        pane.deleteBackward()     // roll back the pending byte only
+
+        XCTAssertEqual(pane.fileSize, 4)
+        XCTAssertEqual(pane.hexByteStates(in: 0..<4).map(\.byte), [0xA0, 0x11, 0x22, 0x33],
+                       "the byte typed before the caret moved survives")
+        XCTAssertTrue(pane.status.canUndo, "and it is still on the undo stack")
+        XCTAssertTrue(try pane.undo())
+        XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0x11, 0x22, 0x33])
+    }
+
+    /// The same, for an edit made in overwrite mode before the mode was
+    /// switched on: the rollback of an inserted byte must not revert it.
+    func testRollbackLeavesAnOverwriteModeEditAlone() throws {
+        let (pane, url) = try openPane([0x11, 0x22, 0x33])
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        pane.typeHexNibble(0xA)   // overwrite mode: 0x11 -> 0xA1
+        pane.moveCaret(to: 2)
+        pane.isInsertMode = true
+        pane.typeHexNibble(0xB)   // insert 0xB0 at 2
+        pane.deleteBackward()     // roll the inserted byte back
+
+        XCTAssertEqual(pane.fileSize, 3)
+        XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0xA1, 0x22, 0x33],
+                       "the overwrite-mode edit survives the rollback")
+    }
+
+    /// A rollback leaves the pane and the document agreeing that no group is
+    /// open. When they disagreed, every later byte's two nibbles landed as two
+    /// separate undo steps — in both typing modes, for the rest of the
+    /// document's life.
+    func testTypingStillCoalescesAfterARollback() throws {
+        let (pane, url) = try openPane([0x11, 0x22, 0x33])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.isInsertMode = true
+
+        pane.typeHexNibble(0xA)   // half-typed insert
+        pane.deleteBackward()     // rollback
+
+        pane.typeHexNibble(0xC)   // a whole byte, insert mode
+        pane.typeHexNibble(0xD)
+        XCTAssertEqual(pane.fileSize, 4)
+        XCTAssertTrue(try pane.undo())
+        XCTAssertEqual(pane.fileSize, 3, "the inserted byte undoes in one step, both nibbles")
+        XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0x11, 0x22, 0x33])
+
+        // And in overwrite mode, on the same document.
+        pane.isInsertMode = false
+        pane.moveCaret(to: 0)
+        pane.typeHexNibble(0xC)
+        pane.typeHexNibble(0xD)
+        XCTAssertEqual(pane.hexByteStates(in: 0..<1)[0].byte, 0xCD)
+        XCTAssertTrue(try pane.undo())
+        XCTAssertEqual(pane.hexByteStates(in: 0..<1)[0].byte, 0x11,
+                       "one undo restores the whole byte, not half of it")
+    }
 }

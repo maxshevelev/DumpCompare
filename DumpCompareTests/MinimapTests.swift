@@ -1220,10 +1220,16 @@ final class MinimapTests: XCTestCase {
     private func overviewPicture(bytes: [UInt8], rowCount: Int,
                                  differences: [Range<UInt64>] = [])
         -> (density: [UInt8], modified: [UInt16], different: [UInt16])? {
+        // The engine asks the index for the blocks in the rows it is computing,
+        // so a test's differing ranges become an index over the same extent.
+        let index: DiffBlockIndex? = differences.isEmpty ? nil : DiffBlockIndex(
+            leftSize: UInt64(bytes.count), rightSize: UInt64(bytes.count),
+            blocks: differences.map { DiffBlock(kind: .different, range: $0) }
+        )
         let source = MainViewController.OverviewSource(
             storage: MemoryBackedStorage(bytes: bytes), saved: nil,
             size: UInt64(bytes.count), edited: [], isUntitled: true,
-            differences: differences
+            differences: index
         )
         return MainViewController.overviewRows(source: source, extent: UInt64(bytes.count),
                                                rowCount: rowCount, rows: 0...(rowCount - 1))
@@ -2477,6 +2483,219 @@ final class MinimapTests: XCTestCase {
         let exactBottom = try inkiness(atY: panel.bounds.maxY - 3)
         XCTAssertGreaterThan(exactBottom, exactTop * 2,
                              "and the exact picture agrees on which half is which")
+    }
+
+    /// The bounding box of the red (modified) pixels in the panel's rendering,
+    /// in device pixels, or nil when there are none. Red is what nothing else in
+    /// the overview draws: the tone ramp is a neutral ink and the difference
+    /// fill is orange, which is far less red-vs-blue than `systemRed`.
+    private func modifiedInkBounds(_ panel: MinimapView) throws -> (x: ClosedRange<Int>, y: ClosedRange<Int>, count: Int)? {
+        let rep = try XCTUnwrap(panel.bitmapImageRepForCachingDisplay(in: panel.bounds))
+        panel.cacheDisplay(in: panel.bounds, to: rep)
+        var minX = Int.max, maxX = -1, minY = Int.max, maxY = -1, count = 0
+        for y in 0..<rep.pixelsHigh {
+            for x in 0..<rep.pixelsWide {
+                guard let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
+                guard c.redComponent - c.blueComponent > 0.45, c.redComponent > 0.5,
+                      c.greenComponent < 0.45 else { continue }
+                minX = min(minX, x); maxX = max(maxX, x)
+                minY = min(minY, y); maxY = max(maxY, y)
+                count += 1
+            }
+        }
+        guard maxX >= 0 else { return nil }
+        return (minX...maxX, minY...maxY, count)
+    }
+
+    /// A byte the user changed marks its row across the map's whole width, not
+    /// one cell of it. Per cell the mark was drawn but unfindable: one edited
+    /// byte is one cell of sixteen in one row of a thousand — a couple of dozen
+    /// device pixels in the whole panel — which read as "modified bytes do not
+    /// show up in the overview at all" (§19.4).
+    func testAModifiedByteMarksItsWholeRowInTheOverview() throws {
+        let (controller, _, panel) = try makeOverviewWindow(
+            (0..<(256 * 1024)).map { UInt8($0 % 251) })
+        XCTAssertNil(try modifiedInkBounds(panel), "nothing is modified yet")
+
+        controller.windowModel.pane1.moveCaret(to: 100 * 1024)
+        controller.windowModel.pane1.typeASCII(0x5A)
+        XCTAssertTrue(pumpUntil(3.0) {
+            panel.overviewSummaries.first?.modified.contains { $0 != 0 } ?? false
+        }, "the edit reaches the picture")
+
+        let ink = try XCTUnwrap(try modifiedInkBounds(panel), "the edit is marked in red")
+        // The mark spans the map's content, not a sixteenth of it.
+        let scale = CGFloat(try XCTUnwrap(panel.bitmapImageRepForCachingDisplay(in: panel.bounds)).pixelsWide)
+            / panel.bounds.width
+        let contentWidth = (panel.bounds.width - 2 * MinimapView.contentPadding) * scale
+        let markWidth = CGFloat(ink.x.count)
+        XCTAssertGreaterThan(markWidth, contentWidth * 0.8,
+                             "the mark reads across the map: \(markWidth) of \(contentWidth) px")
+        // And it stays a hairline: a row of a thousand, two device pixels tall.
+        XCTAssertLessThan(ink.y.count, 8, "the mark is a hairline, not a band")
+    }
+
+    /// Where a row-wide fill stops: a map draws nothing of its file past the
+    /// file's end (§9), and after an edit whole rows are filled in one go, so the
+    /// row the end falls in has to be cut at the right cell. It decides a couple
+    /// of cells in one row of a thousand — too little for pixel sampling to be
+    /// trusted with, which is why the rule is a function.
+    func testARowWideFillStopsWhereTheFileEnds() {
+        let columns = Int(MinimapView.bytesPerRow)   // 16
+
+        // A row entirely inside the file: every column belongs to it.
+        XCTAssertEqual(MinimapView.lastColumnInFile(rowStart: 0, span: 1024, fileSize: 4096),
+                       columns - 1)
+        XCTAssertEqual(MinimapView.lastColumnInFile(rowStart: 3072, span: 1024, fileSize: 4096),
+                       columns - 1)
+
+        // A row that begins past the end: nothing of it is drawn.
+        XCTAssertEqual(MinimapView.lastColumnInFile(rowStart: 4096, span: 1024, fileSize: 4096), -1)
+        XCTAssertEqual(MinimapView.lastColumnInFile(rowStart: 9000, span: 1024, fileSize: 4096), -1)
+
+        // The row the end falls in, at a few fractions of the way across.
+        XCTAssertEqual(MinimapView.lastColumnInFile(rowStart: 4096, span: 1024, fileSize: 4096 + 512),
+                       columns / 2, "half way across the row")
+        XCTAssertEqual(MinimapView.lastColumnInFile(rowStart: 4096, span: 1024, fileSize: 4096 + 64),
+                       1, "one cell in")
+        XCTAssertEqual(MinimapView.lastColumnInFile(rowStart: 4096, span: 1024, fileSize: 4096 + 1),
+                       0, "a single byte of the row")
+        XCTAssertEqual(MinimapView.lastColumnInFile(rowStart: 4096, span: 1024, fileSize: 4096 + 1023),
+                       columns - 1, "all but the last byte still reaches the last cell")
+
+        // Rows thinner than their 16 cells (a file smaller than the panel's
+        // rows): the arithmetic must not run past the last column.
+        XCTAssertEqual(MinimapView.lastColumnInFile(rowStart: 0, span: 1, fileSize: 1), columns - 1)
+        XCTAssertEqual(MinimapView.lastColumnInFile(rowStart: 5, span: 1, fileSize: 5), -1)
+        XCTAssertEqual(MinimapView.lastColumnInFile(rowStart: 0, span: 4, fileSize: 2),
+                       columns / 2, "two of the row's four bytes")
+    }
+
+    /// A typed byte grows the file by one, which moves the overview's extent by
+    /// one — a fraction of a byte per row, and less than a pixel at the file's
+    /// end. There is nothing to see, so it must not ask for a repaint of the
+    /// panel: doing that on every keystroke cost 25-44 ms of main thread each
+    /// time, which is what the typing stuttered on. What the edit does make
+    /// visible — the marks — invalidates its own rows (§19.9).
+    func testATypedByteDoesNotRepaintTheWholeOverview() throws {
+        let (controller, _, panel) = try makeOverviewWindow(
+            (0..<(512 * 1024)).map { UInt8($0 % 251) })
+        let pane = controller.windowModel.pane1
+        pane.isInsertMode = true
+        pane.moveCaret(to: 200 * 1024)
+
+        pane.typeASCII(0x5A)
+
+        let rects = try XCTUnwrap(panel.lastRepaintRequest,
+                                  "a typed byte repaints rows, not the panel")
+        XCTAssertFalse(rects.isEmpty, "and it does repaint the rows its marks cover")
+        let total = rects.reduce(0.0) { $0 + $1.height }
+        XCTAssertLessThan(total, panel.bounds.height,
+                          "the repaint is bounded by the marked tail, not the whole map")
+
+        // The rule itself, at the level it lives: a size change smaller than a
+        // row's worth of bytes asks for nothing, a big one asks for the panel.
+        let size = panel.maps[0].fileSize
+        panel.setMaps([MinimapView.Map(fileSize: size + 1, selection: nil)])
+        XCTAssertNotNil(panel.lastRepaintRequest,
+                        "one byte moves no pixel: no full repaint")
+        panel.setMaps([MinimapView.Map(fileSize: size / 2, selection: nil)])
+        XCTAssertNil(panel.lastRepaintRequest,
+                     "half the file gone re-bins every row: that is a new picture")
+    }
+
+
+
+    /// An inserted byte moves every byte after it, so from there to the end the
+    /// file no longer holds what it held at those offsets — which is why the hex
+    /// view paints the whole tail red. The overview has to say the same thing.
+    ///
+    /// It used to mark only the inserted byte's own row: the modified pass looked
+    /// exclusively where the edit overlay had *written*, which was the truth
+    /// while overwriting was the only kind of edit and stopped being the truth
+    /// with insert mode (§19.4).
+    func testAnInsertMarksTheWholeShiftedTailInTheOverview() throws {
+        // Non-uniform bytes: shifting a run of one repeated byte would leave the
+        // same byte at every offset, and nothing would have changed.
+        let size = 256 * 1024
+        let (controller, _, panel) = try makeOverviewWindow((0..<size).map { UInt8($0 % 251) })
+        let rowsBefore = try XCTUnwrap(panel.overviewSummaries.first).rowCount
+        XCTAssertTrue(try XCTUnwrap(panel.overviewSummaries.first).modified.allSatisfy { $0 == 0 })
+
+        let insertAt: UInt64 = 100 * 1024
+        controller.windowModel.pane1.isInsertMode = true
+        controller.windowModel.pane1.moveCaret(to: insertAt)
+        controller.windowModel.pane1.typeASCII(0x5A)
+
+        XCTAssertTrue(pumpUntil(10.0) {
+            guard let summary = panel.overviewSummaries.first, !panel.overviewBinsAreStale else {
+                return false
+            }
+            return summary.modified.contains { $0 != 0 }
+        }, "the picture is recomputed after the insert")
+
+        let summary = try XCTUnwrap(panel.overviewSummaries.first)
+        XCTAssertEqual(summary.rowCount, rowsBefore, "same panel, same rows")
+        let insertRow = Int(insertAt * UInt64(summary.rowCount) / summary.extent)
+
+        let tail = ((insertRow + 1)..<summary.rowCount).filter { summary.modified[$0] != 0 }
+        let tailRows = summary.rowCount - insertRow - 1
+        XCTAssertGreaterThan(Double(tail.count) / Double(tailRows), 0.95,
+                             "the shifted tail is marked: \(tail.count) of \(tailRows) rows")
+        let head = (0..<insertRow).filter { summary.modified[$0] != 0 }
+        XCTAssertTrue(head.isEmpty,
+                      "nothing before the insertion moved, so nothing there is marked: \(head.prefix(5))")
+    }
+
+    /// An edit that changes the longest file's length invalidates the overview's
+    /// bins — every row covers a different slice of the file now. The picture is
+    /// kept and stretched until the background pass replaces it, rather than
+    /// dropped: dropping it blanked the panel on every inserted byte, and in a
+    /// comparison it blanked only for inserts (a delete leaves the companion the
+    /// longest, so the extent, and the bins, are unchanged), which made the
+    /// blink look like a bug in insert mode (§19.9).
+    func testAnInsertKeepsTheOverviewPictureWhileItIsRecomputed() throws {
+        // Erased first half, content second half — so which half is which is
+        // visible in the drawing, stretched or exact.
+        let size = 512 * 1024
+        var bytes = [UInt8](repeating: 0xFF, count: size)
+        for i in (size / 2)..<size { bytes[i] = UInt8(i % 251) }
+        let (controller, window, panel) = try makeOverviewWindow(bytes)
+        let summaryBefore = try XCTUnwrap(panel.overviewSummaries.first)
+        XCTAssertGreaterThan(summaryBefore.rowCount, 0)
+        XCTAssertFalse(panel.overviewBinsAreStale)
+
+        // Insert one byte: the file grows, so the bins no longer match it. Near
+        // the very end, so the interim modified marks (§19.4) cover only the last
+        // rows and the density picture this test reads is still on screen.
+        controller.windowModel.pane1.isInsertMode = true
+        controller.windowModel.pane1.moveCaret(to: UInt64(size) - 8)
+        controller.windowModel.pane1.typeASCII(0x5A)
+
+        XCTAssertTrue(panel.overviewBinsAreStale, "the bins are known to be out of date")
+        XCTAssertEqual(panel.overviewSummaries.first?.rowCount, summaryBefore.rowCount,
+                       "and the picture is still there to draw")
+
+        // It is drawn, not left blank, and it still says the content is in the
+        // bottom half.
+        let paper = paperBrightness(panel)
+        let inset = MinimapView.contentPadding + 2
+        let right = panel.bounds.width - MinimapView.contentPadding - 2
+        func inkiness(atY y: CGFloat) throws -> CGFloat {
+            let samples = try sampleRow(panel, y: y, from: inset, to: right)
+            XCTAssertGreaterThan(samples.count, 20, "enough pixels to judge")
+            return samples.map { abs($0 - paper) }.reduce(0, +) / CGFloat(samples.count)
+        }
+        let bottom = try inkiness(atY: panel.bounds.maxY - 3)
+        let top = try inkiness(atY: panel.bounds.minY + 3)
+        XCTAssertGreaterThan(bottom, 0.05, "the map is still drawn, not blanked")
+        XCTAssertGreaterThan(bottom, top * 2, "top \(top), bottom \(bottom)")
+
+        // And the background pass replaces it, clearing the stale mark.
+        XCTAssertTrue(pumpUntil(10.0) { !panel.overviewBinsAreStale },
+                      "the exact picture arrives and the bins are current again")
+        XCTAssertEqual(panel.overviewSummaries.first?.rowCount, panel.overviewRowCount())
+        _ = window
     }
 
 }

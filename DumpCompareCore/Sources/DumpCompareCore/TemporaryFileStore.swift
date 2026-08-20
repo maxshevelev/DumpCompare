@@ -27,6 +27,19 @@ public final class TemporaryFileStore: @unchecked Sendable {
         return url
     }
 
+    /// Removes every file created by this store except `url` — the one a storage
+    /// has just materialized into. Keeping the earlier ones was how a typing
+    /// session ended up with one full copy of the file per keystroke on disk.
+    public func removeAll(except url: URL) {
+        lock.lock()
+        defer { lock.unlock() }
+        let keep = url.standardizedFileURL
+        for candidate in created where candidate.standardizedFileURL != keep {
+            try? FileManager.default.removeItem(at: candidate)
+        }
+        created = created.filter { $0.standardizedFileURL == keep }
+    }
+
     /// Removes every file created by this store.
     public func removeAll() {
         lock.lock()

@@ -596,4 +596,237 @@ final class DiffEngineTests: XCTestCase {
     func testNetDiffEditEmptyReturnsNil() {
         XCTAssertNil(DiffEdit.netDiffEdit(ops: []))
     }
+
+    // MARK: - Querying a window of the index (§8)
+
+    /// The blocks touching a window, by binary search. Consumers that care about
+    /// a few rows must not flatten the whole index to find them — that was a
+    /// third of the main thread while typing into a 16 MB comparison.
+    func testBlocksInAWindow() {
+        // 0..10 same, 10..20 different, 20..30 same, 30..40 different.
+        let index = DiffBlockIndex(leftSize: 40, rightSize: 40, blocks: [
+            DiffBlock(kind: .same, range: 0..<10),
+            DiffBlock(kind: .different, range: 10..<20),
+            DiffBlock(kind: .same, range: 20..<30),
+            DiffBlock(kind: .different, range: 30..<40),
+        ])
+
+        func kinds(_ range: Range<UInt64>) -> [String] {
+            index.blocks(in: range).map { "\($0.kind == .same ? "s" : "d")\($0.range.lowerBound)" }
+        }
+
+        XCTAssertEqual(kinds(0..<40), ["s0", "d10", "s20", "d30"], "the whole extent")
+        XCTAssertEqual(kinds(0..<1), ["s0"], "inside the first block")
+        XCTAssertEqual(kinds(9..<11), ["s0", "d10"], "across a boundary")
+        XCTAssertEqual(kinds(10..<20), ["d10"], "exactly one block")
+        XCTAssertEqual(kinds(10..<21), ["d10", "s20"], "one block and a byte of the next")
+        XCTAssertEqual(kinds(19..<20), ["d10"], "the last byte of a block")
+        XCTAssertEqual(kinds(20..<20), [], "an empty window")
+        XCTAssertEqual(kinds(40..<50), [], "past the extent")
+        XCTAssertEqual(kinds(35..<50), ["d30"], "clamped at the end")
+        XCTAssertEqual(DiffBlockIndex(leftSize: 0, rightSize: 0, blocks: []).blocks(in: 0..<10).count, 0)
+    }
+
+    /// The window query and the flattened list must agree — the same blocks, in
+    /// the same order — over a random index.
+    func testBlocksInAWindowAgreesWithTheWholeIndex() {
+        var rng = SystemRandomNumberGenerator()
+        for _ in 0..<30 {
+            var blocks: [DiffBlock] = []
+            var offset: UInt64 = 0
+            var kind = DiffBlock.Kind.same
+            while offset < 500 {
+                let length = UInt64.random(in: 1...40, using: &rng)
+                blocks.append(DiffBlock(kind: kind, range: offset..<(offset + length)))
+                offset += length
+                kind = kind == .same ? .different : .same
+            }
+            let index = DiffBlockIndex(leftSize: offset, rightSize: offset, blocks: blocks)
+            for _ in 0..<20 {
+                let lower = UInt64.random(in: 0..<offset, using: &rng)
+                // Non-empty windows only: an empty one holds nothing by
+                // definition, and the naive filter below would disagree.
+                let upper = min(offset, lower + UInt64.random(in: 1...120, using: &rng))
+                let expected = index.blocks.filter {
+                    $0.range.lowerBound < upper && $0.range.upperBound > lower
+                }
+                XCTAssertEqual(Array(index.blocks(in: lower..<upper)), expected,
+                               "window \(lower)..<\(upper)")
+            }
+        }
+    }
+
+    // MARK: - Collapsing a batch (§8.3)
+
+    func testCollapseKeepsASingleEditAlone() {
+        XCTAssertEqual(DiffEdit.collapse([]), [])
+        XCTAssertEqual(DiffEdit.collapse([.overwrite(range: 5..<9)]), [.overwrite(range: 5..<9)])
+        XCTAssertEqual(DiffEdit.collapse([.insert(at: 5, length: 1)]), [.insert(at: 5, length: 1)])
+    }
+
+    /// A run of typed bytes in insert mode: every edit shifts from a slightly
+    /// higher offset, and the lowest one already invalidates all of them.
+    func testCollapseReducesARunOfInsertsToTheEarliestOne() {
+        let edits = (0..<10).map { DiffEdit.insert(at: 1000 + UInt64($0), length: 1) }
+        XCTAssertEqual(DiffEdit.collapse(edits), [.insert(at: 1000, length: 1)])
+    }
+
+    /// Mixed kinds: the earliest shifting edit wins, whichever kind it is.
+    func testCollapseTakesTheEarliestShiftingEdit() {
+        XCTAssertEqual(
+            DiffEdit.collapse([.insert(at: 900, length: 4), .delete(range: 40..<50),
+                               .insert(at: 500, length: 1)]),
+            [.delete(range: 40..<50)]
+        )
+    }
+
+    /// Overwrites at or after the shift point are already covered by the tail
+    /// rescan; the part of one that reaches below it is not, and survives.
+    func testCollapseDropsOverwritesTheShiftAlreadyCovers() {
+        XCTAssertEqual(
+            DiffEdit.collapse([.overwrite(range: 200..<300), .insert(at: 100, length: 1)]),
+            [.insert(at: 100, length: 1)]
+        )
+        XCTAssertEqual(
+            DiffEdit.collapse([.overwrite(range: 50..<300), .insert(at: 100, length: 1)]),
+            [.overwrite(range: 50..<100), .insert(at: 100, length: 1)]
+        )
+        XCTAssertEqual(
+            DiffEdit.collapse([.overwrite(range: 10..<20), .insert(at: 100, length: 1)]),
+            [.overwrite(range: 10..<20), .insert(at: 100, length: 1)]
+        )
+    }
+
+    /// A run of typed bytes in overwrite mode: adjacent windows become one.
+    func testCollapseMergesTouchingOverwrites() {
+        let edits = (0..<8).map { DiffEdit.overwrite(range: (100 + UInt64($0))..<(101 + UInt64($0))) }
+        XCTAssertEqual(DiffEdit.collapse(edits), [.overwrite(range: 100..<108)])
+
+        XCTAssertEqual(
+            DiffEdit.collapse([.overwrite(range: 0..<10), .overwrite(range: 20..<30),
+                               .overwrite(range: 5..<22)]),
+            [.overwrite(range: 0..<30)]
+        )
+        XCTAssertEqual(
+            DiffEdit.collapse([.overwrite(range: 0..<10), .overwrite(range: 40..<50)]),
+            [.overwrite(range: 0..<10), .overwrite(range: 40..<50)]
+        )
+    }
+
+    /// The collapsed batch must describe the same damage: applying it and
+    /// applying the original edits one by one must land on the same index.
+    func testCollapsedBatchGivesTheSameIndexAsApplyingEveryEdit() throws {
+        let size = 4096
+        let left = (0..<size).map { UInt8($0 % 251) }
+        var right = left
+        for i in 1000..<1100 { right[i] ^= 0xFF }
+        let leftStorage = MemoryBackedStorage(bytes: left)
+        let rightStorage = MemoryBackedStorage(bytes: right)
+        // The left side ends up one byte longer, as an insert would leave it.
+        let editedLeft = MemoryBackedStorage(bytes: [0xAA] + left)
+
+        let base = try DiffEngine.scan(left: leftStorage, right: rightStorage)
+        let batch: [DiffEdit] = [.overwrite(range: 10..<20), .insert(at: 0, length: 1),
+                                 .overwrite(range: 3000..<3010)]
+
+        var oneByOne = base
+        for edit in batch {
+            oneByOne = try DiffEngine.apply(edit, to: oneByOne, left: editedLeft, right: rightStorage)
+        }
+        var collapsed = base
+        for edit in DiffEdit.collapse(batch) {
+            collapsed = try DiffEngine.apply(edit, to: collapsed, left: editedLeft, right: rightStorage)
+        }
+        XCTAssertEqual(collapsed.blocks, oneByOne.blocks)
+        XCTAssertEqual(collapsed.blocks, try DiffEngine.scan(left: editedLeft, right: rightStorage).blocks,
+                       "and both agree with a full scan of the edited files")
+    }
+
+    // MARK: - The word-wise scan (§8.3)
+
+    /// The chunked scan compares a machine word at a time, with `memcmp` for a
+    /// chunk that matches whole. The runs it produces must be exactly the ones
+    /// the byte-at-a-time reference produces — `blocks(left:right:)`, which is
+    /// still written the obvious way. These are the shapes the word stepping
+    /// could get wrong: runs shorter than a word, runs that straddle a word
+    /// boundary, runs that end exactly on one, and a difference in the last
+    /// bytes of the buffer.
+    private func assertScanMatchesReference(_ left: [UInt8], _ right: [UInt8],
+                                           chunkSize: Int = 64,
+                                           _ message: String = "",
+                                           line: UInt = #line) throws {
+        let expected = DiffEngine.blocks(left: left, right: right)
+        let scanned = try DiffEngine.scan(left: MemoryBackedStorage(bytes: left),
+                                          right: MemoryBackedStorage(bytes: right),
+                                          chunkSize: chunkSize).blocks
+        XCTAssertEqual(scanned, expected, message, line: line)
+    }
+
+    func testWordWiseScanMatchesTheByteWiseReference() throws {
+        let size = 200
+        let base = (0..<size).map { UInt8($0 % 251) }
+
+        // A single differing byte, at every offset in the first two words and
+        // the last one — the boundaries word stepping can slip on.
+        for offset in Array(0..<17) + [size - 9, size - 8, size - 1] {
+            var other = base
+            other[offset] ^= 0xFF
+            try assertScanMatchesReference(base, other, "one byte differing at \(offset)")
+        }
+
+        // Differing runs of every length up to two words, at a few alignments.
+        for start in [0, 1, 7, 8, 9, 62, 63, 64] {
+            for length in 1...17 where start + length <= size {
+                var other = base
+                for i in start..<(start + length) { other[i] ^= 0xFF }
+                try assertScanMatchesReference(base, other, "run \(start)..<\(start + length)")
+            }
+        }
+
+        // Every byte differing, and none.
+        try assertScanMatchesReference(base, base.map { $0 ^ 0xFF }, "all bytes differ")
+        try assertScanMatchesReference(base, base, "no byte differs")
+
+        // Unequal lengths: the tail of the longer file is one differing run.
+        try assertScanMatchesReference(base, Array(base.prefix(100)), "shorter right")
+        try assertScanMatchesReference(Array(base.prefix(100)), base, "shorter left")
+        try assertScanMatchesReference([], base, "empty left")
+        try assertScanMatchesReference(base, [], "empty right")
+    }
+
+    /// Runs that cross a chunk boundary must join, not break into two blocks:
+    /// the `BlockBuilder` merges them, and the word stepping must not confuse it
+    /// by ending a chunk mid-run.
+    func testRunsCrossingChunkBoundariesMatchTheReference() throws {
+        let size = 300
+        let base = (0..<size).map { UInt8($0 % 251) }
+        for chunk in [1, 2, 7, 8, 9, 16, 64, 100, 299, 300, 1024] {
+            var other = base
+            for i in 60..<70 { other[i] ^= 0xFF }         // spans a 64-byte boundary
+            for i in 128..<136 { other[i] ^= 0xFF }       // starts on one
+            try assertScanMatchesReference(base, other, chunkSize: chunk,
+                                           "chunk size \(chunk)")
+        }
+    }
+
+    /// A random walk over the same oracle: mostly-equal files with scattered
+    /// differences, which is what the word stepping is tuned for, plus a few
+    /// dense ones.
+    func testRandomFilesMatchTheReference() throws {
+        var rng = SystemRandomNumberGenerator()
+        for round in 0..<40 {
+            let size = Int.random(in: 1...600, using: &rng)
+            let left = (0..<size).map { _ in UInt8.random(in: 0...255, using: &rng) }
+            var right = left
+            let differences = Int.random(in: 0...(size / 2 + 1), using: &rng)
+            for _ in 0..<differences {
+                let at = Int.random(in: 0..<size, using: &rng)
+                right[at] = UInt8.random(in: 0...255, using: &rng)
+            }
+            if Bool.random(using: &rng) { right.removeLast(Int.random(in: 0..<size, using: &rng)) }
+            try assertScanMatchesReference(left, right,
+                                           chunkSize: Int.random(in: 1...128, using: &rng),
+                                           "round \(round)")
+        }
+    }
 }

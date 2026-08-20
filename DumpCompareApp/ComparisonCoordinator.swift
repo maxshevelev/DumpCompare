@@ -181,10 +181,17 @@ final class ComparisonCoordinator {
         guard !applying, let left = currentLeft, let right = currentRight, let base = index else { return }
         applying = true
         let gen = generation
-        let edits = queuedEdits
+        // A batch is collapsed before it is applied: `apply` rescans against
+        // current bytes, so a shifting edit already covers every edit at or
+        // after its offset. Ten inserted bytes were ten rescans of the file's
+        // tail; now they are one (§8.3).
+        let edits = DiffEdit.collapse(queuedEdits)
         queuedEdits.removeAll()
         let gap = groupingGap
-        Task {
+        // Below the interface's priority: absorbing an edit is background work
+        // whose result nothing on screen is waiting for — the panes compute the
+        // difference they show from the bytes themselves (§8.3).
+        Task(priority: .utility) {
             var working = base
             let hunks: DiffHunkIndex
             do {

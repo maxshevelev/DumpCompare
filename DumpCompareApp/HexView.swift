@@ -27,6 +27,14 @@ protocol HexViewDataSource: AnyObject {
     func hexSelection() -> SelectionModel
     func hexCaretNibble() -> Int
     func hexInputRegion() -> HexInputRegion
+    /// The pane's typing mode: when true the caret is drawn as a red vertical
+    /// line at the byte boundary (insert mode) instead of the blue nibble bar.
+    var hexInsertMode: Bool { get }
+    /// Whether the caret sits on a genuinely half-typed insert-mode byte (the
+    /// high nibble landed, the low nibble is still pending) — as opposed to a
+    /// mid-byte caret a click placed. The view shows the dim `_` placeholder in
+    /// the low-nibble slot only in this state (§7).
+    var hexHasPendingInsert: Bool { get }
     /// The opposite pane's selection, clamped to this pane's file size — what
     /// this pane frames to mirror the other pane (§3.3). Nil in single-file
     /// mode (no companion).
@@ -630,6 +638,7 @@ final class HexView: NSView {
     // MARK: - Drawing
 
     override func draw(_ dirtyRect: NSRect) {
+
         // Confine all drawing to the dirty region: a selection-only redraw
         // invalidates just the affected rows, and the rows outside them keep
         // their previous pixels. Painting the whole bounds here (or drawing
@@ -790,7 +799,10 @@ final class HexView: NSView {
         // monospaced too; otherwise it falls back to per-cell drawing so a wide
         // glyph (a substitute font) never drifts its neighbours.
         if drawsHex {
-            let hexString = hexColumnAttributedString(states: states, layout: layout)
+            let hexString = hexColumnAttributedString(
+                states: states, layout: layout,
+                pendingLowNibbleColumn: pendingLowNibbleColumn(rowStart: rowStart, rowEnd: rowEnd,
+                                                              fileSize: fileSize))
             if hexString.length > 0 {
                 hexString.draw(at: NSPoint(x: layout.hexByteX(column: 0), y: rowY + baseline))
             }
@@ -814,7 +826,8 @@ final class HexView: NSView {
     /// every digit on the same cell the per-glyph code used. EOF cells draw
     /// nothing, so the string ends at the first one. Exposed (internal) so tests
     /// can pin the spacing against the layout's own geometry.
-    func hexColumnAttributedString(states: [HexByteState], layout: HexLayout) -> NSAttributedString {
+    func hexColumnAttributedString(states: [HexByteState], layout: HexLayout,
+                                   pendingLowNibbleColumn: Int? = nil) -> NSAttributedString {
         let result = NSMutableAttributedString()
         var currentColor: NSColor?
         var pending = ""
@@ -825,7 +838,22 @@ final class HexView: NSView {
                 appendRun(&pending, to: result, color: currentColor)
                 currentColor = color
             }
-            pending += hexDigits(states[column].byte)
+            if column == pendingLowNibbleColumn {
+                // Insert mode, byte half typed: the low nibble is not a zero the
+                // user entered, it is an empty slot waiting for the second digit.
+                // The dim `_` goes into the row's own string — painting it over
+                // the finished row would have to erase the cell first, and that
+                // erase punched a hole in whatever the cell stood on: the
+                // difference orange, a selection fill, the EOF hatch.
+                let digits = hexDigits(states[column].byte)
+                pending += String(digits.prefix(1))
+                appendRun(&pending, to: result, color: currentColor)
+                var slot = "_"
+                appendRun(&slot, to: result, color: HexTheme.mutedTextColor)
+                currentColor = nil
+            } else {
+                pending += hexDigits(states[column].byte)
+            }
             if column < HexLayout.bytesPerRow - 1 {
                 let inWord = (column % HexLayout.groupSize) % layout.wordSize
                 if inWord == layout.wordSize - 1 {
@@ -1217,21 +1245,65 @@ final class HexView: NSView {
         }
     }
 
+    /// The column of `rowStart..<rowEnd` whose low nibble is an empty slot: the
+    /// byte a half-typed insert-mode entry has opened (its high nibble landed,
+    /// the second digit is still to come), drawn as a dim `_` inside the row's
+    /// own hex string (§7). Nil on every other row and in every other state.
+    ///
+    /// Guarded to the active pane, insert mode, and a *genuinely pending* insert
+    /// (`hexHasPendingInsert`) — a mid-byte caret a click placed (nibble 1,
+    /// nothing typed) keeps showing the byte's own low nibble.
+    private func pendingLowNibbleColumn(rowStart: UInt64, rowEnd: UInt64,
+                                        fileSize: UInt64) -> Int? {
+        guard isActive, let dataSource, dataSource.hexInsertMode,
+              dataSource.hexHasPendingInsert, dataSource.hexCaretNibble() == 1 else { return nil }
+        let offset = dataSource.hexSelection().start
+        guard offset >= rowStart, offset < rowEnd, offset < fileSize else { return nil }
+        return Int(offset - rowStart)
+    }
+
     private func drawCaret(offset: UInt64, layout: HexLayout, nibble: Int,
                            region: HexInputRegion, rowCount: UInt64) {
         let (row, column) = layout.rowColumn(of: offset)
         guard UInt64(row) < rowCount else { return }
+        let insertMode = dataSource?.hexInsertMode ?? false
         let x: CGFloat
         let width: CGFloat
-        if region == .ascii {
-            x = layout.asciiX(column: column)
+        if insertMode {
+            // Insert mode: a thin red vertical line. Before the first digit it
+            // sits on the byte's left boundary (where the byte will be
+            // inserted); after the first digit it shifts to between the two
+            // nibbles, on the low-nibble side. The ASCII region is whole-byte,
+            // so its line stays on the cell's left edge.
+            x = region == .ascii
+                ? layout.asciiX(column: column)
+                : layout.hexByteX(column: column) + (nibble == 1 ? layout.charWidth : 0)
             width = 1
+        } else if region == .ascii {
+            // Overwrite mode: a thick underline under the current character.
+            x = layout.asciiX(column: column)
+            width = layout.charWidth
         } else {
             x = layout.caretX(row: row, column: column, nibble: nibble)
-            width = 2
+            width = layout.charWidth
         }
-        let rect = CGRect(x: x, y: layout.rowFrame(row: row).minY, width: width, height: layout.rowHeight)
-        HexTheme.caretColor.setFill()
+        let rowFrame = layout.rowFrame(row: row)
+        let rect: CGRect
+        if insertMode {
+            // A full-height vertical line.
+            rect = CGRect(x: x, y: rowFrame.minY, width: width, height: rowFrame.height)
+        } else {
+            // An underline at the cell's bottom edge — below the glyph (whose ink
+            // is centred in the row), so it never covers the symbol. It starts
+            // exactly at the row's last 2 pt and runs 2 pt past the edge, so it
+            // reads as a solid bar overlapping the row below (the byte beneath)
+            // without eating into the row it belongs to.
+            let barHeight: CGFloat = 2
+            let extendDown: CGFloat = 2
+            rect = CGRect(x: x, y: rowFrame.maxY - barHeight,
+                          width: width, height: barHeight + extendDown)
+        }
+        (insertMode ? HexTheme.insertCaretColor : HexTheme.caretColor).setFill()
         NSBezierPath(rect: rect).fill()
     }
 
@@ -1341,6 +1413,21 @@ final class HexView: NSView {
             rect = layout.hexByteFrame(row: row, column: column)
         }
         scrollToVisible(rect)
+    }
+
+    /// Redraws the row the caret sits on without scrolling. Used when the
+    /// caret's *appearance* changes (a typing-mode flip) but its position does
+    /// not — a scroll would yank the view away from where the user was reading.
+    /// The overwrite-mode underline extends a couple of pixels below the row's
+    /// bottom edge, so the invalidation reaches a little past the row frame or
+    /// that sliver stays stale.
+    func redrawCaret() {
+        guard let dataSource else { return }
+        let layout = currentLayout
+        let selection = dataSource.hexSelection()
+        let (row, _) = layout.rowColumn(of: selection.start)
+        let frame = layout.rowFrame(row: row)
+        setNeedsDisplay(frame.insetBy(dx: 0, dy: -3))
     }
 
     /// Scrolls the row containing `offset` to the vertical centre of the visible
@@ -1831,6 +1918,10 @@ enum HexTheme {
 
     static let modifiedText = NSColor.systemRed
     static let caretColor = NSColor.controlAccentColor
+
+    /// Caret colour in insert mode: a red vertical line at the byte boundary,
+    /// the classic "insert" caret, distinct from the blue overwrite bar.
+    static let insertCaretColor = NSColor.systemRed
 
     /// Ink blue for the column header and the offset column (§6): a pale,
     /// slightly desaturated blue that reads as a quiet secondary element next

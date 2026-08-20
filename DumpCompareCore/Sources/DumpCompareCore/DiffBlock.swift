@@ -72,6 +72,34 @@ public struct DiffBlockIndex: Equatable, Sendable {
     }
 
     public var differenceBlocks: [DiffBlock] { blocks.filter { $0.kind == .different } }
+
+    /// The blocks intersecting `range`, in order — found by binary search, not by
+    /// walking the index.
+    ///
+    /// Consumers that only care about a window (the minimap's overview computes a
+    /// few rows at a time) must not flatten the whole index to get at it:
+    /// building `differenceBlocks` on every keystroke was a third of the main
+    /// thread on a 16 MB comparison, and the sticking that came with it.
+    public func blocks(in range: Range<UInt64>) -> ArraySlice<DiffBlock> {
+        guard !blocks.isEmpty, range.lowerBound < range.upperBound else { return [] }
+        // The first block whose end is past the range's start.
+        var lo = 0
+        var hi = blocks.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if blocks[mid].range.upperBound <= range.lowerBound { lo = mid + 1 } else { hi = mid }
+        }
+        let first = lo
+        guard first < blocks.count, blocks[first].range.lowerBound < range.upperBound else { return [] }
+        // The first block that starts at or after the range's end.
+        lo = first
+        hi = blocks.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if blocks[mid].range.lowerBound < range.upperBound { lo = mid + 1 } else { hi = mid }
+        }
+        return blocks[first..<lo]
+    }
     public var sameBlocks: [DiffBlock] { blocks.filter { $0.kind == .same } }
 
     /// The first block starting strictly after `offset`.

@@ -107,6 +107,12 @@ final class FilePaneView: NSView {
     private(set) var documentSymbolName = "document"
     private let lockLabel = NSTextField(labelWithString: "")
     private let statusLabel = NSTextField(labelWithString: "")
+    /// The typing-mode indicator at the right end of the status bar: `OVR` in
+    /// the status bar's own quiet grey, `INS` in the insert caret's red (§7.6).
+    /// Insert mode grows the file on every keystroke, so it is the state that
+    /// gets the colour — the mode is readable at a glance, without hunting for
+    /// the caret or opening the Edit menu. Internal so tests can read it.
+    let typingModeLabel = NSTextField(labelWithString: "OVR")
     /// The pinned column header above the dump ("Offset" / "Hex" / "Decoded
     /// text"). It sits outside the scroll view, so it never scrolls vertically,
     /// and mirrors the horizontal scroll to stay aligned with the columns (§6).
@@ -273,6 +279,15 @@ final class FilePaneView: NSView {
         statusLabel.lineBreakMode = .byTruncatingTail
         statusLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
         statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // The mode indicator keeps its width: three monospaced characters, the
+        // same in both states, so the bar's layout never shifts when the mode
+        // flips. It holds its size against a narrow pane — the status text
+        // truncates first.
+        typingModeLabel.font = .monospacedSystemFont(ofSize: 11, weight: .semibold)
+        typingModeLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        typingModeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        // A pane built while the mode is already on shows INS from the start.
+        updateTypingModeIndicator(viewModel.isInsertMode)
         // The strip keeps its size; a narrow pane shrinks the status text.
         operationView.isHidden = true
         operationView.setContentHuggingPriority(.defaultHigh, for: .horizontal)
@@ -284,6 +299,7 @@ final class FilePaneView: NSView {
         statusStack.spacing = 10
         statusStack.translatesAutoresizingMaskIntoConstraints = false
         statusStack.addArrangedSubview(statusLabel)
+        statusStack.addArrangedSubview(typingModeLabel)
         statusStack.addArrangedSubview(operationView)
 
         let statusBar = NSView()
@@ -443,6 +459,13 @@ final class FilePaneView: NSView {
         // differently instead of the whole pane (§3.3).
         viewModel.onSelectionChanged = { [weak self] in
             self?.refreshSelection()
+        }
+        // A typing-mode flip recolors/reshapes the caret in place (its position
+        // did not move): redraw the caret's row without scrolling, and swap the
+        // status bar's INS/OVR indicator.
+        viewModel.onCaretAppearanceChanged = { [weak self] in
+            self?.hexView.redrawCaret()
+            self?.updateStatus()
         }
         // A content change — bytes overwritten in this pane, or its decoder
         // rebuilt: redraw just the affected rows/columns and refresh the chrome
@@ -752,6 +775,16 @@ final class FilePaneView: NSView {
             parts.append(comparisonInfo)
         }
         statusLabel.stringValue = parts.joined(separator: "  ·  ")
+        updateTypingModeIndicator(status.isInsertMode)
+    }
+
+    /// INS/OVR (§7.6). Red for insert — the colour of its caret and of a byte
+    /// the user has changed but not saved: in this app red means "this is not
+    /// the file you opened", which is exactly what the mode is about.
+    private func updateTypingModeIndicator(_ isInsertMode: Bool) {
+        typingModeLabel.stringValue = isInsertMode ? "INS" : "OVR"
+        typingModeLabel.textColor = isInsertMode ? HexTheme.insertCaretColor : .secondaryLabelColor
+        typingModeLabel.setAccessibilityLabel(isInsertMode ? "Insert mode" : "Overwrite mode")
     }
 
     private static func friendlySize(_ bytes: UInt64) -> String {

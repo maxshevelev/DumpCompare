@@ -290,6 +290,14 @@ final class MainWindowController: NSWindowController {
         editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         editMenu.addItem(withTitle: "Paste Insert…", action: #selector(MainViewController.pasteInsert), keyEquivalent: "")
         editMenu.addItem(withTitle: "Delete Bytes…", action: #selector(MainViewController.deleteBytes), keyEquivalent: "")
+        // A checked toggle, not a one-shot command: it flips the typing mode for
+        // both panes (see `toggleInsertMode`). Bound to ⌥⌘I — a mode switch the
+        // user reaches often, so it earns a shortcut (Option keeps it clear of
+        // the plain-⌘ single-letter command space).
+        let insertModeItem = editMenu.addItem(withTitle: "Insert Mode",
+                                              action: #selector(MainViewController.toggleInsertMode),
+                                              keyEquivalent: "i")
+        insertModeItem.keyEquivalentModifierMask = [.command, .option]
         editMenu.addItem(.separator())
         editMenu.addItem(withTitle: "Fill Selection with…", action: #selector(MainViewController.fillSelectionWithBytes), keyEquivalent: "")
         editMenu.addItem(withTitle: "Select All", action: #selector(MainViewController.selectAllBytes), keyEquivalent: "a")

@@ -16,12 +16,56 @@ public enum DiffEdit: Equatable, Sendable {
     case delete(range: Range<UInt64>)
 
     /// The offset from which the comparison is no longer trustworthy.
-    var earliestAffectedOffset: UInt64 {
+    public var earliestAffectedOffset: UInt64 {
         switch self {
         case .overwrite(let range): return range.lowerBound
         case .insert(let at, _): return at
         case .delete(let range): return range.lowerBound
         }
+    }
+
+    /// Whether this edit shifts the offsets after it, making everything from
+    /// `earliestAffectedOffset` to the end of both files unreliable.
+    public var shiftsOffsets: Bool {
+        switch self {
+        case .overwrite: return false
+        case .insert, .delete: return true
+        }
+    }
+
+    /// Reduces a batch of edits to the fewest that describe the same damage.
+    ///
+    /// `DiffEngine.apply` rescans against current bytes, so what matters is only
+    /// which offsets each edit invalidates — not what it did there. A shifting
+    /// edit invalidates from its offset to the end, so a batch containing one
+    /// needs no other edit at or after that offset: ten inserted bytes rescanned
+    /// the file's tail ten times where one pass would have done. Overwrites
+    /// before the shift point survive (nothing rescans their offsets otherwise)
+    /// and are merged where they touch, which is what a run of typing produces.
+    ///
+    /// Returns the edits in ascending offset order; an empty batch stays empty.
+    public static func collapse(_ edits: [DiffEdit]) -> [DiffEdit] {
+        guard edits.count > 1 else { return edits }
+        let shift = edits.filter(\.shiftsOffsets).min { $0.earliestAffectedOffset < $1.earliestAffectedOffset }
+        let overwrites: [Range<UInt64>] = edits.compactMap { edit in
+            guard case .overwrite(let range) = edit, !range.isEmpty else { return nil }
+            // Everything at or after the shift point is rescanned anyway.
+            guard let shift else { return range }
+            let cut = shift.earliestAffectedOffset
+            guard range.lowerBound < cut else { return nil }
+            return range.lowerBound..<min(range.upperBound, cut)
+        }
+        var merged: [Range<UInt64>] = []
+        for range in overwrites.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+            if let last = merged.last, range.lowerBound <= last.upperBound {
+                merged[merged.count - 1] = last.lowerBound..<max(last.upperBound, range.upperBound)
+            } else {
+                merged.append(range)
+            }
+        }
+        var result = merged.map { DiffEdit.overwrite(range: $0) }
+        if let shift { result.append(shift) }
+        return result
     }
 
     /// Derives the single net edit an undo/redo transaction produces, given the
@@ -309,24 +353,97 @@ public enum DiffEngine {
         let a = try left.read(at: offset, length: length)
         let b = try right.read(at: offset, length: length)
         let n = min(a.count, b.count)
-
-        var runStart: Int?
-        var runKind: DiffBlock.Kind?
-        for j in 0..<n {
-            let kind: DiffBlock.Kind = a[j] == b[j] ? .same : .different
-            if runKind == nil {
-                runKind = kind
-                runStart = j
-            } else if runKind != kind {
-                builder.appendRun(runKind!, range: (offset + UInt64(runStart!))..<(offset + UInt64(j)))
-                runKind = kind
-                runStart = j
+        guard n > 0 else { return n }
+        a.withUnsafeBufferPointer { pa in
+            b.withUnsafeBufferPointer { pb in
+                guard let left = pa.baseAddress, let right = pb.baseAddress else { return }
+                appendRuns(left, right, count: n, at: offset, into: &builder)
             }
         }
-        if let kind = runKind, let start = runStart {
-            builder.appendRun(kind, range: (offset + UInt64(start))..<(offset + UInt64(n)))
-        }
         return n
+    }
+
+    /// Appends the same/different runs of `count` byte pairs, starting at the
+    /// absolute offset `offset`.
+    ///
+    /// Comparison is by machine word, not by byte. A byte-at-a-time loop over
+    /// two Swift arrays ran at about 16 MB/s — a 16 MB pair took 2.1 seconds,
+    /// while *reading* the same bytes took 2 ms — which made every inserted byte
+    /// cost a two-second rescan of the file's tail (§8.3).
+    ///
+    /// Two reads of the same chip match over their whole length, so the chunk is
+    /// first tested with one `memcmp`: the common case becomes a single
+    /// comparison and a single run. Where the chunk does differ, the run
+    /// boundaries are found a word at a time — equal words to skip a matching
+    /// run, words with no zero byte in their XOR to skip a differing one — and
+    /// only the last word of each run is walked byte by byte.
+    private static func appendRuns(
+        _ a: UnsafePointer<UInt8>,
+        _ b: UnsafePointer<UInt8>,
+        count: Int,
+        at offset: UInt64,
+        into builder: inout BlockBuilder
+    ) {
+        if memcmp(a, b, count) == 0 {
+            builder.appendRun(.same, range: offset..<(offset + UInt64(count)))
+            return
+        }
+        var i = 0
+        while i < count {
+            let same = a[i] == b[i]
+            let end = same
+                ? firstDifference(a, b, from: i, count: count)
+                : firstMatch(a, b, from: i, count: count)
+            builder.appendRun(same ? .same : .different,
+                              range: (offset + UInt64(i))..<(offset + UInt64(end)))
+            i = end
+        }
+    }
+
+    /// The index of the first differing byte at or after `from`, or `count`.
+    private static func firstDifference(
+        _ a: UnsafePointer<UInt8>, _ b: UnsafePointer<UInt8>, from: Int, count: Int
+    ) -> Int {
+        var i = from
+        let step = MemoryLayout<UInt64>.size
+        while i + step <= count,
+              word(a, i) == word(b, i) {
+            i += step
+        }
+        while i < count, a[i] == b[i] { i += 1 }
+        return i
+    }
+
+    /// The index of the first matching byte at or after `from`, or `count`.
+    private static func firstMatch(
+        _ a: UnsafePointer<UInt8>, _ b: UnsafePointer<UInt8>, from: Int, count: Int
+    ) -> Int {
+        var i = from
+        let step = MemoryLayout<UInt64>.size
+        // A zero byte in the XOR is a byte that matches, so a word without one
+        // is eight differing bytes and can be skipped whole.
+        while i + step <= count,
+              !containsZeroByte(word(a, i) ^ word(b, i)) {
+            i += step
+        }
+        while i < count, a[i] != b[i] { i += 1 }
+        return i
+    }
+
+    /// Eight bytes at `i` as one word. Unaligned: chunk boundaries and run
+    /// boundaries fall wherever the bytes do. Only equality and zero bytes are
+    /// tested, so the machine's byte order does not matter.
+    @inline(__always)
+    private static func word(_ p: UnsafePointer<UInt8>, _ i: Int) -> UInt64 {
+        UnsafeRawPointer(p + i).loadUnaligned(as: UInt64.self)
+    }
+
+    /// Whether any of the word's eight bytes is zero — the standard bit trick:
+    /// subtracting 1 from a zero byte borrows into its high bit, which `~v`
+    /// keeps only where the byte was zero to begin with.
+    @inline(__always)
+    private static func containsZeroByte(_ v: UInt64) -> Bool {
+        (v &- 0x0101_0101_0101_0101) & ~v & 0x8080_8080_8080_8080 != 0
     }
 
     /// Async twin of `scanRange`: same per-chunk work, but yields after each
