@@ -2529,6 +2529,42 @@ final class MinimapTests: XCTestCase {
         XCTAssertLessThan(ink.y.count, 8, "the mark is a hairline, not a band")
     }
 
+    /// Where a row-wide fill stops: a map draws nothing of its file past the
+    /// file's end (§9), and after an edit whole rows are filled in one go, so the
+    /// row the end falls in has to be cut at the right cell. It decides a couple
+    /// of cells in one row of a thousand — too little for pixel sampling to be
+    /// trusted with, which is why the rule is a function.
+    func testARowWideFillStopsWhereTheFileEnds() {
+        let columns = Int(MinimapView.bytesPerRow)   // 16
+
+        // A row entirely inside the file: every column belongs to it.
+        XCTAssertEqual(MinimapView.lastColumnInFile(rowStart: 0, span: 1024, fileSize: 4096),
+                       columns - 1)
+        XCTAssertEqual(MinimapView.lastColumnInFile(rowStart: 3072, span: 1024, fileSize: 4096),
+                       columns - 1)
+
+        // A row that begins past the end: nothing of it is drawn.
+        XCTAssertEqual(MinimapView.lastColumnInFile(rowStart: 4096, span: 1024, fileSize: 4096), -1)
+        XCTAssertEqual(MinimapView.lastColumnInFile(rowStart: 9000, span: 1024, fileSize: 4096), -1)
+
+        // The row the end falls in, at a few fractions of the way across.
+        XCTAssertEqual(MinimapView.lastColumnInFile(rowStart: 4096, span: 1024, fileSize: 4096 + 512),
+                       columns / 2, "half way across the row")
+        XCTAssertEqual(MinimapView.lastColumnInFile(rowStart: 4096, span: 1024, fileSize: 4096 + 64),
+                       1, "one cell in")
+        XCTAssertEqual(MinimapView.lastColumnInFile(rowStart: 4096, span: 1024, fileSize: 4096 + 1),
+                       0, "a single byte of the row")
+        XCTAssertEqual(MinimapView.lastColumnInFile(rowStart: 4096, span: 1024, fileSize: 4096 + 1023),
+                       columns - 1, "all but the last byte still reaches the last cell")
+
+        // Rows thinner than their 16 cells (a file smaller than the panel's
+        // rows): the arithmetic must not run past the last column.
+        XCTAssertEqual(MinimapView.lastColumnInFile(rowStart: 0, span: 1, fileSize: 1), columns - 1)
+        XCTAssertEqual(MinimapView.lastColumnInFile(rowStart: 5, span: 1, fileSize: 5), -1)
+        XCTAssertEqual(MinimapView.lastColumnInFile(rowStart: 0, span: 4, fileSize: 2),
+                       columns / 2, "two of the row's four bytes")
+    }
+
     /// Typing must not starve the overview. Each keystroke asks for a rebuild
     /// twice — once for the file's new size, once when the comparison index
     /// absorbs the edit — and restarting the 120 ms debounce on every request

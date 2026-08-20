@@ -1399,6 +1399,12 @@ The panes' visible slice is drawn as a translucent band over the map.
     change and the maps repaint whole.
 - A repaint must start from the panel's background, since it can no longer
   rely on the whole panel being redrawn.
+- A row one colour covers whole is one fill, and consecutive such rows are one
+  fill together. After an edit that shifts offsets the whole tail is modified —
+  and in a comparison differing as well — so nearly every row is in that state:
+  drawing them cell by cell put a full repaint of two maps at 138 ms on the main
+  thread, once per rebuild, which is felt as the typing stuttering. Rows the
+  file's end falls in are drawn on their own, so a fill never runs past it.
 - An edit must not rebuild the overview's picture. A byte lands in one row of
   a thousand, so the rows its range falls in are recomputed — from the file for
   their density, from the edit overlay for their modified marks, from the

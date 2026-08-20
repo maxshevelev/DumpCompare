@@ -1056,6 +1056,43 @@ final class MinimapView: NSView {
         let tones = (0...255).map { ink.withAlphaComponent(Self.overviewTone(density: UInt8($0))) }
         let columns = Int(Self.bytesPerRow)
         let extent = max(summary.extent, 1)
+        func lastColumnInFile(rowStart: UInt64, span: UInt64) -> Int {
+            Self.lastColumnInFile(rowStart: rowStart, span: span, fileSize: fileSize)
+        }
+
+        /// One fill across a row, up to where the file ends: what a row draws
+        /// when a single colour covers all of it.
+        func fillRow(_ colour: NSColor, y: CGFloat, rowStart: UInt64, span: UInt64) {
+            let last = lastColumnInFile(rowStart: rowStart, span: span)
+            guard last >= 0, let first = cells.first, cells.indices.contains(last) else { return }
+            colour.setFill()
+            NSRect(x: first.x, y: y,
+                   width: cells[last].x + cells[last].width - first.x,
+                   height: rowHeight * 2).fill()
+        }
+
+        // Consecutive rows that are one colour across their whole width are
+        // filled together: an edited file's tail is a thousand red rows, and a
+        // thousand fills of one pixel each cost the same as the picture they
+        // replace. Only rows entirely inside the file join a run — the one or
+        // two rows the file's end falls in are drawn on their own.
+        var runColour: NSColor?
+        var runFirstRow = 0
+        var runLastRow = -1
+        func flushRun() {
+            guard let colour = runColour, runLastRow >= runFirstRow,
+                  let first = cells.first, let last = cells.last else {
+                runColour = nil
+                return
+            }
+            colour.setFill()
+            let y = top + CGFloat(runFirstRow) * rowHeight
+            let height = CGFloat(runLastRow - runFirstRow) * rowHeight + rowHeight * 2
+            NSRect(x: first.x, y: y,
+                   width: last.x + last.width - first.x, height: height).fill()
+            runColour = nil
+        }
+
         for row in rows {
             let y = top + CGFloat(row) * rowHeight
             let modified = summary.modified.indices.contains(row) ? summary.modified[row] : 0
@@ -1063,9 +1100,45 @@ final class MinimapView: NSView {
             let rowStart = extent * UInt64(row) / UInt64(summary.rowCount)
             let rowEnd = extent * UInt64(row + 1) / UInt64(summary.rowCount)
             let span = rowEnd - rowStart
-            // The last column of this row that still belongs to the file, so a
-            // row-wide mark stops where the file does.
-            var lastInFile = -1
+
+            let wholeRow: NSColor? = modified != 0
+                ? HexTheme.modifiedText
+                : (different == .max ? HexTheme.differenceFill : nil)
+            if let colour = wholeRow, lastColumnInFile(rowStart: rowStart, span: span) == columns - 1 {
+                if runColour === colour, runLastRow == row - 1 {
+                    runLastRow = row
+                } else {
+                    flushRun()
+                    runColour = colour
+                    runFirstRow = row
+                    runLastRow = row
+                }
+                continue
+            }
+            flushRun()
+
+            // A row holding bytes the user changed is red across its whole width
+            // (§19.4). Per cell the mark was drawn and unfindable: one edited
+            // byte is one cell of sixteen in one row of a thousand, and at this
+            // scale the column it happened in says almost nothing — a column of
+            // a 16 MB dump's row is a kilobyte. Differences keep their per-cell
+            // shading, which is what makes the shape of a run legible, except
+            // when they cover the row whole and there is no shape to show.
+            //
+            // Both cases are also one fill instead of sixteen, which is what
+            // keeps typing smooth: an insert leaves the whole tail modified and,
+            // in a comparison, differing, so nearly every row is one of these —
+            // and a full repaint of two maps' worth of cells took 138 ms on the
+            // main thread, once per rebuild (§19.9).
+            if modified != 0 {
+                fillRow(HexTheme.modifiedText, y: y, rowStart: rowStart, span: span)
+                continue
+            }
+            if different == .max {
+                fillRow(HexTheme.differenceFill, y: y, rowStart: rowStart, span: span)
+                continue
+            }
+
             for column in 0..<columns {
                 let bit = UInt16(1) << UInt16(column)
                 let densityIndex = row * columns + column
@@ -1076,7 +1149,6 @@ final class MinimapView: NSView {
                 // fill, not an event. That is what leaves the shorter file's
                 // tail empty (§9).
                 guard sliceStart < fileSize else { continue }
-                lastInFile = column
                 let isEvent = different & bit != 0
                 // An event is one cell of a one-pixel row, invisible inside a
                 // dense region, so it is drawn two pixels tall — it spills into
@@ -1091,27 +1163,25 @@ final class MinimapView: NSView {
                 }
                 rect.fill()
             }
-            // A row holding bytes the user changed is marked across its whole
-            // width, on top of everything else (§19.4).
-            //
-            // Per cell it was drawn and unfindable: one edited byte is one cell
-            // of sixteen in one row of a thousand — a couple of dozen device
-            // pixels in the whole panel, in a red whose brightness sits close to
-            // the ink around it. "You changed something here" is the rarest and
-            // most valuable thing the map says, and at this scale the column it
-            // happened in says almost nothing: a column of a 16 MB dump's row is
-            // a kilobyte. So the column detail goes and the row reads at a
-            // glance. Differences keep their per-cell shading — they come in
-            // runs, which the shading is what makes legible.
-            if modified != 0, lastInFile >= 0, let first = cells.first,
-               cells.indices.contains(lastInFile) {
-                let last = cells[lastInFile]
-                HexTheme.modifiedText.setFill()
-                NSRect(x: first.x, y: y,
-                       width: last.x + last.width - first.x,
-                       height: rowHeight * 2).fill()
-            }
         }
+        flushRun()
+    }
+
+    /// The last column of a row that still belongs to a file of `fileSize`, for a
+    /// row covering `span` bytes from `rowStart` — where a row-wide fill has to
+    /// stop, because a map draws nothing of its file past its end (§9). Returns
+    /// -1 for a row that begins past the end, and the last column for a row
+    /// entirely inside the file.
+    ///
+    /// Internal so the rule can be tested directly: it decides a couple of cells
+    /// in the single row a file's end falls in, which is not something pixel
+    /// sampling catches reliably.
+    static func lastColumnInFile(rowStart: UInt64, span: UInt64, fileSize: UInt64) -> Int {
+        let columns = Int(bytesPerRow)
+        guard fileSize > rowStart else { return -1 }
+        let bytes = fileSize - rowStart
+        guard bytes < span else { return columns - 1 }
+        return min(columns - 1, Int(bytes * UInt64(columns) / max(span, 1)))
     }
 
     // MARK: - The stand-in picture across a resize (§19.9)
