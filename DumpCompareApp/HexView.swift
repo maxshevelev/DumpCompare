@@ -1429,6 +1429,9 @@ final class HexView: NSView {
         let frame = layout.rowFrame(row: row)
         setNeedsDisplay(frame.insetBy(dx: 0, dy: -3))
     }
+
+    /// Scrolls the row containing `offset` to the vertical centre of the visible
+    /// area (clamped to the document's edges), so the byte is shown mid-pane
     /// instead of at its top or bottom edge. Used after a search result lands
     /// (§11).
     func revealOffsetCentered(_ offset: UInt64) {
