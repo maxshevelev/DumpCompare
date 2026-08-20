@@ -1220,10 +1220,16 @@ final class MinimapTests: XCTestCase {
     private func overviewPicture(bytes: [UInt8], rowCount: Int,
                                  differences: [Range<UInt64>] = [])
         -> (density: [UInt8], modified: [UInt16], different: [UInt16])? {
+        // The engine asks the index for the blocks in the rows it is computing,
+        // so a test's differing ranges become an index over the same extent.
+        let index: DiffBlockIndex? = differences.isEmpty ? nil : DiffBlockIndex(
+            leftSize: UInt64(bytes.count), rightSize: UInt64(bytes.count),
+            blocks: differences.map { DiffBlock(kind: .different, range: $0) }
+        )
         let source = MainViewController.OverviewSource(
             storage: MemoryBackedStorage(bytes: bytes), saved: nil,
             size: UInt64(bytes.count), edited: [], isUntitled: true,
-            differences: differences
+            differences: index
         )
         return MainViewController.overviewRows(source: source, extent: UInt64(bytes.count),
                                                rowCount: rowCount, rows: 0...(rowCount - 1))

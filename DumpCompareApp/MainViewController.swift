@@ -529,10 +529,13 @@ final class MainViewController: NSViewController {
         /// can sit at.
         let edited: [Range<UInt64>]
         let isUntitled: Bool
-        /// The comparison's differing ranges, taken from the background index
-        /// rather than by re-reading the companion: the index is maintained
-        /// anyway, and block granularity is finer than a summary cell (§8).
-        let differences: [Range<UInt64>]
+        /// The comparison index, kept whole rather than flattened into a list of
+        /// differing ranges: the rows being computed ask it for the blocks in
+        /// their own window (§8). Flattening it here walked every block in the
+        /// index on every keystroke — a third of the main thread on a 16 MB
+        /// comparison, and the sticking that came with it. Nil in single-file
+        /// mode and before the first index lands.
+        let differences: DiffBlockIndex?
     }
 
     /// The mode the file(s) now open call for: detail for a file small enough
@@ -808,7 +811,7 @@ final class MainViewController: NSViewController {
     private func overviewSource(_ pane: PaneViewModel) -> OverviewSource {
         OverviewSource(storage: pane.byteStorage, saved: pane.savedStorage, size: pane.fileSize,
                        edited: pane.editedRanges, isUntitled: pane.isUntitled,
-                       differences: comparisonCoordinator.index?.differenceBlocks.map(\.range) ?? [])
+                       differences: comparisonCoordinator.index)
     }
 
     /// How many of `buffer[from..<to]` are neither 0x00 nor 0xFF — how "full"
@@ -1067,10 +1070,13 @@ final class MainViewController: NSViewController {
             }
         }
 
-        // Differences: walk the index's blocks and mark the cells they cover. A
-        // block spanning whole rows marks every column of them.
-        for range in source.differences {
+        // Differences: the index's differing blocks that touch these rows, found
+        // by binary search rather than by flattening the index. A block spanning
+        // whole rows marks every column of them.
+        for block in source.differences?.blocks(in: windowStart..<windowEnd) ?? []
+        where block.kind == .different {
             if shouldCancel() { return nil }
+            let range = block.range
             let lower = max(range.lowerBound, windowStart)
             let upper = min(range.upperBound, min(windowEnd, extent))
             guard lower < upper, let first = cells(of: lower), let last = cells(of: upper - 1)

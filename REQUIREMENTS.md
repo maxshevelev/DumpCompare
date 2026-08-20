@@ -1422,8 +1422,14 @@ The panes' visible slice is drawn as a translucent band over the map.
   (tens of kilobytes), so the mark appears with the keystroke, with no debounce
   to wait out. A patched picture must equal the picture a full pass would
   build; anything else drifts the map away from the file as editing goes on.
-  - The difference marks come from the comparison index, which absorbs the edit
-    in its own background pass. Those rows are therefore patched twice: once
+  - The difference marks come from the comparison index, and a consumer that
+    needs a few rows of them asks the index for that window, by binary search
+    over its blocks. Flattening the index into a list of differing ranges to
+    find them walks every block in it: two reads of a chip with scattered
+    differences make tens of thousands of blocks, and doing that twice per
+    keystroke — once for the edit, once when the index absorbs it — put a third
+    of the main thread into building arrays, which is what the typing stuck on.
+  - The index absorbs the edit in its own background pass. Those rows are therefore patched twice: once
     with the keystroke, once when the index reports the change.
   - An index change that is *not* the absorption of a recorded edit — a fresh
     build, a cancel, a stop — invalidates the whole derived picture, so that

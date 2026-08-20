@@ -597,6 +597,65 @@ final class DiffEngineTests: XCTestCase {
         XCTAssertNil(DiffEdit.netDiffEdit(ops: []))
     }
 
+    // MARK: - Querying a window of the index (§8)
+
+    /// The blocks touching a window, by binary search. Consumers that care about
+    /// a few rows must not flatten the whole index to find them — that was a
+    /// third of the main thread while typing into a 16 MB comparison.
+    func testBlocksInAWindow() {
+        // 0..10 same, 10..20 different, 20..30 same, 30..40 different.
+        let index = DiffBlockIndex(leftSize: 40, rightSize: 40, blocks: [
+            DiffBlock(kind: .same, range: 0..<10),
+            DiffBlock(kind: .different, range: 10..<20),
+            DiffBlock(kind: .same, range: 20..<30),
+            DiffBlock(kind: .different, range: 30..<40),
+        ])
+
+        func kinds(_ range: Range<UInt64>) -> [String] {
+            index.blocks(in: range).map { "\($0.kind == .same ? "s" : "d")\($0.range.lowerBound)" }
+        }
+
+        XCTAssertEqual(kinds(0..<40), ["s0", "d10", "s20", "d30"], "the whole extent")
+        XCTAssertEqual(kinds(0..<1), ["s0"], "inside the first block")
+        XCTAssertEqual(kinds(9..<11), ["s0", "d10"], "across a boundary")
+        XCTAssertEqual(kinds(10..<20), ["d10"], "exactly one block")
+        XCTAssertEqual(kinds(10..<21), ["d10", "s20"], "one block and a byte of the next")
+        XCTAssertEqual(kinds(19..<20), ["d10"], "the last byte of a block")
+        XCTAssertEqual(kinds(20..<20), [], "an empty window")
+        XCTAssertEqual(kinds(40..<50), [], "past the extent")
+        XCTAssertEqual(kinds(35..<50), ["d30"], "clamped at the end")
+        XCTAssertEqual(DiffBlockIndex(leftSize: 0, rightSize: 0, blocks: []).blocks(in: 0..<10).count, 0)
+    }
+
+    /// The window query and the flattened list must agree — the same blocks, in
+    /// the same order — over a random index.
+    func testBlocksInAWindowAgreesWithTheWholeIndex() {
+        var rng = SystemRandomNumberGenerator()
+        for _ in 0..<30 {
+            var blocks: [DiffBlock] = []
+            var offset: UInt64 = 0
+            var kind = DiffBlock.Kind.same
+            while offset < 500 {
+                let length = UInt64.random(in: 1...40, using: &rng)
+                blocks.append(DiffBlock(kind: kind, range: offset..<(offset + length)))
+                offset += length
+                kind = kind == .same ? .different : .same
+            }
+            let index = DiffBlockIndex(leftSize: offset, rightSize: offset, blocks: blocks)
+            for _ in 0..<20 {
+                let lower = UInt64.random(in: 0..<offset, using: &rng)
+                // Non-empty windows only: an empty one holds nothing by
+                // definition, and the naive filter below would disagree.
+                let upper = min(offset, lower + UInt64.random(in: 1...120, using: &rng))
+                let expected = index.blocks.filter {
+                    $0.range.lowerBound < upper && $0.range.upperBound > lower
+                }
+                XCTAssertEqual(Array(index.blocks(in: lower..<upper)), expected,
+                               "window \(lower)..<\(upper)")
+            }
+        }
+    }
+
     // MARK: - Collapsing a batch (§8.3)
 
     func testCollapseKeepsASingleEditAlone() {
