@@ -545,6 +545,15 @@ When edits occur:
 - update background diff index incrementally where possible;
 - insert/delete operations that shift offsets must invalidate from the earliest affected offset onward.
 
+Because a shifting edit invalidates everything after it, the scan itself has to
+be fast enough that rescanning a file's tail is not an event: comparing two
+16 MB dumps must cost tens of milliseconds, not seconds. Comparison is by
+absolute offset, so it is a memory comparison — it must be done a machine word
+at a time, with a whole-chunk comparison for the chunks that match (which is
+most of them when the two files are reads of the same chip). A byte-at-a-time
+loop ran at 16 MB/s, which made one inserted byte cost a two-second rescan and a
+run of ten cost twenty.
+
 When one file is closed:
 
 - clear comparison state;

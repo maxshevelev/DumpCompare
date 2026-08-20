@@ -596,4 +596,92 @@ final class DiffEngineTests: XCTestCase {
     func testNetDiffEditEmptyReturnsNil() {
         XCTAssertNil(DiffEdit.netDiffEdit(ops: []))
     }
+
+    // MARK: - The word-wise scan (§8.3)
+
+    /// The chunked scan compares a machine word at a time, with `memcmp` for a
+    /// chunk that matches whole. The runs it produces must be exactly the ones
+    /// the byte-at-a-time reference produces — `blocks(left:right:)`, which is
+    /// still written the obvious way. These are the shapes the word stepping
+    /// could get wrong: runs shorter than a word, runs that straddle a word
+    /// boundary, runs that end exactly on one, and a difference in the last
+    /// bytes of the buffer.
+    private func assertScanMatchesReference(_ left: [UInt8], _ right: [UInt8],
+                                           chunkSize: Int = 64,
+                                           _ message: String = "",
+                                           line: UInt = #line) throws {
+        let expected = DiffEngine.blocks(left: left, right: right)
+        let scanned = try DiffEngine.scan(left: MemoryBackedStorage(bytes: left),
+                                          right: MemoryBackedStorage(bytes: right),
+                                          chunkSize: chunkSize).blocks
+        XCTAssertEqual(scanned, expected, message, line: line)
+    }
+
+    func testWordWiseScanMatchesTheByteWiseReference() throws {
+        let size = 200
+        let base = (0..<size).map { UInt8($0 % 251) }
+
+        // A single differing byte, at every offset in the first two words and
+        // the last one — the boundaries word stepping can slip on.
+        for offset in Array(0..<17) + [size - 9, size - 8, size - 1] {
+            var other = base
+            other[offset] ^= 0xFF
+            try assertScanMatchesReference(base, other, "one byte differing at \(offset)")
+        }
+
+        // Differing runs of every length up to two words, at a few alignments.
+        for start in [0, 1, 7, 8, 9, 62, 63, 64] {
+            for length in 1...17 where start + length <= size {
+                var other = base
+                for i in start..<(start + length) { other[i] ^= 0xFF }
+                try assertScanMatchesReference(base, other, "run \(start)..<\(start + length)")
+            }
+        }
+
+        // Every byte differing, and none.
+        try assertScanMatchesReference(base, base.map { $0 ^ 0xFF }, "all bytes differ")
+        try assertScanMatchesReference(base, base, "no byte differs")
+
+        // Unequal lengths: the tail of the longer file is one differing run.
+        try assertScanMatchesReference(base, Array(base.prefix(100)), "shorter right")
+        try assertScanMatchesReference(Array(base.prefix(100)), base, "shorter left")
+        try assertScanMatchesReference([], base, "empty left")
+        try assertScanMatchesReference(base, [], "empty right")
+    }
+
+    /// Runs that cross a chunk boundary must join, not break into two blocks:
+    /// the `BlockBuilder` merges them, and the word stepping must not confuse it
+    /// by ending a chunk mid-run.
+    func testRunsCrossingChunkBoundariesMatchTheReference() throws {
+        let size = 300
+        let base = (0..<size).map { UInt8($0 % 251) }
+        for chunk in [1, 2, 7, 8, 9, 16, 64, 100, 299, 300, 1024] {
+            var other = base
+            for i in 60..<70 { other[i] ^= 0xFF }         // spans a 64-byte boundary
+            for i in 128..<136 { other[i] ^= 0xFF }       // starts on one
+            try assertScanMatchesReference(base, other, chunkSize: chunk,
+                                           "chunk size \(chunk)")
+        }
+    }
+
+    /// A random walk over the same oracle: mostly-equal files with scattered
+    /// differences, which is what the word stepping is tuned for, plus a few
+    /// dense ones.
+    func testRandomFilesMatchTheReference() throws {
+        var rng = SystemRandomNumberGenerator()
+        for round in 0..<40 {
+            let size = Int.random(in: 1...600, using: &rng)
+            let left = (0..<size).map { _ in UInt8.random(in: 0...255, using: &rng) }
+            var right = left
+            let differences = Int.random(in: 0...(size / 2 + 1), using: &rng)
+            for _ in 0..<differences {
+                let at = Int.random(in: 0..<size, using: &rng)
+                right[at] = UInt8.random(in: 0...255, using: &rng)
+            }
+            if Bool.random(using: &rng) { right.removeLast(Int.random(in: 0..<size, using: &rng)) }
+            try assertScanMatchesReference(left, right,
+                                           chunkSize: Int.random(in: 1...128, using: &rng),
+                                           "round \(round)")
+        }
+    }
 }
