@@ -24,6 +24,50 @@ public enum DiffEdit: Equatable, Sendable {
         }
     }
 
+    /// Whether this edit shifts the offsets after it, making everything from
+    /// `earliestAffectedOffset` to the end of both files unreliable.
+    var shiftsOffsets: Bool {
+        switch self {
+        case .overwrite: return false
+        case .insert, .delete: return true
+        }
+    }
+
+    /// Reduces a batch of edits to the fewest that describe the same damage.
+    ///
+    /// `DiffEngine.apply` rescans against current bytes, so what matters is only
+    /// which offsets each edit invalidates — not what it did there. A shifting
+    /// edit invalidates from its offset to the end, so a batch containing one
+    /// needs no other edit at or after that offset: ten inserted bytes rescanned
+    /// the file's tail ten times where one pass would have done. Overwrites
+    /// before the shift point survive (nothing rescans their offsets otherwise)
+    /// and are merged where they touch, which is what a run of typing produces.
+    ///
+    /// Returns the edits in ascending offset order; an empty batch stays empty.
+    public static func collapse(_ edits: [DiffEdit]) -> [DiffEdit] {
+        guard edits.count > 1 else { return edits }
+        let shift = edits.filter(\.shiftsOffsets).min { $0.earliestAffectedOffset < $1.earliestAffectedOffset }
+        let overwrites: [Range<UInt64>] = edits.compactMap { edit in
+            guard case .overwrite(let range) = edit, !range.isEmpty else { return nil }
+            // Everything at or after the shift point is rescanned anyway.
+            guard let shift else { return range }
+            let cut = shift.earliestAffectedOffset
+            guard range.lowerBound < cut else { return nil }
+            return range.lowerBound..<min(range.upperBound, cut)
+        }
+        var merged: [Range<UInt64>] = []
+        for range in overwrites.sorted(by: { $0.lowerBound < $1.lowerBound }) {
+            if let last = merged.last, range.lowerBound <= last.upperBound {
+                merged[merged.count - 1] = last.lowerBound..<max(last.upperBound, range.upperBound)
+            } else {
+                merged.append(range)
+            }
+        }
+        var result = merged.map { DiffEdit.overwrite(range: $0) }
+        if let shift { result.append(shift) }
+        return result
+    }
+
     /// Derives the single net edit an undo/redo transaction produces, given the
     /// ops in the exact order they mutate storage (forward order for a redo;
     /// inverse ops in reversed order for an undo). `DiffEngine.apply` is

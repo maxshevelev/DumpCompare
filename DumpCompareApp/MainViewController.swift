@@ -498,8 +498,17 @@ final class MainViewController: NSViewController {
 
     // MARK: - Minimap overview (§19.4)
 
-    /// The in-flight overview computation; cancelled and replaced by the next.
-    private var overviewTask: Task<Void, Never>?
+    /// The debounce waiting to start a pass, and the pass itself. Separate
+    /// handles because they are cancelled for different reasons: a request that
+    /// arrives while a pass runs must not kill it (see `scheduleOverviewRebuild`).
+    private var overviewDebounceTask: Task<Void, Never>?
+    private var overviewPassTask: Task<Void, Never>?
+    /// The row count the running pass is binning for. A request that comes in
+    /// with a different one means the panel's height moved and the pass's result
+    /// is for a geometry that no longer exists.
+    private var overviewPassRowCount = 0
+    /// A rebuild asked for while a pass was running, honoured when it lands.
+    private var overviewRebuildPending = false
     /// Edited ranges whose difference marks are still waiting for the comparison
     /// index to absorb them (§19.9).
     private var overviewRowsAwaitingIndex: [Range<UInt64>] = []
@@ -569,7 +578,7 @@ final class MainViewController: NSViewController {
         if mode == .overview {
             scheduleOverviewRebuild()
         } else {
-            overviewTask?.cancel()
+            cancelOverviewWork()
             reportOverviewProgress(nil)
         }
     }
@@ -597,14 +606,47 @@ final class MainViewController: NSViewController {
     /// row of an overview is on screen at once, so unlike the detail window it
     /// cannot be pulled per repaint — it is computed in the background and
     /// debounced, so a burst of edits costs one pass (§19.4).
+    /// The debounce is *not* restarted by a later request, and a pass that is
+    /// already running is not cancelled unless the geometry moved under it.
+    ///
+    /// Restarting on every request meant nothing ever ran while the user typed:
+    /// each keystroke asked twice — once for the file's new size, once when the
+    /// comparison index absorbed the edit — so the 120 ms wait was pushed back
+    /// past the next keystroke, and the picture only rebuilt after typing
+    /// stopped. Coalescing instead bounds the wait to 120 ms after the *first*
+    /// request, and a request that arrives mid-pass is remembered and honoured
+    /// when that pass lands. A row-count change is the one case where the
+    /// running pass is useless — its result is binned for a panel height that no
+    /// longer exists — so that one does cancel.
     private func scheduleOverviewRebuild() {
         guard minimapSplit.panelVisible, minimapView.renderMode == .overview else { return }
-        overviewTask?.cancel()
-        overviewTask = Task { [weak self] in
+        if overviewPassTask != nil {
+            if overviewPassRowCount != minimapView.overviewRowCount() {
+                overviewPassTask?.cancel()
+                overviewPassTask = nil
+                reportOverviewProgress(nil)
+            } else {
+                overviewRebuildPending = true
+                return
+            }
+        }
+        guard overviewDebounceTask == nil else { return }
+        overviewDebounceTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 120_000_000)
             guard !Task.isCancelled else { return }
+            self?.overviewDebounceTask = nil
             self?.rebuildOverview()
         }
+    }
+
+    /// Cancels whatever the overview has in flight — a waiting debounce and a
+    /// running pass — and forgets any queued request.
+    private func cancelOverviewWork() {
+        overviewDebounceTask?.cancel()
+        overviewDebounceTask = nil
+        overviewPassTask?.cancel()
+        overviewPassTask = nil
+        overviewRebuildPending = false
     }
 
     private func rebuildOverview() {
@@ -616,7 +658,9 @@ final class MainViewController: NSViewController {
             minimapView.setOverviewSummaries([])
             return
         }
-        overviewTask?.cancel()
+        overviewPassTask?.cancel()
+        overviewRebuildPending = false
+        overviewPassRowCount = rowCount
         overviewRebuilds += 1
         beginOverviewProgress()
         let progress = OverviewProgressSink(total: rowCount * sources.count) { [weak self] fraction in
@@ -625,7 +669,7 @@ final class MainViewController: NSViewController {
         // The user is waiting for the picture, so this is user-initiated work,
         // and the two files are independent passes — running them together
         // halves the wait on a comparison.
-        overviewTask = Task.detached(priority: .userInitiated) { [weak self] in
+        overviewPassTask = Task.detached(priority: .userInitiated) { [weak self] in
             let summaries = await withTaskGroup(
                 of: (Int, MinimapView.OverviewSummary).self
             ) { group -> [MinimapView.OverviewSummary] in
@@ -645,9 +689,16 @@ final class MainViewController: NSViewController {
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.reportOverviewProgress(nil)
+                self.overviewPassTask = nil
                 guard !Task.isCancelled, self.minimapView.renderMode == .overview else { return }
                 self.minimapView.setOverviewSummaries(summaries)
                 self.overviewRebuildsCompleted += 1
+                // A request that arrived while this pass ran was not allowed to
+                // cancel it; honour it now.
+                if self.overviewRebuildPending {
+                    self.overviewRebuildPending = false
+                    self.scheduleOverviewRebuild()
+                }
             }
         }
     }

@@ -597,6 +597,92 @@ final class DiffEngineTests: XCTestCase {
         XCTAssertNil(DiffEdit.netDiffEdit(ops: []))
     }
 
+    // MARK: - Collapsing a batch (§8.3)
+
+    func testCollapseKeepsASingleEditAlone() {
+        XCTAssertEqual(DiffEdit.collapse([]), [])
+        XCTAssertEqual(DiffEdit.collapse([.overwrite(range: 5..<9)]), [.overwrite(range: 5..<9)])
+        XCTAssertEqual(DiffEdit.collapse([.insert(at: 5, length: 1)]), [.insert(at: 5, length: 1)])
+    }
+
+    /// A run of typed bytes in insert mode: every edit shifts from a slightly
+    /// higher offset, and the lowest one already invalidates all of them.
+    func testCollapseReducesARunOfInsertsToTheEarliestOne() {
+        let edits = (0..<10).map { DiffEdit.insert(at: 1000 + UInt64($0), length: 1) }
+        XCTAssertEqual(DiffEdit.collapse(edits), [.insert(at: 1000, length: 1)])
+    }
+
+    /// Mixed kinds: the earliest shifting edit wins, whichever kind it is.
+    func testCollapseTakesTheEarliestShiftingEdit() {
+        XCTAssertEqual(
+            DiffEdit.collapse([.insert(at: 900, length: 4), .delete(range: 40..<50),
+                               .insert(at: 500, length: 1)]),
+            [.delete(range: 40..<50)]
+        )
+    }
+
+    /// Overwrites at or after the shift point are already covered by the tail
+    /// rescan; the part of one that reaches below it is not, and survives.
+    func testCollapseDropsOverwritesTheShiftAlreadyCovers() {
+        XCTAssertEqual(
+            DiffEdit.collapse([.overwrite(range: 200..<300), .insert(at: 100, length: 1)]),
+            [.insert(at: 100, length: 1)]
+        )
+        XCTAssertEqual(
+            DiffEdit.collapse([.overwrite(range: 50..<300), .insert(at: 100, length: 1)]),
+            [.overwrite(range: 50..<100), .insert(at: 100, length: 1)]
+        )
+        XCTAssertEqual(
+            DiffEdit.collapse([.overwrite(range: 10..<20), .insert(at: 100, length: 1)]),
+            [.overwrite(range: 10..<20), .insert(at: 100, length: 1)]
+        )
+    }
+
+    /// A run of typed bytes in overwrite mode: adjacent windows become one.
+    func testCollapseMergesTouchingOverwrites() {
+        let edits = (0..<8).map { DiffEdit.overwrite(range: (100 + UInt64($0))..<(101 + UInt64($0))) }
+        XCTAssertEqual(DiffEdit.collapse(edits), [.overwrite(range: 100..<108)])
+
+        XCTAssertEqual(
+            DiffEdit.collapse([.overwrite(range: 0..<10), .overwrite(range: 20..<30),
+                               .overwrite(range: 5..<22)]),
+            [.overwrite(range: 0..<30)]
+        )
+        XCTAssertEqual(
+            DiffEdit.collapse([.overwrite(range: 0..<10), .overwrite(range: 40..<50)]),
+            [.overwrite(range: 0..<10), .overwrite(range: 40..<50)]
+        )
+    }
+
+    /// The collapsed batch must describe the same damage: applying it and
+    /// applying the original edits one by one must land on the same index.
+    func testCollapsedBatchGivesTheSameIndexAsApplyingEveryEdit() throws {
+        let size = 4096
+        let left = (0..<size).map { UInt8($0 % 251) }
+        var right = left
+        for i in 1000..<1100 { right[i] ^= 0xFF }
+        let leftStorage = MemoryBackedStorage(bytes: left)
+        let rightStorage = MemoryBackedStorage(bytes: right)
+        // The left side ends up one byte longer, as an insert would leave it.
+        let editedLeft = MemoryBackedStorage(bytes: [0xAA] + left)
+
+        let base = try DiffEngine.scan(left: leftStorage, right: rightStorage)
+        let batch: [DiffEdit] = [.overwrite(range: 10..<20), .insert(at: 0, length: 1),
+                                 .overwrite(range: 3000..<3010)]
+
+        var oneByOne = base
+        for edit in batch {
+            oneByOne = try DiffEngine.apply(edit, to: oneByOne, left: editedLeft, right: rightStorage)
+        }
+        var collapsed = base
+        for edit in DiffEdit.collapse(batch) {
+            collapsed = try DiffEngine.apply(edit, to: collapsed, left: editedLeft, right: rightStorage)
+        }
+        XCTAssertEqual(collapsed.blocks, oneByOne.blocks)
+        XCTAssertEqual(collapsed.blocks, try DiffEngine.scan(left: editedLeft, right: rightStorage).blocks,
+                       "and both agree with a full scan of the edited files")
+    }
+
     // MARK: - The word-wise scan (§8.3)
 
     /// The chunked scan compares a machine word at a time, with `memcmp` for a

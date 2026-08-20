@@ -545,6 +545,13 @@ When edits occur:
 - update background diff index incrementally where possible;
 - insert/delete operations that shift offsets must invalidate from the earliest affected offset onward.
 
+A batch of queued edits is collapsed before it is applied. Applying rescans
+against current bytes, so a shifting edit already covers every edit at or after
+its offset: a run of ten inserted bytes is one rescan of the tail, not ten.
+Overwrites below the shift point survive it, merged where they touch. Only the
+first full build reports progress — an incremental apply is short enough that a
+bar would flash (§19.9 says what that reads as).
+
 Because a shifting edit invalidates everything after it, the scan itself has to
 be fast enough that rescanning a file's tail is not an event: comparing two
 16 MB dumps must cost tens of milliseconds, not seconds. Comparison is by
@@ -1418,6 +1425,15 @@ The panes' visible slice is drawn as a translucent band over the map.
   then held for a minimum showing before it clears, because the pass itself is
   fast: two 16 MB dumps are binned in ~150 ms, so a bar that vanished the
   instant the pass ended was never seen at all.
+- The rebuild is debounced, and the debounce is not restarted by a later
+  request: the wait is bounded from the first request, not the last. A request
+  that arrives while a pass is running does not cancel it — it is remembered and
+  honoured when that pass lands. The exception is a change to the row count: the
+  running pass is binning for a panel height that no longer exists, so it is
+  cancelled. Restarting on every request starved the rebuild completely while the
+  user typed, because a keystroke asks twice — once for the file's new size, once
+  when the comparison index absorbs the edit — and the second ask always landed
+  inside the wait.
 - The picture in hand is never thrown away while its replacement is computed.
   A rebuild is triggered by things that make the picture stale, not wrong to
   look at: an edit that changes the longest file's length re-bins every row, but

@@ -2529,6 +2529,31 @@ final class MinimapTests: XCTestCase {
         XCTAssertLessThan(ink.y.count, 8, "the mark is a hairline, not a band")
     }
 
+    /// Typing must not starve the overview. Each keystroke asks for a rebuild
+    /// twice — once for the file's new size, once when the comparison index
+    /// absorbs the edit — and restarting the 120 ms debounce on every request
+    /// pushed the pass past the next keystroke, so nothing rebuilt until typing
+    /// stopped. The wait is now bounded from the *first* request (§19.9).
+    func testTypingDoesNotStarveTheOverviewRebuild() throws {
+        let (controller, _, panel) = try makeOverviewWindow(
+            (0..<(256 * 1024)).map { UInt8($0 % 251) })
+        let completedBefore = controller.overviewRebuildsCompleted
+        controller.windowModel.pane1.isInsertMode = true
+        controller.windowModel.pane1.moveCaret(to: 50 * 1024)
+
+        // Twelve bytes at roughly a keystroke every 60 ms — faster than the
+        // debounce, for well over a second in total.
+        for _ in 0..<12 {
+            controller.windowModel.pane1.typeASCII(0x5A)
+            _ = pumpUntil(0.06) { false }
+        }
+
+        XCTAssertGreaterThan(controller.overviewRebuildsCompleted, completedBefore,
+                             "a pass ran while the typing was still going")
+        XCTAssertTrue(panel.overviewSummaries.first?.modified.contains { $0 != 0 } ?? false,
+                      "and it brought the edits into the picture")
+    }
+
     /// An inserted byte moves every byte after it, so from there to the end the
     /// file no longer holds what it held at those offsets — which is why the hex
     /// view paints the whole tail red. The overview has to say the same thing.
