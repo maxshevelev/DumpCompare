@@ -1063,6 +1063,9 @@ final class MinimapView: NSView {
             let rowStart = extent * UInt64(row) / UInt64(summary.rowCount)
             let rowEnd = extent * UInt64(row + 1) / UInt64(summary.rowCount)
             let span = rowEnd - rowStart
+            // The last column of this row that still belongs to the file, so a
+            // row-wide mark stops where the file does.
+            var lastInFile = -1
             for column in 0..<columns {
                 let bit = UInt16(1) << UInt16(column)
                 let densityIndex = row * columns + column
@@ -1073,21 +1076,40 @@ final class MinimapView: NSView {
                 // fill, not an event. That is what leaves the shorter file's
                 // tail empty (§9).
                 guard sliceStart < fileSize else { continue }
-                let isEvent = modified & bit != 0 || different & bit != 0
+                lastInFile = column
+                let isEvent = different & bit != 0
                 // An event is one cell of a one-pixel row, invisible inside a
                 // dense region, so it is drawn two pixels tall — it spills into
                 // the next row rather than disappearing.
                 let rect = NSRect(x: cells[column].x, y: y,
                                   width: cells[column].width,
                                   height: isEvent ? rowHeight * 2 : rowHeight)
-                if modified & bit != 0 {
-                    HexTheme.modifiedText.setFill()
-                } else if different & bit != 0 {
+                if different & bit != 0 {
                     HexTheme.differenceFill.setFill()
                 } else {
                     tones[Int(density)].setFill()
                 }
                 rect.fill()
+            }
+            // A row holding bytes the user changed is marked across its whole
+            // width, on top of everything else (§19.4).
+            //
+            // Per cell it was drawn and unfindable: one edited byte is one cell
+            // of sixteen in one row of a thousand — a couple of dozen device
+            // pixels in the whole panel, in a red whose brightness sits close to
+            // the ink around it. "You changed something here" is the rarest and
+            // most valuable thing the map says, and at this scale the column it
+            // happened in says almost nothing: a column of a 16 MB dump's row is
+            // a kilobyte. So the column detail goes and the row reads at a
+            // glance. Differences keep their per-cell shading — they come in
+            // runs, which the shading is what makes legible.
+            if modified != 0, lastInFile >= 0, let first = cells.first,
+               cells.indices.contains(lastInFile) {
+                let last = cells[lastInFile]
+                HexTheme.modifiedText.setFill()
+                NSRect(x: first.x, y: y,
+                       width: last.x + last.width - first.x,
+                       height: rowHeight * 2).fill()
             }
         }
     }

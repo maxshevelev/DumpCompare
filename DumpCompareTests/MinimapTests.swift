@@ -2479,6 +2479,56 @@ final class MinimapTests: XCTestCase {
                              "and the exact picture agrees on which half is which")
     }
 
+    /// The bounding box of the red (modified) pixels in the panel's rendering,
+    /// in device pixels, or nil when there are none. Red is what nothing else in
+    /// the overview draws: the tone ramp is a neutral ink and the difference
+    /// fill is orange, which is far less red-vs-blue than `systemRed`.
+    private func modifiedInkBounds(_ panel: MinimapView) throws -> (x: ClosedRange<Int>, y: ClosedRange<Int>, count: Int)? {
+        let rep = try XCTUnwrap(panel.bitmapImageRepForCachingDisplay(in: panel.bounds))
+        panel.cacheDisplay(in: panel.bounds, to: rep)
+        var minX = Int.max, maxX = -1, minY = Int.max, maxY = -1, count = 0
+        for y in 0..<rep.pixelsHigh {
+            for x in 0..<rep.pixelsWide {
+                guard let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
+                guard c.redComponent - c.blueComponent > 0.45, c.redComponent > 0.5,
+                      c.greenComponent < 0.45 else { continue }
+                minX = min(minX, x); maxX = max(maxX, x)
+                minY = min(minY, y); maxY = max(maxY, y)
+                count += 1
+            }
+        }
+        guard maxX >= 0 else { return nil }
+        return (minX...maxX, minY...maxY, count)
+    }
+
+    /// A byte the user changed marks its row across the map's whole width, not
+    /// one cell of it. Per cell the mark was drawn but unfindable: one edited
+    /// byte is one cell of sixteen in one row of a thousand — a couple of dozen
+    /// device pixels in the whole panel — which read as "modified bytes do not
+    /// show up in the overview at all" (§19.4).
+    func testAModifiedByteMarksItsWholeRowInTheOverview() throws {
+        let (controller, _, panel) = try makeOverviewWindow(
+            (0..<(256 * 1024)).map { UInt8($0 % 251) })
+        XCTAssertNil(try modifiedInkBounds(panel), "nothing is modified yet")
+
+        controller.windowModel.pane1.moveCaret(to: 100 * 1024)
+        controller.windowModel.pane1.typeASCII(0x5A)
+        XCTAssertTrue(pumpUntil(3.0) {
+            panel.overviewSummaries.first?.modified.contains { $0 != 0 } ?? false
+        }, "the edit reaches the picture")
+
+        let ink = try XCTUnwrap(try modifiedInkBounds(panel), "the edit is marked in red")
+        // The mark spans the map's content, not a sixteenth of it.
+        let scale = CGFloat(try XCTUnwrap(panel.bitmapImageRepForCachingDisplay(in: panel.bounds)).pixelsWide)
+            / panel.bounds.width
+        let contentWidth = (panel.bounds.width - 2 * MinimapView.contentPadding) * scale
+        let markWidth = CGFloat(ink.x.count)
+        XCTAssertGreaterThan(markWidth, contentWidth * 0.8,
+                             "the mark reads across the map: \(markWidth) of \(contentWidth) px")
+        // And it stays a hairline: a row of a thousand, two device pixels tall.
+        XCTAssertLessThan(ink.y.count, 8, "the mark is a hairline, not a band")
+    }
+
     /// An edit that changes the longest file's length invalidates the overview's
     /// bins — every row covers a different slice of the file now. The picture is
     /// kept and stretched until the background pass replaces it, rather than

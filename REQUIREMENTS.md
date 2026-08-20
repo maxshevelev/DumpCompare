@@ -1279,9 +1279,16 @@ resolution is used and nothing is spent on gaps.
   within a map's content puts every boundary of the second map mid-pixel,
   because its content begins after a gutter that is a fraction of the panel.
 - Difference and modification are drawn over the shading, and at least two
-  pixels tall so a single byte among thousands stays visible. Where a cell is
-  both, modified wins: at hundreds of bytes per cell the two overlap often, and
-  the difference is still legible across the rest of the region.
+  pixels tall so a single byte among thousands stays visible.
+- A modified byte marks its row across the map's whole width — as far as its own
+  file reaches — rather than the cell it falls in, and over everything else in
+  that row. Two pixels tall in one cell of sixteen, a single edited byte was a
+  couple of dozen pixels in the whole panel and simply not findable, which reads
+  as the overview not marking edits at all. "You changed this" is the rarest
+  thing the map says, and at this scale the column it happened in says almost
+  nothing: one column of a 16 MB dump's row is a kilobyte. Differences keep
+  their per-cell shading — they come in runs, and the shading is what makes a
+  run's shape legible.
 - Rows are binned over the comparison's extent, so the same height is the same
   absolute offset on both maps (§9); rows past a shorter file's end stay empty.
   Empty means empty: the difference index is built over the extent, so every
