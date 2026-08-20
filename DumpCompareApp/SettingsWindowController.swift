@@ -131,11 +131,13 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     private let appearanceController = AppearanceSettingsViewController()
     private let layoutController = LayoutSettingsViewController()
     private let comparisonController = ComparisonSettingsViewController()
+    private let editingController = EditingSettingsViewController()
     private let textDecodingController = TextDecodingSettingsViewController()
 
     private static let appearanceItemID = NSToolbarItem.Identifier("Appearance")
     private static let layoutItemID = NSToolbarItem.Identifier("Layout")
     private static let comparisonItemID = NSToolbarItem.Identifier("Comparison")
+    private static let editingItemID = NSToolbarItem.Identifier("Editing")
     private static let textDecodingItemID = NSToolbarItem.Identifier("TextDecoding")
 
     init() {
@@ -177,11 +179,13 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     // MARK: - NSToolbarDelegate
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.appearanceItemID, Self.layoutItemID, Self.comparisonItemID, Self.textDecodingItemID]
+        [Self.appearanceItemID, Self.layoutItemID, Self.comparisonItemID, Self.editingItemID,
+         Self.textDecodingItemID]
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.appearanceItemID, Self.layoutItemID, Self.comparisonItemID, Self.textDecodingItemID]
+        [Self.appearanceItemID, Self.layoutItemID, Self.comparisonItemID, Self.editingItemID,
+         Self.textDecodingItemID]
     }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
@@ -207,6 +211,13 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
                                  accessibilityDescription: "Comparison")
             item.target = self
             item.action = #selector(comparisonTabTapped)
+        case Self.editingItemID:
+            item.label = "Editing"
+            item.paletteLabel = "Editing"
+            item.image = NSImage(systemSymbolName: "square.and.pencil",
+                                 accessibilityDescription: "Editing")
+            item.target = self
+            item.action = #selector(editingTabTapped)
         case Self.textDecodingItemID:
             item.label = "Text Decoding"
             item.paletteLabel = "Text Decoding"
@@ -229,6 +240,10 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
 
     @objc private func comparisonTabTapped() {
         window?.contentViewController = comparisonController
+    }
+
+    @objc private func editingTabTapped() {
+        window?.contentViewController = editingController
     }
 
     @objc private func textDecodingTabTapped() {

@@ -16,10 +16,6 @@ final class MainViewController: NSViewController {
     /// Current diff-navigation availability. Recomputed on every mode, index,
     /// and caret change; the menu items read it via `validateMenuItem` (§10.3).
     private(set) var diffNavigationState = DiffNavigationState()
-    /// Typing mode for both panes: `true` inserts a byte at the caret (the file
-    /// grows), `false` overwrites the byte under the caret. Session-global — it
-    /// is never persisted, so the app always launches in Overwrite mode.
-    private(set) var insertMode = false
     let windowModel = WindowViewModel()
     private weak var activeFilePane: FilePaneView?
     private weak var comparisonView: ComparisonView?
@@ -2168,7 +2164,8 @@ final class MainViewController: NSViewController {
             title: "Paste Insert?",
             message: "Insert \(bytes.count) byte(s) at offset \(String(format: "0x%X", offset)). Existing bytes from this offset on will shift.",
             confirmTitle: "Insert",
-            destructive: true
+            destructive: true,
+            suppressible: true
         )
         guard response == .alertFirstButtonReturn else { return }
         do {
@@ -2222,7 +2219,8 @@ final class MainViewController: NSViewController {
             title: "Delete \(count) byte(s)?",
             message: "Bytes from offset \(String(format: "0x%X", start)) will be removed. Subsequent offsets will shift — the file structure may be affected.",
             confirmTitle: "Delete",
-            destructive: true
+            destructive: true,
+            suppressible: true
         )
         guard response == .alertFirstButtonReturn else { return }
         do {
@@ -2232,29 +2230,30 @@ final class MainViewController: NSViewController {
         }
     }
 
-    /// Edit > Insert Mode: flips the typing mode for BOTH panes (a session-global
-    /// mode, never persisted). When on, typing inserts a byte at the caret and
-    /// shifts the tail right; the caret becomes a red vertical line at the byte
-    /// boundary. The one-time "this shifts the file" warning is injected into
-    /// each pane idempotently here — wiring it at toggle (rather than pane
-    /// creation) guarantees the callback exists before any insert-mode keystroke,
-    /// and it is mode-independent, so re-enabling after a toggle-off never
+    /// Edit > Insert Mode: flips the typing mode of the ACTIVE pane. The mode is
+    /// per pane and never persisted — one file can be typed into while the other
+    /// is being read, and each pane's status bar says which mode it is in (§7.6).
+    ///
+    /// When on, typing inserts a byte at the caret and shifts the tail right; the
+    /// caret becomes a red vertical line at the byte boundary. The one-time
+    /// "this shifts the file" warning is injected here rather than at pane
+    /// creation, which guarantees the callback exists before any insert-mode
+    /// keystroke; it is mode-independent, so re-enabling after a toggle-off never
     /// re-arms it within the same file.
     @objc func toggleInsertMode(_ sender: Any?) {
-        insertMode.toggle()
-        for pane in [windowModel.pane1, windowModel.pane2] {
-            pane.isInsertMode = insertMode
-            pane.confirmInsertModeWarning = { [weak self, weak pane] in
-                guard let self, let pane else { return true }
-                let offset = pane.caretOffset
-                let response = self.confirmAlert(
-                    title: "Insert?",
-                    message: "Inserting at offset \(String(format: "0x%X", offset)) shifts every byte from here on — the file structure may be affected.",
-                    confirmTitle: "Insert",
-                    destructive: true
-                )
-                return response == .alertFirstButtonReturn
-            }
+        let pane = activePane
+        pane.isInsertMode.toggle()
+        pane.confirmInsertModeWarning = { [weak self, weak pane] in
+            guard let self, let pane else { return true }
+            let offset = pane.caretOffset
+            let response = self.confirmAlert(
+                title: "Insert?",
+                message: "Inserting at offset \(String(format: "0x%X", offset)) shifts every byte from here on — the file structure may be affected.",
+                confirmTitle: "Insert",
+                destructive: true,
+                suppressible: true
+            )
+            return response == .alertFirstButtonReturn
         }
     }
 
@@ -2656,7 +2655,15 @@ final class MainViewController: NSViewController {
     // MARK: - Alerts
 
     @discardableResult
-    private func confirmAlert(title: String, message: String, confirmTitle: String, destructive: Bool = false) -> NSApplication.ModalResponse {
+    private func confirmAlert(title: String, message: String, confirmTitle: String,
+                              destructive: Bool = false,
+                              suppressible: Bool = false) -> NSApplication.ModalResponse {
+        // A suppressible confirmation is one of the §7.2 shifting-edit warnings.
+        // With the warnings switched off it does not appear at all and the edit
+        // proceeds: the user has said, once, that they know what these edits do.
+        if suppressible, !EditingSettings.warnsBeforeShiftingEdits {
+            return .alertFirstButtonReturn
+        }
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message
@@ -2665,7 +2672,23 @@ final class MainViewController: NSViewController {
         if destructive {
             alert.buttons.first?.hasDestructiveAction = true
         }
-        return Self.presentModal(alert, defaultInTest: .alertSecondButtonReturn)  // Cancel in tests
+        if suppressible {
+            alert.showsSuppressionButton = true
+            alert.suppressionButton?.title = "Do not ask again"
+        }
+        let response = Self.presentModal(alert, defaultInTest: .alertSecondButtonReturn)  // Cancel in tests
+        if suppressible { Self.applySuppression(of: alert) }
+        return response
+    }
+
+    /// Honours an alert's "Do not ask again" checkbox by switching the
+    /// shifting-edit warnings off — the same switch as Settings ▸ Editing.
+    /// Whichever button dismissed the alert: ticking the box and then cancelling
+    /// still means "stop asking me". Internal so a test can pin the wiring,
+    /// which is otherwise unreachable (a test never shows the alert).
+    static func applySuppression(of alert: NSAlert) {
+        guard alert.suppressionButton?.state == .on else { return }
+        EditingSettings.set(warnsBeforeShiftingEdits: false)
     }
 
     @discardableResult
@@ -2897,9 +2920,11 @@ extension MainViewController: NSMenuItemValidation {
             menuItem.title = minimapSplit.panelVisible ? "Hide Minimap" : "Show Minimap"
             return true
         case #selector(toggleInsertMode):
-            // A checked toggle: the checkmark reads the current mode. Always
-            // enabled — it is a mode switch, meaningful even with no file open.
-            menuItem.state = insertMode ? .on : .off
+            // A checked toggle reading the ACTIVE pane's mode: the mode is per
+            // pane (§7.6), so the checkmark follows the pane the keys go to.
+            // Always enabled — it is a mode switch, meaningful even with no file
+            // open.
+            menuItem.state = activePane.isInsertMode ? .on : .off
             return true
         case #selector(saveDocument),
              #selector(saveDocumentAs),

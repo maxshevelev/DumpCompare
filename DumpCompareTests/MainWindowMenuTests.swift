@@ -72,9 +72,9 @@ final class MainWindowMenuTests: XCTestCase {
         XCTAssertEqual(item?.keyEquivalentModifierMask, [.command, .option])
     }
 
-    /// The Insert Mode checkmark follows the mode: off on a fresh controller,
-    /// on after a toggle — which also flips both panes and wires the one-time
-    /// warning into each.
+    /// The Insert Mode checkmark follows the ACTIVE pane's mode: the mode is per
+    /// pane (§7.6), so the toggle flips the pane the keys go to and leaves the
+    /// other one alone.
     func testInsertModeCheckmarkFollowsTheToggle() throws {
         let wc = MainWindowController()
         defer { wc.close() }
@@ -94,11 +94,9 @@ final class MainWindowMenuTests: XCTestCase {
 
         XCTAssertTrue(controller.validateMenuItem(item))
         XCTAssertEqual(item.state, .on)
-        XCTAssertTrue(controller.windowModel.pane1.isInsertMode)
-        XCTAssertTrue(controller.windowModel.pane2.isInsertMode)
+        XCTAssertTrue(controller.windowModel.pane1.isInsertMode, "the active pane flipped")
+        XCTAssertFalse(controller.windowModel.pane2.isInsertMode, "the other pane did not")
         XCTAssertNotNil(controller.windowModel.pane1.confirmInsertModeWarning,
-                        "the one-time warning is wired into pane 1")
-        XCTAssertNotNil(controller.windowModel.pane2.confirmInsertModeWarning,
-                        "the one-time warning is wired into pane 2")
+                        "the one-time warning is wired into the pane that flipped")
     }
 }

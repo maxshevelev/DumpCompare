@@ -350,6 +350,15 @@ Confirmed length-changing operations include:
 - Insert mode (§7.6), where confirmation is once per opened file rather than per
   keystroke — per-keystroke confirmation would make the mode unusable.
 
+These confirmations can be switched off, from a setting and from a "Do not ask
+again" checkbox on the dialogs themselves — one switch, reached two ways, so
+dismissing a dialog with the box ticked is reflected in the setting and the
+setting silences the dialogs. Ticking the box counts whichever button dismissed
+the dialog: it says "stop asking", not "and do it". They are on by default: these
+are the edits that quietly ruin a structured dump. With them off the edits still
+record undo steps, and insert mode still announces itself in the status bar and in
+the caret.
+
 Confirmation dialog must explain:
 
 - operation type;
@@ -457,8 +466,10 @@ An optional typing mode, off at every launch and never persisted, that turns
 typing into insertion. It is a mode, not a command: it changes what the keys of
 §7 do until it is switched off.
 
-- Scope: one mode for the window, both panes, toggled from Edit > Insert Mode (a
-  checked item) or its key equivalent. The checkmark follows the mode.
+- Scope: one mode per pane, toggled for the active pane from Edit > Insert Mode
+  (a checked item) or its key equivalent. The checkmark follows the active pane's
+  mode, and each pane's status bar reports its own — one file can be typed into
+  while the other is being read.
 - Typing inserts: a completed byte is inserted at the caret and every byte from
   there on shifts right; the file grows by one. Hex entry inserts on the first
   digit with the low nibble still empty, and the second digit fills that nibble
@@ -486,7 +497,8 @@ typing into insertion. It is a mode, not a command: it changes what the keys of
   delete that shifts anything, and then stays silent for that file; cancelling
   swallows the keystroke and leaves the file untouched, and the next one asks
   again. Opening or closing a file re-arms it. Toggling the mode off and on
-  within the same file does not.
+  within the same file does not. The confirmation can be switched off for good
+  (§7.2).
 - Cost: each inserted or deleted byte rewrites the file's storage, so the mode is
   meant for small edits, not for typing over a chip-sized dump. Buffering typed
   input is a separate topic (it would cover Paste Insert too).
