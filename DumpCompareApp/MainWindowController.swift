@@ -37,6 +37,10 @@ final class MainWindowController: NSWindowController {
         super.init(window: window)
         buildMainMenu()
         buildToolbar()
+        // The toolbar exists only now, so the mode's effect on it has to be
+        // applied once here: the difference block is in the default items and
+        // the window opens with no file (§10.3).
+        controller.syncDiffNavigationToolbarItem()
     }
 
     /// Owned lazily so the settings window isn't instantiated until first use.

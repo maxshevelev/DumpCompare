@@ -13,6 +13,9 @@ struct DiffNavigationState: Equatable {
 
 final class MainViewController: NSViewController {
     private(set) var mode: WindowMode = .empty
+    /// Whether a toolbar sync is already queued for the next run-loop turn.
+    private var diffToolbarSyncScheduled = false
+
     /// Current diff-navigation availability. Recomputed on every mode, index,
     /// and caret change; the menu items read it via `validateMenuItem` (§10.3).
     private(set) var diffNavigationState = DiffNavigationState()
@@ -238,6 +241,7 @@ final class MainViewController: NSViewController {
     /// Swaps the content area for the given window mode (§3 of REQUIREMENTS.md).
     func apply(mode: WindowMode) {
         self.mode = mode
+        syncDiffNavigationToolbarItem()
         unwireComparison()
         // The panes are about to be rebuilt, so an in-flight Search All would
         // stream into an orphaned view (and its × would be gone). Stop it here:
@@ -802,6 +806,13 @@ final class MainViewController: NSViewController {
     override func viewDidLayout() {
         super.viewDidLayout()
         updateMinimapChrome()
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        // The toolbar can only be reconfigured once it is up, which is not the
+        // case while the window controller is still building (§10.3).
+        syncDiffNavigationToolbarItem()
     }
 
     private func overviewSource(_ pane: PaneViewModel) -> OverviewSource {
@@ -2254,6 +2265,53 @@ final class MainViewController: NSViewController {
                 suppressible: true
             )
             return response == .alertFirstButtonReturn
+        }
+    }
+
+    /// Adds or removes the toolbar's Prev/Next Difference block to match the
+    /// mode. Difference navigation exists only with two files open, and a block
+    /// of buttons that can never do anything is worse than no block: disabled
+    /// they still read as something the window offers (§10.3). The menu items
+    /// stay, disabled — a menu is a list of what exists, and it says why.
+    ///
+    /// Called on every mode change and once the toolbar exists (the window
+    /// controller builds it after the view is loaded).
+    func syncDiffNavigationToolbarItem() {
+        // Deferred by a run-loop turn, and coalesced. Called from `apply(mode:)`
+        // this would land while AppKit is still reconfiguring the toolbar from
+        // the previous change, and mutating it then raises on the item index.
+        guard !diffToolbarSyncScheduled else { return }
+        diffToolbarSyncScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            self?.diffToolbarSyncScheduled = false
+            self?.applyDiffNavigationToolbarItem()
+        }
+    }
+
+    private func applyDiffNavigationToolbarItem() {
+        // Only a toolbar on screen can be reconfigured: before the window is
+        // shown, `items` reports the configured identifiers while the toolbar's
+        // own list is still empty. A window that appears later syncs from
+        // `viewDidAppear`.
+        guard let window = viewIfLoaded?.window, window.isVisible,
+              let toolbar = window.toolbar else { return }
+        let index = toolbar.items.firstIndex { $0.itemIdentifier == .diffNavigation }
+        switch (mode == .comparison, index) {
+        case (true, nil):
+            // Before the standard space, so the block keeps its place between
+            // the flexible space and the minimap toggle (§19).
+            let insertAt = toolbar.items.firstIndex { $0.itemIdentifier == .space }
+                ?? toolbar.items.count
+            toolbar.insertItem(withItemIdentifier: .diffNavigation, at: insertAt)
+            // A freshly inserted item starts enabled — AppKit's default
+            // validation only asks whether the target responds to the action —
+            // so it would offer a live-looking Prev Diff until the next
+            // validation pass (§10.3).
+            toolbar.validateVisibleItems()
+        case (false, let index?):
+            toolbar.removeItem(at: index)
+        default:
+            break
         }
     }
 

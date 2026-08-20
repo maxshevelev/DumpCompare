@@ -53,20 +53,59 @@ final class ToolbarValidationTests: XCTestCase {
         wc.showWindow(nil)
         let window = wc.window!
         window.setFrame(NSRect(x: 100, y: 100, width: 1080, height: 720), display: true)
-        _ = pumpUntil(2) { window.toolbar?.items.count == 4 }
+        // Three items with no file open — the difference block is not among
+        // them outside comparison mode (§10.3).
+        _ = pumpUntil(2) { (window.toolbar?.items.count ?? 0) >= 3 }
         window.layoutIfNeeded()
         window.toolbar?.validateVisibleItems()
         return wc
     }
 
-    /// Empty mode: there is nothing to navigate, so both arrows are dim.
-    func testTheArrowsAreDisabledWithNoFilesOpen() throws {
+    /// Difference navigation exists only with two files open, so outside
+    /// comparison mode the toolbar does not carry the block at all — a pair of
+    /// buttons that can never do anything still reads as something the window
+    /// offers. The menu items stay, disabled: a menu lists what exists (§10.3).
+    func testTheDifferenceBlockIsOnlyInTheToolbarInComparisonMode() throws {
         let wc = makeWindow()
-        defer { wc.close() }
-        let (prev, next) = try arrowButtons(wc.window!)
+        let controller = wc.mainViewController
+        let window = wc.window!
+        let urlA = try tempFile([UInt8](repeating: 0x11, count: 64))
+        let urlB = try tempFile([UInt8](repeating: 0x22, count: 64))
+        defer {
+            controller.windowModel.pane1.close()
+            controller.windowModel.pane2.close()
+            wc.close()
+            try? FileManager.default.removeItem(at: urlA)
+            try? FileManager.default.removeItem(at: urlB)
+        }
 
-        XCTAssertFalse(prev.isEnabled, "Prev Diff must be dim in empty mode")
-        XCTAssertFalse(next.isEnabled, "Next Diff must be dim in empty mode")
+        // The toolbar is reconfigured a run-loop turn after the mode changes
+        // (AppKit will not have it mutated mid-reconfiguration), so each check
+        // waits for it.
+        func hasBlock() -> Bool {
+            window.toolbar?.items.contains { $0.itemIdentifier == .diffNavigation } ?? false
+        }
+
+        XCTAssertTrue(pumpUntil(2) { !hasBlock() }, "empty mode: nothing to compare")
+
+        try controller.windowModel.pane1.open(url: urlA)
+        controller.apply(mode: .singleFile)
+        window.layoutIfNeeded()
+        XCTAssertTrue(pumpUntil(2) { !hasBlock() }, "single-file mode: still nothing to compare")
+
+        try controller.windowModel.pane2.open(url: urlB)
+        controller.apply(mode: .comparison)
+        window.layoutIfNeeded()
+        XCTAssertTrue(pumpUntil(2) { hasBlock() }, "two files: the block appears")
+        // And in its place: between the flexible space and the minimap toggle.
+        XCTAssertEqual(window.toolbar?.items.map(\.itemIdentifier),
+                       [.flexibleSpace, .diffNavigation, .space, .toggleMinimap])
+
+        controller.windowModel.pane2.close()
+        controller.apply(mode: .singleFile)
+        window.layoutIfNeeded()
+        XCTAssertTrue(pumpUntil(2) { !hasBlock() },
+                      "closing the second file takes it away again")
     }
 
     /// In a comparison, each arrow is enabled exactly when it has somewhere to
@@ -95,9 +134,11 @@ final class ToolbarValidationTests: XCTestCase {
 
         let (prev, next) = try arrowButtons(window)
         // The index has to land before navigation is possible at all (§10.3).
-        XCTAssertTrue(pumpUntil(5) { next.isEnabled },
-                      "Next Diff must enable once the index is built and a change lies ahead")
-        XCTAssertFalse(prev.isEnabled, "nothing lies behind the caret at offset 0")
+        // Both conditions in one wait: the arrows are validated together, and
+        // waiting on one of them can catch the state mid-pass.
+        XCTAssertTrue(pumpUntil(5) { next.isEnabled && !prev.isEnabled },
+                      "Next Diff enables once the index is built and a change lies ahead, "
+                      + "while nothing lies behind the caret at offset 0")
 
         // Jump past the only change: now the arrows swap.
         controller.windowModel.pane1.moveCaret(to: UInt64(left.count))

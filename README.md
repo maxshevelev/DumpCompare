@@ -36,7 +36,7 @@ The workflows the app is shaped around:
 - Two panes: open one or two files via **File > Open…** (⌘O) or drag-and-drop. One file — single-pane mode; two — comparison.
 - Differing bytes get an orange fill, with theme-appropriate intensities for light and dark mode; the shorter file's EOF tail counts as a difference too.
 - The status bar shows a live summary — `12 differing · 2048 same` — updating as you edit.
-- **Next/Previous Difference** (⌘⌥→ / ⌘⌥←) and **Next/Previous Same Block** (⌘⌥⇧→ / ⌘⌥⇧←): forward lands on a block's start, backward on its last byte, and the result is centered in the view.
+- **Next/Previous Difference** (⌘⌥→ / ⌘⌥←) and **Next/Previous Same Block** (⌘⌥⇧→ / ⌘⌥⇧←): forward lands on a block's start, backward on its last byte, and the result is centered in the view. The toolbar's arrows appear only in comparison mode.
 - Diff navigation steps between *changes*, not bytes: differing bytes closer together than the grouping distance (64 bytes by default, configurable in Settings) are one target. A holey region — a rewritten NVRAM area where changed bytes alternate with unchanged ones — is one press instead of hundreds, while highlighting stays per byte.
 - A selection in one pane is outlined in the other (mirror contour), so the two halves of the same offset read as one.
 - **View > Toggle Pane Layout** (⌘⌥L) switches side-by-side and stacked; **Swap Panels** exchanges the two files without reopening them.

@@ -668,11 +668,18 @@ Requirements:
 - If no further block exists in the requested direction:
   - show a status message or unobtrusive feedback;
   - do not silently wrap by default.
+- The toolbar carries the difference block only in comparison mode: with fewer
+  than two files there is nothing to navigate at all, and a pair of buttons that
+  can never do anything still reads as something the window offers. The menu
+  items stay in place, disabled — a menu is a list of what the app can do, and a
+  greyed item says why this one is not available now. Inserting the block must be
+  followed by a validation pass, or its buttons show up enabled: the default
+  validation only asks whether the target responds to the action.
 - The menu items and the toolbar's arrows must both be disabled whenever the
-  command would find nothing — wrong mode, index still building, or no target
-  in that direction from the caret. Toolbar items are validated by the target,
-  not by pushing their enabled state: the framework revalidates visible items
-  on its own schedule and would undo a pushed value. The arrows must also be
+  command would find nothing — index still building, or no target in that
+  direction from the caret. Toolbar items are validated by the target, not by
+  pushing their enabled state: the framework revalidates visible items on its
+  own schedule and would undo a pushed value. The arrows must also be
   revalidated when the availability changes, so they follow the caret at once
   instead of on the next idle pass.
 - If the full-file diff index is still being computed:

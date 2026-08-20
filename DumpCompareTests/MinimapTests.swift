@@ -209,11 +209,12 @@ final class MinimapTests: XCTestCase {
         XCTAssertNotNil(toolbar, "the main window has a toolbar")
         guard let toolbar else { return }
 
-        _ = pumpUntil(1.0) { toolbar.items.count == 4 }
-        let identifiers = toolbar.items.map(\.itemIdentifier)
-        XCTAssertEqual(identifiers,
+        // The configuration, not the live items: the difference block is only
+        // carried in comparison mode (§10.3), and this window has no files.
+        XCTAssertEqual(wc.toolbarDefaultItemIdentifiers(toolbar),
                        [.flexibleSpace, .diffNavigation, .space, .toggleMinimap],
                        "flexible space pins the diff block right; a system space keeps the toggle past it")
+        _ = pumpUntil(1.0) { toolbar.items.contains { $0.itemIdentifier == .toggleMinimap } }
 
         let toggle = toolbar.items.first { $0.itemIdentifier == .toggleMinimap }
         XCTAssertNotNil(toggle?.image, "the toggle shows the sidebar-right icon")
