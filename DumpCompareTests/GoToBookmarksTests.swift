@@ -343,6 +343,52 @@ final class GoToBookmarksTests: XCTestCase {
         XCTAssertFalse(form.isEditingBookmark)
     }
 
+    /// The row the user was editing stays selected when the editor closes —
+    /// whether it closed on Return or on a click outside it. The selection belongs
+    /// to the bookmark, not to a row number, so an edited address takes it along
+    /// (§20.5).
+    func testTheEditedBookmarkStaysSelected() throws {
+        let (form, _, _, _) = makeForm(rows: [0x10: "a", 0x20: "b", 0x30: "c"])
+        var presented: [BookmarkEditPopoverController] = []
+        form.editPopoverPresenter = { presented.append($0) }
+        form.bookmarkTable.selectRowIndexes([1], byExtendingSelection: false)
+        form.editClickedBookmark()
+        let popover = try XCTUnwrap(presented.first)
+        popover.loadViewIfNeeded()
+
+        // Return, with only the name changed.
+        popover.nameField.stringValue = "renamed"
+        popover.commit()
+        XCTAssertEqual(form.selectedBookmark, Bookmark(row: 0x20, name: "renamed"),
+                       "the bookmark that was edited is still the selected one")
+
+        // A click outside the popover, with the address changed: the bookmark
+        // moves to the end of the list, and the selection goes with it.
+        form.editClickedBookmark()
+        let second = try XCTUnwrap(presented.last)
+        second.loadViewIfNeeded()
+        second.offsetField.stringValue = "0x400"
+        second.popoverDidClose(Notification(name: NSPopover.didCloseNotification))
+
+        XCTAssertEqual(form.bookmarks.map(\.row), [0x10, 0x30, 0x400])
+        XCTAssertEqual(form.selectedBookmark?.row, 0x400,
+                       "an edited address takes the selection with it")
+    }
+
+    /// A bookmark made elsewhere renumbers the rows; the selection stays on the
+    /// bookmark it was on rather than on the row number it had.
+    func testTheSelectionSurvivesAChangeFromOutside() throws {
+        let (form, store, _, _) = makeForm(rows: [0x100: "a", 0x200: "b"])
+        form.bookmarkTable.selectRowIndexes([0], byExtendingSelection: false)
+
+        store.add(rowContaining: 0x10, name: "before them")
+        form.reloadBookmarks()
+
+        XCTAssertEqual(form.bookmarks.map(\.row), [0x10, 0x100, 0x200])
+        XCTAssertEqual(form.selectedBookmark?.row, 0x100,
+                       "still the same bookmark, one row further down")
+    }
+
     /// Its Delete removes the bookmark from the list too.
     func testDeletingFromThePopoverRemovesTheRow() throws {
         let (form, store, _, _) = makeForm(rows: [0x10: "EC table", 0x20: ""])
@@ -358,6 +404,8 @@ final class GoToBookmarksTests: XCTestCase {
         XCTAssertEqual(store.bookmarks.map(\.row), [0x20])
         XCTAssertEqual(form.bookmarks.map(\.row), [0x20])
         XCTAssertFalse(form.isEditingBookmark)
+        XCTAssertEqual(form.selectedBookmark?.row, 0x20,
+                       "the selection lands on the neighbour, as ⌫ in the list leaves it")
     }
 
     /// Escape closes the editor before it closes the form: editing a bookmark and

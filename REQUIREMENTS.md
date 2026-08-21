@@ -1858,7 +1858,12 @@ window, so nothing about a bookmark lives in two places.
   activates it, and it can only ever edit the one column it sits in. Sending the
   gesture to a menu command and the popover keeps both jobs whole.
 - **Escape closes the editor before it closes the form**: editing a bookmark and
-  pressing Escape must not throw the window away (§10.1). Return commits the name, a click elsewhere commits it too, and Escape
+  pressing Escape must not throw the window away (§10.1).
+- The selection belongs to a **bookmark**, not to a row number. Reloading the list
+  renumbers its rows — an address edited in the popover re-sorts it, a bookmark
+  made elsewhere pushes the rest down — so the selection follows the bookmark it
+  was on, and an edited bookmark stays selected wherever it now sits. Only removing
+  moves it: there the neighbour takes it, as `⌫` in the list leaves it. Return commits the name, a click elsewhere commits it too, and Escape
   restores the name the store holds without closing the form (§10.1).
 - **⌫** removes the selected bookmark. The selection stays where it was, so a run
   of them can be cleared without reaching for the mouse between presses;

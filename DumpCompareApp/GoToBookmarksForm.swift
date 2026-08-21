@@ -393,10 +393,30 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
     /// Re-reads the list from the store. Called on every change the form makes,
     /// and by the window when a bookmark changes under it (§20.2).
     func reloadBookmarks() {
+        // The selection belongs to a bookmark, not to a row number: reloading
+        // renumbers the rows (an address edited from the popover re-sorts the
+        // list, one made elsewhere pushes the rest down), and a selection left on
+        // its old index would either follow the wrong bookmark or vanish (§20.5).
+        let selected = selectedBookmark?.row
         bookmarks = store.bookmarks
         bookmarkTable.reloadData()
         emptyLabel.isHidden = !bookmarks.isEmpty
         updateTableHeight()
+        if let selected { selectBookmark(atRow: selected) }
+    }
+
+    /// The bookmark the list has selected, if any.
+    var selectedBookmark: Bookmark? {
+        let row = bookmarkTable.selectedRow
+        return bookmarks.indices.contains(row) ? bookmarks[row] : nil
+    }
+
+    /// Selects the bookmark on `row`, wherever the list now keeps it. A row that
+    /// is no longer in the list leaves the selection alone — the callers that
+    /// remove a bookmark choose a neighbour themselves.
+    func selectBookmark(atRow row: UInt64) {
+        guard let index = bookmarks.firstIndex(where: { $0.row == row }) else { return }
+        bookmarkTable.selectRowIndexes([index], byExtendingSelection: false)
     }
 
     /// How many rows the list shows before it starts scrolling.
@@ -572,15 +592,22 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
                 return store.bookmark(atRowContaining: row) == nil
             },
             onCommit: { [weak self] target, name in
-                self?.openEditPopover = nil
-                self?.store.edit(rowContaining: bookmark.row, to: target, name: name)
-                self?.reloadBookmarks()
+                guard let self else { return }
+                openEditPopover = nil
+                store.edit(rowContaining: bookmark.row, to: target, name: name)
+                reloadBookmarks()
+                // The bookmark that was being edited stays selected, at whatever
+                // row it now sits: it is what the user was working on, and an
+                // edited address moves it in the list.
+                selectBookmark(atRow: BookmarkStore.row(containing: target))
             },
             onCancel: { [weak self] in self?.openEditPopover = nil },
             onDelete: { [weak self] in
-                self?.openEditPopover = nil
-                self?.store.remove(rowContaining: bookmark.row)
-                self?.reloadBookmarks()
+                guard let self else { return }
+                openEditPopover = nil
+                // Removing from the popover leaves the selection where the row
+                // was, as ⌫ in the list does.
+                removeBookmark(atRow: row)
             })
         openEditPopover = controller
         if let editPopoverPresenter {
