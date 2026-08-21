@@ -470,6 +470,35 @@ final class GoToBookmarksTests: XCTestCase {
         XCTAssertEqual(field.stringValue, "0007AF00")
     }
 
+    /// The form's spacing groups what belongs together: the error message under
+    /// the field it is about, the "Bookmarks" title on the list it names, and only
+    /// the gap between those two groups a full one. Evenly spaced, the field and
+    /// the list sat an inch apart with a blank line between them (§10.1).
+    func testTheFieldAndTheListAreNotAnInchApart() throws {
+        let (form, _, _, _) = makeForm(rows: [0x10: "EC table"])
+        form.view.layoutSubtreeIfNeeded()
+        let scrollView = try XCTUnwrap(form.bookmarkTable.enclosingScrollView)
+        let field = form.offsetCombo!
+
+        let fieldFrame = form.view.convert(field.bounds, from: field)
+        let listFrame = form.view.convert(scrollView.bounds, from: scrollView)
+        let errorFrame = form.view.convert(form.errorLabel.bounds, from: form.errorLabel)
+        // The root view is not flipped, so "below" is a smaller y.
+        func distance(_ upper: NSRect, _ lower: NSRect) -> CGFloat {
+            form.view.isFlipped ? lower.minY - upper.maxY : upper.minY - lower.maxY
+        }
+
+        let gap = distance(fieldFrame, listFrame)
+        XCTAssertGreaterThan(gap, 0, "the list is below the field")
+        XCTAssertLessThan(gap, 46, "and not a blank line and two full gaps away")
+
+        // The error message belongs to the field, so it is nearer to it than to
+        // the list — that is what makes the grouping readable rather than merely
+        // tighter.
+        XCTAssertLessThan(distance(fieldFrame, errorFrame), distance(errorFrame, listFrame),
+                          "the message sits under its field, not adrift between the two")
+    }
+
     // MARK: - The list's height (§20.5)
 
     /// The list is as tall as it has rows: a form that opened with a page of

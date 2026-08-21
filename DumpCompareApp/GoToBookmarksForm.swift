@@ -85,6 +85,9 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
     private(set) var bookmarkTable: NSTableView!
     private(set) var errorLabel: NSTextField!
     private(set) var emptyLabel: NSTextField!
+    /// The "Bookmarks" title over the list. Held so the layout can pull it down
+    /// onto the list it names.
+    private var listLabel: NSTextField!
 
     /// The list's height, re-set from the number of bookmarks (§20.5).
     private var tableHeight: NSLayoutConstraint!
@@ -129,7 +132,8 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
 
         // No title label inside the form: the window it is presented in carries
         // "Go To" in its title bar, and saying it twice is not saying it better.
-        root.addArrangedSubview(makeOffsetRow())
+        let offsetRow = makeOffsetRow()
+        root.addArrangedSubview(offsetRow)
 
         // Always in the layout, empty when there is nothing wrong: a label that
         // appeared and disappeared would move the list up and down under the
@@ -139,7 +143,7 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
         errorLabel.textColor = .systemRed
         root.addArrangedSubview(errorLabel)
 
-        let listLabel = NSTextField(labelWithString: "Bookmarks")
+        listLabel = NSTextField(labelWithString: "Bookmarks")
         listLabel.font = .systemFont(ofSize: 12, weight: .semibold)
         listLabel.textColor = .secondaryLabelColor
         root.addArrangedSubview(listLabel)
@@ -153,6 +157,15 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
 
         let buttonRow = makeButtonRow()
         root.addArrangedSubview(buttonRow)
+
+        // The spacing says what belongs with what, rather than spreading five
+        // rows evenly down the form: the error message sits under the field it is
+        // about, the "Bookmarks" title sits on the list it names, and only the
+        // gap *between* those two groups is a full one. Evenly spaced, the field
+        // and the list ended up an inch apart with a blank line between them.
+        root.setCustomSpacing(2, after: offsetRow)
+        root.setCustomSpacing(8, after: errorLabel)
+        root.setCustomSpacing(4, after: listLabel)
 
         // A root that can claim Escape before the Cancel button's key
         // equivalent does — that is the whole of the two-level Escape (§10.1).
