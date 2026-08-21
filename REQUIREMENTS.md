@@ -1783,6 +1783,13 @@ which would lose its name.
   travels to another row moves anything, so a click stays a click.
 - The bookmark moves as the pointer crosses each row, not on release: what the
   drag is doing is visible while it is done, and the name travels with the mark.
+- A step answers the pointer **crossing** into another row, and only that. Two
+  points of hysteresis hold the boundary still, so a hand resting on the mouse
+  cannot step the mark to and fro across a row edge; and the row already answered
+  is never answered twice, which is what makes a jump over another mark final.
+  (Re-reading the same row after a jump would compute the jump again, in the
+  other direction, the mark now being on the far side of the obstacle — the mark
+  would flicker instead of settling.)
 - A drag pushed past the visible top or bottom edge autoscrolls the pane exactly
   as a drag selection does (§6), and the mark keeps moving while the pane scrolls
   — that is what makes it possible to drag a mark somewhere off screen.

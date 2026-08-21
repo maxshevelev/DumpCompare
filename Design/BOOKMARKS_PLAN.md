@@ -431,6 +431,16 @@ from where it was put — and that removing and re-marking loses its name.
   `dragAutoscrollStep`, the same timer, with the tick moving the mark instead of
   extending the selection. `lastRow` is passed in by the view, since only the view
   knows how far the pane reaches (§9).
+- **A step answers a crossing, not a position** — the fix for a reported flicker.
+  The first version moved the mark to whatever row the pointer was over, and at a
+  jump that oscillated: after jumping the obstacle the mark sits past it while the
+  pointer is still on the obstacle's row, so the next mouse event recomputed the
+  jump from the far side and sent the mark back. Remembering the row already
+  answered (`draggingBookmarkPointerRow`) makes a jump final until the pointer
+  really moves on, and two points of hysteresis at the row edge
+  (`bookmarkDragHysteresis`) keep a resting hand from stepping across it. Both
+  halves have their own test, and the boundary one is written in absolute points
+  — measured in the constant it checks, it passed with no hysteresis at all.
 - Tests: the store's jump / stop-before / no-room-at-all cases in both directions,
   and the gesture end to end in a real pane — following the pointer, jumping a
   marked row, autoscrolling past the bottom edge while still carrying the mark,

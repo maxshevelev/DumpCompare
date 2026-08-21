@@ -283,6 +283,99 @@ final class BookmarkDragTests: XCTestCase {
                       "the autoscroll moved the mark, not a selection")
     }
 
+    /// Window point over the Offset column at an exact view-coordinate `y`, for
+    /// the drags that test a row boundary rather than a row.
+    private func addressPoint(_ hexView: HexView, atY y: CGFloat) -> NSPoint {
+        let x = hexView.hexLayout.offsetColumnFrame(row: 0).midX
+        return hexView.convert(CGPoint(x: x, y: y), to: nil)
+    }
+
+    /// The reported jitter (§20.6): with a mark just jumped over another, the
+    /// pointer still sits on the row it jumped over, so re-reading that row
+    /// computed the jump again — in the other direction, the mark now being on
+    /// the far side — and the mark flickered to and fro under a resting hand.
+    /// A step answers the pointer CROSSING a row, so the jump holds.
+    func testJitterAfterAJumpLeavesTheMarkWhereItLanded() throws {
+        let (_, hexView, window, store) = try makePane()
+        store.add(rowContaining: 0x00, name: "moving")
+        store.add(rowContaining: 0x10, name: "in the way")
+
+        hexView.mouseDown(with: try mouse(.leftMouseDown, at: addressPoint(hexView, row: 0), window: window))
+        hexView.mouseDragged(with: try mouse(.leftMouseDragged, at: addressPoint(hexView, row: 1), window: window))
+        XCTAssertEqual(store.bookmarks.map(\.row), [0x10, 0x20], "the mark jumped the marked row")
+
+        // A hand resting on the mouse: a few pixels of jitter within that row.
+        let rowMiddle = hexView.hexLayout.rowFrame(row: 1).midY
+        for dy in [0.5, -0.5, 1.0, -1.0, 0.0] as [CGFloat] {
+            hexView.mouseDragged(with: try mouse(.leftMouseDragged,
+                                                 at: addressPoint(hexView, atY: rowMiddle + dy),
+                                                 window: window))
+            XCTAssertEqual(store.bookmarks.map(\.row), [0x10, 0x20],
+                           "jitter on the jumped-over row must not move anything")
+        }
+        hexView.mouseUp(with: try mouse(.leftMouseUp, at: addressPoint(hexView, row: 1), window: window))
+    }
+
+    /// The other half: a pointer sitting ON a row boundary must not flip between
+    /// the two rows. It has to travel a couple of points into the next row before
+    /// the drag counts it as being there.
+    func testThePointerMustCrossARowEdgeByAFewPointsToStep() throws {
+        let (_, hexView, window, store) = try makePane()
+        store.add(rowContaining: 0x00)
+        let rowHeight = hexView.hexLayout.rowHeight
+        // Absolute distances, not the constant itself: a test measured in the
+        // value it is checking would pass with no hysteresis at all.
+        XCTAssertGreaterThan(HexView.bookmarkDragHysteresis, 1)
+
+        hexView.mouseDown(with: try mouse(.leftMouseDown, at: addressPoint(hexView, row: 0), window: window))
+
+        // One point over the edge into row 1 — inside the hysteresis band.
+        hexView.mouseDragged(with: try mouse(.leftMouseDragged,
+                                             at: addressPoint(hexView, atY: rowHeight + 1),
+                                             window: window))
+        XCTAssertEqual(store.bookmarks.map(\.row), [0x00],
+                       "a pointer barely past the edge is still on the row it came from")
+
+        // Four points in: past the band, really on row 1.
+        hexView.mouseDragged(with: try mouse(.leftMouseDragged,
+                                             at: addressPoint(hexView, atY: rowHeight + 4),
+                                             window: window))
+        XCTAssertEqual(store.bookmarks.map(\.row), [0x10])
+
+        // One point above row 1's top edge: the same band holds going up.
+        hexView.mouseDragged(with: try mouse(.leftMouseDragged,
+                                             at: addressPoint(hexView, atY: rowHeight - 1),
+                                             window: window))
+        XCTAssertEqual(store.bookmarks.map(\.row), [0x10],
+                       "the band is symmetric — a step back needs the same couple of points")
+
+        // Four points above it, and the mark comes back.
+        hexView.mouseDragged(with: try mouse(.leftMouseDragged,
+                                             at: addressPoint(hexView, atY: rowHeight - 4),
+                                             window: window))
+        XCTAssertEqual(store.bookmarks.map(\.row), [0x00])
+        hexView.mouseUp(with: try mouse(.leftMouseUp, at: addressPoint(hexView, row: 1), window: window))
+    }
+
+    /// The hysteresis is per gesture, not per view: a fresh press re-reads where
+    /// the pointer is, so the next drag is not measured against the last one's
+    /// row.
+    func testANewGestureStartsFromTheMarksOwnRow() throws {
+        let (_, hexView, window, store) = try makePane()
+        store.add(rowContaining: 0x00)
+
+        hexView.mouseDown(with: try mouse(.leftMouseDown, at: addressPoint(hexView, row: 0), window: window))
+        hexView.mouseDragged(with: try mouse(.leftMouseDragged, at: addressPoint(hexView, row: 3), window: window))
+        hexView.mouseUp(with: try mouse(.leftMouseUp, at: addressPoint(hexView, row: 3), window: window))
+        XCTAssertEqual(store.bookmarks.map(\.row), [0x30])
+
+        hexView.mouseDown(with: try mouse(.leftMouseDown, at: addressPoint(hexView, row: 3), window: window))
+        hexView.mouseDragged(with: try mouse(.leftMouseDragged, at: addressPoint(hexView, row: 4), window: window))
+        hexView.mouseUp(with: try mouse(.leftMouseUp, at: addressPoint(hexView, row: 4), window: window))
+
+        XCTAssertEqual(store.bookmarks.map(\.row), [0x40], "the second drag moved one row on")
+    }
+
     /// A pointer dragged above the first row has no row of its own: the mark
     /// lands on row 0 rather than on a negative offset.
     func testAMarkDraggedAboveTheFirstRowLandsOnRowZero() throws {

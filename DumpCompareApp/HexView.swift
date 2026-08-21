@@ -203,6 +203,25 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// ticks, which is what lets a mark be dragged past the visible edge.
     private var draggingBookmarkRow: UInt64?
 
+    /// The row the pointer was last resolved to during a mark's drag. A step is
+    /// taken only when this changes — the mark answers the pointer *crossing* a
+    /// row, not the row the pointer happens to be over (§20.6).
+    ///
+    /// This is what stops a mark that has just jumped over another from shuffling
+    /// back and forth: after the jump the mark sits past the obstacle while the
+    /// pointer is still on the obstacle's row, so re-reading that row would
+    /// compute the jump again — in the other direction, since the mark is now on
+    /// the far side of it. Answering only the crossing makes the jump final until
+    /// the pointer really moves on.
+    private var draggingBookmarkPointerRow: Int?
+
+    /// How far past a row's edge the pointer must travel before a drag counts it
+    /// as being on the next row (§20.6). A hand resting on a mouse jitters by
+    /// about a pixel, and on a row boundary that jitter would step the mark to
+    /// and fro; two points of hysteresis costs nothing at the speed a drag
+    /// actually moves and makes the boundary hold still.
+    static let bookmarkDragHysteresis: CGFloat = 2
+
     /// Ideal width of the hex grid (offset column + hex + ASCII). The window
     /// delegate uses this to zoom-to-fit (§3.1) instead of zooming to max.
     var hexContentWidth: CGFloat { currentLayout.contentWidth }
@@ -1836,7 +1855,10 @@ final class HexView: NSView, NSViewToolTipOwner {
         // release on an address is the click it has always been — only a press
         // that then travels to another row moves anything.
         draggingBookmarkRow = bookmarkMarkRow(at: mouseDownLocation ?? .zero)
-        if draggingBookmarkRow != nil {
+        if let grabbed = draggingBookmarkRow {
+            // The gesture starts on the mark's own row, so the first step comes
+            // when the pointer leaves it.
+            draggingBookmarkPointerRow = currentLayout.rowColumn(of: grabbed).row
             NSCursor.closedHand.push()
         }
         // A shift-click extends immediately; an unmodified click needs to leave
@@ -1882,6 +1904,7 @@ final class HexView: NSView, NSViewToolTipOwner {
         dragEngaged = false
         if draggingBookmarkRow != nil {
             draggingBookmarkRow = nil
+            draggingBookmarkPointerRow = nil
             NSCursor.pop()
         }
         super.mouseUp(with: event)
@@ -1905,18 +1928,39 @@ final class HexView: NSView, NSViewToolTipOwner {
         let layout = currentLayout
         let fileSize = dataSource.fileSize
         guard fileSize > 0, layout.rowHeight > 0 else { return }
+        // A step happens when the pointer CROSSES into another row, and only
+        // then: see `draggingBookmarkPointerRow`.
+        let previous = draggingBookmarkPointerRow ?? layout.rowColumn(of: from).row
+        let row = pointerRow(at: point.y, comingFrom: previous, layout: layout)
+        guard row != previous else { return }
+        draggingBookmarkPointerRow = row
         // The rows that hold bytes: the caret row past a file whose length is a
         // multiple of 16 is not a row a bookmark belongs on. The far end is the
         // store's to enforce (it is handed `lastRow` below); the near end is
         // this view's, because a pointer above the first row gives a negative
         // row index and there is no such offset.
         let lastDataRow = layout.rowColumn(of: fileSize - 1).row
-        let row = max(0, Int(floor(point.y / layout.rowHeight)))
         let target = layout.byteOffset(row: row, column: 0)
         guard target != from else { return }
         if let landed = onBookmarkDrag(from, target, layout.byteOffset(row: lastDataRow, column: 0)) {
             draggingBookmarkRow = landed
         }
+    }
+
+    /// The row a drag counts the pointer as being on, given the row it was last
+    /// counted on: a new row is taken only once the pointer is
+    /// `bookmarkDragHysteresis` points inside it, so a pointer resting on a row
+    /// boundary stays on the row it came from (§20.6).
+    private func pointerRow(at y: CGFloat, comingFrom previous: Int, layout: HexLayout) -> Int {
+        let raw = max(0, Int(floor(y / layout.rowHeight)))
+        guard raw != previous else { return previous }
+        let hysteresis = Self.bookmarkDragHysteresis
+        if raw > previous {
+            // Downwards: far enough below the new row's top edge.
+            return y >= CGFloat(raw) * layout.rowHeight + hysteresis ? raw : previous
+        }
+        // Upwards: far enough above the new row's bottom edge.
+        return y <= CGFloat(raw + 1) * layout.rowHeight - hysteresis ? raw : previous
     }
 
     /// What a right-click in the dump anchors the context menu to (§10.2).
