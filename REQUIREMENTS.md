@@ -618,15 +618,49 @@ Optional future enhancement: independent scroll mode. For MVP, synchronized beha
 
 10.1 Go To Position
 
-- Cmd+G opens a Go To Position dialog.
-- The dialog accepts a single absolute offset.
+Go To and the bookmark list (§20) are one form, presented in a window centred
+over the one it navigates. They are one form because they are one question — "go
+where?" — and split in two they would be two windows each offering half an
+answer: the addresses worth returning to are exactly the ones a user would
+otherwise be typing again.
+
+- Cmd+G opens the form with the offset field focused; Option+Cmd+B opens the same
+  form with the bookmark list focused. The two shortcuts differ only in which
+  half the keyboard starts in.
+- Either command needs a file open: with nothing open there is nothing to
+  navigate, and both menu items are greyed out.
+- The field accepts a single absolute offset. A **Go To** button beside it names
+  the action rather than leaving it to be guessed from Return.
 - Offset input must support:
   - hexadecimal with `0x` or `0X` prefix;
   - decimal without prefix.
-- The offset input field should be pre-filled with `0x` by default.
+- The offset input field should be pre-filled with `0x` by default, with the
+  caret behind the prefix so hex digits can be typed straight away. The last
+  address is deliberately not pre-filled: the caret sits at the end of the text,
+  so a pre-filled address would turn Cmd+G, type, Return into digits appended to
+  the previous jump.
 - Offsets are zero-based.
 - Input parsing must be case-insensitive for hex.
-- Invalid input must show inline validation or alert.
+- Invalid input must show inline validation or alert. An invalid offset leaves
+  the form up, with the caret in the field, so it can be corrected.
+- **Return follows the focus.** In the field it goes to the typed offset; in the
+  list it goes to the selected bookmark; in the list with nothing selected it
+  does nothing at all. One Return means two things without ever guessing — which
+  is also why the Go To button must not be a default button, since a default
+  button claims Return from the whole window.
+- **Escape is two-level**: while a bookmark's name is being edited in the list it
+  cancels that edit, restoring the name the store holds; with no edit running it
+  closes the form. Editing a name and pressing Escape must not throw the window
+  away.
+- The offsets Go To was sent to are remembered in the field's dropdown: the last
+  ten, most recent first, persisted across launches. An entry is the offset's
+  canonical address, not the keystrokes that produced it — `0x7af00`, `0x07AF00`
+  and `503552` are one address, and a history listing them three times would be a
+  log of typing rather than a list of places. A jump from the bookmark list is
+  not recorded: it is already in the list below.
+- A jump dismisses the form, and the row it lands on is revealed centred — the
+  form is centred over the window it is about to scroll, so the destination has
+  to be where the user is looking.
 
 Go To behavior:
 
@@ -638,6 +672,9 @@ Go To behavior:
 - If the offset is beyond both files:
   - clamp to the end of the longer file;
   - show a warning or status message.
+
+The bookmark list in the lower half of the form, and everything it does with a
+bookmark, is §20.5.
 
 10.2 Select Block
 
@@ -702,6 +739,10 @@ Suggested shortcuts:
 - Previous difference: Cmd+Option+Left Arrow.
 - Next same block: Cmd+Option+Shift+Right Arrow.
 - Previous same block: Cmd+Option+Shift+Left Arrow.
+- Go To Position (the form's offset field): Cmd+G.
+- Bookmarks (the same form, its list focused): Cmd+Option+B — Cmd+B is the
+  system's Bold, so the list takes the Option variant.
+- Toggle Bookmark: Cmd+D; Rename Bookmark: Shift+Cmd+D (§20.3).
 
 Shortcuts may be adjusted, but must be discoverable in menus.
 
@@ -1583,8 +1624,10 @@ height in both, which is the whole point of it in a comparison.
 - Names are stored trimmed of surrounding whitespace, and a name that is nothing
   but whitespace is no name — so the "empty means show the address" rule cannot
   be defeated by a space.
-- The list and the form that manage bookmarks are a later stage; the model above
-  is the current core.
+- The store fires that same change signal at whatever else is showing its
+  contents — the naming popover, which must not outlive its mark (§20.3), and the
+  open form's list (§20.5) — so a bookmark made or removed anywhere shows up
+  everywhere without any of those surfaces polling it.
 
 20.3 Marking and naming a row
 
@@ -1670,3 +1713,42 @@ same shape stroked in the bookmark colour at the ring's line width, with no fill
 longer a fill to read against. A menu opened on a *byte* of a marked row frames
 that byte as usual (§10.2) and leaves the mark filled: only the address anchor
 occupies the mark's rect.
+
+20.5 The list
+
+The bookmarks are listed in the lower half of the Go To form (§10.1), which is
+the only place they are listed: going to a bookmark and managing one are the same
+window, so nothing about a bookmark lives in two places.
+
+- Two columns, one row per bookmark, ordered by address: the address in the
+  dump's own shape and ink-blue colour (§6), and the name beside it. An unnamed
+  bookmark shows an empty name cell — it is called by its address (§20.2) and the
+  column beside it already says that address, so printing it twice would say
+  nothing new.
+- **Return** goes to the selected bookmark, and a **double click on a row** goes
+  there too, so the mouse needs no detour to the keyboard. Both dismiss the form
+  and behave exactly as a typed offset does (§10.1): both panes of a comparison
+  move, because a bookmark is an absolute offset (§8).
+- **A double click on a name** edits it in place instead of jumping — a double
+  click that jumped from the name column would leave no way to rename with the
+  mouse. Return commits the name, a click elsewhere commits it too, and Escape
+  restores the name the store holds without closing the form (§10.1).
+- **⌫** removes the selected bookmark. The selection stays where it was, so a run
+  of them can be cleared without reaching for the mouse between presses;
+  removing the last row selects the one now at the end. With nothing selected
+  neither key does anything.
+- Opened by Option+Cmd+B the list arrives with its first bookmark selected — the
+  command exists to go to a bookmark, and the list is ordered by address, so the
+  lowest one is a real default. The jump still takes a Return: a selection is an
+  offer, not an act. Opened by Cmd+G, which is about typing an address, the list
+  offers nothing.
+- **Empty state**: with no bookmarks the list says so and names the gesture that
+  makes one (⌘D). It is a message over the table, not a row in it — a pseudo-row
+  would answer ⌫ and Return as if it held a bookmark.
+- The list follows the store (§20.2): a bookmark made or removed anywhere while
+  the form is open appears in or disappears from it, and removing the last one
+  brings the empty state back.
+
+A toolbar button belongs here too, but the toolbar's composition — and this
+item's icon — is a separate question, left for when the toolbar is filled out as
+a whole.

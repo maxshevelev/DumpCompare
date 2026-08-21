@@ -325,6 +325,50 @@ feature that replaces something that exists today.
 **Done when** ⌘G still goes to a typed offset in three keystrokes, and the same
 window lists the bookmarks and jumps to them.
 
+**As built (stage 3).** The form is `GoToBookmarksController` in
+`GoToBookmarksForm.swift`, with `GoToHistoryStore` beside it (the way
+`FindHistoryStore` sits with the sheets it serves). What the plan above did not
+yet know:
+
+- **The Go To button carries no key equivalent.** A default button claims Return
+  from the whole window, which would have made Return in the list go to the typed
+  offset instead of the selected bookmark. Return reaches the field through the
+  combo box's own action and the list through its own `keyDown`, so "Return
+  follows the focus" needs no focus sniffing at all: each half is simply handed
+  the key it was pressed in. Cancel keeps Esc, as the sheet family does.
+- **Escape's first level is claimed by the form's root view.** Its
+  `performKeyEquivalent` sees Esc before the Cancel button does, and consumes it
+  only while a name is being edited. That is the whole of the two-level Escape,
+  and it is what keeps a name edit from throwing the window away.
+- **The window title is the form's title**, so there is no title label inside it:
+  `presentAsModalWindow` puts "Go To" in the title bar, and saying it twice is
+  not saying it better.
+- **The recents are canonical addresses, not keystrokes** (`0x` + eight upper-case
+  digits), so `0x7af00`, `0x07AF00` and `503552` are one entry. The field is still
+  pre-filled with "0x" rather than the last address: the caret sits behind the
+  prefix, so a pre-filled address would turn ⌘G, type, Return into digits
+  appended to the previous jump. A jump from the list is not recorded — it is
+  already in the list below.
+- **An unnamed bookmark's name cell is empty**, with no placeholder: the Offset
+  column beside it is the address, and a placeholder repeating it prints the same
+  thing twice on one row. The list also drops the alternating row stripes — three
+  bookmarks in a tall box were a few rows of content in a page of banding.
+- **⌥⌘B preselects the first bookmark**, so ⌥⌘B, Return is a working gesture the
+  way ⌘D, Return is. ⌘G leaves the list unselected: it is about typing.
+- **The jump is one method** (`goTo(offset:)`) reached from both halves, and it
+  reveals the row centred — the form is centred over the window it is about to
+  scroll, so the destination has to be where the user is looking. The past-EOF
+  alert and the clamp are unchanged from the old sheet, and
+  `MainViewController.lastAlertTitle` records the alert so a test can see it (a
+  modal alert is short-circuited under XCTest).
+- **Two seams for the tests**: `goToFormPresenter`, because a modal window has no
+  one to dismiss it under XCTest, and `dismissForm`, because `dismiss` traps on a
+  controller that was never presented. The same shape as stage 2's
+  `bookmarkNamingPresenter`.
+- The open form is a weak reference on the controller, refreshed from the window's
+  bookmark signal — the store's documented third consumer, after the panes and
+  the popover.
+
 ### Stage 4 — Arrows in the minimap
 
 **Delivers:** bookmarks visible in both minimap modes, so a marked region can be

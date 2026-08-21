@@ -233,45 +233,9 @@ class SheetViewController: NSViewController {
     }
 }
 
-// MARK: - Go To Position (§10.1)
-
-/// Cmd+G: single absolute offset, `0x`-prefixed by default, inline validation.
-final class GoToSheetController: SheetViewController {
-    private var offsetField: NSTextField!
-    private let onGo: (UInt64) -> Void
-
-    init(fileSize: UInt64, onGo: @escaping (UInt64) -> Void) {
-        self.onGo = onGo
-        super.init(title: "Go To Position",
-                   message: "Enter a zero-based offset in hex (file is \(fileSize) bytes).")
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) is not supported")
-    }
-
-    override func loadView() {
-        super.loadView()
-        offsetField = addFieldRow(label: "Offset:", initial: "0x")
-    }
-
-    override func firstField() -> NSView? { offsetField }
-
-    override func validate() -> String? {
-        do {
-            _ = try OffsetParser.parse(offsetField.stringValue)
-            return nil
-        } catch {
-            return "Invalid offset — use hex with 0x prefix or decimal."
-        }
-    }
-
-    override func handleSubmit() {
-        if let offset = try? OffsetParser.parse(offsetField.stringValue) {
-            onGo(offset)
-        }
-    }
-}
+// Go To Position was a sheet of its own until the bookmark list arrived; both
+// answer "go where?", so they are one form now — `GoToBookmarksController`
+// (§10.1).
 
 // MARK: - Select Block (§10.2)
 

@@ -84,9 +84,11 @@ final class MainViewController: NSViewController {
         wireExternalChangeDetection()
         // A bookmark changed: the panes have already repainted their row, and
         // what is left for the window is the naming popover, which must not
-        // outlive the mark it is naming (§20.3).
+        // outlive the mark it is naming (§20.3), and the open form's list, which
+        // has to show what the store holds (§20.5).
         windowModel.onBookmarksChanged = { [weak self] row in
             self?.dismissNamingPopoverIfItsMarkIsGone(row: row)
+            self?.openGoToForm?.reloadBookmarks()
         }
         // Apply the Layout settings tab's direction change to an open comparison
         // immediately; outside comparison mode the value is stored and the next
@@ -2591,29 +2593,64 @@ final class MainViewController: NSViewController {
 
     // MARK: - Dialogs (§10)
 
+    /// ⌘G: the Go To / Bookmarks form with the offset field focused — the fast
+    /// path is unchanged, ⌘G, type, Return (§10.1).
     @objc func goToPosition() {
-        let pane = activePane
-        guard pane.isOpen else { return }
-        let largerSize = max(windowModel.pane1.fileSize, windowModel.pane2.fileSize)
-        let sheet = GoToSheetController(fileSize: largerSize) { [weak self] offset in
-            guard let self else { return }
-            if offset > largerSize {
-                self.presentAlert(
-                    title: "Offset beyond end of file",
-                    message: "Offset \(String(format: "0x%X", offset)) is beyond the end of the file(s) (\(String(format: "0x%X", largerSize)) bytes). Moved to the end."
-                )
-            }
-            let target = min(offset, largerSize)
-            if self.mode == .comparison {
-                // §10.1: move both panes; each clamps to its own EOF.
-                self.windowModel.pane1.moveCaret(to: target)
-                self.windowModel.pane2.moveCaret(to: target)
-            } else {
-                pane.moveCaret(to: target)
-            }
-            self.focusActiveHexView()
+        presentGoToForm(focus: .offsetField)
+    }
+
+    /// ⌥⌘B: the same form with the bookmark list focused, because going to a
+    /// bookmark is the other half of the same question (§20.5).
+    @objc func showBookmarks() {
+        presentGoToForm(focus: .bookmarks)
+    }
+
+    /// Where the form goes, so a test can drive it instead: it is presented in a
+    /// modal window, and a modal window has no one to dismiss it under XCTest.
+    var goToFormPresenter: ((GoToBookmarksController) -> Void)?
+
+    /// The form on screen, so a bookmark changed under it (from its own list, or
+    /// from anywhere the store is touched) refreshes what it shows (§20.2).
+    private weak var openGoToForm: GoToBookmarksController?
+
+    private func presentGoToForm(focus: GoToBookmarksController.Focus) {
+        guard activePane.isOpen else { return }
+        let form = GoToBookmarksController(store: windowModel.bookmarkStore, focus: focus) {
+            [weak self] offset in
+            self?.goTo(offset: offset)
         }
-        presentAsSheet(sheet)
+        openGoToForm = form
+        if let goToFormPresenter {
+            goToFormPresenter(form)
+            return
+        }
+        // A window, not a sheet: it holds a list the user manages, and it is
+        // centred over the window it navigates.
+        presentAsModalWindow(form)
+    }
+
+    /// The jump itself (§10.1) — the same act whether the offset was typed or
+    /// picked from the bookmark list.
+    private func goTo(offset: UInt64) {
+        let largerSize = max(windowModel.pane1.fileSize, windowModel.pane2.fileSize)
+        if offset > largerSize {
+            presentAlert(
+                title: "Offset beyond end of file",
+                message: "Offset \(String(format: "0x%X", offset)) is beyond the end of the file(s) (\(String(format: "0x%X", largerSize)) bytes). Moved to the end."
+            )
+        }
+        let target = min(offset, largerSize)
+        if mode == .comparison {
+            // §10.1: move both panes; each clamps to its own EOF.
+            windowModel.pane1.moveCaret(to: target)
+            windowModel.pane2.moveCaret(to: target)
+        } else {
+            activePane.moveCaret(to: target)
+        }
+        // The row has to be where the user is looking, not wherever it happened
+        // to be before the jump (§10.1).
+        activeFilePane?.revealOffsetCentered(target)
+        focusActiveHexView()
     }
 
     @objc func selectBlock() {
@@ -2952,7 +2989,14 @@ final class MainViewController: NSViewController {
         return Self.presentModal(alert, defaultInTest: .alertThirdButtonReturn)  // Cancel in tests
     }
 
+    /// The title of the last informational alert. A modal alert is
+    /// short-circuited under XCTest (see `presentModal`), so this is the only
+    /// trace it leaves — and some of it is behaviour worth pinning, like the
+    /// past-EOF warning a Go To leaves behind (§10.1).
+    private(set) var lastAlertTitle: String?
+
     private func presentAlert(title: String, message: String) {
+        lastAlertTitle = title
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message
@@ -3184,6 +3228,7 @@ extension MainViewController: NSMenuItemValidation {
              #selector(deleteBytes),
              #selector(selectBlock),
              #selector(goToPosition),
+             #selector(showBookmarks),
              #selector(findPattern),
              #selector(selectAllBytes),
              #selector(toggleBookmark):

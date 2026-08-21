@@ -318,6 +318,14 @@ final class MainWindowController: NSWindowController {
         // and is greyed out on a row that carries no mark (§20.3).
         editMenu.addItem(withTitle: "Rename Bookmark…", action: #selector(MainViewController.renameBookmark), keyEquivalent: "D")
         editMenu.addItem(withTitle: "Go To Position…", action: #selector(MainViewController.goToPosition), keyEquivalent: "g")
+        // ⌥⌘B opens the same form as ⌘G with the bookmark list focused (§10.1):
+        // one window answers "go where?", and the two shortcuts differ only in
+        // which half of it the keyboard starts in. ⌘B is the system's Bold, so
+        // the list takes the Option variant.
+        let bookmarksItem = editMenu.addItem(withTitle: "Bookmarks…",
+                                             action: #selector(MainViewController.showBookmarks),
+                                             keyEquivalent: "b")
+        bookmarksItem.keyEquivalentModifierMask = [.command, .option]
         return editMenu
     }
 
