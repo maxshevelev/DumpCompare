@@ -89,15 +89,6 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
     /// The list's height, re-set from the number of bookmarks (§20.5).
     private var tableHeight: NSLayoutConstraint!
 
-    /// The row whose name is being edited, if any — what makes Escape two-level
-    /// (§10.1): it cancels the edit while one is running, and closes the form
-    /// only when none is.
-    private(set) var editingNameRow: Int?
-
-    /// Set while a name edit is being backed out, so the end of the editing
-    /// session it provokes does not write the abandoned text to the store.
-    private var cancellingNameEdit = false
-
     /// How the form closes itself. Replaced in tests: `dismiss` traps on a
     /// controller that was never presented, and what those tests are about is
     /// what the form asks for, not the window it lives in.
@@ -166,7 +157,7 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
         // A root that can claim Escape before the Cancel button's key
         // equivalent does — that is the whole of the two-level Escape (§10.1).
         let contentView = GoToFormView()
-        contentView.escapeHandler = { [weak self] in self?.cancelNameEdit() ?? false }
+        contentView.escapeHandler = { [weak self] in self?.cancelBookmarkEdit() ?? false }
         contentView.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(root)
 
@@ -301,6 +292,9 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
         // A right-click offers the one thing the list does that a key does not
         // announce: ⌫ removes a bookmark, but nothing on screen says so (§20.5).
         let menu = NSMenu()
+        let edit = menu.addItem(withTitle: "Edit Bookmark…",
+                                action: #selector(editClickedBookmark), keyEquivalent: "")
+        edit.target = self
         let remove = menu.addItem(withTitle: "Delete Bookmark",
                                   action: #selector(deleteClickedBookmark), keyEquivalent: "")
         remove.target = self
@@ -460,11 +454,10 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
 
     /// A double click jumps, wherever in the row it lands — a double click
     /// *activates* an item, which here means going to it, the way it opens a file
-    /// in the Finder (§20.5). Renaming is the Finder's gesture too and AppKit's
-    /// own: a click on an already-selected row's name, after the pause that tells
-    /// it from a double click, puts the field editor up. Takes the row and column
-    /// rather than reading `clickedRow` itself, because those are AppKit's to set
-    /// and a test cannot.
+    /// in the Finder (§20.5). Editing a bookmark is a menu command and its own
+    /// popover, so no click in the list has to mean two things. Takes the row and
+    /// column rather than reading `clickedRow` itself, because those are AppKit's
+    /// to set and a test cannot.
     func handleDoubleClick(row: Int, column: Int) {
         guard row >= 0, row < bookmarks.count else { return }
         bookmarkTable.selectRowIndexes([row], byExtendingSelection: false)
@@ -504,6 +497,58 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
         removeBookmark(atRow: bookmarkTable.selectedRow)
     }
 
+    /// The list's context menu > Edit Bookmark…: the same popover the dump's own
+    /// ⇧⌘D opens (§20.3), on the row that was right-clicked. One editor for a
+    /// bookmark, wherever it is edited from — and it can move the bookmark and
+    /// delete it, which an in-place name field could not.
+    @objc func editClickedBookmark() {
+        let clicked = bookmarkTable.clickedRow
+        editBookmark(atRow: clicked >= 0 ? clicked : bookmarkTable.selectedRow)
+    }
+
+    /// Where the edit popover goes. Nil means on the row itself; a test replaces
+    /// it, because a popover anchored in a window that is never on screen closes
+    /// the instant it opens (§20.3 does the same for the dump's).
+    var editPopoverPresenter: ((BookmarkEditPopoverController) -> Void)?
+
+    /// The popover on screen, if any: Escape closes it before it closes the form
+    /// (§10.1), and it must not outlive the bookmark it is editing (§20.3).
+    private weak var openEditPopover: BookmarkEditPopoverController?
+
+    /// Whether a bookmark's editor is up — what Escape's first level acts on.
+    var isEditingBookmark: Bool { openEditPopover != nil }
+
+    private func editBookmark(atRow row: Int) {
+        guard row >= 0, row < bookmarks.count else { return }
+        let bookmark = bookmarks[row]
+        bookmarkTable.selectRowIndexes([row], byExtendingSelection: false)
+        let controller = BookmarkEditPopoverController(
+            row: bookmark.row, existingName: bookmark.name,
+            // One row holds one bookmark (§20.1), so a row already marked is not
+            // a row this one can be given.
+            rowIsFree: { [weak self] row in
+                guard let self else { return true }
+                return store.bookmark(atRowContaining: row) == nil
+            },
+            onCommit: { [weak self] target, name in
+                self?.openEditPopover = nil
+                self?.store.edit(rowContaining: bookmark.row, to: target, name: name)
+                self?.reloadBookmarks()
+            },
+            onCancel: { [weak self] in self?.openEditPopover = nil },
+            onDelete: { [weak self] in
+                self?.openEditPopover = nil
+                self?.store.remove(rowContaining: bookmark.row)
+                self?.reloadBookmarks()
+            })
+        openEditPopover = controller
+        if let editPopoverPresenter {
+            editPopoverPresenter(controller)
+            return
+        }
+        controller.show(relativeTo: bookmarkTable.rect(ofRow: row), of: bookmarkTable)
+    }
+
     /// The list's context menu > Delete Bookmark: the row that was right-clicked
     /// rather than the selected one, the way every context menu in the app acts
     /// on what was clicked (§10.2).
@@ -521,58 +566,16 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
                                        byExtendingSelection: false)
     }
 
-    /// The end of a name edit — Return in the cell, or a click elsewhere:
-    /// whatever is in the field is the name (§20.2 trims it, and an empty name
-    /// means the bookmark shows its address again).
-    @objc func nameEdited(_ sender: NSTextField) {
-        guard !cancellingNameEdit else { return }
-        let row = bookmarkTable.row(for: sender)
-        guard row >= 0, row < bookmarks.count else { return }
-        editingNameRow = nil
-        store.rename(rowContaining: bookmarks[row].row, to: sender.stringValue)
-        reloadBookmarks()
-    }
-
-    /// Records which row's name is being edited, from the field's own report.
-    private func noteNameEditing(_ editing: Bool, in cell: NSTableCellView?) {
-        guard let field = cell?.textField else { return }
-        let row = bookmarkTable.row(for: field)
-        guard row >= 0 else { return }
-        if editing {
-            editingNameRow = row
-        } else if editingNameRow == row {
-            editingNameRow = nil
-        }
-    }
-
-    /// Escape's first level: backs out of a name edit, restoring the name the
-    /// store holds. Returns whether there was an edit to cancel — when there was
-    /// not, Escape falls through to the Cancel button and closes the form, which
-    /// is why editing a name and pressing Escape cannot throw the window away
-    /// (§10.1).
+    /// Escape's first level: closes an open bookmark editor instead of the form,
+    /// leaving the bookmark as it was. Returns whether there was one to close —
+    /// when there was not, Escape falls through to the Cancel button and closes
+    /// the form (§10.1).
     @discardableResult
-    func cancelNameEdit() -> Bool {
-        guard let row = editingNameRow else { return false }
-        editingNameRow = nil
-        cancellingNameEdit = true
-        if row < bookmarks.count,
-           let field = nameField(atRow: row) {
-            field.stringValue = bookmarks[row].name
-        }
-        // Ending the session sends the field's action; the flag above is what
-        // keeps that from writing the abandoned text back.
-        view.window?.makeFirstResponder(bookmarkTable)
-        cancellingNameEdit = false
-        reloadBookmarks()
+    func cancelBookmarkEdit() -> Bool {
+        guard let popover = openEditPopover else { return false }
+        openEditPopover = nil
+        popover.cancel()
         return true
-    }
-
-    /// The editable name field of a laid-out row, if the table has built it.
-    private func nameField(atRow row: Int) -> NSTextField? {
-        let column = columnIndex(ColumnID.name)
-        guard column >= 0 else { return nil }
-        let cell = bookmarkTable.view(atColumn: column, row: row, makeIfNecessary: false)
-        return (cell as? NSTableCellView)?.textField
     }
 
     private func columnIndex(_ identifier: NSUserInterfaceItemIdentifier) -> Int {
@@ -591,7 +594,7 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
         switch tableColumn.identifier {
         case ColumnID.offset:
             let cell = (tableView.makeView(withIdentifier: ColumnID.offset, owner: self) as? BookmarkCellView)
-                ?? BookmarkCellView(identifier: ColumnID.offset, editable: false)
+                ?? BookmarkCellView(identifier: ColumnID.offset)
             // The dump's own address shape and colour (§6), so a row in the list
             // reads as the row it points at.
             cell.textField?.font = AppearanceSettings.font(size: 12)
@@ -603,15 +606,7 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
             return cell
         case ColumnID.name:
             let cell = (tableView.makeView(withIdentifier: ColumnID.name, owner: self) as? BookmarkCellView)
-                ?? BookmarkCellView(identifier: ColumnID.name, editable: true)
-            cell.textField?.target = self
-            cell.textField?.action = #selector(nameEdited(_:))
-            // The edit is started by AppKit, not by us (§20.5), so the row being
-            // edited is learnt from the field rather than set before it — that is
-            // what Escape's first level needs to know (§10.1).
-            cell.onEditingStateChange = { [weak self, weak cell] editing in
-                self?.noteNameEditing(editing, in: cell)
-            }
+                ?? BookmarkCellView(identifier: ColumnID.name)
             cell.textField?.stringValue = bookmark.name
             cell.restingTextColor = .labelColor
             // An unnamed bookmark is described by what is AT it: the row's bytes
@@ -738,24 +733,6 @@ private final class BookmarkTableView: NSTableView {
 
 /// One cell of the list: a label that fills the cell, editable in the Name
 /// column so a double click renames the bookmark where it is listed (§20.5).
-/// The label a cell draws its value in: an editable one reports when it takes
-/// and gives up the keyboard, so the cell can colour it for the field editor's
-/// white background rather than for the row it sits on.
-private final class EditableLabel: NSTextField {
-    var onEditingChange: ((Bool) -> Void)?
-
-    override func becomeFirstResponder() -> Bool {
-        let accepted = super.becomeFirstResponder()
-        if accepted { onEditingChange?(true) }
-        return accepted
-    }
-
-    override func textDidEndEditing(_ notification: Notification) {
-        super.textDidEndEditing(notification)
-        onEditingChange?(false)
-    }
-}
-
 private final class BookmarkCellView: NSTableCellView {
     /// The label's inset from each side of the cell. Read by the address
     /// column's sizing, so the room a value gets and the width it is measured at
@@ -782,16 +759,8 @@ private final class BookmarkCellView: NSTableCellView {
         didSet { applyBackgroundStyle() }
     }
 
-    /// True while the cell's name is being edited. The field editor draws its own
-    /// white background over the row, so the text has to go back to its resting
-    /// colour there — a selected row's white-on-selection text would be white on
-    /// white, and the name would vanish as it was typed (§20.5).
-    private var isEditing = false {
-        didSet { applyBackgroundStyle() }
-    }
-
     private func applyBackgroundStyle() {
-        let selected = backgroundStyle == .emphasized && !isEditing
+        let selected = backgroundStyle == .emphasized
         textField?.textColor = selected ? .alternateSelectedControlTextColor : restingTextColor
         guard let placeholder = restingPlaceholder else {
             textField?.placeholderAttributedString = nil
@@ -810,29 +779,20 @@ private final class BookmarkCellView: NSTableCellView {
         textField?.placeholderAttributedString = tinted
     }
 
-    /// Reported when the cell's label takes or gives up the keyboard, so the
-    /// form can follow an edit AppKit started (§20.5).
-    var onEditingStateChange: ((Bool) -> Void)?
-
-    init(identifier: NSUserInterfaceItemIdentifier, editable: Bool) {
+    init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
         self.identifier = identifier
 
-        let field = EditableLabel(labelWithString: "")
-        field.onEditingChange = { [weak self] editing in
-            self?.isEditing = editing
-            self?.onEditingStateChange?(editing)
-        }
+        // A label, not a field: a bookmark is edited in its own popover (§20.3),
+        // so nothing in the list takes the keyboard and every click in it means
+        // one thing — select the row, or activate it on a double click.
+        let field = NSTextField(labelWithString: "")
         field.font = .systemFont(ofSize: 12)
         field.usesSingleLineMode = true
         field.lineBreakMode = .byTruncatingTail
-        field.isEditable = editable
-        field.isSelectable = editable
+        field.isSelectable = false
         field.isBordered = false
         field.drawsBackground = false
-        // A name typed here is committed by Return and by clicking away; the
-        // form's Escape puts the stored name back before the session ends.
-        field.cell?.sendsActionOnEndEditing = true
         field.translatesAutoresizingMaskIntoConstraints = false
         addSubview(field)
         textField = field

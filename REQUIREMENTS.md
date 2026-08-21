@@ -1836,14 +1836,18 @@ window, so nothing about a bookmark lives in two places.
   there too, so the mouse needs no detour to the keyboard. Both dismiss the form
   and behave exactly as a typed offset does (§10.1): both panes of a comparison
   move, because a bookmark is an absolute offset (§8).
-- **A name is renamed the way the Finder renames a file**: a click on the name of
-  an already-selected row, after the pause that tells it from a double click, puts
-  the field editor up. That is AppKit's own behaviour for an editable field in a
-  view-based table, and nothing in the form intercepts it — a double click stays
-  what a double click is everywhere on macOS: *activate the item*, which here
-  means go to it, wherever in the row it lands. Whoever starts the edit, the form
-  learns which row it is from the field itself, because that is what Escape's
-  first level acts on (§10.1). Return commits the name, a click elsewhere commits it too, and Escape
+- **A bookmark is edited in its own popover**, opened from the row's context menu
+  (*Edit Bookmark…*) — the same popover ⇧⌘D opens on a mark in the dump (§20.3).
+  One editor for a bookmark wherever it is edited from, and it can do what a name
+  field in a row could not: change the address, and delete the bookmark. The list
+  itself holds no editable fields, so every click in it means one thing — select
+  the row, or, on a double click, activate it.
+- Nothing in the list is renamed in place. A field inside a table row is edited by
+  a click on an already-selected row, which collides with the double click that
+  activates it, and it can only ever edit the one column it sits in. Sending the
+  gesture to a menu command and the popover keeps both jobs whole.
+- **Escape closes the editor before it closes the form**: editing a bookmark and
+  pressing Escape must not throw the window away (§10.1). Return commits the name, a click elsewhere commits it too, and Escape
   restores the name the store holds without closing the form (§10.1).
 - **⌫** removes the selected bookmark. The selection stays where it was, so a run
   of them can be cleared without reaching for the mouse between presses;

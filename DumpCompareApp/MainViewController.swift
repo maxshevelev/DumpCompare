@@ -2529,13 +2529,7 @@ final class MainViewController: NSViewController {
     /// arrives on the new one named, rather than being removed and re-made, so
     /// nothing in between sees a bookmark without its name (§20.3).
     private func applyBookmarkEdit(from row: UInt64, to target: UInt64, name: String) {
-        let store = windowModel.bookmarkStore
-        guard target != row else {
-            store.rename(rowContaining: row, to: name)
-            return
-        }
-        store.remove(rowContaining: row)
-        store.add(rowContaining: target, name: name)
+        windowModel.bookmarkStore.edit(rowContaining: row, to: target, name: name)
     }
 
     /// A request to edit a bookmark: which row, in which pane, the name it

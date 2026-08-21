@@ -443,21 +443,31 @@ map rebuild. Where it differs from the sketch above:
 **Done when** clicking an arrow in the overview of a 16 MB file lands on the
 bookmark's row rather than a few rows off.
 
-### Corrected after stage 3 — renaming in the list is the Finder's gesture
+### Corrected after stage 3 — the list does not edit names in place
 
-The plan had a double click on a name start an in-place edit. That is not the
-platform's behaviour and it cost two hacks to hold up: the cell's field had to
-stop swallowing clicks (or the edit opened only on a force click over an empty
-name, where the row preview shows), and the double click then meant two different
-things depending on which column it landed in.
+The plan had a double click on a name start an in-place edit. Getting there took
+two attempts and neither was the platform's behaviour:
 
-What AppKit already does for an editable field in a view-based table is the
-Finder's rule: a click on an **already-selected** row's name, after the pause that
-distinguishes it from a double click, opens the field editor. So the hacks are
-gone, a double click activates the row wherever it lands — go to the bookmark, as
-a double click opens a file — and the form learns which row is being edited from
-the field's own report rather than by starting the edit itself, which is all
-Escape's first level needed.
+1. Making the double click work meant stopping the cell's field from swallowing
+   clicks — otherwise the edit opened only on a *force* click over an empty name
+   (where the row preview shows). And a double click then meant two things
+   depending on which column it landed in.
+2. Handing the gesture back to AppKit (a click on an already-selected row's name)
+   turned out not to be the Finder's rule either: `NSTableView` has no timing in
+   it at all — the Finder's click-pause-click is the Finder's own doing. What is
+   left is a bare `validateProposedFirstResponder` decision, and a click that
+   sometimes edits and sometimes selects.
+
+So the list holds no editable fields at all. A bookmark is edited in **its own
+popover** — the same `BookmarkEditPopoverController` ⇧⌘D opens in the dump —
+reached from the row's context menu (*Edit Bookmark…*), which can also change the
+address and delete the bookmark; a name field in a row could do neither. Every
+click in the list now means one thing, Return and a double click both go to the
+bookmark, and Escape closes the editor before it closes the form.
+
+The store gained `edit(rowContaining:to:name:)` so both editors — the dump's and
+the list's — apply an edit the same way, moving the bookmark rather than removing
+and re-making it.
 
 ### Added after stage 3 — editing a bookmark's address
 

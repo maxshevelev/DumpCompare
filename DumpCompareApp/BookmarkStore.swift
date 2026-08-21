@@ -133,6 +133,25 @@ final class BookmarkStore {
         return true
     }
 
+    /// Applies an edit from the edit popover (§20.3): the bookmark on the row
+    /// containing `from` takes `name`, and moves to the row containing `to` when
+    /// that is a different row. Moved rather than removed and re-made, so it is
+    /// never in the list without its name. Returns the bookmark as it now is, or
+    /// nil when `from` carries none.
+    ///
+    /// The target row is taken as given: the popover only offers rows that are
+    /// free (§20.1), which is a question about the whole list and so is asked
+    /// before the edit, not during it.
+    @discardableResult
+    func edit(rowContaining from: UInt64, to target: UInt64, name: String) -> Bookmark? {
+        let fromRow = Self.row(containing: from)
+        let toRow = Self.row(containing: target)
+        guard bookmarks.contains(where: { $0.row == fromRow }) else { return nil }
+        guard toRow != fromRow else { return rename(rowContaining: fromRow, to: name) }
+        remove(rowContaining: fromRow)
+        return add(rowContaining: toRow, name: name)
+    }
+
     /// Moves the bookmark on the row containing `from` to the row containing
     /// `to`, keeping its name, and returns the row it ended on — nil when there
     /// was nothing to move, nowhere to move it, or the move was refused.

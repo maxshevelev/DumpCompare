@@ -264,8 +264,8 @@ final class GoToBookmarksTests: XCTestCase {
 
     /// A double click on the name jumps as well: a double click activates the
     /// item, wherever in the row it lands, the way it opens a file in the Finder.
-    /// Renaming is the Finder's other gesture — a click on an already-selected
-    /// row's name — and AppKit puts the field editor up for it itself (§20.5).
+    /// Editing a bookmark is a menu command and its own popover, so no click in
+    /// the list means two things (§20.5).
     func testADoubleClickOnANameJumpsToo() {
         let (form, _, jumps, closes) = makeForm(rows: [0x10: "EC table"])
 
@@ -273,37 +273,97 @@ final class GoToBookmarksTests: XCTestCase {
 
         XCTAssertEqual(jumps(), [0x10])
         XCTAssertEqual(closes(), 1)
-        XCTAssertNil(form.editingNameRow, "a double click never starts an edit")
+        XCTAssertFalse(form.isEditingBookmark, "a double click never opens the editor")
     }
 
-    /// The name cell is a plain editable field, which is what lets AppKit start
-    /// the edit on a click into an already-selected row: nothing in the form
-    /// intercepts those clicks, named or unnamed.
-    func testTheNameCellIsEditableInPlace() throws {
-        for name in ["EC table", ""] {
-            let (form, _, _, _) = makeForm(rows: [0x10: name])
-            let field = try nameField(form, row: 0)
+    /// Nothing in the list takes the keyboard: the name is a label, not a field,
+    /// so a click on it selects the row like a click anywhere else in it.
+    func testTheListHoldsNoEditableFields() throws {
+        let (form, _, _, _) = makeForm(rows: [0x10: "EC table", 0x20: ""])
 
-            XCTAssertTrue(field.isEditable, "name '\(name)' can be edited in place")
-            let middle = NSPoint(x: field.bounds.midX, y: field.bounds.midY)
-            XCTAssertNotNil(field.hitTest(middle),
-                            "and the field takes the click AppKit needs to see")
+        for row in 0..<2 {
+            let field = try nameField(form, row: row)
+            XCTAssertFalse(field.isEditable, "row \(row)'s name is a label")
+            XCTAssertFalse(field.isSelectable)
         }
     }
 
-    /// Whoever starts the edit, the form learns which row it is — that is what
-    /// Escape's first level acts on (§10.1).
-    func testTheFormFollowsAnEditItDidNotStart() throws {
-        let (form, _, _, _) = makeForm(rows: [0x10: "EC table"])
-        let window = try XCTUnwrap(form.view.window)
-        let field = try nameField(form, row: 0)
-        XCTAssertNil(form.editingNameRow)
+    // MARK: - Editing from the list (§20.5)
 
-        window.makeFirstResponder(field)
-        XCTAssertEqual(form.editingNameRow, 0, "the field reported the edit")
+    /// The list's Edit Bookmark… opens the same popover the dump's ⇧⌘D opens
+    /// (§20.3) — one editor for a bookmark, wherever it is edited from, and it can
+    /// move the bookmark and delete it, which a name field in the list could not.
+    func testTheListEditsABookmarkInThePopover() throws {
+        let (form, store, jumps, closes) = makeForm(rows: [0x10: "EC table", 0x20: ""])
+        var presented: [BookmarkEditPopoverController] = []
+        form.editPopoverPresenter = { presented.append($0) }
+        let menu = try XCTUnwrap(form.bookmarkTable.menu)
+        let edit = try XCTUnwrap(menu.items.first { $0.title == "Edit Bookmark…" })
+        XCTAssertEqual(edit.action, #selector(GoToBookmarksController.editClickedBookmark))
+        XCTAssertTrue(edit.target === form)
 
-        window.makeFirstResponder(form.bookmarkTable)
-        XCTAssertNil(form.editingNameRow, "and reported its end")
+        form.bookmarkTable.selectRowIndexes([0], byExtendingSelection: false)
+        form.editClickedBookmark()
+
+        let popover = try XCTUnwrap(presented.first, "the editor opened")
+        popover.loadViewIfNeeded()
+        XCTAssertEqual(popover.row, 0x10)
+        XCTAssertEqual(popover.nameField.stringValue, "EC table",
+                       "on the right bookmark, with its name")
+        XCTAssertTrue(form.isEditingBookmark)
+        XCTAssertTrue(jumps().isEmpty, "editing is not going")
+        XCTAssertEqual(closes(), 0, "and the form stays up behind it")
+
+        popover.nameField.stringValue = "descriptor"
+        popover.offsetField.stringValue = "0x40"
+        popover.commit()
+
+        XCTAssertEqual(store.bookmarks, [Bookmark(row: 0x20, name: ""),
+                                         Bookmark(row: 0x40, name: "descriptor")],
+                       "committing moves and renames the one bookmark")
+        XCTAssertEqual(form.bookmarks.map(\.row), [0x20, 0x40], "and the list followed")
+        XCTAssertFalse(form.isEditingBookmark)
+    }
+
+    /// Its Delete removes the bookmark from the list too.
+    func testDeletingFromThePopoverRemovesTheRow() throws {
+        let (form, store, _, _) = makeForm(rows: [0x10: "EC table", 0x20: ""])
+        var presented: [BookmarkEditPopoverController] = []
+        form.editPopoverPresenter = { presented.append($0) }
+        form.bookmarkTable.selectRowIndexes([0], byExtendingSelection: false)
+        form.editClickedBookmark()
+        let popover = try XCTUnwrap(presented.first)
+        popover.loadViewIfNeeded()
+
+        popover.deletePressed()
+
+        XCTAssertEqual(store.bookmarks.map(\.row), [0x20])
+        XCTAssertEqual(form.bookmarks.map(\.row), [0x20])
+        XCTAssertFalse(form.isEditingBookmark)
+    }
+
+    /// Escape closes the editor before it closes the form: editing a bookmark and
+    /// pressing Escape must not throw the window away (§10.1).
+    func testEscapeClosesTheEditorFirstAndTheFormSecond() throws {
+        let (form, store, _, closes) = makeForm(rows: [0x10: "EC table"])
+        var presented: [BookmarkEditPopoverController] = []
+        form.editPopoverPresenter = { presented.append($0) }
+        form.bookmarkTable.selectRowIndexes([0], byExtendingSelection: false)
+        form.editClickedBookmark()
+        let popover = try XCTUnwrap(presented.first)
+        popover.loadViewIfNeeded()
+        popover.nameField.stringValue = "half-typed"
+
+        let escape = try keyDown("\u{1B}", keyCode: 53)
+        XCTAssertTrue(form.view.performKeyEquivalent(with: escape),
+                      "the form claims Escape while the editor is up")
+        XCTAssertEqual(store.bookmarks, [Bookmark(row: 0x10, name: "EC table")],
+                       "the abandoned text is not written")
+        XCTAssertFalse(form.isEditingBookmark)
+        XCTAssertEqual(closes(), 0, "the form is still up")
+
+        _ = form.view.performKeyEquivalent(with: escape)
+        XCTAssertEqual(closes(), 1, "and the next Escape closes it")
     }
 
     // MARK: - Managing the list (§20.5)
@@ -359,20 +419,6 @@ final class GoToBookmarksTests: XCTestCase {
         let cell = form.bookmarkTable.view(atColumn: form.nameColumnIndex, row: row,
                                            makeIfNecessary: true)
         return try XCTUnwrap((cell as? NSTableCellView)?.textField)
-    }
-
-    func testANameEditedInTheListRenamesTheBookmark() throws {
-        let (form, store, _, _) = makeForm(rows: [0x10: "old"])
-        let field = try nameField(form, row: 0)
-        XCTAssertEqual(field.stringValue, "old")
-        XCTAssertTrue(field.isEditable, "the name is edited where it is listed")
-
-        field.stringValue = "  EC table  "
-        form.nameEdited(field)
-
-        XCTAssertEqual(store.bookmarks, [Bookmark(row: 0x10, name: "EC table")],
-                       "§20.2 trims the name")
-        XCTAssertNil(form.editingNameRow)
     }
 
     /// An unnamed bookmark is described by what is AT it — the row's bytes as
@@ -539,36 +585,12 @@ final class GoToBookmarksTests: XCTestCase {
                              "more rows, a taller window")
     }
 
-    /// A name being edited is drawn on the field editor's own white background,
-    /// so it goes back to its resting colour there: a selected row's
-    /// white-on-selection text would be white on white, and the name would
-    /// vanish as it was typed.
-    func testANameBeingEditedIsNotWhiteOnWhite() throws {
-        let (form, _, _, _) = makeForm(rows: [0x10: "EC table"])
-        let window = try XCTUnwrap(form.view.window)
-        let cell = try XCTUnwrap(form.bookmarkTable.view(atColumn: form.nameColumnIndex, row: 0,
-                                                         makeIfNecessary: true) as? NSTableCellView)
-        let field = try XCTUnwrap(cell.textField)
-        cell.backgroundStyle = .emphasized
-        XCTAssertEqual(field.textColor, .alternateSelectedControlTextColor,
-                       "a selected row's name reads as text on the selection")
-
-        window.makeFirstResponder(field)
-        XCTAssertEqual(field.textColor, .labelColor,
-                       "being edited, it is text on the editor's white instead")
-
-        window.makeFirstResponder(form.bookmarkTable)
-        XCTAssertEqual(field.textColor, .alternateSelectedControlTextColor,
-                       "and once the edit ends it belongs to the row again")
-    }
-
     /// The list's right-click menu removes a bookmark: ⌫ does it too, but nothing
     /// on screen says so (§20.5).
     func testTheListsContextMenuDeletesABookmark() throws {
         let (form, store, jumps, closes) = makeForm(rows: [0x10: "", 0x20: "", 0x30: ""])
         let menu = try XCTUnwrap(form.bookmarkTable.menu, "the list has a context menu")
-        let item = try XCTUnwrap(menu.items.first)
-        XCTAssertEqual(item.title, "Delete Bookmark")
+        let item = try XCTUnwrap(menu.items.first { $0.title == "Delete Bookmark" })
         XCTAssertEqual(item.action, #selector(GoToBookmarksController.deleteClickedBookmark))
         XCTAssertTrue(item.target === form)
 
@@ -594,26 +616,6 @@ final class GoToBookmarksTests: XCTestCase {
     }
 
     // MARK: - Escape is two-level (§10.1)
-
-    /// Editing a name and pressing Escape must not throw the window away.
-    func testEscapeDuringANameEditCancelsTheEditAndKeepsTheForm() throws {
-        let (form, store, _, closes) = makeForm(rows: [0x10: "EC table"])
-        let window = try XCTUnwrap(form.view.window)
-        let field = try nameField(form, row: 0)
-        window.makeFirstResponder(field)   // as a click into the selected row does
-        field.stringValue = "half-typed"
-
-        let escape = try keyDown("\u{1B}", keyCode: 53)
-        XCTAssertTrue(form.view.performKeyEquivalent(with: escape),
-                      "the form claims Escape while a name is being edited")
-
-        XCTAssertEqual(store.bookmarks, [Bookmark(row: 0x10, name: "EC table")],
-                       "the abandoned text is not written to the store")
-        XCTAssertNil(form.editingNameRow)
-        XCTAssertEqual(closes(), 0, "the form is still up")
-        XCTAssertEqual(try nameField(form, row: 0).stringValue, "EC table",
-                       "the cell shows the name the store holds again")
-    }
 
     /// With no edit running, the same key closes the form — that is the Cancel
     /// button's key equivalent doing its ordinary job.
