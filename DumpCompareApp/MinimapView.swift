@@ -577,10 +577,13 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         invalidate(maps.indices.compactMap { bookmarkMargin(forMapAt: $0)?.strip })
     }
 
-    /// The base of a bookmark's mark. Smaller than the viewport marker's
-    /// (`viewportMarkerSide`) because the two can share a margin and the viewport
-    /// is the one the eye should find first. Internal so tests can sample a mark.
-    static let bookmarkMarkSide: CGFloat = 6
+    /// The base of a bookmark's mark. Still smaller than the viewport marker's
+    /// (`viewportMarkerSide`) — the two can share a margin and the viewport is the
+    /// one the eye should find first — but a point wider than it first was: at 6 pt
+    /// the arrow read as a speck beside the purple slab in the dump's gutter. The
+    /// base is what grows, so the triangle stays equilateral and its reach across
+    /// the margin grows with it. Internal so tests can sample a mark.
+    static let bookmarkMarkSide: CGFloat = 7
 
     /// The strip a map's bookmark marks are drawn in, and which way they point.
     ///
