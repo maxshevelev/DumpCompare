@@ -109,6 +109,52 @@ layering rule and §11 for the search behaviour.
 are most of it, and the visible-window scan wants a test that a match straddling
 the window's edge is still highlighted.
 
+### Navigation history — back and forward through the file
+
+**What.** A stack of the places the caret has been *sent*, and two commands to
+walk it: Back and Forward. Every jump the app makes on the user's behalf — a typed
+offset (§10.1), a bookmark, a difference (§10.3), a search result, a click on the
+minimap — records where it came from, so returning is one keystroke instead of
+remembering an address.
+
+**Why.** Reading a dump is a series of excursions: you are looking at the EC table,
+a difference three megabytes away catches your eye, you go and look — and then you
+want *back*, exactly back, not "roughly where I was". Bookmarks answer the planned
+version of this (a place worth returning to more than once); history answers the
+unplanned one, which is most of them.
+
+**How.** A small pure model — `NavigationHistory`: a back stack, a forward stack, a
+cap (50 is plenty), and the rule that walking the history does not itself record
+anything. AppKit-free and byte-free, so it is unit-testable the way `BookmarkStore`
+is.
+
+The interesting decision is **what counts as a jump**, and the answer that keeps
+this honest is *only what already goes through one place*: `MainViewController`'s
+`goTo(offset:)` and the other explicit reveals (diff navigation, a search result,
+a minimap click). Arrow keys and scrolling must not record — a history that fills
+up as the caret walks a row at a time is a history nobody can use. If that turns
+out to be too strict in practice, the next rule to try is "record when the new
+position is more than a screenful from the last recorded one", not "record
+everything and coalesce".
+
+It lives on `WindowViewModel`, not on a pane: a jump moves *both* panes of a
+comparison (§10.1), so the position it records is one absolute offset, and Back
+puts both panes back.
+
+Commands and keys: **Back** and **Forward**, probably in a Navigate menu with the
+diff-navigation commands. Xcode uses ⌃⌘← / ⌃⌘→ for exactly this, Safari ⌘[ / ⌘];
+one has to be picked, and the arrows read better next to the diff navigation's own
+⌥⌘←/→. Disabled when the stack is empty, like every other navigation command.
+
+**Touches.** `WindowViewModel` (the history), `MainViewController` (recording at
+the jump, the two commands, menu validation), `MainWindowController` (the menu),
+and §10 for a new subsection.
+
+**Cost.** 4–6 hours. The model and its tests are quick; the judgement is all in
+what records and what does not, and that is where the tests should be pointed —
+a jump records, an arrow key does not, walking back does not record, a new jump
+clears the forward stack.
+
 ---
 
 ## Later
