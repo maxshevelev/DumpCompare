@@ -189,6 +189,20 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// row's start offset — the mouse gesture for marking a row (§20.3).
     var onOffsetDoubleClick: ((UInt64) -> Void)?
 
+    /// Asks for the bookmark on row `from` to be moved to row `to`, with `lastRow`
+    /// the last row this view draws — the far edge a mark may be dragged to
+    /// (§20.6). Returns the row the mark actually landed on, which is not always
+    /// `to`: a row another bookmark holds is jumped over, and a mark with nowhere
+    /// to go stays where it is (nil). The view drags the mark by the answer, so a
+    /// refused step leaves the pointer running ahead of a mark that stopped.
+    var onBookmarkDrag: ((_ from: UInt64, _ to: UInt64, _ lastRow: UInt64) -> UInt64?)?
+
+    /// The row of the mark being dragged, updated as it moves (§20.6). Non-nil
+    /// for the whole gesture, so a drag that started on a mark moves that mark
+    /// instead of extending a selection — including from the autoscroll timer's
+    /// ticks, which is what lets a mark be dragged past the visible edge.
+    private var draggingBookmarkRow: UInt64?
+
     /// Ideal width of the hex grid (offset column + hex + ASCII). The window
     /// delegate uses this to zoom-to-fit (§3.1) instead of zooming to max.
     var hexContentWidth: CGFloat { currentLayout.contentWidth }
@@ -1773,13 +1787,20 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// document runs out (§6). Internal (not private) so tests can drive a tick
     /// synchronously without spinning the run loop.
     func performDragAutoscrollTick() {
-        guard let last = lastDragPoint, dragEngaged else {
+        // A mark's drag engages on the press itself (there is no dead zone to
+        // leave: it moves only when the pointer reaches another row), so it does
+        // not wait for `dragEngaged` the way a selection does.
+        guard let last = lastDragPoint, dragEngaged || draggingBookmarkRow != nil else {
             stopDragAutoscroll()
             return
         }
         let point = convert(last, from: nil)
         let effective = dragAutoscrollStep(at: point)
-        extendDragSelection(at: effective)
+        if draggingBookmarkRow != nil {
+            moveDraggedBookmark(to: effective)
+        } else {
+            extendDragSelection(at: effective)
+        }
         // Re-convert after the scroll step: a held pointer's document
         // coordinate advances with the scroll (its screen position stays put,
         // so the content scrolls past it), keeping the overshoot constant. The
@@ -1810,6 +1831,14 @@ final class HexView: NSView, NSViewToolTipOwner {
             return
         }
         mouseDownLocation = convert(event.locationInWindow, from: nil)
+        // Pressing on a mark takes hold of it: the drag that follows moves the
+        // bookmark (§20.6). The press still places the caret, so a press and
+        // release on an address is the click it has always been — only a press
+        // that then travels to another row moves anything.
+        draggingBookmarkRow = bookmarkMarkRow(at: mouseDownLocation ?? .zero)
+        if draggingBookmarkRow != nil {
+            NSCursor.closedHand.push()
+        }
         // A shift-click extends immediately; an unmodified click needs to leave
         // the dead zone before the selection engages.
         dragEngaged = event.modifierFlags.contains(.shift)
@@ -1817,6 +1846,16 @@ final class HexView: NSView, NSViewToolTipOwner {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if draggingBookmarkRow != nil {
+            lastDragPoint = event.locationInWindow
+            // The same autoscroll the selection uses (§6): a mark dragged past
+            // the visible edge scrolls the pane, and the timer keeps it going
+            // while the pointer is held there.
+            let effective = dragAutoscrollStep(at: convert(event.locationInWindow, from: nil))
+            moveDraggedBookmark(to: effective)
+            updateDragAutoscrollTimer(at: convert(event.locationInWindow, from: nil))
+            return
+        }
         if !dragEngaged {
             let point = convert(event.locationInWindow, from: nil)
             if let origin = mouseDownLocation, !dragHasLeftDeadZone(from: origin, to: point) {
@@ -1841,7 +1880,43 @@ final class HexView: NSView, NSViewToolTipOwner {
         mouseDownLocation = nil
         lastDragPoint = nil
         dragEngaged = false
+        if draggingBookmarkRow != nil {
+            draggingBookmarkRow = nil
+            NSCursor.pop()
+        }
         super.mouseUp(with: event)
+    }
+
+    /// The bookmarked row whose mark is under `point`, if any. The mark fills its
+    /// row's Offset column (§20.4), so a press anywhere on that address is a
+    /// press on the mark — there is nothing else drawn there to hit.
+    private func bookmarkMarkRow(at point: CGPoint) -> UInt64? {
+        guard let offset = offsetColumnOffset(at: point),
+              dataSource?.hexBookmark(atRowContaining: offset) != nil else { return nil }
+        return offset
+    }
+
+    /// One step of a mark's drag: the row under the pointer, clamped to the rows
+    /// this view actually draws. The mark follows the answer rather than the
+    /// pointer — a row another bookmark holds is jumped over, and a mark that
+    /// cannot move stays put while the pointer runs on (§20.6).
+    private func moveDraggedBookmark(to point: CGPoint) {
+        guard let from = draggingBookmarkRow, let dataSource, let onBookmarkDrag else { return }
+        let layout = currentLayout
+        let fileSize = dataSource.fileSize
+        guard fileSize > 0, layout.rowHeight > 0 else { return }
+        // The rows that hold bytes: the caret row past a file whose length is a
+        // multiple of 16 is not a row a bookmark belongs on. The far end is the
+        // store's to enforce (it is handed `lastRow` below); the near end is
+        // this view's, because a pointer above the first row gives a negative
+        // row index and there is no such offset.
+        let lastDataRow = layout.rowColumn(of: fileSize - 1).row
+        let row = max(0, Int(floor(point.y / layout.rowHeight)))
+        let target = layout.byteOffset(row: row, column: 0)
+        guard target != from else { return }
+        if let landed = onBookmarkDrag(from, target, layout.byteOffset(row: lastDataRow, column: 0)) {
+            draggingBookmarkRow = landed
+        }
     }
 
     /// What a right-click in the dump anchors the context menu to (§10.2).

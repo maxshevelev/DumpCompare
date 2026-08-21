@@ -133,6 +133,81 @@ final class BookmarkStore {
         return true
     }
 
+    /// Moves the bookmark on the row containing `from` to the row containing
+    /// `to`, keeping its name, and returns the row it ended on — nil when there
+    /// was nothing to move, nowhere to move it, or the move was refused.
+    ///
+    /// One row holds at most one bookmark (§20.1), so a target another bookmark
+    /// already holds is **jumped over**: the search carries on in the direction
+    /// of travel to the first free row, which is what makes dragging a mark
+    /// through a marked row feel like one mark sliding past another rather than
+    /// two merging. When there is no free row beyond the obstacle — occupied all
+    /// the way to `lastRow` going down, or to row 0 going up — the mark instead
+    /// **stops before it**, on the last free row on the way there: a mark may
+    /// neither leave the file to find room nor swallow the bookmark in its way,
+    /// but it should still travel as far as the pointer took it. Only when even
+    /// that room is missing (the obstacle sits right next to where the mark
+    /// started) does nothing move.
+    ///
+    /// `lastRow` comes from the view, not from a file size held here: the last
+    /// row a mark may be dragged to is the last row that pane draws (§9), and
+    /// only the view knows that.
+    @discardableResult
+    func move(rowContaining from: UInt64, to: UInt64, lastRow: UInt64) -> UInt64? {
+        let fromRow = Self.row(containing: from)
+        guard let index = bookmarks.firstIndex(where: { $0.row == fromRow }) else { return nil }
+        let limit = Self.row(containing: lastRow)
+        let target = min(Self.row(containing: to), limit)
+        guard target != fromRow else { return nil }
+        guard let landing = freeRow(near: target, from: fromRow, limit: limit) else { return nil }
+
+        let moved = Bookmark(row: landing, name: bookmarks[index].name)
+        bookmarks.remove(at: index)
+        bookmarks.insert(moved, at: insertionIndex(for: landing))
+        // Both rows changed: the one the mark left and the one it landed on.
+        onChange?(fromRow)
+        onChange?(landing)
+        return landing
+    }
+
+    /// Where a mark travelling from `from` toward `target` can actually land:
+    /// `target` itself when free; else the first free row beyond the bookmarks
+    /// blocking it, in the direction of travel and within `0...limit`; else the
+    /// last free row before them, on the way back toward `from`. Nil when the
+    /// obstacle leaves no room at all — `from`'s own row does not count, since
+    /// staying put is not moving.
+    private func freeRow(near target: UInt64, from: UInt64, limit: UInt64) -> UInt64? {
+        let step = UInt64(HexLayout.bytesPerRow)
+        let descending = target > from
+        func isFree(_ row: UInt64) -> Bool { !bookmarks.contains { $0.row == row } }
+
+        var row = target
+        while !isFree(row) {
+            if descending {
+                guard row + step <= limit else { return lastFreeRow(before: target, from: from) }
+                row += step
+            } else {
+                guard row >= step else { return lastFreeRow(before: target, from: from) }
+                row -= step
+            }
+        }
+        return row
+    }
+
+    /// Walking back from `target` toward `from`, the first free row — where a
+    /// mark stops when the way past the obstacle is closed.
+    private func lastFreeRow(before target: UInt64, from: UInt64) -> UInt64? {
+        let step = UInt64(HexLayout.bytesPerRow)
+        let descending = target > from
+        var row = target
+        while row != from {
+            row = descending ? row - step : row + step
+            guard row != from else { return nil }
+            if !bookmarks.contains(where: { $0.row == row }) { return row }
+        }
+        return nil
+    }
+
     /// Where `row` belongs in the list, which is kept sorted by row.
     private func insertionIndex(for row: UInt64) -> Int {
         bookmarks.firstIndex { $0.row > row } ?? bookmarks.endIndex

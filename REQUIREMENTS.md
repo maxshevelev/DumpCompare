@@ -1621,6 +1621,11 @@ height in both, which is the whole point of it in a comparison.
   that exists, and remove one — each reporting what it found, so a caller never
   has to read the list first, and each firing the same change signal, so a name
   typed in a dialog shows up without anything else repainting the row.
+- It can also move a mark to another row, keeping its name and reporting the row
+  it ended on — which is not always the row asked for: the store owns the
+  one-bookmark-per-row rule, so it is the store that decides where a mark dragged
+  onto an occupied row lands (§20.6). The far row it may not pass comes from the
+  caller, because how far a pane reaches is the view's knowledge, not the list's.
 - Names are stored trimmed of surrounding whitespace, and a name that is nothing
   but whitespace is no name — so the "empty means show the address" rule cannot
   be defeated by a space.
@@ -1762,3 +1767,40 @@ window, so nothing about a bookmark lives in two places.
 A toolbar button belongs here too, but the toolbar's composition — and this
 item's icon — is a separate question, left for when the toolbar is filled out as
 a whole.
+
+20.6 Moving a mark
+
+A mark can be dragged to another row: press and hold on it, and the bookmark
+follows the pointer row by row until the button is released. It is the same act
+as marking the right row in the first place, done a second time — a dump gets
+read before it is understood, and a mark often turns out to belong a few rows
+from where it was put. Dragging it there beats removing it and marking again,
+which would lose its name.
+
+- The mark is grabbed by pressing anywhere on its row's address: the mark fills
+  that column (§20.4), so there is nothing else there to hit. The press also
+  places the caret, as a press on an address always has — only a press that then
+  travels to another row moves anything, so a click stays a click.
+- The bookmark moves as the pointer crosses each row, not on release: what the
+  drag is doing is visible while it is done, and the name travels with the mark.
+- A drag pushed past the visible top or bottom edge autoscrolls the pane exactly
+  as a drag selection does (§6), and the mark keeps moving while the pane scrolls
+  — that is what makes it possible to drag a mark somewhere off screen.
+- A drag inside the Offset column is never a selection, and a drag from an
+  address that carries no mark is still the selection it has always been. The
+  gesture belongs to the mark, not to the column.
+- **One row holds one bookmark** (§20.1), so a mark dragged onto a marked row
+  does not merge with it. It **jumps over** it, landing on the first free row
+  beyond it in the direction of travel — one mark sliding past another. When the
+  rows beyond are occupied all the way to the end of what the pane draws, the
+  mark **stops before** the obstacle instead, on the last free row on the way
+  there: it may neither leave the file to find room nor swallow the bookmark in
+  its way, but it should still travel as far as the pointer took it. Only when
+  even that room is missing does nothing move, and the pointer runs on ahead of a
+  mark that stayed.
+- A mark cannot be dragged off the file: the last row it can reach is the last
+  row with bytes in it, and a pointer above the first row leaves it on row 0.
+- Everything watching the store follows a move, because it is the store's own
+  change signal that reports it (§20.2): both panes repaint the two rows
+  involved, the open form's list re-sorts, and a naming popover on the row the
+  mark left closes with it (§20.3).

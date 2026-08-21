@@ -410,6 +410,32 @@ arrow away.
 **Done when** clicking an arrow in the overview of a 16 MB file lands on the
 bookmark's row rather than a few rows off.
 
+### Added after stage 3 — dragging a mark
+
+Not in the original plan: a mark can be dragged to another row (§20.6), asked for
+once the list existed and it became obvious that a mark often belongs a few rows
+from where it was put — and that removing and re-marking loses its name.
+
+- `BookmarkStore.move(rowContaining:to:lastRow:)` owns the one-per-row rule: it
+  jumps a mark over an occupied row to the first free row in the direction of
+  travel, and when the way beyond is blocked to the end it stops the mark on the
+  last free row before the obstacle instead. Stopping *before* rather than not
+  moving at all was the second attempt: refusing the whole move froze a mark that
+  the pointer had already carried several rows.
+- `HexView` grabs a mark on `mouseDown` over its address and moves it per crossed
+  row, through an `onBookmarkDrag` closure that answers with the row it actually
+  landed on — so a jumped-over or stopped mark stays in step with the store rather
+  than with the pointer. The press still places the caret, so a click on an
+  address is the click it always was.
+- The drag reuses the selection's autoscroll wholesale: the same
+  `dragAutoscrollStep`, the same timer, with the tick moving the mark instead of
+  extending the selection. `lastRow` is passed in by the view, since only the view
+  knows how far the pane reaches (§9).
+- Tests: the store's jump / stop-before / no-room-at-all cases in both directions,
+  and the gesture end to end in a real pane — following the pointer, jumping a
+  marked row, autoscrolling past the bottom edge while still carrying the mark,
+  releasing on mouse up, and an unmarked address still selecting.
+
 ### Order and independence
 
 Stages 1 and 2 are the feature's spine and must go in order. Stage 3 depends on 1
