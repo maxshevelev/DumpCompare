@@ -203,22 +203,25 @@ deliberately left for when the toolbar is filled out as a whole.
   The offset column's context menu already exists (§10.2) and already knows the
   row.
 
-**As built (stage 2).** Four differences, all in the same direction — one command
-per intention instead of one per state:
+**As built (stage 2).** The naming moved from a modal sheet into a popover on the
+mark, in the shape Xcode gives a breakpoint, and that collapsed the four commands
+into two:
 
-- ⇧⌘D is *Name Bookmark…*, not *Add Bookmark…*: it marks the caret's row if it is
-  unmarked and renames it if it is marked, because "name this row" is the one
-  thing meant either way, and after ⌘D became *Toggle Bookmark* an *Add* twin
-  would have been the odd one out.
-- The context menu offers **two** items, chosen by what the clicked row carries:
-  *Add Bookmark at «address»* + *Add Bookmark with Name…* when unmarked,
-  *Rename Bookmark at «address»…* + *Remove Bookmark* when marked. Four items of
-  which two are always inert is worse than two that always apply.
-- The name dialog shows the row's address in its message and as the field's
-  placeholder rather than pre-filling it: accepting an empty name then means
-  "show the address" (the rule the model already has) instead of storing an
-  address as a literal name. A *rename* does pre-fill — with the current name,
-  selected, so typing replaces it.
+- **⌘D marks the row and opens the popover on it**, caret already in the Name
+  field. Return saves (nothing typed = unnamed), Esc removes the mark again. So
+  the fast path is ⌘D, Return, and the named path is ⌘D, a name, Return — one
+  command plus Return either way. A second ⌘D on a marked row removes it with no
+  popover, there being nothing to name.
+- **⇧⌘D is *Rename Bookmark…***, not *Add Bookmark…*: the same popover on an
+  existing mark, with its current name selected, and its Esc keeps that name.
+  Enabled only on a marked row, because ⌘D is what makes a mark — and names it.
+- **The context menu carries one toggle**, *Toggle Bookmark at «address»*, plus
+  *Rename Bookmark…* where there is something to rename. Add / Add with Name /
+  Remove / Rename was four items to read where the row itself says which two
+  apply, and the toggle is now the same command ⌘D is, popover and all.
+- The popover keeps what was typed when it is dismissed by a click outside: the
+  mark is already on the row, so dropping the name would be the surprise. Only
+  Esc backs out.
 - A name needed somewhere to show before the list exists (stage 3), so a marked
   row's address carries a tooltip with the bookmark's name — its address when
   unnamed — and the pane's accessibility value reads the name out with the

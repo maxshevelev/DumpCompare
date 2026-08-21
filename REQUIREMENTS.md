@@ -1588,28 +1588,40 @@ height in both, which is the whole point of it in a comparison.
 
 20.3 Marking and naming a row
 
-- Edit ▸ Toggle Bookmark (⌘D) marks the active pane's caret row, unnamed.
-  Pressed again on a bookmarked row it removes the mark — the command is a
-  toggle, and its title says so rather than promising only to add.
-- Edit ▸ Name Bookmark… (⇧⌘D) names the caret's row: it marks the row first if it
-  is unmarked, and renames the mark if it is already marked. One command, because
-  "name this row" is the one thing meant either way; the ellipsis says a dialog
-  follows.
-- Both commands are enabled only when the active pane has a file open: with
-  nothing open there is no caret row to mark.
+- Edit ▸ Toggle Bookmark (⌘D) marks the active pane's caret row and unmarks it
+  again — one command for both, and its title says so rather than promising only
+  to add.
+- Marking a row opens the naming popover on the new mark: a small panel anchored
+  to the mark itself, with the caret already in its Name field. **Return** saves
+  the name (nothing typed means an unnamed bookmark, shown by its address);
+  **Esc** removes the mark again, cancelling the whole act, not just the name.
+  So **⌘D, Return** is the whole gesture for "mark this row", and ⌘D, a name,
+  Return the one for "mark it and call it this" — the muscle memory is one
+  command plus Return either way.
+- A popover, not a modal dialog: naming a row is an aside to reading a dump, and
+  the mark being named has to stay visible while the name is typed. Its title
+  line carries the row's address, which is what an unnamed bookmark will be
+  called, and it spells out what its two keys do — Esc does different things to a
+  new mark and to an existing name.
+- Dismissing the popover any other way — a click outside it — keeps what was
+  typed. The mark is already on the row by then, so discarding the name would be
+  the surprising outcome.
+- ⌘D on a row that is already marked removes the mark on the spot, with no
+  popover: there is nothing to name.
+- Edit ▸ Rename Bookmark… (⇧⌘D) opens the same popover on an existing mark, with
+  its current name selected so typing replaces it; Esc leaves that name alone.
+  The command is enabled only when the caret's row carries a mark — ⌘D is how a
+  mark is made, and it names it too, so this one has only the one job.
+- Toggle is enabled only when the active pane has a file open: with nothing open
+  there is no caret row to mark.
 - Because both panes read the same store, marking a row shows it at the same
   height in both panes of a comparison.
-- The offset context menu (§10.2) carries the same acts for the row that was
-  right-clicked rather than the caret's: an unmarked row is offered *Add
-  Bookmark at «address»* (no dialog) and *Add Bookmark with Name…*, a marked one
-  *Rename Bookmark at «address»…* and *Remove Bookmark*. The address in the title
-  is the ROW's, because a right-click on a byte marks that byte's row, and the
-  title is what makes that visible. Remove only ever removes: a right-click on
-  the wrong row cannot leave a new mark behind, as a second ⌘D would.
-- The name dialog never refuses a submit — any text is a name, and an empty one
-  means the bookmark shows its address. Its title says whether it is adding or
-  renaming, a rename opens with the current name selected so typing replaces it,
-  and the row's address is in the dialog's message.
+- The offset context menu (§10.2) carries the same two commands for the row that
+  was right-clicked rather than the caret's, in the pane that was right-clicked:
+  *Toggle Bookmark at «address»* — the same command ⌘D is, popover and all — and
+  *Rename Bookmark…* on a row that has something to rename. The address in the
+  title is the ROW's, because a right-click on a byte marks that byte's row, and
+  the title is what makes that visible.
 - A name has to be visible before the bookmark list exists (a later stage):
   hovering a marked row's address shows the name as a tooltip — the address
   itself when the bookmark is unnamed — and the pane's accessibility value reads

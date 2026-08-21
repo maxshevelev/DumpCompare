@@ -9,9 +9,11 @@ import XCTest
 /// (including the right-click outline), the app's own repaint wiring, and the
 /// Edit-menu item with its key.
 ///
-/// Stage 2 — "Give it a name": ⇧⌘D and the offset context menu's add / name /
-/// rename / remove items, what the store does with a name, and the two places a
-/// name shows before the list exists — the mark's tooltip and VoiceOver.
+/// Stage 2 — "Give it a name": the naming popover ⌘D opens on a mark it makes
+/// (Return saves, Esc removes the mark again), ⇧⌘D renaming through the same
+/// popover, the offset menu's Toggle and Rename items, what the store does with a
+/// name, and the two places a name shows before the list exists — the mark's
+/// tooltip and VoiceOver.
 ///
 /// The bookmark list, the form, and the minimap arrows are later stages.
 @MainActor
@@ -601,128 +603,322 @@ final class BookmarkTests: XCTestCase {
                        "an address wider than eight digits is not truncated")
     }
 
-    // MARK: - Names: the sheet (§20.2)
+    // MARK: - Naming: the popover itself (§20.3)
 
-    /// The name sheet reports what was typed, trimmed by the store on the way in.
-    /// Its title tells adding from renaming, and a rename opens with the current
-    /// name in the field, ready to be replaced.
-    func testTheNameSheetSubmitsWhatWasTyped() {
-        var captured: String?
-        let adding = BookmarkNameSheetController(row: 0x10, existingName: nil) { captured = $0 }
-        _ = adding.view
-        XCTAssertEqual(adding.titleText, "Add Bookmark")
-        XCTAssertEqual(adding.nameField.stringValue, "", "a new bookmark opens with an empty field")
-        XCTAssertTrue(try! XCTUnwrap(adding.messageText).contains("0x00000010"),
-                      "the sheet says which row it is naming")
-        adding.nameField.stringValue = "boot block"
-        // `handleSubmit` is the submit path minus `dismiss`, which needs a real
-        // presentation (the pattern SelectBlockSheetTests uses).
-        adding.handleSubmit()
-        XCTAssertEqual(captured, "boot block")
+    /// The popover's own contract: Return saves what was typed, Esc backs out,
+    /// and a dismissal by any other means (a click outside it) keeps what was
+    /// typed — the mark is already on the row by then.
+    func testThePopoverReportsReturnEscAndDismissal() throws {
+        func popover(existing: String?) -> (BookmarkNamePopoverController, () -> [String]) {
+            var events: [String] = []
+            let controller = BookmarkNamePopoverController(
+                row: 0x10, existingName: existing,
+                onCommit: { events.append("commit:\($0)") },
+                onCancel: { events.append("cancel") }
+            )
+            controller.loadViewIfNeeded()
+            return (controller, { events })
+        }
 
-        let renaming = BookmarkNameSheetController(row: 0x10, existingName: "boot block") { captured = $0 }
-        _ = renaming.view
-        XCTAssertEqual(renaming.titleText, "Rename Bookmark")
-        XCTAssertEqual(renaming.nameField.stringValue, "boot block",
-                       "a rename opens with the name it is changing")
-        renaming.nameField.stringValue = ""
-        renaming.handleSubmit()
-        XCTAssertEqual(captured, "", "an empty name is allowed: the bookmark shows its address")
+        let (returning, returnEvents) = popover(existing: nil)
+        returning.nameField.stringValue = "ME region"
+        returning.commit()
+        XCTAssertEqual(returnEvents(), ["commit:ME region"])
+
+        let (escaping, escEvents) = popover(existing: nil)
+        escaping.nameField.stringValue = "abandoned"
+        escaping.cancel()
+        XCTAssertEqual(escEvents(), ["cancel"], "Esc drops the name AND the mark")
+
+        let (clickedAway, clickEvents) = popover(existing: "old")
+        clickedAway.nameField.stringValue = "new"
+        clickedAway.popoverDidClose(Notification(name: NSPopover.didCloseNotification))
+        XCTAssertEqual(clickEvents(), ["commit:new"],
+                       "a click outside keeps the typed name")
     }
 
-    /// The name field selects its whole text on focus — the initial value is a
-    /// suggestion to replace, unlike an offset field's "0x" prefix, which the
-    /// caret must land after (§10, §20.2).
-    func testTheNameFieldSelectsItsTextOnFocus() throws {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 220),
-                              styleMask: [.titled], backing: .buffered, defer: false)
-        defer { window.orderOut(nil) }
-        let sheet = BookmarkNameSheetController(row: 0x10, existingName: "boot block") { _ in }
-        window.contentView = sheet.view
-        window.makeFirstResponder(sheet.nameField)
-        let editor = try XCTUnwrap(window.firstResponder as? NSTextView)
-        XCTAssertEqual(editor.selectedRange, NSRange(location: 0, length: 10),
-                       "typing replaces the suggested name")
+    /// Only the first outcome counts: the close that follows a Return or an Esc
+    /// must not commit a second time.
+    func testThePopoverSettlesOnce() throws {
+        var events: [String] = []
+        let controller = BookmarkNamePopoverController(
+            row: 0x10, existingName: nil,
+            onCommit: { events.append("commit:\($0)") },
+            onCancel: { events.append("cancel") }
+        )
+        controller.loadViewIfNeeded()
+        controller.cancel()
+        controller.popoverDidClose(Notification(name: NSPopover.didCloseNotification))
+        controller.commit()
+        XCTAssertEqual(events, ["cancel"])
     }
 
-    /// ⇧⌘D names the caret's row: Edit ▸ Name Bookmark…, enabled with a file open.
-    func testEditMenuHasNameBookmarkWithShiftCmdD() throws {
-        let item = try XCTUnwrap(MainWindowController().makeEditMenu().items
-            .first { $0.action == #selector(MainViewController.nameBookmark) })
-        XCTAssertEqual(item.title, "Name Bookmark…", "the ellipsis says a dialog follows")
-        // An upper-case key equivalent is how AppKit spells ⇧ — the menu shows
-        // ⇧⌘D and matches shift+D, with no `.shift` in the mask (as Save As…).
-        XCTAssertEqual(item.keyEquivalent, "D")
-        XCTAssertEqual(item.keyEquivalentModifierMask, [.command])
+    /// It opens ready for the keyboard: an empty field for a new mark and the
+    /// current name for a rename, with the row's address in the title — which is
+    /// what an unnamed bookmark will be called. The hint says what Esc will do,
+    /// which is not the same in the two cases.
+    func testThePopoverOpensForTheRightJob() throws {
+        let creating = BookmarkNamePopoverController(row: 0x10, existingName: nil,
+                                                    onCommit: { _ in }, onCancel: {})
+        creating.loadViewIfNeeded()
+        XCTAssertEqual(creating.nameField.stringValue, "")
+        XCTAssertEqual(creating.nameField.placeholderString, "Optional",
+                       "a name is optional; the title already says which row it is")
+        XCTAssertTrue(creating.labelTexts.contains("Bookmark at 0x00000010"),
+                      "the popover says which row: \(creating.labelTexts)")
+        XCTAssertTrue(creating.labelTexts.contains { $0.contains("Esc removes the bookmark") },
+                      "\(creating.labelTexts)")
+
+        let renaming = BookmarkNamePopoverController(row: 0x10, existingName: "ME region",
+                                                    onCommit: { _ in }, onCancel: {})
+        renaming.loadViewIfNeeded()
+        XCTAssertEqual(renaming.nameField.stringValue, "ME region")
+        XCTAssertTrue(renaming.labelTexts.contains { $0.contains("Esc keeps the current name") },
+                      "\(renaming.labelTexts)")
     }
 
-    func testNameBookmarkEnabledOnlyWithAFileOpen() throws {
-        let wc = MainWindowController()
-        defer { wc.close() }
-        let controller = try XCTUnwrap(wc.mainViewController)
-        let item = NSMenuItem(title: "Name Bookmark…",
-                              action: #selector(MainViewController.nameBookmark), keyEquivalent: "D")
-        XCTAssertFalse(controller.validateMenuItem(item), "no file open → disabled")
-        let url = try tempFile([UInt8](repeating: 0x00, count: 32))
-        defer { try? FileManager.default.removeItem(at: url) }
-        try controller.windowModel.pane1.open(url: url)
-        XCTAssertTrue(controller.validateMenuItem(item))
-    }
-
-    // MARK: - Names: the context menu (§20.3)
-
-    /// The offset context menu offers what the clicked row does not have yet: an
-    /// unmarked row gets Add and Add with Name…, a marked one Rename… and Remove.
-    /// The address in the title is the ROW's — right-clicking a byte marks its
-    /// row, and the title is what says so (§20.1).
-    func testTheContextMenuOffersTheRightBookmarkItems() throws {
-        let wc = MainWindowController()
-        defer { wc.close() }
-        let controller = try XCTUnwrap(wc.mainViewController)
+    /// The pane view anchors the popover on the mark itself, and the mark's rect
+    /// is the same one the right-click focus ring uses (§20.4).
+    func testThePaneViewAnchorsThePopoverOnTheMark() throws {
         let url = try tempFile([UInt8](repeating: 0x11, count: 64))
         defer { try? FileManager.default.removeItem(at: url) }
-        let pane = controller.windowModel.pane1
+        let pane = PaneViewModel()
         try pane.open(url: url)
+        let store = BookmarkStore()
+        pane.bookmarkStore = store
+        store.add(rowContaining: 20, name: "ME region")
+
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        let paneView = try host(pane, in: window, right: false)
+        let hex = try XCTUnwrap(paneView.scrollView.documentView as? HexView)
+
+        let controller = paneView.presentBookmarkNamePopover(
+            rowContaining: 20, existingName: "ME region", onCommit: { _ in }, onCancel: {})
+        XCTAssertEqual(controller.nameField.stringValue, "ME region",
+                       "the popover is loaded and filled before it is shown")
+
+        let layout = hex.hexLayout
+        XCTAssertEqual(hex.bookmarkMarkRect(forRowContaining: 20),
+                       layout.offsetColumnFrame(row: 1)
+                           .insetBy(dx: -HexView.mirrorContourPadding, dy: 0),
+                       "the popover points at the mark, not at the pane")
+    }
+
+    // MARK: - Naming: what the commands do (§20.3)
+
+    /// A real window with a file open in pane 1 — the commands act on the active
+    /// pane and hand the naming to its view. The returned closure closes the
+    /// window and removes the file.
+    private func makeControllerWithFile(bytes: Int = 48) throws -> (MainViewController, () -> Void) {
+        let wc = MainWindowController()
+        let controller = try XCTUnwrap(wc.mainViewController)
+        let url = try tempFile([UInt8](repeating: 0x11, count: bytes))
+        try controller.windowModel.pane1.open(url: url)
+        wc.window?.layoutIfNeeded()
+        return (controller, {
+            wc.close()
+            try? FileManager.default.removeItem(at: url)
+        })
+    }
+
+    /// Captures the naming requests a command makes, instead of showing a
+    /// popover: one anchored in a window that is never on screen closes the
+    /// instant it opens, and what these tests are about is the commands.
+    private func captureNaming(_ controller: MainViewController)
+        -> () -> [MainViewController.BookmarkNamingRequest] {
+        var requests: [MainViewController.BookmarkNamingRequest] = []
+        controller.bookmarkNamingPresenter = { requests.append($0) }
+        return { requests }
+    }
+
+    /// ⌘D marks the caret's row and immediately asks for its name: the mark is
+    /// already there (visible while the name is typed), and Return with nothing
+    /// typed leaves it unnamed — the ⌘D, Return gesture.
+    func testToggleMarksTheRowAndAsksForItsName() throws {
+        let (controller, close) = try makeControllerWithFile()
+        defer { close() }
+        let store = controller.windowModel.bookmarkStore
+        let requests = captureNaming(controller)
+        controller.windowModel.pane1.moveCaret(to: 20)
+
+        controller.toggleBookmark()
+        XCTAssertEqual(store.bookmarks.map(\.row), [16], "the mark appears before the name")
+        XCTAssertEqual(requests().count, 1)
+        let request = try XCTUnwrap(requests().first)
+        XCTAssertEqual(request.row, 16)
+        XCTAssertNil(request.existingName, "a mark just made has no name to edit — and Esc removes it")
+        XCTAssertTrue(request.pane === controller.windowModel.pane1)
+
+        request.commit("")
+        XCTAssertEqual(store.bookmarks, [Bookmark(row: 16, name: "")],
+                       "Return with nothing typed keeps the mark, unnamed")
+    }
+
+    /// ⌘D, a name, Return: the mark keeps what was typed, trimmed by the store.
+    func testCommittingANameNamesTheMark() throws {
+        let (controller, close) = try makeControllerWithFile()
+        defer { close() }
+        let store = controller.windowModel.bookmarkStore
+        let requests = captureNaming(controller)
+        controller.windowModel.pane1.moveCaret(to: 20)
+
+        controller.toggleBookmark()
+        try XCTUnwrap(requests().first).commit("  ME region ")
+        XCTAssertEqual(store.bookmarks, [Bookmark(row: 16, name: "ME region")])
+    }
+
+    /// Esc on a popover that opened by marking a row removes the mark again: the
+    /// whole act is cancelled, not just the name.
+    func testEscAfterMarkingRemovesTheMark() throws {
+        let (controller, close) = try makeControllerWithFile()
+        defer { close() }
+        let store = controller.windowModel.bookmarkStore
+        let requests = captureNaming(controller)
+        controller.windowModel.pane1.moveCaret(to: 20)
+
+        controller.toggleBookmark()
+        try XCTUnwrap(requests().first).cancel()
+        XCTAssertTrue(store.bookmarks.isEmpty, "Esc undoes the marking too")
+    }
+
+    /// A second ⌘D on a marked row unmarks it on the spot — nothing is asked,
+    /// because there is nothing to name.
+    func testTogglingAMarkedRowRemovesItAndAsksNothing() throws {
+        let (controller, close) = try makeControllerWithFile()
+        defer { close() }
+        let store = controller.windowModel.bookmarkStore
+        let requests = captureNaming(controller)
+        controller.windowModel.pane1.moveCaret(to: 20)
+        store.add(rowContaining: 20, name: "ME region")
+
+        controller.toggleBookmark()
+        XCTAssertTrue(store.bookmarks.isEmpty)
+        XCTAssertTrue(requests().isEmpty, "removing a mark asks nothing")
+    }
+
+    /// ⇧⌘D renames through the same popover: it opens with the current name, and
+    /// its Esc leaves that name alone — where Esc on a new mark removes it.
+    func testRenameOpensWithTheCurrentNameAndEscKeepsIt() throws {
+        let (controller, close) = try makeControllerWithFile()
+        defer { close() }
+        let store = controller.windowModel.bookmarkStore
+        let requests = captureNaming(controller)
+        controller.windowModel.pane1.moveCaret(to: 20)
+        store.add(rowContaining: 20, name: "ME region")
+
+        controller.renameBookmark()
+        let first = try XCTUnwrap(requests().first)
+        XCTAssertEqual(first.existingName, "ME region")
+        first.commit("descriptor")
+        XCTAssertEqual(store.bookmarks, [Bookmark(row: 16, name: "descriptor")])
+
+        controller.renameBookmark()
+        try XCTUnwrap(requests().last).cancel()
+        XCTAssertEqual(store.bookmarks, [Bookmark(row: 16, name: "descriptor")],
+                       "Esc keeps the name the bookmark had")
+    }
+
+    /// ⇧⌘D on an unmarked row does nothing at all — there is no mark to rename,
+    /// and it must not create one behind the user's back.
+    func testRenameDoesNothingOnAnUnmarkedRow() throws {
+        let (controller, close) = try makeControllerWithFile()
+        defer { close() }
+        let requests = captureNaming(controller)
+        controller.windowModel.pane1.moveCaret(to: 20)
+
+        controller.renameBookmark()
+        XCTAssertTrue(requests().isEmpty)
+        XCTAssertTrue(controller.windowModel.bookmarkStore.bookmarks.isEmpty)
+    }
+
+    /// ⌘D always applies; ⇧⌘D only where there is a mark to rename (§20.3).
+    func testRenameIsEnabledOnlyOnAMarkedRow() throws {
+        let (controller, close) = try makeControllerWithFile()
+        defer { close() }
+        let toggleItem = NSMenuItem(title: "Toggle Bookmark",
+                                    action: #selector(MainViewController.toggleBookmark), keyEquivalent: "d")
+        let renameItem = NSMenuItem(title: "Rename Bookmark…",
+                                    action: #selector(MainViewController.renameBookmark), keyEquivalent: "D")
+        controller.windowModel.pane1.moveCaret(to: 20)
+
+        XCTAssertTrue(controller.validateMenuItem(toggleItem), "a file is open")
+        XCTAssertFalse(controller.validateMenuItem(renameItem), "nothing to rename yet")
+
+        controller.windowModel.bookmarkStore.add(rowContaining: 20)
+        XCTAssertTrue(controller.validateMenuItem(renameItem), "the caret's row carries a mark")
+
+        controller.windowModel.pane1.moveCaret(to: 40)
+        XCTAssertFalse(controller.validateMenuItem(renameItem),
+                       "the caret moved off the marked row")
+    }
+
+    /// The Edit menu's two bookmark commands and their keys.
+    func testEditMenuHasBothBookmarkCommands() throws {
+        let items = MainWindowController().makeEditMenu().items
+        let toggle = try XCTUnwrap(items.first { $0.action == #selector(MainViewController.toggleBookmark) })
+        XCTAssertEqual(toggle.title, "Toggle Bookmark")
+        XCTAssertEqual(toggle.keyEquivalent, "d")
+        XCTAssertEqual(toggle.keyEquivalentModifierMask, [.command])
+
+        let rename = try XCTUnwrap(items.first { $0.action == #selector(MainViewController.renameBookmark) })
+        XCTAssertEqual(rename.title, "Rename Bookmark…", "the ellipsis says a dialog follows")
+        // An upper-case key equivalent is how AppKit spells ⇧ — the menu shows
+        // ⇧⌘D and matches shift+D, with no `.shift` in the mask (as Save As…).
+        XCTAssertEqual(rename.keyEquivalent, "D")
+        XCTAssertEqual(rename.keyEquivalentModifierMask, [.command])
+    }
+
+    // MARK: - Naming: the context menu (§20.3)
+
+    /// The offset menu carries ONE item for marking and unmarking — the same
+    /// command ⌘D is — plus Rename on a row that has something to rename. The
+    /// address is the ROW's: a right-click on a byte marks that byte's row, and
+    /// the title is what says so (§20.1).
+    func testTheContextMenuTogglesAndRenames() throws {
+        let (controller, close) = try makeControllerWithFile(bytes: 64)
+        defer { close() }
+        let pane = controller.windowModel.pane1
 
         // A byte in the middle of row 0x10, so the row address has to be derived.
         let unmarked = controller.makeOffsetMenu(for: pane, offset: 0x1B).items.map(\.title)
-        XCTAssertTrue(unmarked.contains("Add Bookmark at 0x00000010"),
+        XCTAssertTrue(unmarked.contains("Toggle Bookmark at 0x00000010"),
                       "the row's address, not the clicked byte's: \(unmarked)")
-        XCTAssertTrue(unmarked.contains("Add Bookmark with Name…"))
-        XCTAssertFalse(unmarked.contains("Remove Bookmark"))
+        XCTAssertFalse(unmarked.contains("Rename Bookmark…"),
+                       "nothing to rename on an unmarked row")
 
         controller.windowModel.bookmarkStore.add(rowContaining: 0x1B, name: "ME region")
         let marked = controller.makeOffsetMenu(for: pane, offset: 0x1B).items.map(\.title)
-        XCTAssertTrue(marked.contains("Rename Bookmark at 0x00000010…"), "\(marked)")
-        XCTAssertTrue(marked.contains("Remove Bookmark"))
-        XCTAssertFalse(marked.contains("Add Bookmark at 0x00000010"),
-                       "a marked row is not offered a second mark")
+        XCTAssertTrue(marked.contains("Toggle Bookmark at 0x00000010"), "\(marked)")
+        XCTAssertTrue(marked.contains("Rename Bookmark…"))
     }
 
     /// The items act on the row that was right-clicked, in the pane that was
     /// right-clicked — the `representedObject` pattern the rest of the offset
-    /// menu uses (§10.2). Add and Remove need no dialog, so they are driven here
-    /// end to end.
+    /// menu uses (§10.2). Toggling from the menu asks for the name the same way
+    /// ⌘D does.
     func testTheContextMenuItemsActOnTheClickedRow() throws {
-        let wc = MainWindowController()
-        defer { wc.close() }
-        let controller = try XCTUnwrap(wc.mainViewController)
-        let url = try tempFile([UInt8](repeating: 0x11, count: 64))
-        defer { try? FileManager.default.removeItem(at: url) }
+        let (controller, close) = try makeControllerWithFile(bytes: 64)
+        defer { close() }
         let pane = controller.windowModel.pane1
-        try pane.open(url: url)
         let store = controller.windowModel.bookmarkStore
+        let requests = captureNaming(controller)
 
-        let addItem = try XCTUnwrap(controller.makeOffsetMenu(for: pane, offset: 0x2A).items
-            .first { $0.action == #selector(MainViewController.addBookmarkAtOffset(_:)) })
-        XCTAssertTrue(addItem.target === controller)
-        controller.addBookmarkAtOffset(addItem)
+        let toggleItem = try XCTUnwrap(controller.makeOffsetMenu(for: pane, offset: 0x2A).items
+            .first { $0.action == #selector(MainViewController.toggleBookmarkAtOffset(_:)) })
+        XCTAssertTrue(toggleItem.target === controller)
+        controller.toggleBookmarkAtOffset(toggleItem)
         XCTAssertEqual(store.bookmarks.map(\.row), [0x20], "the clicked byte's row is marked")
 
-        let removeItem = try XCTUnwrap(controller.makeOffsetMenu(for: pane, offset: 0x2A).items
-            .first { $0.action == #selector(MainViewController.removeBookmarkAtOffset(_:)) })
-        controller.removeBookmarkAtOffset(removeItem)
+        let request = try XCTUnwrap(requests().first, "the menu's toggle names the mark it makes")
+        XCTAssertEqual(request.row, 0x20)
+        request.commit("vendor block")
+        XCTAssertEqual(store.bookmarks, [Bookmark(row: 0x20, name: "vendor block")])
+
+        // And the same item takes it away again, with nothing to dismiss.
+        controller.toggleBookmarkAtOffset(toggleItem)
         XCTAssertTrue(store.bookmarks.isEmpty)
+        XCTAssertEqual(requests().count, 1, "removing asks nothing")
     }
 
     // MARK: - Where a name shows (§20.2)
@@ -782,5 +978,17 @@ final class BookmarkTests: XCTestCase {
         store.rename(rowContaining: 20, to: "")
         let unnamed = try XCTUnwrap(hex.accessibilityValue() as? String)
         XCTAssertTrue(unnamed.contains("Bookmarked row: 0x00000010."), unnamed)
+    }
+}
+
+private extension BookmarkNamePopoverController {
+    /// The static text the popover shows — its title line and its key hint — so
+    /// a test can read what it tells the user without knowing the view's shape.
+    var labelTexts: [String] {
+        func labels(in view: NSView) -> [String] {
+            let own = (view as? NSTextField).flatMap { $0.isEditable ? nil : $0.stringValue }
+            return (own.map { [$0] } ?? []) + view.subviews.flatMap(labels(in:))
+        }
+        return labels(in: view)
     }
 }

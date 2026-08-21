@@ -313,9 +313,10 @@ final class MainWindowController: NSWindowController {
         // then go to a position. The title says Toggle rather than Add because
         // the one command does both, whatever the caret's row currently is.
         editMenu.addItem(withTitle: "Toggle Bookmark", action: #selector(MainViewController.toggleBookmark), keyEquivalent: "d")
-        // ⇧⌘D names the caret's row — marking it first if it is not marked. The
-        // ellipsis carries its usual Mac meaning: a dialog follows (§20.2).
-        editMenu.addItem(withTitle: "Name Bookmark…", action: #selector(MainViewController.nameBookmark), keyEquivalent: "D")
+        // ⇧⌘D renames the caret's row's mark. Making one is ⌘D's job — which
+        // names it too, in the popover it opens — so this command only renames,
+        // and is greyed out on a row that carries no mark (§20.3).
+        editMenu.addItem(withTitle: "Rename Bookmark…", action: #selector(MainViewController.renameBookmark), keyEquivalent: "D")
         editMenu.addItem(withTitle: "Go To Position…", action: #selector(MainViewController.goToPosition), keyEquivalent: "g")
         return editMenu
     }

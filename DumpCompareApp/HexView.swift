@@ -1075,8 +1075,7 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// so the mark itself becomes the ring and the standard frame is skipped
     /// (§20.4).
     private func drawBookmarkMark(in layout: HexLayout, row: Int, outlined: Bool) {
-        let frame = layout.offsetColumnFrame(row: row)
-            .insetBy(dx: -Self.mirrorContourPadding, dy: 0)
+        let frame = Self.bookmarkMarkBody(in: layout, row: row)
         let tip = Self.bookmarkTipReach(height: frame.height, gap: layout.gapAfterOffset)
         let radius = Self.mirrorContourRadius
         let top = frame.minY
@@ -1314,6 +1313,21 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// pointing at the bytes. The reach that produces it follows from the mark's
     /// height, so the angle holds at every font size.
     static let bookmarkTipAngle: CGFloat = 120 * .pi / 180
+
+    /// The bookmark mark's body: the right-click focus ring's own rect, so mark
+    /// and ring are one shape at one size (§20.4). The tip grows out of its
+    /// right edge.
+    static func bookmarkMarkBody(in layout: HexLayout, row: Int) -> CGRect {
+        layout.offsetColumnFrame(row: row).insetBy(dx: -mirrorContourPadding, dy: 0)
+    }
+
+    /// The rect a bookmark's naming popover points at: the mark on the row
+    /// containing `offset`, in this view's coordinates. The popover is about that
+    /// row, so it hangs off the mark rather than off the pane (§20.3).
+    func bookmarkMarkRect(forRowContaining offset: UInt64) -> CGRect {
+        let layout = currentLayout
+        return Self.bookmarkMarkBody(in: layout, row: layout.rowColumn(of: offset).row)
+    }
 
     /// How far the bookmark mark's tip reaches past its body for a mark of
     /// `height`, given the `gap` before the hex column. Each of the tip's two

@@ -3,30 +3,21 @@ import DumpCompareCore
 
 // MARK: - Shared sheet chrome
 
-/// An `NSTextField` that decides for itself what focus does with its text.
-/// By default the caret lands after the existing text (the "0x" prefix), so the
-/// user can type hex digits immediately and deletes the prefix only for a
-/// decimal value (§10) — AppKit's own default is select-all, which would replace
-/// the prefix. A field whose text is a suggestion rather than a prefix sets
-/// `selectsAllOnFocus` and gets AppKit's behaviour back (§20.2). Also fires
-/// `onTextChange` on every edit so the sheet can re-validate live.
+/// An `NSTextField` that doesn't select its whole text when it gains focus:
+/// the caret lands after the existing text (the "0x" prefix), so the user can
+/// type hex digits immediately and deletes the prefix only for a decimal value
+/// (§10). AppKit's default is select-all on focus, which would replace "0x".
+/// Also fires `onTextChange` on every edit so the sheet can re-validate live.
 private final class HexInputField: NSTextField {
     /// Called on every edit (typing, deleting, replacing) — the sheet uses it
     /// to re-validate the input and update the error label as the user types.
     var onTextChange: (() -> Void)?
 
-    /// Whether focus selects the field's whole text instead of putting the caret
-    /// after it. A name field wants this: its initial value is a suggestion to
-    /// replace (§20.2), where an offset field's "0x" is a prefix to type after.
-    var selectsAllOnFocus = false
-
     override func becomeFirstResponder() -> Bool {
         let focused = super.becomeFirstResponder()
         if focused, let editor = currentEditor() as? NSTextView {
             let length = (stringValue as NSString).length
-            editor.selectedRange = selectsAllOnFocus
-                ? NSRange(location: 0, length: length)
-                : NSRange(location: length, length: 0)
+            editor.selectedRange = NSRange(location: length, length: 0)
         }
         return focused
     }
@@ -37,8 +28,7 @@ private final class HexInputField: NSTextField {
     }
 }
 
-/// Base class for the input dialogs (Go To Position, Select Block, Fill,
-/// Name Bookmark).
+/// Base class for the input dialogs (Go To Position, Select Block).
 /// Builds a titled sheet with a field stack, an inline error label, and a
 /// Cancel/Submit button row; subclasses add fields and validation (§10).
 class SheetViewController: NSViewController {
@@ -211,13 +201,8 @@ class SheetViewController: NSViewController {
         }
     }
 
-    /// Builds a label + text field row inside `contentStack` and returns the
-    /// field. `monospaced` suits the hex and offset inputs; a free-text field (a
-    /// bookmark's name) reads in the system font, shows `placeholder` when empty
-    /// and selects its whole text on focus, so typing replaces the suggestion
-    /// instead of appending to it (§20.2).
-    func addFieldRow(label text: String, initial: String,
-                     monospaced: Bool = true, placeholder: String? = nil) -> NSTextField {
+    /// Builds a label + text field row inside `contentStack` and returns the field.
+    func addFieldRow(label text: String, initial: String) -> NSTextField {
         let label = NSTextField(labelWithString: text)
         label.font = .systemFont(ofSize: 12)
         label.textColor = .secondaryLabelColor
@@ -226,13 +211,7 @@ class SheetViewController: NSViewController {
         label.widthAnchor.constraint(equalToConstant: 110).isActive = true
 
         let field = HexInputField(string: initial)
-        field.font = monospaced
-            ? .monospacedSystemFont(ofSize: 12, weight: .regular)
-            : .systemFont(ofSize: 12)
-        field.selectsAllOnFocus = !monospaced
-        if let placeholder {
-            field.placeholderString = placeholder
-        }
+        field.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         field.target = self
         field.action = #selector(submitPressed)
         // §10: submit only on OK / Return — losing focus (e.g. clicking another
@@ -291,50 +270,6 @@ final class GoToSheetController: SheetViewController {
         if let offset = try? OffsetParser.parse(offsetField.stringValue) {
             onGo(offset)
         }
-    }
-}
-
-// MARK: - Name a bookmark (§20.2)
-
-/// ⇧⌘D, and the context menus' *with Name…* / *Rename…*: one free-text field for
-/// what a bookmark is called. There is nothing to validate — any text is a name,
-/// and an empty one means the bookmark shows its address instead — so the sheet
-/// never refuses a submit.
-///
-/// `existingName` decides which job the sheet is doing: nil for a row that is
-/// about to be marked, a name (possibly empty) for one already marked. That
-/// picks the title, so the user can tell adding from renaming, and it pre-fills
-/// the field for a rename.
-final class BookmarkNameSheetController: SheetViewController {
-    /// Internal so the tests can type into the field, as the Select Block
-    /// sheet's fields are.
-    private(set) var nameField: NSTextField!
-    private let initialName: String
-    private let onName: (String) -> Void
-
-    init(row: UInt64, existingName: String?, onName: @escaping (String) -> Void) {
-        self.initialName = existingName ?? ""
-        self.onName = onName
-        let address = Bookmark.addressLabel(row)
-        super.init(title: existingName == nil ? "Add Bookmark" : "Rename Bookmark",
-                   message: "Name the bookmark at \(address). "
-                       + "Leave the name empty to show the address.")
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) is not supported")
-    }
-
-    override func loadView() {
-        super.loadView()
-        nameField = addFieldRow(label: "Name:", initial: initialName,
-                                monospaced: false, placeholder: "e.g. boot block")
-    }
-
-    override func firstField() -> NSView? { nameField }
-
-    override func handleSubmit() {
-        onName(nameField.stringValue)
     }
 }
 

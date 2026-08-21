@@ -1965,27 +1965,22 @@ final class MainViewController: NSViewController {
         return menu
     }
 
-    /// The bookmark block of the offset context menu (§20.3). Two items, and
-    /// which two depends on what the clicked row carries: an unmarked row is
-    /// offered *Add Bookmark* and *Add Bookmark with Name…*, a marked one
-    /// *Rename Bookmark…* and *Remove Bookmark*. The address in the leading
-    /// item's title is the ROW's, not the clicked byte's — a right-click on a
-    /// byte marks its row (§20.1), and the title is what says so.
+    /// The bookmark block of the offset context menu (§20.3). One item marks and
+    /// unmarks — *Toggle Bookmark at «address»*, the same command ⌘D is, so there
+    /// is one thing to learn — and a marked row is offered *Rename Bookmark…*
+    /// besides. The address is the ROW's, not the clicked byte's: a right-click on
+    /// a byte marks its row (§20.1), and the title is what says so.
     private func addBookmarkMenuItems(to menu: NSMenu, for pane: PaneViewModel, offset: UInt64) {
         let target = OffsetContextTarget(pane: pane, offset: offset)
-        let row = BookmarkStore.row(containing: offset)
-        let address = Bookmark.addressLabel(row)
+        let address = Bookmark.addressLabel(BookmarkStore.row(containing: offset))
         func add(_ title: String, _ action: Selector) {
             let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
             item.target = self
             item.representedObject = target
         }
-        if windowModel.bookmarkStore.bookmark(atRowContaining: offset) == nil {
-            add("Add Bookmark at \(address)", #selector(addBookmarkAtOffset(_:)))
-            add("Add Bookmark with Name…", #selector(nameBookmarkAtOffset(_:)))
-        } else {
-            add("Rename Bookmark at \(address)…", #selector(nameBookmarkAtOffset(_:)))
-            add("Remove Bookmark", #selector(removeBookmarkAtOffset(_:)))
+        add("Toggle Bookmark at \(address)", #selector(toggleBookmarkAtOffset(_:)))
+        if windowModel.bookmarkStore.bookmark(atRowContaining: offset) != nil {
+            add("Rename Bookmark…", #selector(renameBookmarkAtOffset(_:)))
         }
     }
 
@@ -2425,63 +2420,101 @@ final class MainViewController: NSViewController {
 
     // MARK: - Bookmarks (§20)
 
-    /// Edit > Toggle Bookmark (⌘D): toggle a bookmark on the active pane's caret
-    /// row (§20). A bookmark marks a row, not a byte — the caret's offset is
-    /// rounded down to its row — and the list is shared by both panes, so the
-    /// same row is marked in both panes of a comparison. Pressed again on an
-    /// already-bookmarked row it removes the mark.
-    @objc func toggleBookmark() {
-        let pane = activePane
-        guard pane.isOpen else { return }
-        windowModel.bookmarkStore.toggle(rowContaining: pane.hexSelection().start)
-    }
-
-    /// Edit > Name Bookmark… (⇧⌘D): names the bookmark on the active pane's
-    /// caret row (§20.2). One command for both cases — an unmarked row is marked
-    /// with the name the sheet returns, a marked one keeps its mark and is
-    /// renamed — because "name this row" is the one thing the user means, and the
-    /// ellipsis says a dialog follows.
-    @objc func nameBookmark() {
-        let pane = activePane
-        guard pane.isOpen else { return }
-        presentBookmarkNameSheet(rowContaining: pane.hexSelection().start)
-    }
-
-    /// The name sheet for the row containing `offset`, and the store call its
-    /// submit makes. Adding and renaming share it: what the row carries right now
-    /// decides the sheet's title and its pre-filled name, and `add` both marks an
-    /// unmarked row and renames a marked one (§20.2).
-    private func presentBookmarkNameSheet(rowContaining offset: UInt64) {
+    /// Edit > Toggle Bookmark (⌘D), and the offset menu's item: toggles the mark
+    /// on `pane`'s row containing `offset` (§20.3). A bookmark marks a row, not a
+    /// byte — the offset is rounded down to its row — and the list is shared by
+    /// both panes, so the same row is marked in both panes of a comparison.
+    ///
+    /// Marking a row opens the naming popover on the new mark: Return saves it
+    /// (unnamed if nothing was typed), Esc removes it again. That is what makes
+    /// **⌘D, Return** the whole gesture for "mark this row" and ⌘D, a name,
+    /// Return the one for "mark it and call it this". A row that is already
+    /// marked is unmarked on the spot, with no popover to dismiss.
+    private func toggleBookmarkInPane(_ pane: PaneViewModel, rowContaining offset: UInt64) {
         let store = windowModel.bookmarkStore
+        guard pane.isOpen else { return }
+        if store.remove(rowContaining: offset) { return }
         let row = BookmarkStore.row(containing: offset)
-        let existing = store.bookmark(atRowContaining: offset)
-        let sheet = BookmarkNameSheetController(row: row, existingName: existing?.name) { name in
-            store.add(rowContaining: row, name: name)
+        store.add(rowContaining: row)
+        // `existingName: nil` is what tells the popover it is naming a mark that
+        // was just made — so its Esc removes the mark rather than keeping a name.
+        presentBookmarkNamePopover(
+            in: pane, row: row, existingName: nil,
+            onCommit: { store.rename(rowContaining: row, to: $0) },
+            onCancel: { store.remove(rowContaining: row) }
+        )
+    }
+
+    /// Renames the mark on `pane`'s row containing `offset`, in the same popover
+    /// (§20.3). Only for a row that carries one: Esc leaves the name as it was.
+    private func renameBookmarkInPane(_ pane: PaneViewModel, rowContaining offset: UInt64) {
+        let store = windowModel.bookmarkStore
+        guard pane.isOpen, let existing = store.bookmark(atRowContaining: offset) else { return }
+        presentBookmarkNamePopover(
+            in: pane, row: existing.row, existingName: existing.name,
+            onCommit: { store.rename(rowContaining: existing.row, to: $0) },
+            onCancel: {}
+        )
+    }
+
+    /// A request to name a bookmark: which row, in which pane, the name it
+    /// starts with (nil when the mark was just created, which is what makes Esc
+    /// remove it), and what the two keys do.
+    struct BookmarkNamingRequest {
+        let pane: PaneViewModel
+        let row: UInt64
+        let existingName: String?
+        let commit: (String) -> Void
+        let cancel: () -> Void
+    }
+
+    /// Where a naming request goes. Nil means the real popover on the pane's
+    /// mark; a test replaces it to capture the request instead, because a
+    /// popover anchored in a window that is never on screen closes the instant
+    /// it opens — the commands' own behaviour is what those tests are about.
+    var bookmarkNamingPresenter: ((BookmarkNamingRequest) -> Void)?
+
+    /// Presents the naming popover on `pane`'s mark (§20.3).
+    private func presentBookmarkNamePopover(
+        in pane: PaneViewModel, row: UInt64, existingName: String?,
+        onCommit: @escaping (String) -> Void, onCancel: @escaping () -> Void
+    ) {
+        let request = BookmarkNamingRequest(pane: pane, row: row, existingName: existingName,
+                                            commit: onCommit, cancel: onCancel)
+        if let bookmarkNamingPresenter {
+            bookmarkNamingPresenter(request)
+            return
         }
-        presentAsSheet(sheet)
+        filePaneView(for: pane)?.presentBookmarkNamePopover(
+            rowContaining: row, existingName: existingName,
+            onCommit: onCommit, onCancel: onCancel
+        )
     }
 
-    /// Offset context menu > Add Bookmark: marks the right-clicked row, unnamed,
-    /// with no dialog — the same act as ⌘D, on the row that was clicked rather
-    /// than the caret's (§20.3).
-    @objc func addBookmarkAtOffset(_ sender: Any?) {
-        guard let target = offsetContextTarget(from: sender) else { return }
-        windowModel.bookmarkStore.add(rowContaining: target.offset)
+    /// ⌘D: the active pane's caret row.
+    @objc func toggleBookmark() {
+        toggleBookmarkInPane(activePane, rowContaining: activePane.hexSelection().start)
     }
 
-    /// Offset context menu > Add Bookmark with Name… / Rename Bookmark…: the
-    /// name sheet for the right-clicked row (§20.2).
-    @objc func nameBookmarkAtOffset(_ sender: Any?) {
-        guard let target = offsetContextTarget(from: sender) else { return }
-        presentBookmarkNameSheet(rowContaining: target.offset)
+    /// ⇧⌘D: renames the mark on the active pane's caret row. Enabled only when
+    /// that row carries one — ⌘D is how a mark is made, and it names it too, so
+    /// this command has only the one job (§20.3).
+    @objc func renameBookmark() {
+        renameBookmarkInPane(activePane, rowContaining: activePane.hexSelection().start)
     }
 
-    /// Offset context menu > Remove Bookmark: unmarks the right-clicked row
-    /// (§20.3). Unlike ⌘D this only ever removes, so a click on the wrong row
-    /// cannot leave a new mark behind.
-    @objc func removeBookmarkAtOffset(_ sender: Any?) {
+    /// Offset context menu > Toggle Bookmark: the same act on the row that was
+    /// right-clicked rather than the caret's, in the pane that was right-clicked.
+    @objc func toggleBookmarkAtOffset(_ sender: Any?) {
         guard let target = offsetContextTarget(from: sender) else { return }
-        windowModel.bookmarkStore.remove(rowContaining: target.offset)
+        toggleBookmarkInPane(target.pane, rowContaining: target.offset)
+    }
+
+    /// Offset context menu > Rename Bookmark…: the naming popover for the
+    /// right-clicked row's existing mark.
+    @objc func renameBookmarkAtOffset(_ sender: Any?) {
+        guard let target = offsetContextTarget(from: sender) else { return }
+        renameBookmarkInPane(target.pane, rowContaining: target.offset)
     }
 
     // MARK: - Dialogs (§10)
@@ -3081,9 +3114,13 @@ extension MainViewController: NSMenuItemValidation {
              #selector(goToPosition),
              #selector(findPattern),
              #selector(selectAllBytes),
-             #selector(toggleBookmark),
-             #selector(nameBookmark):
+             #selector(toggleBookmark):
             return activePane.isOpen
+        case #selector(renameBookmark):
+            // There is nothing to rename on a row that carries no mark, and ⌘D
+            // is what makes one (§20.3).
+            return activePane.isOpen
+                && windowModel.bookmarkStore.bookmark(atRowContaining: activePane.hexSelection().start) != nil
         case #selector(revertDocument):
             // Nothing on disk to revert an untitled document to.
             return activePane.isOpen && !activePane.isUntitled

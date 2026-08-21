@@ -519,6 +519,32 @@ final class FilePaneView: NSView {
         hexView.scrollRowToTop(containing: offset)
     }
 
+    /// Shows the bookmark naming popover on the mark of the row containing
+    /// `offset` (§20.3). The row is scrolled into view first if it is not there:
+    /// a popover has to point at something the user can see, and ⇧⌘D can be
+    /// pressed with the caret's row just off screen.
+    ///
+    /// The pane view presents it because the mark's rect is the hex view's to
+    /// give — the controller says which row and what the two keys mean.
+    @discardableResult
+    func presentBookmarkNamePopover(
+        rowContaining offset: UInt64, existingName: String?,
+        onCommit: @escaping (String) -> Void, onCancel: @escaping () -> Void
+    ) -> BookmarkNamePopoverController {
+        if !hexView.visibleByteRange().contains(offset) {
+            hexView.revealOffsetCentered(offset)
+            // The scroll has to land before the anchor rect is read, or the
+            // popover points at where the row used to be.
+            scrollView.contentView.layoutSubtreeIfNeeded()
+        }
+        let controller = BookmarkNamePopoverController(
+            row: BookmarkStore.row(containing: offset), existingName: existingName,
+            onCommit: onCommit, onCancel: onCancel
+        )
+        controller.show(relativeTo: hexView.bookmarkMarkRect(forRowContaining: offset), of: hexView)
+        return controller
+    }
+
     /// Shows a transient message (e.g. "No match found.") in the status bar,
     /// replacing the regular status for a couple of seconds, then restoring it.
     /// Used by the Find bar for errors and empty results (§11).
