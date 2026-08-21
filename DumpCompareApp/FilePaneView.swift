@@ -175,6 +175,14 @@ final class FilePaneView: NSView {
         didSet { hexView.offsetMenuProvider = offsetMenuProvider }
     }
 
+    /// Fired when the user double-clicks an address in the Offset column, with
+    /// that row's start offset — the mouse gesture for marking a row (§20.3).
+    /// Wired by MainViewController so it resolves THIS pane, as the offset menu
+    /// does.
+    var onOffsetDoubleClick: ((UInt64) -> Void)? {
+        didSet { hexView.onOffsetDoubleClick = onOffsetDoubleClick }
+    }
+
     /// Fired when the user clicks anywhere in the pane (activates it).
     var onActivate: (() -> Void)?
     /// Fired when the user double-clicks the header: expand this pane so its
@@ -486,6 +494,17 @@ final class FilePaneView: NSView {
         viewModel.onMirroredSelectionChanged = { [weak self] in
             self?.hexView.reloadSelection()
         }
+        // A bookmark mark appeared or disappeared on a row (§20). The list is
+        // shared by both panes, so the same row repaints in each — a redraw
+        // only; the bytes, selection, and scroll are untouched.
+        viewModel.onBookmarksChanged = { [weak self] row in
+            self?.hexView.redrawRow(startingAt: row)
+        }
+        // Dragging a mark moves the bookmark itself (§20.6) — the store decides
+        // where it lands, since it is the one that knows which rows are taken.
+        hexView.onBookmarkDrag = { [weak viewModel] from, to, lastRow in
+            viewModel?.bookmarkStore?.move(rowContaining: from, to: to, lastRow: lastRow)
+        }
     }
 
     /// Makes the hex view first responder (e.g. when the pane becomes active).
@@ -511,6 +530,35 @@ final class FilePaneView: NSView {
     /// visible area. Driven by the minimap's viewport drag and wheel (§19).
     func scrollRowToTop(containing offset: UInt64) {
         hexView.scrollRowToTop(containing: offset)
+    }
+
+    /// Shows the bookmark edit popover on the mark of the row containing `offset`
+    /// (§20.3). The row is scrolled into view first if it is not there: a popover
+    /// has to point at something the user can see, and ⇧⌘D can be pressed with
+    /// the caret's row just off screen.
+    ///
+    /// The pane view presents it because the mark's rect is the hex view's to
+    /// give — the controller says which row, which rows are free, and what the
+    /// two keys mean.
+    @discardableResult
+    func presentBookmarkEditPopover(
+        rowContaining offset: UInt64, existingName: String?,
+        rowIsFree: @escaping (UInt64) -> Bool,
+        onCommit: @escaping (UInt64, String) -> Void, onCancel: @escaping () -> Void,
+        onDelete: (() -> Void)? = nil
+    ) -> BookmarkEditPopoverController {
+        if !hexView.visibleByteRange().contains(offset) {
+            hexView.revealOffsetCentered(offset)
+            // The scroll has to land before the anchor rect is read, or the
+            // popover points at where the row used to be.
+            scrollView.contentView.layoutSubtreeIfNeeded()
+        }
+        let controller = BookmarkEditPopoverController(
+            row: BookmarkStore.row(containing: offset), existingName: existingName,
+            rowIsFree: rowIsFree, onCommit: onCommit, onCancel: onCancel, onDelete: onDelete
+        )
+        controller.show(relativeTo: hexView.bookmarkMarkRect(forRowContaining: offset), of: hexView)
+        return controller
     }
 
     /// Shows a transient message (e.g. "No match found.") in the status bar,

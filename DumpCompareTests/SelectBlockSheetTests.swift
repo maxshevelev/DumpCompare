@@ -17,6 +17,60 @@ final class SelectBlockSheetTests: XCTestCase {
         return (sheet, { captured })
     }
 
+    /// Opened from the offset context menu the sheet says nothing above its
+    /// fields: the Start field already shows the address that was right-clicked
+    /// and Length is already the active option, so a sentence saying both would be
+    /// the sheet narrating its own fields (§10.2).
+    func testThePresetSheetHasNoMessageAboveItsFields() throws {
+        let preset = SelectBlockSheetController(fileSize: 0x1000, presetStart: 0x24) { _ in }
+        preset.loadViewIfNeeded()
+        XCTAssertNil(preset.messageText)
+        XCTAssertEqual(preset.startField.stringValue, "0x24", "the address is in the field instead")
+
+        let plain = SelectBlockSheetController(fileSize: 0x1000) { _ in }
+        plain.loadViewIfNeeded()
+        XCTAssertNotNil(plain.messageText,
+                        "opened from the menu bar it still says what End means")
+        XCTAssertLessThan(preset.view.fittingSize.height, plain.view.fittingSize.height,
+                          "and the sheet is shorter for the line it does not show")
+    }
+
+    /// A sheet is as tall as its own rows: a floor of 200 pt left the one-field
+    /// sheets with a hand's width of nothing between the field and the buttons,
+    /// because the slack had to go somewhere (§10).
+    func testASheetIsAsTallAsItsRows() throws {
+        let fill = FillSheetController(selectionCount: 64) { _ in }
+        fill.loadViewIfNeeded()
+        fill.view.layoutSubtreeIfNeeded()
+        let field = try XCTUnwrap(fill.firstField())
+        let fieldFrame = fill.view.convert(field.bounds, from: field)
+        let buttons = fill.view.convert(fill.buttonRow.bounds, from: fill.buttonRow)
+        // The sheet's root view is not flipped, so lower means a smaller y.
+        let gap = fieldFrame.minY - buttons.maxY
+        XCTAssertGreaterThan(gap, 0, "the buttons are below the field")
+        XCTAssertLessThan(gap, 40, "and not a hand's width away")
+
+        let block = SelectBlockSheetController(fileSize: 0x100) { _ in }
+        block.loadViewIfNeeded()
+        block.view.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(block.view.fittingSize.height, fill.view.fittingSize.height,
+                             "three rows of fields make a taller sheet than one")
+    }
+
+    /// The validation message lines up with the fields it is about, not with the
+    /// sheet's left edge (§10).
+    func testTheValidationMessageLinesUpWithTheFields() throws {
+        let (sheet, _) = makeSheet()
+        sheet.startField.stringValue = "0xZZ"
+        _ = sheet.validate()
+        sheet.showError("Invalid start offset.")
+        sheet.view.layoutSubtreeIfNeeded()
+
+        let message = sheet.view.convert(sheet.errorLabel.bounds, from: sheet.errorLabel)
+        let field = sheet.view.convert(sheet.startField.bounds, from: sheet.startField)
+        XCTAssertEqual(message.minX, field.minX, accuracy: 3)
+    }
+
     // MARK: - Default state
 
     func testDefaultStateEndActiveLengthDisabled() {

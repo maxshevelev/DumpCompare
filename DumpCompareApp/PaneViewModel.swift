@@ -135,6 +135,13 @@ final class PaneViewModel: HexViewDataSource {
     /// mirror redraws. Nil in single-file mode. Weak to avoid a retain cycle.
     weak var companion: PaneViewModel?
 
+    /// The window's shared bookmark list (§20): one instance on the
+    /// `WindowViewModel`, reached by both panes, so a marked row shows at the
+    /// same height in both panes of a comparison. Strong — the store holds no
+    /// pane, so there is no cycle — and nil on a bare pane (unit tests) that
+    /// has no window behind it.
+    var bookmarkStore: BookmarkStore?
+
     /// Fired after a byte-mutating edit with the `DiffEdit` describing the
     /// affected region, so the `ComparisonCoordinator` can update the index
     /// (§8.3). Not fired for selection-only changes or undo/redo/revert (those
@@ -193,6 +200,13 @@ final class PaneViewModel: HexViewDataSource {
     /// because the caret did not move (a scroll would yank the view away from
     /// where the user was reading). Set by `FilePaneView.bind`.
     var onCaretAppearanceChanged: (() -> Void)?
+
+    /// Fired when the shared bookmark list changes, carrying the affected
+    /// row's start offset (§20). The view redraws just that row — the mark
+    /// appeared or disappeared there — without scrolling. The list is shared,
+    /// so the same row redraws in both panes of a comparison. Set by
+    /// `FilePaneView.bind`.
+    var onBookmarksChanged: ((UInt64) -> Void)?
 
     /// The active text decoder, rebuilt whenever decoding settings change.
     private(set) var textDecoder: any TextDecoder
@@ -487,6 +501,21 @@ final class PaneViewModel: HexViewDataSource {
     private func companionBytes(in range: Range<UInt64>) -> [UInt8]? {
         guard let other = companion, let doc = other.document else { return nil }
         return (try? doc.read(at: range.lowerBound, length: Int(range.count))) ?? []
+    }
+
+    /// The bookmarked rows in `range` (a range of offsets), for the offset
+    /// column's per-row drawing (§20). A set per range rather than a call per
+    /// row, the same shape as `hexByteStates`. Empty when the pane has no
+    /// store behind it.
+    func hexBookmarkedRows(in range: Range<UInt64>) -> Set<UInt64> {
+        bookmarkStore?.rows(in: range) ?? []
+    }
+
+    /// The bookmark on the row containing `offset` (§20.2) — what the mark's
+    /// tooltip and VoiceOver read, and what tells a right-clicked address from
+    /// an unmarked one.
+    func hexBookmark(atRowContaining offset: UInt64) -> Bookmark? {
+        bookmarkStore?.bookmark(atRowContaining: offset)
     }
 
     func hexSelection() -> SelectionModel {

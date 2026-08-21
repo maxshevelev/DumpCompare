@@ -308,7 +308,24 @@ final class MainWindowController: NSWindowController {
         editMenu.addItem(.separator())
         editMenu.addItem(withTitle: "Select Block…", action: #selector(MainViewController.selectBlock), keyEquivalent: "")
         editMenu.addItem(withTitle: "Find", action: #selector(MainViewController.findPattern), keyEquivalent: "f")
+        // ⌘D marks (or unmarks) the caret's row — the gesture that has to cost
+        // nothing on a bench (§20). It sits beside Go To: mark where you are,
+        // then go to a position. The title says Toggle rather than Add because
+        // the one command does both, whatever the caret's row currently is.
+        editMenu.addItem(withTitle: "Toggle Bookmark", action: #selector(MainViewController.toggleBookmark), keyEquivalent: "d")
+        // ⇧⌘D edits the caret's row's mark — its address and its name. Making one
+        // is ⌘D's job, which opens the same popover, so this command only ever
+        // edits, and is greyed out on a row that carries no mark (§20.3).
+        editMenu.addItem(withTitle: "Edit Bookmark…", action: #selector(MainViewController.editBookmark), keyEquivalent: "D")
         editMenu.addItem(withTitle: "Go To Position…", action: #selector(MainViewController.goToPosition), keyEquivalent: "g")
+        // ⌥⌘B opens the same form as ⌘G with the bookmark list focused (§10.1):
+        // one window answers "go where?", and the two shortcuts differ only in
+        // which half of it the keyboard starts in. ⌘B is the system's Bold, so
+        // the list takes the Option variant.
+        let bookmarksItem = editMenu.addItem(withTitle: "Bookmarks…",
+                                             action: #selector(MainViewController.showBookmarks),
+                                             keyEquivalent: "b")
+        bookmarksItem.keyEquivalentModifierMask = [.command, .option]
         return editMenu
     }
 

@@ -82,6 +82,16 @@ final class MainViewController: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         wireExternalChangeDetection()
+        // A bookmark changed: the panes have already repainted their row, and
+        // what is left for the window is the edit popover, which must not
+        // outlive the mark it is editing (§20.3), the open form's list, which has
+        // to show what the store holds (§20.5), and the minimap's margins, where
+        // the same list is marked (§19.4.3).
+        windowModel.onBookmarksChanged = { [weak self] row in
+            self?.dismissEditPopoverIfItsMarkIsGone(row: row)
+            self?.openGoToForm?.reloadBookmarks()
+            self?.syncMinimapBookmarks()
+        }
         // Apply the Layout settings tab's direction change to an open comparison
         // immediately; outside comparison mode the value is stored and the next
         // comparison opens with it (§6).
@@ -279,6 +289,7 @@ final class MainViewController: NSViewController {
             pane.offsetMenuProvider = { [weak self] offset in
                 self?.makeOffsetMenu(for: paneModel, offset: offset) ?? NSMenu()
             }
+            wireBookmarkDoubleClick(pane, for: paneModel)
             // Close button: closing the last file returns to empty mode (§3.5).
             pane.onClose = { [weak self] in self?.closePane(at: 0) }
             // Closing the Search All panel stops the in-flight search (§11).
@@ -333,6 +344,10 @@ final class MainViewController: NSViewController {
             pane2View.offsetMenuProvider = { [weak self] offset in
                 self?.makeOffsetMenu(for: pane2, offset: offset) ?? NSMenu()
             }
+            // A double click on an address marks that row, in whichever pane
+            // was clicked (§20.3).
+            wireBookmarkDoubleClick(pane1View, for: pane1)
+            wireBookmarkDoubleClick(pane2View, for: pane2)
             // Comparison-mode drops target the hovered pane (§4.3).
             pane1View.enableFileDrop()
             pane2View.enableFileDrop()
@@ -1153,11 +1168,22 @@ final class MainViewController: NSViewController {
         return pane?.hexByteStates(in: range) ?? []
     }
 
+    /// Hands the minimap the window's bookmarks (§19.4.3). The store is the one
+    /// list both maps mark, so this is a straight copy — which rows a given map
+    /// actually shows is the minimap's own geometry to decide, and the names come
+    /// along because hovering a mark names it.
+    private func syncMinimapBookmarks() {
+        minimapView.setBookmarks(windowModel.bookmarkStore.bookmarks)
+    }
+
     /// Hands the minimap the open files' sizes. That is all it needs to lay its
     /// maps out — everything it draws it pulls per repaint.
     private func refreshMinimapMaps() {
         minimapView.setMaps(currentFileSizes().map { MinimapView.Map(fileSize: $0) })
         updateMinimapSelections()
+        // The maps were just rebuilt, so the marks have to be handed over again
+        // — and a file that grew or shrank changes which of them are drawn (§9).
+        syncMinimapBookmarks()
         // An insert or a delete can carry the file across the line where the
         // overview stops magnifying it, so the offer follows the size as well as
         // the panel's height (§19.4). The *mode* is deliberately not re-decided
@@ -1960,7 +1986,28 @@ final class MainViewController: NSViewController {
                                   keyEquivalent: "")
         select.target = self
         select.representedObject = OffsetContextTarget(pane: pane, offset: offset)
+        menu.addItem(.separator())
+        addBookmarkMenuItems(to: menu, for: pane, offset: offset)
         return menu
+    }
+
+    /// The bookmark block of the offset context menu (§20.3). One item marks and
+    /// unmarks — *Toggle Bookmark at «address»*, the same command ⌘D is, so there
+    /// is one thing to learn — and a marked row is offered *Edit Bookmark…*
+    /// besides. The address is the ROW's, not the clicked byte's: a right-click on
+    /// a byte marks its row (§20.1), and the title is what says so.
+    private func addBookmarkMenuItems(to menu: NSMenu, for pane: PaneViewModel, offset: UInt64) {
+        let target = OffsetContextTarget(pane: pane, offset: offset)
+        let address = Bookmark.addressLabel(BookmarkStore.row(containing: offset))
+        func add(_ title: String, _ action: Selector) {
+            let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.representedObject = target
+        }
+        add("Toggle Bookmark at \(address)", #selector(toggleBookmarkAtOffset(_:)))
+        if windowModel.bookmarkStore.bookmark(atRowContaining: offset) != nil {
+            add("Edit Bookmark…", #selector(editBookmarkAtOffset(_:)))
+        }
     }
 
     /// The three selection-scoped context-menu items (§10.2). Each carries the
@@ -2397,31 +2444,277 @@ final class MainViewController: NSViewController {
         WordSize.set(size)
     }
 
+    // MARK: - Bookmarks (§20)
+
+    /// Edit > Toggle Bookmark (⌘D), and the offset menu's item: toggles the mark
+    /// on `pane`'s row containing `offset` (§20.3). A bookmark marks a row, not a
+    /// byte — the offset is rounded down to its row — and the list is shared by
+    /// both panes, so the same row is marked in both panes of a comparison.
+    ///
+    /// Marking a row opens the naming popover on the new mark: Return saves it
+    /// (unnamed if nothing was typed), Esc removes it again. That is what makes
+    /// **⌘D, Return** the whole gesture for "mark this row" and ⌘D, a name,
+    /// Return the one for "mark it and call it this". A row that is already
+    /// marked is unmarked on the spot, with no popover to dismiss.
+    private func toggleBookmarkInPane(_ pane: PaneViewModel, rowContaining offset: UInt64) {
+        guard pane.isOpen else { return }
+        if windowModel.bookmarkStore.remove(rowContaining: offset) { return }
+        markAndNameBookmark(in: pane, rowContaining: offset)
+    }
+
+    /// Marks the row containing `offset` and opens the naming popover on the new
+    /// mark. The mark is made first, so it is visible while its name is typed —
+    /// and `existingName: nil` is what tells the popover it is naming a mark that
+    /// was just made, so its Esc removes it rather than keeping a name (§20.3).
+    private func markAndNameBookmark(in pane: PaneViewModel, rowContaining offset: UInt64) {
+        let store = windowModel.bookmarkStore
+        let row = BookmarkStore.row(containing: offset)
+        store.add(rowContaining: row)
+        presentBookmarkEditPopover(
+            in: pane, row: row, existingName: nil,
+            onCommit: { [weak self] target, name in
+                self?.applyBookmarkEdit(from: row, to: target, name: name)
+            },
+            onCancel: { store.remove(rowContaining: row) }
+        )
+    }
+
+    /// A double click on an address opens the edit popover on that row: it marks
+    /// the row first when it carries no mark, so the gesture is ⌘D's with the
+    /// mouse, and it edits the mark that is there otherwise — a double click on
+    /// a mark is how a mark is opened everywhere else in the app (§20.5's list
+    /// does the same on a name).
+    ///
+    /// What it never does is unmark: the pointer covers the mark it is aimed at,
+    /// so a toggle here would silently take an existing bookmark away on a click
+    /// landing a row off.
+    func handleOffsetDoubleClick(in pane: PaneViewModel, rowContaining offset: UInt64) {
+        guard pane.isOpen else { return }
+        if windowModel.bookmarkStore.bookmark(atRowContaining: offset) != nil {
+            editBookmarkInPane(pane, rowContaining: offset)
+        } else {
+            markAndNameBookmark(in: pane, rowContaining: offset)
+        }
+    }
+
+    /// Wires a pane view's Offset-column double click to the bookmark gesture, so
+    /// it resolves THIS pane even when it is not the active one (§20.3).
+    func wireBookmarkDoubleClick(_ paneView: FilePaneView, for pane: PaneViewModel) {
+        paneView.onOffsetDoubleClick = { [weak self] offset in
+            self?.handleOffsetDoubleClick(in: pane, rowContaining: offset)
+        }
+    }
+
+    /// Edits the mark on `pane`'s row containing `offset` — its address and its
+    /// name — in the same popover (§20.3). Only for a row that carries one: Esc
+    /// leaves the bookmark exactly as it was.
+    private func editBookmarkInPane(_ pane: PaneViewModel, rowContaining offset: UInt64) {
+        guard pane.isOpen,
+              let existing = windowModel.bookmarkStore.bookmark(atRowContaining: offset) else { return }
+        let store = windowModel.bookmarkStore
+        presentBookmarkEditPopover(
+            in: pane, row: existing.row, existingName: existing.name,
+            onCommit: { [weak self] target, name in
+                self?.applyBookmarkEdit(from: existing.row, to: target, name: name)
+            },
+            onCancel: {},
+            // Removing is offered only here, on a bookmark that already exists:
+            // a mark still being named is taken away by its Esc (§20.3).
+            onDelete: { store.remove(rowContaining: existing.row) }
+        )
+    }
+
+    /// Applies what the popover was edited to: the name, and the address when it
+    /// changed. A moved bookmark is the same bookmark — it leaves the old row and
+    /// arrives on the new one named, rather than being removed and re-made, so
+    /// nothing in between sees a bookmark without its name (§20.3).
+    private func applyBookmarkEdit(from row: UInt64, to target: UInt64, name: String) {
+        windowModel.bookmarkStore.edit(rowContaining: row, to: target, name: name)
+    }
+
+    /// A request to edit a bookmark: which row, in which pane, the name it
+    /// starts with (nil when the mark was just created, which is what makes Esc
+    /// remove it), and what the two keys do. `commit` takes the row the popover
+    /// was edited to, which is not always the row it opened on (§20.3).
+    struct BookmarkEditRequest {
+        let pane: PaneViewModel
+        let row: UInt64
+        let existingName: String?
+        let commit: (UInt64, String) -> Void
+        let cancel: () -> Void
+        /// Removes the bookmark — nil for a mark that was just made, whose Esc
+        /// already does that (§20.3).
+        let delete: (() -> Void)?
+    }
+
+    /// Where an edit request goes, returning how to dismiss what it presented.
+    /// Nil means the real popover on the pane's mark; a test replaces it to
+    /// capture the request instead, because a popover anchored in a window that
+    /// is never on screen closes the instant it opens — the commands' own
+    /// behaviour is what those tests are about.
+    var bookmarkEditPresenter: ((BookmarkEditRequest) -> () -> Void)?
+
+    /// The editing session on screen: the row it is about, and how to close it
+    /// without saving. Held because it must not outlive its mark (§20.3).
+    private var openEditing: (row: UInt64, dismiss: () -> Void)?
+
+    /// The row an edit popover is open for, if any.
+    var editingRow: UInt64? { openEditing?.row }
+
+    /// Presents the edit popover on `pane`'s mark (§20.3), replacing any session
+    /// already on screen — ⌘D on another row while one is open would otherwise
+    /// leave two panels up, one of them about a row the user has moved on from.
+    private func presentBookmarkEditPopover(
+        in pane: PaneViewModel, row: UInt64, existingName: String?,
+        onCommit: @escaping (UInt64, String) -> Void, onCancel: @escaping () -> Void,
+        onDelete: (() -> Void)? = nil
+    ) {
+        openEditing?.dismiss()
+        openEditing = nil
+        let request = BookmarkEditRequest(
+            pane: pane, row: row, existingName: existingName,
+            commit: { [weak self] target, name in
+                self?.openEditing = nil
+                onCommit(target, name)
+            },
+            cancel: { [weak self] in
+                self?.openEditing = nil
+                onCancel()
+            },
+            delete: onDelete.map { delete in
+                { [weak self] in
+                    self?.openEditing = nil
+                    delete()
+                }
+            }
+        )
+        if let bookmarkEditPresenter {
+            openEditing = (row, bookmarkEditPresenter(request))
+            return
+        }
+        guard let paneView = filePaneView(for: pane) else { return }
+        let store = windowModel.bookmarkStore
+        let controller = paneView.presentBookmarkEditPopover(
+            rowContaining: row, existingName: existingName,
+            // One row holds one bookmark (§20.1), so an address already marked is
+            // not an address this bookmark can be given.
+            rowIsFree: { store.bookmark(atRowContaining: $0) == nil },
+            onCommit: request.commit, onCancel: request.cancel, onDelete: request.delete
+        )
+        openEditing = (row, { controller.abandon() })
+    }
+
+    /// Closes the edit popover when the mark it is editing disappears. Every
+    /// removal arrives here through the window's bookmark signal — ⌘D (whose key
+    /// equivalent reaches the menu through an open popover), the context menu,
+    /// and the form's list — so no removal path has to remember to do this
+    /// (§20.3).
+    private func dismissEditPopoverIfItsMarkIsGone(row: UInt64) {
+        guard let openEditing, openEditing.row == row,
+              windowModel.bookmarkStore.bookmark(atRowContaining: row) == nil else { return }
+        self.openEditing = nil
+        openEditing.dismiss()
+    }
+
+    /// ⌘D: the active pane's caret row.
+    @objc func toggleBookmark() {
+        toggleBookmarkInPane(activePane, rowContaining: activePane.hexSelection().start)
+    }
+
+    /// ⇧⌘D: edits the mark on the active pane's caret row — its address and its
+    /// name. Enabled only when that row carries one: ⌘D is how a mark is made,
+    /// and it opens the same popover, so this command only ever edits (§20.3).
+    @objc func editBookmark() {
+        editBookmarkInPane(activePane, rowContaining: activePane.hexSelection().start)
+    }
+
+    /// Offset context menu > Toggle Bookmark: the same act on the row that was
+    /// right-clicked rather than the caret's, in the pane that was right-clicked.
+    @objc func toggleBookmarkAtOffset(_ sender: Any?) {
+        guard let target = offsetContextTarget(from: sender) else { return }
+        toggleBookmarkInPane(target.pane, rowContaining: target.offset)
+    }
+
+    /// Offset context menu > Edit Bookmark…: the edit popover for the
+    /// right-clicked row's existing mark.
+    @objc func editBookmarkAtOffset(_ sender: Any?) {
+        guard let target = offsetContextTarget(from: sender) else { return }
+        editBookmarkInPane(target.pane, rowContaining: target.offset)
+    }
+
     // MARK: - Dialogs (§10)
 
+    /// ⌘G: the Go To / Bookmarks form with the offset field focused — the fast
+    /// path is unchanged, ⌘G, type, Return (§10.1).
     @objc func goToPosition() {
-        let pane = activePane
-        guard pane.isOpen else { return }
-        let largerSize = max(windowModel.pane1.fileSize, windowModel.pane2.fileSize)
-        let sheet = GoToSheetController(fileSize: largerSize) { [weak self] offset in
-            guard let self else { return }
-            if offset > largerSize {
-                self.presentAlert(
-                    title: "Offset beyond end of file",
-                    message: "Offset \(String(format: "0x%X", offset)) is beyond the end of the file(s) (\(String(format: "0x%X", largerSize)) bytes). Moved to the end."
-                )
-            }
-            let target = min(offset, largerSize)
-            if self.mode == .comparison {
-                // §10.1: move both panes; each clamps to its own EOF.
-                self.windowModel.pane1.moveCaret(to: target)
-                self.windowModel.pane2.moveCaret(to: target)
-            } else {
-                pane.moveCaret(to: target)
-            }
-            self.focusActiveHexView()
+        presentGoToForm(focus: .offsetField)
+    }
+
+    /// ⌥⌘B: the same form with the bookmark list focused, because going to a
+    /// bookmark is the other half of the same question (§20.5).
+    @objc func showBookmarks() {
+        presentGoToForm(focus: .bookmarks)
+    }
+
+    /// Where the form goes, so a test can drive it instead: it is presented in a
+    /// modal window, and a modal window has no one to dismiss it under XCTest.
+    var goToFormPresenter: ((GoToBookmarksController) -> Void)?
+
+    /// The form on screen, so a bookmark changed under it (from its own list, or
+    /// from anywhere the store is touched) refreshes what it shows (§20.2).
+    private weak var openGoToForm: GoToBookmarksController?
+
+    private func presentGoToForm(focus: GoToBookmarksController.Focus) {
+        guard activePane.isOpen else { return }
+        let form = GoToBookmarksController(
+            store: windowModel.bookmarkStore, focus: focus,
+            rowBytes: { [weak self] row in self?.bookmarkRowBytes(row) },
+            onGo: { [weak self] offset in self?.goTo(offset: offset) }
+        )
+        openGoToForm = form
+        if let goToFormPresenter {
+            goToFormPresenter(form)
+            return
         }
-        presentAsSheet(sheet)
+        // A window, not a sheet: it holds a list the user manages, and it is
+        // centred over the window it navigates.
+        presentAsModalWindow(form)
+    }
+
+    /// The bytes on a bookmarked row of the ACTIVE pane, for the list to show
+    /// where an unnamed bookmark's name would be (§20.5). Nil when the row is
+    /// past that pane's end: a bookmark is an absolute address and stays in the
+    /// list even where the file does not reach (§9). Read live, per row, so the
+    /// list shows the pane's current content, edits included.
+    private func bookmarkRowBytes(_ row: UInt64) -> [UInt8]? {
+        let pane = activePane
+        guard pane.isOpen, row < pane.fileSize, let storage = pane.byteStorage else { return nil }
+        let length = Int(min(UInt64(HexLayout.bytesPerRow), pane.fileSize - row))
+        return (try? storage.read(at: row, length: length)) ?? []
+    }
+
+    /// The jump itself (§10.1) — the same act whether the offset was typed or
+    /// picked from the bookmark list.
+    private func goTo(offset: UInt64) {
+        let largerSize = max(windowModel.pane1.fileSize, windowModel.pane2.fileSize)
+        if offset > largerSize {
+            presentAlert(
+                title: "Offset beyond end of file",
+                message: "Offset \(String(format: "0x%X", offset)) is beyond the end of the file(s) (\(String(format: "0x%X", largerSize)) bytes). Moved to the end."
+            )
+        }
+        let target = min(offset, largerSize)
+        if mode == .comparison {
+            // §10.1: move both panes; each clamps to its own EOF.
+            windowModel.pane1.moveCaret(to: target)
+            windowModel.pane2.moveCaret(to: target)
+        } else {
+            activePane.moveCaret(to: target)
+        }
+        // The row has to be where the user is looking, not wherever it happened
+        // to be before the jump (§10.1).
+        activeFilePane?.revealOffsetCentered(target)
+        focusActiveHexView()
     }
 
     @objc func selectBlock() {
@@ -2760,7 +3053,14 @@ final class MainViewController: NSViewController {
         return Self.presentModal(alert, defaultInTest: .alertThirdButtonReturn)  // Cancel in tests
     }
 
+    /// The title of the last informational alert. A modal alert is
+    /// short-circuited under XCTest (see `presentModal`), so this is the only
+    /// trace it leaves — and some of it is behaviour worth pinning, like the
+    /// past-EOF warning a Go To leaves behind (§10.1).
+    private(set) var lastAlertTitle: String?
+
     private func presentAlert(title: String, message: String) {
+        lastAlertTitle = title
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message
@@ -2992,9 +3292,16 @@ extension MainViewController: NSMenuItemValidation {
              #selector(deleteBytes),
              #selector(selectBlock),
              #selector(goToPosition),
+             #selector(showBookmarks),
              #selector(findPattern),
-             #selector(selectAllBytes):
+             #selector(selectAllBytes),
+             #selector(toggleBookmark):
             return activePane.isOpen
+        case #selector(editBookmark):
+            // There is nothing to edit on a row that carries no mark, and ⌘D is
+            // what makes one (§20.3).
+            return activePane.isOpen
+                && windowModel.bookmarkStore.bookmark(atRowContaining: activePane.hexSelection().start) != nil
         case #selector(revertDocument):
             // Nothing on disk to revert an untitled document to.
             return activePane.isOpen && !activePane.isUntitled

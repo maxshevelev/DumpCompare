@@ -238,7 +238,8 @@ final class OffsetContextMenuTests: XCTestCase {
         let controller = MainViewController()
         let menu = controller.makeOffsetMenu(for: PaneViewModel(), offset: 0x24)
 
-        XCTAssertEqual(menu.items.count, 3, "Copy offset, separator, Select block from here")
+        XCTAssertEqual(menu.items.count, 5,
+                       "Copy offset, separator, Select block from here, separator, Toggle Bookmark")
         XCTAssertEqual(menu.items[0].title, "Copy offset")
         XCTAssertEqual(menu.items[0].action, #selector(MainViewController.copyOffset(_:)))
         XCTAssertTrue(menu.items[1].isSeparatorItem)
@@ -293,7 +294,10 @@ final class OffsetContextMenuTests: XCTestCase {
                        ["Copy", "Fill Selection with…", "Delete Bytes…",
                         "",                     // separator
                         "Copy offset", "",
-                        "Select block from here"])
+                        "Select block from here", "",
+                        // The bookmark block: one item marks and unmarks, and an
+                        // unmarked row has nothing to rename (§20.3).
+                        "Toggle Bookmark at 0x00000010"])
 
         // The selection items act on the pane they were built for.
         let copy = menu.items[0]
@@ -315,7 +319,8 @@ final class OffsetContextMenuTests: XCTestCase {
         let controller = MainViewController()
         let menu = controller.makeOffsetMenu(for: pane, offset: 0x24)
         XCTAssertEqual(menu.items.map(\.title),
-                       ["Copy offset", "", "Select block from here"])
+                       ["Copy offset", "", "Select block from here", "",
+                        "Toggle Bookmark at 0x00000020"])
     }
 
     /// Selection membership is half-open: the byte at `start` qualifies, the

@@ -1,4 +1,5 @@
 import Cocoa
+import Cocoa
 import DumpCompareCore
 
 /// What changed in the pane's content, so the hex view can invalidate only the
@@ -24,6 +25,15 @@ protocol HexViewDataSource: AnyObject {
     /// rows past this pane's own EOF are simply empty.
     var scrollExtent: UInt64 { get }
     func hexByteStates(in range: Range<UInt64>) -> [HexByteState]
+    /// The bookmarked rows in `range` (a range of offsets), for the offset
+    /// column's per-row drawing (§20). A set per range rather than a call per
+    /// row, the same shape as `hexByteStates`.
+    func hexBookmarkedRows(in range: Range<UInt64>) -> Set<UInt64>
+    /// The bookmark on the row containing `offset`, if any (§20.2). One row, not
+    /// a range: this answers the questions about a single row — what the mark's
+    /// tooltip says, what VoiceOver reads, whether a right-clicked address
+    /// carries a mark — where the per-range set above serves the drawing.
+    func hexBookmark(atRowContaining offset: UInt64) -> Bookmark?
     func hexSelection() -> SelectionModel
     func hexCaretNibble() -> Int
     func hexInputRegion() -> HexInputRegion
@@ -59,7 +69,7 @@ protocol HexEditorDelegate: AnyObject {
 /// so arbitrarily large files scroll without materializing their rows (§6,
 /// §13.8). Rendered from a `HexViewDataSource` and driven by a
 /// `HexEditorDelegate`.
-final class HexView: NSView {
+final class HexView: NSView, NSViewToolTipOwner {
     weak var dataSource: HexViewDataSource?
     weak var delegate: HexEditorDelegate?
 
@@ -174,6 +184,43 @@ final class HexView: NSView {
     /// resolve the exact offset and pane (§10.2). When nil (the default) the
     /// right-click falls through to `super` unchanged.
     var offsetMenuProvider: ((UInt64) -> NSMenu)?
+
+    /// Called when an address in the Offset column is double-clicked, with that
+    /// row's start offset — the mouse gesture for marking a row (§20.3).
+    var onOffsetDoubleClick: ((UInt64) -> Void)?
+
+    /// Asks for the bookmark on row `from` to be moved to row `to`, with `lastRow`
+    /// the last row this view draws — the far edge a mark may be dragged to
+    /// (§20.6). Returns the row the mark actually landed on, which is not always
+    /// `to`: a row another bookmark holds is jumped over, and a mark with nowhere
+    /// to go stays where it is (nil). The view drags the mark by the answer, so a
+    /// refused step leaves the pointer running ahead of a mark that stopped.
+    var onBookmarkDrag: ((_ from: UInt64, _ to: UInt64, _ lastRow: UInt64) -> UInt64?)?
+
+    /// The row of the mark being dragged, updated as it moves (§20.6). Non-nil
+    /// for the whole gesture, so a drag that started on a mark moves that mark
+    /// instead of extending a selection — including from the autoscroll timer's
+    /// ticks, which is what lets a mark be dragged past the visible edge.
+    private var draggingBookmarkRow: UInt64?
+
+    /// The row the pointer was last resolved to during a mark's drag. A step is
+    /// taken only when this changes — the mark answers the pointer *crossing* a
+    /// row, not the row the pointer happens to be over (§20.6).
+    ///
+    /// This is what stops a mark that has just jumped over another from shuffling
+    /// back and forth: after the jump the mark sits past the obstacle while the
+    /// pointer is still on the obstacle's row, so re-reading that row would
+    /// compute the jump again — in the other direction, since the mark is now on
+    /// the far side of it. Answering only the crossing makes the jump final until
+    /// the pointer really moves on.
+    private var draggingBookmarkPointerRow: Int?
+
+    /// How far past a row's edge the pointer must travel before a drag counts it
+    /// as being on the next row (§20.6). A hand resting on a mouse jitters by
+    /// about a pixel, and on a row boundary that jitter would step the mark to
+    /// and fro; two points of hysteresis costs nothing at the speed a drag
+    /// actually moves and makes the boundary hold still.
+    static let bookmarkDragHysteresis: CGFloat = 2
 
     /// Ideal width of the hex grid (offset column + hex + ASCII). The window
     /// delegate uses this to zoom-to-fit (§3.1) instead of zooming to max.
@@ -310,6 +357,7 @@ final class HexView: NSView {
     func reloadData() {
         currentLayout = makeLayout()
         updateContentFrame()
+        refreshBookmarkTooltipRect()
         // A full redraw repaints everything, so the diff baselines catch up to
         // the current state — otherwise a later `reloadSelection` would
         // invalidate rows this redraw already made current.
@@ -603,6 +651,54 @@ final class HexView: NSView {
         onVisibleRangeChanged?(visibleByteRange())
     }
 
+    // MARK: - Bookmark tooltips (§20.2)
+
+    /// The tooltip tag covering the Offset column. Internal so a test can see
+    /// that the rect is registered at all — the hover itself cannot be driven.
+    private(set) var bookmarkTooltipTag: NSView.ToolTipTag?
+
+    /// The rect that tag covers, so an unchanged geometry re-registers nothing:
+    /// `reloadData` runs on every edit, and there is no reason to churn AppKit's
+    /// tooltip bookkeeping per typed byte.
+    private var bookmarkTooltipRect: CGRect?
+
+    /// Registers one tooltip rect over the whole Offset column rather than one
+    /// per marked row: AppKit asks the owner for the string at the hovered
+    /// point, so a single rect answers for every row and nothing has to be
+    /// re-registered when a bookmark is added, renamed or removed — only when
+    /// the column itself moves or the content grows.
+    private func refreshBookmarkTooltipRect() {
+        let layout = currentLayout
+        let column = CGRect(x: layout.leftPadding, y: 0,
+                            width: layout.offsetColumnWidth + layout.gapAfterOffset,
+                            height: max(frame.height, bounds.height))
+        guard column.width > 0, column.height > 0 else { return }
+        guard column != bookmarkTooltipRect else { return }
+        if let bookmarkTooltipTag {
+            removeToolTip(bookmarkTooltipTag)
+        }
+        bookmarkTooltipTag = addToolTip(column, owner: self, userData: nil)
+        bookmarkTooltipRect = column
+    }
+
+    /// A marked row's NAME under the pointer, and nothing else: the address is
+    /// right there under the pointer, drawn on the mark, so a tooltip repeating
+    /// it would explain a thing to itself. An unmarked row, and a marked row with
+    /// no name, return "" — no tooltip at all (§20.3). The minimap's marks say
+    /// the address as well, because there the arrow's position only approximates
+    /// it (§19.4.3).
+    func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag,
+              point: NSPoint, userData data: UnsafeMutableRawPointer?) -> String {
+        guard let dataSource else { return "" }
+        let hoveredRow = Int(floor(point.y / currentLayout.rowHeight))
+        guard hoveredRow >= 0 else { return "" }
+        let offset = currentLayout.byteOffset(row: hoveredRow, column: 0)
+        guard offset < dataSource.scrollExtent,
+              let bookmark = dataSource.hexBookmark(atRowContaining: offset),
+              !bookmark.name.isEmpty else { return "" }
+        return bookmark.name
+    }
+
     // MARK: - Accessibility (§15)
 
     override func accessibilityLabel() -> String? { accessibilityTitle }
@@ -612,11 +708,17 @@ final class HexView: NSView {
         let selection = dataSource.hexSelection()
         let size = dataSource.fileSize
         let start = String(selection.start, radix: 16).uppercased()
+        // The bookmark mark is purely visual otherwise, so the row the caret is
+        // on says whether it is marked, and what the mark is called — the only
+        // way a bookmark reaches a screen reader while moving through the dump
+        // (§15, §20.2).
+        let mark = dataSource.hexBookmark(atRowContaining: selection.start)
+            .map { " Bookmarked row: \($0.displayName)." } ?? ""
         if selection.isEmpty {
-            return "Offset 0x\(start). File size \(size) bytes."
+            return "Offset 0x\(start).\(mark) File size \(size) bytes."
         }
         let end = String(selection.end, radix: 16).uppercased()
-        return "Offset 0x\(start), \(selection.count) bytes selected through 0x\(end). File size \(size) bytes."
+        return "Offset 0x\(start), \(selection.count) bytes selected through 0x\(end).\(mark) File size \(size) bytes."
     }
 
     // MARK: - Focus
@@ -676,12 +778,36 @@ final class HexView: NSView {
 
         let rows = layout.visibleRowRange(in: dirtyRect)
 
+        // The bookmarked rows in the drawn range, asked once per range rather
+        // than per row (§20) — the same shape as `hexByteStates`.
+        let bookmarkedRows: Set<UInt64>
+        if rows.isEmpty {
+            bookmarkedRows = []
+        } else {
+            let lower = UInt64(rows.lowerBound) * UInt64(HexLayout.bytesPerRow)
+            let upper = UInt64(rows.upperBound) * UInt64(HexLayout.bytesPerRow)
+            bookmarkedRows = dataSource.hexBookmarkedRows(in: lower..<upper)
+        }
+
+        // The row whose address carries a right-click menu, if any. A bookmarked
+        // row shows that menu through its own mark — outlined instead of filled
+        // (§20.4) — because the accent ring lands on top of the fill. A menu
+        // opened on a byte frames that byte and leaves the mark alone.
+        let contextMenuRowAddress: UInt64? = {
+            guard let contextMenuOffset, contextMenuOffset < fileSize,
+                  !contextMenuFramesByte else { return nil }
+            return layout.byteOffset(row: layout.rowColumn(of: contextMenuOffset).row, column: 0)
+        }()
+
         for row in rows {
             guard UInt64(row) < rowCount else { break }
+            let rowAddress = layout.byteOffset(row: row, column: 0)
             drawRow(
                 row: row, layout: layout, fileSize: fileSize,
                 selection: selection, baseline: baseline,
-                drawsOffset: drawsOffset, drawsHex: drawsHex, drawsAscii: drawsAscii
+                drawsOffset: drawsOffset, drawsHex: drawsHex, drawsAscii: drawsAscii,
+                isBookmarked: bookmarkedRows.contains(rowAddress),
+                bookmarkOutlined: rowAddress == contextMenuRowAddress
             )
         }
 
@@ -711,13 +837,16 @@ final class HexView: NSView {
         // Context-menu anchor: while a right-click menu is up, frame the
         // right-clicked anchor with the standard focus ring (§10.2) — the
         // Offset column's row address, or the single byte the menu was opened
-        // on in the hex column.
+        // on in the hex column. A bookmarked row's address is the exception:
+        // its mark occupies that exact rect, so the mark is outlined in the
+        // bookmark colour instead of being buried under the ring (§20.4).
         if let contextMenuOffset, contextMenuOffset < fileSize {
             let (row, column) = layout.rowColumn(of: contextMenuOffset)
-            let frame = contextMenuFramesByte
-                ? layout.hexByteFrame(row: row, column: column)
-                : layout.offsetColumnFrame(row: row)
-            drawContextMenuFrame(around: frame)
+            if contextMenuFramesByte {
+                drawContextMenuFrame(around: layout.hexByteFrame(row: row, column: column))
+            } else if !isBookmarked(rowStartingAt: layout.byteOffset(row: row, column: 0)) {
+                drawContextMenuFrame(around: layout.offsetColumnFrame(row: row))
+            }
         }
     }
 
@@ -729,7 +858,8 @@ final class HexView: NSView {
     /// extension).
     private func drawRow(row: Int, layout: HexLayout, fileSize: UInt64,
                          selection: SelectionModel, baseline: CGFloat,
-                         drawsOffset: Bool, drawsHex: Bool, drawsAscii: Bool) {
+                         drawsOffset: Bool, drawsHex: Bool, drawsAscii: Bool,
+                         isBookmarked: Bool, bookmarkOutlined: Bool) {
         let rowStart = layout.byteOffset(row: row, column: 0)
         let rowEnd = rowStart + UInt64(HexLayout.bytesPerRow)
         let rowY = layout.rowFrame(row: row).minY
@@ -737,8 +867,22 @@ final class HexView: NSView {
         // Offset column.
         if drawsOffset {
             let offsetText = String(rowStart, radix: 16, uppercase: true).leftPadded(to: layout.offsetColumnChars, with: "0")
-            draw(text: offsetText, in: layout.offsetColumnFrame(row: row),
-                 baseline: baseline, color: HexTheme.inkBlue)
+            if isBookmarked {
+                // A bookmarked row's address stands on a purple right-pointing
+                // arrow — the breakpoint-style mark the eye catches when scanning
+                // rather than reading addresses (§20). The mark is the offset's
+                // background, so the address is drawn on top of it in the colour
+                // for text on a filled selection. While the row's own right-click
+                // menu is up the mark is a purple outline instead: there is no
+                // fill to read against, so the address keeps its ink (§20.4).
+                drawBookmarkMark(in: layout, row: row, outlined: bookmarkOutlined)
+                draw(text: offsetText, in: layout.offsetColumnFrame(row: row),
+                     baseline: baseline,
+                     color: bookmarkOutlined ? HexTheme.inkBlue : HexTheme.bookmarkTextColor)
+            } else {
+                draw(text: offsetText, in: layout.offsetColumnFrame(row: row),
+                     baseline: baseline, color: HexTheme.inkBlue)
+            }
         }
 
         let states = dataSource?.hexByteStates(in: rowStart..<rowEnd) ?? []
@@ -950,6 +1094,47 @@ final class HexView: NSView {
         }
     }
 
+    /// Whether the row starting at `rowAddress` carries a bookmark. Asks for
+    /// that one row instead of reusing the drawn range's set: the right-click
+    /// anchor can sit outside the dirty rows the pass is painting (§20.4).
+    private func isBookmarked(rowStartingAt rowAddress: UInt64) -> Bool {
+        dataSource?.hexBookmark(atRowContaining: rowAddress) != nil
+    }
+
+    /// The bookmark mark: a right-pointing arrow (a rectangle with a pointed
+    /// right end) in the bookmark colour that is the marked offset's background
+    /// — the breakpoint-style mark the eye catches when scanning rather than
+    /// reading addresses (§20).
+    ///
+    /// Its body is the right-click focus ring's own rect — the Offset column
+    /// padded by `mirrorContourPadding`, rounded by `mirrorContourRadius` — so
+    /// the mark and the ring are the same shape at the same size; the tip
+    /// reaches into the gap before the hex column, never touching it.
+    ///
+    /// `outlined` strokes that shape instead of filling it, in the bookmark
+    /// colour and the ring's line width. That is how a bookmarked row shows its
+    /// right-click menu: the accent ring drawn on top of the fill is unreadable,
+    /// so the mark itself becomes the ring and the standard frame is skipped
+    /// (§20.4).
+    private func drawBookmarkMark(in layout: HexLayout, row: Int, outlined: Bool) {
+        let frame = Self.bookmarkMarkBody(in: layout, row: row)
+        let tip = Self.bookmarkTipReach(height: frame.height, gap: layout.gapAfterOffset)
+        let path = Self.bookmarkMarkPath(body: frame, tipReach: tip)
+        if outlined {
+            HexTheme.bookmarkColor.setStroke()
+            path.lineWidth = Self.mirrorContourLineWidth
+            // Dashed, not solid: at the ring's line width a closed purple loop
+            // around an address reads as a heavy slab, and the mark it replaces
+            // was a fill — the dashes say "this row is marked, and the menu is
+            // about it" without shouting louder than the mark did (§20.4).
+            path.setLineDash(Self.bookmarkOutlineDashes, count: 2, phase: 0)
+            path.stroke()
+        } else {
+            HexTheme.bookmarkColor.setFill()
+            path.fill()
+        }
+    }
+
     /// Closed contours that mirror the opposite pane — one loop around the span
     /// in the hex column and one around it in the ASCII column (the companion's
     /// selection, clamped to this pane's file size). A non-empty selection is
@@ -1149,6 +1334,73 @@ final class HexView: NSView {
 
     /// Stroke width of the mirrored-selection contour.
     static let mirrorContourLineWidth: CGFloat = 2
+
+    /// The apex angle of the bookmark mark's tip (§20.4) — blunt rather than
+    /// sharp, so the mark reads as a flag beside the address instead of an arrow
+    /// pointing at the bytes. The reach that produces it follows from the mark's
+    /// height, so the angle holds at every font size.
+    static let bookmarkTipAngle: CGFloat = 120 * .pi / 180
+
+    /// The dash pattern the mark's outline is stroked with while a context menu
+    /// is up (§20.4): dash, gap. Internal so a test can sample between dashes.
+    static let bookmarkOutlineDashes: [CGFloat] = [3, 2]
+
+    /// The mark's outline: the pentagon of `body` with a `tipReach` point on its
+    /// right, corners rounded like the right-click focus ring's (§20.4). Shared
+    /// by the fill and the stroke, and by the tests, so the shape is stated once.
+    ///
+    /// The path starts halfway along the top edge rather than at a corner.
+    /// `appendArc` leaves the path on the edge *after* the corner it rounds, so a
+    /// path beginning at the top-left vertex ended with `close()` drawing a spur
+    /// back into that sharp vertex — a visible notch on the outlined mark.
+    /// Starting mid-edge, the closing line runs along the edge itself.
+    static func bookmarkMarkPath(body: CGRect, tipReach: CGFloat) -> NSBezierPath {
+        let (top, bottom, left, right) = (body.minY, body.maxY, body.minX, body.maxX)
+        // Pentagon vertices, clockwise from top-left; the tip is the rightmost.
+        let points = [
+            NSPoint(x: left, y: top),
+            NSPoint(x: right, y: top),
+            NSPoint(x: right + tipReach, y: (top + bottom) / 2),
+            NSPoint(x: right, y: bottom),
+            NSPoint(x: left, y: bottom),
+        ]
+        let path = NSBezierPath()
+        path.move(to: NSPoint(x: (left + right) / 2, y: top))
+        for i in 1...points.count {
+            path.appendArc(from: points[i % points.count],
+                           to: points[(i + 1) % points.count],
+                           radius: mirrorContourRadius)
+        }
+        path.close()
+        return path
+    }
+
+    /// The bookmark mark's body: the right-click focus ring's own rect, so mark
+    /// and ring are one shape at one size (§20.4). The tip grows out of its
+    /// right edge.
+    static func bookmarkMarkBody(in layout: HexLayout, row: Int) -> CGRect {
+        layout.offsetColumnFrame(row: row).insetBy(dx: -mirrorContourPadding, dy: 0)
+    }
+
+    /// The rect a bookmark's naming popover points at: the mark on the row
+    /// containing `offset`, in this view's coordinates. The popover is about that
+    /// row, so it hangs off the mark rather than off the pane (§20.3).
+    func bookmarkMarkRect(forRowContaining offset: UInt64) -> CGRect {
+        let layout = currentLayout
+        return Self.bookmarkMarkBody(in: layout, row: layout.rowColumn(of: offset).row)
+    }
+
+    /// How far the bookmark mark's tip reaches past its body for a mark of
+    /// `height`, given the `gap` before the hex column. Each of the tip's two
+    /// edges rises over half the height, so the reach that opens the apex to
+    /// `bookmarkTipAngle` is (height / 2) / tan(angle / 2) — the angle then holds
+    /// at every font size, since the height scales with the font. The reach is
+    /// clamped to the gap (less the padding the body already spends in it, and a
+    /// point of air) because the tip must never touch the hex column (§20.4).
+    static func bookmarkTipReach(height: CGFloat, gap: CGFloat) -> CGFloat {
+        let reach = (height / 2) / tan(bookmarkTipAngle / 2)
+        return max(0, min(reach, gap - mirrorContourPadding - 1))
+    }
 
     /// Opacity of the mirrored-selection contour's stroke.
     static let mirrorContourAlpha: CGFloat = 0.6
@@ -1430,6 +1682,17 @@ final class HexView: NSView {
         setNeedsDisplay(frame.insetBy(dx: 0, dy: -3))
     }
 
+    /// Redraws the row whose start offset is `rowStart` without scrolling — a
+    /// bookmark mark appeared or disappeared there (§20). The mark is the
+    /// offset's arrow (the Offset column and its right-pointing tip), so the
+    /// row's frame repaints. Off-screen rows are marked dirty too: a
+    /// layer-backed view keeps their old pixels until they are redrawn.
+    func redrawRow(startingAt rowStart: UInt64) {
+        let layout = currentLayout
+        let row = Int(rowStart / UInt64(HexLayout.bytesPerRow))
+        setNeedsDisplay(layout.rowFrame(row: row))
+    }
+
     /// Scrolls the row containing `offset` to the vertical centre of the visible
     /// area (clamped to the document's edges), so the byte is shown mid-pane
     /// instead of at its top or bottom edge. Used after a search result lands
@@ -1567,13 +1830,20 @@ final class HexView: NSView {
     /// document runs out (§6). Internal (not private) so tests can drive a tick
     /// synchronously without spinning the run loop.
     func performDragAutoscrollTick() {
-        guard let last = lastDragPoint, dragEngaged else {
+        // A mark's drag engages on the press itself (there is no dead zone to
+        // leave: it moves only when the pointer reaches another row), so it does
+        // not wait for `dragEngaged` the way a selection does.
+        guard let last = lastDragPoint, dragEngaged || draggingBookmarkRow != nil else {
             stopDragAutoscroll()
             return
         }
         let point = convert(last, from: nil)
         let effective = dragAutoscrollStep(at: point)
-        extendDragSelection(at: effective)
+        if draggingBookmarkRow != nil {
+            moveDraggedBookmark(to: effective)
+        } else {
+            extendDragSelection(at: effective)
+        }
         // Re-convert after the scroll step: a held pointer's document
         // coordinate advances with the scroll (its screen position stays put,
         // so the content scrolls past it), keeping the overshoot constant. The
@@ -1594,7 +1864,27 @@ final class HexView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
+        // A double click on an address marks that row (§20.3). The click that
+        // came before it has already placed the caret there, which is where the
+        // gesture would leave it anyway; the second click adds the mark instead
+        // of placing the caret again.
+        if event.clickCount == 2,
+           let offset = offsetColumnOffset(at: convert(event.locationInWindow, from: nil)) {
+            onOffsetDoubleClick?(offset)
+            return
+        }
         mouseDownLocation = convert(event.locationInWindow, from: nil)
+        // Pressing on a mark takes hold of it: the drag that follows moves the
+        // bookmark (§20.6). The press still places the caret, so a press and
+        // release on an address is the click it has always been — only a press
+        // that then travels to another row moves anything.
+        draggingBookmarkRow = bookmarkMarkRow(at: mouseDownLocation ?? .zero)
+        if let grabbed = draggingBookmarkRow {
+            // The gesture starts on the mark's own row, so the first step comes
+            // when the pointer leaves it.
+            draggingBookmarkPointerRow = currentLayout.rowColumn(of: grabbed).row
+            NSCursor.closedHand.push()
+        }
         // A shift-click extends immediately; an unmodified click needs to leave
         // the dead zone before the selection engages.
         dragEngaged = event.modifierFlags.contains(.shift)
@@ -1602,6 +1892,16 @@ final class HexView: NSView {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if draggingBookmarkRow != nil {
+            lastDragPoint = event.locationInWindow
+            // The same autoscroll the selection uses (§6): a mark dragged past
+            // the visible edge scrolls the pane, and the timer keeps it going
+            // while the pointer is held there.
+            let effective = dragAutoscrollStep(at: convert(event.locationInWindow, from: nil))
+            moveDraggedBookmark(to: effective)
+            updateDragAutoscrollTimer(at: convert(event.locationInWindow, from: nil))
+            return
+        }
         if !dragEngaged {
             let point = convert(event.locationInWindow, from: nil)
             if let origin = mouseDownLocation, !dragHasLeftDeadZone(from: origin, to: point) {
@@ -1626,7 +1926,65 @@ final class HexView: NSView {
         mouseDownLocation = nil
         lastDragPoint = nil
         dragEngaged = false
+        if draggingBookmarkRow != nil {
+            draggingBookmarkRow = nil
+            draggingBookmarkPointerRow = nil
+            NSCursor.pop()
+        }
         super.mouseUp(with: event)
+    }
+
+    /// The bookmarked row whose mark is under `point`, if any. The mark fills its
+    /// row's Offset column (§20.4), so a press anywhere on that address is a
+    /// press on the mark — there is nothing else drawn there to hit.
+    private func bookmarkMarkRow(at point: CGPoint) -> UInt64? {
+        guard let offset = offsetColumnOffset(at: point),
+              dataSource?.hexBookmark(atRowContaining: offset) != nil else { return nil }
+        return offset
+    }
+
+    /// One step of a mark's drag: the row under the pointer, clamped to the rows
+    /// this view actually draws. The mark follows the answer rather than the
+    /// pointer — a row another bookmark holds is jumped over, and a mark that
+    /// cannot move stays put while the pointer runs on (§20.6).
+    private func moveDraggedBookmark(to point: CGPoint) {
+        guard let from = draggingBookmarkRow, let dataSource, let onBookmarkDrag else { return }
+        let layout = currentLayout
+        let fileSize = dataSource.fileSize
+        guard fileSize > 0, layout.rowHeight > 0 else { return }
+        // A step happens when the pointer CROSSES into another row, and only
+        // then: see `draggingBookmarkPointerRow`.
+        let previous = draggingBookmarkPointerRow ?? layout.rowColumn(of: from).row
+        let row = pointerRow(at: point.y, comingFrom: previous, layout: layout)
+        guard row != previous else { return }
+        draggingBookmarkPointerRow = row
+        // The rows that hold bytes: the caret row past a file whose length is a
+        // multiple of 16 is not a row a bookmark belongs on. The far end is the
+        // store's to enforce (it is handed `lastRow` below); the near end is
+        // this view's, because a pointer above the first row gives a negative
+        // row index and there is no such offset.
+        let lastDataRow = layout.rowColumn(of: fileSize - 1).row
+        let target = layout.byteOffset(row: row, column: 0)
+        guard target != from else { return }
+        if let landed = onBookmarkDrag(from, target, layout.byteOffset(row: lastDataRow, column: 0)) {
+            draggingBookmarkRow = landed
+        }
+    }
+
+    /// The row a drag counts the pointer as being on, given the row it was last
+    /// counted on: a new row is taken only once the pointer is
+    /// `bookmarkDragHysteresis` points inside it, so a pointer resting on a row
+    /// boundary stays on the row it came from (§20.6).
+    private func pointerRow(at y: CGFloat, comingFrom previous: Int, layout: HexLayout) -> Int {
+        let raw = max(0, Int(floor(y / layout.rowHeight)))
+        guard raw != previous else { return previous }
+        let hysteresis = Self.bookmarkDragHysteresis
+        if raw > previous {
+            // Downwards: far enough below the new row's top edge.
+            return y >= CGFloat(raw) * layout.rowHeight + hysteresis ? raw : previous
+        }
+        // Upwards: far enough above the new row's bottom edge.
+        return y <= CGFloat(raw + 1) * layout.rowHeight - hysteresis ? raw : previous
     }
 
     /// What a right-click in the dump anchors the context menu to (§10.2).
@@ -1653,13 +2011,26 @@ final class HexView: NSView {
             super.rightMouseDown(with: event)
             return
         }
+        beginContextMenu(at: anchor)
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+        endContextMenu(at: anchor)
+    }
+
+    /// Records that `anchor`'s context menu is up and repaints what that
+    /// changes. Split out of `rightMouseDown` because `popUpContextMenu` runs a
+    /// blocking tracking loop no test can enter: this is the state the pane is
+    /// in while the menu is visible, drivable on its own (§10.2, §20.4).
+    func beginContextMenu(at anchor: ContextMenuAnchor) {
         contextMenuOffset = anchor.offset
         contextMenuFramesByte = anchor.framesByte
         invalidateContextMenuFrame(for: anchor.offset)
-        NSMenu.popUpContextMenu(menu, with: event, for: self)
-        // Clear the frame: the rows must be invalidated even though the offset
-        // is already gone — the no-argument form guards on it, so the clear
-        // call passes the anchor's row explicitly (§10.2).
+    }
+
+    /// Clears the anchor once its menu is dismissed. The rows must be
+    /// invalidated even though the offset is already gone — the no-argument
+    /// form guards on it, so the clear passes the anchor's row explicitly, or
+    /// §3.3 region-redraw leaves the frame on screen (§10.2).
+    func endContextMenu(at anchor: ContextMenuAnchor) {
         contextMenuOffset = nil
         contextMenuFramesByte = false
         invalidateContextMenuFrame(for: anchor.offset)
@@ -1772,6 +2143,17 @@ final class HexView: NSView {
         let region: HexInputRegion = (point.x >= asciiStart && point.x < asciiStart + layout.asciiColumnWidth)
             ? .ascii : .hex
         delegate.hexEditor(self, didClickAt: end, region: region, extendSelection: true, nibble: 0)
+    }
+
+    /// The row-start offset of the address under `point`, or nil when the point
+    /// is not on one — the hex or ASCII columns, or past the last row (§20.3).
+    private func offsetColumnOffset(at point: CGPoint) -> UInt64? {
+        guard let dataSource else { return nil }
+        let layout = currentLayout
+        let rowCount = layout.rowCount(fileSize: dataSource.fileSize)
+        guard let hit = layout.hitTest(point: point, rowCount: rowCount),
+              case .offset = hit.column else { return nil }
+        return layout.byteOffset(row: hit.row, column: 0)
     }
 
     private func handleMouse(_ event: NSEvent, extendSelection: Bool) {
@@ -1922,6 +2304,19 @@ enum HexTheme {
     /// Caret colour in insert mode: a red vertical line at the byte boundary,
     /// the classic "insert" caret, distinct from the blue overwrite bar.
     static let insertCaretColor = NSColor.systemRed
+
+    /// Bookmark colour (§20). The SDK has no semantic bookmark colour and the
+    /// app's palette is otherwise spoken for — red is modified bytes and the
+    /// insert caret, orange is a difference, the accent is the caret and mirror
+    /// frames, ink blue is the addresses — so purple, which is free, marks a
+    /// bookmarked row. It reads as a mark rather than a state: green would say
+    /// "matches", which a bookmark says nothing about.
+    static let bookmarkColor = NSColor.systemPurple
+
+    /// The address drawn on a filled bookmark mark. The semantic colour for
+    /// text on a filled selection: white in both appearances, and named rather
+    /// than literal so it follows the SDK if that ever changes (§20.4).
+    static let bookmarkTextColor = NSColor.alternateSelectedControlTextColor
 
     /// Ink blue for the column header and the offset column (§6): a pale,
     /// slightly desaturated blue that reads as a quiet secondary element next

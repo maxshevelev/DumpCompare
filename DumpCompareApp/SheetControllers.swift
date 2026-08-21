@@ -85,10 +85,20 @@ class SheetViewController: NSViewController {
         contentStack.spacing = 8
         root.addArrangedSubview(contentStack)
 
+        // Indented to the fields' own left edge, not the sheet's: the message is
+        // about a field, and a line starting under the labels reads as a line of
+        // the sheet (§10).
         errorLabel = NSTextField(labelWithString: "")
         errorLabel.font = .systemFont(ofSize: 11)
         errorLabel.textColor = .systemRed
-        root.addArrangedSubview(errorLabel)
+        let errorIndent = NSView()
+        errorIndent.translatesAutoresizingMaskIntoConstraints = false
+        errorIndent.widthAnchor.constraint(equalToConstant: Self.fieldLabelWidth).isActive = true
+        let errorRow = NSStackView(views: [errorIndent, errorLabel])
+        errorRow.orientation = .horizontal
+        errorRow.alignment = .centerY
+        errorRow.spacing = Self.fieldRowSpacing
+        root.addArrangedSubview(errorRow)
 
         buttonRow = NSStackView()
         buttonRow.orientation = .horizontal
@@ -108,6 +118,9 @@ class SheetViewController: NSViewController {
         submitButton = submit
 
         root.addArrangedSubview(buttonRow)
+        // The message belongs to the fields above it, so it sits close under them
+        // and the full gap is the one before the buttons (§10).
+        root.setCustomSpacing(5, after: contentStack)
         buttonRow.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             buttonRow.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -36),
@@ -123,12 +136,14 @@ class SheetViewController: NSViewController {
             root.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             root.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             contentView.widthAnchor.constraint(greaterThanOrEqualToConstant: 400),
-            contentView.heightAnchor.constraint(greaterThanOrEqualToConstant: 200),
         ])
-        // A concrete, generous default frame lets `presentAsSheet` size the
-        // sheet window even before auto layout runs (the view arrives with a
-        // zero frame); it is wide/tall enough to hold any of the subclasses.
-        contentView.frame = NSRect(x: 0, y: 0, width: 420, height: 220)
+        // A concrete default frame lets `presentAsSheet` size the sheet window
+        // even before auto layout runs (the view arrives with a zero frame).
+        // Height is only a starting point — nothing pins a minimum, so a sheet is
+        // as tall as its own rows: a floor of 200 pt left the one-field sheets
+        // (Fill Selection) with a hand's width of nothing between the field and
+        // the buttons, because the slack had to go somewhere.
+        contentView.frame = NSRect(x: 0, y: 0, width: 420, height: 170)
         view = contentView
     }
 
@@ -201,6 +216,12 @@ class SheetViewController: NSViewController {
         }
     }
 
+    /// The width every row's label column gets, and the gap to the field beside
+    /// it. Shared with the error message, which is indented by exactly this much
+    /// so it lines up with the fields it is about.
+    static let fieldLabelWidth: CGFloat = 110
+    static let fieldRowSpacing: CGFloat = 8
+
     /// Builds a label + text field row inside `contentStack` and returns the field.
     func addFieldRow(label text: String, initial: String) -> NSTextField {
         let label = NSTextField(labelWithString: text)
@@ -208,7 +229,7 @@ class SheetViewController: NSViewController {
         label.textColor = .secondaryLabelColor
         label.alignment = .right
         label.translatesAutoresizingMaskIntoConstraints = false
-        label.widthAnchor.constraint(equalToConstant: 110).isActive = true
+        label.widthAnchor.constraint(equalToConstant: Self.fieldLabelWidth).isActive = true
 
         let field = HexInputField(string: initial)
         field.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
@@ -225,7 +246,7 @@ class SheetViewController: NSViewController {
         let row = NSStackView()
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 8
+        row.spacing = Self.fieldRowSpacing
         row.addArrangedSubview(label)
         row.addArrangedSubview(field)
         contentStack.addArrangedSubview(row)
@@ -233,45 +254,9 @@ class SheetViewController: NSViewController {
     }
 }
 
-// MARK: - Go To Position (§10.1)
-
-/// Cmd+G: single absolute offset, `0x`-prefixed by default, inline validation.
-final class GoToSheetController: SheetViewController {
-    private var offsetField: NSTextField!
-    private let onGo: (UInt64) -> Void
-
-    init(fileSize: UInt64, onGo: @escaping (UInt64) -> Void) {
-        self.onGo = onGo
-        super.init(title: "Go To Position",
-                   message: "Enter a zero-based offset in hex (file is \(fileSize) bytes).")
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) is not supported")
-    }
-
-    override func loadView() {
-        super.loadView()
-        offsetField = addFieldRow(label: "Offset:", initial: "0x")
-    }
-
-    override func firstField() -> NSView? { offsetField }
-
-    override func validate() -> String? {
-        do {
-            _ = try OffsetParser.parse(offsetField.stringValue)
-            return nil
-        } catch {
-            return "Invalid offset — use hex with 0x prefix or decimal."
-        }
-    }
-
-    override func handleSubmit() {
-        if let offset = try? OffsetParser.parse(offsetField.stringValue) {
-            onGo(offset)
-        }
-    }
-}
+// Go To Position was a sheet of its own until the bookmark list arrived; both
+// answer "go where?", so they are one form now — `GoToBookmarksController`
+// (§10.1).
 
 // MARK: - Select Block (§10.2)
 
@@ -304,13 +289,14 @@ final class SelectBlockSheetController: SheetViewController {
         self.fileSize = fileSize
         self.presetStart = presetStart
         self.onSelect = onSelect
-        let message: String
-        if let presetStart {
-            message = "Select a block starting at \(String(format: "0x%X", presetStart)) by its length."
-        } else {
-            message = "Select a byte range by absolute offsets. End is the block's last byte."
-        }
-        super.init(title: "Select Block", message: message)
+        // No message when the start is already filled in ("Select block from
+        // here", §10.2): the Start field shows that address, the Length option is
+        // already the active one, and a sentence saying both was the sheet
+        // narrating its own fields back at the user.
+        super.init(title: "Select Block",
+                   message: presetStart == nil
+                       ? "Select a byte range by absolute offsets. End is the block's last byte."
+                       : nil)
     }
 
     required init?(coder: NSCoder) {
@@ -361,7 +347,7 @@ final class SelectBlockSheetController: SheetViewController {
         let radio = NSButton(radioButtonWithTitle: title, target: self, action: action)
         radio.font = .systemFont(ofSize: 12)
         radio.translatesAutoresizingMaskIntoConstraints = false
-        radio.widthAnchor.constraint(equalToConstant: 110).isActive = true
+        radio.widthAnchor.constraint(equalToConstant: SheetViewController.fieldLabelWidth).isActive = true
 
         let field = HexInputField(string: "0x")
         field.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
@@ -377,7 +363,7 @@ final class SelectBlockSheetController: SheetViewController {
         let row = NSStackView()
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 8
+        row.spacing = SheetViewController.fieldRowSpacing
         row.addArrangedSubview(radio)
         row.addArrangedSubview(field)
         contentStack.addArrangedSubview(row)

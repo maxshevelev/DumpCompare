@@ -307,6 +307,15 @@ Visual states:
 5. Missing EOF in shorter file:
    - display empty cells with a distinct muted background or separator style.
 
+6. Bookmarked row (§20):
+   - a state of the row's Offset column, not of its byte cells: the address
+     stands on a right-pointing arrow in the bookmark colour — the column filled
+     with the bookmark colour and its right end pointed into the gap before the
+     hex column, the address drawn in white on top.
+   - it is orthogonal to states 1–5: a bookmarked row may also be different,
+     modified, or selected in its byte cells, and the arrow is drawn on top of
+     the Offset column without disturbing them.
+
 =====================================================================
 7. EDITING MODEL
 =====================================================================
@@ -609,15 +618,59 @@ Optional future enhancement: independent scroll mode. For MVP, synchronized beha
 
 10.1 Go To Position
 
-- Cmd+G opens a Go To Position dialog.
-- The dialog accepts a single absolute offset.
+Go To and the bookmark list (§20) are one form, presented in a window centred
+over the one it navigates. They are one form because they are one question — "go
+where?" — and split in two they would be two windows each offering half an
+answer: the addresses worth returning to are exactly the ones a user would
+otherwise be typing again.
+
+- Cmd+G opens the form with the offset field focused; Option+Cmd+B opens the same
+  form with the bookmark list focused. The two shortcuts differ only in which
+  half the keyboard starts in.
+- Either command needs a file open: with nothing open there is nothing to
+  navigate, and both menu items are greyed out.
+- The field accepts a single absolute offset. A **Go To** button beside it names
+  the action rather than leaving it to be guessed from Return.
 - Offset input must support:
   - hexadecimal with `0x` or `0X` prefix;
   - decimal without prefix.
-- The offset input field should be pre-filled with `0x` by default.
+- The offset input field should be pre-filled with `0x` by default, with the
+  caret behind the prefix so hex digits can be typed straight away. The last
+  address is deliberately not pre-filled: the caret sits at the end of the text,
+  so a pre-filled address would turn Cmd+G, type, Return into digits appended to
+  the previous jump.
 - Offsets are zero-based.
 - Input parsing must be case-insensitive for hex.
-- Invalid input must show inline validation or alert.
+- The field is validated as it is typed in, the way the Select Block sheet's
+  fields are (§10.2): the message under it — starting at the field's own left
+  edge, not the dialog's, because it belongs to that field — names what is wrong
+  and clears the moment the input becomes valid, and the **Go To** button is enabled only for an
+  offset that parses — so the form says whether it can act on the field before
+  any key is pressed. The form opens with the button off and no message: the "0x"
+  prefix is not an offset yet, and there is nothing to complain about until
+  something is typed.
+- Return in a field that does not parse beeps and does nothing else. The button
+  beside it is already disabled and the message already says why, so the key owes
+  no new words — only an answer that it was heard and refused. An invalid offset
+  leaves the form up, with the caret in the field, so it can be corrected.
+- **Return follows the focus.** In the field it goes to the typed offset; in the
+  list it goes to the selected bookmark; in the list with nothing selected it
+  does nothing at all. One Return means two things without ever guessing — which
+  is also why the Go To button must not be a default button, since a default
+  button claims Return from the whole window.
+- **Escape is two-level**: while a bookmark's name is being edited in the list it
+  cancels that edit, restoring the name the store holds; with no edit running it
+  closes the form. Editing a name and pressing Escape must not throw the window
+  away.
+- The offsets Go To was sent to are remembered in the field's dropdown: the last
+  ten, most recent first, persisted across launches. An entry is the offset's
+  canonical address, not the keystrokes that produced it — `0x7af00`, `0x07AF00`
+  and `503552` are one address, and a history listing them three times would be a
+  log of typing rather than a list of places. A jump from the bookmark list is
+  not recorded: it is already in the list below.
+- A jump dismisses the form, and the row it lands on is revealed centred — the
+  form is centred over the window it is about to scroll, so the destination has
+  to be where the user is looking.
 
 Go To behavior:
 
@@ -629,6 +682,9 @@ Go To behavior:
 - If the offset is beyond both files:
   - clamp to the end of the longer file;
   - show a warning or status message.
+
+The bookmark list in the lower half of the form, and everything it does with a
+bookmark, is §20.5.
 
 10.2 Select Block
 
@@ -648,6 +704,10 @@ Rules:
   - length validity.
 - For start/end mode:
   - if start > end, show error or optionally swap after confirmation; default: error.
+- Opened from the offset context menu ("Select block from here", §10.2) the sheet
+  carries no message line: the Start field already shows the address that was
+  right-clicked and Length is already the active option, so a sentence saying
+  both would be the sheet narrating its own fields.
 - Selection must be applied to the active pane and synchronized to the other pane where possible.
 - The status bar must show selection length and selected range.
 
@@ -693,6 +753,10 @@ Suggested shortcuts:
 - Previous difference: Cmd+Option+Left Arrow.
 - Next same block: Cmd+Option+Shift+Right Arrow.
 - Previous same block: Cmd+Option+Shift+Left Arrow.
+- Go To Position (the form's offset field): Cmd+G.
+- Bookmarks (the same form, its list focused): Cmd+Option+B — Cmd+B is the
+  system's Bold, so the list takes the Option variant.
+- Toggle Bookmark: Cmd+D; Edit Bookmark: Shift+Cmd+D (§20.3).
 
 Shortcuts may be adjusted, but must be discoverable in menus.
 
@@ -1335,6 +1399,43 @@ resolution is used and nothing is spent on gaps.
   index changes — difference marks come from that index rather than from
   re-reading both files.
 
+19.4.3 Bookmarks in the margin
+
+Bookmarked rows (§20) are marked on the maps, so a marked region can be found
+without opening anything.
+
+- A mark is a small arrow in the map's **side margin** — outside the content
+  area, pointing inward at the row it marks — in the bookmark colour (purple,
+  §20.4), which keeps it apart from the file's own inks and from the grey
+  viewport marker that can share the margin with it. Nothing is drawn over the
+  content: on a dump every column of every row carries information.
+- The two margin markers are the **same shape**: an equilateral triangle whose
+  apex stops the same distance short of the content edge. A viewport's position
+  and a bookmark's row are the same kind of statement about where something is,
+  so they are the same arrow — the bookmark's is the smaller of the two, because
+  they can share a margin and the viewport is the one the eye should find first,
+  and colour is what says which is which.
+- **Hovering a mark names it**: `offset: name`, or the offset alone when the
+  bookmark has no name — bare digits, the way the list writes an address (§20.5). A mark carries no text of its own, so this is where its
+  name shows on the map — and the address belongs here even for a named bookmark,
+  because on a map the arrow's position only approximates it (a row of the
+  overview is kilobytes). Hovering anywhere else on the panel shows nothing.
+- Which margin depends on the layout. Side by side the two maps meet at the
+  gutter with no padding between them, so the second map marks its rows in its
+  right margin, pointing left; everywhere else the mark sits on the left.
+- Both render modes mark the same rows — the mode changes the scale, not what is
+  marked. In detail a mark is level with its row exactly; in overview it is level
+  with the row the bookmark's offset falls in, so several bookmarks close
+  together can land on one arrow, which is what that scale means everywhere else
+  on the map.
+- One list serves both maps, because a bookmark is an absolute offset (§8): a
+  marked row is marked at the same height on each. A row past a file's own end is
+  not marked on that file's map — there is no such row there (§9) — and in detail
+  a row outside the window is not marked at all.
+- A bookmark changes nothing about the file's picture, so adding, moving or
+  removing one repaints only the margins the marks live in, never the maps
+  (§19.9). A rename repaints nothing: the arrows have not moved.
+
 19.5 The window onto the file (detail mode)
 
 Because the detail scale is fixed, a file taller than the panel does not fit:
@@ -1366,11 +1467,24 @@ The panes' visible slice is drawn as a translucent band over the map.
 - The band is drawn under the selection overlay, so a selection inside it
   stays readable.
 - In overview a visible page is a fraction of a pixel, so nothing is drawn
-  across the content at all: the position is marked by a chevron in each outer
-  margin, level with the middle of the visible slice, pointing inward. A band or
+  across the content at all: the position is marked by an equilateral triangle in
+  each outer margin, level with the middle of the visible slice, pointing inward
+  — the same shape a bookmark's mark uses, one size larger (§19.4.3). A band or
   line spanning the panel would cost a whole row of the picture, and on a dump
   every row carries information. The marker states a position and must not
   pretend to show an extent.
+
+19.6.1 Clicking near a bookmark's mark
+
+- A click within a few points of a bookmark's mark (§19.4.3) means **that
+  bookmark's row**, not the byte drawn under the pointer. On a full-dump overview
+  a row is kilobytes, so a pointer dead on the arrow still resolves to an offset a
+  dozen rows off the bookmark — the mark is what the user aimed at, and it is a
+  two-pixel target without this.
+- With two marks in range the nearer one wins, measured from each mark's own
+  centre line.
+- **Dragging the band never snaps.** It is a scrollbar gesture, and a continuous
+  scroll that jumped to a bookmark as it passed would fight the drag.
 
 19.7 Navigation
 
@@ -1519,3 +1633,328 @@ The panes' visible slice is drawn as a translucent band over the map.
 - The panel need not be a keyboard focus stop: every navigation it offers
   must already be reachable from the keyboard in the panes (§10) and its
   toggle from the View menu (§15).
+
+=====================================================================
+20. BOOKMARKS
+=====================================================================
+
+A bookmark is a marked row of the hex dump — an address the user has decided is
+worth coming back to. Comparison is by absolute offset (§8), so a bookmark is an
+offset, not "an offset in file A": one list serves both panes and marks the same
+height in both, which is the whole point of it in a comparison.
+
+20.1 What a bookmark marks
+
+- A bookmark marks a row, not a byte: its offset is rounded down to a multiple of
+  16 (the bytes per row). The places a bookmark has to be visible are
+  row-granular by construction — the Offset column carries one address per row,
+  and a minimap row is one hex row (§19) — so byte precision would be invisible
+  exactly where the mark is meant to be seen. It also removes the "two bookmarks
+  in one row" ambiguity from the drawing.
+- Bookmarks are absolute addresses: an insert or a delete shifts the bytes, not
+  the bookmark (§8). A bookmark past the end of a file stays in the list and is
+  simply not drawn where the file does not reach (§9).
+- Bookmarks are session-only: they live as long as the window, not the file. So
+  closing a file and opening it again keeps its marks, which is the case that
+  matters on a bench — the same chip read twice. Opening an *unrelated* file
+  inherits them too; the list is not cleared, because the app cannot tell a
+  re-read from a new dump, and a mark that turns out to be meaningless is cheaper
+  than losing the marks of a re-read. Persisting bookmarks per file is a project
+  feature (§20 opening note), not a session one.
+- The mark has no text of its own, so the pane's accessibility value says whether
+  the caret's row carries one and what it is called, as it says the caret's
+  offset (§15).
+- A bookmarked row is marked in the minimap's margin as well as in the Offset
+  column, in both of the minimap's modes (§19.4.3) — that is what makes a marked
+  region findable without opening anything.
+
+20.2 The model
+
+- A bookmark is a value: the row it marks (always a multiple of 16) and a name;
+  an empty name means "show the address".
+- The store keeps the bookmarks sorted by row and answers the questions the
+  panes ask: the bookmark on the row containing an offset, a toggle of the mark
+  on that row (adds an unnamed bookmark when the row is unmarked, removes it when
+  it is marked), and the set of bookmarked rows in a range of offsets — asked
+  once per drawn row range, not per row.
+- The store snaps an offset to its row (the offset rounded down to a multiple of
+  16) and fires a change signal carrying the affected row's start offset, so each
+  pane repaints just that row instead of the whole dump.
+- One instance lives on the window's view model, reached by both panes — that is
+  what makes the list shared rather than merged. The store holds no bytes and is
+  AppKit-free, so its arithmetic is unit-testable in the app suite.
+- Besides the toggle the store can mark-and-name a row in one act (an
+  already-marked row keeps its one mark and takes the new name), rename a mark
+  that exists, and remove one — each reporting what it found, so a caller never
+  has to read the list first, and each firing the same change signal, so a name
+  typed in a dialog shows up without anything else repainting the row.
+- It can also move a mark to another row, keeping its name and reporting the row
+  it ended on — which is not always the row asked for: the store owns the
+  one-bookmark-per-row rule, so it is the store that decides where a mark dragged
+  onto an occupied row lands (§20.6). The far row it may not pass comes from the
+  caller, because how far a pane reaches is the view's knowledge, not the list's.
+- Names are stored trimmed of surrounding whitespace, and a name that is nothing
+  but whitespace is no name — so the "empty means show the address" rule cannot
+  be defeated by a space.
+- The store fires that same change signal at whatever else is showing its
+  contents — the edit popover, which must not outlive its mark (§20.3), and the
+  open form's list (§20.5) — so a bookmark made or removed anywhere shows up
+  everywhere without any of those surfaces polling it.
+
+20.3 Marking and naming a row
+
+- Edit ▸ Toggle Bookmark (⌘D) marks the active pane's caret row and unmarks it
+  again — one command for both, and its title says so rather than promising only
+  to add.
+- Marking a row opens the edit popover on the new mark: a small panel anchored
+  to the mark itself, with the caret already in its Name field. **Return** saves
+  the name (nothing typed means an unnamed bookmark, shown by its address);
+  **Esc** removes the mark again, cancelling the whole act, not just the name.
+  So **⌘D, Return** is the whole gesture for "mark this row", and ⌘D, a name,
+  Return the one for "mark it and call it this" — the muscle memory is one
+  command plus Return either way.
+- A popover, not a modal dialog: editing a bookmark is an aside to reading a
+  dump, and the mark being edited has to stay visible while the name is typed. It
+  holds the bookmark's **address** and its **name**, each a field spanning the
+  popover's width, the name labelled by its own placeholder — and no instructions:
+  a panel with two fields is not where the keyboard needs explaining.
+- On an **existing** bookmark it also carries one button, **Delete**, because
+  removing the bookmark is the one act the popover's keys cannot express: Esc
+  means "leave it as it was", and it has to keep meaning that. A mark that is
+  still being named gets no such button — its Esc already takes it away, and two
+  ways to undo one half-finished act is one too many.
+- The address is a field, not a title, so a mark put a row off is corrected by
+  typing the right address — the keyboard's version of dragging the mark (§20.6),
+  and it keeps the name. Committing a different address moves the one bookmark
+  there; it is never removed and re-made, so it never appears without its name.
+- The address is validated as it is typed, as every offset field is (§10.1) —
+  shown in the field itself, in red, because a panel this small has no room for a
+  sentence and red digits among digits say the same thing. An address that names
+  no row refuses Return with a beep and keeps the popover up: a typo, or a row
+  another bookmark already holds, one row holding one bookmark (§20.1). The
+  mark's own row is of course always available to it.
+- The caret starts in the **Name** field in both jobs — making a mark and editing
+  one — because the address is already right and is there to be corrected, not
+  filled in. An existing name arrives selected, so typing replaces it. So ⌘D,
+  Return stays two keystrokes: Return in the name saves outright.
+- Return in the **address** confirms the address rather than the whole bookmark:
+  the field is rewritten as the row it names and the caret moves on to the name,
+  and the next Return saves. A bookmark marks a row (§20.1), so an address inside
+  a row means that row — and typing `0x3333` only to be told afterwards that the
+  bookmark went to `0x3330` is the app changing the input behind the user's back.
+  The field says where it is going before anything is saved.
+- Dismissing the popover any other way — a click outside it — keeps what was
+  typed. The mark is already on the row by then, so discarding the name would be
+  the surprising outcome. A half-typed address is the one thing not kept: the
+  bookmark stays on the row it was on, with the name.
+- ⌘D on a row that is already marked removes the mark on the spot, with no
+  popover: there is nothing to name.
+- A **double click on an address** in the Offset column opens the edit popover on
+  that row: it marks the row first when it carries no mark — the mouse gesture for
+  ⌘D — and edits the mark that is already there otherwise, which is how a mark is
+  opened everywhere else (the list opens a name the same way, §20.5). What it
+  never does is unmark: the pointer covers the mark it is aimed at, so a toggle
+  here would silently take an existing bookmark away on a click landing a row off.
+  The gesture belongs to the Offset column only — a double click in the hex or
+  decoded-text columns still selects.
+- The edit popover never outlives the mark it is editing. ⌘D's key equivalent
+  reaches the menu through an open popover, so the row can be unmarked while its
+  name is being typed; the popover then closes, saving nothing and undoing
+  nothing. Any removal path does this, because it follows from the bookmark
+  change itself, not from the command that caused it. Marking another row while
+  a popover is open likewise replaces it rather than leaving two panels up.
+- Edit ▸ Edit Bookmark… (⇧⌘D) opens the same popover on an existing mark, with
+  its current name selected so typing replaces it; Esc leaves the bookmark
+  exactly as it was, address and name. The command is enabled only when the
+  caret's row carries a mark — ⌘D is how a mark is made, and it opens the same
+  popover, so this one only ever edits.
+- Toggle is enabled only when the active pane has a file open: with nothing open
+  there is no caret row to mark.
+- Because both panes read the same store, marking a row shows it at the same
+  height in both panes of a comparison.
+- The offset context menu (§10.2) carries the same two commands for the row that
+  was right-clicked rather than the caret's, in the pane that was right-clicked:
+  *Toggle Bookmark at «address»* — the same command ⌘D is, popover and all — and
+  *Edit Bookmark…* on a row that has something to edit. The address in the
+  title is the ROW's, because a right-click on a byte marks that byte's row, and
+  the title is what makes that visible.
+- Hovering a marked row's address shows the bookmark's **name**, and nothing
+  else: the address is drawn under the pointer, on the mark itself, so a tooltip
+  repeating it would explain a thing to itself. An unmarked row shows no tooltip,
+  and neither does a marked row with no name — there is nothing to add. (The
+  minimap's marks do say the address, because there the arrow only approximates
+  it, §19.4.3.) The pane's accessibility value reads the name out with the
+  caret's offset (§15).
+
+20.4 Rendering a marked row (§6)
+
+A marked row's address stands on a right-pointing arrow in the bookmark colour
+(systemPurple — the palette is otherwise spoken for, red modified, orange
+difference, accent caret, ink-blue addresses): the Offset column is filled with
+the bookmark colour and its right end comes to a point into the gap before the
+hex column, and the address is drawn over it in the colour for text on a filled
+selection. The mark is a state of the Offset column, not of the byte cells, so it
+is orthogonal to the difference, modification, and selection states (§6) and is
+drawn on top of the column without disturbing them. Both panes draw it, because
+both read the same store; in a comparison the shorter file's pane has no such row
+to draw (§9).
+
+The mark's body is the right-click focus ring's own rect — the Offset column
+padded horizontally, with the same corner radius (§10.2) — so the mark and the
+ring are one shape at one size. The tip is a blunt 120° point: it reads as a flag
+beside the address rather than an arrow aimed at the bytes. Its reach follows from
+the mark's height, which scales with the font, so the angle holds at every font
+size; the reach is clamped to the gap before the hex column, which the tip must
+never touch.
+
+Right-clicking a marked row's address therefore does not draw the ring: the ring
+on top of the fill is unreadable. Instead the mark itself becomes the ring — the
+same shape stroked in the bookmark colour at the ring's line width, **dashed**,
+with no fill — and the address keeps its ink colour while the menu is up, because
+there is no longer a fill to read against. Dashed rather than solid because at
+that line width a closed purple loop around an address reads as a slab: the
+dashes say the row is marked and the menu is about it without shouting louder
+than the fill they replace. The outline's path opens midway along an edge rather
+than at a corner, or closing it draws a spur into that corner — a visible notch
+on the mark. A menu opened on a *byte* of a marked row frames
+that byte as usual (§10.2) and leaves the mark filled: only the address anchor
+occupies the mark's rect.
+
+20.5 The list
+
+The bookmarks are listed in the lower half of the Go To form (§10.1), which is
+the only place they are listed: going to a bookmark and managing one are the same
+window, so nothing about a bookmark lives in two places.
+
+- The list is **as tall as it has rows**, up to ten; past that it scrolls. A form
+  that opened with a page of empty table over three bookmarks would be mostly
+  nothing, and one that grew without limit would push its own buttons off the
+  screen. An empty list keeps a few rows' worth of height, because its message
+  needs room to be read.
+- **The window is as tall as the form**, and follows it as rows come and go —
+  nothing pins a minimum height, and no strip of nothing is left under the list.
+  Its width is the user's to widen; the fields fill whatever it is.
+- Two columns, one row per bookmark, ordered by address: the address in the
+  **bookmark colour** (§20.4), and the name beside it. The bookmark colour rather
+  than the dump's address ink, because in a list *of* bookmarks the address is
+  what the purple mark in the Offset column and the purple arrow in the minimap
+  point at — one colour ties the three together. It is written as bare padded hex
+  digits, without the `0x` the dialogs use: a whole column of addresses in a
+  window about addresses does not need each one announcing that it is hex. The
+  column is exactly as wide as eight digits in the dump's font, so everything else
+  on the row belongs to the name.
+- **An unnamed bookmark is described by what is at it**: where its name would be,
+  the list shows the row's bytes as the dump writes them, read from the ACTIVE
+  pane — in a comparison the two files hold different bytes at the same address,
+  and the list describes the one being worked in. That is what the row was marked
+  for, and it is the one thing the address column does not already say. A row past
+  the end of that pane's file says so in words instead: a bookmark is an absolute
+  address and stays in the list where the file does not reach (§9), and "nothing
+  there" is worth saying outright rather than leaving a blank cell. Both are shown
+  the way a placeholder is — dimmed, and replaced the moment a name is typed.
+- **Return** goes to the selected bookmark — the key the form's focus rule is
+  built on (§10.1) — and dismisses the form, behaving exactly as a typed offset
+  does: both panes of a comparison move, because a bookmark is an absolute offset
+  (§8). The **Go To** button does the same for the mouse.
+- A **double click on a row** opens that bookmark's editor, wherever in the row
+  it lands: a double click opens what it lands on rather than acting on it, and
+  the list's one keyboard gesture is already the jump.
+- **A bookmark is edited in its own popover**, opened by a double click on its row
+  or from the row's context menu (*Edit Bookmark…*) — the same popover ⇧⌘D opens on a mark in the dump (§20.3).
+  One editor for a bookmark wherever it is edited from, and it can do what a name
+  field in a row could not: change the address, and delete the bookmark. The list
+  itself holds no editable fields, so every click in it means one thing — select
+  the row, or, on a double click, activate it.
+- Nothing in the list is renamed in place. A field inside a table row is edited by
+  a click on an already-selected row, which collides with the double click that
+  activates it, and it can only ever edit the one column it sits in. Sending the
+  gesture to a menu command and the popover keeps both jobs whole.
+- **Escape closes the editor before it closes the form**: editing a bookmark and
+  pressing Escape must not throw the window away (§10.1).
+- The selection belongs to a **bookmark**, and it is the form's state rather than
+  the table's. A table view's selection is a row *number*, and a row number is a
+  rendering detail: the list re-sorts when an address is edited, renumbers when a
+  bookmark is made elsewhere, and forgets its selection outright on every reload.
+  So the form keeps which bookmark is selected and tells the table; the table is
+  the authority only at the moment the user picks a row. The selection therefore
+  survives a reload and follows an edited bookmark to wherever the list re-sorts
+  it. Only removing moves it: there the neighbour takes it, as `⌫` in the list
+  leaves it. Return commits the name, a click elsewhere commits it too, and Escape
+  restores the name the store holds without closing the form (§10.1).
+- **⌫** removes the selected bookmark. The selection stays where it was, so a run
+  of them can be cleared without reaching for the mouse between presses;
+  removing the last row selects the one now at the end. With nothing selected
+  neither key does anything.
+- Opened by Option+Cmd+B the list arrives with its first bookmark selected — the
+  command exists to go to a bookmark, and the list is ordered by address, so the
+  lowest one is a real default. The jump still takes a Return: a selection is an
+  offer, not an act. Opened by Cmd+G, which is about typing an address, the list
+  offers nothing.
+- **Empty state**: with no bookmarks the list says so and names the gesture that
+  makes one (⌘D). It is a message over the table, not a row in it — a pseudo-row
+  would answer ⌫ and Return as if it held a bookmark.
+- A **name being edited** goes back to its resting colour, because the field
+  editor draws its own white background over the row: a selected row's
+  white-on-selection text would be white on white, and the name would vanish as
+  it was typed.
+- **Right-clicking a row** offers *Delete Bookmark*, acting on the row that was
+  clicked as every context menu in the app does (§10.2). `⌫` does the same, but
+  nothing on screen says so.
+- On a **selected** row every cell reads as text on a selection, the address and
+  the row preview included: the address is drawn in the dump's ink blue and the
+  preview in a dim grey, and both are close to unreadable on the selection fill.
+  AppKit does this for a plain label by itself; a colour set by hand has to follow
+  the row's state by hand. The preview stays dimmer than a name even there — it is
+  still a placeholder, not a value.
+- The list follows the store (§20.2): a bookmark made or removed anywhere while
+  the form is open appears in or disappears from it, and removing the last one
+  brings the empty state back.
+
+A toolbar button belongs here too, but the toolbar's composition — and this
+item's icon — is a separate question, left for when the toolbar is filled out as
+a whole.
+
+20.6 Moving a mark
+
+A mark can be dragged to another row: press and hold on it, and the bookmark
+follows the pointer row by row until the button is released. (The same move by
+keyboard is ⇧⌘D and a new address, §20.3.) It is the same act
+as marking the right row in the first place, done a second time — a dump gets
+read before it is understood, and a mark often turns out to belong a few rows
+from where it was put. Dragging it there beats removing it and marking again,
+which would lose its name.
+
+- The mark is grabbed by pressing anywhere on its row's address: the mark fills
+  that column (§20.4), so there is nothing else there to hit. The press also
+  places the caret, as a press on an address always has — only a press that then
+  travels to another row moves anything, so a click stays a click.
+- The bookmark moves as the pointer crosses each row, not on release: what the
+  drag is doing is visible while it is done, and the name travels with the mark.
+- A step answers the pointer **crossing** into another row, and only that. Two
+  points of hysteresis hold the boundary still, so a hand resting on the mouse
+  cannot step the mark to and fro across a row edge; and the row already answered
+  is never answered twice, which is what makes a jump over another mark final.
+  (Re-reading the same row after a jump would compute the jump again, in the
+  other direction, the mark now being on the far side of the obstacle — the mark
+  would flicker instead of settling.)
+- A drag pushed past the visible top or bottom edge autoscrolls the pane exactly
+  as a drag selection does (§6), and the mark keeps moving while the pane scrolls
+  — that is what makes it possible to drag a mark somewhere off screen.
+- A drag inside the Offset column is never a selection, and a drag from an
+  address that carries no mark is still the selection it has always been. The
+  gesture belongs to the mark, not to the column.
+- **One row holds one bookmark** (§20.1), so a mark dragged onto a marked row
+  does not merge with it. It **jumps over** it, landing on the first free row
+  beyond it in the direction of travel — one mark sliding past another. When the
+  rows beyond are occupied all the way to the end of what the pane draws, the
+  mark **stops before** the obstacle instead, on the last free row on the way
+  there: it may neither leave the file to find room nor swallow the bookmark in
+  its way, but it should still travel as far as the pointer took it. Only when
+  even that room is missing does nothing move, and the pointer runs on ahead of a
+  mark that stayed.
+- A mark cannot be dragged off the file: the last row it can reach is the last
+  row with bytes in it, and a pointer above the first row leaves it on row 0.
+- Everything watching the store follows a move, because it is the store's own
+  change signal that reports it (§20.2): both panes repaint the two rows
+  involved, the open form's list re-sorts, and an edit popover on the row the
+  mark left closes with it (§20.3).
