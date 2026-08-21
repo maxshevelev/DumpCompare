@@ -198,6 +198,9 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
 
         reloadBookmarks()
         refreshHistoryItems()
+        // The form opens with "0x" in the field: nothing to go to yet, so the
+        // button is off — but no error, because nothing has been typed wrong.
+        updateValidation(showsError: false)
     }
 
     /// "Offset: [ 0x… ▾ ] ( Go To )" — the fast path unchanged: ⌘G, type,
@@ -346,15 +349,46 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
 
     // MARK: - Going
 
-    /// Return in the field, and the Go To button: the typed address.
+    /// Return in the field, and the Go To button: the typed address. Return on
+    /// an offset that does not parse beeps — the button is already disabled and
+    /// the error already says why, so the key needs no new words, only an answer
+    /// that it did nothing (§10.1).
     @objc func goToTypedOffset() {
         guard let offset = try? OffsetParser.parse(offsetCombo.stringValue) else {
-            errorLabel.stringValue = "Invalid offset — use hex with 0x prefix or decimal."
+            showValidationError()
+            beep()
             return
         }
         errorLabel.stringValue = ""
         GoToHistoryStore.record(offset)
         jump(to: offset)
+    }
+
+    /// What an invalid Return sounds like. A closure so a test can hear it: a
+    /// beep leaves no trace of its own.
+    var beep: () -> Void = { NSSound.beep() }
+
+    /// Re-validates the field as it is typed in, the way the Select Block sheet
+    /// does (§10.2): the **Go To** button is enabled only for an offset that
+    /// parses, so the form says whether it can act on what is in the field
+    /// before the key is pressed, and the message names what is wrong.
+    ///
+    /// `showsError` is false for the state the form opens in — the field holds
+    /// its "0x" prefix, which is not yet an offset, and greeting the user with
+    /// an error about text they have not typed would be scolding them for
+    /// arriving. The button is still disabled: there is nowhere to go yet.
+    private func updateValidation(text: String? = nil, showsError: Bool = true) {
+        let offset = try? OffsetParser.parse(text ?? offsetCombo.stringValue)
+        goButton.isEnabled = offset != nil
+        if offset != nil {
+            errorLabel.stringValue = ""
+        } else if showsError {
+            showValidationError()
+        }
+    }
+
+    private func showValidationError() {
+        errorLabel.stringValue = "Invalid offset — use hex with 0x prefix or decimal."
     }
 
     /// Return in the list: the selected bookmark. With nothing selected nothing
@@ -560,10 +594,18 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
 }
 
 extension GoToBookmarksController: NSComboBoxDelegate {
+    /// Every keystroke re-validates the field (§10.1).
+    func controlTextDidChange(_ obj: Notification) {
+        updateValidation()
+    }
+
     /// A picked address only fills the field; the jump is still a Return away,
     /// so the dropdown cannot navigate the window by itself.
     func comboBoxSelectionDidChange(_ notification: Notification) {
-        errorLabel.stringValue = ""
+        // The field's text catches up after this notification, so the picked
+        // item is what to validate — it is a recorded address, so this is what
+        // re-enables the button.
+        updateValidation(text: offsetCombo.objectValueOfSelectedItem as? String)
     }
 }
 

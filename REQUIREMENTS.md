@@ -641,8 +641,17 @@ otherwise be typing again.
   the previous jump.
 - Offsets are zero-based.
 - Input parsing must be case-insensitive for hex.
-- Invalid input must show inline validation or alert. An invalid offset leaves
-  the form up, with the caret in the field, so it can be corrected.
+- The field is validated as it is typed in, the way the Select Block sheet's
+  fields are (§10.2): the message under it names what is wrong and clears the
+  moment the input becomes valid, and the **Go To** button is enabled only for an
+  offset that parses — so the form says whether it can act on the field before
+  any key is pressed. The form opens with the button off and no message: the "0x"
+  prefix is not an offset yet, and there is nothing to complain about until
+  something is typed.
+- Return in a field that does not parse beeps and does nothing else. The button
+  beside it is already disabled and the message already says why, so the key owes
+  no new words — only an answer that it was heard and refused. An invalid offset
+  leaves the form up, with the caret in the field, so it can be corrected.
 - **Return follows the focus.** In the field it goes to the typed offset; in the
   list it goes to the selected bookmark; in the list with nothing selected it
   does nothing at all. One Return means two things without ever guessing — which

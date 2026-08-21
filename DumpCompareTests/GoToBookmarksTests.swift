@@ -128,6 +128,8 @@ final class GoToBookmarksTests: XCTestCase {
 
     func testAnUnparseableOffsetShowsAnErrorAndGoesNowhere() {
         let (form, _, jumps, closes) = makeForm()
+        var beeps = 0
+        form.beep = { beeps += 1 }
         form.offsetCombo.stringValue = "0xZZ"
 
         form.goToTypedOffset()
@@ -135,6 +137,71 @@ final class GoToBookmarksTests: XCTestCase {
         XCTAssertTrue(jumps().isEmpty)
         XCTAssertEqual(closes(), 0, "an invalid offset leaves the form up to correct it")
         XCTAssertFalse(form.errorLabel.stringValue.isEmpty)
+        XCTAssertEqual(beeps, 1, "Return on an offset that does not parse says so out loud")
+    }
+
+    // MARK: - Validation while typing (§10.1)
+
+    /// Typing into the field re-validates it, as the Select Block sheet's fields
+    /// do (§10.2): the button follows what is in the field, and the message says
+    /// what is wrong.
+    func testTypingAnInvalidOffsetDisablesGoToAndSaysWhy() {
+        let (form, _, _, _) = makeForm()
+
+        form.offsetCombo.stringValue = "0x12"
+        form.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification,
+                                               object: form.offsetCombo))
+        XCTAssertTrue(form.goButton.isEnabled)
+        XCTAssertEqual(form.errorLabel.stringValue, "")
+
+        form.offsetCombo.stringValue = "0x12Z"
+        form.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification,
+                                               object: form.offsetCombo))
+        XCTAssertFalse(form.goButton.isEnabled, "there is nothing to go to")
+        XCTAssertFalse(form.errorLabel.stringValue.isEmpty)
+
+        form.offsetCombo.stringValue = "300"
+        form.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification,
+                                               object: form.offsetCombo))
+        XCTAssertTrue(form.goButton.isEnabled, "a decimal offset is an offset (§10)")
+        XCTAssertEqual(form.errorLabel.stringValue, "", "a stale error clears the moment it is fixed")
+    }
+
+    /// The form opens on its "0x" prefix, which is not an offset yet: the button
+    /// is off, but there is no error — nothing has been typed wrong.
+    func testTheFormOpensWithGoToOffAndNothingComplainedAbout() {
+        let (form, _, _, _) = makeForm()
+
+        XCTAssertEqual(form.offsetCombo.stringValue, "0x")
+        XCTAssertFalse(form.goButton.isEnabled)
+        XCTAssertEqual(form.errorLabel.stringValue, "")
+    }
+
+    /// A valid offset does not beep — the sound belongs to the refused Return.
+    func testReturnOnAValidOffsetIsSilent() {
+        let (form, _, jumps, _) = makeForm()
+        var beeps = 0
+        form.beep = { beeps += 1 }
+        form.offsetCombo.stringValue = "0x30"
+
+        form.goToTypedOffset()
+
+        XCTAssertEqual(jumps(), [0x30])
+        XCTAssertEqual(beeps, 0)
+    }
+
+    /// Picking a recent address re-enables the button: the field's own text
+    /// catches up only after the notification, so the picked item is what the
+    /// form validates.
+    func testPickingARecentAddressEnablesGoTo() {
+        GoToHistoryStore.record(0x7AF00)
+        let (form, _, _, _) = makeForm()
+        XCTAssertFalse(form.goButton.isEnabled)
+
+        form.offsetCombo.selectItem(at: 0)
+
+        XCTAssertTrue(form.goButton.isEnabled)
+        XCTAssertEqual(form.errorLabel.stringValue, "")
     }
 
     func testReturnInTheListGoesToTheSelectedBookmark() throws {
