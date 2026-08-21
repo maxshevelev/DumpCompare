@@ -1119,30 +1119,15 @@ final class HexView: NSView, NSViewToolTipOwner {
     private func drawBookmarkMark(in layout: HexLayout, row: Int, outlined: Bool) {
         let frame = Self.bookmarkMarkBody(in: layout, row: row)
         let tip = Self.bookmarkTipReach(height: frame.height, gap: layout.gapAfterOffset)
-        let radius = Self.mirrorContourRadius
-        let top = frame.minY
-        let bottom = frame.maxY
-        let left = frame.minX
-        let right = frame.maxX
-        let midY = (top + bottom) / 2
-        // Pentagon vertices, clockwise from top-left; the tip is the rightmost.
-        let points = [
-            NSPoint(x: left, y: top),
-            NSPoint(x: right, y: top),
-            NSPoint(x: right + tip, y: midY),
-            NSPoint(x: right, y: bottom),
-            NSPoint(x: left, y: bottom),
-        ]
-        let path = NSBezierPath()
-        path.move(to: points[0])
-        for i in 1...points.count {
-            path.appendArc(from: points[i % points.count],
-                           to: points[(i + 1) % points.count], radius: radius)
-        }
-        path.close()
+        let path = Self.bookmarkMarkPath(body: frame, tipReach: tip)
         if outlined {
             HexTheme.bookmarkColor.setStroke()
             path.lineWidth = Self.mirrorContourLineWidth
+            // Dashed, not solid: at the ring's line width a closed purple loop
+            // around an address reads as a heavy slab, and the mark it replaces
+            // was a fill — the dashes say "this row is marked, and the menu is
+            // about it" without shouting louder than the mark did (§20.4).
+            path.setLineDash(Self.bookmarkOutlineDashes, count: 2, phase: 0)
             path.stroke()
         } else {
             HexTheme.bookmarkColor.setFill()
@@ -1355,6 +1340,40 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// pointing at the bytes. The reach that produces it follows from the mark's
     /// height, so the angle holds at every font size.
     static let bookmarkTipAngle: CGFloat = 120 * .pi / 180
+
+    /// The dash pattern the mark's outline is stroked with while a context menu
+    /// is up (§20.4): dash, gap. Internal so a test can sample between dashes.
+    static let bookmarkOutlineDashes: [CGFloat] = [3, 2]
+
+    /// The mark's outline: the pentagon of `body` with a `tipReach` point on its
+    /// right, corners rounded like the right-click focus ring's (§20.4). Shared
+    /// by the fill and the stroke, and by the tests, so the shape is stated once.
+    ///
+    /// The path starts halfway along the top edge rather than at a corner.
+    /// `appendArc` leaves the path on the edge *after* the corner it rounds, so a
+    /// path beginning at the top-left vertex ended with `close()` drawing a spur
+    /// back into that sharp vertex — a visible notch on the outlined mark.
+    /// Starting mid-edge, the closing line runs along the edge itself.
+    static func bookmarkMarkPath(body: CGRect, tipReach: CGFloat) -> NSBezierPath {
+        let (top, bottom, left, right) = (body.minY, body.maxY, body.minX, body.maxX)
+        // Pentagon vertices, clockwise from top-left; the tip is the rightmost.
+        let points = [
+            NSPoint(x: left, y: top),
+            NSPoint(x: right, y: top),
+            NSPoint(x: right + tipReach, y: (top + bottom) / 2),
+            NSPoint(x: right, y: bottom),
+            NSPoint(x: left, y: bottom),
+        ]
+        let path = NSBezierPath()
+        path.move(to: NSPoint(x: (left + right) / 2, y: top))
+        for i in 1...points.count {
+            path.appendArc(from: points[i % points.count],
+                           to: points[(i + 1) % points.count],
+                           radius: mirrorContourRadius)
+        }
+        path.close()
+        return path
+    }
 
     /// The bookmark mark's body: the right-click focus ring's own rect, so mark
     /// and ring are one shape at one size (§20.4). The tip grows out of its

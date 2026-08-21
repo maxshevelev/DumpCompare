@@ -318,9 +318,11 @@ final class BookmarkTests: XCTestCase {
         // Inside the fill, clear of the stroke: the mark's body is the column
         // padded outwards, so its stroke runs outside these bounds.
         let interior = columnFrame.insetBy(dx: 4, dy: 3)
-        // The stroke's left edge: the padded rect's own minX, ± half the line width.
+        // The stroke's left edge: the padded rect's own minX, ± half the line
+        // width, sampled down the whole row — the outline is dashed (§20.4), so a
+        // short window could land in a gap.
         let leftEdge = NSRect(x: columnFrame.minX - HexView.mirrorContourPadding - 1,
-                             y: rowFrame.midY - 2, width: 3, height: 4)
+                             y: rowFrame.minY, width: 3, height: rowFrame.height)
         let anchor = HexView.ContextMenuAnchor(offset: 16, framesByte: false)
 
         // `render` drives a full `draw(_:)`, so these assertions read the state
@@ -603,6 +605,67 @@ final class BookmarkTests: XCTestCase {
                        "an address wider than eight digits is not truncated")
     }
 
+    /// The outline is dashed, not solid: at the focus ring's line width a closed
+    /// purple loop around an address reads as a slab (§20.4). So its left edge
+    /// has ink in some places and paper in others — a solid stroke would have ink
+    /// all the way down.
+    func testTheOutlineIsDashed() throws {
+        let url = try tempFile([UInt8](repeating: 0x11, count: 48))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let pane = PaneViewModel()
+        try pane.open(url: url)
+        let store = BookmarkStore()
+        pane.bookmarkStore = store
+        store.add(rowContaining: 16)
+
+        let hex = HexView()
+        hex.appearance = NSAppearance(named: .aqua)
+        hex.dataSource = pane
+        hex.delegate = pane
+        hex.reloadData()
+        hex.beginContextMenu(at: HexView.ContextMenuAnchor(offset: 16, framesByte: false))
+
+        let layout = hex.hexLayout
+        let rowFrame = layout.rowFrame(row: 1)
+        let x = layout.offsetColumnFrame(row: 1).minX - HexView.mirrorContourPadding - 1
+        // How much of the stroke's own line is inked: a dash pattern of 3 on, 2
+        // off covers about three fifths of it, a solid stroke all of it. Measured
+        // along the straight part, clear of the rounded corners.
+        var inked = 0
+        var total = 0
+        var y = rowFrame.minY + HexView.mirrorContourRadius + 1
+        while y < rowFrame.maxY - HexView.mirrorContourRadius - 1 {
+            if try purpleness(hex, in: NSRect(x: x, y: y, width: 3, height: 0.2)) > 0.2 {
+                inked += 1
+            }
+            total += 1
+            y += 0.25
+        }
+
+        XCTAssertGreaterThan(total, 10, "enough of the edge to measure")
+        let fraction = Double(inked) / Double(total)
+        XCTAssertGreaterThan(fraction, 0.2, "the outline is drawn")
+        XCTAssertLessThan(fraction, 0.85,
+                          "and it is dashed — a solid stroke inks its whole length")
+        XCTAssertEqual(HexView.bookmarkOutlineDashes.count, 2, "dash, gap")
+    }
+
+    /// The path starts halfway along an edge, never at a corner: `appendArc`
+    /// leaves the path past the corner it rounds, so a path that began at the
+    /// top-left vertex closed with a spur back into it — the notch that showed on
+    /// the outlined mark (§20.4).
+    func testTheMarkPathDoesNotCloseIntoACorner() throws {
+        let body = CGRect(x: 10, y: 20, width: 60, height: 16)
+        let path = HexView.bookmarkMarkPath(body: body, tipReach: 4)
+
+        var points = [NSPoint](repeating: .zero, count: 3)
+        XCTAssertEqual(path.element(at: 0, associatedPoints: &points), .moveTo)
+        XCTAssertEqual(points[0].x, body.midX, accuracy: 0.01,
+                       "the path opens midway along the top edge")
+        XCTAssertEqual(points[0].y, body.minY, accuracy: 0.01)
+        XCTAssertNotEqual(points[0].x, body.minX, "not at the top-left corner")
+    }
+
     // MARK: - Naming: the popover itself (§20.3)
 
     /// The popover's own contract: Return saves what was typed, Esc backs out,
@@ -667,7 +730,8 @@ final class BookmarkTests: XCTestCase {
         XCTAssertEqual(creating.offsetField.stringValue, "0x00000010",
                        "the address is a field now — it can be corrected here (§20.3)")
         XCTAssertTrue(creating.labelTexts.isEmpty, "no titles: two fields say it all")
-        XCTAssertTrue(creating.buttons.isEmpty, "the keyboard finishes the job")
+        XCTAssertTrue(creating.buttons.isEmpty,
+                      "a mark still being named needs no Delete: its Esc removes it")
         // The field spans the popover, so a long name has all the room there is.
         creating.view.layoutSubtreeIfNeeded()
         XCTAssertEqual(creating.nameField.frame.width, creating.view.frame.width - 32,
@@ -678,6 +742,31 @@ final class BookmarkTests: XCTestCase {
         editing.loadViewIfNeeded()
         XCTAssertEqual(editing.nameField.stringValue, "ME region")
         XCTAssertEqual(editing.offsetField.stringValue, "0x00000010")
+        XCTAssertTrue(editing.buttons.isEmpty,
+                      "and without an onDelete there is still nothing to press")
+    }
+
+    /// Removing is the one act the popover's keys cannot express — Esc means
+    /// "leave it as it was" — so an existing bookmark gets a Delete button
+    /// (§20.3). It removes the bookmark and closes; nothing else runs.
+    func testAnExistingBookmarkCanBeDeletedFromThePopover() throws {
+        var events: [String] = []
+        let controller = BookmarkEditPopoverController(
+            row: 0x10, existingName: "ME region",
+            onCommit: { events.append("commit:\($0):\($1)") },
+            onCancel: { events.append("cancel") },
+            onDelete: { events.append("delete") })
+        controller.loadViewIfNeeded()
+
+        let delete = try XCTUnwrap(controller.deleteButton, "an existing bookmark offers Delete")
+        XCTAssertEqual(delete.title, "Delete")
+        XCTAssertEqual(controller.buttons.map(\.title), ["Delete"],
+                       "one button, and only that one")
+
+        controller.deletePressed()
+        XCTAssertEqual(events, ["delete"])
+        controller.commit()
+        XCTAssertEqual(events, ["delete"], "it has settled: a later Return does nothing")
     }
 
     /// The caret goes to the NAME in both jobs — the address is already right,
@@ -946,6 +1035,37 @@ final class BookmarkTests: XCTestCase {
         try XCTUnwrap(requests().first).commit(0x80, "vendor block")
 
         XCTAssertEqual(store.bookmarks, [Bookmark(row: 0x80, name: "vendor block")])
+    }
+
+    /// The command hands the popover a way to remove the bookmark, and pressing
+    /// it takes the mark off the row.
+    func testEditOffersDeleteAndItRemovesTheMark() throws {
+        let (controller, close) = try makeControllerWithFile()
+        defer { close() }
+        let store = controller.windowModel.bookmarkStore
+        let requests = captureEditing(controller)
+        controller.windowModel.pane1.moveCaret(to: 20)
+        store.add(rowContaining: 20, name: "ME region")
+
+        controller.editBookmark()
+        let request = try XCTUnwrap(requests().first)
+        let delete = try XCTUnwrap(request.delete, "editing an existing mark can remove it")
+        delete()
+
+        XCTAssertTrue(store.bookmarks.isEmpty)
+    }
+
+    /// A mark that is still being named offers no Delete: its Esc already does
+    /// that, and two ways to undo one half-finished act is one too many.
+    func testANewMarkIsOfferedNoDelete() throws {
+        let (controller, close) = try makeControllerWithFile()
+        defer { close() }
+        let requests = captureEditing(controller)
+        controller.windowModel.pane1.moveCaret(to: 20)
+
+        controller.toggleBookmark()
+
+        XCTAssertNil(try XCTUnwrap(requests().first).delete)
     }
 
     /// ⇧⌘D edits through the same popover: it opens with the current name, and

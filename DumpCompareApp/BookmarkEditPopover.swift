@@ -28,6 +28,8 @@ final class BookmarkEditPopoverController: NSViewController, NSTextFieldDelegate
     /// synthesized key event without a real key window.
     private(set) var offsetField: NSTextField!
     private(set) var nameField: NSTextField!
+    /// The Delete button, on an existing bookmark only.
+    private(set) var deleteButton: NSButton?
 
     /// The row the popover opened on — where the bookmark is now.
     let row: UInt64
@@ -39,6 +41,10 @@ final class BookmarkEditPopoverController: NSViewController, NSTextFieldDelegate
     private let rowIsFree: (UInt64) -> Bool
     private let onCommit: (UInt64, String) -> Void
     private let onCancel: () -> Void
+    /// Removes the bookmark. Nil when the popover is naming a mark that was just
+    /// made: Esc already takes that one away, and a Delete button beside it would
+    /// offer a second way to undo the same half-finished act.
+    private let onDelete: (() -> Void)?
 
     /// What a refused Return sounds like. A closure so a test can hear it: a
     /// beep leaves no trace of its own.
@@ -59,12 +65,14 @@ final class BookmarkEditPopoverController: NSViewController, NSTextFieldDelegate
     ///     — which is also what makes Esc mean "remove it again".
     init(row: UInt64, existingName: String?,
          rowIsFree: @escaping (UInt64) -> Bool = { _ in true },
-         onCommit: @escaping (UInt64, String) -> Void, onCancel: @escaping () -> Void) {
+         onCommit: @escaping (UInt64, String) -> Void, onCancel: @escaping () -> Void,
+         onDelete: (() -> Void)? = nil) {
         self.row = row
         self.initialName = existingName ?? ""
         self.rowIsFree = rowIsFree
         self.onCommit = onCommit
         self.onCancel = onCancel
+        self.onDelete = onDelete
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -96,18 +104,30 @@ final class BookmarkEditPopoverController: NSViewController, NSTextFieldDelegate
         name.setAccessibilityLabel("Bookmark name")
         nameField = name
 
-        // Two lines and nothing else: where the bookmark is, and what it is
-        // called. Return and Esc are not spelled out — a popover with two fields
-        // is not where the keyboard needs explaining, and the panel stays the
-        // size of its job.
-        let stack = NSStackView(views: [offset, name])
+        // Two lines: where the bookmark is, and what it is called. Return and Esc
+        // are not spelled out — a popover with two fields is not where the
+        // keyboard needs explaining. An existing bookmark gets a third line with
+        // one button, because removing it is the one act the keyboard here cannot
+        // express: Esc means "leave it as it was", and it has to keep meaning
+        // that (§20.3).
+        var rows: [NSView] = [offset, name]
+        if onDelete != nil {
+            let delete = NSButton(title: "Delete", target: self, action: #selector(deletePressed))
+            delete.controlSize = .small
+            delete.translatesAutoresizingMaskIntoConstraints = false
+            delete.setAccessibilityLabel("Delete bookmark")
+            deleteButton = delete
+            rows.append(delete)
+        }
+        let stack = NSStackView(views: rows)
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
         stack.edgeInsets = NSEdgeInsets(top: 14, left: 16, bottom: 14, right: 16)
         stack.translatesAutoresizingMaskIntoConstraints = false
 
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: Self.width, height: 84))
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: Self.width,
+                                        height: onDelete == nil ? 84 : 116))
         root.addSubview(stack)
         let inset = stack.edgeInsets.left + stack.edgeInsets.right
         NSLayoutConstraint.activate([
@@ -210,6 +230,16 @@ final class BookmarkEditPopoverController: NSViewController, NSTextFieldDelegate
     func abandon() {
         guard !settled else { return }
         settled = true
+        popover?.performClose(nil)
+    }
+
+    /// Removes the bookmark and closes. Only ever offered for a bookmark that
+    /// already existed, so there is no half-made mark to reason about: the row is
+    /// simply not marked any more.
+    @objc func deletePressed() {
+        guard !settled, let onDelete else { return }
+        settled = true
+        onDelete()
         popover?.performClose(nil)
     }
 

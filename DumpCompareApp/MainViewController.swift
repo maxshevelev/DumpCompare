@@ -2511,12 +2511,16 @@ final class MainViewController: NSViewController {
     private func editBookmarkInPane(_ pane: PaneViewModel, rowContaining offset: UInt64) {
         guard pane.isOpen,
               let existing = windowModel.bookmarkStore.bookmark(atRowContaining: offset) else { return }
+        let store = windowModel.bookmarkStore
         presentBookmarkEditPopover(
             in: pane, row: existing.row, existingName: existing.name,
             onCommit: { [weak self] target, name in
                 self?.applyBookmarkEdit(from: existing.row, to: target, name: name)
             },
-            onCancel: {}
+            onCancel: {},
+            // Removing is offered only here, on a bookmark that already exists:
+            // a mark still being named is taken away by its Esc (§20.3).
+            onDelete: { store.remove(rowContaining: existing.row) }
         )
     }
 
@@ -2544,6 +2548,9 @@ final class MainViewController: NSViewController {
         let existingName: String?
         let commit: (UInt64, String) -> Void
         let cancel: () -> Void
+        /// Removes the bookmark — nil for a mark that was just made, whose Esc
+        /// already does that (§20.3).
+        let delete: (() -> Void)?
     }
 
     /// Where an edit request goes, returning how to dismiss what it presented.
@@ -2565,7 +2572,8 @@ final class MainViewController: NSViewController {
     /// leave two panels up, one of them about a row the user has moved on from.
     private func presentBookmarkEditPopover(
         in pane: PaneViewModel, row: UInt64, existingName: String?,
-        onCommit: @escaping (UInt64, String) -> Void, onCancel: @escaping () -> Void
+        onCommit: @escaping (UInt64, String) -> Void, onCancel: @escaping () -> Void,
+        onDelete: (() -> Void)? = nil
     ) {
         openEditing?.dismiss()
         openEditing = nil
@@ -2578,6 +2586,12 @@ final class MainViewController: NSViewController {
             cancel: { [weak self] in
                 self?.openEditing = nil
                 onCancel()
+            },
+            delete: onDelete.map { delete in
+                { [weak self] in
+                    self?.openEditing = nil
+                    delete()
+                }
             }
         )
         if let bookmarkEditPresenter {
@@ -2591,7 +2605,7 @@ final class MainViewController: NSViewController {
             // One row holds one bookmark (§20.1), so an address already marked is
             // not an address this bookmark can be given.
             rowIsFree: { store.bookmark(atRowContaining: $0) == nil },
-            onCommit: request.commit, onCancel: request.cancel
+            onCommit: request.commit, onCancel: request.cancel, onDelete: request.delete
         )
         openEditing = (row, { controller.abandon() })
     }

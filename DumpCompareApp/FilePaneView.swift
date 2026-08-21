@@ -544,7 +544,8 @@ final class FilePaneView: NSView {
     func presentBookmarkEditPopover(
         rowContaining offset: UInt64, existingName: String?,
         rowIsFree: @escaping (UInt64) -> Bool,
-        onCommit: @escaping (UInt64, String) -> Void, onCancel: @escaping () -> Void
+        onCommit: @escaping (UInt64, String) -> Void, onCancel: @escaping () -> Void,
+        onDelete: (() -> Void)? = nil
     ) -> BookmarkEditPopoverController {
         if !hexView.visibleByteRange().contains(offset) {
             hexView.revealOffsetCentered(offset)
@@ -554,7 +555,7 @@ final class FilePaneView: NSView {
         }
         let controller = BookmarkEditPopoverController(
             row: BookmarkStore.row(containing: offset), existingName: existingName,
-            rowIsFree: rowIsFree, onCommit: onCommit, onCancel: onCancel
+            rowIsFree: rowIsFree, onCommit: onCommit, onCancel: onCancel, onDelete: onDelete
         )
         controller.show(relativeTo: hexView.bookmarkMarkRect(forRowContaining: offset), of: hexView)
         return controller

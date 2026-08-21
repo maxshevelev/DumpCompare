@@ -1698,10 +1698,14 @@ height in both, which is the whole point of it in a comparison.
   command plus Return either way.
 - A popover, not a modal dialog: editing a bookmark is an aside to reading a
   dump, and the mark being edited has to stay visible while the name is typed. It
-  holds two lines and nothing else — the bookmark's **address** and its **name**,
-  each a field spanning the popover's width, the name labelled by its own
-  placeholder — with no buttons and no instructions: a panel with two fields is
-  not where the keyboard needs explaining.
+  holds the bookmark's **address** and its **name**, each a field spanning the
+  popover's width, the name labelled by its own placeholder — and no instructions:
+  a panel with two fields is not where the keyboard needs explaining.
+- On an **existing** bookmark it also carries one button, **Delete**, because
+  removing the bookmark is the one act the popover's keys cannot express: Esc
+  means "leave it as it was", and it has to keep meaning that. A mark that is
+  still being named gets no such button — its Esc already takes it away, and two
+  ways to undo one half-finished act is one too many.
 - The address is a field, not a title, so a mark put a row off is corrected by
   typing the right address — the keyboard's version of dragging the mark (§20.6),
   and it keeps the name. Committing a different address moves the one bookmark
@@ -1788,9 +1792,14 @@ never touch.
 
 Right-clicking a marked row's address therefore does not draw the ring: the ring
 on top of the fill is unreadable. Instead the mark itself becomes the ring — the
-same shape stroked in the bookmark colour at the ring's line width, with no fill
-— and the address keeps its ink colour while the menu is up, because there is no
-longer a fill to read against. A menu opened on a *byte* of a marked row frames
+same shape stroked in the bookmark colour at the ring's line width, **dashed**,
+with no fill — and the address keeps its ink colour while the menu is up, because
+there is no longer a fill to read against. Dashed rather than solid because at
+that line width a closed purple loop around an address reads as a slab: the
+dashes say the row is marked and the menu is about it without shouting louder
+than the fill they replace. The outline's path opens midway along an edge rather
+than at a corner, or closing it draws a spur into that corner — a visible notch
+on the mark. A menu opened on a *byte* of a marked row frames
 that byte as usual (§10.2) and leaves the mark filled: only the address anchor
 occupies the mark's rect.
 
