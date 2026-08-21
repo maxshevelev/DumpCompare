@@ -392,6 +392,101 @@ final class GoToBookmarksTests: XCTestCase {
         XCTAssertEqual(field.stringValue, "0007AF00")
     }
 
+    // MARK: - The list's height (§20.5)
+
+    /// The list is as tall as it has rows: a form that opened with a page of
+    /// empty table over three bookmarks would be mostly nothing.
+    func testTheListIsAsTallAsItsRows() {
+        let five = makeForm(rows: [0x00: "", 0x10: "", 0x20: "", 0x30: "", 0x40: ""]).form
+        let step = five.rowStep
+        let scrollHeight = five.bookmarkTable.enclosingScrollView?.frame.height ?? 0
+
+        XCTAssertEqual(scrollHeight, 5 * step + 2, accuracy: 1,
+                       "five bookmarks, five rows of table")
+    }
+
+    /// Past ten rows it stops growing and scrolls instead.
+    func testTheListStopsGrowingAtTenRowsAndScrolls() throws {
+        var rows: [UInt64: String] = [:]
+        for index in 0..<25 { rows[UInt64(index) * 16] = "" }
+        let (form, _, _, _) = makeForm(rows: rows)
+        let scrollView = try XCTUnwrap(form.bookmarkTable.enclosingScrollView)
+
+        XCTAssertEqual(form.bookmarks.count, 25)
+        XCTAssertEqual(scrollView.frame.height,
+                       CGFloat(GoToBookmarksController.maxVisibleRows) * form.rowStep + 2,
+                       accuracy: 1, "ten rows is as tall as the list gets")
+        XCTAssertGreaterThan(form.bookmarkTable.frame.height, scrollView.contentView.bounds.height,
+                             "and the rest is reached by scrolling")
+        XCTAssertTrue(scrollView.hasVerticalScroller)
+    }
+
+    /// An empty list keeps room for its message — two lines of text over the
+    /// table, which need somewhere to be read.
+    func testAnEmptyListKeepsRoomForItsMessage() throws {
+        let (form, _, _, _) = makeForm()
+        let scrollView = try XCTUnwrap(form.bookmarkTable.enclosingScrollView)
+
+        XCTAssertEqual(scrollView.frame.height,
+                       CGFloat(GoToBookmarksController.minVisibleRows) * form.rowStep + 2,
+                       accuracy: 1)
+        XCTAssertFalse(form.emptyLabel.isHidden)
+    }
+
+    /// Removing a bookmark shrinks the list with it.
+    func testRemovingARowShrinksTheList() throws {
+        let (form, store, _, _) = makeForm(rows: [0x00: "", 0x10: "", 0x20: "",
+                                                  0x30: "", 0x40: "", 0x50: ""])
+        let scrollView = try XCTUnwrap(form.bookmarkTable.enclosingScrollView)
+        let before = scrollView.frame.height
+
+        store.remove(rowContaining: 0x50)
+        form.reloadBookmarks()
+        form.view.layoutSubtreeIfNeeded()
+
+        XCTAssertLessThan(scrollView.frame.height, before, "one row shorter")
+    }
+
+    // MARK: - A selected row (§20.5)
+
+    /// On a selected row the address and the row-preview placeholder switch to
+    /// the colour for text on a selection: ink blue and a dim grey are close to
+    /// unreadable on the selection fill, which is what the name never had to
+    /// worry about (AppKit tints a plain label by itself).
+    func testASelectedRowInvertsItsAddressAndPlaceholder() throws {
+        let (form, _, _, _) = makeForm(rows: [0x10: ""], fill: 0xEE)
+        let offsetCell = try XCTUnwrap(form.bookmarkTable.view(atColumn: form.offsetColumnIndex,
+                                                              row: 0, makeIfNecessary: true) as? NSTableCellView)
+        let nameCell = try XCTUnwrap(form.bookmarkTable.view(atColumn: form.nameColumnIndex,
+                                                            row: 0, makeIfNecessary: true) as? NSTableCellView)
+
+        XCTAssertEqual(offsetCell.textField?.textColor, HexTheme.inkBlue,
+                       "on paper the address is the dump's own ink (§6)")
+        let restingPlaceholder = try XCTUnwrap(nameCell.textField?.placeholderAttributedString)
+        XCTAssertEqual(restingPlaceholder.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor,
+                       NSColor.secondaryLabelColor)
+
+        offsetCell.backgroundStyle = .emphasized
+        nameCell.backgroundStyle = .emphasized
+
+        XCTAssertEqual(offsetCell.textField?.textColor, .alternateSelectedControlTextColor,
+                       "selected, it reads as text on the selection")
+        let selectedPlaceholder = try XCTUnwrap(nameCell.textField?.placeholderAttributedString)
+        let colour = try XCTUnwrap(selectedPlaceholder.attribute(.foregroundColor, at: 0,
+                                                                effectiveRange: nil) as? NSColor)
+        XCTAssertLessThan(colour.alphaComponent, 1.0,
+                          "still a placeholder, so still dimmer than a value")
+        XCTAssertNotEqual(colour.usingColorSpace(.deviceRGB)?.redComponent,
+                          NSColor.secondaryLabelColor.usingColorSpace(.deviceRGB)?.redComponent,
+                          "and no longer the resting grey")
+        XCTAssertEqual(selectedPlaceholder.string, restingPlaceholder.string,
+                       "and it is the same preview, only recoloured")
+
+        offsetCell.backgroundStyle = .normal
+        XCTAssertEqual(offsetCell.textField?.textColor, HexTheme.inkBlue,
+                       "deselected, it goes back to the dump's ink")
+    }
+
     // MARK: - Escape is two-level (§10.1)
 
     /// Editing a name and pressing Escape must not throw the window away.

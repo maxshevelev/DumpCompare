@@ -1809,6 +1809,11 @@ The bookmarks are listed in the lower half of the Go To form (§10.1), which is
 the only place they are listed: going to a bookmark and managing one are the same
 window, so nothing about a bookmark lives in two places.
 
+- The list is **as tall as it has rows**, up to ten; past that it scrolls. A form
+  that opened with a page of empty table over three bookmarks would be mostly
+  nothing, and one that grew without limit would push its own buttons off the
+  screen. An empty list keeps a few rows' worth of height, because its message
+  needs room to be read, and the window follows the list as rows come and go.
 - Two columns, one row per bookmark, ordered by address: the address in the
   dump's ink-blue (§6), and the name beside it. The address is written as bare
   padded hex digits, without the `0x` the dialogs use — a whole column of
@@ -1844,6 +1849,12 @@ window, so nothing about a bookmark lives in two places.
 - **Empty state**: with no bookmarks the list says so and names the gesture that
   makes one (⌘D). It is a message over the table, not a row in it — a pseudo-row
   would answer ⌫ and Return as if it held a bookmark.
+- On a **selected** row every cell reads as text on a selection, the address and
+  the row preview included: the address is drawn in the dump's ink blue and the
+  preview in a dim grey, and both are close to unreadable on the selection fill.
+  AppKit does this for a plain label by itself; a colour set by hand has to follow
+  the row's state by hand. The preview stays dimmer than a name even there — it is
+  still a placeholder, not a value.
 - The list follows the store (§20.2): a bookmark made or removed anywhere while
   the form is open appears in or disappears from it, and removing the last one
   brings the empty state back.

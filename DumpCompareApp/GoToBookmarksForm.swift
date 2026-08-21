@@ -86,6 +86,9 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
     private(set) var errorLabel: NSTextField!
     private(set) var emptyLabel: NSTextField!
 
+    /// The list's height, re-set from the number of bookmarks (§20.5).
+    private var tableHeight: NSLayoutConstraint!
+
     /// The row whose name is being edited, if any — what makes Escape two-level
     /// (§10.1): it cancels the edit while one is running, and closes the form
     /// only when none is.
@@ -151,6 +154,10 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
         root.addArrangedSubview(listLabel)
 
         let scrollView = makeTable()
+        // The list is as tall as it needs to be, up to `maxVisibleRows`: a form
+        // that opened with a page of empty table over three bookmarks would be
+        // mostly nothing. `updateTableHeight` sets the constant.
+        tableHeight = scrollView.heightAnchor.constraint(equalToConstant: 0)
         root.addArrangedSubview(scrollView)
 
         let buttonRow = makeButtonRow()
@@ -179,11 +186,10 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
             root.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             root.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             contentView.widthAnchor.constraint(greaterThanOrEqualToConstant: 460),
-            contentView.heightAnchor.constraint(greaterThanOrEqualToConstant: 360),
 
             scrollView.widthAnchor.constraint(equalTo: root.widthAnchor,
                                               constant: -(root.edgeInsets.left + root.edgeInsets.right)),
-            scrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 180),
+            tableHeight,
             buttonRow.widthAnchor.constraint(equalTo: root.widthAnchor,
                                              constant: -(root.edgeInsets.left + root.edgeInsets.right)),
 
@@ -193,10 +199,12 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
         ])
         // A concrete frame lets the presentation size the window before auto
         // layout runs (the view arrives with a zero frame), as the sheets do.
-        contentView.frame = NSRect(x: 0, y: 0, width: 480, height: 400)
+        // Its height is only a starting point: the list sizes itself to its rows
+        // (§20.5) and the window follows, so nothing pins a minimum height.
+        contentView.frame = NSRect(x: 0, y: 0, width: 480, height: 260)
         view = contentView
 
-        reloadBookmarks()
+        reloadBookmarks()   // also sizes the list to its rows
         refreshHistoryItems()
         // The form opens with "0x" in the field: nothing to go to yet, so the
         // button is off — but no error, because nothing has been typed wrong.
@@ -340,6 +348,32 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
         bookmarks = store.bookmarks
         bookmarkTable.reloadData()
         emptyLabel.isHidden = !bookmarks.isEmpty
+        updateTableHeight()
+    }
+
+    /// How many rows the list shows before it starts scrolling.
+    static let maxVisibleRows = 10
+
+    /// The fewest rows' worth of height the list keeps: the empty state is two
+    /// lines of text over the table, and it needs room to be read.
+    static let minVisibleRows = 3
+
+    /// What one row of the list costs vertically. Internal so a test can measure
+    /// the list in rows rather than in points.
+    var rowStep: CGFloat {
+        bookmarkTable.rowHeight + bookmarkTable.intercellSpacing.height
+    }
+
+    /// Sizes the list to its contents, capped at `maxVisibleRows` — beyond that
+    /// it scrolls (§20.5). The window follows, so a bookmark removed does not
+    /// leave a strip of empty table behind.
+    private func updateTableHeight() {
+        let rows = min(max(bookmarks.count, Self.minVisibleRows), Self.maxVisibleRows)
+        // Two points for the bezel the rows sit inside.
+        tableHeight.constant = CGFloat(rows) * rowStep + 2
+        guard let window = view.window else { return }
+        view.layoutSubtreeIfNeeded()
+        window.setContentSize(view.fittingSize)
     }
 
     private func refreshHistoryItems() {
@@ -527,7 +561,7 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
             // The dump's own address shape and colour (§6), so a row in the list
             // reads as the row it points at.
             cell.textField?.font = AppearanceSettings.font(size: 12)
-            cell.textField?.textColor = HexTheme.inkBlue
+            cell.restingTextColor = HexTheme.inkBlue
             // Bare digits, no "0x": a whole column of addresses in a window about
             // addresses does not need each one announcing that it is hex, and the
             // prefix was two characters of column width per row.
@@ -539,12 +573,12 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
             cell.textField?.target = self
             cell.textField?.action = #selector(nameEdited(_:))
             cell.textField?.stringValue = bookmark.name
+            cell.restingTextColor = .labelColor
             // An unnamed bookmark is described by what is AT it: the row's bytes
             // as the dump would show them. That is what the user marked the row
             // for, and it is the one thing the Offset column beside it does not
             // already say (§20.5).
-            cell.textField?.placeholderAttributedString =
-                Self.rowDescription(rowBytes(bookmark.row))
+            cell.restingPlaceholder = Self.rowDescription(rowBytes(bookmark.row))
             return cell
         default:
             return nil
@@ -669,6 +703,46 @@ private final class BookmarkCellView: NSTableCellView {
     /// column's sizing, so the room a value gets and the width it is measured at
     /// cannot drift apart.
     static let labelInset: CGFloat = 4
+
+    /// The colour the label has on paper. On a selected row every cell switches
+    /// to the colour for text on a selection instead — the address is ink blue
+    /// and the row-preview placeholder a dim grey, and both are close to
+    /// unreadable on the selection fill (§20.5). AppKit does this for a plain
+    /// label by itself; a colour set by hand has to follow the style by hand.
+    var restingTextColor: NSColor = .labelColor {
+        didSet { applyBackgroundStyle() }
+    }
+
+    /// The placeholder as it reads on paper — the row's bytes, or the sentence
+    /// for a row past the file's end. Re-coloured for a selected row, keeping its
+    /// own font: the monospaced preview has to stay monospaced.
+    var restingPlaceholder: NSAttributedString? {
+        didSet { applyBackgroundStyle() }
+    }
+
+    override var backgroundStyle: NSView.BackgroundStyle {
+        didSet { applyBackgroundStyle() }
+    }
+
+    private func applyBackgroundStyle() {
+        let selected = backgroundStyle == .emphasized
+        textField?.textColor = selected ? .alternateSelectedControlTextColor : restingTextColor
+        guard let placeholder = restingPlaceholder else {
+            textField?.placeholderAttributedString = nil
+            return
+        }
+        guard selected else {
+            textField?.placeholderAttributedString = placeholder
+            return
+        }
+        let tinted = NSMutableAttributedString(attributedString: placeholder)
+        // Dimmer than the row's own text, as the resting placeholder is dimmer
+        // than a name: it is still a placeholder, not a value.
+        tinted.addAttribute(.foregroundColor,
+                            value: NSColor.alternateSelectedControlTextColor.withAlphaComponent(0.75),
+                            range: NSRange(location: 0, length: tinted.length))
+        textField?.placeholderAttributedString = tinted
+    }
 
     init(identifier: NSUserInterfaceItemIdentifier, editable: Bool) {
         super.init(frame: .zero)
