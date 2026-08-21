@@ -99,7 +99,7 @@ row instead gets:
   than reading addresses.
 
 **As built (stage 1).** The two shapes became one: an Xcode-breakpoint-style
-pentagon — the Offset column's rect with a pointed right end reaching into the gap
+pentagon — the Offset column's rect with a blunt 120° point reaching into the gap
 before the hex column — filled purple, with the address on top in the colour for
 text on a filled selection. One mark instead of a rect plus a detached triangle,
 and the addresses stay in their column. Its body is the right-click focus ring's

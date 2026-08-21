@@ -103,6 +103,27 @@ final class BookmarkTests: XCTestCase {
         XCTAssertEqual(fired, [0, 32, 32])
     }
 
+    // MARK: - The mark's geometry
+
+    /// The tip is a blunt 120° point whatever the font size — its reach follows
+    /// from the mark's height, which scales with the font — and it never crosses
+    /// the gap into the hex column (§20.4).
+    func testBookmarkTipIsABlunt120DegreePoint() {
+        for height in [12, 16, 24, 40] as [CGFloat] {
+            // A roomy gap, so the angle decides the reach rather than the clamp.
+            let reach = HexView.bookmarkTipReach(height: height, gap: height * 2)
+            let apex = 2 * atan2(height / 2, reach) * 180 / .pi
+            XCTAssertEqual(apex, 120, accuracy: 0.01, "a mark \(height) pt tall")
+        }
+        // A gap too narrow for that angle clamps the reach rather than letting
+        // the tip touch the hex column; the body already spends the ring's
+        // padding of that gap, and a point of air is left beyond the tip.
+        XCTAssertEqual(HexView.bookmarkTipReach(height: 40, gap: 6),
+                       6 - HexView.mirrorContourPadding - 1, accuracy: 0.001)
+        XCTAssertEqual(HexView.bookmarkTipReach(height: 40, gap: 1), 0,
+                       "a gap with no room at all leaves the mark tipless, not inverted")
+    }
+
     // MARK: - Rendering (both panes)
 
     /// Snapshots the view via `cacheDisplay`, which drives the real flipped

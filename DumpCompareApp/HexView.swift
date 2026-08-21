@@ -1028,7 +1028,7 @@ final class HexView: NSView {
     private func drawBookmarkMark(in layout: HexLayout, row: Int, outlined: Bool) {
         let frame = layout.offsetColumnFrame(row: row)
             .insetBy(dx: -Self.mirrorContourPadding, dy: 0)
-        let tip: CGFloat = min(layout.charWidth * 1.5, 12)
+        let tip = Self.bookmarkTipReach(height: frame.height, gap: layout.gapAfterOffset)
         let radius = Self.mirrorContourRadius
         let top = frame.minY
         let bottom = frame.maxY
@@ -1259,6 +1259,24 @@ final class HexView: NSView {
 
     /// Stroke width of the mirrored-selection contour.
     static let mirrorContourLineWidth: CGFloat = 2
+
+    /// The apex angle of the bookmark mark's tip (§20.4) — blunt rather than
+    /// sharp, so the mark reads as a flag beside the address instead of an arrow
+    /// pointing at the bytes. The reach that produces it follows from the mark's
+    /// height, so the angle holds at every font size.
+    static let bookmarkTipAngle: CGFloat = 120 * .pi / 180
+
+    /// How far the bookmark mark's tip reaches past its body for a mark of
+    /// `height`, given the `gap` before the hex column. Each of the tip's two
+    /// edges rises over half the height, so the reach that opens the apex to
+    /// `bookmarkTipAngle` is (height / 2) / tan(angle / 2) — the angle then holds
+    /// at every font size, since the height scales with the font. The reach is
+    /// clamped to the gap (less the padding the body already spends in it, and a
+    /// point of air) because the tip must never touch the hex column (§20.4).
+    static func bookmarkTipReach(height: CGFloat, gap: CGFloat) -> CGFloat {
+        let reach = (height / 2) / tan(bookmarkTipAngle / 2)
+        return max(0, min(reach, gap - mirrorContourPadding - 1))
+    }
 
     /// Opacity of the mirrored-selection contour's stroke.
     static let mirrorContourAlpha: CGFloat = 0.6

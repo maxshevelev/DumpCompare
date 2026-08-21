@@ -1602,8 +1602,11 @@ to draw (§9).
 
 The mark's body is the right-click focus ring's own rect — the Offset column
 padded horizontally, with the same corner radius (§10.2) — so the mark and the
-ring are one shape at one size, and the tip always fits the gap before the hex
-column at any font size.
+ring are one shape at one size. The tip is a blunt 120° point: it reads as a flag
+beside the address rather than an arrow aimed at the bytes. Its reach follows from
+the mark's height, which scales with the font, so the angle holds at every font
+size; the reach is clamped to the gap before the hex column, which the tip must
+never touch.
 
 Right-clicking a marked row's address therefore does not draw the ring: the ring
 on top of the fill is unreadable. Instead the mark itself becomes the ring — the
