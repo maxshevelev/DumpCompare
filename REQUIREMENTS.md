@@ -1599,10 +1599,10 @@ height in both, which is the whole point of it in a comparison.
   Return the one for "mark it and call it this" — the muscle memory is one
   command plus Return either way.
 - A popover, not a modal dialog: naming a row is an aside to reading a dump, and
-  the mark being named has to stay visible while the name is typed. Its title
-  line carries the row's address, which is what an unnamed bookmark will be
-  called, and it spells out what its two keys do — Esc does different things to a
-  new mark and to an existing name.
+  the mark being named has to stay visible while the name is typed. It holds two
+  lines and nothing else — the row's address, which is what an unnamed bookmark
+  will be called, and the Name field — with no buttons and no instructions: a
+  panel with one field is not where the keyboard needs explaining.
 - Dismissing the popover any other way — a click outside it — keeps what was
   typed. The mark is already on the row by then, so discarding the name would be
   the surprising outcome.

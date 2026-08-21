@@ -222,6 +222,9 @@ into two:
 - The popover keeps what was typed when it is dismissed by a click outside: the
   mark is already on the row, so dropping the name would be the surprise. Only
   Esc backs out.
+- It holds two lines — the row's address and the Name field — with no buttons and
+  no key hints. A panel with one field is not where Return and Esc need
+  explaining, and it stays the size of its job.
 - A name needed somewhere to show before the list exists (stage 3), so a marked
   row's address carries a tooltip with the bookmark's name — its address when
   unnamed — and the pane's accessibility value reads the name out with the

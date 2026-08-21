@@ -5,7 +5,7 @@ import Cocoa
 /// caret already in the Name field, and the keyboard finishes the job —
 /// **Return** saves, **Esc** backs out. That is what makes ⌘D, Return a single
 /// gesture for "mark this row" and ⌘D, a name, Return one for "mark it and call
-/// it this".
+/// it this". Two lines hold all of it: which row, and what to call it.
 ///
 /// A popover, not a modal sheet: naming a row is an aside to reading a dump, and
 /// the mark it is attached to has to stay visible while the name is typed.
@@ -23,7 +23,6 @@ final class BookmarkNamePopoverController: NSViewController, NSTextFieldDelegate
 
     private let row: UInt64
     private let initialName: String
-    private let creating: Bool
     private let onCommit: (String) -> Void
     private let onCancel: () -> Void
 
@@ -45,7 +44,6 @@ final class BookmarkNamePopoverController: NSViewController, NSTextFieldDelegate
          onCommit: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
         self.row = row
         self.initialName = existingName ?? ""
-        self.creating = existingName == nil
         self.onCommit = onCommit
         self.onCancel = onCancel
         super.init(nibName: nil, bundle: nil)
@@ -90,22 +88,17 @@ final class BookmarkNamePopoverController: NSViewController, NSTextFieldDelegate
         fieldRow.alignment = .firstBaseline
         fieldRow.spacing = 8
 
-        // The keys, spelled out: Esc does different things to a new mark and to
-        // an existing name, and the popover is where that has to be said.
-        let hint = NSTextField(labelWithString: creating
-            ? "Return saves. Esc removes the bookmark."
-            : "Return saves. Esc keeps the current name.")
-        hint.font = .systemFont(ofSize: 11)
-        hint.textColor = .secondaryLabelColor
-
-        let stack = NSStackView(views: [title, fieldRow, hint])
+        // Two lines and nothing else: which row, and what to call it. Return and
+        // Esc are not spelled out — a popover with one field is not where the
+        // keyboard needs explaining, and the panel stays the size of its job.
+        let stack = NSStackView(views: [title, fieldRow])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
         stack.edgeInsets = NSEdgeInsets(top: 14, left: 16, bottom: 14, right: 16)
         stack.translatesAutoresizingMaskIntoConstraints = false
 
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 108))
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 80))
         root.addSubview(stack)
         NSLayoutConstraint.activate([
             stack.topAnchor.constraint(equalTo: root.topAnchor),

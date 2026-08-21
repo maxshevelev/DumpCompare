@@ -655,8 +655,8 @@ final class BookmarkTests: XCTestCase {
 
     /// It opens ready for the keyboard: an empty field for a new mark and the
     /// current name for a rename, with the row's address in the title — which is
-    /// what an unnamed bookmark will be called. The hint says what Esc will do,
-    /// which is not the same in the two cases.
+    /// what an unnamed bookmark will be called. And nothing else: two lines, no
+    /// buttons, no explanation of Return and Esc.
     func testThePopoverOpensForTheRightJob() throws {
         let creating = BookmarkNamePopoverController(row: 0x10, existingName: nil,
                                                     onCommit: { _ in }, onCancel: {})
@@ -664,17 +664,15 @@ final class BookmarkTests: XCTestCase {
         XCTAssertEqual(creating.nameField.stringValue, "")
         XCTAssertEqual(creating.nameField.placeholderString, "Optional",
                        "a name is optional; the title already says which row it is")
-        XCTAssertTrue(creating.labelTexts.contains("Bookmark at 0x00000010"),
-                      "the popover says which row: \(creating.labelTexts)")
-        XCTAssertTrue(creating.labelTexts.contains { $0.contains("Esc removes the bookmark") },
-                      "\(creating.labelTexts)")
+        XCTAssertEqual(creating.labelTexts, ["Bookmark at 0x00000010", "Name"],
+                       "which row, and what to call it — nothing more")
+        XCTAssertTrue(creating.buttons.isEmpty, "the keyboard finishes the job")
 
         let renaming = BookmarkNamePopoverController(row: 0x10, existingName: "ME region",
                                                     onCommit: { _ in }, onCancel: {})
         renaming.loadViewIfNeeded()
         XCTAssertEqual(renaming.nameField.stringValue, "ME region")
-        XCTAssertTrue(renaming.labelTexts.contains { $0.contains("Esc keeps the current name") },
-                      "\(renaming.labelTexts)")
+        XCTAssertEqual(renaming.labelTexts, ["Bookmark at 0x00000010", "Name"])
     }
 
     /// The pane view anchors the popover on the mark itself, and the mark's rect
@@ -990,5 +988,14 @@ private extension BookmarkNamePopoverController {
             return (own.map { [$0] } ?? []) + view.subviews.flatMap(labels(in:))
         }
         return labels(in: view)
+    }
+
+    /// The buttons the popover shows — none: Return and Esc are the whole
+    /// interface, so a stray OK/Cancel row would be a regression.
+    var buttons: [NSButton] {
+        func found(in view: NSView) -> [NSButton] {
+            ((view as? NSButton).map { [$0] } ?? []) + view.subviews.flatMap(found(in:))
+        }
+        return found(in: view)
     }
 }
