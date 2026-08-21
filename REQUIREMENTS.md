@@ -1394,6 +1394,32 @@ resolution is used and nothing is spent on gaps.
   index changes — difference marks come from that index rather than from
   re-reading both files.
 
+19.4.3 Bookmarks in the margin
+
+Bookmarked rows (§20) are marked on the maps, so a marked region can be found
+without opening anything.
+
+- A mark is a small arrow in the map's **side margin** — outside the content
+  area, pointing inward at the row it marks — in the bookmark colour (purple,
+  §20.4), which keeps it apart from the file's own inks and from the grey
+  viewport chevron that can share the margin with it. Nothing is drawn over the
+  content: on a dump every column of every row carries information.
+- Which margin depends on the layout. Side by side the two maps meet at the
+  gutter with no padding between them, so the second map marks its rows in its
+  right margin, pointing left; everywhere else the mark sits on the left.
+- Both render modes mark the same rows — the mode changes the scale, not what is
+  marked. In detail a mark is level with its row exactly; in overview it is level
+  with the row the bookmark's offset falls in, so several bookmarks close
+  together can land on one arrow, which is what that scale means everywhere else
+  on the map.
+- One list serves both maps, because a bookmark is an absolute offset (§8): a
+  marked row is marked at the same height on each. A row past a file's own end is
+  not marked on that file's map — there is no such row there (§9) — and in detail
+  a row outside the window is not marked at all.
+- A bookmark changes nothing about the file's picture, so adding, moving or
+  removing one repaints only the margins the marks live in, never the maps
+  (§19.9). A rename repaints nothing: the arrows have not moved.
+
 19.5 The window onto the file (detail mode)
 
 Because the detail scale is fixed, a file taller than the panel does not fit:
@@ -1609,6 +1635,9 @@ height in both, which is the whole point of it in a comparison.
 - The mark has no text of its own, so the pane's accessibility value says whether
   the caret's row carries one and what it is called, as it says the caret's
   offset (§15).
+- A bookmarked row is marked in the minimap's margin as well as in the Offset
+  column, in both of the minimap's modes (§19.4.3) — that is what makes a marked
+  region findable without opening anything.
 
 20.2 The model
 

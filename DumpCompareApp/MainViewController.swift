@@ -83,12 +83,14 @@ final class MainViewController: NSViewController {
         super.viewDidLoad()
         wireExternalChangeDetection()
         // A bookmark changed: the panes have already repainted their row, and
-        // what is left for the window is the naming popover, which must not
-        // outlive the mark it is naming (§20.3), and the open form's list, which
-        // has to show what the store holds (§20.5).
+        // what is left for the window is the edit popover, which must not
+        // outlive the mark it is editing (§20.3), the open form's list, which has
+        // to show what the store holds (§20.5), and the minimap's margins, where
+        // the same list is marked (§19.4.3).
         windowModel.onBookmarksChanged = { [weak self] row in
             self?.dismissEditPopoverIfItsMarkIsGone(row: row)
             self?.openGoToForm?.reloadBookmarks()
+            self?.syncMinimapBookmarks()
         }
         // Apply the Layout settings tab's direction change to an open comparison
         // immediately; outside comparison mode the value is stored and the next
@@ -1166,11 +1168,21 @@ final class MainViewController: NSViewController {
         return pane?.hexByteStates(in: range) ?? []
     }
 
+    /// Hands the minimap the window's bookmarked rows (§19.4.3). The store is
+    /// the one list both maps mark, so this is a straight copy — which rows a
+    /// given map actually shows is the minimap's own geometry to decide.
+    private func syncMinimapBookmarks() {
+        minimapView.setBookmarkRows(windowModel.bookmarkStore.bookmarks.map(\.row))
+    }
+
     /// Hands the minimap the open files' sizes. That is all it needs to lay its
     /// maps out — everything it draws it pulls per repaint.
     private func refreshMinimapMaps() {
         minimapView.setMaps(currentFileSizes().map { MinimapView.Map(fileSize: $0) })
         updateMinimapSelections()
+        // The maps were just rebuilt, so the marks have to be handed over again
+        // — and a file that grew or shrank changes which of them are drawn (§9).
+        syncMinimapBookmarks()
         // An insert or a delete can carry the file across the line where the
         // overview stops magnifying it, so the offer follows the size as well as
         // the panel's height (§19.4). The *mode* is deliberately not re-decided

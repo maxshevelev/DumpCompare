@@ -551,6 +551,110 @@ final class MinimapView: NSView {
         }
     }
 
+    // MARK: - Bookmarks (§19.4.3, §20)
+
+    /// The bookmarked rows the maps mark in their margins. One list for every
+    /// map, because a bookmark is an absolute offset (§8): a marked row lands at
+    /// the same height on both maps of a comparison, which is the whole point of
+    /// sharing the list. Kept sorted so the drawing order is the file's order.
+    private(set) var bookmarkRows: [UInt64] = []
+
+    /// Replaces the bookmarked rows. Only the margins the marks live in are
+    /// repainted: a bookmark changes nothing about the file's picture, and
+    /// repainting a full-dump overview to add one arrow is what §19.9 is about.
+    func setBookmarkRows(_ rows: [UInt64]) {
+        let sorted = rows.sorted()
+        guard sorted != bookmarkRows else { return }
+        bookmarkRows = sorted
+        invalidate(maps.indices.compactMap { bookmarkMargin(forMapAt: $0)?.strip })
+    }
+
+    /// How tall a bookmark's mark is — shorter than the viewport marker
+    /// (`overviewMarkerHeight`), because the two can share a margin and the
+    /// viewport is the one the eye should find first. Internal so tests can
+    /// sample around a mark.
+    static let bookmarkMarkHeight: CGFloat = 7
+
+    /// The strip a map's bookmark marks are drawn in, and which way they point.
+    ///
+    /// The marks live in the map's side margin — outside the content area, so a
+    /// mark never covers a byte — pointing inward at the rows they mark, the way
+    /// the overview's viewport chevrons do (§19.6). Which margin depends on the
+    /// layout: side by side, the inner edges have no padding at all (the two
+    /// dumps meet at the gutter), so map 1's marks go in its right margin and
+    /// point left. Nil when the map has no margin to draw in.
+    private func bookmarkMargin(forMapAt index: Int) -> (strip: NSRect, pointsRight: Bool)? {
+        guard maps.indices.contains(index) else { return nil }
+        let area = area(forMapAt: index)
+        let content = contentArea(within: area, forMapAt: index)
+        guard area.height > 0 else { return nil }
+        let left = content.minX - area.minX
+        let right = area.maxX - content.maxX
+        // The wider margin wins, so a layout that pads only one side is drawn on
+        // that side; ties go left, which is where a reader looks first.
+        if left >= right, left > 1 {
+            return (NSRect(x: area.minX, y: area.minY, width: left, height: area.height), true)
+        }
+        if right > 1 {
+            return (NSRect(x: content.maxX, y: area.minY, width: right, height: area.height), false)
+        }
+        return nil
+    }
+
+    /// The box a bookmarked row's mark occupies on map `index`, or nil when that
+    /// map does not show the row: past the end of *its* file (§9 — a comparison's
+    /// shorter file has no such row to mark), or outside the detail window.
+    /// Shared by drawing and by tests, so what is asserted is what is painted.
+    func bookmarkMarkRect(row: UInt64, forMapAt index: Int) -> NSRect? {
+        guard maps.indices.contains(index), let margin = bookmarkMargin(forMapAt: index) else {
+            return nil
+        }
+        let fileSize = maps[index].fileSize
+        guard fileSize > 0, row < fileSize else { return nil }
+        let area = self.area(forMapAt: index)
+        let content = contentArea(within: area, forMapAt: index)
+        // The row's own y, from the same mapping the selection overlay uses, so
+        // a mark and the row it marks cannot drift apart.
+        let rowY = y(of: row, in: content)
+        let height = Self.bookmarkMarkHeight
+        let box = NSRect(x: margin.strip.minX, y: rowY - height / 2 + Self.byteHeight / 2,
+                         width: margin.strip.width, height: height)
+        // A row the window has scrolled past is not marked. The row's own y is
+        // what is tested, not the mark's box: half a mark hanging over the top
+        // edge still belongs to a row that is on screen.
+        guard rowY >= area.minY - Self.rowStep, rowY <= area.maxY else { return nil }
+        return box
+    }
+
+    /// Draws the bookmark marks: a small purple triangle per marked row in each
+    /// map's margin, pointing at the row it marks. Purple is the bookmark colour
+    /// throughout (§20.4), which keeps a mark apart from the grey viewport
+    /// chevron that can share the margin with it.
+    private func drawBookmarkMarks(dirtyRect: NSRect) {
+        guard !bookmarkRows.isEmpty else { return }
+        (HexTheme.bookmarkColor.usingColorSpace(.deviceRGB) ?? HexTheme.bookmarkColor).setFill()
+        for index in maps.indices {
+            guard let margin = bookmarkMargin(forMapAt: index),
+                  margin.strip.intersects(dirtyRect) else { continue }
+            for row in bookmarkRows {
+                guard let box = bookmarkMarkRect(row: row, forMapAt: index),
+                      box.maxY >= dirtyRect.minY, box.minY <= dirtyRect.maxY else { continue }
+                // The apex sits `overviewMarkerInset` short of the content, as
+                // the viewport chevrons do: the arrow points at the map without
+                // touching it.
+                let inset = Self.overviewMarkerInset
+                let apexX = margin.pointsRight ? box.maxX - inset : box.minX + inset
+                let baseX = margin.pointsRight ? box.minX : box.maxX
+                let path = NSBezierPath()
+                path.move(to: NSPoint(x: baseX, y: box.minY))
+                path.line(to: NSPoint(x: apexX, y: box.midY))
+                path.line(to: NSPoint(x: baseX, y: box.maxY))
+                path.close()
+                path.fill()
+            }
+        }
+    }
+
     /// Marks only these rectangles for repaint. Scrolling calls into the panel
     /// on every wheel tick, and the maps themselves do not change between edits:
     /// in overview a full repaint would redraw a whole dump's picture — 16 cells
@@ -754,6 +858,10 @@ final class MinimapView: NSView {
             }
         }
         drawViewports(dirtyRect: dirtyRect)
+        // After the viewport, so a bookmark's mark is not buried under the grey
+        // chevron when the two land in the same margin: there are few marks and
+        // they are what the user put there on purpose.
+        drawBookmarkMarks(dirtyRect: dirtyRect)
         for index in maps.indices {
             drawSelection(maps[index].selection,
                           in: contentArea(within: area(forMapAt: index), forMapAt: index),

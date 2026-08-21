@@ -395,6 +395,33 @@ found without opening anything.
 **Done when** marking a row puts an arrow on both maps and removing it takes the
 arrow away.
 
+**As built (stage 4).** `MinimapView.setBookmarkRows(_:)`, fed from the store by
+`MainViewController.syncMinimapBookmarks()` on every bookmark change and on every
+map rebuild. Where it differs from the sketch above:
+
+- **The arrow is the viewport chevron's shape**, not a plain triangle of its own:
+  a margin-wide triangle whose apex stops `overviewMarkerInset` short of the
+  content, exactly as the overview's viewport marker does (§19.6). Reusing that
+  construction is why the two read as the same kind of object — a position in the
+  margin — and purple is what tells them apart. It is 7 pt tall against the
+  viewport marker's 11: the two can share a margin, and the viewport is the one
+  the eye should find first.
+- **Not two pixels tall in the overview.** The plan said to match the other
+  overview event marks, but those run the map's full width; a 1 pt triangle in a
+  10 pt margin is invisible. The mark keeps one height in both modes, and only
+  its *position* changes scale.
+- **The margin is not always the left one**: side by side, the maps meet at the
+  gutter with no inner padding, so map 1 marks in its right margin pointing left.
+  `bookmarkMargin(forMapAt:)` picks the wider margin and the direction with it.
+- **The row's y comes from `y(of:in:)`** — the same mapping the selection overlay
+  uses — so a mark and the row it marks cannot drift apart in either mode, and
+  the detail window's scroll is already accounted for.
+- Marks are drawn *after* the viewport overlay, so a mark is not buried under the
+  grey chevron when the two coincide.
+- Repainting is the margin strip only, and an unchanged list repaints nothing —
+  so a rename costs no ink. Tests pin both, along with the arrow's position in
+  each mode, the same height on both maps, and nothing past a shorter file's end.
+
 ### Stage 5 — Click near an arrow to land on it
 
 **Delivers:** the two-pixel overview arrow becomes a target you can hit.
