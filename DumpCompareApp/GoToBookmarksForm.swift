@@ -382,8 +382,8 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
             // ⌥⌘B is opened to go to a bookmark, so the list offers its first
             // one — the lowest address, the list being sorted by address. The
             // jump still takes a Return: a selection is an offer, not an act.
-            if bookmarkTable.selectedRow < 0, !bookmarks.isEmpty {
-                bookmarkTable.selectRowIndexes([0], byExtendingSelection: false)
+            if selectedBookmarkRow == nil, let first = bookmarks.first {
+                applySelection(first.row)
             }
         }
     }
@@ -393,30 +393,62 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
     /// Re-reads the list from the store. Called on every change the form makes,
     /// and by the window when a bookmark changes under it (§20.2).
     func reloadBookmarks() {
-        // The selection belongs to a bookmark, not to a row number: reloading
-        // renumbers the rows (an address edited from the popover re-sorts the
-        // list, one made elsewhere pushes the rest down), and a selection left on
-        // its old index would either follow the wrong bookmark or vanish (§20.5).
-        let selected = selectedBookmark?.row
+        let selected = selectedBookmarkRow
         bookmarks = store.bookmarks
         bookmarkTable.reloadData()
         emptyLabel.isHidden = !bookmarks.isEmpty
         updateTableHeight()
-        if let selected { selectBookmark(atRow: selected) }
+        // `reloadData` clears the table's own selection, so the form puts its
+        // selection back — which is the point of keeping it here (§20.5).
+        applySelection(selected)
     }
 
-    /// The bookmark the list has selected, if any.
+    /// Which bookmark the list has selected — the form's state, not the table's.
+    ///
+    /// A table view's selection is a row *number*, and a row number is a
+    /// rendering detail: the list re-sorts when an address is edited, renumbers
+    /// when a bookmark is made elsewhere, and forgets the selection outright on
+    /// every `reloadData`. The selection means "this bookmark", so it is kept as
+    /// one and the table is told; nothing reads it back out of the table.
+    private(set) var selectedBookmarkRow: UInt64?
+
+    /// Set while the form is writing its selection into the table, so the
+    /// notification that comes back is not mistaken for the user's choice.
+    private var isApplyingSelection = false
+
+    /// The selected bookmark, or nil when the selection points at nothing (an
+    /// empty list, or a bookmark that has just been removed).
     var selectedBookmark: Bookmark? {
-        let row = bookmarkTable.selectedRow
-        return bookmarks.indices.contains(row) ? bookmarks[row] : nil
+        guard let selectedBookmarkRow else { return nil }
+        return bookmarks.first { $0.row == selectedBookmarkRow }
     }
 
-    /// Selects the bookmark on `row`, wherever the list now keeps it. A row that
-    /// is no longer in the list leaves the selection alone — the callers that
-    /// remove a bookmark choose a neighbour themselves.
+    /// Selects the bookmark on `row`, wherever the list now keeps it.
     func selectBookmark(atRow row: UInt64) {
-        guard let index = bookmarks.firstIndex(where: { $0.row == row }) else { return }
+        applySelection(row)
+    }
+
+    /// Points the selection at `row` and makes the table show it. A row the list
+    /// no longer holds leaves nothing selected — the callers that remove a
+    /// bookmark pick a neighbour themselves.
+    private func applySelection(_ row: UInt64?) {
+        selectedBookmarkRow = row
+        isApplyingSelection = true
+        defer { isApplyingSelection = false }
+        guard let row, let index = bookmarks.firstIndex(where: { $0.row == row }) else {
+            bookmarkTable.deselectAll(nil)
+            selectedBookmarkRow = nil
+            return
+        }
         bookmarkTable.selectRowIndexes([index], byExtendingSelection: false)
+    }
+
+    /// The user picked a row: that is the one moment the table is the authority,
+    /// and the form writes down which bookmark it means.
+    func tableViewSelectionDidChange(_ notification: Notification) {
+        guard !isApplyingSelection else { return }
+        let row = bookmarkTable.selectedRow
+        selectedBookmarkRow = bookmarks.indices.contains(row) ? bookmarks[row].row : nil
     }
 
     /// How many rows the list shows before it starts scrolling.
@@ -506,9 +538,8 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
     /// happens — the same Return in the same window must never be a coin flip
     /// between a typed address and a guessed one (§10.1).
     func goToSelectedBookmark() {
-        let row = bookmarkTable.selectedRow
-        guard row >= 0, row < bookmarks.count else { return }
-        jump(to: bookmarks[row].row)
+        guard let selected = selectedBookmark else { return }
+        jump(to: selected.row)
     }
 
     @objc private func rowDoubleClicked() {
@@ -555,7 +586,7 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
     /// a run of them can be cleared without reaching for the mouse between
     /// presses; removing the last row selects the one now at the end.
     func removeSelectedBookmark() {
-        removeBookmark(atRow: bookmarkTable.selectedRow)
+        removeBookmark(atRow: bookmarks.firstIndex { $0.row == selectedBookmarkRow } ?? -1)
     }
 
     /// The list's context menu > Edit Bookmark…: the same popover the dump's own
@@ -564,7 +595,14 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
     /// delete it, which an in-place name field could not.
     @objc func editClickedBookmark() {
         let clicked = bookmarkTable.clickedRow
-        editBookmark(atRow: clicked >= 0 ? clicked : bookmarkTable.selectedRow)
+        guard clicked >= 0 else {
+            if let selected = selectedBookmarkRow,
+               let index = bookmarks.firstIndex(where: { $0.row == selected }) {
+                editBookmark(atRow: index)
+            }
+            return
+        }
+        editBookmark(atRow: clicked)
     }
 
     /// Where the edit popover goes. Nil means on the row itself; a test replaces
@@ -582,7 +620,7 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
     private func editBookmark(atRow row: Int) {
         guard row >= 0, row < bookmarks.count else { return }
         let bookmark = bookmarks[row]
-        bookmarkTable.selectRowIndexes([row], byExtendingSelection: false)
+        applySelection(bookmark.row)
         let controller = BookmarkEditPopoverController(
             row: bookmark.row, existingName: bookmark.name,
             // One row holds one bookmark (§20.1), so a row already marked is not
@@ -622,16 +660,18 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
     /// on what was clicked (§10.2).
     @objc func deleteClickedBookmark() {
         let clicked = bookmarkTable.clickedRow
-        removeBookmark(atRow: clicked >= 0 ? clicked : bookmarkTable.selectedRow)
+        guard clicked >= 0 else { return removeSelectedBookmark() }
+        removeBookmark(atRow: clicked)
     }
 
     private func removeBookmark(atRow row: Int) {
         guard row >= 0, row < bookmarks.count else { return }
         store.remove(rowContaining: bookmarks[row].row)
         reloadBookmarks()
+        // The bookmark the selection pointed at is gone, so the neighbour takes
+        // it — the row that slid up into its place, or the new last row.
         guard !bookmarks.isEmpty else { return }
-        bookmarkTable.selectRowIndexes([min(row, bookmarks.count - 1)],
-                                       byExtendingSelection: false)
+        applySelection(bookmarks[min(row, bookmarks.count - 1)].row)
     }
 
     /// Escape's first level: closes an open bookmark editor instead of the form,

@@ -1859,11 +1859,15 @@ window, so nothing about a bookmark lives in two places.
   gesture to a menu command and the popover keeps both jobs whole.
 - **Escape closes the editor before it closes the form**: editing a bookmark and
   pressing Escape must not throw the window away (§10.1).
-- The selection belongs to a **bookmark**, not to a row number. Reloading the list
-  renumbers its rows — an address edited in the popover re-sorts it, a bookmark
-  made elsewhere pushes the rest down — so the selection follows the bookmark it
-  was on, and an edited bookmark stays selected wherever it now sits. Only removing
-  moves it: there the neighbour takes it, as `⌫` in the list leaves it. Return commits the name, a click elsewhere commits it too, and Escape
+- The selection belongs to a **bookmark**, and it is the form's state rather than
+  the table's. A table view's selection is a row *number*, and a row number is a
+  rendering detail: the list re-sorts when an address is edited, renumbers when a
+  bookmark is made elsewhere, and forgets its selection outright on every reload.
+  So the form keeps which bookmark is selected and tells the table; the table is
+  the authority only at the moment the user picks a row. The selection therefore
+  survives a reload and follows an edited bookmark to wherever the list re-sorts
+  it. Only removing moves it: there the neighbour takes it, as `⌫` in the list
+  leaves it. Return commits the name, a click elsewhere commits it too, and Escape
   restores the name the store holds without closing the form (§10.1).
 - **⌫** removes the selected bookmark. The selection stays where it was, so a run
   of them can be cleared without reaching for the mouse between presses;

@@ -375,6 +375,25 @@ final class GoToBookmarksTests: XCTestCase {
                        "an edited address takes the selection with it")
     }
 
+    /// The selection is the form's, not the table's: a table view's selection is
+    /// a row number, and a row number is a rendering detail. `reloadData` alone
+    /// clears the table — the form puts its selection back (§20.5).
+    func testTheSelectionLivesInTheFormNotTheTable() throws {
+        let (form, _, _, _) = makeForm(rows: [0x10: "a", 0x20: "b"])
+
+        form.bookmarkTable.selectRowIndexes([1], byExtendingSelection: false)
+        XCTAssertEqual(form.selectedBookmarkRow, 0x20,
+                       "the user's pick is written down as a bookmark")
+
+        form.bookmarkTable.reloadData()   // as any table reload does
+        XCTAssertEqual(form.bookmarkTable.selectedRow, -1, "the table forgot")
+        XCTAssertEqual(form.selectedBookmarkRow, 0x20, "the form did not")
+
+        form.reloadBookmarks()
+        XCTAssertEqual(form.bookmarkTable.selectedRow, 1, "and it told the table again")
+        XCTAssertEqual(form.selectedBookmark, Bookmark(row: 0x20, name: "b"))
+    }
+
     /// A bookmark made elsewhere renumbers the rows; the selection stays on the
     /// bookmark it was on rather than on the row number it had.
     func testTheSelectionSurvivesAChangeFromOutside() throws {
