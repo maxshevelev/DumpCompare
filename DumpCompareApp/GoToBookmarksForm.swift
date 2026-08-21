@@ -495,16 +495,14 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
         handleDoubleClick(row: bookmarkTable.clickedRow, column: bookmarkTable.clickedColumn)
     }
 
-    /// A double click jumps, wherever in the row it lands — a double click
-    /// *activates* an item, which here means going to it, the way it opens a file
-    /// in the Finder (§20.5). Editing a bookmark is a menu command and its own
-    /// popover, so no click in the list has to mean two things. Takes the row and
-    /// column rather than reading `clickedRow` itself, because those are AppKit's
-    /// to set and a test cannot.
+    /// A double click opens the bookmark — its editor, wherever in the row the
+    /// click lands (§20.5). *Going* to a bookmark is Return and the Go To button;
+    /// opening it is the mouse's gesture, the way a double click opens what it
+    /// lands on rather than acting on it. Takes the row and column rather than
+    /// reading `clickedRow` itself, because those are AppKit's to set and a test
+    /// cannot.
     func handleDoubleClick(row: Int, column: Int) {
-        guard row >= 0, row < bookmarks.count else { return }
-        bookmarkTable.selectRowIndexes([row], byExtendingSelection: false)
-        goToSelectedBookmark()
+        editBookmark(atRow: row)
     }
 
     /// The list's two columns, by index — what a double click is judged against.

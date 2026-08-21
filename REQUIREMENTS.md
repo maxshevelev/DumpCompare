@@ -1840,12 +1840,15 @@ window, so nothing about a bookmark lives in two places.
   address and stays in the list where the file does not reach (§9), and "nothing
   there" is worth saying outright rather than leaving a blank cell. Both are shown
   the way a placeholder is — dimmed, and replaced the moment a name is typed.
-- **Return** goes to the selected bookmark, and a **double click on a row** goes
-  there too, so the mouse needs no detour to the keyboard. Both dismiss the form
-  and behave exactly as a typed offset does (§10.1): both panes of a comparison
-  move, because a bookmark is an absolute offset (§8).
-- **A bookmark is edited in its own popover**, opened from the row's context menu
-  (*Edit Bookmark…*) — the same popover ⇧⌘D opens on a mark in the dump (§20.3).
+- **Return** goes to the selected bookmark — the key the form's focus rule is
+  built on (§10.1) — and dismisses the form, behaving exactly as a typed offset
+  does: both panes of a comparison move, because a bookmark is an absolute offset
+  (§8). The **Go To** button does the same for the mouse.
+- A **double click on a row** opens that bookmark's editor, wherever in the row
+  it lands: a double click opens what it lands on rather than acting on it, and
+  the list's one keyboard gesture is already the jump.
+- **A bookmark is edited in its own popover**, opened by a double click on its row
+  or from the row's context menu (*Edit Bookmark…*) — the same popover ⇧⌘D opens on a mark in the dump (§20.3).
   One editor for a bookmark wherever it is edited from, and it can do what a name
   field in a row could not: change the address, and delete the bookmark. The list
   itself holds no editable fields, so every click in it means one thing — select

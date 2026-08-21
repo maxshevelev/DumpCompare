@@ -253,27 +253,45 @@ final class GoToBookmarksTests: XCTestCase {
 
     // MARK: - The mouse
 
-    func testADoubleClickOnARowJumpsToIt() {
-        let (form, _, jumps, closes) = makeForm(rows: [0x10: "", 0x100: ""])
+    func testADoubleClickOpensTheBookmarksEditor() throws {
+        let (form, _, jumps, closes) = makeForm(rows: [0x10: "", 0x100: "NVRAM"])
+        var presented: [BookmarkEditPopoverController] = []
+        form.editPopoverPresenter = { presented.append($0) }
 
         form.handleDoubleClick(row: 1, column: form.offsetColumnIndex)
 
-        XCTAssertEqual(jumps(), [0x100])
-        XCTAssertEqual(closes(), 1)
+        let popover = try XCTUnwrap(presented.first, "the editor opened on the clicked row")
+        XCTAssertEqual(popover.row, 0x100)
+        XCTAssertTrue(jumps().isEmpty, "opening a bookmark is not going to it")
+        XCTAssertEqual(closes(), 0, "and the form stays up behind it")
     }
 
-    /// A double click on the name jumps as well: a double click activates the
-    /// item, wherever in the row it lands, the way it opens a file in the Finder.
-    /// Editing a bookmark is a menu command and its own popover, so no click in
-    /// the list means two things (§20.5).
-    func testADoubleClickOnANameJumpsToo() {
-        let (form, _, jumps, closes) = makeForm(rows: [0x10: "EC table"])
+    /// The same wherever in the row the click lands: one click means one thing,
+    /// and *going* to a bookmark is Return and the Go To button (§20.5).
+    func testADoubleClickOnTheNameOpensTheEditorToo() throws {
+        let (form, _, jumps, _) = makeForm(rows: [0x10: "EC table"])
+        var presented: [BookmarkEditPopoverController] = []
+        form.editPopoverPresenter = { presented.append($0) }
 
         form.handleDoubleClick(row: 0, column: form.nameColumnIndex)
 
-        XCTAssertEqual(jumps(), [0x10])
+        XCTAssertEqual(presented.count, 1)
+        XCTAssertTrue(form.isEditingBookmark)
+        XCTAssertTrue(jumps().isEmpty)
+    }
+
+    /// Return still goes: that is the key the form's focus rule is built on
+    /// (§10.1), and it is what makes ⌥⌘B, Return a way to reach a bookmark.
+    func testReturnStillGoesToTheSelectedBookmark() throws {
+        let (form, _, jumps, closes) = makeForm(rows: [0x10: "", 0x100: ""],
+                                                focus: .bookmarks)
+        form.bookmarkTable.selectRowIndexes([1], byExtendingSelection: false)
+
+        form.bookmarkTable.keyDown(with: try keyDown("\r", keyCode: 36))
+
+        XCTAssertEqual(jumps(), [0x100])
         XCTAssertEqual(closes(), 1)
-        XCTAssertFalse(form.isEditingBookmark, "a double click never opens the editor")
+        XCTAssertFalse(form.isEditingBookmark, "Return does not open the editor")
     }
 
     /// Nothing in the list takes the keyboard: the name is a label, not a field,
