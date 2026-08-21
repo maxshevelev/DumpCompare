@@ -87,7 +87,7 @@ final class MainViewController: NSViewController {
         // outlive the mark it is naming (§20.3), and the open form's list, which
         // has to show what the store holds (§20.5).
         windowModel.onBookmarksChanged = { [weak self] row in
-            self?.dismissNamingPopoverIfItsMarkIsGone(row: row)
+            self?.dismissEditPopoverIfItsMarkIsGone(row: row)
             self?.openGoToForm?.reloadBookmarks()
         }
         // Apply the Layout settings tab's direction change to an open comparison
@@ -1980,7 +1980,7 @@ final class MainViewController: NSViewController {
 
     /// The bookmark block of the offset context menu (§20.3). One item marks and
     /// unmarks — *Toggle Bookmark at «address»*, the same command ⌘D is, so there
-    /// is one thing to learn — and a marked row is offered *Rename Bookmark…*
+    /// is one thing to learn — and a marked row is offered *Edit Bookmark…*
     /// besides. The address is the ROW's, not the clicked byte's: a right-click on
     /// a byte marks its row (§20.1), and the title is what says so.
     private func addBookmarkMenuItems(to menu: NSMenu, for pane: PaneViewModel, offset: UInt64) {
@@ -1993,7 +1993,7 @@ final class MainViewController: NSViewController {
         }
         add("Toggle Bookmark at \(address)", #selector(toggleBookmarkAtOffset(_:)))
         if windowModel.bookmarkStore.bookmark(atRowContaining: offset) != nil {
-            add("Rename Bookmark…", #selector(renameBookmarkAtOffset(_:)))
+            add("Edit Bookmark…", #selector(editBookmarkAtOffset(_:)))
         }
     }
 
@@ -2457,9 +2457,11 @@ final class MainViewController: NSViewController {
         let store = windowModel.bookmarkStore
         let row = BookmarkStore.row(containing: offset)
         store.add(rowContaining: row)
-        presentBookmarkNamePopover(
+        presentBookmarkEditPopover(
             in: pane, row: row, existingName: nil,
-            onCommit: { store.rename(rowContaining: row, to: $0) },
+            onCommit: { [weak self] target, name in
+                self?.applyBookmarkEdit(from: row, to: target, name: name)
+            },
             onCancel: { store.remove(rowContaining: row) }
         )
     }
@@ -2483,86 +2485,107 @@ final class MainViewController: NSViewController {
         }
     }
 
-    /// Renames the mark on `pane`'s row containing `offset`, in the same popover
-    /// (§20.3). Only for a row that carries one: Esc leaves the name as it was.
-    private func renameBookmarkInPane(_ pane: PaneViewModel, rowContaining offset: UInt64) {
-        let store = windowModel.bookmarkStore
-        guard pane.isOpen, let existing = store.bookmark(atRowContaining: offset) else { return }
-        presentBookmarkNamePopover(
+    /// Edits the mark on `pane`'s row containing `offset` — its address and its
+    /// name — in the same popover (§20.3). Only for a row that carries one: Esc
+    /// leaves the bookmark exactly as it was.
+    private func editBookmarkInPane(_ pane: PaneViewModel, rowContaining offset: UInt64) {
+        guard pane.isOpen,
+              let existing = windowModel.bookmarkStore.bookmark(atRowContaining: offset) else { return }
+        presentBookmarkEditPopover(
             in: pane, row: existing.row, existingName: existing.name,
-            onCommit: { store.rename(rowContaining: existing.row, to: $0) },
+            onCommit: { [weak self] target, name in
+                self?.applyBookmarkEdit(from: existing.row, to: target, name: name)
+            },
             onCancel: {}
         )
     }
 
-    /// A request to name a bookmark: which row, in which pane, the name it
+    /// Applies what the popover was edited to: the name, and the address when it
+    /// changed. A moved bookmark is the same bookmark — it leaves the old row and
+    /// arrives on the new one named, rather than being removed and re-made, so
+    /// nothing in between sees a bookmark without its name (§20.3).
+    private func applyBookmarkEdit(from row: UInt64, to target: UInt64, name: String) {
+        let store = windowModel.bookmarkStore
+        guard target != row else {
+            store.rename(rowContaining: row, to: name)
+            return
+        }
+        store.remove(rowContaining: row)
+        store.add(rowContaining: target, name: name)
+    }
+
+    /// A request to edit a bookmark: which row, in which pane, the name it
     /// starts with (nil when the mark was just created, which is what makes Esc
-    /// remove it), and what the two keys do.
-    struct BookmarkNamingRequest {
+    /// remove it), and what the two keys do. `commit` takes the row the popover
+    /// was edited to, which is not always the row it opened on (§20.3).
+    struct BookmarkEditRequest {
         let pane: PaneViewModel
         let row: UInt64
         let existingName: String?
-        let commit: (String) -> Void
+        let commit: (UInt64, String) -> Void
         let cancel: () -> Void
     }
 
-    /// Where a naming request goes, returning how to dismiss what it presented.
+    /// Where an edit request goes, returning how to dismiss what it presented.
     /// Nil means the real popover on the pane's mark; a test replaces it to
     /// capture the request instead, because a popover anchored in a window that
     /// is never on screen closes the instant it opens — the commands' own
     /// behaviour is what those tests are about.
-    var bookmarkNamingPresenter: ((BookmarkNamingRequest) -> () -> Void)?
+    var bookmarkEditPresenter: ((BookmarkEditRequest) -> () -> Void)?
 
-    /// The naming session on screen: the row it is about, and how to close it
+    /// The editing session on screen: the row it is about, and how to close it
     /// without saving. Held because it must not outlive its mark (§20.3).
-    private var openNaming: (row: UInt64, dismiss: () -> Void)?
+    private var openEditing: (row: UInt64, dismiss: () -> Void)?
 
-    /// The row a naming popover is open for, if any.
-    var namingRow: UInt64? { openNaming?.row }
+    /// The row an edit popover is open for, if any.
+    var editingRow: UInt64? { openEditing?.row }
 
-    /// Presents the naming popover on `pane`'s mark (§20.3), replacing any
-    /// session already on screen — ⌘D on another row while one is open would
-    /// otherwise leave two panels up, one of them about a row the user has moved
-    /// on from.
-    private func presentBookmarkNamePopover(
+    /// Presents the edit popover on `pane`'s mark (§20.3), replacing any session
+    /// already on screen — ⌘D on another row while one is open would otherwise
+    /// leave two panels up, one of them about a row the user has moved on from.
+    private func presentBookmarkEditPopover(
         in pane: PaneViewModel, row: UInt64, existingName: String?,
-        onCommit: @escaping (String) -> Void, onCancel: @escaping () -> Void
+        onCommit: @escaping (UInt64, String) -> Void, onCancel: @escaping () -> Void
     ) {
-        openNaming?.dismiss()
-        openNaming = nil
-        let request = BookmarkNamingRequest(
+        openEditing?.dismiss()
+        openEditing = nil
+        let request = BookmarkEditRequest(
             pane: pane, row: row, existingName: existingName,
-            commit: { [weak self] name in
-                self?.openNaming = nil
-                onCommit(name)
+            commit: { [weak self] target, name in
+                self?.openEditing = nil
+                onCommit(target, name)
             },
             cancel: { [weak self] in
-                self?.openNaming = nil
+                self?.openEditing = nil
                 onCancel()
             }
         )
-        if let bookmarkNamingPresenter {
-            openNaming = (row, bookmarkNamingPresenter(request))
+        if let bookmarkEditPresenter {
+            openEditing = (row, bookmarkEditPresenter(request))
             return
         }
         guard let paneView = filePaneView(for: pane) else { return }
-        let controller = paneView.presentBookmarkNamePopover(
+        let store = windowModel.bookmarkStore
+        let controller = paneView.presentBookmarkEditPopover(
             rowContaining: row, existingName: existingName,
+            // One row holds one bookmark (§20.1), so an address already marked is
+            // not an address this bookmark can be given.
+            rowIsFree: { store.bookmark(atRowContaining: $0) == nil },
             onCommit: request.commit, onCancel: request.cancel
         )
-        openNaming = (row, { controller.abandon() })
+        openEditing = (row, { controller.abandon() })
     }
 
-    /// Closes the naming popover when the mark it is naming disappears. Every
+    /// Closes the edit popover when the mark it is editing disappears. Every
     /// removal arrives here through the window's bookmark signal — ⌘D (whose key
     /// equivalent reaches the menu through an open popover), the context menu,
-    /// and later the list — so no removal path has to remember to do this
+    /// and the form's list — so no removal path has to remember to do this
     /// (§20.3).
-    private func dismissNamingPopoverIfItsMarkIsGone(row: UInt64) {
-        guard let openNaming, openNaming.row == row,
+    private func dismissEditPopoverIfItsMarkIsGone(row: UInt64) {
+        guard let openEditing, openEditing.row == row,
               windowModel.bookmarkStore.bookmark(atRowContaining: row) == nil else { return }
-        self.openNaming = nil
-        openNaming.dismiss()
+        self.openEditing = nil
+        openEditing.dismiss()
     }
 
     /// ⌘D: the active pane's caret row.
@@ -2570,11 +2593,11 @@ final class MainViewController: NSViewController {
         toggleBookmarkInPane(activePane, rowContaining: activePane.hexSelection().start)
     }
 
-    /// ⇧⌘D: renames the mark on the active pane's caret row. Enabled only when
-    /// that row carries one — ⌘D is how a mark is made, and it names it too, so
-    /// this command has only the one job (§20.3).
-    @objc func renameBookmark() {
-        renameBookmarkInPane(activePane, rowContaining: activePane.hexSelection().start)
+    /// ⇧⌘D: edits the mark on the active pane's caret row — its address and its
+    /// name. Enabled only when that row carries one: ⌘D is how a mark is made,
+    /// and it opens the same popover, so this command only ever edits (§20.3).
+    @objc func editBookmark() {
+        editBookmarkInPane(activePane, rowContaining: activePane.hexSelection().start)
     }
 
     /// Offset context menu > Toggle Bookmark: the same act on the row that was
@@ -2584,11 +2607,11 @@ final class MainViewController: NSViewController {
         toggleBookmarkInPane(target.pane, rowContaining: target.offset)
     }
 
-    /// Offset context menu > Rename Bookmark…: the naming popover for the
+    /// Offset context menu > Edit Bookmark…: the edit popover for the
     /// right-clicked row's existing mark.
-    @objc func renameBookmarkAtOffset(_ sender: Any?) {
+    @objc func editBookmarkAtOffset(_ sender: Any?) {
         guard let target = offsetContextTarget(from: sender) else { return }
-        renameBookmarkInPane(target.pane, rowContaining: target.offset)
+        editBookmarkInPane(target.pane, rowContaining: target.offset)
     }
 
     // MARK: - Dialogs (§10)
@@ -3246,9 +3269,9 @@ extension MainViewController: NSMenuItemValidation {
              #selector(selectAllBytes),
              #selector(toggleBookmark):
             return activePane.isOpen
-        case #selector(renameBookmark):
-            // There is nothing to rename on a row that carries no mark, and ⌘D
-            // is what makes one (§20.3).
+        case #selector(editBookmark):
+            // There is nothing to edit on a row that carries no mark, and ⌘D is
+            // what makes one (§20.3).
             return activePane.isOpen
                 && windowModel.bookmarkStore.bookmark(atRowContaining: activePane.hexSelection().start) != nil
         case #selector(revertDocument):

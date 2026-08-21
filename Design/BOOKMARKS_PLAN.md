@@ -410,6 +410,26 @@ arrow away.
 **Done when** clicking an arrow in the overview of a 16 MB file lands on the
 bookmark's row rather than a few rows off.
 
+### Added after stage 3 — editing a bookmark's address
+
+The popover's title became a field: *Rename Bookmark…* is now **Edit Bookmark…**
+(⇧⌘D), and the panel holds the bookmark's two facts as two fields — the address
+and the name. A mark put a row off is corrected by typing the right address,
+which is the keyboard's version of dragging it, and the name comes along.
+
+- `BookmarkNamePopoverController` → `BookmarkEditPopoverController`, its commit
+  now `(row, name)`; `MainViewController.BookmarkNamingRequest` →
+  `BookmarkEditRequest`, and `applyBookmarkEdit` moves the bookmark when the
+  address changed (remove + add with the name, so it never exists unnamed).
+- The address is validated as it is typed, but in the field rather than in a
+  message — red digits, no room for a sentence in a 300pt panel. Return refuses
+  with a beep while it is red, and a row another bookmark already holds is as
+  invalid as a typo (`rowIsFree`, handed in by the controller).
+- The caret still starts in the Name field in both jobs, and an existing name
+  arrives selected — which AppKit does for a plain field on focus, so the
+  explicit `selectText` turned out to be dead code and went; the test pins the
+  behaviour, not the call.
+
 ### Added after stage 3 — dragging a mark
 
 Not in the original plan: a mark can be dragged to another row (§20.6), asked for

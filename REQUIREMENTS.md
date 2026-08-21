@@ -751,7 +751,7 @@ Suggested shortcuts:
 - Go To Position (the form's offset field): Cmd+G.
 - Bookmarks (the same form, its list focused): Cmd+Option+B — Cmd+B is the
   system's Bold, so the list takes the Option variant.
-- Toggle Bookmark: Cmd+D; Rename Bookmark: Shift+Cmd+D (§20.3).
+- Toggle Bookmark: Cmd+D; Edit Bookmark: Shift+Cmd+D (§20.3).
 
 Shortcuts may be adjusted, but must be discoverable in menus.
 
@@ -1639,7 +1639,7 @@ height in both, which is the whole point of it in a comparison.
   but whitespace is no name — so the "empty means show the address" rule cannot
   be defeated by a space.
 - The store fires that same change signal at whatever else is showing its
-  contents — the naming popover, which must not outlive its mark (§20.3), and the
+  contents — the edit popover, which must not outlive its mark (§20.3), and the
   open form's list (§20.5) — so a bookmark made or removed anywhere shows up
   everywhere without any of those surfaces polling it.
 
@@ -1648,22 +1648,36 @@ height in both, which is the whole point of it in a comparison.
 - Edit ▸ Toggle Bookmark (⌘D) marks the active pane's caret row and unmarks it
   again — one command for both, and its title says so rather than promising only
   to add.
-- Marking a row opens the naming popover on the new mark: a small panel anchored
+- Marking a row opens the edit popover on the new mark: a small panel anchored
   to the mark itself, with the caret already in its Name field. **Return** saves
   the name (nothing typed means an unnamed bookmark, shown by its address);
   **Esc** removes the mark again, cancelling the whole act, not just the name.
   So **⌘D, Return** is the whole gesture for "mark this row", and ⌘D, a name,
   Return the one for "mark it and call it this" — the muscle memory is one
   command plus Return either way.
-- A popover, not a modal dialog: naming a row is an aside to reading a dump, and
-  the mark being named has to stay visible while the name is typed. It holds two
-  lines and nothing else — the row's address, which is what an unnamed bookmark
-  will be called, and a name field spanning its width, labelled by its own
-  placeholder — with no buttons and no instructions: a panel with one field is
+- A popover, not a modal dialog: editing a bookmark is an aside to reading a
+  dump, and the mark being edited has to stay visible while the name is typed. It
+  holds two lines and nothing else — the bookmark's **address** and its **name**,
+  each a field spanning the popover's width, the name labelled by its own
+  placeholder — with no buttons and no instructions: a panel with two fields is
   not where the keyboard needs explaining.
+- The address is a field, not a title, so a mark put a row off is corrected by
+  typing the right address — the keyboard's version of dragging the mark (§20.6),
+  and it keeps the name. Committing a different address moves the one bookmark
+  there; it is never removed and re-made, so it never appears without its name.
+- The address is validated as it is typed, as every offset field is (§10.1) —
+  shown in the field itself, in red, because a panel this small has no room for a
+  sentence and red digits among digits say the same thing. An address that names
+  no row refuses Return with a beep and keeps the popover up: a typo, or a row
+  another bookmark already holds, one row holding one bookmark (§20.1). The
+  mark's own row is of course always available to it.
+- The caret starts in the **Name** field in both jobs — making a mark and editing
+  one — because the address is already right and is there to be corrected, not
+  filled in. An existing name arrives selected, so typing replaces it.
 - Dismissing the popover any other way — a click outside it — keeps what was
   typed. The mark is already on the row by then, so discarding the name would be
-  the surprising outcome.
+  the surprising outcome. A half-typed address is the one thing not kept: the
+  bookmark stays on the row it was on, with the name.
 - ⌘D on a row that is already marked removes the mark on the spot, with no
   popover: there is nothing to name.
 - A **double click on an address** in the Offset column marks that row and names
@@ -1674,16 +1688,17 @@ height in both, which is the whole point of it in a comparison.
   row leaves it exactly as it is, name and all, and the gesture belongs to the
   Offset column only — a double click in the hex or decoded-text columns still
   selects.
-- The naming popover never outlives the mark it is naming. ⌘D's key equivalent
+- The edit popover never outlives the mark it is editing. ⌘D's key equivalent
   reaches the menu through an open popover, so the row can be unmarked while its
   name is being typed; the popover then closes, saving nothing and undoing
   nothing. Any removal path does this, because it follows from the bookmark
   change itself, not from the command that caused it. Marking another row while
   a popover is open likewise replaces it rather than leaving two panels up.
-- Edit ▸ Rename Bookmark… (⇧⌘D) opens the same popover on an existing mark, with
-  its current name selected so typing replaces it; Esc leaves that name alone.
-  The command is enabled only when the caret's row carries a mark — ⌘D is how a
-  mark is made, and it names it too, so this one has only the one job.
+- Edit ▸ Edit Bookmark… (⇧⌘D) opens the same popover on an existing mark, with
+  its current name selected so typing replaces it; Esc leaves the bookmark
+  exactly as it was, address and name. The command is enabled only when the
+  caret's row carries a mark — ⌘D is how a mark is made, and it opens the same
+  popover, so this one only ever edits.
 - Toggle is enabled only when the active pane has a file open: with nothing open
   there is no caret row to mark.
 - Because both panes read the same store, marking a row shows it at the same
@@ -1691,7 +1706,7 @@ height in both, which is the whole point of it in a comparison.
 - The offset context menu (§10.2) carries the same two commands for the row that
   was right-clicked rather than the caret's, in the pane that was right-clicked:
   *Toggle Bookmark at «address»* — the same command ⌘D is, popover and all — and
-  *Rename Bookmark…* on a row that has something to rename. The address in the
+  *Edit Bookmark…* on a row that has something to edit. The address in the
   title is the ROW's, because a right-click on a byte marks that byte's row, and
   the title is what makes that visible.
 - A name has to be visible before the bookmark list exists (a later stage):
@@ -1780,7 +1795,8 @@ a whole.
 20.6 Moving a mark
 
 A mark can be dragged to another row: press and hold on it, and the bookmark
-follows the pointer row by row until the button is released. It is the same act
+follows the pointer row by row until the button is released. (The same move by
+keyboard is ⇧⌘D and a new address, §20.3.) It is the same act
 as marking the right row in the first place, done a second time — a dump gets
 read before it is understood, and a mark often turns out to belong a few rows
 from where it was put. Dragging it there beats removing it and marking again,
@@ -1818,5 +1834,5 @@ which would lose its name.
   row with bytes in it, and a pointer above the first row leaves it on row 0.
 - Everything watching the store follows a move, because it is the store's own
   change signal that reports it (§20.2): both panes repaint the two rows
-  involved, the open form's list re-sorts, and a naming popover on the row the
+  involved, the open form's list re-sorts, and an edit popover on the row the
   mark left closes with it (§20.3).
