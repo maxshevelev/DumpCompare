@@ -1168,11 +1168,12 @@ final class MainViewController: NSViewController {
         return pane?.hexByteStates(in: range) ?? []
     }
 
-    /// Hands the minimap the window's bookmarked rows (§19.4.3). The store is
-    /// the one list both maps mark, so this is a straight copy — which rows a
-    /// given map actually shows is the minimap's own geometry to decide.
+    /// Hands the minimap the window's bookmarks (§19.4.3). The store is the one
+    /// list both maps mark, so this is a straight copy — which rows a given map
+    /// actually shows is the minimap's own geometry to decide, and the names come
+    /// along because hovering a mark names it.
     private func syncMinimapBookmarks() {
-        minimapView.setBookmarkRows(windowModel.bookmarkStore.bookmarks.map(\.row))
+        minimapView.setBookmarks(windowModel.bookmarkStore.bookmarks)
     }
 
     /// Hands the minimap the open files' sizes. That is all it needs to lay its

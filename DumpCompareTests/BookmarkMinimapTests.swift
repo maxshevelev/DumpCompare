@@ -144,7 +144,7 @@ final class BookmarkMinimapTests: XCTestCase {
         store.remove(rowContaining: 0x400)
         panel.display()
 
-        XCTAssertTrue(panel.bookmarkRows.isEmpty, "the panel was told")
+        XCTAssertTrue(panel.bookmarks.isEmpty, "the panel was told")
         XCTAssertLessThan(try maxPurpleness(panel, in: box), 0.05, "and the arrow is gone")
     }
 
@@ -202,6 +202,95 @@ final class BookmarkMinimapTests: XCTestCase {
                           "and no purple anywhere on the short file's half")
     }
 
+    // MARK: - The shape (§19.6)
+
+    /// Both margin markers are the same shape — an equilateral triangle pointing
+    /// at the map — because both say the same kind of thing about a position. The
+    /// bookmark's is the smaller of the two: they can share a margin, and the
+    /// viewport is the one the eye should find first.
+    func testBothMarkersAreEquilateralTrianglesAndTheBookmarkIsSmaller() throws {
+        let (controller, panel) = try makeWindow(sizes: (0x4000, nil))
+        controller.windowModel.bookmarkStore.add(rowContaining: 0x400)
+        panel.display()
+
+        let box = try XCTUnwrap(panel.bookmarkMarkRect(row: 0x400, forMapAt: 0))
+        XCTAssertEqual(box.height, MinimapView.bookmarkMarkSide, accuracy: 0.01,
+                       "the triangle's base is its height in the margin")
+        XCTAssertEqual(box.width, MinimapView.bookmarkMarkSide * sqrt(3) / 2, accuracy: 0.01,
+                       "and it reaches an equilateral triangle's height across it")
+        XCTAssertLessThan(MinimapView.bookmarkMarkSide, MinimapView.viewportMarkerSide,
+                          "a bookmark's mark is the smaller one")
+        XCTAssertLessThanOrEqual(
+            MinimapView.marginMarkerReach(side: MinimapView.viewportMarkerSide)
+                + MinimapView.overviewMarkerInset,
+            MinimapView.contentPadding,
+            "the bigger marker still fits the margin it points across")
+    }
+
+    /// Both markers point at the same line — the content's edge, less the inset —
+    /// so a mark and the viewport read as the same kind of arrow at two sizes.
+    func testBothMarkersApexOnTheSameLine() throws {
+        let (controller, panel) = try makeWindow(sizes: (0x4000, nil))
+        controller.windowModel.bookmarkStore.add(rowContaining: 0x400)
+        panel.display()
+
+        let box = try XCTUnwrap(panel.bookmarkMarkRect(row: 0x400, forMapAt: 0))
+        XCTAssertEqual(box.maxX, MinimapView.contentPadding - MinimapView.overviewMarkerInset,
+                       accuracy: 0.01,
+                       "the apex stops the same distance short of the content as the viewport's")
+    }
+
+    // MARK: - Hovering a mark (§19.4.3)
+
+    /// A mark carries no text, so hovering it says which row it marks — and what
+    /// the bookmark is called, when it is called anything.
+    func testHoveringAMarkNamesIt() throws {
+        let (controller, panel) = try makeWindow(sizes: (0x4000, nil))
+        let store = controller.windowModel.bookmarkStore
+        store.add(rowContaining: 0x400)
+        panel.display()
+        let box = try XCTUnwrap(panel.bookmarkMarkRect(row: 0x400, forMapAt: 0))
+
+        XCTAssertEqual(panel.view(panel, stringForToolTip: 0, point: centre(of: box), userData: nil),
+                       "0x00000400", "an unnamed bookmark is its address")
+
+        store.rename(rowContaining: 0x400, to: "EC table")
+        XCTAssertEqual(panel.view(panel, stringForToolTip: 0, point: centre(of: box), userData: nil),
+                       "0x00000400 — EC table",
+                       "a named one says the address and the name")
+    }
+
+    /// Anywhere that is not a mark says nothing, which shows no tooltip at all.
+    func testHoveringElsewhereSaysNothing() throws {
+        let (controller, panel) = try makeWindow(sizes: (0x4000, nil))
+        controller.windowModel.bookmarkStore.add(rowContaining: 0x400)
+        panel.display()
+        let box = try XCTUnwrap(panel.bookmarkMarkRect(row: 0x400, forMapAt: 0))
+
+        let inTheMap = NSPoint(x: panel.bounds.midX, y: box.midY)
+        XCTAssertEqual(panel.view(panel, stringForToolTip: 0, point: inTheMap, userData: nil), "",
+                       "the map's own content is not a mark")
+        let belowIt = NSPoint(x: box.midX, y: box.maxY + 3 * box.height)
+        XCTAssertEqual(panel.view(panel, stringForToolTip: 0, point: belowIt, userData: nil), "",
+                       "and an unmarked row's margin is not either")
+    }
+
+    /// The tooltip answers from the pointer's position, so the mark on the second
+    /// map of a comparison — in its own margin, on the other side — is found too.
+    func testHoveringAMarkOnTheSecondMapNamesItToo() throws {
+        let (controller, panel) = try makeWindow(sizes: (0x4000, 0x4000))
+        controller.windowModel.bookmarkStore.add(rowContaining: 0x800, name: "NVRAM")
+        panel.display()
+        let box = try XCTUnwrap(panel.bookmarkMarkRect(row: 0x800, forMapAt: 1))
+
+        XCTAssertEqual(panel.view(panel, stringForToolTip: 0, point: centre(of: box), userData: nil),
+                       "0x00000800 — NVRAM")
+    }
+
+    private func centre(of rect: NSRect) -> NSPoint {
+        NSPoint(x: rect.midX, y: rect.midY)
+    }
+
     // MARK: - Repainting (§19.9)
 
     /// A bookmark changes nothing about the file's picture, so only the margins
@@ -225,9 +314,9 @@ final class BookmarkMinimapTests: XCTestCase {
                        "its whole height, since any row can be marked")
     }
 
-    /// Setting the same rows again asks for nothing: the store fires on every
-    /// change, and a name change moves no arrow.
-    func testAnUnchangedListDoesNotRepaint() throws {
+    /// A name change moves no arrow, so it asks for no repaint — though the mark
+    /// it names does read out the new name (see the hover tests).
+    func testARenameDoesNotRepaint() throws {
         let (controller, panel) = try makeWindow(sizes: (0x4000, nil))
         let store = controller.windowModel.bookmarkStore
         store.add(rowContaining: 0x400)

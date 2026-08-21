@@ -33,7 +33,7 @@ import Cocoa
 /// at the file's start and at its bottom at the file's end — so the band is
 /// always fully on the map, and the map doubles as a proportional scrollbar the
 /// band can be dragged along (`mouseDown`/`mouseDragged`, `onScrollToOffset`).
-final class MinimapView: NSView {
+final class MinimapView: NSView, NSViewToolTipOwner {
     /// How the panel is divided into maps for the open file(s).
     enum MapLayout {
         /// One map over the whole panel (single-file mode, or nothing open).
@@ -553,27 +553,34 @@ final class MinimapView: NSView {
 
     // MARK: - Bookmarks (§19.4.3, §20)
 
-    /// The bookmarked rows the maps mark in their margins. One list for every
-    /// map, because a bookmark is an absolute offset (§8): a marked row lands at
-    /// the same height on both maps of a comparison, which is the whole point of
-    /// sharing the list. Kept sorted so the drawing order is the file's order.
-    private(set) var bookmarkRows: [UInt64] = []
+    /// The bookmarks the maps mark in their margins. One list for every map,
+    /// because a bookmark is an absolute offset (§8): a marked row lands at the
+    /// same height on both maps of a comparison, which is the whole point of
+    /// sharing the list. Kept sorted by row, so the drawing order is the file's.
+    ///
+    /// The names ride along because a mark has no text of its own: hovering one
+    /// names it (§19.4.3).
+    private(set) var bookmarks: [Bookmark] = []
 
-    /// Replaces the bookmarked rows. Only the margins the marks live in are
-    /// repainted: a bookmark changes nothing about the file's picture, and
-    /// repainting a full-dump overview to add one arrow is what §19.9 is about.
-    func setBookmarkRows(_ rows: [UInt64]) {
-        let sorted = rows.sorted()
-        guard sorted != bookmarkRows else { return }
-        bookmarkRows = sorted
+    /// Replaces the bookmarks. Only the margins the marks live in are repainted:
+    /// a bookmark changes nothing about the file's picture, and repainting a
+    /// full-dump overview to add one arrow is what §19.9 is about. A name that
+    /// changed repaints nothing at all — the arrows have not moved — but the
+    /// tooltip is re-registered, since it is the name that it reads out.
+    func setBookmarks(_ marks: [Bookmark]) {
+        let sorted = marks.sorted { $0.row < $1.row }
+        guard sorted != bookmarks else { return }
+        let rowsMoved = sorted.map(\.row) != bookmarks.map(\.row)
+        bookmarks = sorted
+        refreshBookmarkTooltip()
+        guard rowsMoved else { return }
         invalidate(maps.indices.compactMap { bookmarkMargin(forMapAt: $0)?.strip })
     }
 
-    /// How tall a bookmark's mark is — shorter than the viewport marker
-    /// (`overviewMarkerHeight`), because the two can share a margin and the
-    /// viewport is the one the eye should find first. Internal so tests can
-    /// sample around a mark.
-    static let bookmarkMarkHeight: CGFloat = 7
+    /// The base of a bookmark's mark. Smaller than the viewport marker's
+    /// (`viewportMarkerSide`) because the two can share a margin and the viewport
+    /// is the one the eye should find first. Internal so tests can sample a mark.
+    static let bookmarkMarkSide: CGFloat = 6
 
     /// The strip a map's bookmark marks are drawn in, and which way they point.
     ///
@@ -604,7 +611,8 @@ final class MinimapView: NSView {
     /// The box a bookmarked row's mark occupies on map `index`, or nil when that
     /// map does not show the row: past the end of *its* file (§9 — a comparison's
     /// shorter file has no such row to mark), or outside the detail window.
-    /// Shared by drawing and by tests, so what is asserted is what is painted.
+    /// Shared by drawing, hit-testing and tests, so what is asserted is what is
+    /// painted and what the pointer finds.
     func bookmarkMarkRect(row: UInt64, forMapAt index: Int) -> NSRect? {
         guard maps.indices.contains(index), let margin = bookmarkMargin(forMapAt: index) else {
             return nil
@@ -616,43 +624,111 @@ final class MinimapView: NSView {
         // The row's own y, from the same mapping the selection overlay uses, so
         // a mark and the row it marks cannot drift apart.
         let rowY = y(of: row, in: content)
-        let height = Self.bookmarkMarkHeight
-        let box = NSRect(x: margin.strip.minX, y: rowY - height / 2 + Self.byteHeight / 2,
-                         width: margin.strip.width, height: height)
         // A row the window has scrolled past is not marked. The row's own y is
         // what is tested, not the mark's box: half a mark hanging over the top
         // edge still belongs to a row that is on screen.
         guard rowY >= area.minY - Self.rowStep, rowY <= area.maxY else { return nil }
-        return box
+        return Self.marginMarkerBox(pointingRight: margin.pointsRight,
+                                    apexAt: margin.pointsRight
+                                        ? content.minX - Self.overviewMarkerInset
+                                        : content.maxX + Self.overviewMarkerInset,
+                                    midY: rowY + Self.byteHeight / 2,
+                                    side: Self.bookmarkMarkSide)
     }
 
     /// Draws the bookmark marks: a small purple triangle per marked row in each
     /// map's margin, pointing at the row it marks. Purple is the bookmark colour
-    /// throughout (§20.4), which keeps a mark apart from the grey viewport
-    /// chevron that can share the margin with it.
+    /// throughout (§20.4), which keeps a mark apart from the grey viewport marker
+    /// that can share the margin with it — the shape is the same, deliberately,
+    /// because both say the same kind of thing about a position (§19.4.3).
     private func drawBookmarkMarks(dirtyRect: NSRect) {
-        guard !bookmarkRows.isEmpty else { return }
+        guard !bookmarks.isEmpty else { return }
         (HexTheme.bookmarkColor.usingColorSpace(.deviceRGB) ?? HexTheme.bookmarkColor).setFill()
         for index in maps.indices {
             guard let margin = bookmarkMargin(forMapAt: index),
                   margin.strip.intersects(dirtyRect) else { continue }
-            for row in bookmarkRows {
-                guard let box = bookmarkMarkRect(row: row, forMapAt: index),
+            for bookmark in bookmarks {
+                guard let box = bookmarkMarkRect(row: bookmark.row, forMapAt: index),
                       box.maxY >= dirtyRect.minY, box.minY <= dirtyRect.maxY else { continue }
-                // The apex sits `overviewMarkerInset` short of the content, as
-                // the viewport chevrons do: the arrow points at the map without
-                // touching it.
-                let inset = Self.overviewMarkerInset
-                let apexX = margin.pointsRight ? box.maxX - inset : box.minX + inset
-                let baseX = margin.pointsRight ? box.minX : box.maxX
-                let path = NSBezierPath()
-                path.move(to: NSPoint(x: baseX, y: box.minY))
-                path.line(to: NSPoint(x: apexX, y: box.midY))
-                path.line(to: NSPoint(x: baseX, y: box.maxY))
-                path.close()
-                path.fill()
+                Self.marginMarkerPath(in: box, pointingRight: margin.pointsRight).fill()
             }
         }
+    }
+
+    // MARK: - The margin markers' shape (§19.6, §19.4.3)
+
+    /// An equilateral triangle's height for a base of `side` — what a marker
+    /// reaches back from its apex.
+    static func marginMarkerReach(side: CGFloat) -> CGFloat {
+        side * sqrt(3) / 2
+    }
+
+    /// The box a margin marker occupies: `side` tall, centred on `midY`, and
+    /// reaching back from `apexAt` toward the map's outer edge.
+    static func marginMarkerBox(pointingRight: Bool, apexAt apexX: CGFloat,
+                                midY: CGFloat, side: CGFloat) -> NSRect {
+        let reach = marginMarkerReach(side: side)
+        return NSRect(x: pointingRight ? apexX - reach : apexX,
+                      y: midY - side / 2, width: reach, height: side)
+    }
+
+    /// The marker itself: an **equilateral** triangle pointing inward at the map,
+    /// its base on the outer edge of `box` and its apex on the inner one. One
+    /// shape for both markers — a viewport's position and a bookmark's row are
+    /// the same kind of statement, so they are the same arrow, and only the size
+    /// and the colour tell them apart (§19.6, §19.4.3).
+    static func marginMarkerPath(in box: NSRect, pointingRight: Bool) -> NSBezierPath {
+        let apexX = pointingRight ? box.maxX : box.minX
+        let baseX = pointingRight ? box.minX : box.maxX
+        let path = NSBezierPath()
+        path.move(to: NSPoint(x: baseX, y: box.minY))
+        path.line(to: NSPoint(x: apexX, y: box.midY))
+        path.line(to: NSPoint(x: baseX, y: box.maxY))
+        path.close()
+        return path
+    }
+
+    // MARK: - Naming a mark on hover (§19.4.3)
+
+    /// The one tooltip rect over the whole panel: the answer is computed from the
+    /// pointer's position, so a mark that moves with a scroll, a mode switch or a
+    /// resize needs no re-registration — only a change of the panel's own bounds
+    /// or of the list does.
+    private var bookmarkTooltipTag: NSView.ToolTipTag?
+
+    private func refreshBookmarkTooltip() {
+        if let tag = bookmarkTooltipTag {
+            removeToolTip(tag)
+            bookmarkTooltipTag = nil
+        }
+        guard !bookmarks.isEmpty, !bounds.isEmpty else { return }
+        bookmarkTooltipTag = addToolTip(bounds, owner: self, userData: nil)
+    }
+
+    /// The bookmark whose mark is under `point`, if any. The mark's own box is
+    /// the target, grown a little: a 6 pt arrow in a 10 pt margin is a small
+    /// thing to hit, and a tooltip that only answers on the pixel is a tooltip
+    /// nobody sees.
+    func bookmark(atMarkPoint point: NSPoint) -> Bookmark? {
+        for index in maps.indices {
+            for bookmark in bookmarks {
+                guard let box = bookmarkMarkRect(row: bookmark.row, forMapAt: index) else { continue }
+                if box.insetBy(dx: -2, dy: -2).contains(point) { return bookmark }
+            }
+        }
+        return nil
+    }
+
+    /// What hovering a mark says: the row's address, and the name after it when
+    /// there is one. A mark carries no text, so this is the only place its name
+    /// shows on the map — and the address is worth saying even for a named
+    /// bookmark, because the address is what the mark is pointing at. Anywhere
+    /// else on the panel answers with nothing, which shows no tooltip at all.
+    func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag,
+              point: NSPoint, userData data: UnsafeMutableRawPointer?) -> String {
+        guard let bookmark = bookmark(atMarkPoint: point) else { return "" }
+        let address = Bookmark.addressLabel(bookmark.row)
+        return bookmark.name.isEmpty ? address : "\(address) — \(bookmark.name)"
     }
 
     /// Marks only these rectangles for repaint. Scrolling calls into the panel
@@ -797,6 +873,8 @@ final class MinimapView: NSView {
 
     override func layout() {
         super.layout()
+        // The tooltip covers the panel, so its rect follows the bounds.
+        refreshBookmarkTooltip()
         // A resize changes how many rows fit, which moves the window, and
         // re-derives the divider's position from the new bounds.
         updateTopRow()
@@ -1602,16 +1680,9 @@ final class MinimapView: NSView {
         for band in rects {
             for (slot, box) in overviewMarkerRects(for: band).enumerated() {
                 guard box.maxY >= dirtyRect.minY, box.minY <= dirtyRect.maxY else { continue }
-                // The left chevron points right, the right one points left: both
+                // The left marker points right, the right one points left: both
                 // aim at the content between them.
-                let apexX = slot == 0 ? box.maxX : box.minX
-                let baseX = slot == 0 ? box.minX : box.maxX
-                let path = NSBezierPath()
-                path.move(to: NSPoint(x: baseX, y: box.minY))
-                path.line(to: NSPoint(x: apexX, y: box.midY))
-                path.line(to: NSPoint(x: baseX, y: box.maxY))
-                path.close()
-                path.fill()
+                Self.marginMarkerPath(in: box, pointingRight: slot == 0).fill()
             }
         }
     }
@@ -1627,26 +1698,31 @@ final class MinimapView: NSView {
     static let overviewBandShortHeight: CGFloat = 4
     static let overviewBandTallHeight: CGFloat = 5
 
-    /// How tall the viewport marker is — big enough to find at a glance on a
-    /// full-dump overview, small enough to stay an index rather than a cover.
-    private static let overviewMarkerHeight: CGFloat = 11
+    /// The base of the viewport marker's triangle — big enough to find at a
+    /// glance on a full-dump overview, small enough to stay an index rather than
+    /// a cover, and small enough that an equilateral triangle's height still fits
+    /// the margin it points across. Internal so tests can measure the shape.
+    static let viewportMarkerSide: CGFloat = 9
 
     /// The paper left between the marker's apex and the map's content edge.
     /// The arrow points at the map without reaching it, so the marker costs the
     /// map no detail. Internal so tests can sample around the marker.
     static let overviewMarkerInset: CGFloat = 2
 
-    /// The two boxes the chevrons occupy, level with the middle of the band.
-    /// Each spans the full side margin minus `overviewMarkerInset`, so the
-    /// chevron's apex stops short of the map's content edge. Shared by drawing
-    /// and by invalidation, which is what keeps a scroll's repaint this small.
+    /// The two boxes the markers occupy, level with the middle of the band: an
+    /// equilateral triangle's box either side, apex `overviewMarkerInset` short
+    /// of the map's content edge. Shared by drawing and by invalidation, which is
+    /// what keeps a scroll's repaint this small.
     private func overviewMarkerRects(for band: NSRect) -> [NSRect] {
-        let width = Self.contentPadding - Self.overviewMarkerInset
-        guard width > 1 else { return [] }
-        let height = Self.overviewMarkerHeight
-        let y = band.midY - height / 2
-        return [NSRect(x: band.minX, y: y, width: width, height: height),
-                NSRect(x: band.maxX - width, y: y, width: width, height: height)]
+        let side = Self.viewportMarkerSide
+        let inset = Self.overviewMarkerInset
+        guard Self.marginMarkerReach(side: side) + inset <= Self.contentPadding else { return [] }
+        return [Self.marginMarkerBox(pointingRight: true,
+                                     apexAt: band.minX + Self.contentPadding - inset,
+                                     midY: band.midY, side: side),
+                Self.marginMarkerBox(pointingRight: false,
+                                     apexAt: band.maxX - Self.contentPadding + inset,
+                                     midY: band.midY, side: side)]
     }
 
     private func drawSelection(_ selection: Range<UInt64>?, in area: NSRect, dirtyRect: NSRect) {

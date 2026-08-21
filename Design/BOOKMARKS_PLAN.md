@@ -399,13 +399,19 @@ arrow away.
 `MainViewController.syncMinimapBookmarks()` on every bookmark change and on every
 map rebuild. Where it differs from the sketch above:
 
-- **The arrow is the viewport chevron's shape**, not a plain triangle of its own:
-  a margin-wide triangle whose apex stops `overviewMarkerInset` short of the
-  content, exactly as the overview's viewport marker does (§19.6). Reusing that
-  construction is why the two read as the same kind of object — a position in the
-  margin — and purple is what tells them apart. It is 7 pt tall against the
-  viewport marker's 11: the two can share a margin, and the viewport is the one
-  the eye should find first.
+- **The arrow and the viewport marker are one shape**: an equilateral triangle
+  whose apex stops `overviewMarkerInset` short of the content, built by one
+  `marginMarkerPath`/`marginMarkerBox` pair (§19.6). Both say the same kind of
+  thing about a position, so they are the same arrow; the bookmark's base is 6 pt
+  against the viewport's 9, because they can share a margin and the viewport is
+  the one the eye should find first. The viewport marker used to be a 8×11
+  wedge — equilateral at its old height would not have fitted the margin it
+  points across, so the height came down with the shape.
+- **Hovering a mark names it** — the address, plus the name when there is one —
+  through one tooltip rect over the whole panel whose answer is computed from the
+  pointer's position, the way the Offset column's tooltip works (§20.3). That is
+  why the panel now holds `[Bookmark]` rather than `[UInt64]`: the names have to
+  reach the map. A rename repaints nothing but does re-register the tooltip.
 - **Not two pixels tall in the overview.** The plan said to match the other
   overview event marks, but those run the map's full width; a 1 pt triangle in a
   10 pt margin is invisible. The mark keeps one height in both modes, and only

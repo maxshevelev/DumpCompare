@@ -1402,8 +1402,19 @@ without opening anything.
 - A mark is a small arrow in the map's **side margin** — outside the content
   area, pointing inward at the row it marks — in the bookmark colour (purple,
   §20.4), which keeps it apart from the file's own inks and from the grey
-  viewport chevron that can share the margin with it. Nothing is drawn over the
+  viewport marker that can share the margin with it. Nothing is drawn over the
   content: on a dump every column of every row carries information.
+- The two margin markers are the **same shape**: an equilateral triangle whose
+  apex stops the same distance short of the content edge. A viewport's position
+  and a bookmark's row are the same kind of statement about where something is,
+  so they are the same arrow — the bookmark's is the smaller of the two, because
+  they can share a margin and the viewport is the one the eye should find first,
+  and colour is what says which is which.
+- **Hovering a mark names it**: the row's address, and the name after it when the
+  bookmark has one. A mark carries no text of its own, so this is where its name
+  shows on the map — and the address is worth saying even for a named bookmark,
+  because the address is what the arrow is pointing at. Hovering anywhere else on
+  the panel shows nothing.
 - Which margin depends on the layout. Side by side the two maps meet at the
   gutter with no padding between them, so the second map marks its rows in its
   right margin, pointing left; everywhere else the mark sits on the left.
@@ -1451,8 +1462,9 @@ The panes' visible slice is drawn as a translucent band over the map.
 - The band is drawn under the selection overlay, so a selection inside it
   stays readable.
 - In overview a visible page is a fraction of a pixel, so nothing is drawn
-  across the content at all: the position is marked by a chevron in each outer
-  margin, level with the middle of the visible slice, pointing inward. A band or
+  across the content at all: the position is marked by an equilateral triangle in
+  each outer margin, level with the middle of the visible slice, pointing inward
+  — the same shape a bookmark's mark uses, one size larger (§19.4.3). A band or
   line spanning the panel would cost a whole row of the picture, and on a dump
   every row carries information. The marker states a position and must not
   pretend to show an extent.
