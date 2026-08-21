@@ -735,6 +735,18 @@ private final class BookmarkTableView: NSTableView {
 private final class EditableLabel: NSTextField {
     var onEditingChange: ((Bool) -> Void)?
 
+    /// Clicks belong to the table until the cell is actually being edited. An
+    /// editable field inside a table cell otherwise swallows them and starts an
+    /// edit on its own terms — which, over an empty name, took a force click
+    /// rather than the double click the list documents (§20.5). With the field
+    /// out of the way every click reaches the table: one selects the row, two
+    /// start the edit, whether the name is there or not. Once the edit is
+    /// running the field takes its clicks back, so the caret can be placed and
+    /// text selected with the mouse.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        currentEditor() == nil ? nil : super.hitTest(point)
+    }
+
     override func becomeFirstResponder() -> Bool {
         let accepted = super.becomeFirstResponder()
         if accepted { onEditingChange?(true) }

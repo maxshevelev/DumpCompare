@@ -1838,7 +1838,12 @@ window, so nothing about a bookmark lives in two places.
   move, because a bookmark is an absolute offset (§8).
 - **A double click on a name** edits it in place instead of jumping — a double
   click that jumped from the name column would leave no way to rename with the
-  mouse. Return commits the name, a click elsewhere commits it too, and Escape
+  mouse. The gesture is the table's, not the field's: an editable field left to
+  itself swallows the clicks and opens on its own terms, which over an empty name
+  (where the row preview shows) meant a force click rather than a double click.
+  Every click reaches the table — one selects the row, two start the edit,
+  whether the name is there or not — and the field takes its clicks back once it
+  is editing, so the caret can still be placed with the mouse. Return commits the name, a click elsewhere commits it too, and Escape
   restores the name the store holds without closing the form (§10.1).
 - **⌫** removes the selected bookmark. The selection stays where it was, so a run
   of them can be cleared without reaching for the mouse between presses;

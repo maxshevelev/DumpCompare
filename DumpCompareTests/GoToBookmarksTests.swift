@@ -274,6 +274,31 @@ final class GoToBookmarksTests: XCTestCase {
         XCTAssertEqual(form.editingNameRow, 0)
     }
 
+    /// The double click has to reach the table, which is what starts the edit —
+    /// including over an **empty** name, where an editable field left to itself
+    /// swallowed the clicks and opened only on a force click.
+    func testADoubleClickEditsANameThatIsNotThereYet() throws {
+        for name in ["EC table", ""] {
+            let (form, _, _, _) = makeForm(rows: [0x10: name])
+            let window = try XCTUnwrap(form.view.window)
+            window.makeKeyAndOrderFront(nil)
+            let field = try nameField(form, row: 0)
+
+            XCTAssertNil(field.hitTest(NSPoint(x: field.bounds.midX, y: field.bounds.midY)),
+                         "an idle name field passes clicks through to the table")
+
+            form.handleDoubleClick(row: 0, column: form.nameColumnIndex)
+
+            let editor = try XCTUnwrap(window.firstResponder as? NSTextView,
+                                       "the edit really started for name '\(name)'")
+            XCTAssertTrue((editor.delegate as AnyObject?) === field,
+                          "and it is this cell's field being edited")
+            XCTAssertEqual(form.editingNameRow, 0)
+            XCTAssertNotNil(field.hitTest(NSPoint(x: field.bounds.midX, y: field.bounds.midY)),
+                            "once it is editing, the field takes its own clicks back")
+        }
+    }
+
     // MARK: - Managing the list (§20.5)
 
     func testTheListShowsWhatTheStoreHolds() {
