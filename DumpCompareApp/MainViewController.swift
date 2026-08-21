@@ -2399,7 +2399,7 @@ final class MainViewController: NSViewController {
 
     // MARK: - Bookmarks (§20)
 
-    /// Edit > Add Bookmark (⌘D): toggle a bookmark on the active pane's caret
+    /// Edit > Toggle Bookmark (⌘D): toggle a bookmark on the active pane's caret
     /// row (§20). A bookmark marks a row, not a byte — the caret's offset is
     /// rounded down to its row — and the list is shared by both panes, so the
     /// same row is marked in both panes of a comparison. Pressed again on an

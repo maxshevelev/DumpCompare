@@ -1549,7 +1549,15 @@ height in both, which is the whole point of it in a comparison.
 - Bookmarks are absolute addresses: an insert or a delete shifts the bytes, not
   the bookmark (§8). A bookmark past the end of a file stays in the list and is
   simply not drawn where the file does not reach (§9).
-- Bookmarks are session-only: they live as long as the window, not the file.
+- Bookmarks are session-only: they live as long as the window, not the file. So
+  closing a file and opening it again keeps its marks, which is the case that
+  matters on a bench — the same chip read twice. Opening an *unrelated* file
+  inherits them too; the list is not cleared, because the app cannot tell a
+  re-read from a new dump, and a mark that turns out to be meaningless is cheaper
+  than losing the marks of a re-read. Persisting bookmarks per file is a project
+  feature (§20 opening note), not a session one.
+- The mark has no text of its own, so the pane's accessibility value says whether
+  the caret's row carries one, as it says the caret's offset (§15).
 
 20.2 The model
 
@@ -1571,8 +1579,9 @@ height in both, which is the whole point of it in a comparison.
 
 20.3 Marking a row
 
-- Edit ▸ Add Bookmark (⌘D) marks the active pane's caret row, unnamed. Pressed
-  again on a bookmarked row it removes the mark — the command is a toggle.
+- Edit ▸ Toggle Bookmark (⌘D) marks the active pane's caret row, unnamed.
+  Pressed again on a bookmarked row it removes the mark — the command is a
+  toggle, and its title says so rather than promising only to add.
 - The command is enabled only when the active pane has a file open: with nothing
   open there is no caret row to mark.
 - Because both panes read the same store, marking a row shows it at the same
@@ -1584,8 +1593,22 @@ A marked row's address stands on a right-pointing arrow in the bookmark colour
 (systemPurple — the palette is otherwise spoken for, red modified, orange
 difference, accent caret, ink-blue addresses): the Offset column is filled with
 the bookmark colour and its right end comes to a point into the gap before the
-hex column, and the address is drawn over it in white. The mark is a state of the
-Offset column, not of the byte cells, so it is orthogonal to the difference,
-modification, and selection states (§6) and is drawn on top of the column without
-disturbing them. Both panes draw it, because both read the same store; in a
-comparison the shorter file's pane has no such row to draw (§9).
+hex column, and the address is drawn over it in the colour for text on a filled
+selection. The mark is a state of the Offset column, not of the byte cells, so it
+is orthogonal to the difference, modification, and selection states (§6) and is
+drawn on top of the column without disturbing them. Both panes draw it, because
+both read the same store; in a comparison the shorter file's pane has no such row
+to draw (§9).
+
+The mark's body is the right-click focus ring's own rect — the Offset column
+padded horizontally, with the same corner radius (§10.2) — so the mark and the
+ring are one shape at one size, and the tip always fits the gap before the hex
+column at any font size.
+
+Right-clicking a marked row's address therefore does not draw the ring: the ring
+on top of the fill is unreadable. Instead the mark itself becomes the ring — the
+same shape stroked in the bookmark colour at the ring's line width, with no fill
+— and the address keeps its ink colour while the menu is up, because there is no
+longer a fill to read against. A menu opened on a *byte* of a marked row frames
+that byte as usual (§10.2) and leaves the mark filled: only the address anchor
+occupies the mark's rect.

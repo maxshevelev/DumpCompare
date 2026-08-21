@@ -616,11 +616,16 @@ final class HexView: NSView {
         let selection = dataSource.hexSelection()
         let size = dataSource.fileSize
         let start = String(selection.start, radix: 16).uppercased()
+        // The bookmark mark is purely visual otherwise, so the row the caret is
+        // on says whether it is marked — the only way the mark reaches a screen
+        // reader while moving through the dump (§15, §20.4).
+        let mark = isBookmarked(rowStartingAt: BookmarkStore.row(containing: selection.start))
+            ? " Bookmarked row." : ""
         if selection.isEmpty {
-            return "Offset 0x\(start). File size \(size) bytes."
+            return "Offset 0x\(start).\(mark) File size \(size) bytes."
         }
         let end = String(selection.end, radix: 16).uppercased()
-        return "Offset 0x\(start), \(selection.count) bytes selected through 0x\(end). File size \(size) bytes."
+        return "Offset 0x\(start), \(selection.count) bytes selected through 0x\(end).\(mark) File size \(size) bytes."
     }
 
     // MARK: - Focus
@@ -691,13 +696,25 @@ final class HexView: NSView {
             bookmarkedRows = dataSource.hexBookmarkedRows(in: lower..<upper)
         }
 
+        // The row whose address carries a right-click menu, if any. A bookmarked
+        // row shows that menu through its own mark — outlined instead of filled
+        // (§20.4) — because the accent ring lands on top of the fill. A menu
+        // opened on a byte frames that byte and leaves the mark alone.
+        let contextMenuRowAddress: UInt64? = {
+            guard let contextMenuOffset, contextMenuOffset < fileSize,
+                  !contextMenuFramesByte else { return nil }
+            return layout.byteOffset(row: layout.rowColumn(of: contextMenuOffset).row, column: 0)
+        }()
+
         for row in rows {
             guard UInt64(row) < rowCount else { break }
+            let rowAddress = layout.byteOffset(row: row, column: 0)
             drawRow(
                 row: row, layout: layout, fileSize: fileSize,
                 selection: selection, baseline: baseline,
                 drawsOffset: drawsOffset, drawsHex: drawsHex, drawsAscii: drawsAscii,
-                isBookmarked: bookmarkedRows.contains(layout.byteOffset(row: row, column: 0))
+                isBookmarked: bookmarkedRows.contains(rowAddress),
+                bookmarkOutlined: rowAddress == contextMenuRowAddress
             )
         }
 
@@ -727,13 +744,16 @@ final class HexView: NSView {
         // Context-menu anchor: while a right-click menu is up, frame the
         // right-clicked anchor with the standard focus ring (§10.2) — the
         // Offset column's row address, or the single byte the menu was opened
-        // on in the hex column.
+        // on in the hex column. A bookmarked row's address is the exception:
+        // its mark occupies that exact rect, so the mark is outlined in the
+        // bookmark colour instead of being buried under the ring (§20.4).
         if let contextMenuOffset, contextMenuOffset < fileSize {
             let (row, column) = layout.rowColumn(of: contextMenuOffset)
-            let frame = contextMenuFramesByte
-                ? layout.hexByteFrame(row: row, column: column)
-                : layout.offsetColumnFrame(row: row)
-            drawContextMenuFrame(around: frame)
+            if contextMenuFramesByte {
+                drawContextMenuFrame(around: layout.hexByteFrame(row: row, column: column))
+            } else if !isBookmarked(rowStartingAt: layout.byteOffset(row: row, column: 0)) {
+                drawContextMenuFrame(around: layout.offsetColumnFrame(row: row))
+            }
         }
     }
 
@@ -746,7 +766,7 @@ final class HexView: NSView {
     private func drawRow(row: Int, layout: HexLayout, fileSize: UInt64,
                          selection: SelectionModel, baseline: CGFloat,
                          drawsOffset: Bool, drawsHex: Bool, drawsAscii: Bool,
-                         isBookmarked: Bool) {
+                         isBookmarked: Bool, bookmarkOutlined: Bool) {
         let rowStart = layout.byteOffset(row: row, column: 0)
         let rowEnd = rowStart + UInt64(HexLayout.bytesPerRow)
         let rowY = layout.rowFrame(row: row).minY
@@ -757,14 +777,15 @@ final class HexView: NSView {
             if isBookmarked {
                 // A bookmarked row's address stands on a purple right-pointing
                 // arrow — the breakpoint-style mark the eye catches when scanning
-                // rather than reading addresses (§20). The arrow is the offset's
-                // background; the address is drawn in white on top of it, centred
-                // on the arrow's own vertical centre (the mark may not span the
-                // full row height, so the row's baseline isn't always its middle).
-                let arrowCenterY = drawBookmarkArrow(in: layout, row: row)
-                let arrowFrame = layout.offsetColumnFrame(row: row)
-                draw(text: offsetText, in: arrowFrame,
-                     baseline: baseline + (arrowCenterY - arrowFrame.midY), color: .white)
+                // rather than reading addresses (§20). The mark is the offset's
+                // background, so the address is drawn on top of it in the colour
+                // for text on a filled selection. While the row's own right-click
+                // menu is up the mark is a purple outline instead: there is no
+                // fill to read against, so the address keeps its ink (§20.4).
+                drawBookmarkMark(in: layout, row: row, outlined: bookmarkOutlined)
+                draw(text: offsetText, in: layout.offsetColumnFrame(row: row),
+                     baseline: baseline,
+                     color: bookmarkOutlined ? HexTheme.inkBlue : HexTheme.bookmarkTextColor)
             } else {
                 draw(text: offsetText, in: layout.offsetColumnFrame(row: row),
                      baseline: baseline, color: HexTheme.inkBlue)
@@ -980,19 +1001,35 @@ final class HexView: NSView {
         }
     }
 
+    /// Whether the row starting at `rowAddress` carries a bookmark. Asks for
+    /// that one row instead of reusing the drawn range's set: the right-click
+    /// anchor can sit outside the dirty rows the pass is painting (§20.4).
+    private func isBookmarked(rowStartingAt rowAddress: UInt64) -> Bool {
+        guard let dataSource else { return false }
+        let row = rowAddress..<(rowAddress + UInt64(HexLayout.bytesPerRow))
+        return dataSource.hexBookmarkedRows(in: row).contains(rowAddress)
+    }
+
     /// The bookmark mark: a right-pointing arrow (a rectangle with a pointed
     /// right end) in the bookmark colour that is the marked offset's background
     /// — the breakpoint-style mark the eye catches when scanning rather than
-    /// reading addresses (§20). The rectangular part spans the Offset column so
-    /// the address sits on it; the tip reaches into the gap before the hex
-    /// column, never touching it. Corners are rounded for a softer marker.
-    /// Returns the arrow's vertical centre so the address can be drawn centred
-    /// on the mark itself rather than on the row (the arrow may not span the
-    /// full row height).
-    private func drawBookmarkArrow(in layout: HexLayout, row: Int) -> CGFloat {
+    /// reading addresses (§20).
+    ///
+    /// Its body is the right-click focus ring's own rect — the Offset column
+    /// padded by `mirrorContourPadding`, rounded by `mirrorContourRadius` — so
+    /// the mark and the ring are the same shape at the same size; the tip
+    /// reaches into the gap before the hex column, never touching it.
+    ///
+    /// `outlined` strokes that shape instead of filling it, in the bookmark
+    /// colour and the ring's line width. That is how a bookmarked row shows its
+    /// right-click menu: the accent ring drawn on top of the fill is unreadable,
+    /// so the mark itself becomes the ring and the standard frame is skipped
+    /// (§20.4).
+    private func drawBookmarkMark(in layout: HexLayout, row: Int, outlined: Bool) {
         let frame = layout.offsetColumnFrame(row: row)
+            .insetBy(dx: -Self.mirrorContourPadding, dy: 0)
         let tip: CGFloat = min(layout.charWidth * 1.5, 12)
-        let radius: CGFloat = 3
+        let radius = Self.mirrorContourRadius
         let top = frame.minY
         let bottom = frame.maxY
         let left = frame.minX
@@ -1013,9 +1050,14 @@ final class HexView: NSView {
                            to: points[(i + 1) % points.count], radius: radius)
         }
         path.close()
-        HexTheme.bookmarkColor.setFill()
-        path.fill()
-        return midY
+        if outlined {
+            HexTheme.bookmarkColor.setStroke()
+            path.lineWidth = Self.mirrorContourLineWidth
+            path.stroke()
+        } else {
+            HexTheme.bookmarkColor.setFill()
+            path.fill()
+        }
     }
 
     /// Closed contours that mirror the opposite pane — one loop around the span
@@ -1732,13 +1774,26 @@ final class HexView: NSView {
             super.rightMouseDown(with: event)
             return
         }
+        beginContextMenu(at: anchor)
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+        endContextMenu(at: anchor)
+    }
+
+    /// Records that `anchor`'s context menu is up and repaints what that
+    /// changes. Split out of `rightMouseDown` because `popUpContextMenu` runs a
+    /// blocking tracking loop no test can enter: this is the state the pane is
+    /// in while the menu is visible, drivable on its own (§10.2, §20.4).
+    func beginContextMenu(at anchor: ContextMenuAnchor) {
         contextMenuOffset = anchor.offset
         contextMenuFramesByte = anchor.framesByte
         invalidateContextMenuFrame(for: anchor.offset)
-        NSMenu.popUpContextMenu(menu, with: event, for: self)
-        // Clear the frame: the rows must be invalidated even though the offset
-        // is already gone — the no-argument form guards on it, so the clear
-        // call passes the anchor's row explicitly (§10.2).
+    }
+
+    /// Clears the anchor once its menu is dismissed. The rows must be
+    /// invalidated even though the offset is already gone — the no-argument
+    /// form guards on it, so the clear passes the anchor's row explicitly, or
+    /// §3.3 region-redraw leaves the frame on screen (§10.2).
+    func endContextMenu(at anchor: ContextMenuAnchor) {
         contextMenuOffset = nil
         contextMenuFramesByte = false
         invalidateContextMenuFrame(for: anchor.offset)
@@ -2009,6 +2064,11 @@ enum HexTheme {
     /// bookmarked row. It reads as a mark rather than a state: green would say
     /// "matches", which a bookmark says nothing about.
     static let bookmarkColor = NSColor.systemPurple
+
+    /// The address drawn on a filled bookmark mark. The semantic colour for
+    /// text on a filled selection: white in both appearances, and named rather
+    /// than literal so it follows the SDK if that ever changes (§20.4).
+    static let bookmarkTextColor = NSColor.alternateSelectedControlTextColor
 
     /// Ink blue for the column header and the offset column (§6): a pale,
     /// slightly desaturated blue that reads as a quiet secondary element next

@@ -98,6 +98,17 @@ row instead gets:
   column, same colour — the arrow the eye catches when scanning the gutter rather
   than reading addresses.
 
+**As built (stage 1).** The two shapes became one: an Xcode-breakpoint-style
+pentagon — the Offset column's rect with a pointed right end reaching into the gap
+before the hex column — filled purple, with the address on top in the colour for
+text on a filled selection. One mark instead of a rect plus a detached triangle,
+and the addresses stay in their column. Its body is the right-click focus ring's
+own rect (`offsetColumnFrame` padded by `mirrorContourPadding`, radius
+`mirrorContourRadius`), so mark and ring are one shape at one size. That also
+settles a collision the plan didn't foresee: right-clicking a marked address would
+draw the ring on top of the fill, so instead the mark itself is stroked in purple
+with no fill while the menu is up, and the address keeps its ink (§20.4).
+
 The data source gains one question, asked once per drawn row range:
 
 ```swift

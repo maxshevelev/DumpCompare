@@ -116,11 +116,9 @@ final class BookmarkTests: XCTestCase {
         return rep
     }
 
-    /// The strongest purpleness (min(r, b) − g) inside a point-space rect.
-    /// `systemPurple` (≈ 0.69, 0.32, 0.87) reads ≈ 0.36; paper, the ink-blue
-    /// address, and the white bookmarked address all read ≤ 0, so this isolates
-    /// the bookmark's purple fill and arrow from everything else on the row.
-    private func purpleness(_ hexView: HexView, in pointRect: NSRect) throws -> CGFloat {
+    /// The largest value `metric` takes on any pixel inside a point-space rect.
+    private func maxMetric(_ hexView: HexView, in pointRect: NSRect,
+                           _ metric: (NSColor) -> CGFloat) -> CGFloat {
         let rep = render(hexView)
         let scale = CGFloat(rep.pixelsWide) / hexView.bounds.width
         let startX = max(0, Int(floor(pointRect.minX * scale)))
@@ -128,14 +126,31 @@ final class BookmarkTests: XCTestCase {
         let startY = max(0, Int(floor(pointRect.minY * scale)))
         let endY = min(rep.pixelsHigh - 1, Int(ceil(pointRect.maxY * scale)))
         guard endX >= startX, endY >= startY else { return 0 }
-        var maxP = CGFloat(0)
+        var best = CGFloat(0)
         for y in startY...endY {
             for x in startX...endX {
                 guard let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
-                maxP = max(maxP, min(c.redComponent, c.blueComponent) - c.greenComponent)
+                best = max(best, metric(c))
             }
         }
-        return maxP
+        return best
+    }
+
+    /// The strongest purpleness (min(r, b) − g) inside a point-space rect.
+    /// `systemPurple` (≈ 0.69, 0.32, 0.87) reads ≈ 0.36; paper, the ink-blue
+    /// address, the white bookmarked address and the accent focus ring (a blue,
+    /// so min(r, b) − g < 0) all read ≤ 0, so this isolates the bookmark's own
+    /// purple — fill or stroke — from everything else on the row.
+    private func purpleness(_ hexView: HexView, in pointRect: NSRect) throws -> CGFloat {
+        maxMetric(hexView, in: pointRect) { min($0.redComponent, $0.blueComponent) - $0.greenComponent }
+    }
+
+    /// The strongest blueness (b − r) inside a point-space rect. `inkBlue` in
+    /// aqua (0.33, 0.54, 0.78) reads 0.45; the purple fill reads 0.18 and white
+    /// glyphs 0, so this tells an address drawn in its own ink from one drawn in
+    /// white on the mark.
+    private func blueness(_ hexView: HexView, in pointRect: NSRect) throws -> CGFloat {
+        maxMetric(hexView, in: pointRect) { $0.blueComponent - $0.redComponent }
     }
 
     /// The vertical centre (y, in points) of the white address glyphs inside a
@@ -231,8 +246,8 @@ final class BookmarkTests: XCTestCase {
         XCTAssertGreaterThan(try purpleness(hexA, in: tipRect), 0.3, "marked row A's arrow points right")
         XCTAssertGreaterThan(try purpleness(hexB, in: tipRect), 0.3, "marked row B's arrow points right")
 
-        // The white address is centred on the arrow's vertical middle (the
-        // arrow spans the full row here, so that middle is the row's).
+        // The white address stays vertically centred on the mark, which is the
+        // row's own height, so its middle is the row's.
         for (hex, label) in [(hexA, "A"), (hexB, "B")] {
             let centerY = try whiteTextCenterY(hex, in: bodyRect)
             XCTAssertNotNil(centerY, "marked row \(label) draws its white address")
@@ -247,14 +262,220 @@ final class BookmarkTests: XCTestCase {
         XCTAssertLessThan(try purpleness(hexA, in: tipRect), 0.3, "unmarked row A's arrow tip is gone")
     }
 
+    /// A right-click on a marked address does not bury the mark under the accent
+    /// focus ring: the mark itself becomes the ring — the same shape stroked in
+    /// the bookmark colour, no fill — and the address goes back to its own ink,
+    /// there being no fill left to read against (§20.4). A dismissed menu
+    /// restores the fill.
+    func testRightClickOnAMarkedRowOutlinesTheMarkInsteadOfFramingIt() throws {
+        let url = try tempFile([UInt8](repeating: 0x11, count: 48))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let pane = PaneViewModel()
+        try pane.open(url: url)
+        let store = BookmarkStore()
+        pane.bookmarkStore = store
+
+        let hex = HexView()
+        hex.appearance = NSAppearance(named: .aqua)
+        hex.dataSource = pane
+        hex.delegate = pane
+        hex.reloadData()
+
+        let layout = hex.hexLayout
+        let rowFrame = layout.rowFrame(row: 1)
+        let columnFrame = layout.offsetColumnFrame(row: 1)
+        // Inside the fill, clear of the stroke: the mark's body is the column
+        // padded outwards, so its stroke runs outside these bounds.
+        let interior = columnFrame.insetBy(dx: 4, dy: 3)
+        // The stroke's left edge: the padded rect's own minX, ± half the line width.
+        let leftEdge = NSRect(x: columnFrame.minX - HexView.mirrorContourPadding - 1,
+                             y: rowFrame.midY - 2, width: 3, height: 4)
+        let anchor = HexView.ContextMenuAnchor(offset: 16, framesByte: false)
+
+        // `render` drives a full `draw(_:)`, so these assertions read the state
+        // of the pane rather than what a repaint happened to reach.
+        // A band strictly between the padded rect's left edge and the column's,
+        // and clear of the column's own edge at either rendering scale: the
+        // mark's body is the focus ring's rect, so purple reaches out there
+        // (§20.4). Sampling right up to the column would pass either way — the
+        // pixel rounding would catch the fill's edge.
+        let padBand = NSRect(x: columnFrame.minX - HexView.mirrorContourPadding,
+                             y: rowFrame.midY - 2, width: 0.8, height: 4)
+
+        store.toggle(rowContaining: 16)
+        XCTAssertGreaterThan(try purpleness(hex, in: interior), 0.3,
+                             "with no menu up the mark is filled")
+        XCTAssertGreaterThan(try purpleness(hex, in: padBand), 0.3,
+                             "the mark is as wide as the right-click focus ring, padding included")
+        XCTAssertLessThan(try blueness(hex, in: interior), 0.35,
+                          "the address on the fill is white, not ink blue")
+
+        hex.beginContextMenu(at: anchor)
+        XCTAssertLessThan(try purpleness(hex, in: interior), 0.3,
+                          "the menu turns the mark into an outline: no fill inside it")
+        XCTAssertGreaterThan(try purpleness(hex, in: leftEdge), 0.3,
+                             "the outline is the bookmark colour, not the accent ring")
+        XCTAssertGreaterThan(try blueness(hex, in: interior), 0.35,
+                             "with no fill to read against, the address keeps its ink")
+
+        hex.endContextMenu(at: anchor)
+        XCTAssertGreaterThan(try purpleness(hex, in: interior), 0.3,
+                             "dismissing the menu restores the fill")
+        XCTAssertLessThan(try blueness(hex, in: interior), 0.35,
+                          "and the address goes back to white on it")
+    }
+
+    /// A menu opened on a *byte* of a marked row frames that byte as usual and
+    /// leaves the mark filled — only the address anchor occupies the mark's rect
+    /// (§20.4).
+    func testRightClickOnAByteOfAMarkedRowLeavesTheMarkFilled() throws {
+        let url = try tempFile([UInt8](repeating: 0x11, count: 48))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let pane = PaneViewModel()
+        try pane.open(url: url)
+        let store = BookmarkStore()
+        pane.bookmarkStore = store
+
+        let hex = HexView()
+        hex.appearance = NSAppearance(named: .aqua)
+        hex.dataSource = pane
+        hex.delegate = pane
+        hex.reloadData()
+
+        let interior = hex.hexLayout.offsetColumnFrame(row: 1).insetBy(dx: 4, dy: 3)
+        store.toggle(rowContaining: 16)
+        hex.beginContextMenu(at: HexView.ContextMenuAnchor(offset: 20, framesByte: true))
+        XCTAssertGreaterThan(try purpleness(hex, in: interior), 0.3,
+                             "a byte's menu doesn't touch the row's mark")
+    }
+
+    /// The mark is otherwise purely visual, so the pane's accessibility value
+    /// says whether the caret's row carries one (§15, §20.4).
+    func testAccessibilityValueSaysWhetherTheCaretsRowIsBookmarked() throws {
+        let url = try tempFile([UInt8](repeating: 0x11, count: 48))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let pane = PaneViewModel()
+        try pane.open(url: url)
+        let store = BookmarkStore()
+        pane.bookmarkStore = store
+
+        let hex = HexView()
+        hex.dataSource = pane
+        hex.delegate = pane
+        hex.reloadData()
+        pane.moveCaret(to: 20)
+
+        let plain = try XCTUnwrap(hex.accessibilityValue() as? String)
+        XCTAssertFalse(plain.contains("Bookmarked"), "an unmarked row says nothing about bookmarks")
+
+        store.toggle(rowContaining: 20)
+        let marked = try XCTUnwrap(hex.accessibilityValue() as? String)
+        XCTAssertTrue(marked.contains("Bookmarked row"), "a marked row says so: \(marked)")
+
+        pane.moveCaret(to: 40)      // row 32, unmarked
+        let elsewhere = try XCTUnwrap(hex.accessibilityValue() as? String)
+        XCTAssertFalse(elsewhere.contains("Bookmarked"), "the mark belongs to its own row")
+    }
+
+    // MARK: - The app's own wiring
+
+    /// A pane view hosting a real hex view in a real window, in one half of it
+    /// (same pattern as OffsetContextMenuTests). The halves must not overlap:
+    /// AppKit invalidates a view when an overlapping sibling is invalidated, and
+    /// these tests measure which pane was asked to repaint.
+    private func host(_ pane: PaneViewModel, in window: NSWindow, right: Bool) throws -> FilePaneView {
+        let content = try XCTUnwrap(window.contentView)
+        let filePane = FilePaneView(viewModel: pane)
+        filePane.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(filePane)
+        NSLayoutConstraint.activate([
+            filePane.widthAnchor.constraint(equalTo: content.widthAnchor, multiplier: 0.5),
+            right
+                ? filePane.trailingAnchor.constraint(equalTo: content.trailingAnchor)
+                : filePane.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            filePane.topAnchor.constraint(equalTo: content.topAnchor),
+            filePane.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+        ])
+        window.layoutIfNeeded()
+        return filePane
+    }
+
+    /// The chain the app actually runs: the window's one store → each pane's
+    /// `onBookmarksChanged` (wired in `WindowViewModel.init`) → the pane view's
+    /// `redrawRow` (bound in `FilePaneView`). The rendering test above installs
+    /// its own `onChange`, so without this nothing notices if a link comes
+    /// loose: the mark would simply stop appearing until something else
+    /// repainted the row (§20).
+    func testAMarkRepaintsBothPanesThroughTheAppsOwnWiring() throws {
+        let bytes = [UInt8](repeating: 0x11, count: 48)
+        let urlA = try tempFile(bytes)
+        let urlB = try tempFile(bytes)
+        defer {
+            try? FileManager.default.removeItem(at: urlA)
+            try? FileManager.default.removeItem(at: urlB)
+        }
+        let model = WindowViewModel()
+        try model.pane1.open(url: urlA)
+        try model.pane2.open(url: urlB)
+
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        let paneA = try host(model.pane1, in: window, right: false)
+        let paneB = try host(model.pane2, in: window, right: true)
+        let hexA = try XCTUnwrap(paneA.scrollView.documentView as? HexView)
+        let hexB = try XCTUnwrap(paneB.scrollView.documentView as? HexView)
+
+        XCTAssertNotNil(model.pane1.onBookmarksChanged, "pane 1's view binds the repaint")
+        XCTAssertNotNil(model.pane2.onBookmarksChanged, "pane 2's view binds the repaint")
+
+        // A pending display is drained first (a view that has never displayed is
+        // dirty by definition), so what the toggle marks dirty is measurable.
+        func settle() {
+            window.contentView?.display()
+            XCTAssertFalse(hexA.needsDisplay, "pane 1 starts clean")
+            XCTAssertFalse(hexB.needsDisplay, "pane 2 starts clean")
+        }
+
+        settle()
+        model.bookmarkStore.toggle(rowContaining: 20)
+        XCTAssertTrue(hexA.needsDisplay, "marking a row invalidates it in pane 1")
+        XCTAssertTrue(hexB.needsDisplay, "and in pane 2 — one shared list, both panes")
+
+        // And unmarking has to repaint too, or the mark stays on screen.
+        settle()
+        model.bookmarkStore.toggle(rowContaining: 20)
+        XCTAssertTrue(hexA.needsDisplay, "unmarking invalidates it in pane 1")
+        XCTAssertTrue(hexB.needsDisplay, "unmarking invalidates it in pane 2")
+    }
+
+    /// ⌘D's own link: the command marks the row containing the active pane's
+    /// caret in the window's shared store, and marks it again to remove (§20.3).
+    func testToggleBookmarkMarksTheActivePanesCaretRow() throws {
+        let wc = MainWindowController()
+        defer { wc.close() }
+        let controller = try XCTUnwrap(wc.mainViewController)
+        let url = try tempFile([UInt8](repeating: 0x00, count: 64))
+        defer { try? FileManager.default.removeItem(at: url) }
+        try controller.windowModel.pane1.open(url: url)
+        controller.windowModel.pane1.moveCaret(to: 20)
+
+        controller.toggleBookmark()
+        XCTAssertEqual(controller.windowModel.bookmarkStore.bookmarks.map(\.row), [16],
+                       "the command marks the caret's row in the window's shared store")
+        controller.toggleBookmark()
+        XCTAssertTrue(controller.windowModel.bookmarkStore.bookmarks.isEmpty,
+                      "the same command removes it")
+    }
+
     // MARK: - Menu
 
-    /// The Edit menu carries "Add Bookmark" wired to the controller's
+    /// The Edit menu carries "Toggle Bookmark" wired to the controller's
     /// `toggleBookmark`, bound to ⌘D — the gesture that has to cost nothing on a
-    /// bench (§20).
-    func testEditMenuHasAddBookmarkWithCmdD() {
-        let item = MainWindowController().makeEditMenu().items.first { $0.title == "Add Bookmark" }
-        XCTAssertNotNil(item, "the Edit menu should offer Add Bookmark")
+    /// bench (§20). The title says Toggle because the one command both marks and
+    /// unmarks, whatever the caret's row currently is (§20.3).
+    func testEditMenuHasToggleBookmarkWithCmdD() {
+        let item = MainWindowController().makeEditMenu().items.first { $0.title == "Toggle Bookmark" }
+        XCTAssertNotNil(item, "the Edit menu should offer Toggle Bookmark")
         XCTAssertEqual(item?.action, #selector(MainViewController.toggleBookmark))
         XCTAssertEqual(item?.keyEquivalent, "d")
         XCTAssertEqual(item?.keyEquivalentModifierMask, [.command])
@@ -262,7 +483,7 @@ final class BookmarkTests: XCTestCase {
 
     /// The command is enabled only when the active pane has a file: with nothing
     /// open there is no caret row to mark, so the item is greyed out.
-    func testAddBookmarkEnabledOnlyWithAFileOpen() throws {
+    func testToggleBookmarkEnabledOnlyWithAFileOpen() throws {
         let wc = MainWindowController()
         defer { wc.close() }
         let controller = try XCTUnwrap(wc.mainViewController)
@@ -270,7 +491,7 @@ final class BookmarkTests: XCTestCase {
             .compactMap(\.submenu).first { $0.title == "Edit" })
         let item = try XCTUnwrap(editMenu.items.first {
             $0.action == #selector(MainViewController.toggleBookmark)
-        }, "an Edit item adding a bookmark")
+        }, "an Edit item toggling a bookmark")
 
         XCTAssertFalse(controller.validateMenuItem(item), "no file open → disabled")
 
