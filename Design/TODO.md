@@ -66,6 +66,49 @@ hiding rules, not in the drawing.
 **Not urgent because** both places already say what the mark is; this is the
 difference between information you can get and information you can sweep.
 
+### Highlight search matches in the dump
+
+**What.** Show *every* occurrence of the current search pattern in the hex dump —
+a background behind the matching bytes, in both the hex and the decoded-text
+columns — not just the one match Find Next moved to. Cleared when the Find bar
+closes or the pattern changes.
+
+**Why.** Today a search says "here is one match" and, through Search All, "here
+is a list of them" (§11). Neither says *what the neighbourhood looks like*, which
+is the question on a dump: a signature that repeats every 0x1000 bytes, a padding
+run broken in one place, a table of pointers where one entry differs. Seeing the
+matches where the bytes are turns a search from navigation into a reading of the
+file's shape.
+
+**How.** The dump is virtualized and pulls its byte states per visible row range
+(`hexByteStates`), which suggests the cheap shape: **search the visible window as
+it draws**, rather than keeping a global index. A window is a few hundred bytes,
+the pattern is short, and the scan is the same `SearchEngine` code the Find bar
+uses — no index to invalidate on an edit, and nothing to keep in step with a
+scroll. Matches crossing the window's edges need the window widened by the
+pattern's length either side.
+
+The alternative is to reuse Search All's ranges when it has run, which gives the
+count for free but has to be invalidated on every edit and only covers a search
+that was run *as* Search All. Probably both, eventually: the visible-window scan
+as the mechanism, the Search All list as the thing that answers "how many".
+
+Colour: AppKit has a semantic `NSColor.findHighlightColor`, which is what the rest
+of the platform highlights a search hit with — worth using rather than inventing a
+yellow. It must layer with what §6 already draws: difference is a background,
+modified is red ink, selection is a background, the caret is a bar. A match is
+also a background, so the layering question is real and belongs in the spec before
+the code: probably match *under* selection (a selected match still reads as
+selected) and *over* difference, since a match is what the user just asked about.
+
+**Touches.** `HexView.drawRow` and its state plumbing, `PaneViewModel` (the byte
+states it answers with), the Find bar for "what is the current pattern", §6 for the
+layering rule and §11 for the search behaviour.
+
+**Cost.** 4–6 hours: the drawing is small, the layering rule and its render tests
+are most of it, and the visible-window scan wants a test that a match straddling
+the window's edge is still highlighted.
+
 ---
 
 ## Later
