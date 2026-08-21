@@ -60,54 +60,48 @@ final class BookmarkNamePopoverController: NSViewController, NSTextFieldDelegate
         let title = NSTextField(labelWithString: "Bookmark at \(address)")
         title.font = .boldSystemFont(ofSize: 13)
 
-        let label = NSTextField(labelWithString: "Name")
-        label.font = .systemFont(ofSize: 12)
-        label.textColor = .secondaryLabelColor
-        label.alignment = .right
-        label.translatesAutoresizingMaskIntoConstraints = false
-        label.widthAnchor.constraint(equalToConstant: 44).isActive = true
-
         // A plain field: AppKit selects its whole text on focus, which is what a
         // name wants — the popover opens with the current name ready to be
         // replaced (unlike the offset sheets, whose "0x" is a prefix to type
-        // after, §10).
+        // after, §10). Its placeholder says what the field is for, so the field
+        // needs no label beside it and can have the popover's whole width.
         let field = NSTextField(string: initialName)
         field.font = .systemFont(ofSize: 12)
-        // "Optional", not the address: the title line above already says which
-        // row this is, and an empty name is exactly how a bookmark ends up being
-        // called by that address (§20.2).
-        field.placeholderString = "Optional"
+        field.placeholderString = "Name"
         field.delegate = self
         field.translatesAutoresizingMaskIntoConstraints = false
-        field.widthAnchor.constraint(equalToConstant: 220).isActive = true
         field.setAccessibilityLabel("Bookmark name")
         nameField = field
-
-        let fieldRow = NSStackView(views: [label, field])
-        fieldRow.orientation = .horizontal
-        fieldRow.alignment = .firstBaseline
-        fieldRow.spacing = 8
 
         // Two lines and nothing else: which row, and what to call it. Return and
         // Esc are not spelled out — a popover with one field is not where the
         // keyboard needs explaining, and the panel stays the size of its job.
-        let stack = NSStackView(views: [title, fieldRow])
+        let stack = NSStackView(views: [title, field])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
         stack.edgeInsets = NSEdgeInsets(top: 14, left: 16, bottom: 14, right: 16)
         stack.translatesAutoresizingMaskIntoConstraints = false
 
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 80))
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: Self.width, height: 76))
         root.addSubview(stack)
         NSLayoutConstraint.activate([
             stack.topAnchor.constraint(equalTo: root.topAnchor),
             stack.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             stack.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             stack.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            root.widthAnchor.constraint(equalToConstant: Self.width),
+            // The field spans the popover, inside the stack's own insets: the
+            // longest thing a name can be is the width there is.
+            field.widthAnchor.constraint(equalTo: stack.widthAnchor,
+                                         constant: -(stack.edgeInsets.left + stack.edgeInsets.right)),
         ])
         view = root
     }
+
+    /// The popover's width. Fixed rather than fitted: a panel that resized itself
+    /// around the address it is naming would jitter from row to row.
+    private static let width: CGFloat = 300
 
     override func viewDidAppear() {
         super.viewDidAppear()

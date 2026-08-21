@@ -662,17 +662,21 @@ final class BookmarkTests: XCTestCase {
                                                     onCommit: { _ in }, onCancel: {})
         creating.loadViewIfNeeded()
         XCTAssertEqual(creating.nameField.stringValue, "")
-        XCTAssertEqual(creating.nameField.placeholderString, "Optional",
-                       "a name is optional; the title already says which row it is")
-        XCTAssertEqual(creating.labelTexts, ["Bookmark at 0x00000010", "Name"],
-                       "which row, and what to call it — nothing more")
+        XCTAssertEqual(creating.nameField.placeholderString, "Name",
+                       "the placeholder is the field's label, so there is no label")
+        XCTAssertEqual(creating.labelTexts, ["Bookmark at 0x00000010"],
+                       "one line of text: which row this is")
         XCTAssertTrue(creating.buttons.isEmpty, "the keyboard finishes the job")
+        // The field spans the popover, so a long name has all the room there is.
+        creating.view.layoutSubtreeIfNeeded()
+        XCTAssertEqual(creating.nameField.frame.width, creating.view.frame.width - 32,
+                       accuracy: 0.5, "the field runs the popover's width, inside its insets")
 
         let renaming = BookmarkNamePopoverController(row: 0x10, existingName: "ME region",
                                                     onCommit: { _ in }, onCancel: {})
         renaming.loadViewIfNeeded()
         XCTAssertEqual(renaming.nameField.stringValue, "ME region")
-        XCTAssertEqual(renaming.labelTexts, ["Bookmark at 0x00000010", "Name"])
+        XCTAssertEqual(renaming.labelTexts, ["Bookmark at 0x00000010"])
     }
 
     /// The pane view anchors the popover on the mark itself, and the mark's rect
