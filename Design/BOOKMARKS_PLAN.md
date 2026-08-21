@@ -349,9 +349,18 @@ yet know:
   prefix, so a pre-filled address would turn ⌘G, type, Return into digits
   appended to the previous jump. A jump from the list is not recorded — it is
   already in the list below.
-- **An unnamed bookmark's name cell is empty**, with no placeholder: the Offset
-  column beside it is the address, and a placeholder repeating it prints the same
-  thing twice on one row. The list also drops the alternating row stripes — three
+- **An unnamed bookmark shows its row's bytes** where a name would be, read from
+  the active pane through a `rowBytes` closure the controller hands the form, and
+  "Past the end of the file" where that pane does not reach (§9). First it showed
+  the address as a placeholder, which printed the same thing twice on one row; the
+  bytes are what the row was marked for, and they are the one thing the address
+  column does not already say. Both are placeholders, so typing a name replaces
+  them.
+- **Addresses in the list are bare digits**, no "0x", in a column exactly eight
+  digits wide measured in the dump's own font — the prefix cost two characters of
+  column width per row and told nobody anything. Spare width goes to the Name
+  column alone (`lastColumnOnlyAutoresizingStyle`), so the names stay next to
+  their addresses. The list also drops the alternating row stripes — three
   bookmarks in a tall box were a few rows of content in a page of banding.
 - **⌥⌘B preselects the first bookmark**, so ⌥⌘B, Return is a working gesture the
   way ⌘D, Return is. ⌘G leaves the list unselected: it is about typing.

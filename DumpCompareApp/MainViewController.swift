@@ -2615,10 +2615,11 @@ final class MainViewController: NSViewController {
 
     private func presentGoToForm(focus: GoToBookmarksController.Focus) {
         guard activePane.isOpen else { return }
-        let form = GoToBookmarksController(store: windowModel.bookmarkStore, focus: focus) {
-            [weak self] offset in
-            self?.goTo(offset: offset)
-        }
+        let form = GoToBookmarksController(
+            store: windowModel.bookmarkStore, focus: focus,
+            rowBytes: { [weak self] row in self?.bookmarkRowBytes(row) },
+            onGo: { [weak self] offset in self?.goTo(offset: offset) }
+        )
         openGoToForm = form
         if let goToFormPresenter {
             goToFormPresenter(form)
@@ -2627,6 +2628,18 @@ final class MainViewController: NSViewController {
         // A window, not a sheet: it holds a list the user manages, and it is
         // centred over the window it navigates.
         presentAsModalWindow(form)
+    }
+
+    /// The bytes on a bookmarked row of the ACTIVE pane, for the list to show
+    /// where an unnamed bookmark's name would be (§20.5). Nil when the row is
+    /// past that pane's end: a bookmark is an absolute address and stays in the
+    /// list even where the file does not reach (§9). Read live, per row, so the
+    /// list shows the pane's current content, edits included.
+    private func bookmarkRowBytes(_ row: UInt64) -> [UInt8]? {
+        let pane = activePane
+        guard pane.isOpen, row < pane.fileSize, let storage = pane.byteStorage else { return nil }
+        let length = Int(min(UInt64(HexLayout.bytesPerRow), pane.fileSize - row))
+        return (try? storage.read(at: row, length: length)) ?? []
     }
 
     /// The jump itself (§10.1) — the same act whether the offset was typed or

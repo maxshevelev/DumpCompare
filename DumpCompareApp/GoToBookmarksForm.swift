@@ -66,6 +66,12 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
     private let store: BookmarkStore
     private let onGo: (UInt64) -> Void
 
+    /// The bytes of a bookmarked row in the ACTIVE pane, or nil when the row is
+    /// past that file's end (§9) — what an unnamed bookmark is described by in
+    /// the list. Read per row as the table asks, so it always shows the pane's
+    /// live content.
+    private let rowBytes: (UInt64) -> [UInt8]?
+
     /// The bookmarks as the table currently shows them — a snapshot, so a row
     /// index means the same thing to every method that reads one, and the store
     /// is asked once per reload rather than once per cell.
@@ -99,9 +105,12 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
         static let name = NSUserInterfaceItemIdentifier("bookmarkName")
     }
 
-    init(store: BookmarkStore, focus: Focus, onGo: @escaping (UInt64) -> Void) {
+    init(store: BookmarkStore, focus: Focus,
+         rowBytes: @escaping (UInt64) -> [UInt8]?,
+         onGo: @escaping (UInt64) -> Void) {
         self.store = store
         self.focus = focus
+        self.rowBytes = rowBytes
         self.onGo = onGo
         super.init(nibName: nil, bundle: nil)
         // The presented window takes its title from here (§10.1): the form is
@@ -241,11 +250,19 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
     private func makeTable() -> NSScrollView {
         let offsetColumn = NSTableColumn(identifier: ColumnID.offset)
         offsetColumn.title = "Offset"
-        offsetColumn.width = 110
-        offsetColumn.minWidth = 90
+        // Exactly as wide as an address and no wider: eight bare hex digits
+        // measured in the dump's own font, so a larger font in Settings cannot
+        // clip them (§3.2) and everything else on the row belongs to the name —
+        // or to the bytes standing in for one. Fixed, because an address is
+        // always the same eight digits; the search results size their columns
+        // from a template the same way (§11).
+        let addressWidth = Self.addressColumnWidth()
+        offsetColumn.width = addressWidth
+        offsetColumn.minWidth = addressWidth
+        offsetColumn.maxWidth = addressWidth
         let nameColumn = NSTableColumn(identifier: ColumnID.name)
         nameColumn.title = "Name"
-        nameColumn.width = 280
+        nameColumn.width = 320
         nameColumn.minWidth = 80
 
         let table = BookmarkTableView()
@@ -259,6 +276,10 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
         table.allowsMultipleSelection = false
         table.allowsEmptySelection = true
         table.allowsColumnReordering = false
+        // Spare width goes to the Name column, not shared out: the address is a
+        // fixed eight digits, and stretching its column only pushes the names
+        // away from the addresses they belong to.
+        table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         // No stripes: a handful of bookmarks in a tall box would be a few rows
         // of content in a page of banding — the addresses are the pattern here.
         table.doubleAction = #selector(rowDoubleClicked)
@@ -473,22 +494,68 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
             // reads as the row it points at.
             cell.textField?.font = AppearanceSettings.font(size: 12)
             cell.textField?.textColor = HexTheme.inkBlue
-            cell.textField?.stringValue = Bookmark.addressLabel(bookmark.row)
+            // Bare digits, no "0x": a whole column of addresses in a window about
+            // addresses does not need each one announcing that it is hex, and the
+            // prefix was two characters of column width per row.
+            cell.textField?.stringValue = Self.addressText(bookmark.row)
             return cell
         case ColumnID.name:
             let cell = (tableView.makeView(withIdentifier: ColumnID.name, owner: self) as? BookmarkCellView)
                 ?? BookmarkCellView(identifier: ColumnID.name, editable: true)
             cell.textField?.target = self
             cell.textField?.action = #selector(nameEdited(_:))
-            // The cell shows the name and nothing else. An unnamed bookmark is
-            // called by its address (§20.2) and the Offset column beside it
-            // already says that address, so filling this cell with it too would
-            // print the same thing twice on one row.
             cell.textField?.stringValue = bookmark.name
+            // An unnamed bookmark is described by what is AT it: the row's bytes
+            // as the dump would show them. That is what the user marked the row
+            // for, and it is the one thing the Offset column beside it does not
+            // already say (§20.5).
+            cell.textField?.placeholderAttributedString =
+                Self.rowDescription(rowBytes(bookmark.row))
             return cell
         default:
             return nil
         }
+    }
+
+    // MARK: - What a row says
+
+    /// A bookmarked row's address in the list: the padded upper-case hex of
+    /// `Bookmark.addressLabel` without its "0x" (§20.5).
+    static func addressText(_ row: UInt64) -> String {
+        String(row, radix: 16, uppercase: true).leftPadded(to: 8, with: "0")
+    }
+
+    /// What the list shows where an unnamed bookmark's name would be: the row's
+    /// bytes in the dump's own hex, or a plain sentence when the row is past the
+    /// active pane's end — a bookmark is an absolute address and stays in the
+    /// list even where the file does not reach (§9), and "nothing there" is worth
+    /// saying outright rather than leaving a blank cell.
+    static func rowDescription(_ bytes: [UInt8]?) -> NSAttributedString {
+        guard let bytes else {
+            return NSAttributedString(string: pastEndOfFileText, attributes: [
+                .font: NSFont.systemFont(ofSize: 12),
+                .foregroundColor: NSColor.secondaryLabelColor,
+            ])
+        }
+        // The dump's font and spacing, so the cell reads as the row it is: it is
+        // a preview of the bytes, not prose about them. It truncates with "…"
+        // against the column's width, like every other value in the list.
+        return NSAttributedString(
+            string: bytes.map { String(format: "%02X", $0) }.joined(separator: " "),
+            attributes: [
+                .font: AppearanceSettings.font(size: 12),
+                .foregroundColor: NSColor.secondaryLabelColor,
+            ])
+    }
+
+    static let pastEndOfFileText = "Past the end of the file"
+
+    /// The width an eight-digit address needs, in the font the list draws it in,
+    /// plus the room the cell's label leaves either side.
+    static func addressColumnWidth() -> CGFloat {
+        let template = String(repeating: "0", count: 8) as NSString
+        let text = template.size(withAttributes: [.font: AppearanceSettings.font(size: 12)]).width
+        return ceil(text) + 2 * BookmarkCellView.labelInset + 1
     }
 }
 
@@ -556,6 +623,11 @@ private final class BookmarkTableView: NSTableView {
 /// One cell of the list: a label that fills the cell, editable in the Name
 /// column so a double click renames the bookmark where it is listed (§20.5).
 private final class BookmarkCellView: NSTableCellView {
+    /// The label's inset from each side of the cell. Read by the address
+    /// column's sizing, so the room a value gets and the width it is measured at
+    /// cannot drift apart.
+    static let labelInset: CGFloat = 4
+
     init(identifier: NSUserInterfaceItemIdentifier, editable: Bool) {
         super.init(frame: .zero)
         self.identifier = identifier
@@ -575,8 +647,8 @@ private final class BookmarkCellView: NSTableCellView {
         addSubview(field)
         textField = field
         NSLayoutConstraint.activate([
-            field.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
-            field.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            field.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.labelInset),
+            field.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Self.labelInset),
             field.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }

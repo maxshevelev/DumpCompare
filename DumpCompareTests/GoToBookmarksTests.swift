@@ -52,7 +52,9 @@ final class GoToBookmarksTests: XCTestCase {
     /// The form in a real window (the table needs a layout to build its cell
     /// views), with the jumps it asks for and how often it closed itself.
     private func makeForm(rows: [UInt64: String] = [:],
-                          focus: GoToBookmarksController.Focus = .offsetField)
+                          focus: GoToBookmarksController.Focus = .offsetField,
+                          fileSize: UInt64 = 0x1000,
+                          fill: UInt8 = 0x11)
         -> (form: GoToBookmarksController, store: BookmarkStore,
             jumps: () -> [UInt64], closes: () -> Int) {
         let store = BookmarkStore()
@@ -61,7 +63,16 @@ final class GoToBookmarksTests: XCTestCase {
         }
         var jumps: [UInt64] = []
         var closes = 0
-        let form = GoToBookmarksController(store: store, focus: focus) { jumps.append($0) }
+        // Stands in for the active pane's storage: `fill` bytes up to
+        // `fileSize`, and nothing at all past it.
+        let form = GoToBookmarksController(
+            store: store, focus: focus,
+            rowBytes: { row in
+                guard row < fileSize else { return nil }
+                let length = Int(min(16, fileSize - row))
+                return [UInt8](repeating: fill, count: length)
+            },
+            onGo: { jumps.append($0) })
         // `dismiss` traps on a controller that was never presented, and a modal
         // window would have no one to close it under XCTest.
         form.dismissForm = { closes += 1 }
@@ -265,15 +276,53 @@ final class GoToBookmarksTests: XCTestCase {
         XCTAssertNil(form.editingNameRow)
     }
 
-    /// An unnamed bookmark shows an empty name cell: the Offset column beside it
-    /// is already the address it is called by (§20.2), and printing that address
-    /// twice on one row says nothing new.
-    func testAnUnnamedBookmarkShowsNoNameAtAll() throws {
-        let (form, _, _, _) = makeForm(rows: [0x10: ""])
+    /// An unnamed bookmark is described by what is AT it — the row's bytes as
+    /// the dump shows them (§20.5). The address is already in the column beside
+    /// it, so repeating that would say nothing new.
+    func testAnUnnamedBookmarkShowsTheRowsBytes() throws {
+        let (form, _, _, _) = makeForm(rows: [0x10: ""], fill: 0xFF)
         let field = try nameField(form, row: 0)
 
         XCTAssertEqual(field.stringValue, "")
-        XCTAssertNil(field.placeholderString)
+        XCTAssertEqual(field.placeholderAttributedString?.string,
+                       "FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF")
+    }
+
+    /// A named bookmark shows its name; the bytes are only what stands in for a
+    /// name that is not there.
+    func testANamedBookmarkShowsItsName() throws {
+        let (form, _, _, _) = makeForm(rows: [0x10: "EC table"])
+
+        XCTAssertEqual(try nameField(form, row: 0).stringValue, "EC table")
+    }
+
+    /// A bookmark is an absolute address and stays in the list where the file
+    /// does not reach (§9), so the row says so instead of showing a blank cell.
+    func testABookmarkPastTheEndOfTheFileSaysSo() throws {
+        let (form, _, _, _) = makeForm(rows: [0x2000: ""], fileSize: 0x100)
+
+        XCTAssertEqual(try nameField(form, row: 0).placeholderAttributedString?.string,
+                       "Past the end of the file")
+    }
+
+    /// The last row of a file is usually a partial one — only the bytes that are
+    /// there are shown.
+    func testTheLastRowShowsOnlyTheBytesItHas() throws {
+        let (form, _, _, _) = makeForm(rows: [0x100: ""], fileSize: 0x104, fill: 0xAB)
+
+        XCTAssertEqual(try nameField(form, row: 0).placeholderAttributedString?.string,
+                       "AB AB AB AB")
+    }
+
+    /// §20.5: bare hex digits in the list — a whole column of addresses in a
+    /// window about addresses does not need each one announcing that it is hex.
+    func testTheListWritesAddressesWithoutThe0xPrefix() throws {
+        let (form, _, _, _) = makeForm(rows: [0x7AF00: ""])
+        let cell = form.bookmarkTable.view(atColumn: form.offsetColumnIndex, row: 0,
+                                           makeIfNecessary: true)
+        let field = try XCTUnwrap((cell as? NSTableCellView)?.textField)
+
+        XCTAssertEqual(field.stringValue, "0007AF00")
     }
 
     // MARK: - Escape is two-level (§10.1)
@@ -474,6 +523,34 @@ final class GoToBookmarksTests: XCTestCase {
         XCTAssertEqual(controller.windowModel.pane1.hexSelection().start, 0x120)
         XCTAssertEqual(controller.windowModel.pane2.hexSelection().start, 0x120,
                        "a bookmark is an absolute offset, so both panes follow it")
+    }
+
+    /// The bytes standing in for a missing name come from the ACTIVE pane: in a
+    /// comparison the two files hold different bytes at the same address, and the
+    /// list describes the one the user is working in (§20.5).
+    func testTheListDescribesARowFromTheActivePane() throws {
+        let wc = MainWindowController()
+        let controller = try XCTUnwrap(wc.mainViewController)
+        let urlA = try tempFile([UInt8](repeating: 0xAA, count: 0x100))
+        let urlB = try tempFile([UInt8](repeating: 0xBB, count: 0x100))
+        try controller.windowModel.pane1.open(url: urlA)
+        try controller.windowModel.pane2.open(url: urlB)
+        controller.apply(mode: .comparison)
+        wc.window?.layoutIfNeeded()
+        addTeardownBlock { @MainActor in
+            controller.windowModel.pane1.close()
+            controller.windowModel.pane2.close()
+            wc.close()
+        }
+        let forms = captureForms(controller)
+        controller.windowModel.bookmarkStore.add(rowContaining: 0x20)
+
+        controller.windowModel.setActivePane(1)
+        controller.showBookmarks()
+        let form = try XCTUnwrap(forms().first)
+
+        XCTAssertEqual(try nameField(form, row: 0).placeholderAttributedString?.string.prefix(5),
+                       "BB BB", "pane 2 is the active one")
     }
 
     /// The store is the one list (§20.2): a bookmark made or removed while the

@@ -1721,10 +1721,20 @@ the only place they are listed: going to a bookmark and managing one are the sam
 window, so nothing about a bookmark lives in two places.
 
 - Two columns, one row per bookmark, ordered by address: the address in the
-  dump's own shape and ink-blue colour (§6), and the name beside it. An unnamed
-  bookmark shows an empty name cell — it is called by its address (§20.2) and the
-  column beside it already says that address, so printing it twice would say
-  nothing new.
+  dump's ink-blue (§6), and the name beside it. The address is written as bare
+  padded hex digits, without the `0x` the dialogs use — a whole column of
+  addresses in a window about addresses does not need each one announcing that it
+  is hex, and the column is exactly as wide as eight digits in the dump's font,
+  so everything else on the row belongs to the name.
+- **An unnamed bookmark is described by what is at it**: where its name would be,
+  the list shows the row's bytes as the dump writes them, read from the ACTIVE
+  pane — in a comparison the two files hold different bytes at the same address,
+  and the list describes the one being worked in. That is what the row was marked
+  for, and it is the one thing the address column does not already say. A row past
+  the end of that pane's file says so in words instead: a bookmark is an absolute
+  address and stays in the list where the file does not reach (§9), and "nothing
+  there" is worth saying outright rather than leaving a blank cell. Both are shown
+  the way a placeholder is — dimmed, and replaced the moment a name is typed.
 - **Return** goes to the selected bookmark, and a **double click on a row** goes
   there too, so the mouse needs no detour to the keyboard. Both dismiss the form
   and behave exactly as a typed offset does (§10.1): both panes of a comparison
