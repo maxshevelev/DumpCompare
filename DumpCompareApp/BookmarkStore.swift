@@ -11,6 +11,27 @@ struct Bookmark: Equatable {
     let row: UInt64
     /// A name for the bookmark; empty means "show the address".
     var name: String
+
+    /// What the bookmark is called wherever a name is shown — the list, the
+    /// mark's tooltip, VoiceOver. An unnamed bookmark is not nameless: it is
+    /// called by where it is, so it shows its address (§20.2). One place decides
+    /// this, so every surface agrees.
+    var displayName: String {
+        name.isEmpty ? Self.addressLabel(row) : name
+    }
+
+    /// A row address as the dialogs write one: `0x` and at least eight upper-case
+    /// hex digits (§10).
+    static func addressLabel(_ row: UInt64) -> String {
+        "0x" + String(row, radix: 16, uppercase: true).leftPadded(to: 8, with: "0")
+    }
+
+    /// A name with its surrounding whitespace removed — the form every path
+    /// stores, so a name typed with a stray space is the same name (§20.2), and
+    /// one typed as nothing but spaces is unnamed.
+    static func normalized(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }
 
 /// The window's bookmark list. One instance lives on the `WindowViewModel`,
@@ -63,11 +84,58 @@ final class BookmarkStore {
             return nil
         }
         let added = Bookmark(row: row, name: "")
-        // Insert keeping the list sorted by row.
-        let index = bookmarks.firstIndex { $0.row > row } ?? bookmarks.endIndex
-        bookmarks.insert(added, at: index)
+        bookmarks.insert(added, at: insertionIndex(for: row))
         onChange?(row)
         return added
+    }
+
+    /// Marks the row containing `offset`, named or not, and returns the
+    /// bookmark. An already-marked row keeps its one bookmark and takes the new
+    /// name — marking twice never makes two marks on one row (§20.1), and the
+    /// name given here is the one that sticks.
+    @discardableResult
+    func add(rowContaining offset: UInt64, name: String = "") -> Bookmark {
+        let row = Self.row(containing: offset)
+        let clean = Bookmark.normalized(name)
+        if let index = bookmarks.firstIndex(where: { $0.row == row }) {
+            bookmarks[index].name = clean
+            onChange?(row)
+            return bookmarks[index]
+        }
+        let added = Bookmark(row: row, name: clean)
+        bookmarks.insert(added, at: insertionIndex(for: row))
+        onChange?(row)
+        return added
+    }
+
+    /// Renames the bookmark on the row containing `offset`, returning it, or nil
+    /// when that row carries no bookmark — renaming is for a mark that exists,
+    /// so a caller that means "mark it and call it this" uses `add` instead.
+    /// An empty name unnames the bookmark: it goes back to showing its address.
+    @discardableResult
+    func rename(rowContaining offset: UInt64, to name: String) -> Bookmark? {
+        let row = Self.row(containing: offset)
+        guard let index = bookmarks.firstIndex(where: { $0.row == row }) else { return nil }
+        bookmarks[index].name = Bookmark.normalized(name)
+        onChange?(row)
+        return bookmarks[index]
+    }
+
+    /// Removes the mark from the row containing `offset`. Returns whether there
+    /// was one to remove, so a caller can tell "removed" from "nothing there"
+    /// without reading the list first.
+    @discardableResult
+    func remove(rowContaining offset: UInt64) -> Bool {
+        let row = Self.row(containing: offset)
+        guard let index = bookmarks.firstIndex(where: { $0.row == row }) else { return false }
+        bookmarks.remove(at: index)
+        onChange?(row)
+        return true
+    }
+
+    /// Where `row` belongs in the list, which is kept sorted by row.
+    private func insertionIndex(for row: UInt64) -> Int {
+        bookmarks.firstIndex { $0.row > row } ?? bookmarks.endIndex
     }
 
     /// The bookmarked rows in `range` (a range of offsets), for the hex view's

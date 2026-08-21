@@ -1960,7 +1960,33 @@ final class MainViewController: NSViewController {
                                   keyEquivalent: "")
         select.target = self
         select.representedObject = OffsetContextTarget(pane: pane, offset: offset)
+        menu.addItem(.separator())
+        addBookmarkMenuItems(to: menu, for: pane, offset: offset)
         return menu
+    }
+
+    /// The bookmark block of the offset context menu (§20.3). Two items, and
+    /// which two depends on what the clicked row carries: an unmarked row is
+    /// offered *Add Bookmark* and *Add Bookmark with Name…*, a marked one
+    /// *Rename Bookmark…* and *Remove Bookmark*. The address in the leading
+    /// item's title is the ROW's, not the clicked byte's — a right-click on a
+    /// byte marks its row (§20.1), and the title is what says so.
+    private func addBookmarkMenuItems(to menu: NSMenu, for pane: PaneViewModel, offset: UInt64) {
+        let target = OffsetContextTarget(pane: pane, offset: offset)
+        let row = BookmarkStore.row(containing: offset)
+        let address = Bookmark.addressLabel(row)
+        func add(_ title: String, _ action: Selector) {
+            let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.representedObject = target
+        }
+        if windowModel.bookmarkStore.bookmark(atRowContaining: offset) == nil {
+            add("Add Bookmark at \(address)", #selector(addBookmarkAtOffset(_:)))
+            add("Add Bookmark with Name…", #selector(nameBookmarkAtOffset(_:)))
+        } else {
+            add("Rename Bookmark at \(address)…", #selector(nameBookmarkAtOffset(_:)))
+            add("Remove Bookmark", #selector(removeBookmarkAtOffset(_:)))
+        }
     }
 
     /// The three selection-scoped context-menu items (§10.2). Each carries the
@@ -2408,6 +2434,54 @@ final class MainViewController: NSViewController {
         let pane = activePane
         guard pane.isOpen else { return }
         windowModel.bookmarkStore.toggle(rowContaining: pane.hexSelection().start)
+    }
+
+    /// Edit > Name Bookmark… (⇧⌘D): names the bookmark on the active pane's
+    /// caret row (§20.2). One command for both cases — an unmarked row is marked
+    /// with the name the sheet returns, a marked one keeps its mark and is
+    /// renamed — because "name this row" is the one thing the user means, and the
+    /// ellipsis says a dialog follows.
+    @objc func nameBookmark() {
+        let pane = activePane
+        guard pane.isOpen else { return }
+        presentBookmarkNameSheet(rowContaining: pane.hexSelection().start)
+    }
+
+    /// The name sheet for the row containing `offset`, and the store call its
+    /// submit makes. Adding and renaming share it: what the row carries right now
+    /// decides the sheet's title and its pre-filled name, and `add` both marks an
+    /// unmarked row and renames a marked one (§20.2).
+    private func presentBookmarkNameSheet(rowContaining offset: UInt64) {
+        let store = windowModel.bookmarkStore
+        let row = BookmarkStore.row(containing: offset)
+        let existing = store.bookmark(atRowContaining: offset)
+        let sheet = BookmarkNameSheetController(row: row, existingName: existing?.name) { name in
+            store.add(rowContaining: row, name: name)
+        }
+        presentAsSheet(sheet)
+    }
+
+    /// Offset context menu > Add Bookmark: marks the right-clicked row, unnamed,
+    /// with no dialog — the same act as ⌘D, on the row that was clicked rather
+    /// than the caret's (§20.3).
+    @objc func addBookmarkAtOffset(_ sender: Any?) {
+        guard let target = offsetContextTarget(from: sender) else { return }
+        windowModel.bookmarkStore.add(rowContaining: target.offset)
+    }
+
+    /// Offset context menu > Add Bookmark with Name… / Rename Bookmark…: the
+    /// name sheet for the right-clicked row (§20.2).
+    @objc func nameBookmarkAtOffset(_ sender: Any?) {
+        guard let target = offsetContextTarget(from: sender) else { return }
+        presentBookmarkNameSheet(rowContaining: target.offset)
+    }
+
+    /// Offset context menu > Remove Bookmark: unmarks the right-clicked row
+    /// (§20.3). Unlike ⌘D this only ever removes, so a click on the wrong row
+    /// cannot leave a new mark behind.
+    @objc func removeBookmarkAtOffset(_ sender: Any?) {
+        guard let target = offsetContextTarget(from: sender) else { return }
+        windowModel.bookmarkStore.remove(rowContaining: target.offset)
     }
 
     // MARK: - Dialogs (§10)
@@ -3007,7 +3081,8 @@ extension MainViewController: NSMenuItemValidation {
              #selector(goToPosition),
              #selector(findPattern),
              #selector(selectAllBytes),
-             #selector(toggleBookmark):
+             #selector(toggleBookmark),
+             #selector(nameBookmark):
             return activePane.isOpen
         case #selector(revertDocument):
             // Nothing on disk to revert an untitled document to.

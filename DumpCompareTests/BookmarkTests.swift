@@ -1,11 +1,19 @@
 import XCTest
 @testable import DumpCompare
 
-/// §20 Stage 1 — "Mark a row and see it": ⌘D marks (and unmarks) the caret's
-/// row, and a marked row's address stands on a purple right-pointing arrow in
-/// BOTH panes of a comparison. Covered here: the store's row arithmetic, the hex
-/// view's rendering of a marked row in both panes, and the Edit-menu item and
-/// its key. Names, the bookmark list, and the minimap are later stages.
+/// §20 Bookmarks, stages 1 and 2.
+///
+/// Stage 1 — "Mark a row and see it": ⌘D marks (and unmarks) the caret's row, and
+/// a marked row's address stands on a purple mark in BOTH panes of a comparison.
+/// Covered here: the store's row arithmetic, the mark's geometry and rendering
+/// (including the right-click outline), the app's own repaint wiring, and the
+/// Edit-menu item with its key.
+///
+/// Stage 2 — "Give it a name": ⇧⌘D and the offset context menu's add / name /
+/// rename / remove items, what the store does with a name, and the two places a
+/// name shows before the list exists — the mark's tooltip and VoiceOver.
+///
+/// The bookmark list, the form, and the minimap arrows are later stages.
 @MainActor
 final class BookmarkTests: XCTestCase {
     /// `MainWindowController()` assigns `NSApp.mainMenu`; restore it so the menu
@@ -520,5 +528,259 @@ final class BookmarkTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: url) }
         try controller.windowModel.pane1.open(url: url)
         XCTAssertTrue(controller.validateMenuItem(item), "a file in the active pane → enabled")
+    }
+
+    // MARK: - Names: the store (§20.2)
+
+    /// A name is stored trimmed, and one that is nothing but whitespace is no
+    /// name at all — so "  " and "" are the same bookmark, shown by address.
+    func testANameIsStoredTrimmed() {
+        let store = BookmarkStore()
+        store.add(rowContaining: 16, name: "  boot block \n")
+        XCTAssertEqual(store.bookmark(atRowContaining: 16)?.name, "boot block")
+        store.rename(rowContaining: 16, to: "   ")
+        XCTAssertEqual(store.bookmark(atRowContaining: 16)?.name, "",
+                       "a whitespace-only name is unnamed")
+    }
+
+    /// `add` marks and names in one act, and on an already-marked row it keeps
+    /// the one mark and takes the new name — the path both ⇧⌘D and the context
+    /// menu's naming item use, whether the row is marked yet or not (§20.2).
+    func testAddNamesAnUnmarkedRowAndRenamesAMarkedOne() {
+        let store = BookmarkStore()
+        let added = store.add(rowContaining: 20, name: "ME region")
+        XCTAssertEqual(added, Bookmark(row: 16, name: "ME region"))
+        XCTAssertEqual(store.bookmarks.count, 1)
+
+        let again = store.add(rowContaining: 30, name: "descriptor")
+        XCTAssertEqual(again, Bookmark(row: 16, name: "descriptor"))
+        XCTAssertEqual(store.bookmarks.count, 1, "one row still carries one mark")
+    }
+
+    /// Renaming is for a mark that exists: an unmarked row is left alone, and the
+    /// caller can tell, so "rename" never quietly creates a bookmark.
+    func testRenameOnlyTouchesAMarkedRow() {
+        let store = BookmarkStore()
+        XCTAssertNil(store.rename(rowContaining: 16, to: "nope"))
+        XCTAssertTrue(store.bookmarks.isEmpty)
+
+        store.add(rowContaining: 16)
+        XCTAssertEqual(store.rename(rowContaining: 16, to: "vendor block")?.name, "vendor block")
+        XCTAssertEqual(store.bookmarks.map(\.name), ["vendor block"])
+    }
+
+    /// `remove` says whether there was a mark to remove — the context menu's item
+    /// only ever removes, so nothing has to read the list first.
+    func testRemoveReportsWhetherThereWasAMark() {
+        let store = BookmarkStore()
+        XCTAssertFalse(store.remove(rowContaining: 16))
+        store.add(rowContaining: 16)
+        XCTAssertTrue(store.remove(rowContaining: 16))
+        XCTAssertTrue(store.bookmarks.isEmpty)
+    }
+
+    /// Naming, renaming and removing all repaint: each fires `onChange` with the
+    /// row, as toggling does, or a name typed in the sheet would not show up
+    /// until something else repainted the row (§20).
+    func testNamingPathsFireOnChange() {
+        let store = BookmarkStore()
+        var fired: [UInt64] = []
+        store.onChange = { fired.append($0) }
+        store.add(rowContaining: 20, name: "a")     // row 16
+        store.rename(rowContaining: 20, to: "b")
+        store.remove(rowContaining: 20)
+        XCTAssertEqual(fired, [16, 16, 16])
+    }
+
+    /// An unnamed bookmark is not nameless: it is called by where it is, so it
+    /// shows its address wherever a name is shown (§20.2).
+    func testDisplayNameFallsBackToTheAddress() {
+        XCTAssertEqual(Bookmark(row: 0x10, name: "").displayName, "0x00000010")
+        XCTAssertEqual(Bookmark(row: 0x10, name: "boot").displayName, "boot")
+        XCTAssertEqual(Bookmark(row: 0x1_0000_0000, name: "").displayName, "0x100000000",
+                       "an address wider than eight digits is not truncated")
+    }
+
+    // MARK: - Names: the sheet (§20.2)
+
+    /// The name sheet reports what was typed, trimmed by the store on the way in.
+    /// Its title tells adding from renaming, and a rename opens with the current
+    /// name in the field, ready to be replaced.
+    func testTheNameSheetSubmitsWhatWasTyped() {
+        var captured: String?
+        let adding = BookmarkNameSheetController(row: 0x10, existingName: nil) { captured = $0 }
+        _ = adding.view
+        XCTAssertEqual(adding.titleText, "Add Bookmark")
+        XCTAssertEqual(adding.nameField.stringValue, "", "a new bookmark opens with an empty field")
+        XCTAssertTrue(try! XCTUnwrap(adding.messageText).contains("0x00000010"),
+                      "the sheet says which row it is naming")
+        adding.nameField.stringValue = "boot block"
+        // `handleSubmit` is the submit path minus `dismiss`, which needs a real
+        // presentation (the pattern SelectBlockSheetTests uses).
+        adding.handleSubmit()
+        XCTAssertEqual(captured, "boot block")
+
+        let renaming = BookmarkNameSheetController(row: 0x10, existingName: "boot block") { captured = $0 }
+        _ = renaming.view
+        XCTAssertEqual(renaming.titleText, "Rename Bookmark")
+        XCTAssertEqual(renaming.nameField.stringValue, "boot block",
+                       "a rename opens with the name it is changing")
+        renaming.nameField.stringValue = ""
+        renaming.handleSubmit()
+        XCTAssertEqual(captured, "", "an empty name is allowed: the bookmark shows its address")
+    }
+
+    /// The name field selects its whole text on focus — the initial value is a
+    /// suggestion to replace, unlike an offset field's "0x" prefix, which the
+    /// caret must land after (§10, §20.2).
+    func testTheNameFieldSelectsItsTextOnFocus() throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 220),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        defer { window.orderOut(nil) }
+        let sheet = BookmarkNameSheetController(row: 0x10, existingName: "boot block") { _ in }
+        window.contentView = sheet.view
+        window.makeFirstResponder(sheet.nameField)
+        let editor = try XCTUnwrap(window.firstResponder as? NSTextView)
+        XCTAssertEqual(editor.selectedRange, NSRange(location: 0, length: 10),
+                       "typing replaces the suggested name")
+    }
+
+    /// ⇧⌘D names the caret's row: Edit ▸ Name Bookmark…, enabled with a file open.
+    func testEditMenuHasNameBookmarkWithShiftCmdD() throws {
+        let item = try XCTUnwrap(MainWindowController().makeEditMenu().items
+            .first { $0.action == #selector(MainViewController.nameBookmark) })
+        XCTAssertEqual(item.title, "Name Bookmark…", "the ellipsis says a dialog follows")
+        // An upper-case key equivalent is how AppKit spells ⇧ — the menu shows
+        // ⇧⌘D and matches shift+D, with no `.shift` in the mask (as Save As…).
+        XCTAssertEqual(item.keyEquivalent, "D")
+        XCTAssertEqual(item.keyEquivalentModifierMask, [.command])
+    }
+
+    func testNameBookmarkEnabledOnlyWithAFileOpen() throws {
+        let wc = MainWindowController()
+        defer { wc.close() }
+        let controller = try XCTUnwrap(wc.mainViewController)
+        let item = NSMenuItem(title: "Name Bookmark…",
+                              action: #selector(MainViewController.nameBookmark), keyEquivalent: "D")
+        XCTAssertFalse(controller.validateMenuItem(item), "no file open → disabled")
+        let url = try tempFile([UInt8](repeating: 0x00, count: 32))
+        defer { try? FileManager.default.removeItem(at: url) }
+        try controller.windowModel.pane1.open(url: url)
+        XCTAssertTrue(controller.validateMenuItem(item))
+    }
+
+    // MARK: - Names: the context menu (§20.3)
+
+    /// The offset context menu offers what the clicked row does not have yet: an
+    /// unmarked row gets Add and Add with Name…, a marked one Rename… and Remove.
+    /// The address in the title is the ROW's — right-clicking a byte marks its
+    /// row, and the title is what says so (§20.1).
+    func testTheContextMenuOffersTheRightBookmarkItems() throws {
+        let wc = MainWindowController()
+        defer { wc.close() }
+        let controller = try XCTUnwrap(wc.mainViewController)
+        let url = try tempFile([UInt8](repeating: 0x11, count: 64))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let pane = controller.windowModel.pane1
+        try pane.open(url: url)
+
+        // A byte in the middle of row 0x10, so the row address has to be derived.
+        let unmarked = controller.makeOffsetMenu(for: pane, offset: 0x1B).items.map(\.title)
+        XCTAssertTrue(unmarked.contains("Add Bookmark at 0x00000010"),
+                      "the row's address, not the clicked byte's: \(unmarked)")
+        XCTAssertTrue(unmarked.contains("Add Bookmark with Name…"))
+        XCTAssertFalse(unmarked.contains("Remove Bookmark"))
+
+        controller.windowModel.bookmarkStore.add(rowContaining: 0x1B, name: "ME region")
+        let marked = controller.makeOffsetMenu(for: pane, offset: 0x1B).items.map(\.title)
+        XCTAssertTrue(marked.contains("Rename Bookmark at 0x00000010…"), "\(marked)")
+        XCTAssertTrue(marked.contains("Remove Bookmark"))
+        XCTAssertFalse(marked.contains("Add Bookmark at 0x00000010"),
+                       "a marked row is not offered a second mark")
+    }
+
+    /// The items act on the row that was right-clicked, in the pane that was
+    /// right-clicked — the `representedObject` pattern the rest of the offset
+    /// menu uses (§10.2). Add and Remove need no dialog, so they are driven here
+    /// end to end.
+    func testTheContextMenuItemsActOnTheClickedRow() throws {
+        let wc = MainWindowController()
+        defer { wc.close() }
+        let controller = try XCTUnwrap(wc.mainViewController)
+        let url = try tempFile([UInt8](repeating: 0x11, count: 64))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let pane = controller.windowModel.pane1
+        try pane.open(url: url)
+        let store = controller.windowModel.bookmarkStore
+
+        let addItem = try XCTUnwrap(controller.makeOffsetMenu(for: pane, offset: 0x2A).items
+            .first { $0.action == #selector(MainViewController.addBookmarkAtOffset(_:)) })
+        XCTAssertTrue(addItem.target === controller)
+        controller.addBookmarkAtOffset(addItem)
+        XCTAssertEqual(store.bookmarks.map(\.row), [0x20], "the clicked byte's row is marked")
+
+        let removeItem = try XCTUnwrap(controller.makeOffsetMenu(for: pane, offset: 0x2A).items
+            .first { $0.action == #selector(MainViewController.removeBookmarkAtOffset(_:)) })
+        controller.removeBookmarkAtOffset(removeItem)
+        XCTAssertTrue(store.bookmarks.isEmpty)
+    }
+
+    // MARK: - Where a name shows (§20.2)
+
+    /// Hovering a marked row's address shows what the bookmark is called;
+    /// unmarked rows show nothing, because an address needs no explaining. This
+    /// is the only place in the dump a name is visible before the list exists.
+    func testTheMarkShowsItsNameAsATooltip() throws {
+        let url = try tempFile([UInt8](repeating: 0x11, count: 64))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let pane = PaneViewModel()
+        try pane.open(url: url)
+        let store = BookmarkStore()
+        pane.bookmarkStore = store
+
+        let hex = HexView()
+        hex.dataSource = pane
+        hex.delegate = pane
+        hex.reloadData()
+
+        let layout = hex.hexLayout
+        func tooltip(row: Int) -> String {
+            let point = NSPoint(x: layout.offsetColumnFrame(row: row).midX,
+                                y: layout.rowFrame(row: row).midY)
+            return hex.view(hex, stringForToolTip: 0, point: point, userData: nil)
+        }
+
+        XCTAssertNotNil(hex.bookmarkTooltipTag,
+                        "the Offset column is registered for tooltips, or none of this is asked")
+        XCTAssertEqual(tooltip(row: 1), "", "an unmarked row has nothing to say")
+        store.add(rowContaining: 16, name: "ME region")
+        XCTAssertEqual(tooltip(row: 1), "ME region")
+        XCTAssertEqual(tooltip(row: 2), "", "the name belongs to its own row")
+        store.rename(rowContaining: 16, to: "")
+        XCTAssertEqual(tooltip(row: 1), "0x00000010",
+                       "an unnamed mark is called by where it is")
+    }
+
+    /// VoiceOver reads the name too, not just that the row is marked (§15).
+    func testAccessibilityValueCarriesTheName() throws {
+        let url = try tempFile([UInt8](repeating: 0x11, count: 48))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let pane = PaneViewModel()
+        try pane.open(url: url)
+        let store = BookmarkStore()
+        pane.bookmarkStore = store
+        let hex = HexView()
+        hex.dataSource = pane
+        hex.delegate = pane
+        hex.reloadData()
+        pane.moveCaret(to: 20)
+
+        store.add(rowContaining: 20, name: "ME region")
+        let value = try XCTUnwrap(hex.accessibilityValue() as? String)
+        XCTAssertTrue(value.contains("Bookmarked row: ME region."), value)
+
+        store.rename(rowContaining: 20, to: "")
+        let unnamed = try XCTUnwrap(hex.accessibilityValue() as? String)
+        XCTAssertTrue(unnamed.contains("Bookmarked row: 0x00000010."), unnamed)
     }
 }

@@ -511,6 +511,13 @@ final class PaneViewModel: HexViewDataSource {
         bookmarkStore?.rows(in: range) ?? []
     }
 
+    /// The bookmark on the row containing `offset` (§20.2) — what the mark's
+    /// tooltip and VoiceOver read, and what tells a right-clicked address from
+    /// an unmarked one.
+    func hexBookmark(atRowContaining offset: UInt64) -> Bookmark? {
+        bookmarkStore?.bookmark(atRowContaining: offset)
+    }
+
     func hexSelection() -> SelectionModel {
         document?.selection ?? SelectionModel.empty(at: 0, fileSize: 0)
     }

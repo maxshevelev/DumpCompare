@@ -1,4 +1,5 @@
 import Cocoa
+import Cocoa
 import DumpCompareCore
 
 /// What changed in the pane's content, so the hex view can invalidate only the
@@ -28,6 +29,11 @@ protocol HexViewDataSource: AnyObject {
     /// column's per-row drawing (§20). A set per range rather than a call per
     /// row, the same shape as `hexByteStates`.
     func hexBookmarkedRows(in range: Range<UInt64>) -> Set<UInt64>
+    /// The bookmark on the row containing `offset`, if any (§20.2). One row, not
+    /// a range: this answers the questions about a single row — what the mark's
+    /// tooltip says, what VoiceOver reads, whether a right-clicked address
+    /// carries a mark — where the per-range set above serves the drawing.
+    func hexBookmark(atRowContaining offset: UInt64) -> Bookmark?
     func hexSelection() -> SelectionModel
     func hexCaretNibble() -> Int
     func hexInputRegion() -> HexInputRegion
@@ -63,7 +69,7 @@ protocol HexEditorDelegate: AnyObject {
 /// so arbitrarily large files scroll without materializing their rows (§6,
 /// §13.8). Rendered from a `HexViewDataSource` and driven by a
 /// `HexEditorDelegate`.
-final class HexView: NSView {
+final class HexView: NSView, NSViewToolTipOwner {
     weak var dataSource: HexViewDataSource?
     weak var delegate: HexEditorDelegate?
 
@@ -314,6 +320,7 @@ final class HexView: NSView {
     func reloadData() {
         currentLayout = makeLayout()
         updateContentFrame()
+        refreshBookmarkTooltipRect()
         // A full redraw repaints everything, so the diff baselines catch up to
         // the current state — otherwise a later `reloadSelection` would
         // invalidate rows this redraw already made current.
@@ -607,6 +614,49 @@ final class HexView: NSView {
         onVisibleRangeChanged?(visibleByteRange())
     }
 
+    // MARK: - Bookmark tooltips (§20.2)
+
+    /// The tooltip tag covering the Offset column. Internal so a test can see
+    /// that the rect is registered at all — the hover itself cannot be driven.
+    private(set) var bookmarkTooltipTag: NSView.ToolTipTag?
+
+    /// The rect that tag covers, so an unchanged geometry re-registers nothing:
+    /// `reloadData` runs on every edit, and there is no reason to churn AppKit's
+    /// tooltip bookkeeping per typed byte.
+    private var bookmarkTooltipRect: CGRect?
+
+    /// Registers one tooltip rect over the whole Offset column rather than one
+    /// per marked row: AppKit asks the owner for the string at the hovered
+    /// point, so a single rect answers for every row and nothing has to be
+    /// re-registered when a bookmark is added, renamed or removed — only when
+    /// the column itself moves or the content grows.
+    private func refreshBookmarkTooltipRect() {
+        let layout = currentLayout
+        let column = CGRect(x: layout.leftPadding, y: 0,
+                            width: layout.offsetColumnWidth + layout.gapAfterOffset,
+                            height: max(frame.height, bounds.height))
+        guard column.width > 0, column.height > 0 else { return }
+        guard column != bookmarkTooltipRect else { return }
+        if let bookmarkTooltipTag {
+            removeToolTip(bookmarkTooltipTag)
+        }
+        bookmarkTooltipTag = addToolTip(column, owner: self, userData: nil)
+        bookmarkTooltipRect = column
+    }
+
+    /// A marked row's name under the pointer. Unmarked rows return nil, which
+    /// shows no tooltip at all — the addresses themselves need no explaining.
+    func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag,
+              point: NSPoint, userData data: UnsafeMutableRawPointer?) -> String {
+        guard let dataSource else { return "" }
+        let hoveredRow = Int(floor(point.y / currentLayout.rowHeight))
+        guard hoveredRow >= 0 else { return "" }
+        let offset = currentLayout.byteOffset(row: hoveredRow, column: 0)
+        guard offset < dataSource.scrollExtent,
+              let bookmark = dataSource.hexBookmark(atRowContaining: offset) else { return "" }
+        return bookmark.displayName
+    }
+
     // MARK: - Accessibility (§15)
 
     override func accessibilityLabel() -> String? { accessibilityTitle }
@@ -617,10 +667,11 @@ final class HexView: NSView {
         let size = dataSource.fileSize
         let start = String(selection.start, radix: 16).uppercased()
         // The bookmark mark is purely visual otherwise, so the row the caret is
-        // on says whether it is marked — the only way the mark reaches a screen
-        // reader while moving through the dump (§15, §20.4).
-        let mark = isBookmarked(rowStartingAt: BookmarkStore.row(containing: selection.start))
-            ? " Bookmarked row." : ""
+        // on says whether it is marked, and what the mark is called — the only
+        // way a bookmark reaches a screen reader while moving through the dump
+        // (§15, §20.2).
+        let mark = dataSource.hexBookmark(atRowContaining: selection.start)
+            .map { " Bookmarked row: \($0.displayName)." } ?? ""
         if selection.isEmpty {
             return "Offset 0x\(start).\(mark) File size \(size) bytes."
         }
@@ -1005,9 +1056,7 @@ final class HexView: NSView {
     /// that one row instead of reusing the drawn range's set: the right-click
     /// anchor can sit outside the dirty rows the pass is painting (§20.4).
     private func isBookmarked(rowStartingAt rowAddress: UInt64) -> Bool {
-        guard let dataSource else { return false }
-        let row = rowAddress..<(rowAddress + UInt64(HexLayout.bytesPerRow))
-        return dataSource.hexBookmarkedRows(in: row).contains(rowAddress)
+        dataSource?.hexBookmark(atRowContaining: rowAddress) != nil
     }
 
     /// The bookmark mark: a right-pointing arrow (a rectangle with a pointed

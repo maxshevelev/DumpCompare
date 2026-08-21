@@ -1557,7 +1557,8 @@ height in both, which is the whole point of it in a comparison.
   than losing the marks of a re-read. Persisting bookmarks per file is a project
   feature (§20 opening note), not a session one.
 - The mark has no text of its own, so the pane's accessibility value says whether
-  the caret's row carries one, as it says the caret's offset (§15).
+  the caret's row carries one and what it is called, as it says the caret's
+  offset (§15).
 
 20.2 The model
 
@@ -1574,18 +1575,45 @@ height in both, which is the whole point of it in a comparison.
 - One instance lives on the window's view model, reached by both panes — that is
   what makes the list shared rather than merged. The store holds no bytes and is
   AppKit-free, so its arithmetic is unit-testable in the app suite.
-- Naming a bookmark, and the list and form that manage them, are added in later
-  stages; the model above is the current core.
+- Besides the toggle the store can mark-and-name a row in one act (an
+  already-marked row keeps its one mark and takes the new name), rename a mark
+  that exists, and remove one — each reporting what it found, so a caller never
+  has to read the list first, and each firing the same change signal, so a name
+  typed in a dialog shows up without anything else repainting the row.
+- Names are stored trimmed of surrounding whitespace, and a name that is nothing
+  but whitespace is no name — so the "empty means show the address" rule cannot
+  be defeated by a space.
+- The list and the form that manage bookmarks are a later stage; the model above
+  is the current core.
 
-20.3 Marking a row
+20.3 Marking and naming a row
 
 - Edit ▸ Toggle Bookmark (⌘D) marks the active pane's caret row, unnamed.
   Pressed again on a bookmarked row it removes the mark — the command is a
   toggle, and its title says so rather than promising only to add.
-- The command is enabled only when the active pane has a file open: with nothing
-  open there is no caret row to mark.
+- Edit ▸ Name Bookmark… (⇧⌘D) names the caret's row: it marks the row first if it
+  is unmarked, and renames the mark if it is already marked. One command, because
+  "name this row" is the one thing meant either way; the ellipsis says a dialog
+  follows.
+- Both commands are enabled only when the active pane has a file open: with
+  nothing open there is no caret row to mark.
 - Because both panes read the same store, marking a row shows it at the same
   height in both panes of a comparison.
+- The offset context menu (§10.2) carries the same acts for the row that was
+  right-clicked rather than the caret's: an unmarked row is offered *Add
+  Bookmark at «address»* (no dialog) and *Add Bookmark with Name…*, a marked one
+  *Rename Bookmark at «address»…* and *Remove Bookmark*. The address in the title
+  is the ROW's, because a right-click on a byte marks that byte's row, and the
+  title is what makes that visible. Remove only ever removes: a right-click on
+  the wrong row cannot leave a new mark behind, as a second ⌘D would.
+- The name dialog never refuses a submit — any text is a name, and an empty one
+  means the bookmark shows its address. Its title says whether it is adding or
+  renaming, a rename opens with the current name selected so typing replaces it,
+  and the row's address is in the dialog's message.
+- A name has to be visible before the bookmark list exists (a later stage):
+  hovering a marked row's address shows the name as a tooltip — the address
+  itself when the bookmark is unnamed — and the pane's accessibility value reads
+  it out with the caret's offset (§15). Unmarked rows show no tooltip at all.
 
 20.4 Rendering a marked row (§6)
 
