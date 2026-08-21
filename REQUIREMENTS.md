@@ -1813,7 +1813,10 @@ window, so nothing about a bookmark lives in two places.
   that opened with a page of empty table over three bookmarks would be mostly
   nothing, and one that grew without limit would push its own buttons off the
   screen. An empty list keeps a few rows' worth of height, because its message
-  needs room to be read, and the window follows the list as rows come and go.
+  needs room to be read.
+- **The window is as tall as the form**, and follows it as rows come and go —
+  nothing pins a minimum height, and no strip of nothing is left under the list.
+  Its width is the user's to widen; the fields fill whatever it is.
 - Two columns, one row per bookmark, ordered by address: the address in the
   dump's ink-blue (§6), and the name beside it. The address is written as bare
   padded hex digits, without the `0x` the dialogs use — a whole column of
@@ -1849,6 +1852,13 @@ window, so nothing about a bookmark lives in two places.
 - **Empty state**: with no bookmarks the list says so and names the gesture that
   makes one (⌘D). It is a message over the table, not a row in it — a pseudo-row
   would answer ⌫ and Return as if it held a bookmark.
+- A **name being edited** goes back to its resting colour, because the field
+  editor draws its own white background over the row: a selected row's
+  white-on-selection text would be white on white, and the name would vanish as
+  it was typed.
+- **Right-clicking a row** offers *Delete Bookmark*, acting on the row that was
+  clicked as every context menu in the app does (§10.2). `⌫` does the same, but
+  nothing on screen says so.
 - On a **selected** row every cell reads as text on a selection, the address and
   the row preview included: the address is drawn in the dump's ink blue and the
   preview in a dim grey, and both are close to unreadable on the selection fill.

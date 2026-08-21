@@ -298,6 +298,13 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
         table.setAccessibilityLabel("Bookmarks")
         table.onReturn = { [weak self] in self?.goToSelectedBookmark() }
         table.onDelete = { [weak self] in self?.removeSelectedBookmark() }
+        // A right-click offers the one thing the list does that a key does not
+        // announce: ⌫ removes a bookmark, but nothing on screen says so (§20.5).
+        let menu = NSMenu()
+        let remove = menu.addItem(withTitle: "Delete Bookmark",
+                                  action: #selector(deleteClickedBookmark), keyEquivalent: "")
+        remove.target = self
+        table.menu = menu
         bookmarkTable = table
 
         let scrollView = NSScrollView()
@@ -326,6 +333,10 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
 
     override func viewDidAppear() {
         super.viewDidAppear()
+        // The window is created after `loadView`, so this is the first chance to
+        // size it to the form: the list is as tall as its rows (§20.5), and the
+        // window has to be as tall as the list, not the other way round.
+        fitWindowToContent()
         switch focus {
         case .offsetField:
             view.window?.makeFirstResponder(offsetCombo)
@@ -371,9 +382,18 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
         let rows = min(max(bookmarks.count, Self.minVisibleRows), Self.maxVisibleRows)
         // Two points for the bezel the rows sit inside.
         tableHeight.constant = CGFloat(rows) * rowStep + 2
+        fitWindowToContent()
+    }
+
+    /// Makes the window exactly as tall as the form wants to be. The width is
+    /// left alone: it is the user's to widen, and the fields fill whatever it is.
+    private func fitWindowToContent() {
         guard let window = view.window else { return }
         view.layoutSubtreeIfNeeded()
-        window.setContentSize(view.fittingSize)
+        let fitting = view.fittingSize
+        guard fitting.height > 0 else { return }
+        window.setContentSize(NSSize(width: max(window.contentLayoutRect.width, fitting.width),
+                                     height: fitting.height))
     }
 
     private func refreshHistoryItems() {
@@ -482,7 +502,18 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
     /// a run of them can be cleared without reaching for the mouse between
     /// presses; removing the last row selects the one now at the end.
     func removeSelectedBookmark() {
-        let row = bookmarkTable.selectedRow
+        removeBookmark(atRow: bookmarkTable.selectedRow)
+    }
+
+    /// The list's context menu > Delete Bookmark: the row that was right-clicked
+    /// rather than the selected one, the way every context menu in the app acts
+    /// on what was clicked (§10.2).
+    @objc func deleteClickedBookmark() {
+        let clicked = bookmarkTable.clickedRow
+        removeBookmark(atRow: clicked >= 0 ? clicked : bookmarkTable.selectedRow)
+    }
+
+    private func removeBookmark(atRow row: Int) {
         guard row >= 0, row < bookmarks.count else { return }
         store.remove(rowContaining: bookmarks[row].row)
         reloadBookmarks()
@@ -698,6 +729,24 @@ private final class BookmarkTableView: NSTableView {
 
 /// One cell of the list: a label that fills the cell, editable in the Name
 /// column so a double click renames the bookmark where it is listed (§20.5).
+/// The label a cell draws its value in: an editable one reports when it takes
+/// and gives up the keyboard, so the cell can colour it for the field editor's
+/// white background rather than for the row it sits on.
+private final class EditableLabel: NSTextField {
+    var onEditingChange: ((Bool) -> Void)?
+
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted { onEditingChange?(true) }
+        return accepted
+    }
+
+    override func textDidEndEditing(_ notification: Notification) {
+        super.textDidEndEditing(notification)
+        onEditingChange?(false)
+    }
+}
+
 private final class BookmarkCellView: NSTableCellView {
     /// The label's inset from each side of the cell. Read by the address
     /// column's sizing, so the room a value gets and the width it is measured at
@@ -724,8 +773,16 @@ private final class BookmarkCellView: NSTableCellView {
         didSet { applyBackgroundStyle() }
     }
 
+    /// True while the cell's name is being edited. The field editor draws its own
+    /// white background over the row, so the text has to go back to its resting
+    /// colour there — a selected row's white-on-selection text would be white on
+    /// white, and the name would vanish as it was typed (§20.5).
+    private var isEditing = false {
+        didSet { applyBackgroundStyle() }
+    }
+
     private func applyBackgroundStyle() {
-        let selected = backgroundStyle == .emphasized
+        let selected = backgroundStyle == .emphasized && !isEditing
         textField?.textColor = selected ? .alternateSelectedControlTextColor : restingTextColor
         guard let placeholder = restingPlaceholder else {
             textField?.placeholderAttributedString = nil
@@ -748,7 +805,10 @@ private final class BookmarkCellView: NSTableCellView {
         super.init(frame: .zero)
         self.identifier = identifier
 
-        let field = NSTextField(labelWithString: "")
+        let field = EditableLabel(labelWithString: "")
+        field.onEditingChange = { [weak self] editing in
+            self?.isEditing = editing
+        }
         field.font = .systemFont(ofSize: 12)
         field.usesSingleLineMode = true
         field.lineBreakMode = .byTruncatingTail

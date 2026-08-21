@@ -487,6 +487,80 @@ final class GoToBookmarksTests: XCTestCase {
                        "deselected, it goes back to the dump's ink")
     }
 
+    /// The window is as tall as the form wants to be — the list sizes itself to
+    /// its rows (§20.5), and the window has to follow, not the other way round.
+    func testTheWindowIsAsTallAsTheForm() throws {
+        let (form, store, _, _) = makeForm(rows: [0x00: "", 0x10: "", 0x20: "", 0x30: ""])
+        let window = try XCTUnwrap(form.view.window)
+        form.viewDidAppear()
+
+        XCTAssertEqual(window.contentLayoutRect.height, form.view.fittingSize.height,
+                       accuracy: 1, "no strip of nothing under the form")
+
+        // And it follows the list as rows come and go.
+        let before = window.contentLayoutRect.height
+        for row in stride(from: UInt64(0x100), to: 0x400, by: 0x10) {
+            store.add(rowContaining: row)
+        }
+        form.reloadBookmarks()
+        XCTAssertGreaterThan(window.contentLayoutRect.height, before,
+                             "more rows, a taller window")
+    }
+
+    /// A name being edited is drawn on the field editor's own white background,
+    /// so it goes back to its resting colour there: a selected row's
+    /// white-on-selection text would be white on white, and the name would
+    /// vanish as it was typed.
+    func testANameBeingEditedIsNotWhiteOnWhite() throws {
+        let (form, _, _, _) = makeForm(rows: [0x10: "EC table"])
+        let window = try XCTUnwrap(form.view.window)
+        let cell = try XCTUnwrap(form.bookmarkTable.view(atColumn: form.nameColumnIndex, row: 0,
+                                                         makeIfNecessary: true) as? NSTableCellView)
+        let field = try XCTUnwrap(cell.textField)
+        cell.backgroundStyle = .emphasized
+        XCTAssertEqual(field.textColor, .alternateSelectedControlTextColor,
+                       "a selected row's name reads as text on the selection")
+
+        window.makeFirstResponder(field)
+        XCTAssertEqual(field.textColor, .labelColor,
+                       "being edited, it is text on the editor's white instead")
+
+        window.makeFirstResponder(form.bookmarkTable)
+        XCTAssertEqual(field.textColor, .alternateSelectedControlTextColor,
+                       "and once the edit ends it belongs to the row again")
+    }
+
+    /// The list's right-click menu removes a bookmark: ⌫ does it too, but nothing
+    /// on screen says so (§20.5).
+    func testTheListsContextMenuDeletesABookmark() throws {
+        let (form, store, jumps, closes) = makeForm(rows: [0x10: "", 0x20: "", 0x30: ""])
+        let menu = try XCTUnwrap(form.bookmarkTable.menu, "the list has a context menu")
+        let item = try XCTUnwrap(menu.items.first)
+        XCTAssertEqual(item.title, "Delete Bookmark")
+        XCTAssertEqual(item.action, #selector(GoToBookmarksController.deleteClickedBookmark))
+        XCTAssertTrue(item.target === form)
+
+        // Nothing was right-clicked in a test, so the selected row stands in for
+        // the clicked one — the same fallback a real click never needs.
+        form.bookmarkTable.selectRowIndexes([1], byExtendingSelection: false)
+        form.deleteClickedBookmark()
+
+        XCTAssertEqual(store.bookmarks.map(\.row), [0x10, 0x30])
+        XCTAssertEqual(form.bookmarks.map(\.row), [0x10, 0x30], "the list followed")
+        XCTAssertTrue(jumps().isEmpty, "deleting is not going")
+        XCTAssertEqual(closes(), 0, "and the form stays up")
+    }
+
+    /// With nothing clicked and nothing selected it removes nothing.
+    func testTheContextMenuRemovesNothingWithNoRow() throws {
+        let (form, store, _, _) = makeForm(rows: [0x10: ""])
+        form.bookmarkTable.deselectAll(nil)
+
+        form.deleteClickedBookmark()
+
+        XCTAssertEqual(store.bookmarks.count, 1)
+    }
+
     // MARK: - Escape is two-level (§10.1)
 
     /// Editing a name and pressing Escape must not throw the window away.
