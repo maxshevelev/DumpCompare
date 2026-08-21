@@ -642,8 +642,9 @@ otherwise be typing again.
 - Offsets are zero-based.
 - Input parsing must be case-insensitive for hex.
 - The field is validated as it is typed in, the way the Select Block sheet's
-  fields are (§10.2): the message under it names what is wrong and clears the
-  moment the input becomes valid, and the **Go To** button is enabled only for an
+  fields are (§10.2): the message under it — starting at the field's own left
+  edge, not the dialog's, because it belongs to that field — names what is wrong
+  and clears the moment the input becomes valid, and the **Go To** button is enabled only for an
   offset that parses — so the form says whether it can act on the field before
   any key is pressed. The form opens with the button off and no message: the "0x"
   prefix is not an offset yet, and there is nothing to complain about until

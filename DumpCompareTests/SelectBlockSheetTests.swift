@@ -17,6 +17,20 @@ final class SelectBlockSheetTests: XCTestCase {
         return (sheet, { captured })
     }
 
+    /// The validation message lines up with the fields it is about, not with the
+    /// sheet's left edge (§10).
+    func testTheValidationMessageLinesUpWithTheFields() throws {
+        let (sheet, _) = makeSheet()
+        sheet.startField.stringValue = "0xZZ"
+        _ = sheet.validate()
+        sheet.showError("Invalid start offset.")
+        sheet.view.layoutSubtreeIfNeeded()
+
+        let message = sheet.view.convert(sheet.errorLabel.bounds, from: sheet.errorLabel)
+        let field = sheet.view.convert(sheet.startField.bounds, from: sheet.startField)
+        XCTAssertEqual(message.minX, field.minX, accuracy: 3)
+    }
+
     // MARK: - Default state
 
     func testDefaultStateEndActiveLengthDisabled() {

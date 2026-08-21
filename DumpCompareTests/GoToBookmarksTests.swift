@@ -499,6 +499,24 @@ final class GoToBookmarksTests: XCTestCase {
                           "the message sits under its field, not adrift between the two")
     }
 
+    /// The validation message lines up with the field it is about, not with the
+    /// form's left edge — a line starting under the "Offset:" label reads as a
+    /// line of the form (§10).
+    func testTheValidationMessageLinesUpWithTheField() throws {
+        let (form, _, _, _) = makeForm()
+        form.offsetCombo.stringValue = "0xZZ"
+        form.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification,
+                                               object: form.offsetCombo))
+        form.view.layoutSubtreeIfNeeded()
+
+        let message = form.view.convert(form.errorLabel.bounds, from: form.errorLabel)
+        let field = form.view.convert(form.offsetCombo.bounds, from: form.offsetCombo)
+        // Alignment rects are what constraints line up; a bordered field's frame
+        // is a couple of points wider than its alignment rect (the focus ring),
+        // so a small tolerance is the correct assertion here.
+        XCTAssertEqual(message.minX, field.minX, accuracy: 3)
+    }
+
     // MARK: - The list's height (§20.5)
 
     /// The list is as tall as it has rows: a form that opened with a page of
@@ -654,8 +672,10 @@ final class GoToBookmarksTests: XCTestCase {
         _ = form.view.performKeyEquivalent(with: try keyDown("\u{1B}", keyCode: 53))
 
         XCTAssertEqual(closes(), 1)
-        XCTAssertTrue(jumps().isEmpty, "cancelling goes nowhere")
+        XCTAssertTrue(jumps().isEmpty, "leaving the form goes nowhere")
         XCTAssertEqual(form.cancelButton.keyEquivalent, "\u{1B}")
+        XCTAssertEqual(form.cancelButton.title, "Close",
+                       "nothing here is undone by leaving, so the button says Close")
     }
 
     // MARK: - Recently typed offsets

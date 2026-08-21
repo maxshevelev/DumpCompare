@@ -85,10 +85,20 @@ class SheetViewController: NSViewController {
         contentStack.spacing = 8
         root.addArrangedSubview(contentStack)
 
+        // Indented to the fields' own left edge, not the sheet's: the message is
+        // about a field, and a line starting under the labels reads as a line of
+        // the sheet (§10).
         errorLabel = NSTextField(labelWithString: "")
         errorLabel.font = .systemFont(ofSize: 11)
         errorLabel.textColor = .systemRed
-        root.addArrangedSubview(errorLabel)
+        let errorIndent = NSView()
+        errorIndent.translatesAutoresizingMaskIntoConstraints = false
+        errorIndent.widthAnchor.constraint(equalToConstant: Self.fieldLabelWidth).isActive = true
+        let errorRow = NSStackView(views: [errorIndent, errorLabel])
+        errorRow.orientation = .horizontal
+        errorRow.alignment = .centerY
+        errorRow.spacing = Self.fieldRowSpacing
+        root.addArrangedSubview(errorRow)
 
         buttonRow = NSStackView()
         buttonRow.orientation = .horizontal
@@ -201,6 +211,12 @@ class SheetViewController: NSViewController {
         }
     }
 
+    /// The width every row's label column gets, and the gap to the field beside
+    /// it. Shared with the error message, which is indented by exactly this much
+    /// so it lines up with the fields it is about.
+    static let fieldLabelWidth: CGFloat = 110
+    static let fieldRowSpacing: CGFloat = 8
+
     /// Builds a label + text field row inside `contentStack` and returns the field.
     func addFieldRow(label text: String, initial: String) -> NSTextField {
         let label = NSTextField(labelWithString: text)
@@ -208,7 +224,7 @@ class SheetViewController: NSViewController {
         label.textColor = .secondaryLabelColor
         label.alignment = .right
         label.translatesAutoresizingMaskIntoConstraints = false
-        label.widthAnchor.constraint(equalToConstant: 110).isActive = true
+        label.widthAnchor.constraint(equalToConstant: Self.fieldLabelWidth).isActive = true
 
         let field = HexInputField(string: initial)
         field.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
@@ -225,7 +241,7 @@ class SheetViewController: NSViewController {
         let row = NSStackView()
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 8
+        row.spacing = Self.fieldRowSpacing
         row.addArrangedSubview(label)
         row.addArrangedSubview(field)
         contentStack.addArrangedSubview(row)
@@ -325,7 +341,7 @@ final class SelectBlockSheetController: SheetViewController {
         let radio = NSButton(radioButtonWithTitle: title, target: self, action: action)
         radio.font = .systemFont(ofSize: 12)
         radio.translatesAutoresizingMaskIntoConstraints = false
-        radio.widthAnchor.constraint(equalToConstant: 110).isActive = true
+        radio.widthAnchor.constraint(equalToConstant: SheetViewController.fieldLabelWidth).isActive = true
 
         let field = HexInputField(string: "0x")
         field.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
@@ -341,7 +357,7 @@ final class SelectBlockSheetController: SheetViewController {
         let row = NSStackView()
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 8
+        row.spacing = SheetViewController.fieldRowSpacing
         row.addArrangedSubview(radio)
         row.addArrangedSubview(field)
         contentStack.addArrangedSubview(row)

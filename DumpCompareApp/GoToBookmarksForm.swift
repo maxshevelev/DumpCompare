@@ -88,6 +88,9 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
     /// The "Bookmarks" title over the list. Held so the layout can pull it down
     /// onto the list it names.
     private var listLabel: NSTextField!
+    /// The "Offset:" label. Held so the validation message can be indented to
+    /// the field's left edge rather than the form's (§10).
+    private var offsetLabel: NSTextField!
 
     /// The list's height, re-set from the number of bookmarks (§20.5).
     private var tableHeight: NSLayoutConstraint!
@@ -137,11 +140,23 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
 
         // Always in the layout, empty when there is nothing wrong: a label that
         // appeared and disappeared would move the list up and down under the
-        // pointer as the user types.
+        // pointer as the user types. Indented to the field's own left edge, so it
+        // reads as that field's message rather than as a line of the form (§10).
         errorLabel = NSTextField(labelWithString: "")
         errorLabel.font = .systemFont(ofSize: 11)
         errorLabel.textColor = .systemRed
-        root.addArrangedSubview(errorLabel)
+        // Its own row, so it can start at the field's left edge rather than the
+        // form's: the message belongs to the field above it.
+        errorLabel.translatesAutoresizingMaskIntoConstraints = false
+        let errorRow = NSView()
+        errorRow.translatesAutoresizingMaskIntoConstraints = false
+        errorRow.addSubview(errorLabel)
+        NSLayoutConstraint.activate([
+            errorLabel.topAnchor.constraint(equalTo: errorRow.topAnchor),
+            errorLabel.bottomAnchor.constraint(equalTo: errorRow.bottomAnchor),
+            errorLabel.trailingAnchor.constraint(lessThanOrEqualTo: errorRow.trailingAnchor),
+        ])
+        root.addArrangedSubview(errorRow)
 
         listLabel = NSTextField(labelWithString: "Bookmarks")
         listLabel.font = .systemFont(ofSize: 12, weight: .semibold)
@@ -166,7 +181,7 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
         // Under the field, but not against it: at 2 pt the message touched the
         // field's focus ring, which is drawn outside its frame.
         root.setCustomSpacing(5, after: offsetRow)
-        root.setCustomSpacing(6, after: errorLabel)
+        root.setCustomSpacing(6, after: errorRow)
         root.setCustomSpacing(4, after: listLabel)
 
         // A root that can claim Escape before the Cancel button's key
@@ -198,6 +213,11 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
             tableHeight,
             buttonRow.widthAnchor.constraint(equalTo: root.widthAnchor,
                                              constant: -(root.edgeInsets.left + root.edgeInsets.right)),
+            errorRow.widthAnchor.constraint(equalTo: root.widthAnchor,
+                                            constant: -(root.edgeInsets.left + root.edgeInsets.right)),
+            // Activated here, where the message and the field finally share an
+            // ancestor: the message starts exactly where the field does.
+            errorLabel.leadingAnchor.constraint(equalTo: offsetCombo.leadingAnchor),
 
             emptyLabel.centerXAnchor.constraint(equalTo: scrollView.centerXAnchor),
             emptyLabel.centerYAnchor.constraint(equalTo: scrollView.centerYAnchor),
@@ -220,11 +240,16 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
     /// "Offset: [ 0x… ▾ ] ( Go To )" — the fast path unchanged: ⌘G, type,
     /// Return. The button names the action rather than leaving Return to be
     /// guessed at, and the dropdown carries the addresses already visited.
+    /// The gap between a row's label and its field — and between the message's
+    /// indent and the message.
+    static let fieldRowSpacing: CGFloat = 8
+
     private func makeOffsetRow() -> NSView {
         let label = NSTextField(labelWithString: "Offset:")
         label.font = .systemFont(ofSize: 12)
         label.textColor = .secondaryLabelColor
         label.translatesAutoresizingMaskIntoConstraints = false
+        offsetLabel = label
 
         let combo = OffsetComboBox()
         combo.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
@@ -255,7 +280,7 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
         let row = NSStackView(views: [label, combo, go])
         row.orientation = .horizontal
         row.alignment = .centerY
-        row.spacing = 8
+        row.spacing = Self.fieldRowSpacing
         row.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             combo.widthAnchor.constraint(greaterThanOrEqualToConstant: 260),
@@ -329,7 +354,10 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelPressed))
+        // Close, not Cancel: nothing in this form is undone by leaving it. A
+        // bookmark edited or removed from the list is already edited or removed,
+        // and a jump has closed the window by then anyway.
+        let cancel = NSButton(title: "Close", target: self, action: #selector(cancelPressed))
         cancel.keyEquivalent = "\u{1B}"  // Esc — at rest it closes the form.
         cancelButton = cancel
 
