@@ -598,11 +598,13 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
             // The dump's own address shape and colour (§6), so a row in the list
             // reads as the row it points at.
             cell.textField?.font = AppearanceSettings.font(size: 12)
-            cell.restingTextColor = HexTheme.inkBlue
-            // Bare digits, no "0x": a whole column of addresses in a window about
-            // addresses does not need each one announcing that it is hex, and the
-            // prefix was two characters of column width per row.
-            cell.textField?.stringValue = Self.addressText(bookmark.row)
+            // The bookmark colour, not the dump's address ink: in a list *of*
+            // bookmarks the address is what the purple mark in the gutter and the
+            // purple arrow in the minimap point at, and one colour ties the three
+            // together (§20.4). Bare digits, no "0x" — a whole column of
+            // addresses does not need each one announcing that it is hex.
+            cell.restingTextColor = HexTheme.bookmarkColor
+            cell.textField?.stringValue = Bookmark.bareAddressLabel(bookmark.row)
             return cell
         case ColumnID.name:
             let cell = (tableView.makeView(withIdentifier: ColumnID.name, owner: self) as? BookmarkCellView)
@@ -621,12 +623,6 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
     }
 
     // MARK: - What a row says
-
-    /// A bookmarked row's address in the list: the padded upper-case hex of
-    /// `Bookmark.addressLabel` without its "0x" (§20.5).
-    static func addressText(_ row: UInt64) -> String {
-        String(row, radix: 16, uppercase: true).leftPadded(to: 8, with: "0")
-    }
 
     /// What the list shows where an unnamed bookmark's name would be: the row's
     /// bytes in the dump's own hex, or a plain sentence when the row is past the

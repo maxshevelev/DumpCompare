@@ -538,8 +538,8 @@ final class GoToBookmarksTests: XCTestCase {
         let nameCell = try XCTUnwrap(form.bookmarkTable.view(atColumn: form.nameColumnIndex,
                                                             row: 0, makeIfNecessary: true) as? NSTableCellView)
 
-        XCTAssertEqual(offsetCell.textField?.textColor, HexTheme.inkBlue,
-                       "on paper the address is the dump's own ink (§6)")
+        XCTAssertEqual(offsetCell.textField?.textColor, HexTheme.bookmarkColor,
+                       "on paper the address wears the bookmark colour (§20.4)")
         let restingPlaceholder = try XCTUnwrap(nameCell.textField?.placeholderAttributedString)
         XCTAssertEqual(restingPlaceholder.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor,
                        NSColor.secondaryLabelColor)
@@ -561,8 +561,8 @@ final class GoToBookmarksTests: XCTestCase {
                        "and it is the same preview, only recoloured")
 
         offsetCell.backgroundStyle = .normal
-        XCTAssertEqual(offsetCell.textField?.textColor, HexTheme.inkBlue,
-                       "deselected, it goes back to the dump's ink")
+        XCTAssertEqual(offsetCell.textField?.textColor, HexTheme.bookmarkColor,
+                       "deselected, it goes back to the bookmark colour")
     }
 
     /// The window is as tall as the form wants to be — the list sizes itself to

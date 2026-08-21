@@ -23,7 +23,15 @@ struct Bookmark: Equatable {
     /// A row address as the dialogs write one: `0x` and at least eight upper-case
     /// hex digits (§10).
     static func addressLabel(_ row: UInt64) -> String {
-        "0x" + String(row, radix: 16, uppercase: true).leftPadded(to: 8, with: "0")
+        "0x" + bareAddressLabel(row)
+    }
+
+    /// The same address without the `0x` — how the bookmark list writes it and how
+    /// hovering a mark reads it out (§20.5). Where every value on show is an
+    /// address, the prefix is two characters saying what the surroundings already
+    /// say.
+    static func bareAddressLabel(_ row: UInt64) -> String {
+        String(row, radix: 16, uppercase: true).leftPadded(to: 8, with: "0")
     }
 
     /// A name with its surrounding whitespace removed — the form every path

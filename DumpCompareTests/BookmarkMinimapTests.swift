@@ -252,11 +252,11 @@ final class BookmarkMinimapTests: XCTestCase {
         let box = try XCTUnwrap(panel.bookmarkMarkRect(row: 0x400, forMapAt: 0))
 
         XCTAssertEqual(panel.view(panel, stringForToolTip: 0, point: centre(of: box), userData: nil),
-                       "0x00000400", "an unnamed bookmark is its address")
+                       "00000400", "an unnamed bookmark is its address")
 
         store.rename(rowContaining: 0x400, to: "EC table")
         XCTAssertEqual(panel.view(panel, stringForToolTip: 0, point: centre(of: box), userData: nil),
-                       "0x00000400: EC table",
+                       "00000400: EC table",
                        "a named one says offset: name")
     }
 
@@ -284,7 +284,7 @@ final class BookmarkMinimapTests: XCTestCase {
         let box = try XCTUnwrap(panel.bookmarkMarkRect(row: 0x800, forMapAt: 1))
 
         XCTAssertEqual(panel.view(panel, stringForToolTip: 0, point: centre(of: box), userData: nil),
-                       "0x00000800: NVRAM")
+                       "00000800: NVRAM")
     }
 
     private func centre(of rect: NSRect) -> NSPoint {

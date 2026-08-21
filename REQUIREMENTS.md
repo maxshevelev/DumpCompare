@@ -1411,7 +1411,7 @@ without opening anything.
   they can share a margin and the viewport is the one the eye should find first,
   and colour is what says which is which.
 - **Hovering a mark names it**: `offset: name`, or the offset alone when the
-  bookmark has no name. A mark carries no text of its own, so this is where its
+  bookmark has no name — bare digits, the way the list writes an address (§20.5). A mark carries no text of its own, so this is where its
   name shows on the map — and the address belongs here even for a named bookmark,
   because on a map the arrow's position only approximates it (a row of the
   overview is kilobytes). Hovering anywhere else on the panel shows nothing.
@@ -1818,11 +1818,14 @@ window, so nothing about a bookmark lives in two places.
   nothing pins a minimum height, and no strip of nothing is left under the list.
   Its width is the user's to widen; the fields fill whatever it is.
 - Two columns, one row per bookmark, ordered by address: the address in the
-  dump's ink-blue (§6), and the name beside it. The address is written as bare
-  padded hex digits, without the `0x` the dialogs use — a whole column of
-  addresses in a window about addresses does not need each one announcing that it
-  is hex, and the column is exactly as wide as eight digits in the dump's font,
-  so everything else on the row belongs to the name.
+  **bookmark colour** (§20.4), and the name beside it. The bookmark colour rather
+  than the dump's address ink, because in a list *of* bookmarks the address is
+  what the purple mark in the Offset column and the purple arrow in the minimap
+  point at — one colour ties the three together. It is written as bare padded hex
+  digits, without the `0x` the dialogs use: a whole column of addresses in a
+  window about addresses does not need each one announcing that it is hex. The
+  column is exactly as wide as eight digits in the dump's font, so everything else
+  on the row belongs to the name.
 - **An unnamed bookmark is described by what is at it**: where its name would be,
   the list shows the row's bytes as the dump writes them, read from the ACTIVE
   pane — in a comparison the two files hold different bytes at the same address,

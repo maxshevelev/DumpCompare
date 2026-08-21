@@ -720,7 +720,7 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     }
 
     /// What hovering a mark says: `offset: name`, or just the offset when the
-    /// bookmark has no name. A mark carries no text, so this is the only place a
+    /// bookmark has no name — bare digits, as the list writes them (§20.5). A mark carries no text, so this is the only place a
     /// name shows on the map — and the address is worth saying even for a named
     /// bookmark, because on a map the address is the one thing the arrow's
     /// position only approximates (§19.4.3). Anywhere else on the panel answers
@@ -728,7 +728,7 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag,
               point: NSPoint, userData data: UnsafeMutableRawPointer?) -> String {
         guard let bookmark = bookmark(atMarkPoint: point) else { return "" }
-        let address = Bookmark.addressLabel(bookmark.row)
+        let address = Bookmark.bareAddressLabel(bookmark.row)
         return bookmark.name.isEmpty ? address : "\(address): \(bookmark.name)"
     }
 
