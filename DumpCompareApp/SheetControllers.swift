@@ -289,13 +289,14 @@ final class SelectBlockSheetController: SheetViewController {
         self.fileSize = fileSize
         self.presetStart = presetStart
         self.onSelect = onSelect
-        let message: String
-        if let presetStart {
-            message = "Select a block starting at \(String(format: "0x%X", presetStart)) by its length."
-        } else {
-            message = "Select a byte range by absolute offsets. End is the block's last byte."
-        }
-        super.init(title: "Select Block", message: message)
+        // No message when the start is already filled in ("Select block from
+        // here", §10.2): the Start field shows that address, the Length option is
+        // already the active one, and a sentence saying both was the sheet
+        // narrating its own fields back at the user.
+        super.init(title: "Select Block",
+                   message: presetStart == nil
+                       ? "Select a byte range by absolute offsets. End is the block's last byte."
+                       : nil)
     }
 
     required init?(coder: NSCoder) {

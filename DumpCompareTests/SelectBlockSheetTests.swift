@@ -17,6 +17,24 @@ final class SelectBlockSheetTests: XCTestCase {
         return (sheet, { captured })
     }
 
+    /// Opened from the offset context menu the sheet says nothing above its
+    /// fields: the Start field already shows the address that was right-clicked
+    /// and Length is already the active option, so a sentence saying both would be
+    /// the sheet narrating its own fields (§10.2).
+    func testThePresetSheetHasNoMessageAboveItsFields() throws {
+        let preset = SelectBlockSheetController(fileSize: 0x1000, presetStart: 0x24) { _ in }
+        preset.loadViewIfNeeded()
+        XCTAssertNil(preset.messageText)
+        XCTAssertEqual(preset.startField.stringValue, "0x24", "the address is in the field instead")
+
+        let plain = SelectBlockSheetController(fileSize: 0x1000) { _ in }
+        plain.loadViewIfNeeded()
+        XCTAssertNotNil(plain.messageText,
+                        "opened from the menu bar it still says what End means")
+        XCTAssertLessThan(preset.view.fittingSize.height, plain.view.fittingSize.height,
+                          "and the sheet is shorter for the line it does not show")
+    }
+
     /// A sheet is as tall as its own rows: a floor of 200 pt left the one-field
     /// sheets with a hand's width of nothing between the field and the buttons,
     /// because the slack had to go somewhere (§10).

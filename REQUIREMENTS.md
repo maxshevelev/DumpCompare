@@ -704,6 +704,10 @@ Rules:
   - length validity.
 - For start/end mode:
   - if start > end, show error or optionally swap after confirmation; default: error.
+- Opened from the offset context menu ("Select block from here", §10.2) the sheet
+  carries no message line: the Start field already shows the address that was
+  right-clicked and Length is already the active option, so a sentence saying
+  both would be the sheet narrating its own fields.
 - Selection must be applied to the active pane and synchronized to the other pane where possible.
 - The status bar must show selection length and selected range.
 
