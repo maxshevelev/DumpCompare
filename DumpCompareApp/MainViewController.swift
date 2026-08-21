@@ -2466,22 +2466,29 @@ final class MainViewController: NSViewController {
         )
     }
 
-    /// A double click on an address marks that row and names it (§20.3) — the
-    /// mouse gesture for ⌘D, except that it only ever marks. A double click that
-    /// also unmarked would make the gesture destructive: the pointer covers the
-    /// mark it is aimed at, and a click landing one row off would silently take
-    /// an existing bookmark away. An already-marked row is left exactly as it is.
-    func addBookmarkByDoubleClick(in pane: PaneViewModel, rowContaining offset: UInt64) {
-        guard pane.isOpen,
-              windowModel.bookmarkStore.bookmark(atRowContaining: offset) == nil else { return }
-        markAndNameBookmark(in: pane, rowContaining: offset)
+    /// A double click on an address opens the edit popover on that row: it marks
+    /// the row first when it carries no mark, so the gesture is ⌘D's with the
+    /// mouse, and it edits the mark that is there otherwise — a double click on
+    /// a mark is how a mark is opened everywhere else in the app (§20.5's list
+    /// does the same on a name).
+    ///
+    /// What it never does is unmark: the pointer covers the mark it is aimed at,
+    /// so a toggle here would silently take an existing bookmark away on a click
+    /// landing a row off.
+    func handleOffsetDoubleClick(in pane: PaneViewModel, rowContaining offset: UInt64) {
+        guard pane.isOpen else { return }
+        if windowModel.bookmarkStore.bookmark(atRowContaining: offset) != nil {
+            editBookmarkInPane(pane, rowContaining: offset)
+        } else {
+            markAndNameBookmark(in: pane, rowContaining: offset)
+        }
     }
 
-    /// Wires a pane view's Offset-column double click to the marking gesture, so
+    /// Wires a pane view's Offset-column double click to the bookmark gesture, so
     /// it resolves THIS pane even when it is not the active one (§20.3).
     func wireBookmarkDoubleClick(_ paneView: FilePaneView, for pane: PaneViewModel) {
         paneView.onOffsetDoubleClick = { [weak self] offset in
-            self?.addBookmarkByDoubleClick(in: pane, rowContaining: offset)
+            self?.handleOffsetDoubleClick(in: pane, rowContaining: offset)
         }
     }
 

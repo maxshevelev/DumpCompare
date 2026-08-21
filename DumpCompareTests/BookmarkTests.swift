@@ -737,6 +737,24 @@ final class BookmarkTests: XCTestCase {
         XCTAssertEqual(beeps, 1, "a valid Return is silent")
     }
 
+    /// Return saves outright, on the row the address field names — rounded down
+    /// to the row it is in, which is what a bookmark marks (§20.1). ⌘D, Return
+    /// stays two keystrokes.
+    func testReturnSavesTheRowTheAddressIsIn() throws {
+        var events: [String] = []
+        let controller = BookmarkEditPopoverController(
+            row: 0x10, existingName: nil,
+            onCommit: { events.append("commit:\($0):\($1)") }, onCancel: {})
+        controller.loadViewIfNeeded()
+        controller.offsetField.stringValue = "0x3333"
+
+        _ = controller.control(controller.nameField, textView: NSTextView(),
+                               doCommandBy: #selector(NSResponder.insertNewline(_:)))
+
+        XCTAssertEqual(events, ["commit:13104:"],
+                       "0x3333 is in the row at 0x3330 — 13104")
+    }
+
     /// One row holds one bookmark (§20.1), so an address another mark already
     /// holds is as invalid as a typo — and the mark's own row always is valid.
     func testAnOffsetAnotherBookmarkHoldsIsRefused() throws {
@@ -1097,7 +1115,7 @@ final class BookmarkTests: XCTestCase {
         let requests = captureEditing(controller)
         let pane = controller.windowModel.pane1
 
-        controller.addBookmarkByDoubleClick(in: pane, rowContaining: 0x2A)
+        controller.handleOffsetDoubleClick(in: pane, rowContaining: 0x2A)
         XCTAssertEqual(store.bookmarks.map(\.row), [0x20], "the clicked row is marked")
         let request = try XCTUnwrap(requests().first, "and named in the same popover as ⌘D's")
         XCTAssertEqual(request.row, 0x20)
@@ -1106,20 +1124,29 @@ final class BookmarkTests: XCTestCase {
         XCTAssertEqual(store.bookmarks, [Bookmark(row: 0x20, name: "vendor block")])
     }
 
-    /// A double click never unmarks: the pointer covers the mark it is aimed at,
-    /// so a toggle here would take an existing bookmark away on a near miss. The
-    /// row is left exactly as it was, name and all.
-    func testDoubleClickingAMarkedRowLeavesItAlone() throws {
+    /// A double click ON a mark opens it for editing — the same popover ⇧⌘D
+    /// opens, with the current name — and never unmarks: the pointer covers the
+    /// mark it is aimed at, so a toggle here would take an existing bookmark away
+    /// on a near miss.
+    func testDoubleClickingAMarkedRowOpensItForEditing() throws {
         let (controller, close) = try makeControllerWithFile(bytes: 64)
         defer { close() }
         let store = controller.windowModel.bookmarkStore
         let requests = captureEditing(controller)
         store.add(rowContaining: 0x20, name: "ME region")
 
-        controller.addBookmarkByDoubleClick(in: controller.windowModel.pane1, rowContaining: 0x2A)
+        controller.handleOffsetDoubleClick(in: controller.windowModel.pane1, rowContaining: 0x2A)
+
         XCTAssertEqual(store.bookmarks, [Bookmark(row: 0x20, name: "ME region")],
-                       "the mark and its name survive")
-        XCTAssertTrue(requests().isEmpty, "and nothing is asked")
+                       "the mark and its name survive the click itself")
+        let request = try XCTUnwrap(requests().first, "the mark opens for editing")
+        XCTAssertEqual(request.row, 0x20)
+        XCTAssertEqual(request.existingName, "ME region",
+                       "an existing mark is edited, not re-made — Esc keeps it")
+
+        request.commit(0x30, "ME region")
+        XCTAssertEqual(store.bookmarks, [Bookmark(row: 0x30, name: "ME region")],
+                       "and the popover can move it, as ⇧⌘D's can")
     }
 
     /// The gesture belongs to the Offset column: a double click on a byte, or on

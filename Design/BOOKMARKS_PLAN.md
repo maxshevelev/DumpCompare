@@ -429,6 +429,21 @@ which is the keyboard's version of dragging it, and the name comes along.
   arrives selected — which AppKit does for a plain field on focus, so the
   explicit `selectText` turned out to be dead code and went; the test pins the
   behaviour, not the call.
+- The typed address is rounded down to its row, as every offset a bookmark is
+  given is (§20.1). Reported as a bug ("I type 3333 and it remembers 3330") and
+  confirmed as expected behaviour: a bookmark marks a row, so `0x3333` means the
+  row at `0x3330`. A test now records that.
+- **A double click on a mark opens it for editing**, where it used to do nothing
+  at all. Marking a row and opening a marked one are one gesture
+  (`handleOffsetDoubleClick`), and it still never unmarks.
+- **Return in the address confirms the address, not the bookmark** (reported as a
+  bug: "I type 3333 and the bookmark remembers 3330"). It rewrites the field as
+  the row it names and moves the caret to the name; the next Return saves. The
+  rounding is the model (§20.1) — what was wrong was doing it silently, after the
+  fact. ⌘D, Return is unaffected: that gesture starts in the name.
+- **A double click on a mark opens it for editing**, where it used to do nothing
+  at all. Marking a row and opening a marked one are one gesture now
+  (`handleOffsetDoubleClick`), and it still never unmarks.
 
 ### Added after stage 3 — dragging a mark
 

@@ -1673,21 +1673,28 @@ height in both, which is the whole point of it in a comparison.
   mark's own row is of course always available to it.
 - The caret starts in the **Name** field in both jobs — making a mark and editing
   one — because the address is already right and is there to be corrected, not
-  filled in. An existing name arrives selected, so typing replaces it.
+  filled in. An existing name arrives selected, so typing replaces it. So ⌘D,
+  Return stays two keystrokes: Return in the name saves outright.
+- Return in the **address** confirms the address rather than the whole bookmark:
+  the field is rewritten as the row it names and the caret moves on to the name,
+  and the next Return saves. A bookmark marks a row (§20.1), so an address inside
+  a row means that row — and typing `0x3333` only to be told afterwards that the
+  bookmark went to `0x3330` is the app changing the input behind the user's back.
+  The field says where it is going before anything is saved.
 - Dismissing the popover any other way — a click outside it — keeps what was
   typed. The mark is already on the row by then, so discarding the name would be
   the surprising outcome. A half-typed address is the one thing not kept: the
   bookmark stays on the row it was on, with the name.
 - ⌘D on a row that is already marked removes the mark on the spot, with no
   popover: there is nothing to name.
-- A **double click on an address** in the Offset column marks that row and names
-  it, exactly as ⌘D does — the mouse gesture for the same act. It only ever
-  marks: a double click that also unmarked would be destructive, because the
-  pointer covers the mark it is aimed at and a click landing a row off would
-  silently take an existing bookmark away. A double click on an already-marked
-  row leaves it exactly as it is, name and all, and the gesture belongs to the
-  Offset column only — a double click in the hex or decoded-text columns still
-  selects.
+- A **double click on an address** in the Offset column opens the edit popover on
+  that row: it marks the row first when it carries no mark — the mouse gesture for
+  ⌘D — and edits the mark that is already there otherwise, which is how a mark is
+  opened everywhere else (the list opens a name the same way, §20.5). What it
+  never does is unmark: the pointer covers the mark it is aimed at, so a toggle
+  here would silently take an existing bookmark away on a click landing a row off.
+  The gesture belongs to the Offset column only — a double click in the hex or
+  decoded-text columns still selects.
 - The edit popover never outlives the mark it is editing. ⌘D's key equivalent
   reaches the menu through an open popover, so the row can be unmarked while its
   name is being typed; the popover then closes, saving nothing and undoing
