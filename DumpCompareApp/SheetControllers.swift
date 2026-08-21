@@ -118,6 +118,9 @@ class SheetViewController: NSViewController {
         submitButton = submit
 
         root.addArrangedSubview(buttonRow)
+        // The message belongs to the fields above it, so it sits close under them
+        // and the full gap is the one before the buttons (§10).
+        root.setCustomSpacing(5, after: contentStack)
         buttonRow.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
             buttonRow.widthAnchor.constraint(equalTo: root.widthAnchor, constant: -36),
@@ -133,12 +136,14 @@ class SheetViewController: NSViewController {
             root.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             root.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             contentView.widthAnchor.constraint(greaterThanOrEqualToConstant: 400),
-            contentView.heightAnchor.constraint(greaterThanOrEqualToConstant: 200),
         ])
-        // A concrete, generous default frame lets `presentAsSheet` size the
-        // sheet window even before auto layout runs (the view arrives with a
-        // zero frame); it is wide/tall enough to hold any of the subclasses.
-        contentView.frame = NSRect(x: 0, y: 0, width: 420, height: 220)
+        // A concrete default frame lets `presentAsSheet` size the sheet window
+        // even before auto layout runs (the view arrives with a zero frame).
+        // Height is only a starting point — nothing pins a minimum, so a sheet is
+        // as tall as its own rows: a floor of 200 pt left the one-field sheets
+        // (Fill Selection) with a hand's width of nothing between the field and
+        // the buttons, because the slack had to go somewhere.
+        contentView.frame = NSRect(x: 0, y: 0, width: 420, height: 170)
         view = contentView
     }
 

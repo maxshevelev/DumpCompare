@@ -17,6 +17,28 @@ final class SelectBlockSheetTests: XCTestCase {
         return (sheet, { captured })
     }
 
+    /// A sheet is as tall as its own rows: a floor of 200 pt left the one-field
+    /// sheets with a hand's width of nothing between the field and the buttons,
+    /// because the slack had to go somewhere (§10).
+    func testASheetIsAsTallAsItsRows() throws {
+        let fill = FillSheetController(selectionCount: 64) { _ in }
+        fill.loadViewIfNeeded()
+        fill.view.layoutSubtreeIfNeeded()
+        let field = try XCTUnwrap(fill.firstField())
+        let fieldFrame = fill.view.convert(field.bounds, from: field)
+        let buttons = fill.view.convert(fill.buttonRow.bounds, from: fill.buttonRow)
+        // The sheet's root view is not flipped, so lower means a smaller y.
+        let gap = fieldFrame.minY - buttons.maxY
+        XCTAssertGreaterThan(gap, 0, "the buttons are below the field")
+        XCTAssertLessThan(gap, 40, "and not a hand's width away")
+
+        let block = SelectBlockSheetController(fileSize: 0x100) { _ in }
+        block.loadViewIfNeeded()
+        block.view.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(block.view.fittingSize.height, fill.view.fittingSize.height,
+                             "three rows of fields make a taller sheet than one")
+    }
+
     /// The validation message lines up with the fields it is about, not with the
     /// sheet's left edge (§10).
     func testTheValidationMessageLinesUpWithTheFields() throws {
