@@ -73,6 +73,10 @@ Layout rules:
 1. In empty mode, show a placeholder area with:
    - an “Open File” button;
    - a hint that files can be dragged and dropped.
+   - the window opens as wide as **one** pane’s hex grid at the saved word size,
+     whatever the saved pane arrangement — no file is open yet, and one file is
+     the common case; the height is the standard default. Window > Zoom fits the
+     real content once files are open.
 
 2. In single-file mode:
    - the only file pane occupies the entire client area.

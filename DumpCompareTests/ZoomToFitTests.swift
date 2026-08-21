@@ -74,6 +74,68 @@ final class ZoomToFitTests: XCTestCase {
         for url in urls { try? FileManager.default.removeItem(at: url) }
     }
 
+    // MARK: - Launch width (§3.1)
+
+    /// The launch window is one pane wide, not two: opening a single file is the
+    /// common case, so the saved side-by-side arrangement must not double the
+    /// width of a window that has no file in it yet.
+    func testLaunchWidthFitsOnePaneEvenSideBySide() throws {
+        let saved = LayoutSettings.isVertical
+        defer { LayoutSettings.set(isVertical: saved) }
+        LayoutSettings.set(isVertical: true)
+
+        let url = try tempFile([UInt8](repeating: 0x41, count: 256))
+        let controller = makeController()
+        let mainVC = controller.mainViewController
+        defer { cleanup(mainVC, url) }
+        try mainVC.windowModel.pane1.open(url: url)
+        mainVC.apply(mode: .singleFile)
+        let pane = try XCTUnwrap(findPane(in: mainVC.view))
+
+        XCTAssertEqual(MainViewController.launchContentWidth(), pane.contentFitWidth, accuracy: 1,
+                       "the launch width must be one pane's hex grid")
+        XCTAssertLessThan(MainViewController.launchContentWidth(),
+                          pane.contentFitWidth * 2,
+                          "a side-by-side arrangement must not double the launch width")
+    }
+
+    /// The saved arrangement does not enter into the launch width at all — the
+    /// window opens empty, so stacked and side-by-side give the same number.
+    func testLaunchWidthIgnoresPaneArrangement() {
+        let saved = LayoutSettings.isVertical
+        defer { LayoutSettings.set(isVertical: saved) }
+
+        LayoutSettings.set(isVertical: true)
+        let sideBySide = MainViewController.launchContentWidth()
+        LayoutSettings.set(isVertical: false)
+        let stacked = MainViewController.launchContentWidth()
+
+        XCTAssertEqual(sideBySide, stacked, accuracy: 0.5)
+    }
+
+    /// The window actually opens at that width, and its height is untouched by
+    /// this rule — the standard 720 pt default. Goes through `showWindow`,
+    /// which is where the launch frame is settled: assigning the content view
+    /// controller shrinks the window to the empty state's fitting size first.
+    func testLaunchWindowUsesOnePaneWidthAndDefaultHeight() {
+        let saved = LayoutSettings.isVertical
+        defer { LayoutSettings.set(isVertical: saved) }
+        LayoutSettings.set(isVertical: true)
+        UserDefaults.standard.removeObject(forKey: "NSWindow Frame MainWindow")
+
+        let controller = makeController()
+        let window = controller.window!
+        controller.showWindow(nil)
+        defer { window.orderOut(nil) }
+
+        let screen = window.screen ?? NSScreen.main
+        let expected = min(MainViewController.launchContentWidth(),
+                           screen?.visibleFrame.width ?? .greatestFiniteMagnitude)
+        XCTAssertEqual(window.frame.width, expected, accuracy: 1,
+                       "the launch frame must use the one-pane width")
+        XCTAssertEqual(window.frame.height, 720, accuracy: 1, "the launch height is unchanged")
+    }
+
     func testEmptyModeKeepsPreferredFrame() {
         let controller = makeController()
         let window = controller.window!
