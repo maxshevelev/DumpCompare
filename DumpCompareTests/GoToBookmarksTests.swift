@@ -262,41 +262,48 @@ final class GoToBookmarksTests: XCTestCase {
         XCTAssertEqual(closes(), 1)
     }
 
-    /// On a name the same gesture renames instead: a double click that jumped
-    /// from the name column would leave no way to rename with the mouse.
-    func testADoubleClickOnANameEditsItInsteadOfJumping() {
+    /// A double click on the name jumps as well: a double click activates the
+    /// item, wherever in the row it lands, the way it opens a file in the Finder.
+    /// Renaming is the Finder's other gesture — a click on an already-selected
+    /// row's name — and AppKit puts the field editor up for it itself (§20.5).
+    func testADoubleClickOnANameJumpsToo() {
         let (form, _, jumps, closes) = makeForm(rows: [0x10: "EC table"])
 
         form.handleDoubleClick(row: 0, column: form.nameColumnIndex)
 
-        XCTAssertTrue(jumps().isEmpty)
-        XCTAssertEqual(closes(), 0)
-        XCTAssertEqual(form.editingNameRow, 0)
+        XCTAssertEqual(jumps(), [0x10])
+        XCTAssertEqual(closes(), 1)
+        XCTAssertNil(form.editingNameRow, "a double click never starts an edit")
     }
 
-    /// The double click has to reach the table, which is what starts the edit —
-    /// including over an **empty** name, where an editable field left to itself
-    /// swallowed the clicks and opened only on a force click.
-    func testADoubleClickEditsANameThatIsNotThereYet() throws {
+    /// The name cell is a plain editable field, which is what lets AppKit start
+    /// the edit on a click into an already-selected row: nothing in the form
+    /// intercepts those clicks, named or unnamed.
+    func testTheNameCellIsEditableInPlace() throws {
         for name in ["EC table", ""] {
             let (form, _, _, _) = makeForm(rows: [0x10: name])
-            let window = try XCTUnwrap(form.view.window)
-            window.makeKeyAndOrderFront(nil)
             let field = try nameField(form, row: 0)
 
-            XCTAssertNil(field.hitTest(NSPoint(x: field.bounds.midX, y: field.bounds.midY)),
-                         "an idle name field passes clicks through to the table")
-
-            form.handleDoubleClick(row: 0, column: form.nameColumnIndex)
-
-            let editor = try XCTUnwrap(window.firstResponder as? NSTextView,
-                                       "the edit really started for name '\(name)'")
-            XCTAssertTrue((editor.delegate as AnyObject?) === field,
-                          "and it is this cell's field being edited")
-            XCTAssertEqual(form.editingNameRow, 0)
-            XCTAssertNotNil(field.hitTest(NSPoint(x: field.bounds.midX, y: field.bounds.midY)),
-                            "once it is editing, the field takes its own clicks back")
+            XCTAssertTrue(field.isEditable, "name '\(name)' can be edited in place")
+            let middle = NSPoint(x: field.bounds.midX, y: field.bounds.midY)
+            XCTAssertNotNil(field.hitTest(middle),
+                            "and the field takes the click AppKit needs to see")
         }
+    }
+
+    /// Whoever starts the edit, the form learns which row it is — that is what
+    /// Escape's first level acts on (§10.1).
+    func testTheFormFollowsAnEditItDidNotStart() throws {
+        let (form, _, _, _) = makeForm(rows: [0x10: "EC table"])
+        let window = try XCTUnwrap(form.view.window)
+        let field = try nameField(form, row: 0)
+        XCTAssertNil(form.editingNameRow)
+
+        window.makeFirstResponder(field)
+        XCTAssertEqual(form.editingNameRow, 0, "the field reported the edit")
+
+        window.makeFirstResponder(form.bookmarkTable)
+        XCTAssertNil(form.editingNameRow, "and reported its end")
     }
 
     // MARK: - Managing the list (§20.5)
@@ -591,8 +598,9 @@ final class GoToBookmarksTests: XCTestCase {
     /// Editing a name and pressing Escape must not throw the window away.
     func testEscapeDuringANameEditCancelsTheEditAndKeepsTheForm() throws {
         let (form, store, _, closes) = makeForm(rows: [0x10: "EC table"])
-        form.beginEditingName(row: 0)
+        let window = try XCTUnwrap(form.view.window)
         let field = try nameField(form, row: 0)
+        window.makeFirstResponder(field)   // as a click into the selected row does
         field.stringValue = "half-typed"
 
         let escape = try keyDown("\u{1B}", keyCode: 53)

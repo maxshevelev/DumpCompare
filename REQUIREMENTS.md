@@ -1836,14 +1836,14 @@ window, so nothing about a bookmark lives in two places.
   there too, so the mouse needs no detour to the keyboard. Both dismiss the form
   and behave exactly as a typed offset does (§10.1): both panes of a comparison
   move, because a bookmark is an absolute offset (§8).
-- **A double click on a name** edits it in place instead of jumping — a double
-  click that jumped from the name column would leave no way to rename with the
-  mouse. The gesture is the table's, not the field's: an editable field left to
-  itself swallows the clicks and opens on its own terms, which over an empty name
-  (where the row preview shows) meant a force click rather than a double click.
-  Every click reaches the table — one selects the row, two start the edit,
-  whether the name is there or not — and the field takes its clicks back once it
-  is editing, so the caret can still be placed with the mouse. Return commits the name, a click elsewhere commits it too, and Escape
+- **A name is renamed the way the Finder renames a file**: a click on the name of
+  an already-selected row, after the pause that tells it from a double click, puts
+  the field editor up. That is AppKit's own behaviour for an editable field in a
+  view-based table, and nothing in the form intercepts it — a double click stays
+  what a double click is everywhere on macOS: *activate the item*, which here
+  means go to it, wherever in the row it lands. Whoever starts the edit, the form
+  learns which row it is from the field itself, because that is what Escape's
+  first level acts on (§10.1). Return commits the name, a click elsewhere commits it too, and Escape
   restores the name the store holds without closing the form (§10.1).
 - **⌫** removes the selected bookmark. The selection stays where it was, so a run
   of them can be cleared without reaching for the mouse between presses;

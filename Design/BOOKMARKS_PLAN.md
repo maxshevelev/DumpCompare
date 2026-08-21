@@ -443,6 +443,22 @@ map rebuild. Where it differs from the sketch above:
 **Done when** clicking an arrow in the overview of a 16 MB file lands on the
 bookmark's row rather than a few rows off.
 
+### Corrected after stage 3 — renaming in the list is the Finder's gesture
+
+The plan had a double click on a name start an in-place edit. That is not the
+platform's behaviour and it cost two hacks to hold up: the cell's field had to
+stop swallowing clicks (or the edit opened only on a force click over an empty
+name, where the row preview shows), and the double click then meant two different
+things depending on which column it landed in.
+
+What AppKit already does for an editable field in a view-based table is the
+Finder's rule: a click on an **already-selected** row's name, after the pause that
+distinguishes it from a double click, opens the field editor. So the hacks are
+gone, a double click activates the row wherever it lands — go to the bookmark, as
+a double click opens a file — and the form learns which row is being edited from
+the field's own report rather than by starting the edit itself, which is all
+Escape's first level needed.
+
 ### Added after stage 3 — editing a bookmark's address
 
 The popover's title became a field: *Rename Bookmark…* is now **Edit Bookmark…**

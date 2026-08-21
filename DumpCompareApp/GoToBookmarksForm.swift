@@ -458,18 +458,17 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
         handleDoubleClick(row: bookmarkTable.clickedRow, column: bookmarkTable.clickedColumn)
     }
 
-    /// A double click jumps too, so the mouse needs no detour to the keyboard —
-    /// except on a name, where it is the gesture for renaming in place (§20.5).
-    /// Takes the row and column rather than reading `clickedRow` itself, because
-    /// those are AppKit's to set and a test cannot.
+    /// A double click jumps, wherever in the row it lands — a double click
+    /// *activates* an item, which here means going to it, the way it opens a file
+    /// in the Finder (§20.5). Renaming is the Finder's gesture too and AppKit's
+    /// own: a click on an already-selected row's name, after the pause that tells
+    /// it from a double click, puts the field editor up. Takes the row and column
+    /// rather than reading `clickedRow` itself, because those are AppKit's to set
+    /// and a test cannot.
     func handleDoubleClick(row: Int, column: Int) {
         guard row >= 0, row < bookmarks.count else { return }
-        if column == nameColumnIndex {
-            beginEditingName(row: row)
-        } else {
-            bookmarkTable.selectRowIndexes([row], byExtendingSelection: false)
-            goToSelectedBookmark()
-        }
+        bookmarkTable.selectRowIndexes([row], byExtendingSelection: false)
+        goToSelectedBookmark()
     }
 
     /// The list's two columns, by index — what a double click is judged against.
@@ -522,14 +521,6 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
                                        byExtendingSelection: false)
     }
 
-    /// Starts an in-place edit of a row's name.
-    func beginEditingName(row: Int) {
-        guard row >= 0, row < bookmarks.count else { return }
-        editingNameRow = row
-        bookmarkTable.selectRowIndexes([row], byExtendingSelection: false)
-        bookmarkTable.editColumn(columnIndex(ColumnID.name), row: row, with: nil, select: true)
-    }
-
     /// The end of a name edit — Return in the cell, or a click elsewhere:
     /// whatever is in the field is the name (§20.2 trims it, and an empty name
     /// means the bookmark shows its address again).
@@ -540,6 +531,18 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
         editingNameRow = nil
         store.rename(rowContaining: bookmarks[row].row, to: sender.stringValue)
         reloadBookmarks()
+    }
+
+    /// Records which row's name is being edited, from the field's own report.
+    private func noteNameEditing(_ editing: Bool, in cell: NSTableCellView?) {
+        guard let field = cell?.textField else { return }
+        let row = bookmarkTable.row(for: field)
+        guard row >= 0 else { return }
+        if editing {
+            editingNameRow = row
+        } else if editingNameRow == row {
+            editingNameRow = nil
+        }
     }
 
     /// Escape's first level: backs out of a name edit, restoring the name the
@@ -603,6 +606,12 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
                 ?? BookmarkCellView(identifier: ColumnID.name, editable: true)
             cell.textField?.target = self
             cell.textField?.action = #selector(nameEdited(_:))
+            // The edit is started by AppKit, not by us (§20.5), so the row being
+            // edited is learnt from the field rather than set before it — that is
+            // what Escape's first level needs to know (§10.1).
+            cell.onEditingStateChange = { [weak self, weak cell] editing in
+                self?.noteNameEditing(editing, in: cell)
+            }
             cell.textField?.stringValue = bookmark.name
             cell.restingTextColor = .labelColor
             // An unnamed bookmark is described by what is AT it: the row's bytes
@@ -735,18 +744,6 @@ private final class BookmarkTableView: NSTableView {
 private final class EditableLabel: NSTextField {
     var onEditingChange: ((Bool) -> Void)?
 
-    /// Clicks belong to the table until the cell is actually being edited. An
-    /// editable field inside a table cell otherwise swallows them and starts an
-    /// edit on its own terms — which, over an empty name, took a force click
-    /// rather than the double click the list documents (§20.5). With the field
-    /// out of the way every click reaches the table: one selects the row, two
-    /// start the edit, whether the name is there or not. Once the edit is
-    /// running the field takes its clicks back, so the caret can be placed and
-    /// text selected with the mouse.
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        currentEditor() == nil ? nil : super.hitTest(point)
-    }
-
     override func becomeFirstResponder() -> Bool {
         let accepted = super.becomeFirstResponder()
         if accepted { onEditingChange?(true) }
@@ -813,6 +810,10 @@ private final class BookmarkCellView: NSTableCellView {
         textField?.placeholderAttributedString = tinted
     }
 
+    /// Reported when the cell's label takes or gives up the keyboard, so the
+    /// form can follow an edit AppKit started (§20.5).
+    var onEditingStateChange: ((Bool) -> Void)?
+
     init(identifier: NSUserInterfaceItemIdentifier, editable: Bool) {
         super.init(frame: .zero)
         self.identifier = identifier
@@ -820,6 +821,7 @@ private final class BookmarkCellView: NSTableCellView {
         let field = EditableLabel(labelWithString: "")
         field.onEditingChange = { [weak self] editing in
             self?.isEditing = editing
+            self?.onEditingStateChange?(editing)
         }
         field.font = .systemFont(ofSize: 12)
         field.usesSingleLineMode = true
