@@ -163,8 +163,10 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
         // about, the "Bookmarks" title sits on the list it names, and only the
         // gap *between* those two groups is a full one. Evenly spaced, the field
         // and the list ended up an inch apart with a blank line between them.
-        root.setCustomSpacing(2, after: offsetRow)
-        root.setCustomSpacing(8, after: errorLabel)
+        // Under the field, but not against it: at 2 pt the message touched the
+        // field's focus ring, which is drawn outside its frame.
+        root.setCustomSpacing(5, after: offsetRow)
+        root.setCustomSpacing(6, after: errorLabel)
         root.setCustomSpacing(4, after: listLabel)
 
         // A root that can claim Escape before the Cancel button's key
