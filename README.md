@@ -9,7 +9,7 @@ DumpCompare grew out of bench work on BIOS and EC dumps, so the comparison model
 
 ## Download
 
-[**DumpCompare 0.3**](https://github.com/maxshevelev/DumpCompare/releases/latest) — a universal `.dmg` (Apple silicon and Intel), macOS 14 or later.
+[**DumpCompare 0.4**](https://github.com/maxshevelev/DumpCompare/releases/latest) — a universal `.dmg` (Apple silicon and Intel), macOS 14 or later.
 
 The build is ad-hoc signed and not notarized, so Gatekeeper stops the first launch: right-click the app and choose **Open**, or clear the quarantine flag once.
 
@@ -24,9 +24,9 @@ The workflows the app is shaped around:
 - **Two reads of the same chip.** Read it twice, open both dumps, look at the summary: `0 differing` means the read is trustworthy. Anything else is a contact problem — a clip, a socket, a hot chip — not a firmware finding, and you learn it before you start diagnosing the board.
 - **A dump against a known-good donor.** Differing bytes are filled orange; ⌘⌥→ / ⌘⌥← walk the differing regions and centre each one, so scrolling 16 MB by hand is not part of the job.
 - **Finding the region that matters.** The overview minimap draws the whole chip in one column, shaded by how much real content each slice holds: erased `0xFF` blocks stay pale, code and tables read dense. A blanked, truncated or corrupted region shows up as the wrong texture at the wrong place — before you know its offset.
+- **Keeping your place in it.** ⌘D marks the caret's row and offers it a name; the mark is a purple arrow in the Offset column and in the minimap's margin, so the header, the table and the region under investigation stay findable while you work between them.
 - **Patching by hand.** ⌘G to the offset, type the hex digits, the changed bytes turn red until saved. Confirmations guard the operations that shift data.
 - **Verifying a write-back.** Re-read the chip and compare the new dump against the file you flashed; the difference count is the pass/fail.
-- **Chasing a string or a signature.** Search hex bytes or text in several encodings, or list every occurrence at once in a results panel.
 - **Chip-sized files, not toy files.** Files are read in chunks and never loaded whole, so a 16 MB SPI dump — or a 1 GB image — opens immediately and stays within a low double-digit megabyte working set.
 
 ## Features
@@ -34,106 +34,57 @@ The workflows the app is shaped around:
 ### Comparison
 
 - Two panes: open one or two files via **File > Open…** (⌘O) or drag-and-drop. One file — single-pane mode; two — comparison.
-- Differing bytes get an orange fill, with theme-appropriate intensities for light and dark mode; the shorter file's EOF tail counts as a difference too.
-- The status bar shows a live summary — `12 differing · 2048 same` — updating as you edit.
-- **Next/Previous Difference** (⌘⌥→ / ⌘⌥←) and **Next/Previous Same Block** (⌘⌥⇧→ / ⌘⌥⇧←): forward lands on a block's start, backward on its last byte, and the result is centered in the view. The toolbar's arrows appear only in comparison mode.
-- Diff navigation steps between *changes*, not bytes: differing bytes closer together than the grouping distance (64 bytes by default, configurable in Settings) are one target. A holey region — a rewritten NVRAM area where changed bytes alternate with unchanged ones — is one press instead of hundreds, while highlighting stays per byte.
-- A selection in one pane is outlined in the other (mirror contour), so the two halves of the same offset read as one.
-- **View > Toggle Pane Layout** (⌘⌥L) switches side-by-side and stacked; **Swap Panels** exchanges the two files without reopening them.
+- Differing bytes get an orange fill, tuned for light and dark mode; the shorter file's EOF tail counts as a difference too. The status bar shows a live summary — `12 differing · 2048 same` — updating as you edit.
+- **Next/Previous Difference** (⌘⌥→ / ⌘⌥←) and **Next/Previous Same Block** (⌘⌥⇧→ / ⌘⌥⇧←) centre each result. Navigation steps between *changes*, not bytes: differing bytes closer together than the grouping distance (64 bytes by default) are one target, so a rewritten NVRAM area is one press instead of hundreds while highlighting stays per byte.
+- A selection in one pane is outlined in the other, so the two halves of the same offset read as one. **View > Toggle Pane Layout** (⌘⌥L) switches side-by-side and stacked; **Swap Panels** exchanges the two files without reopening them.
+
+### Going somewhere, and coming back
+
+- **Go To Position…** (⌘G) and **Bookmarks…** (⌥⌘B) are one window, because they answer one question: the addresses worth returning to are exactly the ones you would otherwise be typing again. ⌘G starts in the offset field, ⌥⌘B in the list; Return follows the focus. The field takes `0x`-hex or decimal, validates as you type, and keeps the last ten addresses it was sent to.
+- **⌘D marks the caret's row** and opens a popover on the mark: type a name and Return, or just Return for an unnamed one. ⇧⌘D reopens it — the popover holds the bookmark's *address* as well as its name, so a mark put a row off is corrected by typing the right one, and a **Delete** button for the act Esc cannot mean.
+- A marked row's address stands on a **purple arrow** in the Offset column, and a smaller one appears in the minimap's margin in both of its modes — a marked region is findable without opening anything. Hovering a mark on the map says `ADDRESS: name`; a click near one lands exactly on the bookmark.
+- **Drag a mark to another row.** A dump gets read before it is understood, and a mark often belongs a few rows from where it was put; dragging beats remaking it, which would lose the name. One row holds one bookmark, so a mark dragged onto an occupied row jumps past it or stops before it.
+- The list shows every mark by address, and **describes an unnamed one by what is at it** — the row's bytes as the dump writes them, read from the pane you are working in. Return jumps, a double click opens the editor, ⌫ removes.
+- Bookmarks are absolute offsets, so one list serves both panes and marks the same height in both. They live as long as the window, not the file: closing a dump and opening it again — the same chip read twice — keeps its marks.
 
 ### Minimap
 
-- A column beside the dumps, from the toolbar button at the far right or **View > Show Minimap** (⇧⌘M). Its header carries a **Local ⇄ Overview** switch (also **View > Minimap Overview**, ⌘⌥M); its status bar carries the progress of a rebuild.
-- The mode is chosen for the file you open: a dump goes to Overview, a few kilobytes to Local — the view that actually says something about it. Nothing is remembered, so a switch by hand lasts until the next file. For a file the Overview could only magnify, that half of the switch is simply greyed out.
-- **Local** mode is a miniature hex dump around the caret: one cell per byte, three points per row, so what you see there is literally the rows of the dump.
-- **Overview** mode is the whole file at once — one row per device pixel. Each cell is shaded by how much of its slice is real content rather than fill, which is what makes erased regions, tables and code distinguishable at a glance.
-- Differences and unsaved edits are drawn over the shading and at least two pixels tall, so a single changed byte among millions stays visible.
-- Two maps mirror the pane arrangement, and their rows are binned over the comparison's whole extent: the same height is the same absolute offset on both, and a shorter file's tail is simply empty.
-- The viewport is marked on the map; drag it to scroll, click elsewhere to move the caret there and centre the pane on it, or roll the wheel over the panel.
-- The heavy work happens off the main thread: a rebuild reports progress in the status bar, and a resize rescales the picture immediately while the exact pixels are recomputed behind it.
+- A column beside the dumps, from the toolbar button or **View > Show Minimap** (⇧⌘M), with a **Local ⇄ Overview** switch in its header (⌘⌥M).
+- **Local** is a miniature hex dump around the caret, one cell per byte. **Overview** is the whole file at once, one row per device pixel, each cell shaded by how much of its slice is real content rather than fill — which is what makes erased regions, tables and code distinguishable at a glance. The mode is chosen for the file you open, and a file the overview could only magnify greys that half of the switch out.
+- Differences and unsaved edits are drawn over the shading and at least two pixels tall, so a single changed byte among millions stays visible. Two maps mirror the pane arrangement and share one scale: the same height is the same absolute offset in both.
+- Drag the viewport marker to scroll, click elsewhere to go there, or roll the wheel over the panel. Rebuilds run off the main thread with progress in the status bar, and a resize rescales the picture in hand while the exact pixels are recomputed.
 
 ### Hex grid
 
-- 16 bytes per row, split into two 8-byte groups; **View > Word Size** regroups the bytes into 1/2/4/8-byte words (16/32/64-bit reads).
-- Three columns: address (Offset), hex values, decoded text. The column header is pinned above the dump and follows horizontal scrolling.
-- `0x00`/`0xFF` bytes are muted so significant data reads with more contrast; offsets and headers use a quiet ink-blue.
-- Navigation like a text editor: arrow keys, Home/End, Page Up/Down, direct hex-digit typing, and editing right in the decoded-text column.
+- 16 bytes per row in two 8-byte groups; **View > Word Size** regroups them into 1/2/4/8-byte words. Three columns — address, hex, decoded text — under a pinned header.
+- `0x00`/`0xFF` bytes are muted so significant data reads with more contrast; cells past EOF carry hatching, so the end of a file is readable without colour.
+- Navigation like a text editor: arrows, Home/End, Page Up/Down, direct hex typing, and editing in the decoded-text column.
 
 ### Editing
 
-- Type hex digits or text — bytes overwrite in place, with per-pane Undo/Redo (⌘Z / ⇧⌘Z).
-- **Insert Mode** (⌥⌘I, Edit menu) switches typing from overwrite to insertion: the byte lands at the caret and the tail shifts right, the caret becomes a red line on the byte boundary, and Delete/Backspace remove bytes instead of zeroing them. The mode is per pane — one file can be typed into while the other is read — and each pane's status bar shows it as `OVR`/`INS`, with `INS` in red. It shifts every offset from the caret on, so the first keystroke in each file asks once; the mode is off again at every launch. Backspace on a half-typed byte takes that byte back as if it had never been entered.
-- Undo is segmented for typed input: the first ⌘Z takes back the last byte (fix a typo), a quick second ⌘Z takes back the rest of the run in one step, and after a pause it is one byte per press again. ⇧⌘Z puts it all back. A pause, a caret move, a hex↔text switch, another command or a save all end a run, so a save is never skipped over.
-- ⌘V with the hex dump focused overwrites bytes from the clipboard (raw bytes are the primary format, hex text the fallback); ⌘V in a text field is the standard system paste.
-- **Paste Insert…** inserts bytes with a shift (confirmed first), **Delete Bytes…** deletes with confirmation, **Fill Selection with…** repeats a pattern across the selection — the fast way to blank a region to `0xFF`.
-- The confirmations for edits that shift the file can be turned off in **Settings ▸ Editing**, or from the **Do not ask again** checkbox on the dialogs themselves — it is the same switch.
-- Modified bytes are drawn red; cells past EOF carry hatching, so the end of the file is readable without color.
+- Type hex digits or text — bytes overwrite in place, with per-pane Undo/Redo (⌘Z / ⇧⌘Z). Modified bytes are drawn red until saved.
+- **Insert Mode** (⌥⌘I) switches typing from overwrite to insertion: the byte lands at the caret, the tail shifts right, and Delete/Backspace remove bytes instead of zeroing them. The mode is per pane — one file can be typed into while the other is read — shown as `OVR`/`INS` in the status bar and by the caret's own shape. It shifts every offset from the caret on, so the first keystroke in each file asks once.
+- Undo is segmented for typed input: the first ⌘Z takes back the last byte, a quick second takes back the rest of the run, and after a pause it is one byte per press again.
+- **Paste Insert…**, **Delete Bytes…** and **Fill Selection with…** — the fast way to blank a region to `0xFF`. The confirmations for edits that shift the file can be turned off in **Settings ▸ Editing**.
 - **File > New File** (⌘N) opens an empty in-memory document — somewhere to paste a block out of a dump; **Revert to Saved** throws away the session's edits.
-
-### Selection & clipboard
-
-- Mouse selection, ⌘A, **Select Block…** (start + length), **Go To Position…** (⌘G).
-- **Copy** puts both raw bytes and hex text on the clipboard.
-- The status bar always shows the caret in hex and decimal, plus the selection length.
 
 ### Search
 
-- **Find** (⌘F): a field with query history, an encoding popup (**Hex bytes**, **Text — ASCII**, **UTF-8**, **UTF-16 LE/BE**), a case toggle (disabled for hex — hex is always byte-exact), and paired ‹ › buttons.
-- History entries record their encoding, so `"abcd" (Hex)` and `"abcd" (ASCII)` are distinct.
-- Searches run in the background with a progress indicator; the result is centered in the pane.
-- **Search All** lists every occurrence in a panel beside the dump, filling as the scan streams matches in. Offsets and excerpts follow later edits, and the panel says whether the list is complete or was capped.
+- **Find** (⌘F): query history, an encoding popup (**Hex bytes**, **Text — ASCII**, **UTF-8**, **UTF-16 LE/BE**), a case toggle, and paired ‹ › buttons. Searches run in the background and centre their result.
+- **Search All** lists every occurrence in a panel beside the dump, filling as the scan streams matches in; offsets and excerpts follow later edits.
 
-### Context menus
+### Selection, clipboard, menus
 
-- Right-click an address or a byte: **Copy offset** and **Select block from here**. The clicked anchor is framed while the menu is open.
-- **Copy offset** copies the address without the `0x` prefix, so pasting into an already-prefixed field doesn't double it.
-- **Select block from here** opens the Select Block dialog prefilled, with the cursor in the length field.
-- Right-click a byte inside a selection adds **Copy**, **Fill Selection with…**, **Delete Bytes** — applied to the clicked pane's selection, not the active pane's.
+- Mouse selection, ⌘A, **Select Block…** (start + end, or start + length). **Copy** puts both raw bytes and hex text on the clipboard; ⌘V overwrites bytes from it.
+- Right-click an address for **Copy offset** (no `0x`, so a prefixed field doesn't double it), **Select block from here** (prefilled), and the bookmark commands for *that* row. Right-click inside a selection for **Copy**, **Fill Selection with…**, **Delete Bytes** — applied to the clicked pane's selection, not the active pane's.
+- Every offset field accepts `0x`-hex or decimal, puts the caret behind the prefix instead of selecting the whole text, and validates on each keystroke, with the message under the field it belongs to.
 
-### Input dialogs
+### Large files, and the rest
 
-- Offset fields accept `0x`-hex and decimal; the caret lands after the prefix on focus instead of selecting the whole field.
-- Validation re-runs on every keystroke: an error clears the moment the input becomes valid.
-
-### Large files
-
-- Files are read through a bounded chunk cache and never loaded whole; edits are stored as a sparse overlay on top of the file; diff and search index incrementally in the background.
-- The active pane's status bar shows the operation name, progress, and a cancel button while indexing. A 1 GB file stays within a low double-digit megabyte working set.
-
-### Settings
-
-- **⌘,** opens a standard macOS settings window with toolbar tabs.
-- **Appearance:** the monospaced font and row density; changes apply live to open dumps.
-- **Comparison:** the grouping distance for diff navigation (16 / 32 / 64 / 256 bytes) — how far apart differing bytes may sit and still count as one change. Applies to an open comparison immediately, without rescanning.
-- **Text Decoding:** the decoding table (Windows-1252 by default, ISO-8859-1, Strict ASCII), a placeholder character for non-printable bytes, and a live grid of all 256 byte values.
-
-### Reliability
-
-- External changes to a file on disk are detected and offer a reload (keeping local edits if there are any).
-- Security-scoped sandbox bookmarks keep file access across launches; closing or replacing a dirty file prompts the standard Save / Don't Save / Cancel dialog.
-- The window frame is saved and restored; off-screen or degenerate frames are corrected on launch.
-
-## Details
-
-Mostly the small things that decide whether an editor is comfortable in daily use:
-
-- The offset field never selects its whole text on focus — the caret waits after `0x`.
-- Validation feedback is immediate and disappears as soon as the input is fixed.
-- Copy offset omits the prefix, so pasting into a prefixed field yields no `0x0x`.
-- Destructive operations confirm first; undo/redo work per pane.
-- State is encoded by color and by form (EOF hatching, outline contours), so it survives color blindness and theme switching.
-- The status bar keeps the readout scannable: caret in hex and decimal, selection length, file size, Modified / Read-Only, diff summary.
-- Transient messages ("No match found.", "No more differences") replace the stats briefly, then yield back.
-- Focus follows the workflow: back to the search field after a search, back to the dump after an edit.
-- Everything primary has a key equivalent: ⌘N/⌘O/⌘S/⇧⌘S/⌘W, ⌘Z/⇧⌘Z, ⌘C/⌘V/⌘A, ⌘F/⌘G, ⌘,, diff navigation, ⇧⌘M for the minimap, ⌘⌥L for the layout, ⌘⌃F for full screen.
-
-## Native macOS
-
-- AppKit and no dependencies — no Electron, no web wrapper.
-- Light and dark themes out of the box; all colors are dynamic.
-- Standard menus and key equivalents, a standard tabbed settings window, standard alert dialogs, SF Symbols in headers.
-- **Window > Zoom** sizes the window to exactly fit the hex content; the top edge stays in place, so the window grows from the bottom.
-- Accessibility labels on the grid and document state; frame autosave; multi-display aware.
+- Files are read through a bounded chunk cache and never loaded whole; edits are a piece list over the file as opened, so an inserted byte costs nothing measurable on a 32 MB dump. Diff and search index incrementally in the background, with progress and a cancel button in the status bar.
+- **⌘,** opens a standard settings window: the monospaced font and row density, the grouping distance for diff navigation, and the text decoding table (Windows-1252 by default) with a live grid of all 256 byte values.
+- External changes on disk are detected and offer a reload, keeping local edits; closing a dirty file prompts the standard Save / Don't Save / Cancel. Security-scoped bookmarks keep file access across launches.
+- Light and dark themes, all colours dynamic; state is carried by colour *and* form (EOF hatching, outline contours), so it survives a theme switch and colour blindness. Accessibility labels on the grid and document state, frame autosave, **Window > Zoom** to fit the content exactly.
 
 ## Requirements
 
@@ -170,4 +121,4 @@ xcodebuild test -project DumpCompare.xcodeproj -scheme DumpCompare -destination 
 
 ## Architecture
 
-Storage layer (`DumpCompareCore`) → model (`BinaryDocument`, diff, search, undo) → view-models (`PaneViewModel`, `WindowModel`) → AppKit views (`HexView`, `FilePaneView`, `ComparisonView`, `MinimapView`). Domain code is pure Swift and unit-tested; all UI runs on the main actor, and long-running work (diff, search, the overview map) runs in background tasks.
+Storage layer (`DumpCompareCore`) → model (`BinaryDocument`, diff, search, undo) → view-models (`PaneViewModel`, `WindowModel`) → AppKit views (`HexView`, `FilePaneView`, `ComparisonView`, `MinimapView`). Domain code is pure Swift and unit-tested; all UI runs on the main actor, and long-running work (diff, search, the overview map) runs in background tasks. The behaviour is specified in `Design/REQUIREMENTS.md`, and the design documents beside it record why each feature came out the way it did.
