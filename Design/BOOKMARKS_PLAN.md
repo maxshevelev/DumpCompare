@@ -443,6 +443,20 @@ map rebuild. Where it differs from the sketch above:
 **Done when** clicking an arrow in the overview of a 16 MB file lands on the
 bookmark's row rather than a few rows off.
 
+**As built (stage 5).** `MinimapView.snappedOffset(at:)` in front of
+`byteOffset(at:)`, used by `mouseDown` only. Two notes on the shape:
+
+- The target is the **mark's own box** (the one drawing and hit-testing already
+  share, `bookmarkMarkRect`) grown by `bookmarkSnapDistance` on each side, rather
+  than a distance measured to a point. That way the snap region follows the mark's
+  geometry in both render modes for free, and it is the same rect the tooltip
+  hit-tests — a click and a hover agree about what "on the mark" means.
+- Ties go to the nearer **centre line**: on an overview two marks a few rows apart
+  can both be in range, and the one aimed at is the closer.
+- The drag path is untouched, which is the point of putting the snap in
+  `mouseDown` rather than in `byteOffset` — grabbing the band still scrolls, and a
+  drag that passes a mark does not jump to it.
+
 ### Corrected after stage 3 — the list does not edit names in place
 
 The plan had a double click on a name start an in-place edit. Getting there took

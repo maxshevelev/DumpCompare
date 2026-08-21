@@ -1474,6 +1474,18 @@ The panes' visible slice is drawn as a translucent band over the map.
   every row carries information. The marker states a position and must not
   pretend to show an extent.
 
+19.6.1 Clicking near a bookmark's mark
+
+- A click within a few points of a bookmark's mark (§19.4.3) means **that
+  bookmark's row**, not the byte drawn under the pointer. On a full-dump overview
+  a row is kilobytes, so a pointer dead on the arrow still resolves to an offset a
+  dozen rows off the bookmark — the mark is what the user aimed at, and it is a
+  two-pixel target without this.
+- With two marks in range the nearer one wins, measured from each mark's own
+  centre line.
+- **Dragging the band never snaps.** It is a scrollbar gesture, and a continuous
+  scroll that jumped to a bookmark as it passed would fight the drag.
+
 19.7 Navigation
 
 - Dragging the band scrolls the panes and keeps the band under the cursor.

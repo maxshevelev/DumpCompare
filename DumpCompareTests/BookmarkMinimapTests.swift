@@ -291,6 +291,121 @@ final class BookmarkMinimapTests: XCTestCase {
         NSPoint(x: rect.midX, y: rect.midY)
     }
 
+    // MARK: - Clicking near a mark (§19.6)
+
+    /// A click near a mark means that bookmark's row. On a full-dump overview a
+    /// row is kilobytes, so without this the pointer can be dead on the arrow and
+    /// still resolve to an offset a dozen rows off.
+    func testAClickNearAMarkLandsOnTheBookmark() throws {
+        let (controller, panel) = try makeWindow(sizes: (0x40000, nil))
+        controller.windowModel.bookmarkStore.add(rowContaining: 0x30000)
+        controller.setMinimapRenderModeForTesting(.overview)
+        XCTAssertTrue(pumpUntil(2.0) { panel.renderMode == .overview && !panel.overviewSummaries.isEmpty })
+        panel.display()
+        let box = try XCTUnwrap(panel.bookmarkMarkRect(row: 0x30000, forMapAt: 0))
+
+        let onTheMark = NSPoint(x: box.midX, y: box.midY)
+        XCTAssertEqual(panel.snappedOffset(at: onTheMark)?.offset, 0x30000)
+
+        // Three points below its centre — inside the snap distance.
+        let near = NSPoint(x: box.midX, y: box.midY + 3)
+        XCTAssertEqual(panel.snappedOffset(at: near)?.offset, 0x30000,
+                       "a click a few points off still means the bookmark")
+        XCTAssertNotEqual(panel.byteOffset(at: near)?.offset, 0x30000,
+                          "and without snapping it would not — or this proves nothing")
+    }
+
+    /// Twenty points away it means what it landed on, as any other click does.
+    func testAClickWellAwayFromAMarkIsNotSnapped() throws {
+        let (controller, panel) = try makeWindow(sizes: (0x40000, nil))
+        controller.windowModel.bookmarkStore.add(rowContaining: 0x30000)
+        controller.setMinimapRenderModeForTesting(.overview)
+        XCTAssertTrue(pumpUntil(2.0) { panel.renderMode == .overview && !panel.overviewSummaries.isEmpty })
+        panel.display()
+        let box = try XCTUnwrap(panel.bookmarkMarkRect(row: 0x30000, forMapAt: 0))
+
+        let away = NSPoint(x: box.midX, y: box.midY + 20)
+        XCTAssertEqual(panel.snappedOffset(at: away)?.offset, panel.byteOffset(at: away)?.offset,
+                       "out of range, a click is the byte under it")
+    }
+
+    /// With two marks in range the nearer one wins.
+    func testTheNearerMarkWins() throws {
+        let (controller, panel) = try makeWindow(sizes: (0x40000, nil))
+        let store = controller.windowModel.bookmarkStore
+        store.add(rowContaining: 0x20000)
+        controller.setMinimapRenderModeForTesting(.overview)
+        XCTAssertTrue(pumpUntil(2.0) { panel.renderMode == .overview && !panel.overviewSummaries.isEmpty })
+        // A second bookmark far enough down the file to draw a few points below
+        // the first, so both marks are in range of a click between them.
+        store.add(rowContaining: 0x22000)
+        panel.display()
+
+        let first = try XCTUnwrap(panel.bookmarkMarkRect(row: 0x20000, forMapAt: 0))
+        let second = try XCTUnwrap(panel.bookmarkMarkRect(row: 0x22000, forMapAt: 0))
+        XCTAssertNotEqual(first.midY, second.midY, "the two marks must be at different heights")
+
+        XCTAssertEqual(panel.snappedOffset(at: NSPoint(x: first.midX, y: first.midY))?.offset,
+                       0x20000, "on the first mark, the first bookmark")
+        XCTAssertEqual(panel.snappedOffset(at: NSPoint(x: second.midX, y: second.midY))?.offset,
+                       0x22000, "on the second, the second")
+    }
+
+    /// A click on the panel goes through the snap: clicking a mark asks the pane
+    /// for the bookmark's row, not for whatever byte the arrow happens to sit on.
+    func testClickingAMarkSelectsTheBookmarksRow() throws {
+        let (controller, panel) = try makeWindow(sizes: (0x40000, nil))
+        controller.windowModel.bookmarkStore.add(rowContaining: 0x30000)
+        controller.setMinimapRenderModeForTesting(.overview)
+        XCTAssertTrue(pumpUntil(2.0) { panel.renderMode == .overview && !panel.overviewSummaries.isEmpty })
+        panel.display()
+        var selected: [(Int, UInt64)] = []
+        panel.onSelectOffset = { selected.append(($0, $1)) }
+        let box = try XCTUnwrap(panel.bookmarkMarkRect(row: 0x30000, forMapAt: 0))
+
+        let point = panel.convert(NSPoint(x: box.midX, y: box.midY + 2), to: nil)
+        panel.mouseDown(with: try XCTUnwrap(
+            NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [],
+                               timestamp: 0, windowNumber: panel.window?.windowNumber ?? 0,
+                               context: nil, eventNumber: 0, clickCount: 1, pressure: 1)))
+
+        XCTAssertEqual(selected.map(\.1), [0x30000])
+    }
+
+    /// Dragging the band is a scrollbar gesture and never snaps: a drag that
+    /// passes a mark must not jump to it.
+    func testDraggingTheBandDoesNotSnap() throws {
+        let (controller, panel) = try makeWindow(sizes: (0x40000, nil))
+        controller.windowModel.bookmarkStore.add(rowContaining: 0x30000)
+        controller.setMinimapRenderModeForTesting(.overview)
+        XCTAssertTrue(pumpUntil(2.0) { panel.renderMode == .overview && !panel.overviewSummaries.isEmpty })
+        panel.display()
+        var selected: [UInt64] = []
+        var scrolled: [UInt64] = []
+        panel.onSelectOffset = { selected.append($1) }
+        panel.onScrollToOffset = { scrolled.append($0) }
+        let band = try XCTUnwrap(panel.viewportRects().first)
+        let box = try XCTUnwrap(panel.bookmarkMarkRect(row: 0x30000, forMapAt: 0))
+
+        func event(_ type: NSEvent.EventType, _ y: CGFloat) throws -> NSEvent {
+            let point = panel.convert(NSPoint(x: panel.bounds.midX, y: y), to: nil)
+            return try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                                                    timestamp: 0,
+                                                    windowNumber: panel.window?.windowNumber ?? 0,
+                                                    context: nil, eventNumber: 0,
+                                                    clickCount: 1, pressure: 1))
+        }
+
+        panel.mouseDown(with: try event(.leftMouseDown, band.midY))
+        panel.mouseDragged(with: try event(.leftMouseDragged, box.midY))
+        panel.mouseUp(with: try event(.leftMouseUp, box.midY))
+
+        XCTAssertTrue(selected.isEmpty, "grabbing the band never moves the caret")
+        XCTAssertFalse(scrolled.isEmpty, "it scrolls")
+        XCTAssertFalse(scrolled.contains(0x30000),
+                       "and it does not jump to the bookmark it dragged past")
+    }
+
     // MARK: - Repainting (§19.9)
 
     /// A bookmark changes nothing about the file's picture, so only the margins

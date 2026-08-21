@@ -1838,10 +1838,11 @@ final class MinimapView: NSView, NSViewToolTipOwner {
             dragGrabOffset = point.y - band.minY
             return
         }
-        // Off the band: the click means the byte drawn under it, so the caret
-        // goes there and the pane centres on it. The drag then continues from
-        // the band's middle, so the press can still turn into a scroll.
-        if let (mapIndex, offset) = byteOffset(at: point) {
+        // Off the band: the click means the byte drawn under it — or the row of a
+        // bookmark whose mark it landed near (§19.6) — so the caret goes there and
+        // the pane centres on it. The drag then continues from the band's middle,
+        // so the press can still turn into a scroll.
+        if let (mapIndex, offset) = snappedOffset(at: point) {
             onSelectOffset?(mapIndex, offset)
         }
         // The band comes from the panes' reported visible range, so it can be
@@ -1856,6 +1857,42 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         guard let grab = dragGrabOffset, let height = viewportRects().first?.height else { return }
         let point = convert(event.locationInWindow, from: nil)
         requestScroll(bandTop: point.y - grab, bandHeight: height)
+    }
+
+    /// How near a bookmark's mark a click may land and still mean that bookmark
+    /// (§19.6). Internal so tests can click just inside and just outside it.
+    static let bookmarkSnapDistance: CGFloat = 4
+
+    /// What a click on the panel means: the row of a bookmark whose mark it
+    /// landed on or near, else the byte drawn under it (§19.6).
+    ///
+    /// Snapping is what makes a mark on a full-dump overview reachable at all: a
+    /// row there is kilobytes, so the pointer can be dead on the arrow and still
+    /// resolve to an offset a dozen rows off the bookmark. The mark is the target
+    /// the user aimed at, and this is the only place that reads it that way —
+    /// dragging the band is a scrollbar gesture and never snaps, since a
+    /// continuous scroll that jumped to a bookmark would fight the drag.
+    func snappedOffset(at point: NSPoint) -> (mapIndex: Int, offset: UInt64)? {
+        nearestBookmarkMark(to: point) ?? byteOffset(at: point)
+    }
+
+    /// The bookmark whose mark is nearest `point`, within the snap distance of
+    /// it. Nearest by the mark's own centre line: two marks a few rows apart on
+    /// an overview can both be in range, and the one aimed at is the closer.
+    private func nearestBookmarkMark(to point: NSPoint) -> (mapIndex: Int, offset: UInt64)? {
+        var best: (mapIndex: Int, offset: UInt64, distance: CGFloat)?
+        for index in maps.indices {
+            for bookmark in bookmarks {
+                guard let box = bookmarkMarkRect(row: bookmark.row, forMapAt: index),
+                      box.insetBy(dx: -Self.bookmarkSnapDistance,
+                                  dy: -Self.bookmarkSnapDistance).contains(point) else { continue }
+                let distance = abs(point.y - box.midY)
+                if best == nil || distance < best!.distance {
+                    best = (index, bookmark.row, distance)
+                }
+            }
+        }
+        return best.map { (mapIndex: $0.mapIndex, offset: $0.offset) }
     }
 
     /// The map and byte a point on the panel lands on, by the *window* mapping —
