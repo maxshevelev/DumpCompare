@@ -82,6 +82,12 @@ final class MainViewController: NSViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         wireExternalChangeDetection()
+        // A bookmark changed: the panes have already repainted their row, and
+        // what is left for the window is the naming popover, which must not
+        // outlive the mark it is naming (§20.3).
+        windowModel.onBookmarksChanged = { [weak self] row in
+            self?.dismissNamingPopoverIfItsMarkIsGone(row: row)
+        }
         // Apply the Layout settings tab's direction change to an open comparison
         // immediately; outside comparison mode the value is stored and the next
         // comparison opens with it (§6).
@@ -279,6 +285,7 @@ final class MainViewController: NSViewController {
             pane.offsetMenuProvider = { [weak self] offset in
                 self?.makeOffsetMenu(for: paneModel, offset: offset) ?? NSMenu()
             }
+            wireBookmarkDoubleClick(pane, for: paneModel)
             // Close button: closing the last file returns to empty mode (§3.5).
             pane.onClose = { [weak self] in self?.closePane(at: 0) }
             // Closing the Search All panel stops the in-flight search (§11).
@@ -333,6 +340,10 @@ final class MainViewController: NSViewController {
             pane2View.offsetMenuProvider = { [weak self] offset in
                 self?.makeOffsetMenu(for: pane2, offset: offset) ?? NSMenu()
             }
+            // A double click on an address marks that row, in whichever pane
+            // was clicked (§20.3).
+            wireBookmarkDoubleClick(pane1View, for: pane1)
+            wireBookmarkDoubleClick(pane2View, for: pane2)
             // Comparison-mode drops target the hovered pane (§4.3).
             pane1View.enableFileDrop()
             pane2View.enableFileDrop()
@@ -2431,18 +2442,43 @@ final class MainViewController: NSViewController {
     /// Return the one for "mark it and call it this". A row that is already
     /// marked is unmarked on the spot, with no popover to dismiss.
     private func toggleBookmarkInPane(_ pane: PaneViewModel, rowContaining offset: UInt64) {
-        let store = windowModel.bookmarkStore
         guard pane.isOpen else { return }
-        if store.remove(rowContaining: offset) { return }
+        if windowModel.bookmarkStore.remove(rowContaining: offset) { return }
+        markAndNameBookmark(in: pane, rowContaining: offset)
+    }
+
+    /// Marks the row containing `offset` and opens the naming popover on the new
+    /// mark. The mark is made first, so it is visible while its name is typed —
+    /// and `existingName: nil` is what tells the popover it is naming a mark that
+    /// was just made, so its Esc removes it rather than keeping a name (§20.3).
+    private func markAndNameBookmark(in pane: PaneViewModel, rowContaining offset: UInt64) {
+        let store = windowModel.bookmarkStore
         let row = BookmarkStore.row(containing: offset)
         store.add(rowContaining: row)
-        // `existingName: nil` is what tells the popover it is naming a mark that
-        // was just made — so its Esc removes the mark rather than keeping a name.
         presentBookmarkNamePopover(
             in: pane, row: row, existingName: nil,
             onCommit: { store.rename(rowContaining: row, to: $0) },
             onCancel: { store.remove(rowContaining: row) }
         )
+    }
+
+    /// A double click on an address marks that row and names it (§20.3) — the
+    /// mouse gesture for ⌘D, except that it only ever marks. A double click that
+    /// also unmarked would make the gesture destructive: the pointer covers the
+    /// mark it is aimed at, and a click landing one row off would silently take
+    /// an existing bookmark away. An already-marked row is left exactly as it is.
+    func addBookmarkByDoubleClick(in pane: PaneViewModel, rowContaining offset: UInt64) {
+        guard pane.isOpen,
+              windowModel.bookmarkStore.bookmark(atRowContaining: offset) == nil else { return }
+        markAndNameBookmark(in: pane, rowContaining: offset)
+    }
+
+    /// Wires a pane view's Offset-column double click to the marking gesture, so
+    /// it resolves THIS pane even when it is not the active one (§20.3).
+    func wireBookmarkDoubleClick(_ paneView: FilePaneView, for pane: PaneViewModel) {
+        paneView.onOffsetDoubleClick = { [weak self] offset in
+            self?.addBookmarkByDoubleClick(in: pane, rowContaining: offset)
+        }
     }
 
     /// Renames the mark on `pane`'s row containing `offset`, in the same popover
@@ -2468,27 +2504,63 @@ final class MainViewController: NSViewController {
         let cancel: () -> Void
     }
 
-    /// Where a naming request goes. Nil means the real popover on the pane's
-    /// mark; a test replaces it to capture the request instead, because a
-    /// popover anchored in a window that is never on screen closes the instant
-    /// it opens — the commands' own behaviour is what those tests are about.
-    var bookmarkNamingPresenter: ((BookmarkNamingRequest) -> Void)?
+    /// Where a naming request goes, returning how to dismiss what it presented.
+    /// Nil means the real popover on the pane's mark; a test replaces it to
+    /// capture the request instead, because a popover anchored in a window that
+    /// is never on screen closes the instant it opens — the commands' own
+    /// behaviour is what those tests are about.
+    var bookmarkNamingPresenter: ((BookmarkNamingRequest) -> () -> Void)?
 
-    /// Presents the naming popover on `pane`'s mark (§20.3).
+    /// The naming session on screen: the row it is about, and how to close it
+    /// without saving. Held because it must not outlive its mark (§20.3).
+    private var openNaming: (row: UInt64, dismiss: () -> Void)?
+
+    /// The row a naming popover is open for, if any.
+    var namingRow: UInt64? { openNaming?.row }
+
+    /// Presents the naming popover on `pane`'s mark (§20.3), replacing any
+    /// session already on screen — ⌘D on another row while one is open would
+    /// otherwise leave two panels up, one of them about a row the user has moved
+    /// on from.
     private func presentBookmarkNamePopover(
         in pane: PaneViewModel, row: UInt64, existingName: String?,
         onCommit: @escaping (String) -> Void, onCancel: @escaping () -> Void
     ) {
-        let request = BookmarkNamingRequest(pane: pane, row: row, existingName: existingName,
-                                            commit: onCommit, cancel: onCancel)
+        openNaming?.dismiss()
+        openNaming = nil
+        let request = BookmarkNamingRequest(
+            pane: pane, row: row, existingName: existingName,
+            commit: { [weak self] name in
+                self?.openNaming = nil
+                onCommit(name)
+            },
+            cancel: { [weak self] in
+                self?.openNaming = nil
+                onCancel()
+            }
+        )
         if let bookmarkNamingPresenter {
-            bookmarkNamingPresenter(request)
+            openNaming = (row, bookmarkNamingPresenter(request))
             return
         }
-        filePaneView(for: pane)?.presentBookmarkNamePopover(
+        guard let paneView = filePaneView(for: pane) else { return }
+        let controller = paneView.presentBookmarkNamePopover(
             rowContaining: row, existingName: existingName,
-            onCommit: onCommit, onCancel: onCancel
+            onCommit: request.commit, onCancel: request.cancel
         )
+        openNaming = (row, { controller.abandon() })
+    }
+
+    /// Closes the naming popover when the mark it is naming disappears. Every
+    /// removal arrives here through the window's bookmark signal — ⌘D (whose key
+    /// equivalent reaches the menu through an open popover), the context menu,
+    /// and later the list — so no removal path has to remember to do this
+    /// (§20.3).
+    private func dismissNamingPopoverIfItsMarkIsGone(row: UInt64) {
+        guard let openNaming, openNaming.row == row,
+              windowModel.bookmarkStore.bookmark(atRowContaining: row) == nil else { return }
+        self.openNaming = nil
+        openNaming.dismiss()
     }
 
     /// ⌘D: the active pane's caret row.

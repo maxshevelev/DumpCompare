@@ -230,6 +230,14 @@ into two:
   row's address carries a tooltip with the bookmark's name — its address when
   unnamed — and the pane's accessibility value reads the name out with the
   caret's offset.
+- **A double click on an address marks the row**, with the same popover — the
+  mouse gesture for ⌘D. It never unmarks: the pointer covers the mark it is aimed
+  at, so a toggle there would take an existing bookmark away on a near miss.
+- The popover cannot outlive its mark. ⌘D reaches the menu through an open
+  popover, so the row can be unmarked while the name is being typed; the window's
+  bookmark signal closes the popover then, which also covers the context menu and
+  the list to come. Marking another row replaces an open popover rather than
+  stacking a second one.
 
 ## Spec
 

@@ -15,6 +15,12 @@ final class WindowViewModel {
     /// session-only — they outlive a file being closed and reopened.
     let bookmarkStore = BookmarkStore()
 
+    /// The window's own view of a bookmark change, after the panes have been
+    /// told: what the controller watches, for the things that are neither pane's
+    /// business — a naming popover that must not outlive the mark it is naming
+    /// (§20.3), and later the open form's table.
+    var onBookmarksChanged: ((UInt64) -> Void)?
+
     init() {
         // Both panes read the same list; the reference is set once here rather
         // than on every mode apply, because the panes are persistent objects.
@@ -26,6 +32,7 @@ final class WindowViewModel {
         bookmarkStore.onChange = { [weak self] row in
             self?.pane1.onBookmarksChanged?(row)
             self?.pane2.onBookmarksChanged?(row)
+            self?.onBookmarksChanged?(row)
         }
     }
 

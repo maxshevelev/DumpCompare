@@ -175,6 +175,14 @@ final class FilePaneView: NSView {
         didSet { hexView.offsetMenuProvider = offsetMenuProvider }
     }
 
+    /// Fired when the user double-clicks an address in the Offset column, with
+    /// that row's start offset — the mouse gesture for marking a row (§20.3).
+    /// Wired by MainViewController so it resolves THIS pane, as the offset menu
+    /// does.
+    var onOffsetDoubleClick: ((UInt64) -> Void)? {
+        didSet { hexView.onOffsetDoubleClick = onOffsetDoubleClick }
+    }
+
     /// Fired when the user clicks anywhere in the pane (activates it).
     var onActivate: (() -> Void)?
     /// Fired when the user double-clicks the header: expand this pane so its

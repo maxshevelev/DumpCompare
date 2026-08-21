@@ -730,7 +730,10 @@ final class BookmarkTests: XCTestCase {
     private func captureNaming(_ controller: MainViewController)
         -> () -> [MainViewController.BookmarkNamingRequest] {
         var requests: [MainViewController.BookmarkNamingRequest] = []
-        controller.bookmarkNamingPresenter = { requests.append($0) }
+        controller.bookmarkNamingPresenter = { request in
+            requests.append(request)
+            return {}      // dismissing a captured request needs no popover
+        }
         return { requests }
     }
 
@@ -869,6 +872,162 @@ final class BookmarkTests: XCTestCase {
         // ⇧⌘D and matches shift+D, with no `.shift` in the mask (as Save As…).
         XCTAssertEqual(rename.keyEquivalent, "D")
         XCTAssertEqual(rename.keyEquivalentModifierMask, [.command])
+    }
+
+    /// ⌘D reaches the menu through an open popover, so the row can be unmarked
+    /// while its name is being typed. The popover must go with the mark: a panel
+    /// naming a bookmark that no longer exists is nonsense.
+    func testUnmarkingTheRowClosesItsNamingPopover() throws {
+        let (controller, close) = try makeControllerWithFile()
+        defer { close() }
+        var dismissals = 0
+        controller.bookmarkNamingPresenter = { _ in { dismissals += 1 } }
+        controller.windowModel.pane1.moveCaret(to: 20)
+
+        controller.toggleBookmark()
+        XCTAssertEqual(controller.namingRow, 16, "the popover is open on the new mark")
+
+        controller.toggleBookmark()      // ⌘D again: the mark goes
+        XCTAssertTrue(controller.windowModel.bookmarkStore.bookmarks.isEmpty)
+        XCTAssertEqual(dismissals, 1, "and the popover goes with it")
+        XCTAssertNil(controller.namingRow)
+    }
+
+    /// Any path that removes the mark closes the popover, not just ⌘D: the
+    /// window's bookmark signal is what drives it, so the context menu — and the
+    /// list, later — need remember nothing.
+    func testRemovingTheMarkFromAnywhereClosesTheNamingPopover() throws {
+        let (controller, close) = try makeControllerWithFile()
+        defer { close() }
+        var dismissals = 0
+        controller.bookmarkNamingPresenter = { _ in { dismissals += 1 } }
+        controller.windowModel.pane1.moveCaret(to: 20)
+
+        controller.toggleBookmark()
+        controller.windowModel.bookmarkStore.remove(rowContaining: 20)
+        XCTAssertEqual(dismissals, 1)
+        XCTAssertNil(controller.namingRow)
+    }
+
+    /// A change to a DIFFERENT row leaves the popover alone — it is still naming
+    /// a mark that exists.
+    func testAChangeElsewhereLeavesThePopoverOpen() throws {
+        let (controller, close) = try makeControllerWithFile()
+        defer { close() }
+        var dismissals = 0
+        controller.bookmarkNamingPresenter = { _ in { dismissals += 1 } }
+        controller.windowModel.pane1.moveCaret(to: 20)
+
+        controller.toggleBookmark()
+        controller.windowModel.bookmarkStore.add(rowContaining: 40, name: "elsewhere")
+        XCTAssertEqual(dismissals, 0)
+        XCTAssertEqual(controller.namingRow, 16)
+    }
+
+    /// ⌘D on another row while a popover is open opens the new one and closes the
+    /// old — two panels, one of them about a row the user has moved on from, is
+    /// not a state to be in.
+    func testMarkingAnotherRowReplacesTheOpenPopover() throws {
+        let (controller, close) = try makeControllerWithFile()
+        defer { close() }
+        var dismissals = 0
+        controller.bookmarkNamingPresenter = { _ in { dismissals += 1 } }
+        controller.windowModel.pane1.moveCaret(to: 20)
+        controller.toggleBookmark()
+
+        controller.windowModel.pane1.moveCaret(to: 40)
+        controller.toggleBookmark()
+        XCTAssertEqual(dismissals, 1, "the first popover was closed")
+        XCTAssertEqual(controller.namingRow, 32, "and the second is open on its own row")
+        XCTAssertEqual(controller.windowModel.bookmarkStore.bookmarks.map(\.row), [16, 32],
+                       "both marks stand: the first one was named, not abandoned")
+    }
+
+    /// Abandoning is neither saving nor cancelling: the popover just goes.
+    func testAbandonRunsNeitherCallback() throws {
+        var events: [String] = []
+        let controller = BookmarkNamePopoverController(
+            row: 0x10, existingName: nil,
+            onCommit: { events.append("commit:\($0)") },
+            onCancel: { events.append("cancel") }
+        )
+        controller.loadViewIfNeeded()
+        controller.nameField.stringValue = "half typed"
+        controller.abandon()
+        XCTAssertEqual(events, [], "nothing to name, nothing to take back")
+        controller.commit()
+        XCTAssertEqual(events, [], "and it has settled: a later Return does nothing")
+    }
+
+    // MARK: - Marking with the mouse (§20.3)
+
+    /// A double click on an address marks that row and names it, like ⌘D.
+    func testDoubleClickingAnAddressMarksItsRow() throws {
+        let (controller, close) = try makeControllerWithFile(bytes: 64)
+        defer { close() }
+        let store = controller.windowModel.bookmarkStore
+        let requests = captureNaming(controller)
+        let pane = controller.windowModel.pane1
+
+        controller.addBookmarkByDoubleClick(in: pane, rowContaining: 0x2A)
+        XCTAssertEqual(store.bookmarks.map(\.row), [0x20], "the clicked row is marked")
+        let request = try XCTUnwrap(requests().first, "and named in the same popover as ⌘D's")
+        XCTAssertEqual(request.row, 0x20)
+        XCTAssertNil(request.existingName, "Esc takes the new mark away again")
+        request.commit("vendor block")
+        XCTAssertEqual(store.bookmarks, [Bookmark(row: 0x20, name: "vendor block")])
+    }
+
+    /// A double click never unmarks: the pointer covers the mark it is aimed at,
+    /// so a toggle here would take an existing bookmark away on a near miss. The
+    /// row is left exactly as it was, name and all.
+    func testDoubleClickingAMarkedRowLeavesItAlone() throws {
+        let (controller, close) = try makeControllerWithFile(bytes: 64)
+        defer { close() }
+        let store = controller.windowModel.bookmarkStore
+        let requests = captureNaming(controller)
+        store.add(rowContaining: 0x20, name: "ME region")
+
+        controller.addBookmarkByDoubleClick(in: controller.windowModel.pane1, rowContaining: 0x2A)
+        XCTAssertEqual(store.bookmarks, [Bookmark(row: 0x20, name: "ME region")],
+                       "the mark and its name survive")
+        XCTAssertTrue(requests().isEmpty, "and nothing is asked")
+    }
+
+    /// The gesture belongs to the Offset column: a double click on a byte, or on
+    /// the decoded text, is not a marking gesture — those columns select.
+    func testOnlyTheOffsetColumnMarksOnDoubleClick() throws {
+        let url = try tempFile([UInt8](repeating: 0x11, count: 64))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let pane = PaneViewModel()
+        try pane.open(url: url)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        let paneView = try host(pane, in: window, right: false)
+        let hex = try XCTUnwrap(paneView.scrollView.documentView as? HexView)
+        var marked: [UInt64] = []
+        paneView.onOffsetDoubleClick = { marked.append($0) }
+
+        let layout = hex.hexLayout
+        func click(at local: CGPoint, count: Int) {
+            let event = NSEvent.mouseEvent(
+                with: .leftMouseDown, location: hex.convert(local, to: nil), modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 0, clickCount: count, pressure: 1)!
+            hex.mouseDown(with: event)
+        }
+
+        click(at: CGPoint(x: layout.offsetColumnFrame(row: 2).midX,
+                          y: layout.rowFrame(row: 2).midY), count: 1)
+        XCTAssertTrue(marked.isEmpty, "one click places the caret, as before")
+
+        click(at: CGPoint(x: layout.offsetColumnFrame(row: 2).midX,
+                          y: layout.rowFrame(row: 2).midY), count: 2)
+        XCTAssertEqual(marked, [0x20], "a double click on the address marks its row")
+
+        click(at: CGPoint(x: layout.hexByteFrame(row: 1, column: 3).midX,
+                          y: layout.rowFrame(row: 1).midY), count: 2)
+        XCTAssertEqual(marked, [0x20], "a double click on a byte is not a marking gesture")
     }
 
     // MARK: - Naming: the context menu (§20.3)

@@ -1609,6 +1609,20 @@ height in both, which is the whole point of it in a comparison.
   the surprising outcome.
 - ⌘D on a row that is already marked removes the mark on the spot, with no
   popover: there is nothing to name.
+- A **double click on an address** in the Offset column marks that row and names
+  it, exactly as ⌘D does — the mouse gesture for the same act. It only ever
+  marks: a double click that also unmarked would be destructive, because the
+  pointer covers the mark it is aimed at and a click landing a row off would
+  silently take an existing bookmark away. A double click on an already-marked
+  row leaves it exactly as it is, name and all, and the gesture belongs to the
+  Offset column only — a double click in the hex or decoded-text columns still
+  selects.
+- The naming popover never outlives the mark it is naming. ⌘D's key equivalent
+  reaches the menu through an open popover, so the row can be unmarked while its
+  name is being typed; the popover then closes, saving nothing and undoing
+  nothing. Any removal path does this, because it follows from the bookmark
+  change itself, not from the command that caused it. Marking another row while
+  a popover is open likewise replaces it rather than leaving two panels up.
 - Edit ▸ Rename Bookmark… (⇧⌘D) opens the same popover on an existing mark, with
   its current name selected so typing replaces it; Esc leaves that name alone.
   The command is enabled only when the caret's row carries a mark — ⌘D is how a

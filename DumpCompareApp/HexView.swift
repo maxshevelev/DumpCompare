@@ -185,6 +185,10 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// right-click falls through to `super` unchanged.
     var offsetMenuProvider: ((UInt64) -> NSMenu)?
 
+    /// Called when an address in the Offset column is double-clicked, with that
+    /// row's start offset — the mouse gesture for marking a row (§20.3).
+    var onOffsetDoubleClick: ((UInt64) -> Void)?
+
     /// Ideal width of the hex grid (offset column + hex + ASCII). The window
     /// delegate uses this to zoom-to-fit (§3.1) instead of zooming to max.
     var hexContentWidth: CGFloat { currentLayout.contentWidth }
@@ -1796,6 +1800,15 @@ final class HexView: NSView, NSViewToolTipOwner {
 
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
+        // A double click on an address marks that row (§20.3). The click that
+        // came before it has already placed the caret there, which is where the
+        // gesture would leave it anyway; the second click adds the mark instead
+        // of placing the caret again.
+        if event.clickCount == 2,
+           let offset = offsetColumnOffset(at: convert(event.locationInWindow, from: nil)) {
+            onOffsetDoubleClick?(offset)
+            return
+        }
         mouseDownLocation = convert(event.locationInWindow, from: nil)
         // A shift-click extends immediately; an unmodified click needs to leave
         // the dead zone before the selection engages.
@@ -1987,6 +2000,17 @@ final class HexView: NSView, NSViewToolTipOwner {
         let region: HexInputRegion = (point.x >= asciiStart && point.x < asciiStart + layout.asciiColumnWidth)
             ? .ascii : .hex
         delegate.hexEditor(self, didClickAt: end, region: region, extendSelection: true, nibble: 0)
+    }
+
+    /// The row-start offset of the address under `point`, or nil when the point
+    /// is not on one — the hex or ASCII columns, or past the last row (§20.3).
+    private func offsetColumnOffset(at point: CGPoint) -> UInt64? {
+        guard let dataSource else { return nil }
+        let layout = currentLayout
+        let rowCount = layout.rowCount(fileSize: dataSource.fileSize)
+        guard let hit = layout.hitTest(point: point, rowCount: rowCount),
+              case .offset = hit.column else { return nil }
+        return layout.byteOffset(row: hit.row, column: 0)
     }
 
     private func handleMouse(_ event: NSEvent, extendSelection: Bool) {

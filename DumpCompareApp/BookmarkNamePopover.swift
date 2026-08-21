@@ -140,6 +140,17 @@ final class BookmarkNamePopoverController: NSViewController, NSTextFieldDelegate
         popover?.performClose(nil)
     }
 
+    /// Closes without saving and without undoing: the mark this was naming is
+    /// gone. ⌘D reaches the menu through an open popover, so the row can be
+    /// unmarked while its name is being typed — and a panel naming a bookmark
+    /// that no longer exists is nonsense (§20.3). Neither callback runs: there
+    /// is nothing to name and nothing to take back.
+    func abandon() {
+        guard !settled else { return }
+        settled = true
+        popover?.performClose(nil)
+    }
+
     /// Backs out: removes a mark that was created for this popover, or leaves an
     /// existing name as it was.
     func cancel() {
