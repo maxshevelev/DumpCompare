@@ -10,6 +10,25 @@ final class WindowViewModel {
     var pane1 = PaneViewModel()
     var pane2 = PaneViewModel()
 
+    /// The window's bookmark list (§20): one list serves both panes, so a
+    /// marked row shows at the same height in a comparison. Bookmarks are
+    /// session-only — they outlive a file being closed and reopened.
+    let bookmarkStore = BookmarkStore()
+
+    init() {
+        // Both panes read the same list; the reference is set once here rather
+        // than on every mode apply, because the panes are persistent objects.
+        pane1.bookmarkStore = bookmarkStore
+        pane2.bookmarkStore = bookmarkStore
+        // The store's single change signal fans out to both panes: a bookmark
+        // is an absolute offset (§8), so the row a mark appears on is the same
+        // height in both panes of a comparison, and both must redraw it (§20).
+        bookmarkStore.onChange = { [weak self] row in
+            self?.pane1.onBookmarksChanged?(row)
+            self?.pane2.onBookmarksChanged?(row)
+        }
+    }
+
     private(set) var activePaneIndex = 0
 
     var activePane: PaneViewModel {

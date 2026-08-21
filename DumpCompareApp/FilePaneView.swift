@@ -486,6 +486,12 @@ final class FilePaneView: NSView {
         viewModel.onMirroredSelectionChanged = { [weak self] in
             self?.hexView.reloadSelection()
         }
+        // A bookmark mark appeared or disappeared on a row (§20). The list is
+        // shared by both panes, so the same row repaints in each — a redraw
+        // only; the bytes, selection, and scroll are untouched.
+        viewModel.onBookmarksChanged = { [weak self] row in
+            self?.hexView.redrawRow(startingAt: row)
+        }
     }
 
     /// Makes the hex view first responder (e.g. when the pane becomes active).

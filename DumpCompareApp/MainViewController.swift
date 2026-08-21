@@ -2397,6 +2397,19 @@ final class MainViewController: NSViewController {
         WordSize.set(size)
     }
 
+    // MARK: - Bookmarks (§20)
+
+    /// Edit > Add Bookmark (⌘D): toggle a bookmark on the active pane's caret
+    /// row (§20). A bookmark marks a row, not a byte — the caret's offset is
+    /// rounded down to its row — and the list is shared by both panes, so the
+    /// same row is marked in both panes of a comparison. Pressed again on an
+    /// already-bookmarked row it removes the mark.
+    @objc func toggleBookmark() {
+        let pane = activePane
+        guard pane.isOpen else { return }
+        windowModel.bookmarkStore.toggle(rowContaining: pane.hexSelection().start)
+    }
+
     // MARK: - Dialogs (§10)
 
     @objc func goToPosition() {
@@ -2993,7 +3006,8 @@ extension MainViewController: NSMenuItemValidation {
              #selector(selectBlock),
              #selector(goToPosition),
              #selector(findPattern),
-             #selector(selectAllBytes):
+             #selector(selectAllBytes),
+             #selector(toggleBookmark):
             return activePane.isOpen
         case #selector(revertDocument):
             // Nothing on disk to revert an untitled document to.

@@ -24,6 +24,10 @@ protocol HexViewDataSource: AnyObject {
     /// rows past this pane's own EOF are simply empty.
     var scrollExtent: UInt64 { get }
     func hexByteStates(in range: Range<UInt64>) -> [HexByteState]
+    /// The bookmarked rows in `range` (a range of offsets), for the offset
+    /// column's per-row drawing (§20). A set per range rather than a call per
+    /// row, the same shape as `hexByteStates`.
+    func hexBookmarkedRows(in range: Range<UInt64>) -> Set<UInt64>
     func hexSelection() -> SelectionModel
     func hexCaretNibble() -> Int
     func hexInputRegion() -> HexInputRegion
@@ -676,12 +680,24 @@ final class HexView: NSView {
 
         let rows = layout.visibleRowRange(in: dirtyRect)
 
+        // The bookmarked rows in the drawn range, asked once per range rather
+        // than per row (§20) — the same shape as `hexByteStates`.
+        let bookmarkedRows: Set<UInt64>
+        if rows.isEmpty {
+            bookmarkedRows = []
+        } else {
+            let lower = UInt64(rows.lowerBound) * UInt64(HexLayout.bytesPerRow)
+            let upper = UInt64(rows.upperBound) * UInt64(HexLayout.bytesPerRow)
+            bookmarkedRows = dataSource.hexBookmarkedRows(in: lower..<upper)
+        }
+
         for row in rows {
             guard UInt64(row) < rowCount else { break }
             drawRow(
                 row: row, layout: layout, fileSize: fileSize,
                 selection: selection, baseline: baseline,
-                drawsOffset: drawsOffset, drawsHex: drawsHex, drawsAscii: drawsAscii
+                drawsOffset: drawsOffset, drawsHex: drawsHex, drawsAscii: drawsAscii,
+                isBookmarked: bookmarkedRows.contains(layout.byteOffset(row: row, column: 0))
             )
         }
 
@@ -729,7 +745,8 @@ final class HexView: NSView {
     /// extension).
     private func drawRow(row: Int, layout: HexLayout, fileSize: UInt64,
                          selection: SelectionModel, baseline: CGFloat,
-                         drawsOffset: Bool, drawsHex: Bool, drawsAscii: Bool) {
+                         drawsOffset: Bool, drawsHex: Bool, drawsAscii: Bool,
+                         isBookmarked: Bool) {
         let rowStart = layout.byteOffset(row: row, column: 0)
         let rowEnd = rowStart + UInt64(HexLayout.bytesPerRow)
         let rowY = layout.rowFrame(row: row).minY
@@ -737,8 +754,21 @@ final class HexView: NSView {
         // Offset column.
         if drawsOffset {
             let offsetText = String(rowStart, radix: 16, uppercase: true).leftPadded(to: layout.offsetColumnChars, with: "0")
-            draw(text: offsetText, in: layout.offsetColumnFrame(row: row),
-                 baseline: baseline, color: HexTheme.inkBlue)
+            if isBookmarked {
+                // A bookmarked row's address stands on a purple right-pointing
+                // arrow — the breakpoint-style mark the eye catches when scanning
+                // rather than reading addresses (§20). The arrow is the offset's
+                // background; the address is drawn in white on top of it, centred
+                // on the arrow's own vertical centre (the mark may not span the
+                // full row height, so the row's baseline isn't always its middle).
+                let arrowCenterY = drawBookmarkArrow(in: layout, row: row)
+                let arrowFrame = layout.offsetColumnFrame(row: row)
+                draw(text: offsetText, in: arrowFrame,
+                     baseline: baseline + (arrowCenterY - arrowFrame.midY), color: .white)
+            } else {
+                draw(text: offsetText, in: layout.offsetColumnFrame(row: row),
+                     baseline: baseline, color: HexTheme.inkBlue)
+            }
         }
 
         let states = dataSource?.hexByteStates(in: rowStart..<rowEnd) ?? []
@@ -948,6 +978,44 @@ final class HexView: NSView {
             path.lineWidth = 1
             path.stroke()
         }
+    }
+
+    /// The bookmark mark: a right-pointing arrow (a rectangle with a pointed
+    /// right end) in the bookmark colour that is the marked offset's background
+    /// — the breakpoint-style mark the eye catches when scanning rather than
+    /// reading addresses (§20). The rectangular part spans the Offset column so
+    /// the address sits on it; the tip reaches into the gap before the hex
+    /// column, never touching it. Corners are rounded for a softer marker.
+    /// Returns the arrow's vertical centre so the address can be drawn centred
+    /// on the mark itself rather than on the row (the arrow may not span the
+    /// full row height).
+    private func drawBookmarkArrow(in layout: HexLayout, row: Int) -> CGFloat {
+        let frame = layout.offsetColumnFrame(row: row)
+        let tip: CGFloat = min(layout.charWidth * 1.5, 12)
+        let radius: CGFloat = 3
+        let top = frame.minY
+        let bottom = frame.maxY
+        let left = frame.minX
+        let right = frame.maxX
+        let midY = (top + bottom) / 2
+        // Pentagon vertices, clockwise from top-left; the tip is the rightmost.
+        let points = [
+            NSPoint(x: left, y: top),
+            NSPoint(x: right, y: top),
+            NSPoint(x: right + tip, y: midY),
+            NSPoint(x: right, y: bottom),
+            NSPoint(x: left, y: bottom),
+        ]
+        let path = NSBezierPath()
+        path.move(to: points[0])
+        for i in 1...points.count {
+            path.appendArc(from: points[i % points.count],
+                           to: points[(i + 1) % points.count], radius: radius)
+        }
+        path.close()
+        HexTheme.bookmarkColor.setFill()
+        path.fill()
+        return midY
     }
 
     /// Closed contours that mirror the opposite pane — one loop around the span
@@ -1428,6 +1496,17 @@ final class HexView: NSView {
         let (row, _) = layout.rowColumn(of: selection.start)
         let frame = layout.rowFrame(row: row)
         setNeedsDisplay(frame.insetBy(dx: 0, dy: -3))
+    }
+
+    /// Redraws the row whose start offset is `rowStart` without scrolling — a
+    /// bookmark mark appeared or disappeared there (§20). The mark is the
+    /// offset's arrow (the Offset column and its right-pointing tip), so the
+    /// row's frame repaints. Off-screen rows are marked dirty too: a
+    /// layer-backed view keeps their old pixels until they are redrawn.
+    func redrawRow(startingAt rowStart: UInt64) {
+        let layout = currentLayout
+        let row = Int(rowStart / UInt64(HexLayout.bytesPerRow))
+        setNeedsDisplay(layout.rowFrame(row: row))
     }
 
     /// Scrolls the row containing `offset` to the vertical centre of the visible
@@ -1922,6 +2001,14 @@ enum HexTheme {
     /// Caret colour in insert mode: a red vertical line at the byte boundary,
     /// the classic "insert" caret, distinct from the blue overwrite bar.
     static let insertCaretColor = NSColor.systemRed
+
+    /// Bookmark colour (§20). The SDK has no semantic bookmark colour and the
+    /// app's palette is otherwise spoken for — red is modified bytes and the
+    /// insert caret, orange is a difference, the accent is the caret and mirror
+    /// frames, ink blue is the addresses — so purple, which is free, marks a
+    /// bookmarked row. It reads as a mark rather than a state: green would say
+    /// "matches", which a bookmark says nothing about.
+    static let bookmarkColor = NSColor.systemPurple
 
     /// Ink blue for the column header and the offset column (§6): a pale,
     /// slightly desaturated blue that reads as a quiet secondary element next

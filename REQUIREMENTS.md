@@ -307,6 +307,15 @@ Visual states:
 5. Missing EOF in shorter file:
    - display empty cells with a distinct muted background or separator style.
 
+6. Bookmarked row (§20):
+   - a state of the row's Offset column, not of its byte cells: the address
+     stands on a right-pointing arrow in the bookmark colour — the column filled
+     with the bookmark colour and its right end pointed into the gap before the
+     hex column, the address drawn in white on top.
+   - it is orthogonal to states 1–5: a bookmarked row may also be different,
+     modified, or selected in its byte cells, and the arrow is drawn on top of
+     the Offset column without disturbing them.
+
 =====================================================================
 7. EDITING MODEL
 =====================================================================
@@ -1519,3 +1528,64 @@ The panes' visible slice is drawn as a translucent band over the map.
 - The panel need not be a keyboard focus stop: every navigation it offers
   must already be reachable from the keyboard in the panes (§10) and its
   toggle from the View menu (§15).
+
+=====================================================================
+20. BOOKMARKS
+=====================================================================
+
+A bookmark is a marked row of the hex dump — an address the user has decided is
+worth coming back to. Comparison is by absolute offset (§8), so a bookmark is an
+offset, not "an offset in file A": one list serves both panes and marks the same
+height in both, which is the whole point of it in a comparison.
+
+20.1 What a bookmark marks
+
+- A bookmark marks a row, not a byte: its offset is rounded down to a multiple of
+  16 (the bytes per row). The places a bookmark has to be visible are
+  row-granular by construction — the Offset column carries one address per row,
+  and a minimap row is one hex row (§19) — so byte precision would be invisible
+  exactly where the mark is meant to be seen. It also removes the "two bookmarks
+  in one row" ambiguity from the drawing.
+- Bookmarks are absolute addresses: an insert or a delete shifts the bytes, not
+  the bookmark (§8). A bookmark past the end of a file stays in the list and is
+  simply not drawn where the file does not reach (§9).
+- Bookmarks are session-only: they live as long as the window, not the file.
+
+20.2 The model
+
+- A bookmark is a value: the row it marks (always a multiple of 16) and a name;
+  an empty name means "show the address".
+- The store keeps the bookmarks sorted by row and answers the questions the
+  panes ask: the bookmark on the row containing an offset, a toggle of the mark
+  on that row (adds an unnamed bookmark when the row is unmarked, removes it when
+  it is marked), and the set of bookmarked rows in a range of offsets — asked
+  once per drawn row range, not per row.
+- The store snaps an offset to its row (the offset rounded down to a multiple of
+  16) and fires a change signal carrying the affected row's start offset, so each
+  pane repaints just that row instead of the whole dump.
+- One instance lives on the window's view model, reached by both panes — that is
+  what makes the list shared rather than merged. The store holds no bytes and is
+  AppKit-free, so its arithmetic is unit-testable in the app suite.
+- Naming a bookmark, and the list and form that manage them, are added in later
+  stages; the model above is the current core.
+
+20.3 Marking a row
+
+- Edit ▸ Add Bookmark (⌘D) marks the active pane's caret row, unnamed. Pressed
+  again on a bookmarked row it removes the mark — the command is a toggle.
+- The command is enabled only when the active pane has a file open: with nothing
+  open there is no caret row to mark.
+- Because both panes read the same store, marking a row shows it at the same
+  height in both panes of a comparison.
+
+20.4 Rendering a marked row (§6)
+
+A marked row's address stands on a right-pointing arrow in the bookmark colour
+(systemPurple — the palette is otherwise spoken for, red modified, orange
+difference, accent caret, ink-blue addresses): the Offset column is filled with
+the bookmark colour and its right end comes to a point into the gap before the
+hex column, and the address is drawn over it in white. The mark is a state of the
+Offset column, not of the byte cells, so it is orthogonal to the difference,
+modification, and selection states (§6) and is drawn on top of the column without
+disturbing them. Both panes draw it, because both read the same store; in a
+comparison the shorter file's pane has no such row to draw (§9).
