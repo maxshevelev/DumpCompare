@@ -1,10 +1,10 @@
-# DumpCompare
+<img width="1541" height="799" alt="Screenshot 2026-08-21 at 23 15 39" src="https://github.com/user-attachments/assets/7dec99c4-34af-497e-8bdf-273708c7ead9" /># DumpCompare
 
 A macOS hex editor and binary-file comparator, written in Swift/AppKit for macOS 14+. Compare two files byte by byte — by absolute offset, no alignment tricks — and edit either one in place. No third-party dependencies.
 
 DumpCompare grew out of bench work on BIOS and EC dumps, so the comparison model stays deliberately simple: a byte at offset N is compared to the byte at offset N, nothing more. That is exactly the question a repair bench asks — *is this chip's content the same as the one that works?* — and the app is built around answering it fast, on files of the size a programmer clip actually pulls off a board.
 
-<img width="1516" height="1049" alt="Screenshot 2026-08-18 at 00 21 57" src="https://github.com/user-attachments/assets/d90588f0-0dee-4b7b-b408-958588a70e7d" />
+<img width="1541" height="799" alt="Screenshot 2026-08-21 at 23 15 39" src="https://github.com/user-attachments/assets/0ff1c54c-78b5-4f7c-94e4-53a005a782ed" />
 
 
 ## Download
