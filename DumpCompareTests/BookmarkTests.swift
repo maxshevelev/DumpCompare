@@ -1239,9 +1239,10 @@ final class BookmarkTests: XCTestCase {
 
     // MARK: - Where a name shows (§20.2)
 
-    /// Hovering a marked row's address shows what the bookmark is called;
-    /// unmarked rows show nothing, because an address needs no explaining. This
-    /// is the only place in the dump a name is visible before the list exists.
+    /// Hovering a marked row's address shows what the bookmark is called — and
+    /// only that. A row with no mark, and a mark with no name, show nothing: the
+    /// address is already drawn under the pointer, so a tooltip repeating it
+    /// would explain a thing to itself.
     func testTheMarkShowsItsNameAsATooltip() throws {
         let url = try tempFile([UInt8](repeating: 0x11, count: 64))
         defer { try? FileManager.default.removeItem(at: url) }
@@ -1269,8 +1270,8 @@ final class BookmarkTests: XCTestCase {
         XCTAssertEqual(tooltip(row: 1), "ME region")
         XCTAssertEqual(tooltip(row: 2), "", "the name belongs to its own row")
         store.rename(rowContaining: 16, to: "")
-        XCTAssertEqual(tooltip(row: 1), "0x00000010",
-                       "an unnamed mark is called by where it is")
+        XCTAssertEqual(tooltip(row: 1), "",
+                       "an unnamed mark has nothing to add to the address it is drawn on")
     }
 
     /// VoiceOver reads the name too, not just that the row is marked (§15).

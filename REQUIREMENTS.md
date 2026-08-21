@@ -1410,11 +1410,11 @@ without opening anything.
   so they are the same arrow — the bookmark's is the smaller of the two, because
   they can share a margin and the viewport is the one the eye should find first,
   and colour is what says which is which.
-- **Hovering a mark names it**: the row's address, and the name after it when the
-  bookmark has one. A mark carries no text of its own, so this is where its name
-  shows on the map — and the address is worth saying even for a named bookmark,
-  because the address is what the arrow is pointing at. Hovering anywhere else on
-  the panel shows nothing.
+- **Hovering a mark names it**: `offset: name`, or the offset alone when the
+  bookmark has no name. A mark carries no text of its own, so this is where its
+  name shows on the map — and the address belongs here even for a named bookmark,
+  because on a map the arrow's position only approximates it (a row of the
+  overview is kilobytes). Hovering anywhere else on the panel shows nothing.
 - Which margin depends on the layout. Side by side the two maps meet at the
   gutter with no padding between them, so the second map marks its rows in its
   right margin, pointing left; everywhere else the mark sits on the left.
@@ -1757,10 +1757,13 @@ height in both, which is the whole point of it in a comparison.
   *Edit Bookmark…* on a row that has something to edit. The address in the
   title is the ROW's, because a right-click on a byte marks that byte's row, and
   the title is what makes that visible.
-- A name has to be visible before the bookmark list exists (a later stage):
-  hovering a marked row's address shows the name as a tooltip — the address
-  itself when the bookmark is unnamed — and the pane's accessibility value reads
-  it out with the caret's offset (§15). Unmarked rows show no tooltip at all.
+- Hovering a marked row's address shows the bookmark's **name**, and nothing
+  else: the address is drawn under the pointer, on the mark itself, so a tooltip
+  repeating it would explain a thing to itself. An unmarked row shows no tooltip,
+  and neither does a marked row with no name — there is nothing to add. (The
+  minimap's marks do say the address, because there the arrow only approximates
+  it, §19.4.3.) The pane's accessibility value reads the name out with the
+  caret's offset (§15).
 
 20.4 Rendering a marked row (§6)
 

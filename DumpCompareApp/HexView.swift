@@ -681,8 +681,12 @@ final class HexView: NSView, NSViewToolTipOwner {
         bookmarkTooltipRect = column
     }
 
-    /// A marked row's name under the pointer. Unmarked rows return nil, which
-    /// shows no tooltip at all — the addresses themselves need no explaining.
+    /// A marked row's NAME under the pointer, and nothing else: the address is
+    /// right there under the pointer, drawn on the mark, so a tooltip repeating
+    /// it would explain a thing to itself. An unmarked row, and a marked row with
+    /// no name, return "" — no tooltip at all (§20.3). The minimap's marks say
+    /// the address as well, because there the arrow's position only approximates
+    /// it (§19.4.3).
     func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag,
               point: NSPoint, userData data: UnsafeMutableRawPointer?) -> String {
         guard let dataSource else { return "" }
@@ -690,8 +694,9 @@ final class HexView: NSView, NSViewToolTipOwner {
         guard hoveredRow >= 0 else { return "" }
         let offset = currentLayout.byteOffset(row: hoveredRow, column: 0)
         guard offset < dataSource.scrollExtent,
-              let bookmark = dataSource.hexBookmark(atRowContaining: offset) else { return "" }
-        return bookmark.displayName
+              let bookmark = dataSource.hexBookmark(atRowContaining: offset),
+              !bookmark.name.isEmpty else { return "" }
+        return bookmark.name
     }
 
     // MARK: - Accessibility (§15)

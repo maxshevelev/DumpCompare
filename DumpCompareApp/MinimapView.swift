@@ -719,16 +719,17 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         return nil
     }
 
-    /// What hovering a mark says: the row's address, and the name after it when
-    /// there is one. A mark carries no text, so this is the only place its name
-    /// shows on the map — and the address is worth saying even for a named
-    /// bookmark, because the address is what the mark is pointing at. Anywhere
-    /// else on the panel answers with nothing, which shows no tooltip at all.
+    /// What hovering a mark says: `offset: name`, or just the offset when the
+    /// bookmark has no name. A mark carries no text, so this is the only place a
+    /// name shows on the map — and the address is worth saying even for a named
+    /// bookmark, because on a map the address is the one thing the arrow's
+    /// position only approximates (§19.4.3). Anywhere else on the panel answers
+    /// with nothing, which shows no tooltip at all.
     func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag,
               point: NSPoint, userData data: UnsafeMutableRawPointer?) -> String {
         guard let bookmark = bookmark(atMarkPoint: point) else { return "" }
         let address = Bookmark.addressLabel(bookmark.row)
-        return bookmark.name.isEmpty ? address : "\(address) — \(bookmark.name)"
+        return bookmark.name.isEmpty ? address : "\(address): \(bookmark.name)"
     }
 
     /// Marks only these rectangles for repaint. Scrolling calls into the panel

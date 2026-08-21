@@ -256,8 +256,8 @@ final class BookmarkMinimapTests: XCTestCase {
 
         store.rename(rowContaining: 0x400, to: "EC table")
         XCTAssertEqual(panel.view(panel, stringForToolTip: 0, point: centre(of: box), userData: nil),
-                       "0x00000400 — EC table",
-                       "a named one says the address and the name")
+                       "0x00000400: EC table",
+                       "a named one says offset: name")
     }
 
     /// Anywhere that is not a mark says nothing, which shows no tooltip at all.
@@ -284,7 +284,7 @@ final class BookmarkMinimapTests: XCTestCase {
         let box = try XCTUnwrap(panel.bookmarkMarkRect(row: 0x800, forMapAt: 1))
 
         XCTAssertEqual(panel.view(panel, stringForToolTip: 0, point: centre(of: box), userData: nil),
-                       "0x00000800 — NVRAM")
+                       "0x00000800: NVRAM")
     }
 
     private func centre(of rect: NSRect) -> NSPoint {
