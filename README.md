@@ -1,4 +1,4 @@
-<img width="1541" height="799" alt="Screenshot 2026-08-21 at 23 15 39" src="https://github.com/user-attachments/assets/7dec99c4-34af-497e-8bdf-273708c7ead9" /># DumpCompare
+# DumpCompare
 
 A macOS hex editor and binary-file comparator, written in Swift/AppKit for macOS 14+. Compare two files byte by byte — by absolute offset, no alignment tricks — and edit either one in place. No third-party dependencies.
 
