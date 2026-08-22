@@ -17,12 +17,18 @@ guarding code the app no longer calls.
 
 ## 1. What changed (commit `2058948`)
 
-| | before | after |
-|---|---|---|
-| App tests | 674 | 633 |
-| Duplicated test helpers | 60 copies | 1 file |
-| Core tests | 291 declared / 291 run | 281 / 281 |
-| Test-body time (app) | 67.1 s | 66.4 s |
+| | before | after the first pass | finished |
+|---|---|---|---|
+| App tests | 674 | 633 | **559** |
+| Core tests | 291 declared / 291 run | 281 / 281 | **203** |
+| Test-body time (app) | 67.1 s | 66.4 s | **54.9 s** |
+| Duplicated test helpers | 60 copies | 1 file | 1 file |
+| Tests that cannot fail | ~25 found | 7 fixed | **all fixed** |
+
+The count fell by a third while coverage went up: most of the reduction is
+table-driven consolidation (one test over ten labelled cases instead of ten
+tests), and ten tests were *added* for behaviour nothing was watching. §1 is
+the first pass; §5 is what the rest of the work did.
 
 **Three tests had never run once.** `testForwardProgressNeverExceedsOne`,
 `testBackwardProgressMeasuresTheSearchedSpan` and
@@ -136,7 +142,7 @@ carrying it.
 
 ---
 
-## 3. What is left, in the order I would do it
+## 3. The work list (all of it done — see §5)
 
 The audits produced exact per-test verdicts; this section is the work list they
 imply, largest value first. Everything here is *additive* to what is already
@@ -307,3 +313,94 @@ Distilled from what the audit kept and what it threw away.
    failure can be replayed.
 7. **Cite the spec section that actually contains the rule** — and when the spec
    turns out to be stale, fix the spec in the same commit.
+
+---
+
+## 5. Finishing it: what the rest of §3 did, and what it found
+
+The whole of §3 is done. Two production bugs came out of it, both found by
+writing a test that could actually fail.
+
+### The numbers
+
+| | |
+|---|---|
+| App suite | 674 → 559 tests, 67.1 s → 54.9 s |
+| Core suite | 291 → 203 tests, ~0.7 s |
+| Deleted as redundant | 54 (first pass) + 74 merged away |
+| Consolidated into tables | 14 groups in core, 3 in the app suite |
+| Added | 10 tests for uncovered behaviour, 1 geometry contract |
+| Rewritten because they could not fail | 19 |
+
+### **Bug 1: silent data loss on save (fixed, `5bbef2a`)**
+
+The first test ever to reach `StorageSaver.rewriteDirectly` — the sandbox
+fallback taken when the atomic sibling-temp swap is impossible, which is the
+shipping app's normal path — showed it opening the target with `O_TRUNC` and
+only *then* reading the content out of the overlay. On a plain Save the
+overlay's base **is** that file, so the read found an empty file and the save
+wrote zero padding over the user's dump: `01 02 03` with one inserted byte
+saved as `00 FF 00 00`. It needs a length-changing edit to trigger — insert
+mode, Paste Insert, Delete Bytes — and it reports success.
+
+The content is now staged in the app's own temporary directory first, and the
+target is opened only once nothing reads from it.
+
+### **Bug 2: the minimap's divider stopped following the panes' (fixed, `cb8f9aa`)**
+
+Deleting `ProportionalSplitView.setPosition` — a method whose own docstring
+said "used by tests" — turned a minimap test red, and that is how it surfaced:
+`mouseDragged` assigned the fraction and re-laid out inline, never firing
+`onFractionChanged`, the only path by which the minimap learns the panes'
+divider moved. Dragging the stacked pane divider left the minimap's divider
+line behind. The test had been green only through the test-only method — a
+seam that existed for tests, hiding a bug from them.
+
+### What each part came to
+
+- **§3.1 merges** — 74 tests folded into their pairs across two passes. The
+  mirror-contour quartet became one test stating the rules (vertex count,
+  alternating axes, turns only at the row edges the span is partial at) instead
+  of exhibiting point lists that satisfy them: 180 lines to 120, four spans
+  instead of three, verified by removing the collinear-vertex drop and watching
+  only that test fail.
+- **§3.2 tables** — 14 groups in core. `EditOverlayStorageTests` and
+  `MemoryBackedStorageTests` were the same suite typed twice; the
+  `EditableByteStorage` contract now has one conformance suite over both
+  implementations, which *gained* coverage in both directions (the overlay's
+  far-past-EOF zero-fill had no test at all).
+- **§3.3 rewrites** — the last twelve tests that could not fail, each verified
+  by breaking what it protects. Two production changes fell out: one plain
+  accessor, and the `setPosition` deletion that found bug 2.
+- **§3.5 seams** — four private literals became settable, so the waits that
+  existed to outlast them are gone: the watcher's three tests 3.6 s → 0.8 s, the
+  long-search test 4.7 s → 0.5 s **and it no longer writes 2 GiB to disk** (8 MiB
+  read 512 bytes at a time is what makes a scan long). `FilePaneView` got the
+  swappable `defaults` the other three stores already had — some twenty tests
+  had been writing the developer's real panel-height preference.
+- **§3.6 gaps** — ten tests for what nothing watched: `cancelEditGroup`, the
+  sandbox save path, save-after-Save-As patching in place, `changedRanges` after
+  a shift, a truncated base, `StorageError` for EACCES and a character device,
+  ISO-8859-1's C1 range, and a read racing an insert (a writer and three readers
+  at a barrier for 120 rounds; removing the lock crashes it).
+
+### Two things left undone, on purpose
+
+- **"The own-write suppression expires"** has no test. Proving it needs a real
+  external write to be noticed after the watcher was rebound, and that delivery
+  is not deterministic here — the test passed twice and failed twice. A flaky
+  test is worse than the gap. It wants a seam on `FileChangeWatcher`'s delivery,
+  not another sleep.
+- **"A second Search All supersedes the first"** (§11) stays untested. The
+  generation machinery is app-layer (`MainViewController.searchAllGeneration`);
+  testing it in the core suite would mean testing a re-implementation of the
+  rule.
+
+### One more lesson for §4
+
+Rule 2 (*break it once*) caught me writing the very defect this review is
+about. The new "suppression expires" test stepped the clock forward by
+`ownWriteSuppressionWindow + 0.1` — the constant under test — so a window of a
+million seconds would still have been "stepped over" and the test passed with
+the behaviour broken. **When a test advances a clock, a size, or an index past a
+threshold, the step has to be a literal too.**
