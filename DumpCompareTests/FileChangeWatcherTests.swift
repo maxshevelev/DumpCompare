@@ -12,9 +12,22 @@ final class FileChangeWatcherTests: XCTestCase {
         return url
     }
 
+    override func setUp() {
+        super.setUp()
+        // A 20 ms debounce instead of the shipping 0.4 s: these tests wait it
+        // out three times over, and what they check is the coalescing and the
+        // cancellation, not the interval.
+        FileChangeWatcher.debounceInterval = 0.02
+    }
+
+    override func tearDown() {
+        FileChangeWatcher.debounceInterval = 0.4
+        super.tearDown()
+    }
+
     private func settle() async {
         // Let the dispatch source register before we trigger events.
-        try? await Task.sleep(nanoseconds: 300_000_000)
+        try? await Task.sleep(nanoseconds: 100_000_000)
     }
 
     func testFiresOnExternalWrite() async throws {
@@ -45,7 +58,9 @@ final class FileChangeWatcherTests: XCTestCase {
 
         try Data([0x01]).write(to: url)
 
-        await fulfillment(of: [unexpected], timeout: 1.5)
+        // Long enough to outlast the debounce several times over — the point is
+        // that nothing arrives, not how long we are willing to wait.
+        await fulfillment(of: [unexpected], timeout: 0.3)
     }
 
     func testRebindWatchesNewFile() async throws {

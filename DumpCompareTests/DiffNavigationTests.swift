@@ -188,8 +188,13 @@ final class DiffNavigationTests: XCTestCase {
                       "the second press must land on the cluster's last differing byte")
         // A third press has nowhere to go: the cluster is one change, so the two
         // earlier differing bytes inside it are not separate targets.
+        // Asserted, not waited for: `diffNavigationState` is recomputed
+        // synchronously from the caret and answers the same question the command
+        // does, so "nowhere to go" is a fact here rather than half a second of
+        // hoping nothing happens.
+        XCTAssertFalse(controller.diffNavigationState.previousDifference,
+                       "with the cluster behind it as one change, there is no earlier target")
         controller.previousDifference()
-        pumpUntil(0.5) { controller.windowModel.pane1.caretOffset != UInt64(101 * 16 + 4) }
         XCTAssertEqual(controller.windowModel.pane1.caretOffset, UInt64(101 * 16 + 4),
                        "the bytes inside the cluster must not be separate targets")
     }
@@ -214,10 +219,11 @@ final class DiffNavigationTests: XCTestCase {
 
         controller.nextDifference()
         XCTAssertTrue(pumpUntil(5) { controller.windowModel.pane1.caretOffset == UInt64(100 * 16) })
+        XCTAssertFalse(controller.diffNavigationState.nextDifference,
+                       "at the default distance the two differences are one change — nothing ahead")
         controller.nextDifference()
-        pumpUntil(0.5) { controller.windowModel.pane1.caretOffset != UInt64(100 * 16) }
         XCTAssertEqual(controller.windowModel.pane1.caretOffset, UInt64(100 * 16),
-                       "at the default distance the two differences are one change — nowhere to go")
+                       "so the second press stays where it is")
 
         ComparisonSettings.set(groupingGap: 16)
         // The observer hands the new distance to the coordinator on the main

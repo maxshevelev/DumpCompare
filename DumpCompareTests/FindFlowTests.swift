@@ -22,6 +22,13 @@ final class FindFlowTests: XCTestCase {
         // isolated store; restored to .standard in tearDown.
         FindHistoryStore.defaults = isolatedDefaults
         FindBarView.defaults = isolatedDefaults
+        // And the results panel's height, which some twenty tests here write on
+        // their way past a shown panel — that was landing in the user's own
+        // preferences.
+        FilePaneView.defaults = isolatedDefaults
+        // The operation strip's reveal delay: shortened so the two tests that
+        // wait it out cost 40 ms instead of a hand-tuned 500.
+        FilePaneView.operationDebounce = 0.02
     }
 
     override func tearDown() {
@@ -29,6 +36,8 @@ final class FindFlowTests: XCTestCase {
         isolatedDefaults.removePersistentDomain(forName: isolatedSuiteName)
         FindHistoryStore.defaults = .standard
         FindBarView.defaults = .standard
+        FilePaneView.defaults = .standard
+        FilePaneView.operationDebounce = FilePaneView.defaultOperationDebounce
         isolatedDefaults = nil
         super.tearDown()
     }
@@ -457,7 +466,7 @@ final class FindFlowTests: XCTestCase {
         done.performClick(nil)
         controller.findPattern()
         XCTAssertTrue(pumpUntil(2) { descendants(of: window.contentView!, FindBarView.self).first?.isHidden == false })
-        RunLoop.main.run(until: Date().addingTimeInterval(0.5))  // let any stray focus-time action fire
+        RunLoop.main.run(until: Date().addingTimeInterval(0.1))  // let any stray focus-time action fire
         XCTAssertFalse(try findBar(window).isHidden, "reopening Find must not auto-search and dismiss itself")
         XCTAssertEqual(controller.windowModel.pane1.hexSelection().start, 0,
                        "the selection must not move on reopen")
@@ -619,9 +628,10 @@ final class FindFlowTests: XCTestCase {
         XCTAssertTrue(pumpUntil(3) { let s = controller.windowModel.pane1.hexSelection(); return s.start == 0 && s.end == 3 },
                       "the search must complete")
 
-        // Let the debounce window elapse; the strip must stay hidden because the
-        // operation already finished.
-        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        // Let the debounce window elapse — several times over, at the 20 ms this
+        // suite sets it to — and the strip must still be hidden, because the
+        // operation had already finished when it opened.
+        RunLoop.main.run(until: Date().addingTimeInterval(FilePaneView.operationDebounce * 5))
         let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
         XCTAssertTrue(paneView.operationView.isHidden,
                       "an instant search must not flash the operation indicator")
@@ -945,9 +955,9 @@ final class FindFlowTests: XCTestCase {
                                                            height: 1000)
         defer {
             cleanup(controller, url)
-            UserDefaults.standard.removeObject(forKey: FilePaneView.searchResultsHeightDefaultsKey)
+            FilePaneView.defaults.removeObject(forKey: FilePaneView.searchResultsHeightDefaultsKey)
         }
-        UserDefaults.standard.removeObject(forKey: FilePaneView.searchResultsHeightDefaultsKey)
+        FilePaneView.defaults.removeObject(forKey: FilePaneView.searchResultsHeightDefaultsKey)
 
         controller.findPattern()
         let view = try runSearchAll("DE AD", in: window)
@@ -990,9 +1000,9 @@ final class FindFlowTests: XCTestCase {
                                                            height: 1000)
         defer {
             cleanup(controller, url)
-            UserDefaults.standard.removeObject(forKey: FilePaneView.searchResultsHeightDefaultsKey)
+            FilePaneView.defaults.removeObject(forKey: FilePaneView.searchResultsHeightDefaultsKey)
         }
-        UserDefaults.standard.set(120.0, forKey: FilePaneView.searchResultsHeightDefaultsKey)
+        FilePaneView.defaults.set(120.0, forKey: FilePaneView.searchResultsHeightDefaultsKey)
 
         controller.findPattern()
         let view = try runSearchAll("DE AD", in: window)
@@ -1011,9 +1021,9 @@ final class FindFlowTests: XCTestCase {
         let (controller, window, url) = try makeController([0xDE, 0xAD])
         defer {
             cleanup(controller, url)
-            UserDefaults.standard.removeObject(forKey: FilePaneView.searchResultsHeightDefaultsKey)
+            FilePaneView.defaults.removeObject(forKey: FilePaneView.searchResultsHeightDefaultsKey)
         }
-        UserDefaults.standard.set(10_000.0, forKey: FilePaneView.searchResultsHeightDefaultsKey)
+        FilePaneView.defaults.set(10_000.0, forKey: FilePaneView.searchResultsHeightDefaultsKey)
 
         controller.findPattern()
         let view = try runSearchAll("DE AD", in: window)
@@ -1039,9 +1049,9 @@ final class FindFlowTests: XCTestCase {
         let (controller, window, url) = try makeController([0xDE, 0xAD])
         defer {
             cleanup(controller, url)
-            UserDefaults.standard.removeObject(forKey: FilePaneView.searchResultsHeightDefaultsKey)
+            FilePaneView.defaults.removeObject(forKey: FilePaneView.searchResultsHeightDefaultsKey)
         }
-        UserDefaults.standard.set(10_000.0, forKey: FilePaneView.searchResultsHeightDefaultsKey)
+        FilePaneView.defaults.set(10_000.0, forKey: FilePaneView.searchResultsHeightDefaultsKey)
 
         controller.findPattern()
         let view = try runSearchAll("DE AD", in: window)
@@ -1123,14 +1133,13 @@ final class FindFlowTests: XCTestCase {
     /// against the search regressing into a synchronous scan that freezes the
     /// app (§14.4).
     func testLongSearchKeepsMainThreadResponsiveAndShowsProgress() throws {
-        // 2 GiB of 0x00; "FF FF" never occurs, so the scan covers the whole file.
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("find-long-\(UUID().uuidString).bin")
-        FileManager.default.createFile(atPath: url.path, contents: nil)
-        let handle = try FileHandle(forWritingTo: url)
-        let page = Data(repeating: 0x00, count: 1024 * 1024)
-        for _ in 0..<2048 { try handle.write(contentsOf: page) }
-        try handle.close()
+        // 8 MiB of 0x00 read 512 bytes at a time: "FF FF" never occurs, so the
+        // scan covers the whole file, and 16 384 chunks make it last long enough
+        // to watch. The fixture used to be 2 GiB — written to disk on every run —
+        // to buy the same seconds that the chunk size buys here.
+        MainViewController.searchChunkSize = 512
+        addTeardownBlock { MainViewController.searchChunkSize = SearchEngine.defaultChunkSize }
+        let url = try tempFile([UInt8](repeating: 0x00, count: 8 * 1024 * 1024))
 
         let controller = MainViewController()
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),

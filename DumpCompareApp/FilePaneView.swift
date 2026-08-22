@@ -146,6 +146,11 @@ final class FilePaneView: NSView {
     /// this session is applied as-is on later shows (§11).
     private var hasRestoredPanelHeightThisSession = false
 
+    /// Where the panel height is persisted. Swappable so the suite does not write
+    /// the user's real preference: the panel is shown at a legal height by some
+    /// twenty tests, and each of those was a write to `UserDefaults.standard`.
+    static var defaults: UserDefaults = .standard
+
     /// `UserDefaults` key for the user's chosen Search All panel height (§11).
     static let searchResultsHeightDefaultsKey = "SearchResultsPanelHeight"
     /// The results panel keeps at least this height when resized (§11).
@@ -593,8 +598,10 @@ final class FilePaneView: NSView {
     /// finishes before the debounce elapses never shows its bar.
     private var operationShowWorkItem: DispatchWorkItem?
     /// Debounce before the operation strip appears — a search on a small file
-    /// finishes in a few milliseconds and must not flash a bar.
-    private static let operationDebounce: TimeInterval = 0.3
+    /// finishes in a few milliseconds and must not flash a bar. A `var` so tests
+    /// can shorten it instead of sleeping 0.5 s to outlast a private literal.
+    static let defaultOperationDebounce: TimeInterval = 0.3
+    static var operationDebounce: TimeInterval = defaultOperationDebounce
 
     /// Shows `op` in the status bar, replacing any previous operation. The
     /// reveal is debounced by `operationDebounce`, so an operation that
@@ -731,7 +738,7 @@ final class FilePaneView: NSView {
         guard searchResultsSplit.resultsPanelVisible else { return }
         let total = searchResultsSplit.bounds.height
         guard total > 0 else { return }
-        let stored = UserDefaults.standard.object(forKey: Self.searchResultsHeightDefaultsKey) as? NSNumber
+        let stored = Self.defaults.object(forKey: Self.searchResultsHeightDefaultsKey) as? NSNumber
         let preferred = stored.map { CGFloat($0.doubleValue) } ?? SearchResultsView.panelHeight
         let height: CGFloat
         if hasRestoredPanelHeightThisSession {
@@ -918,7 +925,7 @@ extension FilePaneView: NSSplitViewDelegate {
         let legalMax = split.bounds.height - FilePaneView.minHexHeightInPane - split.dividerThickness
         guard panelHeight >= FilePaneView.minSearchResultsHeight,
               panelHeight <= legalMax else { return }
-        UserDefaults.standard.set(panelHeight, forKey: Self.searchResultsHeightDefaultsKey)
+        Self.defaults.set(panelHeight, forKey: Self.searchResultsHeightDefaultsKey)
     }
 }
 

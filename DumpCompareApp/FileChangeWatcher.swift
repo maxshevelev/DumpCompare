@@ -7,6 +7,12 @@ import Foundation
 /// main actor via `onChange`. The watcher holds no document state — the caller
 /// (the pane) decides what the event means and whether to prompt.
 final class FileChangeWatcher {
+    /// How long events are coalesced before one is delivered. A `var` so tests
+    /// can shorten it: three tests were spending a second each waiting out a
+    /// literal, and an inverted expectation ("nothing fires after stop") has to
+    /// outlast whatever this is.
+    static var debounceInterval: TimeInterval = 0.4
+
     /// Fired on the main actor after an external change, debounced.
     var onChange: (() -> Void)?
 
@@ -80,6 +86,6 @@ final class FileChangeWatcher {
             }
         }
         debounceWorkItem = item
-        queue.asyncAfter(deadline: .now() + 0.4, execute: item)
+        queue.asyncAfter(deadline: .now() + Self.debounceInterval, execute: item)
     }
 }

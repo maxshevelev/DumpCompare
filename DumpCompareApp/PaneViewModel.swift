@@ -251,8 +251,13 @@ final class PaneViewModel: HexViewDataSource {
 
     private var changeWatcher: FileChangeWatcher?
     /// Own writes (save/save-as/revert) also trip the watcher; events within
-    /// this window are the app's own and are suppressed.
-    private var externalChangeSuppressedUntil = Date.distantPast
+    /// this window are the app's own and are suppressed. Measured on the same
+    /// injectable clock as the typing windows, so a test can step over the
+    /// window instead of sleeping through it.
+    private var externalChangeSuppressedUntil: TimeInterval = -.greatestFiniteMagnitude
+
+    /// How long the app's own write suppresses change events after it.
+    static let ownWriteSuppressionWindow: TimeInterval = 1.0
 
     /// Fired (on the main actor) when the file changed on disk from outside the
     /// app. The view controller decides what to prompt.
@@ -396,7 +401,7 @@ final class PaneViewModel: HexViewDataSource {
 
     private func handleExternalChange() {
         guard isOpen else { return }
-        if Date() < externalChangeSuppressedUntil { return }
+        if Self.clock() < externalChangeSuppressedUntil { return }
         onExternalChange?()
     }
 
@@ -404,7 +409,7 @@ final class PaneViewModel: HexViewDataSource {
     /// events are suppressed for a moment, and the descriptor is rebound because
     /// an atomic save may have replaced the inode.
     private func rearmWatcher() {
-        externalChangeSuppressedUntil = Date().addingTimeInterval(1.0)
+        externalChangeSuppressedUntil = Self.clock() + Self.ownWriteSuppressionWindow
         changeWatcher?.rebind(to: document?.url)
     }
 

@@ -599,16 +599,26 @@ final class PaneViewModelTests: XCTestCase {
         XCTAssertTrue(fired, "external write never surfaced")
     }
 
+    /// The app's own save trips the file watcher too, so it is suppressed for a
+    /// moment afterwards (§5.5). The wait here is the watcher's own debounce
+    /// (0.4 s) plus slack — not the suppression window, which the injected clock
+    /// now measures, so this test no longer sleeps through a whole second of it.
+    ///
+    /// The other half of the rule — that the suppression *expires*, so one save
+    /// does not deafen the pane for the session — is not tested: proving it needs
+    /// a real external write to be noticed after the watcher was rebound, and
+    /// that delivery is not deterministic here. It wants a seam on
+    /// `FileChangeWatcher`, not another sleep.
     func testOwnSaveDoesNotTriggerExternalChange() async throws {
         let (pane, url) = try openPane([0x00])
         defer { try? FileManager.default.removeItem(at: url) }
         var fired = false
         pane.onExternalChange = { fired = true }
-        try await Task.sleep(nanoseconds: 300_000_000)
+        try await Task.sleep(nanoseconds: 300_000_000)  // watcher registration
 
         pane.typeASCII(0x41)  // dirty the doc, then save → own write
         try pane.save()
-        try await Task.sleep(nanoseconds: 1_200_000_000)  // past the suppression window
+        try await Task.sleep(nanoseconds: 600_000_000)  // past the watcher's debounce
 
         XCTAssertFalse(fired, "own save triggered an external-change prompt")
     }

@@ -2806,6 +2806,7 @@ final class MainViewController: NSViewController {
             do {
                 return try SearchEngine.find(pattern: pattern.bytes, in: storage, from: from, direction: direction,
                                              caseSensitive: caseSensitive,
+                                             chunkSize: Self.searchChunkSize,
                                              shouldCancel: { Task.isCancelled },
                                              progress: { operation.report($0) })
             } catch is CancellationError {
@@ -2953,6 +2954,7 @@ final class MainViewController: NSViewController {
         let displayCap = SearchEngine.defaultMaxResults
         let stream = SearchEngine.findAllStream(
             pattern: pattern.bytes, in: storage, caseSensitive: caseSensitive,
+            chunkSize: Self.searchChunkSize,
             maxResults: displayCap + 1,
             shouldCancel: { Task.isCancelled },
             progress: { operation.report($0) }
@@ -3098,6 +3100,13 @@ final class MainViewController: NSViewController {
         }
         return false
     }
+
+    /// How much of the file one scan step reads (§11). The default is the
+    /// engine's own; a `var` so a test can make a search take a while without
+    /// writing a gigabyte to disk to do it — the property under test is that a
+    /// long scan keeps the main thread responsive, and chunk count is what makes
+    /// a scan long.
+    static var searchChunkSize = SearchEngine.defaultChunkSize
 
     // MARK: - Zoom-to-fit (§3.1)
 
