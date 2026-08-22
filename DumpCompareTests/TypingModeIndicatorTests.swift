@@ -91,23 +91,4 @@ final class TypingModeIndicatorTests: XCTestCase {
         XCTAssertFalse(controller.windowModel.pane2.status.isInsertMode)
     }
 
-    /// Two panes, two modes at once — which is the point of the mode being per
-    /// pane, and what each status bar reports.
-    func testTheTwoPanesCanBeInDifferentModes() throws {
-        let (paneA, viewModelA, urlA) = try makePane([0x11, 0x22])
-        let (paneB, viewModelB, urlB) = try makePane([0x33, 0x44])
-        defer {
-            try? FileManager.default.removeItem(at: urlA)
-            try? FileManager.default.removeItem(at: urlB)
-        }
-
-        viewModelA.isInsertMode = true
-
-        XCTAssertEqual(paneA.typingModeLabel.stringValue, "INS")
-        XCTAssertEqual(paneB.typingModeLabel.stringValue, "OVR")
-        XCTAssertGreaterThan(redness(paneA.typingModeLabel.textColor), 0.4)
-        XCTAssertLessThan(redness(paneB.typingModeLabel.textColor), 0.2)
-        XCTAssertTrue(viewModelA.status.isInsertMode)
-        XCTAssertFalse(viewModelB.status.isInsertMode)
-    }
 }

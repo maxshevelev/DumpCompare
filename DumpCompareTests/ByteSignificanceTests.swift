@@ -33,7 +33,26 @@ final class ByteSignificanceTests: XCTestCase {
     }
 
     /// The muted colour must actually read dimmer than the full-contrast one.
-    func testMutedTextIsDimmer() {
-        XCTAssertFalse(HexTheme.mutedByteText.isEqual(to: HexTheme.byteText))
+    ///
+    /// The dimming is alpha (0x00/0xFF bytes are drawn at part opacity), so the
+    /// test resolves both colours in a pinned appearance and compares that. The
+    /// previous version asked whether the two were `isEqual`, and a dynamic
+    /// `NSColor(name: nil)` never equals a semantic one — so it passed even for a
+    /// "muted" colour identical to the ink beside it.
+    func testMutedTextIsDimmer() throws {
+        for name in [NSAppearance.Name.aqua, .darkAqua] {
+            let appearance = try XCTUnwrap(NSAppearance(named: name))
+            var muted: CGFloat = -1
+            var full: CGFloat = -1
+            appearance.performAsCurrentDrawingAppearance {
+                muted = HexTheme.mutedByteText.usingColorSpace(.sRGB)?.alphaComponent ?? -1
+                full = HexTheme.byteText.usingColorSpace(.sRGB)?.alphaComponent ?? -1
+            }
+            // labelColor itself resolves at ~0.85 alpha, so "full strength" is
+            // that, not 1.0; muted is a deliberate 0.4.
+            XCTAssertGreaterThan(full, 0.8, "significant bytes keep the label's own strength (\(name.rawValue))")
+            XCTAssertLessThan(muted, 0.6, "0x00/0xFF must read clearly dimmer (\(name.rawValue))")
+            XCTAssertGreaterThan(muted, 0.25, "…but still be readable (\(name.rawValue))")
+        }
     }
 }

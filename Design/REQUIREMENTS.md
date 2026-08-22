@@ -71,7 +71,9 @@ Each file pane displays one opened binary file.
 Layout rules:
 
 1. In empty mode, show a placeholder area with:
-   - an “Open File” button;
+   - an “Open File” affordance — a large borderless icon with its label under
+     it, not a titled push button: the empty window is a landing screen, and a
+     small grey rounded rectangle in the middle of it reads as a disabled field;
    - a hint that files can be dragged and dropped.
    - the window opens as wide as **one** pane’s hex grid at the saved word size,
      whatever the saved pane arrangement — no file is open yet, and one file is
@@ -91,7 +93,10 @@ Layout rules:
 
 4. Each pane should have a title/header showing:
    - file name;
-   - dirty indicator as “*” when the file has unsaved changes;
+   - a dirty indicator: the document glyph beside the name is filled in while
+     the file has unsaved changes (an outline when it is clean, a “+” badge for
+     an untitled document), which says the same thing as a trailing “*” without
+     spending a character of the name on it;
    - read-only/locked indicator if the file cannot be written back directly.
 
 5. Pane closing:
@@ -1078,7 +1083,9 @@ Edit:
 - Undo
 - Redo
 - Copy
-- Paste Write
+- Paste (the standard item; with the dump focused it pastes bytes over the
+  selection — §12.2. There is deliberately no separate "Paste Write" item: a
+  second ⌘V owner would take the shortcut away from every text field in the app.)
 - Paste Insert
 - Fill Selection with Zero (recommended)
 - Delete Bytes…

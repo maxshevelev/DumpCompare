@@ -2,7 +2,7 @@ import DumpCompareCore
 import XCTest
 @testable import DumpCompare
 
-/// The dirty-rect contract for content changes (§3.3 extension): a byte edit
+/// The dirty-rect contract for content changes (§13): a byte edit
 /// must fire `onContentChanged` with the exact overwritten range — never a full
 /// `onChange` — a decoding change must touch only the decoded-text column, and
 /// the companion pane must repaint the same rows when this pane edits (its diff
@@ -75,7 +75,7 @@ final class ContentRedrawTests: XCTestCase {
         // A decoder change repaints the decoded-text column and no other column
         // — but over the whole document, not just the visible part: the decoder
         // feeds every row's text, and a row already drawn keeps its pixels until
-        // it is marked dirty (§3.3).
+        // it is marked dirty (§13).
         let rects = hexView.contentChangeRects(.textDecoding)
         XCTAssertEqual(rects.count, 1)
         XCTAssertEqual(rects[0].minX, layout.asciiX(column: 0))
@@ -89,30 +89,12 @@ final class ContentRedrawTests: XCTestCase {
         XCTAssertLessThan(rects[0].height, viewport.height)
     }
 
-    func testRowBoundaryEditRedrawsBothRows() throws {
-        let (hexView, url) = try makePane([UInt8](repeating: 0, count: 200))
-        defer { try? FileManager.default.removeItem(at: url) }
-        let rowHeight = hexView.hexLayout.rowHeight
-
-        // Typing at byte 15 (the row-0 boundary) overwrites 15..<16 and the
-        // caret lands on byte 16 (row 1). The edited row and the caret's new
-        // row must both repaint — a whole-pane redraw would cover them but so
-        // would waste every other row.
-        let contentRects = hexView.contentChangeRects(.bytes(in: 15..<16))
-        let selectionRects = hexView.changedSelectionRects(
-            from: selection(15, 15, size: 200),
-            to: selection(16, 16, size: 200))
-        let union = rows(contentRects, rowHeight: rowHeight)
-            .union(rows(selectionRects, rowHeight: rowHeight))
-        XCTAssertTrue(union.isSuperset(of: [0, 1]))
-    }
-
     func testBytesChangeInvalidatesOffScreenRowsToo() throws {
         // A file taller than the viewport. Every row the range spans must be
         // marked dirty, on screen or not: a layer-backed view keeps a drawn
         // row's pixels, so an off-screen byte change would still show its old
         // value when scrolled back to. Off-screen invalidation is deferred by
-        // the display, so it costs nothing now (§3.3).
+        // the display, so it costs nothing now (§13).
         let (hexView, url) = try makePane([UInt8](repeating: 0, count: 5000))
         defer { try? FileManager.default.removeItem(at: url) }
         let layout = hexView.hexLayout
@@ -131,7 +113,7 @@ final class ContentRedrawTests: XCTestCase {
         // Past the per-row threshold the invalidation collapses to a single
         // full-bounds rect instead of emitting a rect per row. Layer-backed
         // display still draws only the visible part of it, so fidelity is
-        // unchanged (§3.3).
+        // unchanged (§13).
         let rows = 5000
         let (hexView, url) = try makePane([UInt8](repeating: 0, count: rows * 16))
         defer { try? FileManager.default.removeItem(at: url) }

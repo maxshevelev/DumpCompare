@@ -4,7 +4,7 @@ import DumpCompareCore
 
 /// What changed in the pane's content, so the hex view can invalidate only the
 /// affected rows or columns instead of repainting the whole pane — the content
-/// counterpart of the selection-only redraw (§3.3 extension). The view model
+/// counterpart of the selection-only redraw (§13). The view model
 /// reports the affected region; the view computes the dirty screen rects from
 /// it.
 enum HexViewChange: Equatable {

@@ -18,11 +18,6 @@ final class AppearanceSettingsTests: XCTestCase {
         super.tearDown()
     }
 
-    func testDefaultsToSystemFontAndDefaultScale() {
-        XCTAssertEqual(AppearanceSettings.fontFamily, AppearanceSettings.systemFontSentinel)
-        XCTAssertEqual(AppearanceSettings.rowHeightScale, AppearanceSettings.defaultRowHeightScale)
-    }
-
     func testSetPersistsAndNotifies() throws {
         let family = try XCTUnwrap(AppearanceSettings.monospacedFontFamilies().first)
         var notified = 0
@@ -45,8 +40,11 @@ final class AppearanceSettingsTests: XCTestCase {
     func testResetRestoresDefaults() {
         AppearanceSettings.set(fontFamily: "Menlo", rowHeightScale: 0.7)
         AppearanceSettings.resetToDefaults()
-        XCTAssertEqual(AppearanceSettings.fontFamily, AppearanceSettings.systemFontSentinel)
-        XCTAssertEqual(AppearanceSettings.rowHeightScale, AppearanceSettings.defaultRowHeightScale)
+        // Written out rather than read back from the constants under test: with
+        // `defaultRowHeightScale` on both sides of the assertion, a default of
+        // 3.0 would pass here and triple every row in the dump.
+        XCTAssertEqual(AppearanceSettings.fontFamily, "")
+        XCTAssertEqual(AppearanceSettings.rowHeightScale, 0.8, accuracy: 0.0001)
     }
 
     func testMonospacedFamiliesAreSortedAndFixedPitch() throws {

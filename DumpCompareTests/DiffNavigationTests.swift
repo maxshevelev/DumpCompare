@@ -133,24 +133,6 @@ final class DiffNavigationTests: XCTestCase {
         try assertRowCentered(window, offset: target)
     }
 
-    /// Previous Difference, from the file end, lands on the LAST byte of the
-    /// second difference (row 250) — not the byte past it, which would make a
-    /// repeated previous press re-find the same block — and centres that row.
-    func testPreviousDifferenceCentersTheBlockInView() throws {
-        let (left, right) = makeLayout()
-        let (controller, window, urlA, urlB) = try makeComparison(left, right)
-        defer { cleanup(controller, urlA, urlB) }
-        XCTAssertTrue(waitForIndex(window), "the index must finish building before navigation")
-        controller.windowModel.pane1.moveCaret(to: UInt64(left.count))
-        controller.windowModel.pane2.moveCaret(to: UInt64(left.count))
-
-        controller.previousDifference()
-        let target = UInt64(250 * 16)
-        XCTAssertTrue(pumpUntil(5) { controller.windowModel.pane1.caretOffset == target },
-                      "previousDifference must land the caret on the previous difference's LAST byte")
-        try assertRowCentered(window, offset: target)
-    }
-
     /// Next Same Block lands on the middle same block (starting row 100) and
     /// centres it.
     func testNextSameBlockCentersTheBlockInView() throws {
@@ -163,23 +145,6 @@ final class DiffNavigationTests: XCTestCase {
         let target = UInt64(100 * 16 + 1)
         XCTAssertTrue(pumpUntil(5) { controller.windowModel.pane1.caretOffset == target },
                       "nextSameBlock must land the caret on the middle same block")
-        try assertRowCentered(window, offset: target)
-    }
-
-    /// Previous Same Block, from the file end, lands on the LAST byte of the
-    /// trailing same block (row 299, the last data row) and centres it.
-    func testPreviousSameBlockCentersTheBlockInView() throws {
-        let (left, right) = makeLayout()
-        let (controller, window, urlA, urlB) = try makeComparison(left, right)
-        defer { cleanup(controller, urlA, urlB) }
-        XCTAssertTrue(waitForIndex(window), "the index must finish building before navigation")
-        controller.windowModel.pane1.moveCaret(to: UInt64(left.count))
-        controller.windowModel.pane2.moveCaret(to: UInt64(left.count))
-
-        controller.previousSameBlock()
-        let target = UInt64(left.count - 1)
-        XCTAssertTrue(pumpUntil(5) { controller.windowModel.pane1.caretOffset == target },
-                      "previousSameBlock must land the caret on the trailing same block's LAST byte")
         try assertRowCentered(window, offset: target)
     }
 

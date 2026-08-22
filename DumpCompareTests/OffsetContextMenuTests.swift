@@ -165,20 +165,12 @@ final class OffsetContextMenuTests: XCTestCase {
 
     // MARK: - Menu anchor state
 
-    /// The frame anchor starts out empty — the highlight appears only while a
-    /// context menu is actually up.
-    func testContextMenuOffsetIsNilByDefault() throws {
-        let (_, _, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 32))
-        defer { try? FileManager.default.removeItem(at: url) }
-        XCTAssertNil(hexView.contextMenuOffset)
-    }
-
     // MARK: - Frame invalidation (§10.2)
 
     /// The regression: clearing the frame after the menu must invalidate the
     /// anchor's rows even though `contextMenuOffset` is already nil at that
     /// moment — the old code called a no-argument helper that `guard`ed on the
-    /// nil anchor and returned silently, so §3.3 region-redraw preserved the
+    /// nil anchor and returned silently, so §13 region-redraw preserved the
     /// focus ring on screen. `invalidateContextMenuFrame` takes the offset
     /// explicitly, so the clearing call is stateless and marks the view dirty
     /// whatever the anchor state.

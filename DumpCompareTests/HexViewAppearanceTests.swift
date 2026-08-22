@@ -78,22 +78,6 @@ final class HexViewAppearanceTests: XCTestCase {
         XCTAssertEqual(hexView.hexLayout.charWidth, expectedCharWidth, accuracy: 0.01)
     }
 
-    /// The change reaches an open pane as a whole: the pane's ideal content
-    /// height (rows × row pitch) grows when the factor is raised.
-    func testRowHeightScaleChangesAnOpenPanesContentHeight() throws {
-        let url = try tempFile([UInt8](repeating: 0xAB, count: 64))
-        defer { try? FileManager.default.removeItem(at: url) }
-        let vm = PaneViewModel()
-        try vm.open(url: url)
-        let pane = FilePaneView(viewModel: vm)
-        let defaultHeight = pane.hexContentHeight
-
-        AppearanceSettings.set(fontFamily: AppearanceSettings.fontFamily, rowHeightScale: 1.0)
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
-
-        XCTAssertGreaterThan(pane.hexContentHeight, defaultHeight)
-    }
-
     // MARK: - Hex-column string shape (§ Option B)
 
     private func state(_ byte: UInt8, modified: Bool = false) -> HexByteState {

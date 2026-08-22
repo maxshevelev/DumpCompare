@@ -336,19 +336,28 @@ final class BookmarkMinimapTests: XCTestCase {
         store.add(rowContaining: 0x20000)
         controller.setMinimapRenderModeForTesting(.overview)
         XCTAssertTrue(pumpUntil(2.0) { panel.renderMode == .overview && !panel.overviewSummaries.isEmpty })
-        // A second bookmark far enough down the file to draw a few points below
-        // the first, so both marks are in range of a click between them.
-        store.add(rowContaining: 0x22000)
+        // Close enough that a click between the two marks is inside BOTH snap
+        // boxes — otherwise the tie-break never runs and this test passes with
+        // the comparison in `nearestBookmarkMark` deleted.
+        store.add(rowContaining: 0x20800)
         panel.display()
 
         let first = try XCTUnwrap(panel.bookmarkMarkRect(row: 0x20000, forMapAt: 0))
-        let second = try XCTUnwrap(panel.bookmarkMarkRect(row: 0x22000, forMapAt: 0))
-        XCTAssertNotEqual(first.midY, second.midY, "the two marks must be at different heights")
+        let second = try XCTUnwrap(panel.bookmarkMarkRect(row: 0x20800, forMapAt: 0))
+        let gap = abs(second.midY - first.midY)
+        let reach = MinimapView.bookmarkMarkSide / 2 + MinimapView.bookmarkSnapDistance
+        XCTAssertGreaterThan(gap, 1, "premise: the two marks are drawn at different heights")
+        XCTAssertLessThan(gap / 2, reach, "premise: a point between them is in range of both marks")
 
-        XCTAssertEqual(panel.snappedOffset(at: NSPoint(x: first.midX, y: first.midY))?.offset,
-                       0x20000, "on the first mark, the first bookmark")
-        XCTAssertEqual(panel.snappedOffset(at: NSPoint(x: second.midX, y: second.midY))?.offset,
-                       0x22000, "on the second, the second")
+        // A point just off the midpoint, on each side in turn: the nearer mark
+        // is the one that answers.
+        let middle = (first.midY + second.midY) / 2
+        let towardsFirst = NSPoint(x: first.midX, y: middle + (first.midY - middle) * 0.4)
+        let towardsSecond = NSPoint(x: second.midX, y: middle + (second.midY - middle) * 0.4)
+        XCTAssertEqual(panel.snappedOffset(at: towardsFirst)?.offset, 0x20000,
+                       "nearer to the upper mark, the upper bookmark wins")
+        XCTAssertEqual(panel.snappedOffset(at: towardsSecond)?.offset, 0x20800,
+                       "nearer to the lower mark, the lower bookmark wins")
     }
 
     /// A click on the panel goes through the snap: clicking a mark asks the pane

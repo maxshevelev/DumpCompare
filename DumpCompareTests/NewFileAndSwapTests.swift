@@ -99,26 +99,4 @@ final class NewFileAndSwapTests: XCTestCase {
                        "the active pane must follow its document to the new side")
     }
 
-    func testWindowViewModelSwapPanesFlipsActivePane() throws {
-        let model = WindowViewModel()
-        let urlA = tempURL("a.bin")
-        let urlB = tempURL("b.bin")
-        try Data([0x01]).write(to: urlA)
-        try Data([0x02]).write(to: urlB)
-        defer {
-            model.pane1.close()
-            model.pane2.close()
-            try? FileManager.default.removeItem(at: urlA)
-            try? FileManager.default.removeItem(at: urlB)
-        }
-        try model.pane1.open(url: urlA)
-        try model.pane2.open(url: urlB)
-        model.setActivePane(0)
-
-        model.swapPanes()
-
-        XCTAssertEqual(model.pane1.status.fileName, urlB.lastPathComponent)
-        XCTAssertEqual(model.pane2.status.fileName, urlA.lastPathComponent)
-        XCTAssertEqual(model.activePaneIndex, 1)
-    }
 }

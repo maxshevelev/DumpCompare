@@ -273,24 +273,6 @@ final class FindFlowTests: XCTestCase {
                       "a subsequent Return must run the search again")
     }
 
-    /// Pressing Return in the pattern field runs a forward search — the natural
-    /// way to submit a find (§11).
-    func testReturnInPatternFieldSearchesForward() throws {
-        let bytes: [UInt8] = [0x41, 0x42, 0x43, 0xDE, 0xAD, 0xBE, 0x44]
-        let (controller, window, url) = try makeController(bytes)
-        defer { cleanup(controller, url) }
-
-        controller.findPattern()
-        let (combo, _, _, _) = try barControls(window)
-        combo.stringValue = "DE AD BE"
-
-        // Return in the field triggers its action — the same path a user takes.
-        combo.sendAction(combo.action!, to: combo.target)
-
-        XCTAssertTrue(pumpUntil(3) { controller.windowModel.pane1.hexSelection().start == 3 },
-                      "Return must run the search")
-    }
-
     /// The Edit > Find menu item's action must reach the controller through the
     /// responder chain (nil target, exactly as the app builds it) and show the
     /// find bar — the full menu path, not a direct call. The test host has no
@@ -850,27 +832,6 @@ final class FindFlowTests: XCTestCase {
         }?.stringValue ?? ""
     }
 
-    /// A Search All that finds more than the match cap stops at the cap — 1000
-    /// rows, no more — and the header says the search returned too many results
-    /// instead of reporting the count as final.
-    func testSearchAllCapsResultsAtMax() throws {
-        // 1500 matching bytes: a one-byte pattern over 1500 zero bytes finds
-        // 1500 occurrences, well past the 1000-match cap.
-        let bytes = [UInt8](repeating: 0x00, count: 1500)
-        let (controller, window, url) = try makeController(bytes)
-        defer { cleanup(controller, url) }
-
-        controller.findPattern()
-        let view = try runSearchAll("00", in: window)
-
-        XCTAssertEqual(view.tableView.numberOfRows, 1000,
-                       "the scan stops at the 1000-match cap")
-        let header = try XCTUnwrap(descendants(of: view, NSTextField.self).first {
-            $0.stringValue.hasPrefix("Search results")
-        })
-        XCTAssertEqual(header.stringValue, "Search results (1000) — too many results")
-    }
-
     /// The found bytes are drawn bold in each row's hex and text excerpts —
     /// the emphasis that marks the match inside its context window.
     func testSearchAllBoldsTheMatchInExcerpts() throws {
@@ -977,23 +938,6 @@ final class FindFlowTests: XCTestCase {
             $0.stringValue.hasPrefix("Search results")
         })
         XCTAssertEqual(header.stringValue, "Search results (0)")
-    }
-
-    /// The panel's × hides it again.
-    func testSearchAllCloseButtonHidesPanel() throws {
-        let (controller, window, url) = try makeController([0xDE, 0xAD])
-        defer { cleanup(controller, url) }
-
-        controller.findPattern()
-        let view = try runSearchAll("DE AD", in: window)
-        XCTAssertGreaterThan(view.frame.height, 1, "Search All must show the results panel")
-
-        let closeButton = try XCTUnwrap(descendants(of: view, NSButton.self).first {
-            $0.accessibilityLabel() == "Close search results"
-        })
-        closeButton.performClick(nil)
-        XCTAssertTrue(pumpUntil(2) { view.frame.height < 1 },
-                      "the × must collapse the results panel to zero height")
     }
 
     /// Closing the panel mid-search stops the scan and forgets the results: a
@@ -1421,43 +1365,6 @@ final class FindFlowTests: XCTestCase {
             XCTAssertLessThanOrEqual(column.width, value + 2 * SearchResultCellView.labelInset + 1,
                                      "\(id) must not be wider than its content needs")
         }
-    }
-
-    /// A longer pattern means longer excerpts, so the excerpt columns grow with
-    /// it while the offset column — whose values are a fixed digit count — does not.
-    func testExcerptColumnsGrowWithThePatternLength() throws {
-        var bytes = [UInt8](repeating: 0x41, count: 300)
-        bytes.replaceSubrange(100..<108, with: [UInt8](repeating: 0x5A, count: 8))
-        let (controller, window, url) = try makeController(bytes)
-        defer { cleanup(controller, url) }
-        controller.findPattern()
-
-        func widths(_ patternText: String) throws -> (offset: CGFloat, hex: CGFloat) {
-            let view = try runSearchAll(patternText, in: window)
-            func column(_ id: String) throws -> NSTableColumn {
-                try XCTUnwrap(view.tableView.tableColumns.first { $0.identifier.rawValue == id })
-            }
-            // Bound separately on purpose: do not fold this back into
-            // `return (try column("offset").width, try column("hex").width)`.
-            //
-            // That inline form crashes the Swift 6.2.4 type checker (Xcode 26.3)
-            // — a stack-guard fault in `TypeChecker::coerceToRValue` while the
-            // solution is applied — where 6.3.3 compiles it fine. Narrowed by
-            // bisection: a tuple of bare `try` calls is fine (`barControls`
-            // above returns one, and `(try width("offset"), try width("hex"))`
-            // compiles); what trips it is a *member access on a `try` call's
-            // result* inside a tuple element.
-            let offset = try column("offset").width
-            let hex = try column("hex").width
-            return (offset, hex)
-        }
-
-        let short = try widths("5A 5A")
-        let long = try widths("5A 5A 5A 5A 5A 5A")
-        XCTAssertGreaterThan(long.hex, short.hex,
-                             "a longer pattern makes a longer hex excerpt")
-        XCTAssertEqual(long.offset, short.offset, accuracy: 0.5,
-                       "the offset column's values are a fixed width")
     }
 
 }

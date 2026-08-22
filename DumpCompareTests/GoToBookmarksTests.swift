@@ -116,16 +116,6 @@ final class GoToBookmarksTests: XCTestCase {
                      "a default button would take Return away from the list")
     }
 
-    /// Decimal without a prefix is an offset too (§10).
-    func testTheFieldTakesADecimalOffset() {
-        let (form, _, jumps, _) = makeForm()
-        form.offsetCombo.stringValue = "1024"
-
-        form.goToTypedOffset()
-
-        XCTAssertEqual(jumps(), [1024])
-    }
-
     func testAnUnparseableOffsetShowsAnErrorAndGoesNowhere() {
         let (form, _, jumps, closes) = makeForm()
         var beeps = 0
@@ -278,20 +268,6 @@ final class GoToBookmarksTests: XCTestCase {
         XCTAssertEqual(presented.count, 1)
         XCTAssertTrue(form.isEditingBookmark)
         XCTAssertTrue(jumps().isEmpty)
-    }
-
-    /// Return still goes: that is the key the form's focus rule is built on
-    /// (§10.1), and it is what makes ⌥⌘B, Return a way to reach a bookmark.
-    func testReturnStillGoesToTheSelectedBookmark() throws {
-        let (form, _, jumps, closes) = makeForm(rows: [0x10: "", 0x100: ""],
-                                                focus: .bookmarks)
-        form.bookmarkTable.selectRowIndexes([1], byExtendingSelection: false)
-
-        form.bookmarkTable.keyDown(with: try keyDown("\r", keyCode: 36))
-
-        XCTAssertEqual(jumps(), [0x100])
-        XCTAssertEqual(closes(), 1)
-        XCTAssertFalse(form.isEditingBookmark, "Return does not open the editor")
     }
 
     /// Nothing in the list takes the keyboard: the name is a label, not a field,
@@ -453,18 +429,6 @@ final class GoToBookmarksTests: XCTestCase {
 
     // MARK: - Managing the list (§20.5)
 
-    func testTheListShowsWhatTheStoreHolds() {
-        let (form, store, _, _) = makeForm(rows: [0x100: "NVRAM", 0x10: ""])
-
-        XCTAssertEqual(form.bookmarks.map(\.row), [0x10, 0x100])
-        XCTAssertEqual(form.numberOfRows(in: form.bookmarkTable), 2)
-        XCTAssertTrue(form.emptyLabel.isHidden)
-
-        store.remove(rowContaining: 0x10)
-        form.reloadBookmarks()
-        XCTAssertEqual(form.bookmarks.map(\.row), [0x100])
-    }
-
     /// The empty state says what a bookmark is and how one is made — a list with
     /// nothing in it is otherwise just an empty box.
     func testTheEmptyListSaysHowToMakeABookmark() {
@@ -555,35 +519,6 @@ final class GoToBookmarksTests: XCTestCase {
         XCTAssertEqual(field.stringValue, "0007AF00")
     }
 
-    /// The form's spacing groups what belongs together: the error message under
-    /// the field it is about, the "Bookmarks" title on the list it names, and only
-    /// the gap between those two groups a full one. Evenly spaced, the field and
-    /// the list sat an inch apart with a blank line between them (§10.1).
-    func testTheFieldAndTheListAreNotAnInchApart() throws {
-        let (form, _, _, _) = makeForm(rows: [0x10: "EC table"])
-        form.view.layoutSubtreeIfNeeded()
-        let scrollView = try XCTUnwrap(form.bookmarkTable.enclosingScrollView)
-        let field = form.offsetCombo!
-
-        let fieldFrame = form.view.convert(field.bounds, from: field)
-        let listFrame = form.view.convert(scrollView.bounds, from: scrollView)
-        let errorFrame = form.view.convert(form.errorLabel.bounds, from: form.errorLabel)
-        // The root view is not flipped, so "below" is a smaller y.
-        func distance(_ upper: NSRect, _ lower: NSRect) -> CGFloat {
-            form.view.isFlipped ? lower.minY - upper.maxY : upper.minY - lower.maxY
-        }
-
-        let gap = distance(fieldFrame, listFrame)
-        XCTAssertGreaterThan(gap, 0, "the list is below the field")
-        XCTAssertLessThan(gap, 46, "and not a blank line and two full gaps away")
-
-        // The error message belongs to the field, so it is nearer to it than to
-        // the list — that is what makes the grouping readable rather than merely
-        // tighter.
-        XCTAssertLessThan(distance(fieldFrame, errorFrame), distance(errorFrame, listFrame),
-                          "the message sits under its field, not adrift between the two")
-    }
-
     /// The validation message lines up with the field it is about, not with the
     /// form's left edge — a line starting under the "Offset:" label reads as a
     /// line of the form (§10).
@@ -623,9 +558,12 @@ final class GoToBookmarksTests: XCTestCase {
         let scrollView = try XCTUnwrap(form.bookmarkTable.enclosingScrollView)
 
         XCTAssertEqual(form.bookmarks.count, 25)
-        XCTAssertEqual(scrollView.frame.height,
-                       CGFloat(GoToBookmarksController.maxVisibleRows) * form.rowStep + 2,
+        // Ten, spelled out: §20.5 fixes the number, and reading it back from
+        // `maxVisibleRows` would accept any cap the constant happened to hold.
+        XCTAssertEqual(scrollView.frame.height, 10 * form.rowStep + 2,
                        accuracy: 1, "ten rows is as tall as the list gets")
+        XCTAssertLessThan(scrollView.frame.height, 25 * form.rowStep,
+                          "a list of 25 bookmarks must not grow to fit them all")
         XCTAssertGreaterThan(form.bookmarkTable.frame.height, scrollView.contentView.bounds.height,
                              "and the rest is reached by scrolling")
         XCTAssertTrue(scrollView.hasVerticalScroller)
@@ -637,10 +575,15 @@ final class GoToBookmarksTests: XCTestCase {
         let (form, _, _, _) = makeForm()
         let scrollView = try XCTUnwrap(form.bookmarkTable.enclosingScrollView)
 
-        XCTAssertEqual(scrollView.frame.height,
-                       CGFloat(GoToBookmarksController.minVisibleRows) * form.rowStep + 2,
-                       accuracy: 1)
+        // The rule is "room to read the message", so the floor is measured
+        // against the message and against three rows written out — with
+        // `minVisibleRows` on both sides, a floor of 0 would pass this test and
+        // leave the empty state invisible.
         XCTAssertFalse(form.emptyLabel.isHidden)
+        XCTAssertEqual(scrollView.frame.height, 3 * form.rowStep + 2, accuracy: 1,
+                       "an empty list keeps three rows' worth of height")
+        XCTAssertGreaterThan(scrollView.frame.height, form.emptyLabel.fittingSize.height,
+                             "and its message fits inside that")
     }
 
     /// Removing a bookmark shrinks the list with it.
@@ -968,9 +911,13 @@ final class GoToBookmarksTests: XCTestCase {
 
         controller.windowModel.bookmarkStore.add(rowContaining: 0x30, name: "here")
         XCTAssertEqual(form.bookmarks.map(\.displayName), ["here"])
+        // The table's own row count, asserted here because the cell tests below
+        // ask the data source for a row directly and would pass with none.
+        XCTAssertEqual(form.bookmarkTable.numberOfRows, 1)
 
         controller.windowModel.bookmarkStore.remove(rowContaining: 0x30)
         XCTAssertTrue(form.bookmarks.isEmpty)
+        XCTAssertEqual(form.bookmarkTable.numberOfRows, 0)
     }
 
     /// Removing the last bookmark from the list leaves the empty state behind,

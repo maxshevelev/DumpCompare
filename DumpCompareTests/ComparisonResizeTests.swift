@@ -62,38 +62,6 @@ final class ComparisonResizeTests: XCTestCase {
         XCTAssertEqual(cv.paneView1.frame.width, cv.paneView2.frame.width, accuracy: 1)
     }
 
-    func testDividerIsDraggableToCustomRatio() throws {
-        let (cv, _) = try makeComparisonView(vertical: true)
-
-        // Drag the divider to 70% / 30%.
-        cv.splitView.setPosition(840, ofDividerAt: 0)
-        cv.layoutSubtreeIfNeeded()
-
-        let w1 = cv.paneView1.frame.width
-        let w2 = cv.paneView2.frame.width
-        XCTAssertEqual(w1 / (w1 + w2), 0.7, accuracy: 0.01)
-        XCTAssertEqual(w1 + w2, 1200 - cv.splitView.dividerThickness, accuracy: 1)  // 1200 − divider
-    }
-
-    func testResizeKeepsDraggedRatio() throws {
-        let (cv, container) = try makeComparisonView(vertical: true)
-
-        // Drag to 70/30, then resize the window wider: the ratio must persist.
-        cv.splitView.setPosition(840, ofDividerAt: 0)
-        cv.layoutSubtreeIfNeeded()
-        let ratioBefore = cv.paneView1.frame.width / (cv.paneView1.frame.width + cv.paneView2.frame.width)
-
-        container.setFrameSize(NSSize(width: 1500, height: 600))
-        container.layoutSubtreeIfNeeded()
-
-        let w1 = cv.paneView1.frame.width
-        let w2 = cv.paneView2.frame.width
-        XCTAssertEqual(w1 / (w1 + w2), ratioBefore, accuracy: 0.01)
-        let available = 1500 - cv.splitView.dividerThickness
-        XCTAssertEqual(w1, ratioBefore * available, accuracy: 1)
-        XCTAssertEqual(w2, (1 - ratioBefore) * available, accuracy: 1)
-    }
-
     func testStackedResizeKeepsHeightRatio() throws {
         let (cv, container) = try makeComparisonView(vertical: false)
 

@@ -167,5 +167,10 @@ final class FillSelectionTests: XCTestCase {
 
         let item = NSMenuItem(title: "Fill Selection with…", action: #selector(MainViewController.fillSelectionWithBytes), keyEquivalent: "")
         XCTAssertFalse(controller.validateMenuItem(item), "fill must be disabled with no selection")
+
+        // And the other half, without which a permanently disabled Fill would
+        // pass this test: a selection enables it.
+        controller.windowModel.pane1.select(range: 0..<2)
+        XCTAssertTrue(controller.validateMenuItem(item), "fill must be offered for a real selection")
     }
 }

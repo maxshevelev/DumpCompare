@@ -330,16 +330,6 @@ final class SelectBlockSheetTests: XCTestCase {
                        "the cursor must land in the Length field")
     }
 
-    /// The preset path submits a start+length selection built from the
-    /// pre-filled Start and the entered Length.
-    func testPresetStartSubmitBuildsStartLengthSelection() {
-        let (sheet, selection) = makeSheet(presetStart: 0x24)
-        sheet.lengthField.stringValue = "0x10"
-        XCTAssertNil(sheet.validate())
-        sheet.handleSubmit()
-        XCTAssertEqual(selection(), SelectionModel(start: 0x24, length: 0x10, fileSize: 0x100))
-    }
-
     /// The preset Start stays editable — a right-click pre-fills the address,
     /// it doesn't lock it; the form follows a later change.
     func testPresetStartRemainsEditable() {

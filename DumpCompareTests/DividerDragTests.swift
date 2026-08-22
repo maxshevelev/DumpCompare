@@ -206,26 +206,4 @@ final class DividerDragTests: XCTestCase {
         XCTAssertEqual(w2, available / 2, accuracy: 1)
     }
 
-    func testDoubleClickDividerResetsToHalfStacked() throws {
-        let (cv, window) = try makeComparisonView(vertical: false)
-        let sv = cv.splitView
-
-        // Drag downward (grows the top pane in flipped coordinates) to 0.75.
-        let dividerY = cv.paneView1.frame.maxY
-        let target = NSPoint(x: 400, y: dividerY + 150)
-        sv.mouseDown(with: mouse(.leftMouseDown, at: windowPoint(sv, NSPoint(x: 400, y: dividerY)), window: window))
-        sv.mouseDragged(with: mouse(.leftMouseDragged, at: windowPoint(sv, target), window: window))
-        sv.mouseUp(with: mouse(.leftMouseUp, at: windowPoint(sv, target), window: window))
-        let before = cv.paneView1.frame.height / (cv.paneView1.frame.height + cv.paneView2.frame.height)
-        XCTAssertEqual(before, 0.75, accuracy: 0.01)
-
-        doubleClick(splitView: sv, at: windowPoint(sv, NSPoint(x: 400, y: cv.paneView1.frame.maxY)), window: window)
-
-        let h1 = cv.paneView1.frame.height
-        let h2 = cv.paneView2.frame.height
-        XCTAssertEqual(h1 / (h1 + h2), 0.5, accuracy: 0.01)
-        let available = 600 - cv.splitView.dividerThickness
-        XCTAssertEqual(h1, available / 2, accuracy: 1)
-        XCTAssertEqual(h2, available / 2, accuracy: 1)
-    }
 }

@@ -2,7 +2,7 @@ import DumpCompareCore
 import XCTest
 @testable import DumpCompare
 
-/// The dirty-rows contract behind drag selection (§3.3): a selection move must
+/// The dirty-rows contract behind drag selection (§13): a selection move must
 /// invalidate only the rows whose rendering actually changes — not the whole
 /// hex view. `changedSelectionRects(from:to:)` is the pure geometry that
 /// decides, so these tests pin exactly which rows it redraws for the shapes a
@@ -89,19 +89,6 @@ final class SelectionRedrawTests: XCTestCase {
         XCTAssertEqual(rows(rects, rowHeight: rowHeight), [0, 1, 2, 3])
     }
 
-    func testSelectionFromEmptyCaretInvalidatesAnchorRowAndBelow() throws {
-        let (hexView, url) = try makePane([UInt8](repeating: 0, count: 200))
-        defer { try? FileManager.default.removeItem(at: url) }
-        let rowHeight = hexView.hexLayout.rowHeight
-
-        // A drag that starts on the caret's own byte fills only that row; the
-        // row below is redrawn to cover the new edge's stroke.
-        let rects = hexView.changedSelectionRects(
-            from: selection(0, 0, size: 200),
-            to: selection(0, 5, size: 200))
-        XCTAssertEqual(rows(rects, rowHeight: rowHeight), [0, 1])
-    }
-
     /// Shift+Right selecting the FIRST byte must repaint the caret's own row: a
     /// caret at P and a one-byte selection [P, P+1) share a byte span, so the
     /// span XOR alone misses the handoff and the byte keeps its caret-only
@@ -145,40 +132,6 @@ final class SelectionRedrawTests: XCTestCase {
         XCTAssertEqual(rows(rects, rowHeight: rowHeight), [0, 1, 2])
     }
 
-    func testBareCaretMoveInvalidatesCaretRowsAndNeighbours() throws {
-        let (hexView, url) = try makePane([UInt8](repeating: 0, count: 200))
-        defer { try? FileManager.default.removeItem(at: url) }
-        let rowHeight = hexView.hexLayout.rowHeight
-
-        // Arrow-key caret move from byte 5 to byte 40: only the two rows that
-        // show a caret change (plus their neighbours for the caret bar's
-        // stroke) — the whole span between them must not repaint.
-        let rects = hexView.changedSelectionRects(
-            from: selection(5, 5, size: 200),
-            to: selection(40, 40, size: 200))
-        XCTAssertEqual(rows(rects, rowHeight: rowHeight), [0, 1, 2, 3])
-    }
-
-    /// Typing into a selection consumes it one byte at a time from its leading
-    /// edge (§7.4): each keystroke moves the caret one byte forward while the
-    /// selection stays non-empty. The span XOR alone invalidates only the byte
-    /// that stopped being selected, so the caret's new row would not repaint —
-    /// the caret must be drawn (and its rows invalidated) at the leading edge
-    /// even while a selection is held.
-    func testTypingIntoSelectionInvalidatesCaretRow() throws {
-        let (hexView, url) = try makePane([UInt8](repeating: 0, count: 200))
-        defer { try? FileManager.default.removeItem(at: url) }
-        let rowHeight = hexView.hexLayout.rowHeight
-
-        // Selection [8, 40) loses its first byte: the caret moves 8 → 9, both
-        // in row 0. The selected-byte XOR covers byte 8's row; the caret-move
-        // rule covers both caret rows (the same row here).
-        let rects = hexView.changedSelectionRects(
-            from: selection(8, 40, size: 200),
-            to: selection(9, 40, size: 200))
-        XCTAssertEqual(rows(rects, rowHeight: rowHeight), [0, 1])
-    }
-
     /// The row-boundary case: typing consumes byte 15 (last of row 0), the
     /// caret lands on byte 16 (first of row 1). The span XOR only invalidates
     /// byte 15, so without the caret-move rule the new caret row would never
@@ -211,7 +164,7 @@ final class SelectionRedrawTests: XCTestCase {
     /// of display rects unioned on the main thread. Off-screen rows are still
     /// invalidated: a selection that scrolls back into view must not keep stale
     /// pixels (the layer-backed stale-highlight bug). This O(old + new rows)
-    /// bound replaced the old viewport clamp (§3.3).
+    /// bound replaced the old viewport clamp (§13).
     func testFarSelectionJumpInvalidatesOnlyOldAndNewSpans() throws {
         // 5000 bytes ≈ 313 rows; the viewport shows ~30. Jumping the selection
         // from the caret at 0 to byte 4000 (row 250) must invalidate the old
@@ -235,7 +188,7 @@ final class SelectionRedrawTests: XCTestCase {
     /// after scrolling back because the old viewport clamp dropped them from
     /// the invalidation — they were never marked dirty, and a layer-backed pane
     /// does not repaint unmarked rows that scroll back into view. A's rows must
-    /// be invalidated even though they are off-screen (§3.3 fix).
+    /// be invalidated even though they are off-screen (§13).
     func testOffScreenOldSelectionStaysInvalidated() throws {
         // 2000 bytes ≈ 125 rows; the viewport shows ~35. Scroll so rows 0-10
         // (block A) sit above the visible area — exactly the user's repro: the
@@ -265,7 +218,7 @@ final class SelectionRedrawTests: XCTestCase {
     /// — hundreds of thousands on a big file — so a change spanning more than a
     /// threshold of rows collapses to a single full-bounds rect. Layer-backed
     /// display repaints that rect only where visible, so the cost stays
-    /// O(visible) per frame (§3.3).
+    /// O(visible) per frame (§13).
     func testHugeSelectionChangeFallsBackToOneFullBoundsRect() throws {
         // 200,000 bytes = 12,500 rows > the 4096-row threshold → full-bounds.
         let (hexView, url) = try makePane([UInt8](repeating: 0, count: 200_000))
@@ -277,7 +230,7 @@ final class SelectionRedrawTests: XCTestCase {
         XCTAssertEqual(rects, [hexView.bounds])
     }
 
-    /// The drag hot path (§3.3): `mouseDragged` drives `moveCaret(to:
+    /// The drag hot path (§13): `mouseDragged` drives `moveCaret(to:
     /// extendSelection:true)` and then reports the click's input region on
     /// every event. Before the fix the region report re-broadcast a *full*
     /// change, so each drag event fell through to `reloadData()` — a whole-

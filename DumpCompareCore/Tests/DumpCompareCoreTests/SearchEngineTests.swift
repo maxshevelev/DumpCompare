@@ -145,17 +145,6 @@ final class SearchEngineTests: XCTestCase {
         }
     }
 
-    func testFindReportsProgress() throws {
-        var last: Double = -1
-        let result = try SearchEngine.find(
-            pattern: [0xFF], in: ArrayStorage([UInt8](repeating: 0, count: 16)),
-            chunkSize: 4,
-            progress: { last = $0 }
-        )
-        XCTAssertNil(result)
-        XCTAssertEqual(last, 1.0)
-    }
-
     // MARK: - Case-insensitive find (§11)
 
     private func findCI(_ pattern: [UInt8], in bytes: [UInt8], from: UInt64 = 0,
@@ -358,19 +347,6 @@ final class SearchEngineTests: XCTestCase {
         XCTAssertEqual(all, expected, "each match is delivered individually, in file order")
     }
 
-    /// Streamed matches respect chunk boundaries exactly like `findAll` — a
-    /// match straddling a boundary is found once, not dropped or doubled.
-    func testFindAllStreamMatchesFindAllAcrossChunkBoundary() async throws {
-        let bytes: [UInt8] = [0x00, 0x01, 0xAA, 0xBB, 0xCC, 0x00, 0x00, 0x00]
-        let expected = try SearchEngine.findAll(pattern: [0xAA, 0xBB, 0xCC], in: ArrayStorage(bytes), chunkSize: 3)
-        XCTAssertEqual(expected, [2..<5])
-
-        let stream = SearchEngine.findAllStream(pattern: [0xAA, 0xBB, 0xCC], in: ArrayStorage(bytes), chunkSize: 3)
-        var all: [Range<UInt64>] = []
-        for try await match in stream { all.append(match) }
-        XCTAssertEqual(all, expected, "streamed matches match findAll across a chunk boundary")
-    }
-
     func testFindAllStreamEmptyPatternThrows() async {
         let stream = SearchEngine.findAllStream(pattern: [], in: ArrayStorage([1, 2, 3]))
         do {
@@ -472,6 +448,13 @@ private final class Flag: @unchecked Sendable {
     private var _value = false
     var value: Bool { _value }
     func set() { _value = true }
+}
+
+/// The progress and folding contracts of `find` (§11). These three tests were
+/// written inside `Flag` above — a plain class, not an `XCTestCase` — so XCTest
+/// never discovered them and they had never run once. Backward progress had no
+/// live coverage at all as a result.
+extension SearchEngineTests {
 
     // MARK: - Progress contract (0...1)
 

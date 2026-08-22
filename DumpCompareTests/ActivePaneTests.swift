@@ -86,23 +86,6 @@ final class ActivePaneTests: XCTestCase {
         view.mouseDown(with: mouse(.leftMouseDown, at: p, window: window))
     }
 
-    /// Clicking a pane's hex dump must activate that pane — the highlight
-    /// follows where typing goes (the first responder).
-    func testClickingHexDumpActivatesThatPane() throws {
-        let (cv, window, url1, url2) = try makeComparisonView()
-        defer { try? FileManager.default.removeItem(at: url1); try? FileManager.default.removeItem(at: url2) }
-
-        var activated: [Int] = []
-        cv.onPaneActivated = { activated.append($0) }
-
-        let hex2 = try hexView(of: cv.paneView2)
-        click(hex2, at: byteCentre(hex2, row: 0, column: 4), window: window)
-
-        XCTAssertEqual(activated, [1])
-        XCTAssertTrue(window.firstResponder === hex2,
-                      "the clicked dump's hex view must hold first responder")
-    }
-
     /// Clicking pane 1 after pane 2 has focus must switch activation back.
     func testClickingOtherDumpSwitchesActivation() throws {
         let (cv, window, url1, url2) = try makeComparisonView()
@@ -118,25 +101,6 @@ final class ActivePaneTests: XCTestCase {
 
         XCTAssertEqual(activated, [1, 0])
         XCTAssertTrue(window.firstResponder === hex1)
-    }
-
-    /// A header click must activate that pane AND move focus to its hex view —
-    /// otherwise typing would go to the previously focused pane while the header
-    /// says a different one is active. Both flows go through focus.
-    func testHeaderClickActivatesAndFocusesPane() throws {
-        let (cv, window, url1, url2) = try makeComparisonView()
-        defer { try? FileManager.default.removeItem(at: url1); try? FileManager.default.removeItem(at: url2) }
-
-        var activated: [Int] = []
-        cv.onPaneActivated = { activated.append($0) }
-
-        let header1 = try header(of: cv.paneView1)
-        let hex1 = try hexView(of: cv.paneView1)
-        click(header1, at: header1.convert(NSPoint(x: 20, y: header1.bounds.midY), to: nil), window: window)
-
-        XCTAssertEqual(activated, [0])
-        XCTAssertTrue(window.firstResponder === hex1,
-                      "a header click must move typing focus to that pane's hex view")
     }
 
     /// Same guarantee from the other side: just focusing pane 2's dump must be

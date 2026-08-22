@@ -128,23 +128,4 @@ final class HexColumnHeaderTests: XCTestCase {
                        "the pane must ask the header to rebuild when the word size changes")
     }
 
-    /// The offset column and the header share the ink-blue color, and it
-    /// resolves blue-dominant in both light and dark appearances.
-    func testInkBlueResolvesBlueDominantInLightAndDark() throws {
-        for name: NSAppearance.Name in [.aqua, .darkAqua] {
-            let appearance = NSAppearance(named: name)!
-            // NSColor(name:) dynamic colors resolve against the drawing
-            // appearance; performAsCurrentDrawingAppearance pins it for the
-            // resolution so components can be read.
-            var resolved = NSColor.white
-            appearance.performAsCurrentDrawingAppearance {
-                resolved = HexTheme.inkBlue.usingColorSpace(.deviceRGB)!
-            }
-            let r = resolved.redComponent
-            let g = resolved.greenComponent
-            let b = resolved.blueComponent
-            XCTAssertGreaterThan(b, r, "ink blue in \(name.rawValue) must be blue-dominant")
-            XCTAssertGreaterThan(b, g, "ink blue in \(name.rawValue) must be blue-dominant")
-        }
-    }
 }

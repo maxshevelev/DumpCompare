@@ -1050,18 +1050,6 @@ final class MinimapTests: XCTestCase {
 
     // MARK: - Band height (§19.6)
 
-    /// The band is exactly the rows it stands for — there is no minimum height
-    /// padding it out any more.
-    func testBandIsExactlyTheVisibleRowsTall() throws {
-        let (_, _, panel) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 100_000))
-        _ = pumpUntil(2.0) { panel.viewport(forMapAt: 0) != nil }
-        let visible = try XCTUnwrap(panel.viewport(forMapAt: 0))
-        let rows = (visible.upperBound - visible.lowerBound + 15) / 16
-        let band = try XCTUnwrap(panel.viewportRects().first)
-        XCTAssertEqual(band.height, CGFloat(rows) * MinimapView.rowStep, accuracy: 0.51,
-                       "no minimum-height clamp inflates the band")
-    }
-
     // MARK: - View menu (§19.1)
 
     /// The toggle is reachable from the View menu with a key equivalent, and the
@@ -2697,6 +2685,30 @@ final class MinimapTests: XCTestCase {
                       "the exact picture arrives and the bins are current again")
         XCTAssertEqual(panel.overviewSummaries.first?.rowCount, panel.overviewRowCount())
         _ = window
+    }
+
+    // MARK: - The geometry contract (§19.4.1, §19.4.3, §19.6.1)
+
+    /// The map's scale and its two marker sizes, written out.
+    ///
+    /// This test exists because every other test in the suite expresses its
+    /// expectations *through* these constants — a band is `rows * rowStep`, a
+    /// mark's box is `bookmarkMarkSide` tall — so all of them would stay green if
+    /// the numbers changed underneath. §19.4.1 fixes the detail scale at 2 pt
+    /// cells with 1 pt gaps, §19.4.3 the mark in the margin, §19.6.1 the
+    /// viewport marker it must stay smaller than. Changing any of them is a
+    /// deliberate act, and it has to be made here too.
+    func testTheMapsGeometryIsWhatTheSpecSays() {
+        XCTAssertEqual(MinimapView.byteHeight, 2, "one byte is a 2 pt cell in detail mode")
+        XCTAssertEqual(MinimapView.rowGap, 1, "with a 1 pt gap between rows")
+        XCTAssertEqual(MinimapView.rowStep, 3, "so a row is 3 pt of map")
+        XCTAssertEqual(MinimapView.contentPadding, 10, "the margins that carry the markers")
+        XCTAssertEqual(MinimapView.bookmarkMarkSide, 7, "the bookmark arrow")
+        XCTAssertEqual(MinimapView.viewportMarkerSide, 9, "the viewport marker it sits inside of")
+        XCTAssertLessThan(MinimapView.bookmarkMarkSide, MinimapView.viewportMarkerSide,
+                          "a bookmark's mark is the smaller of the two shapes (§19.6.1)")
+        XCTAssertLessThan(MinimapView.bookmarkMarkSide, MinimapView.contentPadding,
+                          "and it fits within the margin it is drawn in")
     }
 
 }

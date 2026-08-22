@@ -976,14 +976,6 @@ final class PaneViewModel: HexViewDataSource {
         notify(selectionChangedOnly: true)
     }
 
-    /// Finds `pattern` in the current (unsaved) contents (§11). `from` is the
-    /// offset at which to start; searches read live storage so pending edits are
-    /// included. Returns the match range, or nil when not found.
-    func find(pattern: [UInt8], from offset: UInt64, direction: SearchDirection) throws -> Range<UInt64>? {
-        guard let doc = document else { return nil }
-        return try SearchEngine.find(pattern: pattern, in: doc.storage, from: offset, direction: direction)
-    }
-
     // MARK: - Undo / Redo
 
     @discardableResult

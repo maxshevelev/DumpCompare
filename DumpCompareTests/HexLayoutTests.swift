@@ -144,26 +144,27 @@ final class HexLayoutTests: XCTestCase {
         XCTAssertEqual(l.asciiX(column: 15) + l.charWidth, l.contentWidth - l.rightPadding)
     }
 
+    /// Absolute, because expressing the caret's x as `hexByteFrame(...).minX`
+    /// (+ charWidth) restates `caretX`'s own body: the nibble-0 case was a pure
+    /// tautology. Column 2 starts at 12 + 64 + 16 + 2×24 = 140.
     func testCaretX() {
         let l = makeLayout()
-        let frame = l.hexByteFrame(row: 0, column: 2)
-        XCTAssertEqual(l.caretX(row: 0, column: 2, nibble: 0), frame.minX)
-        XCTAssertEqual(l.caretX(row: 0, column: 2, nibble: 1), frame.minX + l.charWidth)
+        XCTAssertEqual(l.caretX(row: 0, column: 2, nibble: 0), 140)
+        XCTAssertEqual(l.caretX(row: 0, column: 2, nibble: 1), 148)
     }
 
     /// The dead zone around the mid-byte caret spans from the middle of the
     /// high-nibble character to the middle of the low-nibble one (§3.3) — a
     /// one-character band centred on the byte's centre (the nibble gap).
+    /// Absolute for the same reason as `testCaretX`: the midlines used to be
+    /// asserted as `hexByteX + charWidth/2` and `+ 3·charWidth/2` — the
+    /// implementation's own expressions — and the two "symmetry" assertions were
+    /// algebra on those, so they could not fail independently. Column 2 starts at
+    /// 140, its digits are 8 wide.
     func testDeadZoneMidlines() {
         let l = makeLayout()
-        let cell = l.hexByteX(column: 2)
-        XCTAssertEqual(l.highNibbleMidX(column: 2), cell + l.charWidth / 2)
-        XCTAssertEqual(l.lowNibbleMidX(column: 2), cell + 3 * l.charWidth / 2)
-        // The zone straddles the byte's centre symmetrically.
-        XCTAssertEqual(l.lowNibbleMidX(column: 2) - l.highNibbleMidX(column: 2),
-                       l.charWidth)
-        XCTAssertEqual(l.highNibbleMidX(column: 2) + l.charWidth,
-                       l.lowNibbleMidX(column: 2))
+        XCTAssertEqual(l.highNibbleMidX(column: 2), 144)
+        XCTAssertEqual(l.lowNibbleMidX(column: 2), 152)
     }
 
     // MARK: - Virtualization

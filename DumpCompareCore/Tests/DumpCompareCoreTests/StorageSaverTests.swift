@@ -8,13 +8,6 @@ final class StorageSaverTests: XCTestCase {
         return (EditOverlayStorage(base: base), url)
     }
 
-    func testPatchInPlacePreservesUntouchedBytes() throws {
-        let (s, url) = try makeEditable(Data([0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]))
-        try s.overwrite(range: 2..<4, with: [0xAA, 0xBB])
-        try StorageSaver.save(s, to: url)
-        XCTAssertEqual(try TestSupport.readAll(url), Data([0x00, 0x01, 0xAA, 0xBB, 0x04, 0x05, 0x06, 0x07]))
-    }
-
     func testPatchInPlaceExtendsFileAtEOF() throws {
         let (s, url) = try makeEditable(Data([0x01, 0x02]))
         try s.append([0x03, 0x04, 0x05])

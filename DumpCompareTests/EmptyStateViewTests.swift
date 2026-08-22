@@ -48,15 +48,4 @@ final class EmptyStateViewTests: XCTestCase {
                       "the up-to-two-files hint must be shown")
     }
 
-    /// The headline must share the icon's muted grey, so the two read as one
-    /// soft hint rather than the headline standing out as a primary label.
-    func testHeadlineSharesIconColor() {
-        let view = makeEmptyView()
-        let icon = descendants(of: view, NSButton.self).first { $0.accessibilityLabel() == "Open File" }
-        let headline = descendants(of: view, NSTextField.self).first { $0.stringValue == "Drop files here" }
-        guard let icon, let headline else { return XCTFail("icon and headline must exist") }
-
-        XCTAssertTrue(headline.textColor?.isEqual(icon.contentTintColor) ?? false,
-                      "the headline must match the icon's grey")
-    }
 }

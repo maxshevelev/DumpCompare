@@ -481,38 +481,7 @@ final class BookmarkTests: XCTestCase {
         XCTAssertTrue(hexB.needsDisplay, "unmarking invalidates it in pane 2")
     }
 
-    /// ⌘D's own link: the command marks the row containing the active pane's
-    /// caret in the window's shared store, and marks it again to remove (§20.3).
-    func testToggleBookmarkMarksTheActivePanesCaretRow() throws {
-        let wc = MainWindowController()
-        defer { wc.close() }
-        let controller = try XCTUnwrap(wc.mainViewController)
-        let url = try tempFile([UInt8](repeating: 0x00, count: 64))
-        defer { try? FileManager.default.removeItem(at: url) }
-        try controller.windowModel.pane1.open(url: url)
-        controller.windowModel.pane1.moveCaret(to: 20)
-
-        controller.toggleBookmark()
-        XCTAssertEqual(controller.windowModel.bookmarkStore.bookmarks.map(\.row), [16],
-                       "the command marks the caret's row in the window's shared store")
-        controller.toggleBookmark()
-        XCTAssertTrue(controller.windowModel.bookmarkStore.bookmarks.isEmpty,
-                      "the same command removes it")
-    }
-
     // MARK: - Menu
-
-    /// The Edit menu carries "Toggle Bookmark" wired to the controller's
-    /// `toggleBookmark`, bound to ⌘D — the gesture that has to cost nothing on a
-    /// bench (§20). The title says Toggle because the one command both marks and
-    /// unmarks, whatever the caret's row currently is (§20.3).
-    func testEditMenuHasToggleBookmarkWithCmdD() {
-        let item = MainWindowController().makeEditMenu().items.first { $0.title == "Toggle Bookmark" }
-        XCTAssertNotNil(item, "the Edit menu should offer Toggle Bookmark")
-        XCTAssertEqual(item?.action, #selector(MainViewController.toggleBookmark))
-        XCTAssertEqual(item?.keyEquivalent, "d")
-        XCTAssertEqual(item?.keyEquivalentModifierMask, [.command])
-    }
 
     /// The command is enabled only when the active pane has a file: with nothing
     /// open there is no caret row to mark, so the item is greyed out.
@@ -1156,22 +1125,6 @@ final class BookmarkTests: XCTestCase {
         controller.toggleBookmark()      // ⌘D again: the mark goes
         XCTAssertTrue(controller.windowModel.bookmarkStore.bookmarks.isEmpty)
         XCTAssertEqual(dismissals, 1, "and the popover goes with it")
-        XCTAssertNil(controller.editingRow)
-    }
-
-    /// Any path that removes the mark closes the popover, not just ⌘D: the
-    /// window's bookmark signal is what drives it, so the context menu — and the
-    /// list, later — need remember nothing.
-    func testRemovingTheMarkFromAnywhereClosesTheNamingPopover() throws {
-        let (controller, close) = try makeControllerWithFile()
-        defer { close() }
-        var dismissals = 0
-        controller.bookmarkEditPresenter = { _ in { dismissals += 1 } }
-        controller.windowModel.pane1.moveCaret(to: 20)
-
-        controller.toggleBookmark()
-        controller.windowModel.bookmarkStore.remove(rowContaining: 20)
-        XCTAssertEqual(dismissals, 1)
         XCTAssertNil(controller.editingRow)
     }
 

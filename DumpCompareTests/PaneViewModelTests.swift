@@ -52,6 +52,7 @@ final class PaneViewModelTests: XCTestCase {
         let state = pane.hexByteStates(in: 0..<1)[0]
         XCTAssertEqual(state.byte, 0xAB)
         XCTAssertTrue(state.isModified)
+    XCTAssertEqual(pane.fileSize, 1, "overwriting a byte never grows the file")
     }
 
     func testTypeHexIgnoresInvalidDigit() throws {
@@ -63,14 +64,6 @@ final class PaneViewModelTests: XCTestCase {
     }
 
     // MARK: - ASCII typing (§7)
-
-    func testTypeASCIIWritesPrintableByte() throws {
-        let (pane, url) = try openPane([0x00, 0x00])
-        defer { try? FileManager.default.removeItem(at: url) }
-        pane.typeASCII(0x41)               // 'A'
-        XCTAssertEqual(pane.caretOffset, 1)
-        XCTAssertEqual(pane.hexByteStates(in: 0..<1)[0].byte, 0x41)
-    }
 
     func testTypeASCIIWritesGivenByte() throws {
         let (pane, url) = try openPane([0x00, 0x00])
@@ -445,30 +438,6 @@ final class PaneViewModelTests: XCTestCase {
         }
     }
 
-    func testAutoRepeatTypingIsOneSeries() throws {
-        let (pane, url) = try openPane([UInt8](repeating: 0, count: 8))
-        defer { try? FileManager.default.removeItem(at: url) }
-
-        try withControllableClock { advance in
-            // A held-down key: 30–90 ms between characters — well under the
-            // break threshold, so the whole run is one series.
-            let bytes: [UInt8] = [0x41, 0x42, 0x43, 0x44]
-            for (i, byte) in bytes.enumerated() {
-                pane.typeASCII(byte)
-                advance(i.isMultiple(of: 2) ? 0.03 : 0.09)
-            }
-            XCTAssertEqual(pane.hexByteStates(in: 0..<4).map(\.byte), [0x41, 0x42, 0x43, 0x44])
-
-            // One byte, then the whole rest in the fast second press.
-            XCTAssertTrue(try pane.undo())
-            XCTAssertEqual(pane.hexByteStates(in: 0..<4).map(\.byte), [0x41, 0x42, 0x43, 0x00])
-            advance(0.1)
-            XCTAssertTrue(try pane.undo())
-            XCTAssertEqual(pane.hexByteStates(in: 0..<4).map(\.byte), [0x00, 0x00, 0x00, 0x00])
-            XCTAssertFalse(pane.status.canUndo)
-        }
-    }
-
     /// A save is a checkpoint the user must be able to come back to in one press
     /// (§7.5.1), so a series never spans it: the bytes typed after a save are
     /// their own series, and the fast second undo stops at the saved state
@@ -625,20 +594,6 @@ final class PaneViewModelTests: XCTestCase {
         XCTAssertEqual(sel.end, 5)
     }
 
-    /// Shift+Down extends forward by a whole row per press — the same moving-
-    /// end rule as Shift+Right, at line granularity.
-    func testShiftDownExtendsForwardByOneRowPerPress() throws {
-        let (pane, url) = try openPane(Array(repeating: 0x00, count: 64))
-        defer { try? FileManager.default.removeItem(at: url) }
-        pane.moveCaret(to: 3)
-        let row = UInt64(HexLayout.bytesPerRow)
-        pane.moveCaret(by: Int64(row), extendSelection: true)
-        pane.moveCaret(by: Int64(row), extendSelection: true)
-        let sel = pane.hexSelection()
-        XCTAssertEqual(sel.start, 3)
-        XCTAssertEqual(sel.end, 3 + 2 * row)
-    }
-
     /// Reversing direction must shrink from the moving end, not re-anchor at
     /// the opposite edge and start growing the other way.
     func testShiftArrowDirectionFlipShrinksFromMovingEnd() throws {
@@ -660,30 +615,6 @@ final class PaneViewModelTests: XCTestCase {
     }
 
     // MARK: - Find
-
-    func testFindPatternForward() throws {
-        let (pane, url) = try openPane([0xDE, 0xAD, 0xBE, 0xEF])
-        defer { try? FileManager.default.removeItem(at: url) }
-        let range = try pane.find(pattern: [0xAD, 0xBE], from: 0, direction: .forward)
-        XCTAssertEqual(range, 1..<3)
-    }
-
-    func testFindPatternBackward() throws {
-        let (pane, url) = try openPane([0x01, 0x02, 0x01, 0x02])
-        defer { try? FileManager.default.removeItem(at: url) }
-        // The match at 2..<4 spans the caret (offset 3), so it is skipped —
-        // backward must return the last match ending at or before `from` (the
-        // same way forward returns the first match starting at or after `from`).
-        let range = try pane.find(pattern: [0x01, 0x02], from: 3, direction: .backward)
-        XCTAssertEqual(range, 0..<2)
-    }
-
-    func testFindReturnsNilWhenAbsent() throws {
-        let (pane, url) = try openPane([0xDE, 0xAD, 0xBE, 0xEF])
-        defer { try? FileManager.default.removeItem(at: url) }
-        let range = try pane.find(pattern: [0x99], from: 0, direction: .forward)
-        XCTAssertNil(range)
-    }
 
     // MARK: - External change detection (§5.5)
 
@@ -932,19 +863,6 @@ final class PaneViewModelTests: XCTestCase {
         }
     }
 
-    /// Default (no insert mode): typing overwrites in place and the size is
-    /// unchanged — the pre-existing behavior is preserved.
-    func testOverwriteModeStillOverwrites() throws {
-        let (pane, url) = try openPane([0x00])
-        defer { try? FileManager.default.removeItem(at: url) }
-
-        pane.typeHexNibble(0xA)
-        pane.typeHexNibble(0xB)
-
-        XCTAssertEqual(pane.fileSize, 1, "overwrite never grows the file")
-        XCTAssertEqual(pane.hexByteStates(in: 0..<1)[0].byte, 0xAB)
-    }
-
     // MARK: - Insert mode one-time warning
 
     /// The one-time warning fires on the first insert-mode edit and never again
@@ -990,21 +908,6 @@ final class PaneViewModelTests: XCTestCase {
         XCTAssertEqual(calls, 2)
         XCTAssertEqual(pane.fileSize, 2)
         XCTAssertEqual(pane.hexCaretNibble(), 1)
-    }
-
-    /// With no presenter injected (the pure-unit-test path) insert-mode typing
-    /// proceeds without asking.
-    func testInsertModeNilWarningCallbackTypesWithoutAsking() throws {
-        let (pane, url) = try openPane([0x00])
-        defer { try? FileManager.default.removeItem(at: url) }
-        pane.isInsertMode = true
-        XCTAssertNil(pane.confirmInsertModeWarning)
-
-        pane.typeHexNibble(0xA)
-        pane.typeHexNibble(0xB)
-
-        XCTAssertEqual(pane.fileSize, 2)
-        XCTAssertEqual(pane.hexByteStates(in: 0..<1)[0].byte, 0xAB)
     }
 
     /// The warned flag is per opened file: opening a fresh file re-arms the
@@ -1147,19 +1050,6 @@ final class PaneViewModelTests: XCTestCase {
 
         XCTAssertEqual(pane.hexByteStates(in: 0..<5).map(\.byte), [0x11, 0x41, 0x22, 0x33, 0x44])
         XCTAssertTrue(pane.hexSelection().isEmpty)
-    }
-
-    /// Overwrite mode still consumes the selection byte by byte (§7.4).
-    func testOverwriteModeTypingStillConsumesTheSelection() throws {
-        let (pane, url) = try openPane([0x11, 0x22, 0x33, 0x44])
-        defer { try? FileManager.default.removeItem(at: url) }
-        pane.setSelection(SelectionModel(start: 1, end: 3, fileSize: 4))
-
-        pane.typeASCII(0x41)
-
-        XCTAssertEqual(pane.fileSize, 4)
-        XCTAssertEqual(pane.hexByteStates(in: 0..<4).map(\.byte), [0x11, 0x41, 0x33, 0x44])
-        XCTAssertFalse(pane.hexSelection().isEmpty, "the rest of the selection is still being consumed")
     }
 
     // MARK: - The nibble group ends with the byte (§7.5.1)

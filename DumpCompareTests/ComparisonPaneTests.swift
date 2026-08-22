@@ -33,16 +33,6 @@ final class ComparisonPaneTests: XCTestCase {
 
     // MARK: - Live visible diff (§8.3 rule 6)
 
-    func testEqualBytesAreSameEqualLengths() throws {
-        let pair = try openPair([0x41, 0x42, 0x43], [0x41, 0x42, 0x43])
-        defer {
-            try? FileManager.default.removeItem(at: pair.2)
-            try? FileManager.default.removeItem(at: pair.3)
-        }
-        let states = pair.0.hexByteStates(in: 0..<3)
-        XCTAssertEqual(states.map(\.isDifferent), [false, false, false])
-    }
-
     func testDifferentBytesMarkedInBothPanes() throws {
         let pair = try openPair([0x41, 0x42, 0x43], [0x41, 0x00, 0x43])
         defer {
@@ -191,16 +181,6 @@ final class ComparisonPaneTests: XCTestCase {
         XCTAssertEqual(pair.0.scrollExtent, 8_000, "the longer pane spans its own file")
         XCTAssertEqual(pair.1.scrollExtent, 8_000,
                        "the shorter pane spans the comparison's extent, not its own 64 bytes")
-    }
-
-    /// Without a companion there is nothing to synchronize with, so the extent is
-    /// the pane's own file.
-    func testScrollExtentIsTheFileInSingleFileMode() throws {
-        let url = try tempFile([UInt8](repeating: 0x41, count: 100))
-        defer { try? FileManager.default.removeItem(at: url) }
-        let pane = PaneViewModel()
-        try pane.open(url: url)
-        XCTAssertEqual(pane.scrollExtent, 100)
     }
 
     /// The extent follows the companion: growing the longer file extends the

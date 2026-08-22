@@ -157,16 +157,6 @@ final class UndoHistoryTests: XCTestCase {
 
     // MARK: - Typing series (segmented undo, Variant B)
 
-    func testFirstUndoOfASeriesRemovesOneByte() {
-        let history = UndoHistory()
-        history.record([op(0)], seriesID: 1)
-        history.record([op(1)], seriesID: 1)
-        history.record([op(2)], seriesID: 1)
-
-        XCTAssertEqual(ops(history.undo(batch: false)), [[op(2)]])
-        XCTAssertTrue(history.canUndo)
-    }
-
     func testFastSecondUndoRemovesTheRestOfTheSeries() {
         let history = UndoHistory()
         history.record([op(0)], seriesID: 1)

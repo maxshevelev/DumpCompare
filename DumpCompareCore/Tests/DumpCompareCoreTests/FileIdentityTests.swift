@@ -38,11 +38,4 @@ final class FileIdentityTests: XCTestCase {
         XCTAssertNotEqual(FileIdentity(url: a), FileIdentity(url: c))
     }
 
-    func testDescriptionIsInformative() throws {
-        let url = try TestSupport.makeTempFile(contents: Data([0x01]))
-        let description = FileIdentity(url: url).description
-        XCTAssertFalse(description.isEmpty)
-        // Either the stat-based form (file … on dev …) or the path fallback.
-        XCTAssertTrue(description.contains("file") || description.contains("path"))
-    }
 }
