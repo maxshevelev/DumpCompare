@@ -91,6 +91,53 @@ final class StorageSaverTests: XCTestCase {
         }
     }
 
+    /// A file the sandboxed app has been granted but whose directory it cannot
+    /// write: the shape that forces the direct-write fallback, because
+    /// `rewriteViaSiblingTemp` decides on exactly one thing — whether it can
+    /// create a file next to the target. Returns the target and asserts both
+    /// halves of the premise.
+    private func makeTargetInAnUnwritableDirectory(_ initial: Data) throws -> URL {
+        let target = try TestSupport.makeTempFile(contents: initial)
+        let directory = target.deletingLastPathComponent()
+        try FileManager.default.setAttributes([.posixPermissions: 0o500],
+                                             ofItemAtPath: directory.path)
+        addTeardownBlock {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                                   ofItemAtPath: directory.path)
+        }
+        XCTAssertFalse(FileManager.default.createFile(
+            atPath: directory.appendingPathComponent(".probe.tmp").path, contents: nil),
+                       "the sibling temp file really cannot be created")
+        XCTAssertTrue(FileManager.default.isWritableFile(atPath: target.path),
+                      "the chosen file really is still writable")
+        return target
+    }
+
+    /// The sandbox fallback for Save As: the app owns the file the user chose but
+    /// not its directory, so the atomic swap is impossible. The content must
+    /// still land, written straight into the target.
+    func testASaveAsFallsBackToWritingTheChosenFileDirectly() throws {
+        let (s, _) = try makeEditable(Data([0x01, 0x02, 0x03]))
+        try s.insert(at: 1, bytes: [0xFF])
+        let target = try makeTargetInAnUnwritableDirectory(Data([0xEE]))
+
+        try StorageSaver.save(s, to: target)
+        XCTAssertEqual(try TestSupport.readAll(target), Data([0x01, 0xFF, 0x02, 0x03]))
+    }
+
+    /// The direct write must truncate: writing content shorter than what the
+    /// chosen file already held cannot leave the tail of the older version
+    /// behind, or the saved file ends in bytes from a stranger.
+    func testTheDirectWriteLeavesNoTailOfWhatTheFileHeldBefore() throws {
+        let (s, _) = try makeEditable(Data([0x01, 0x02, 0x03, 0x04, 0x05, 0x06]))
+        try s.delete(range: 1..<5)
+        let target = try makeTargetInAnUnwritableDirectory(
+            Data([0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8]))
+
+        try StorageSaver.save(s, to: target)
+        XCTAssertEqual(try TestSupport.readAll(target), Data([0x01, 0x06]))
+    }
+
     func testSaveFailureThrowsAndLeavesOriginalIntact() throws {
         let (s, url) = try makeEditable(Data([0x01]))
         try s.overwrite(range: 0..<1, with: [0xAA])

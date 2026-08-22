@@ -55,9 +55,30 @@ final class FileBackedStorageTests: XCTestCase {
                 try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
                 return dir
             }, .isDirectory),
+            ("a file no one may read", {
+                let url = try TestSupport.makeTempFile(contents: Data([0x01]))
+                try FileManager.default.setAttributes([.posixPermissions: 0o000],
+                                                     ofItemAtPath: url.path)
+                XCTAssertFalse(FileManager.default.isReadableFile(atPath: url.path),
+                               "the file really is unreadable")
+                return url
+            }, .permissionDenied),
+            // A character device, not a FIFO: `open(2)` on a FIFO with no writer
+            // blocks forever, which would hang the suite rather than fail it.
+            ("something that is not a regular file", {
+                URL(fileURLWithPath: "/dev/null")
+            }, .notRegularFile),
         ]
         for testCase in cases {
             let url = try testCase.url()
+            defer {
+                // Give the chmod'ed fixture its permissions back so it can be
+                // cleaned up; never touch a path outside the temp directory.
+                if url.path.hasPrefix(FileManager.default.temporaryDirectory.path) {
+                    try? FileManager.default.setAttributes([.posixPermissions: 0o644],
+                                                           ofItemAtPath: url.path)
+                }
+            }
             XCTAssertThrowsError(try FileBackedStorage(url: url), testCase.name) { error in
                 XCTAssertEqual(error as? StorageError, testCase.expected, testCase.name)
             }

@@ -50,6 +50,48 @@ final class EditOverlayStorageTests: XCTestCase {
         XCTAssertEqual(try s.read(at: 0, length: 6), [0x00, 0xEE, 0x00, 0x00, 0x00, 0xFF])
     }
 
+    /// One shifted byte marks the whole tail as changed: from the insert or
+    /// delete point to EOF, nothing holds the content the file held at that
+    /// offset any more. This is the rule the minimap paints, and the reason a
+    /// single inserted byte reddens everything after it.
+    func testAShiftMarksTheWholeTailAsChanged() throws {
+        let inserted = try makeStorage([UInt8](repeating: 0x00, count: 100))
+        try inserted.insert(at: 10, bytes: [0xFF])
+        XCTAssertEqual(inserted.size, 101, "the insert really did grow the file")
+        XCTAssertEqual(inserted.changedRanges, [10..<101])
+
+        let deleted = try makeStorage([UInt8](repeating: 0x00, count: 100))
+        try deleted.delete(range: 40..<45)
+        XCTAssertEqual(deleted.size, 95, "the delete really did shrink the file")
+        XCTAssertEqual(deleted.changedRanges, [40..<95])
+
+        // A delete that reaches EOF leaves no tail to mark at all.
+        let truncated = try makeStorage([UInt8](repeating: 0x00, count: 100))
+        try truncated.delete(range: 90..<100)
+        XCTAssertEqual(truncated.changedRanges, [])
+    }
+
+    /// The base is immutable by contract, so a short read from it means the file
+    /// was truncated behind the overlay's back. The missing bytes read as zeros
+    /// rather than sliding the bytes after them left — an offset must never
+    /// change meaning because someone else shortened the file.
+    func testABaseTruncatedUnderUsPadsInsteadOfShiftingOffsets() throws {
+        let url = try TestSupport.makeTempFile(contents: Data((0..<100).map { UInt8($0) }))
+        let s = EditOverlayStorage(base: try FileBackedStorage(url: url))
+
+        XCTAssertEqual(Darwin.truncate(url.path, 40), 0)
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int, 40,
+                       "the base file really is shorter now")
+        XCTAssertEqual(s.size, 100, "the overlay still describes the file as opened")
+
+        // A window straddling the truncation point: the bytes that survive, then
+        // zeros where the file ended, each still at its own offset.
+        XCTAssertEqual(try s.read(at: 35, length: 10),
+                       [35, 36, 37, 38, 39, 0, 0, 0, 0, 0])
+        // And a window entirely past it is all zeros, not empty.
+        XCTAssertEqual(try s.read(at: 90, length: 4), [0, 0, 0, 0])
+    }
+
     /// A random sequence of edits, checked against a plain `[UInt8]` doing the
     /// same operations: the piece table's arithmetic has many boundary cases, and
     /// this is the cheapest way to be sure none of them drifts.

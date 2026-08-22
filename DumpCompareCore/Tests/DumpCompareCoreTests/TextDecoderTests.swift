@@ -97,6 +97,44 @@ final class TextDecoderTests: XCTestCase {
         }
     }
 
+    // MARK: - 5.4b ISO-8859-1 against cp1252
+
+    /// The one difference that makes the ISO-8859-1 menu item worth having:
+    /// 0x80–0x9F is the C1 control block there, so every byte in it is a
+    /// placeholder — where cp1252 spends the same range on €, œ, ™ and the rest.
+    /// The Latin-1 accents above it must still decode, or a decoder that
+    /// placeholdered everything would pass this.
+    func testISOLatin1LeavesTheC1RangeAsPlaceholdersWhereCp1252HasCharacters() {
+        let iso = decoder("isoLatin1")
+        let cp = decoder("cp1252")
+
+        for byte in UInt8(0x80)...UInt8(0x9F) {
+            XCTAssertEqual(iso.decode(byte), ".", "isoLatin1 0x\(String(byte, radix: 16))")
+            XCTAssertFalse(iso.isDisplayable(byte), "isoLatin1 0x\(String(byte, radix: 16))")
+        }
+        XCTAssertEqual(cp.decode(0x80), "€")
+        XCTAssertEqual(cp.decode(0x9C), "œ")
+        XCTAssertEqual(cp.decode(0x99), "™")
+        XCTAssertNil(iso.encode("€"), "€ is not representable in ISO-8859-1")
+
+        // The high half above C1 is plain Latin-1 in both tables.
+        XCTAssertEqual(iso.decode(0xE9), "é")
+        XCTAssertEqual(iso.decode(0xFF), "ÿ")
+        XCTAssertEqual(iso.decode(0xA0), " ", "NO-BREAK SPACE shows as a space")
+        XCTAssertTrue(iso.isDisplayable(0xE9))
+        XCTAssertEqual(iso.encode("é"), 0xE9)
+    }
+
+    /// 0xAD is SOFT HYPHEN — an invisible format character, so it is filtered to
+    /// a placeholder in both tables rather than drawn as nothing at all.
+    func testSoftHyphenIsFilteredInBothLatinTables() {
+        for identifier in ["cp1252", "isoLatin1"] {
+            let d = decoder(identifier)
+            XCTAssertEqual(d.decode(0xAD), ".", identifier)
+            XCTAssertFalse(d.isDisplayable(0xAD), identifier)
+        }
+    }
+
     // MARK: - 5.5 Round-trip and encode
 
     func testRoundTrip() {

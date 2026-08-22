@@ -251,6 +251,53 @@ final class BinaryDocumentTests: XCTestCase {
                        "the group's whole selection comes back, not the caret alone")
     }
 
+    // MARK: - Cancelling an edit group (a half-typed insert-mode byte)
+
+    /// Cancelling a group undoes every op it collected, so the file is
+    /// byte-identical to before the group opened — including the tail an insert
+    /// shifted. The ops must be reverted newest first: reverting them in
+    /// recording order would make the second insert's inverse delete a byte that
+    /// has already moved.
+    func testCancellingAnEditGroupRestoresEveryByteItTouched() throws {
+        let (doc, _) = try makeDocument([0x00, 0x01, 0x02, 0x03, 0x04])
+        doc.beginEditGroup()
+        try doc.insert(at: 1, bytes: [0xAA])
+        try doc.insert(at: 3, bytes: [0xBB])
+        try doc.overwrite(range: 0..<1, with: [0x99])
+        XCTAssertEqual(try readAll(doc), [0x99, 0xAA, 0x01, 0xBB, 0x02, 0x03, 0x04],
+                       "the group really did make three edits to undo")
+
+        try doc.cancelEditGroup()
+        XCTAssertEqual(try readAll(doc), [0x00, 0x01, 0x02, 0x03, 0x04])
+        XCTAssertEqual(doc.size, 5)
+    }
+
+    /// A cancelled group never happened as far as undo is concerned: nothing is
+    /// recorded, the stack is exactly as deep as before the group opened, the
+    /// redo stack is untouched, and the selection is the one the group began
+    /// with — not whatever the abandoned edits left behind.
+    func testCancellingAnEditGroupRecordsNothingAndRestoresItsStartSelection() throws {
+        let (doc, _) = try makeDocument([0x00, 0x01, 0x02, 0x03, 0x04])
+        try doc.overwrite(range: 4..<5, with: [0x44])   // one committed edit behind the group
+        XCTAssertEqual(doc.undoHistory.undoDepth, 1, "there is a stack to leave alone")
+
+        doc.setSelection(SelectionModel(start: 2, end: 4, fileSize: doc.size))
+        doc.beginEditGroup()
+        try doc.insert(at: 2, bytes: [0xF0])
+        doc.setSelection(SelectionModel.empty(at: 3, fileSize: doc.size))
+        try doc.cancelEditGroup()
+
+        XCTAssertEqual(doc.undoHistory.undoDepth, 1, "the cancelled group recorded no transaction")
+        XCTAssertFalse(doc.canRedo)
+        XCTAssertEqual(doc.selection, SelectionModel(start: 2, end: 4, fileSize: 5),
+                       "the selection the group started from comes back whole")
+
+        // And the one undo left on the stack is the edit from before the group.
+        try doc.undo()
+        XCTAssertEqual(try readAll(doc), [0x00, 0x01, 0x02, 0x03, 0x04])
+        XCTAssertFalse(doc.canUndo)
+    }
+
     // MARK: - Typing series (segmented undo, Variant B)
 
     func testTypingSeriesUndoByteThenBatch() throws {
@@ -384,6 +431,41 @@ final class BinaryDocumentTests: XCTestCase {
         XCTAssertEqual(doc.url, target)
         XCTAssertFalse(doc.isDirty)
         XCTAssertFalse(doc.readOnly)
+    }
+
+    /// After a Save As the document's storage belongs to the new file, so the
+    /// next overwrite-only save must patch *that* file in place instead of
+    /// rewriting it whole. Patching keeps the file itself (§5.2: "preserving
+    /// every untouched byte and the file identity"); the atomic rewrite swaps a
+    /// fresh file over it, so the inode is the evidence of which path ran.
+    func testSaveAfterSaveAsPatchesTheNewFileInPlace() throws {
+        let url = try TestSupport.makeTempFile(contents: Data([0x00, 0x01, 0x02, 0x03]))
+        let doc = try BinaryDocument(url: url)
+        try doc.overwrite(range: 0..<1, with: [0xAA])
+
+        let target = url.deletingLastPathComponent()
+            .appendingPathComponent("saved-as-\(UUID().uuidString).bin")
+        try doc.save(to: target)
+        XCTAssertEqual(try TestSupport.readAll(target), Data([0xAA, 0x01, 0x02, 0x03]))
+        let inodeAfterSaveAs = try inode(of: target)
+
+        // An overwrite-only edit, then a plain save to the same file.
+        try doc.overwrite(range: 2..<3, with: [0xCC])
+        XCTAssertTrue((doc.storage as? EditOverlayStorage)?.canPatchInPlace == true,
+                      "nothing has shifted an offset, so patching is even possible")
+        try doc.save()
+
+        XCTAssertEqual(try inode(of: target), inodeAfterSaveAs,
+                       "the save patched the file rather than swapping a rewrite over it")
+        XCTAssertEqual(try TestSupport.readAll(target), Data([0xAA, 0x01, 0xCC, 0x03]))
+        XCTAssertFalse(doc.isDirty)
+    }
+
+    private func inode(of url: URL) throws -> Int? {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        let number = attributes[.systemFileNumber] as? Int
+        XCTAssertNotNil(number, "no inode for \(url.lastPathComponent)")
+        return number
     }
 
     func testRevertDiscardsEdits() throws {
