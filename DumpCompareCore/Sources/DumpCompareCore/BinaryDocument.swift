@@ -27,6 +27,13 @@ public final class BinaryDocument: @unchecked Sendable {
     public private(set) var selection: SelectionModel
     public let undoHistory = UndoHistory()
 
+    /// Fired exactly when a transaction is committed to the undo history — a
+    /// forward edit, or the close of a coalesced typing group. Not fired for
+    /// undo/redo (which restore, not record) or a cancelled group. The
+    /// `PaneViewModel` uses it to push a parallel segment snapshot so undo can
+    /// restore the partition (§21.2). `nil` under pure unit tests.
+    public var onTransactionCommitted: (() -> Void)?
+
     // MARK: - Init
 
     /// Opens `url` for editing. The file must exist and be a regular file.
@@ -241,6 +248,7 @@ public final class BinaryDocument: @unchecked Sendable {
             transactionAwaitingSelection = true
             pendingGroupOps.removeAll()
             groupStartSelection = nil
+            onTransactionCommitted?()
         }
     }
 
@@ -311,6 +319,7 @@ public final class BinaryDocument: @unchecked Sendable {
                 seriesID: currentSeriesID
             )
             transactionAwaitingSelection = true
+            onTransactionCommitted?()
         }
     }
 

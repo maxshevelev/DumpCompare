@@ -142,6 +142,24 @@ final class PaneViewModel: HexViewDataSource {
     /// has no window behind it.
     var bookmarkStore: BookmarkStore?
 
+    /// The pane's segment partition (§21): one per pane, beside `document` —
+    /// segments describe one file's make-up, not the window's (the opposite of
+    /// `bookmarkStore`, which is the window's). Created once per pane; reset on
+    /// open, close, and revert.
+    private(set) var segmentStore: SegmentStore
+
+    /// The snapshot stack parallel to the document's undo stack (§21.2): each
+    /// entry is the segment state *before* the transaction it sits under, so
+    /// undo restores by snapshot rather than by inverse edit (a delete that
+    /// swallowed a cut cannot be undone from the edit alone).
+    private var segmentUndoStack: [SegmentStore.Snapshot] = []
+    /// The redo side of the snapshot stack; dropped on every divergent edit.
+    private var segmentRedoStack: [SegmentStore.Snapshot] = []
+    /// The pre-edit segment snapshot captured at the start of the current edit
+    /// gesture, pushed to `segmentUndoStack` when the gesture's transaction
+    /// commits. Nil when no gesture is in flight.
+    private var pendingSegmentSnapshot: SegmentStore.Snapshot?
+
     /// Fired after a byte-mutating edit with the `DiffEdit` describing the
     /// affected region, so the `ComparisonCoordinator` can update the index
     /// (§8.3). Not fired for selection-only changes or undo/redo/revert (those
@@ -218,6 +236,8 @@ final class PaneViewModel: HexViewDataSource {
 
     /// Creates a new pane view model with the current decoding settings.
     init() {
+        // One partition per pane, created empty and reset when a document opens.
+        segmentStore = SegmentStore(size: 0, name: "")
         let currentSettings = TextDecodingSettingsStore().settings
         textDecoder = TextDecoderRegistry.make(identifier: currentSettings.identifier, placeholder: currentSettings.placeholder)
         // Rebuild the decoder when text-decoding settings change.
@@ -279,6 +299,8 @@ final class PaneViewModel: HexViewDataSource {
         // Ends the typing series, so a batch undo cannot span this checkpoint
         // (§7.5.1) — see `save()`.
         resetEditingState()
+        // A new file is one piece — itself — named after the file (§21).
+        resetSegments(for: doc)
         startWatching(url)
         // Announce the new document so the header glyph/name and the hex view
         // update immediately, not only on the next user action.
@@ -293,16 +315,19 @@ final class PaneViewModel: HexViewDataSource {
     /// the document an identity until a real location is chosen.
     func openUntitled() {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("Untitled")
-        document = BinaryDocument(
+        let doc = BinaryDocument(
             storage: EditOverlayStorage(base: MemoryBackedStorage()),
             url: url,
             readOnly: false
         )
+        document = doc
         savedStorage = nil
         isUntitled = true
         // A new file re-arms the one-time insert-mode warning.
         hasWarnedInsertShift = false
         resetEditingState()
+        // A new (empty) file is one piece, named after the (placeholder) file.
+        resetSegments(for: doc)
         changeWatcher?.stop()
         changeWatcher = nil
         notify()
@@ -319,6 +344,11 @@ final class PaneViewModel: HexViewDataSource {
         changeWatcher?.stop()
         changeWatcher = nil
         resetEditingState()
+        // The segments go with the file (§21 edge cases); nothing is persisted.
+        segmentStore.reset(size: 0, name: "")
+        segmentUndoStack.removeAll()
+        segmentRedoStack.removeAll()
+        pendingSegmentSnapshot = nil
     }
 
     func save() throws {
@@ -365,6 +395,8 @@ final class PaneViewModel: HexViewDataSource {
         rearmWatcher()
         // Revert replaces the storage wholesale; the comparison must re-read.
         onFullInvalidation?()
+        // The partition goes back to the file as it is on disk: one piece.
+        resetSegments(for: doc)
         notify()
         notifyCompanionContentFullyChanged()
     }
@@ -420,6 +452,93 @@ final class PaneViewModel: HexViewDataSource {
         overwriteSelection = nil
         selectionAnchor = nil
         pendingInsertOffset = nil
+    }
+
+    // MARK: - Segments (§21)
+
+    /// Resets the partition to one piece — the whole file — named after it,
+    /// clears the snapshot stacks, and wires the document's transaction hook so
+    /// the stacks stay parallel to the undo stack. Called on open, close, and
+    /// revert.
+    private func resetSegments(for doc: BinaryDocument) {
+        segmentStore.reset(size: doc.size, name: doc.url.lastPathComponent)
+        segmentUndoStack.removeAll()
+        segmentRedoStack.removeAll()
+        pendingSegmentSnapshot = nil
+        doc.onTransactionCommitted = { [weak self] in
+            self?.segmentTransactionCommitted()
+        }
+    }
+
+    /// Captures the partition before an edit lands, so the transaction the edit
+    /// commits can be undone back to it (§21.2). Called from every forward-edit
+    /// path **before** the document mutation, because the mutation is what
+    /// commits the transaction (firing `onTransactionCommitted`); the capture
+    /// must precede that or the snapshot is taken one edit too late. A coalesced
+    /// typing group captures once — on its first nibble — and keeps that
+    /// snapshot, so the whole group undoes to the state before its first byte.
+    private func beginSegmentEdit() {
+        guard document != nil, pendingSegmentSnapshot == nil else { return }
+        pendingSegmentSnapshot = segmentStore.snapshot()
+    }
+
+    /// Applies the net edit to the pane's segment partition, moving the cuts
+    /// with the content (§21.2). Called from every forward-edit path **after**
+    /// the document mutation, with the same `DiffEdit` the comparison index
+    /// consumes (§8.3) and the file's post-edit size. Not called for undo/redo —
+    /// those restore by snapshot, not by inverse edit.
+    private func applySegmentEdit(_ edit: DiffEdit) {
+        guard let doc = document else { return }
+        segmentStore.apply(edit, newSize: doc.size)
+    }
+
+    /// Pushes the captured pre-edit snapshot onto the undo stack when the
+    /// gesture's transaction commits, and drops the redo side (the state has
+    /// diverged). No-op when the gesture was cancelled and left no snapshot.
+    private func segmentTransactionCommitted() {
+        guard let snapshot = pendingSegmentSnapshot else { return }
+        pendingSegmentSnapshot = nil
+        segmentUndoStack.append(snapshot)
+        segmentRedoStack.removeAll()
+    }
+
+    /// Discards a captured snapshot whose gesture was cancelled (no transaction
+    /// recorded), so it cannot leak into the next edit.
+    private func discardPendingSegmentSnapshot() {
+        pendingSegmentSnapshot = nil
+    }
+
+    /// Restores the partition after an undo that reverted `step` transactions —
+    /// one step, which may be a fast-undo batch of several series bytes. The
+    /// transactions move from the undo side to the redo side, and their
+    /// snapshots move with them: the undo side keeps one *before* snapshot per
+    /// transaction, the redo side one *after* snapshot per transaction. Because
+    /// `before(tᵢ₊₁) == after(tᵢ)`, the redo side's snapshots are the popped
+    /// ones minus the earliest, plus the current state (the batch's end). The
+    /// store returns to the earliest — the state the step began from.
+    private func undoSegments(step: Int) {
+        guard step > 0 else { return }
+        let popped = Array(segmentUndoStack.suffix(step))
+        segmentUndoStack.removeLast(min(step, segmentUndoStack.count))
+        let afterStates = popped.dropFirst()
+        segmentRedoStack.append(contentsOf: afterStates)
+        segmentRedoStack.append(segmentStore.snapshot())   // after(t_last) = current
+        segmentStore.restore(popped.first ?? segmentStore.snapshot())
+    }
+
+    /// Restores the partition after a redo that reapplied `step` transactions —
+    /// one step, unfolded back into individual byte steps by the document. The
+    /// inverse of `undoSegments`: the redo side's *after* snapshots become the
+    /// undo side's *before* snapshots (`before(t₁) == current`,
+    /// `before(tᵢ₊₁) == after(tᵢ)`), and the store returns to the latest — the
+    /// state the step ended in.
+    private func redoSegments(step: Int) {
+        guard step > 0 else { return }
+        let popped = Array(segmentRedoStack.suffix(step))
+        segmentRedoStack.removeLast(min(step, segmentRedoStack.count))
+        segmentUndoStack.append(segmentStore.snapshot())   // before(t₁) = current
+        segmentUndoStack.append(contentsOf: popped.dropLast())
+        segmentStore.restore(popped.last ?? segmentStore.snapshot())
     }
 
     /// Moves the caret's input region to `region` (set when the user clicks the
@@ -631,11 +750,13 @@ final class PaneViewModel: HexViewDataSource {
                 // byte) so the next digit fills it — no advance here.
                 ensureTypingSeries(mode: inputRegion)
                 beginTypingGroup()
+                beginSegmentEdit()
                 try? doc.insert(at: offset, bytes: [UInt8(digit) << 4])
                 nibble = 1
                 pendingInsertOffset = offset
                 lastTypingTime = Self.clock()
                 onEdit?(.insert(at: offset, length: 1))
+                applySegmentEdit(.insert(at: offset, length: 1))
                 notifyAfterEdit(range: offset..<offset + 1, sizeBefore: sizeBefore)
                 notifyCompanionContentFullyChanged()
                 return
@@ -643,6 +764,7 @@ final class PaneViewModel: HexViewDataSource {
                 // Low nibble: fill the byte's low nibble in place (an
                 // overwrite, no new insertion) and advance past it.
                 let old = byteAt(offset) ?? 0
+                beginSegmentEdit()
                 try? doc.overwrite(range: offset..<offset + 1, with: [(old & 0xF0) | UInt8(digit)])
                 nibble = 0
                 pendingInsertOffset = nil
@@ -650,6 +772,7 @@ final class PaneViewModel: HexViewDataSource {
                 advanceAfterByte()
                 lastTypingTime = Self.clock()
                 onEdit?(.overwrite(range: offset..<offset + 1))
+                applySegmentEdit(.overwrite(range: offset..<offset + 1))
                 notifyAfterEdit(range: offset..<offset + 1, sizeBefore: sizeBefore)
                 return
             }
@@ -662,19 +785,23 @@ final class PaneViewModel: HexViewDataSource {
             offset = typingOffset(doc)
             let old = byteAt(offset) ?? 0
             beginTypingGroup()
+            beginSegmentEdit()
             try? doc.overwrite(range: offset..<offset + 1, with: [(UInt8(digit) << 4) | (old & 0x0F)])
             nibble = 1
             lastTypingTime = Self.clock()
             onEdit?(.overwrite(range: offset..<offset + 1))
+            applySegmentEdit(.overwrite(range: offset..<offset + 1))
         } else {
             offset = typingOffset(doc)
             let old = byteAt(offset) ?? 0
+            beginSegmentEdit()
             try? doc.overwrite(range: offset..<offset + 1, with: [(old & 0xF0) | UInt8(digit)])
             nibble = 0
             endTypingGroup()
             advanceAfterByte()
             lastTypingTime = Self.clock()
             onEdit?(.overwrite(range: offset..<offset + 1))
+            applySegmentEdit(.overwrite(range: offset..<offset + 1))
         }
         notifyAfterEdit(range: offset..<offset + 1, sizeBefore: sizeBefore)
     }
@@ -694,11 +821,13 @@ final class PaneViewModel: HexViewDataSource {
             dropSelectionForInsert()
             ensureTypingSeries(mode: inputRegion)
             let offset = typingOffset(doc)
+            beginSegmentEdit()
             try? doc.insert(at: offset, bytes: [byte])
             nibble = 0
             advanceAfterByte()
             lastTypingTime = Self.clock()
             onEdit?(.insert(at: offset, length: 1))
+            applySegmentEdit(.insert(at: offset, length: 1))
             notifyAfterEdit(range: offset..<offset + 1, sizeBefore: sizeBefore)
             notifyCompanionContentFullyChanged()
             return
@@ -706,11 +835,13 @@ final class PaneViewModel: HexViewDataSource {
         prepareForTyping()
         ensureTypingSeries(mode: inputRegion)
         let offset = typingOffset(doc)
+        beginSegmentEdit()
         try? doc.overwrite(range: offset..<offset + 1, with: [byte])
         nibble = 0
         advanceAfterByte()
         lastTypingTime = Self.clock()
         onEdit?(.overwrite(range: offset..<offset + 1))
+        applySegmentEdit(.overwrite(range: offset..<offset + 1))
         notifyAfterEdit(range: offset..<offset + 1, sizeBefore: sizeBefore)
     }
 
@@ -736,9 +867,11 @@ final class PaneViewModel: HexViewDataSource {
         let caret = doc.selection.start
         guard caret < doc.size else { return }
         // Forward delete fills a byte but leaves the caret put — redo must too.
+        beginSegmentEdit()
         try? doc.fillZero(in: caret..<caret + 1, caretAfter: caret)
         nibble = 0
         onEdit?(.overwrite(range: caret..<caret + 1))
+        applySegmentEdit(.overwrite(range: caret..<caret + 1))
         notifyAfterEdit(range: caret..<caret + 1, sizeBefore: sizeBefore)
     }
 
@@ -776,10 +909,12 @@ final class PaneViewModel: HexViewDataSource {
         guard caret > 0 else { return }
         // Overwrite mode: fill the previous byte with 0x00 and step back one —
         // redo must land there too, not at the (unmoved) caret.
+        beginSegmentEdit()
         try? doc.fillZero(in: (caret - 1)..<caret, caretAfter: caret - 1)
         doc.setSelection(SelectionModel.empty(at: caret - 1, fileSize: doc.size))
         nibble = 0
         onEdit?(.overwrite(range: (caret - 1)..<caret))
+        applySegmentEdit(.overwrite(range: (caret - 1)..<caret))
         notifyAfterEdit(range: (caret - 1)..<caret, sizeBefore: sizeBefore)
     }
 
@@ -807,12 +942,14 @@ final class PaneViewModel: HexViewDataSource {
     private func deleteShiftingTail(_ range: Range<UInt64>) {
         guard let doc = document else { return }
         let sizeBefore = doc.size
+        beginSegmentEdit()
         try? doc.delete(range: range)
         doc.setSelection(SelectionModel.empty(at: range.lowerBound, fileSize: doc.size))
         nibble = 0
         overwriteSelection = nil
         pendingInsertOffset = nil
         onEdit?(.delete(range: range))
+        applySegmentEdit(.delete(range: range))
         notifyAfterEdit(range: range, sizeBefore: sizeBefore)
         notifyCompanionContentFullyChanged()
     }
@@ -836,6 +973,11 @@ final class PaneViewModel: HexViewDataSource {
         pendingInsertOffset = nil
         nibble = 0
         onEdit?(.delete(range: offset..<offset + 1))
+        // Revert the high-nibble insert in the partition, then drop the captured
+        // snapshot: the group was cancelled, so no transaction committed and the
+        // snapshot must not leak into the next edit.
+        applySegmentEdit(.delete(range: offset..<offset + 1))
+        discardPendingSegmentSnapshot()
         notifyAfterEdit(range: offset..<offset + 1, sizeBefore: sizeBefore)
         notifyCompanionContentFullyChanged()
     }
@@ -853,12 +995,14 @@ final class PaneViewModel: HexViewDataSource {
     func deleteBytes(in range: Range<UInt64>) throws {
         guard let doc = document else { return }
         breakTypingSeries()
+        beginSegmentEdit()
         try doc.delete(range: range)
         doc.setSelection(SelectionModel.empty(at: range.lowerBound, fileSize: doc.size))
         doc.noteSelectionAfterEdit()
         nibble = 0
         overwriteSelection = nil
         onEdit?(.delete(range: range))
+        applySegmentEdit(.delete(range: range))
         notify()
         notifyCompanionContentFullyChanged()
     }
@@ -873,12 +1017,14 @@ final class PaneViewModel: HexViewDataSource {
         let sizeBefore = doc.size
         let start = doc.selection.start
         let range = start..<start + UInt64(bytes.count)
+        beginSegmentEdit()
         try doc.overwrite(range: range, with: bytes)
         doc.setSelection(SelectionModel.empty(at: range.upperBound, fileSize: doc.size))
         resetEditingState()
         // The engine's `.overwrite` recomputes `[start, end)`, which covers the
         // paste even when it extends past EOF (the recompute reads current bytes).
         onEdit?(.overwrite(range: range))
+        applySegmentEdit(.overwrite(range: range))
         // A paste that extends past EOF grows the file, so the layout (frame
         // height, caret row) must rebuild — `notifyAfterEdit` handles that.
         notifyAfterEdit(range: range, sizeBefore: sizeBefore)
@@ -891,11 +1037,13 @@ final class PaneViewModel: HexViewDataSource {
         // not inherit the typing series' id.
         breakTypingSeries()
         let at = doc.selection.start
+        beginSegmentEdit()
         try doc.insert(at: at, bytes: bytes)
         doc.setSelection(SelectionModel.empty(at: at + UInt64(bytes.count), fileSize: doc.size))
         doc.noteSelectionAfterEdit()
         resetEditingState()
         onEdit?(.insert(at: at, length: UInt64(bytes.count)))
+        applySegmentEdit(.insert(at: at, length: UInt64(bytes.count)))
         notify()
         notifyCompanionContentFullyChanged()
     }
@@ -996,8 +1144,12 @@ final class PaneViewModel: HexViewDataSource {
         let now = Self.clock()
         let fast = lastUndoTime.map { now - $0 < Self.fastUndoWindow } ?? false
         lastUndoTime = now
+        // The step's size in transactions — one normally, more for a fast-undo
+        // batch — is the drop in the history's transaction count.
+        let depthBefore = doc.undoHistory.undoDepth
         let edit = try doc.undo(batch: fast)   // restores the caret to where the edit began
         if let edit {
+            undoSegments(step: depthBefore - doc.undoHistory.undoDepth)
             // Undo mutates the storage in place, so the net DiffEdit updates the
             // comparison incrementally — no full-file re-scan (§8.3).
             onEdit?(edit)
@@ -1014,8 +1166,12 @@ final class PaneViewModel: HexViewDataSource {
         // Redo does not inherit the fast window: a redo followed quickly by an
         // undo is not a "repeat undo".
         lastUndoTime = nil
+        // The step's size in transactions — the rise in the history's count, a
+        // batch step unfolding back into its individual byte steps.
+        let depthBefore = doc.undoHistory.undoDepth
         let edit = try doc.redo()   // restores the caret to where the edit left it
         if let edit {
+            redoSegments(step: doc.undoHistory.undoDepth - depthBefore)
             onEdit?(edit)
             notifyCompanionContentChanged(edit)
         }
@@ -1133,11 +1289,13 @@ final class PaneViewModel: HexViewDataSource {
         let start = doc.selection.start
         let end = doc.selection.end
         // A fill leaves the caret at the selection start — redo must too.
+        beginSegmentEdit()
         try? doc.fill(pattern: pattern, in: start..<end, caretAfter: start)
         doc.setSelection(SelectionModel.empty(at: start, fileSize: doc.size))
         nibble = 0
         overwriteSelection = nil
         onEdit?(.overwrite(range: start..<end))
+        applySegmentEdit(.overwrite(range: start..<end))
         notifyAfterEdit(range: start..<end, sizeBefore: sizeBefore)
     }
 

@@ -1969,3 +1969,78 @@ which would lose its name.
   change signal that reports it (§20.2): both panes repaint the two rows
   involved, the open form's list re-sorts, and an edit popover on the row the
   mark left closes with it (§20.3).
+
+=====================================================================
+21. SEGMENTS
+=====================================================================
+
+A segmentation is a *partition* of the pane's content: pieces that are
+contiguous, never overlap, and cover the file completely. N pieces are N−1
+**cuts**, so the model is an ordered list of cut offsets, one name per piece —
+and a gap or an overlap is impossible by construction rather than by
+validation. Every open file has at least one segment: itself. Nothing about a
+segment changes the bytes; a partition is a way of *reading* a file, and every
+operation that writes is explicit about it.
+
+21.1 What a segment is
+
+- A segment is a piece of the file's content: a contiguous, non-overlapping
+  stretch that, with its neighbours, covers the whole file. A segmentation is a
+  partition — an ordered list of cut offsets — so a gap or an overlap cannot be
+  represented, let alone validated. N pieces are N−1 cuts.
+- A segment is the pane's, not the window's: it describes one file's make-up,
+  and the other pane holds a different file. Swapping panes swaps them; closing
+  a file drops its partition. That is the opposite of a bookmark (§20), which
+  is the window's and serves both panes at once.
+- **A mark never moves; a cut always does.** A bookmark is an address the user
+  chose and must stay put (§20.1); a cut is the edge of a stretch of content
+  and must travel with it. The case that proves it: append B to A, then insert
+  C at the start, and the first seam moves.
+- The label is positional — S0, S1, S2 … in file order — and renumbers whenever
+  a cut is added or removed. Zero-based, like every other offset in the app
+  (§10). Every segment always has one, so nothing is ever nameless.
+- The name is optional and survives renumbering: rename a piece and add a cut
+  before it later, and the piece keeps its name while its label changes. A
+  segment with no name is still shown as its label, never blank. Two pieces may
+  carry the same name — it describes, it does not identify; the label
+  identifies.
+- Segments are session-only: they live as long as the file is open. Closing the
+  file drops its partition; nothing is persisted (a project file would change
+  that, TODO).
+
+21.2 The model
+
+- A segment is a value: the piece's half-open byte range and a name; the label
+  is derived from its position, never stored.
+- The store keeps **cuts, not ranges**: a partition is its boundaries, so the
+  ranges and the labels are derived from the cut list and the file's size. It
+  answers the questions the panes ask — the piece containing an offset, the
+  pieces in file order — and the editing verbs: add a cut (splitting the piece
+  that contains it; the earlier piece keeps its name, the new one starts
+  unnamed), remove a cut (merging the two pieces it separated into the earlier
+  one, which keeps its name), move a cut, and rename a piece.
+- A cut is refused at 0, at EOF, or on an existing cut: every piece must stay
+  non-empty.
+- **Following the content.** A cut travels with the content — the opposite rule
+  to a bookmark (§20.1). The store applies the same net edit the comparison
+  index and the minimap consume (§8.3), with the file's size after the edit:
+  - *overwrite* — nothing moves (the size may have grown, e.g. a paste past
+    EOF).
+  - *insert(at:length:)* — the cuts strictly after the insert shift by
+    `+length`; a cut exactly at the insert stays, so the inserted bytes join
+    the piece that *starts* there.
+  - *delete(range:)* — a cut at or before the range's start stays; a cut
+    strictly inside the range is swallowed, and the two pieces it separated
+    merge into the one that starts before the deletion, which keeps its name;
+    a cut at or after the range's end shifts by `−length`. A piece left with no
+    bytes is dropped with its name, and the labels renumber.
+- **Undo.** A cut's offset and name are not in the edit that removes it, so
+  undo restores the partition by **snapshot**, not by inverse edit. The pane
+  keeps a stack of snapshots parallel to the document's undo stack — one per
+  committed transaction, captured before the edit lands, popped and restored on
+  undo — with the same lifecycle the document's own stack has: cleared on open
+  and revert, the redo side dropped on a divergent edit. This mirrors how the
+  caret and the selection are restored (§7.5), one level up.
+- One instance lives on the pane's view model, beside its document. The store
+  holds no bytes and is AppKit-free, so its arithmetic is unit-testable in the
+  app suite.
