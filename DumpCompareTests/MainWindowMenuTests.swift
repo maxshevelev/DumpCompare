@@ -29,34 +29,31 @@ final class MainWindowMenuTests: XCTestCase {
 
     // MARK: - ⌘V routing
 
-    /// The ⌘V key equivalent belongs to the standard "Paste" item, whose
-    /// `paste:` action dispatches through the responder chain (target nil).
+    /// One built Edit menu, one question: who owns ⌘V. It belongs to the
+    /// standard "Paste" item, whose `paste:` action dispatches through the
+    /// responder chain (target nil); no "Paste Write" item exists to claim it,
+    /// because plain Paste IS the paste-write in the dump
+    /// (`MainViewController.paste` overwrites bytes when the hex view holds
+    /// focus); and the paste block sits where the system Edit menu puts it —
+    /// right after Copy, followed only by the genuinely different insert paste.
     func testCmdVIsStandardPasteNotPasteWrite() {
-        let paste = makeEditMenu().items.first { $0.keyEquivalent == "v" }
+        let menu = makeEditMenu()
+
+        let paste = menu.items.first { $0.keyEquivalent == "v" }
         XCTAssertEqual(paste?.title, "Paste")
         XCTAssertEqual(paste?.action, #selector(NSText.paste(_:)))
         XCTAssertNil(paste?.target,
                      "paste: must go to the first responder, not a fixed target")
-    }
 
-    /// Plain Paste IS the paste-write in the dump (MainViewController.paste
-    /// overwrites bytes when the hex view holds focus), so a separate
-    /// "Paste Write" menu entry would only duplicate it — none should exist.
-    func testNoSeparatePasteWriteEntry() {
-        let write = makeEditMenu().items.first { $0.action == #selector(MainViewController.pasteWrite) }
-        XCTAssertNil(write,
+        XCTAssertNil(menu.items.first { $0.action == #selector(MainViewController.pasteWrite) },
                      "Paste Write is redundant: Paste (⌘V) already overwrites bytes in the dump")
-    }
 
-    /// Structural sanity: standard "Paste" sits right after "Copy", followed
-    /// only by the genuinely different insert mode, matching the system Edit
-    /// menu layout.
-    func testStandardPasteSitsAfterCopy() {
-        let titles = makeEditMenu().items.map(\.title)
-        XCTAssertEqual(titles.filter { $0 == "Copy" }.count, 1)
+        let titles = menu.items.map(\.title)
+        XCTAssertEqual(titles.filter { $0 == "Copy" }.count, 1, "there is one Copy to anchor on")
         let copyIndex = titles.firstIndex(of: "Copy")!
-        XCTAssertEqual(titles[copyIndex + 1], "Paste")
-        XCTAssertEqual(titles[copyIndex + 2], "Paste Insert…")
+        XCTAssertEqual(titles[copyIndex + 1], "Paste", "standard Paste sits right after Copy")
+        XCTAssertEqual(titles[copyIndex + 2], "Paste Insert…",
+                       "and only the insert paste follows it")
     }
 
     // MARK: - Insert Mode toggle

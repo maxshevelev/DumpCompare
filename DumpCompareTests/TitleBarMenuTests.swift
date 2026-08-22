@@ -55,44 +55,43 @@ final class TitleBarMenuTests: XCTestCase {
 
     // MARK: - App menu bar File submenu
 
-    func testFileMenuCarriesEveryFileMenuItem() {
+    /// One built File menu, described completely: its items and separators in
+    /// order, every real item routing to `mainViewController` (never the nil
+    /// target / responder chain, so the menu bar acts on the active pane), and
+    /// the key equivalent each one carries.
+    ///
+    /// Built once on purpose: `MainWindowController.init` calls
+    /// `buildMainMenu()`, which assigns `NSApp.mainMenu`, so each instance a
+    /// test creates replaces the process's menu bar and leaks its window.
+    func testFileMenuCarriesEveryItemWithItsTargetAndKey() {
         let wc = MainWindowController()
-        XCTAssertEqual(titlesAndSeparators(of: wc.makeFileMenu()), fileMenuItems)
-    }
+        let menu = wc.makeFileMenu()
 
-    /// Every real item must route to `mainViewController` (never the nil target /
-    /// responder chain), so the menu bar acts on the active pane.
-    func testItemsTargetTheMainViewController() {
-        let wc = MainWindowController()
-        for item in wc.makeFileMenu().items where !item.isSeparatorItem {
+        XCTAssertEqual(titlesAndSeparators(of: menu), fileMenuItems)
+
+        for item in menu.items where !item.isSeparatorItem {
             XCTAssertTrue(item.target === wc.mainViewController,
                           "\(item.title) must target mainViewController")
         }
-    }
 
-    func testKeyEquivalentsMatchTheFileMenu() {
-        let wc = MainWindowController()
         let expectedKeys = ["n", "o", nil, "s", "S", "", nil, "w"]
-        let keys = wc.makeFileMenu().items.map { $0.isSeparatorItem ? nil : $0.keyEquivalent }
-        XCTAssertEqual(keys, expectedKeys)
+        let keys = menu.items.map { $0.isSeparatorItem ? nil : $0.keyEquivalent }
+        XCTAssertEqual(keys, expectedKeys, "the File menu's key equivalents")
     }
 
     // MARK: - Pane header context menu
 
-    /// The header menu must carry every File item plus the Swap Panels block.
-    func testPaneMenuCarriesEveryFileMenuItem() {
-        let mvc = MainViewController()
-        XCTAssertEqual(titlesAndSeparators(of: mvc.makePaneMenu(for: mvc.windowModel.pane1)),
-                       paneMenuItems)
-    }
-
-    /// Every File item targets `mainViewController` and pins the pane it was
-    /// built for in `representedObject` — the pane the header that owns the menu
-    /// is bound to, not the active pane. Swap Panels is exempt: it is a
-    /// mode-scoped command and carries no pane.
-    func testPaneMenuItemsResolveTheirOwnPane() {
+    /// The header menu carries every File item plus the header-only Show in
+    /// Finder and the Swap Panels block, and every File item targets
+    /// `mainViewController` while pinning the pane it was built for in
+    /// `representedObject` — the pane the header that owns the menu is bound to,
+    /// not the active pane. Swap Panels is exempt: it is a mode-scoped command
+    /// and carries no pane.
+    func testPaneMenuCarriesEveryFileItemAndResolvesItsOwnPane() {
         let mvc = MainViewController()
         let pane = mvc.windowModel.pane1
+        XCTAssertEqual(titlesAndSeparators(of: mvc.makePaneMenu(for: pane)), paneMenuItems)
+
         for item in mvc.makePaneMenu(for: pane).items where !item.isSeparatorItem {
             XCTAssertTrue(item.target === mvc,
                           "\(item.title) must target mainViewController")

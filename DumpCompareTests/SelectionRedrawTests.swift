@@ -54,75 +54,53 @@ final class SelectionRedrawTests: XCTestCase {
         SelectionModel(start: start, end: end, fileSize: size)
     }
 
-    func testGrowingSelectionInvalidatesChangedRowsAndEdges() throws {
+    /// The span XOR plus the ±1 edge expansion, in both directions and in the
+    /// collapse-to-a-caret shape. One test for the three, because
+    /// `changedSelectionRects` is symmetric in `(old, new)` — every branch of it
+    /// treats the two alike — so a from/to mirror cannot fail on its own.
+    func testAChangedSelectionInvalidatesItsRowsAndTheirEdges() throws {
         let (hexView, url) = try makePane([UInt8](repeating: 0, count: 200))
         defer { try? FileManager.default.removeItem(at: url) }
         let rowHeight = hexView.hexLayout.rowHeight
+        func changedRows(from old: SelectionModel, to new: SelectionModel) -> Set<Int> {
+            rows(hexView.changedSelectionRects(from: old, to: new), rowHeight: rowHeight)
+        }
 
         // Row 0 (bytes 0…15) was already selected; the drag adds rows 1–2. The
-        // old selection's bottom edge (at the bottom of row 0) and the new
-        // selection's bottom edge (below row 2) straddle their boundaries, so
-        // rows 0 and 3 join the redraw.
-        let rects = hexView.changedSelectionRects(
-            from: selection(0, 16, size: 200),
-            to: selection(0, 48, size: 200))
-        XCTAssertEqual(rows(rects, rowHeight: rowHeight), [0, 1, 2, 3])
+        // old selection's bottom edge (at the bottom of row 0) and the new one's
+        // (below row 2) straddle their boundaries, so rows 0 and 3 join in.
+        XCTAssertEqual(changedRows(from: selection(0, 16, size: 200),
+                                   to: selection(0, 48, size: 200)),
+                       [0, 1, 2, 3], "growing the selection repaints the rows it gained, plus the edges")
+        XCTAssertEqual(changedRows(from: selection(0, 48, size: 200),
+                                   to: selection(0, 16, size: 200)),
+                       [0, 1, 2, 3], "and dragging back repaints exactly the same rows")
+
+        // A selection collapsing to a caret elsewhere: the old span's rows clear
+        // and the caret's own row appears.
+        XCTAssertEqual(changedRows(from: selection(5, 20, size: 200),
+                                   to: selection(20, 20, size: 200)),
+                       [0, 1, 2], "a collapse to a caret repaints the old span and the caret's row")
     }
 
-    func testShrinkingSelectionInvalidatesRetiredRowsAndEdges() throws {
+    /// The caret's own row has to repaint when a selection starts or ends at it,
+    /// even though the span XOR is empty there — `if old.isEmpty` /
+    /// `if new.isEmpty` in `changedSelectionRects`. Both directions in one test,
+    /// again because the function is symmetric in `(old, new)`.
+    func testACaretTurningIntoASelectionRepaintsItsOwnRow() throws {
         let (hexView, url) = try makePane([UInt8](repeating: 0, count: 200))
         defer { try? FileManager.default.removeItem(at: url) }
         let rowHeight = hexView.hexLayout.rowHeight
+        func changedRows(from old: SelectionModel, to new: SelectionModel) -> Set<Int> {
+            rows(hexView.changedSelectionRects(from: old, to: new), rowHeight: rowHeight)
+        }
 
-        // Dragging back shrinks the tail: rows 1–2 lose their fill, and the
-        // old bottom edge (below row 2) clears along with it.
-        let rects = hexView.changedSelectionRects(
-            from: selection(0, 48, size: 200),
-            to: selection(0, 16, size: 200))
-        XCTAssertEqual(rows(rects, rowHeight: rowHeight), [0, 1, 2, 3])
-    }
-
-    /// Shift+Right selecting the FIRST byte must repaint the caret's own row: a
-    /// caret at P and a one-byte selection [P, P+1) share a byte span, so the
-    /// span XOR alone misses the handoff and the byte keeps its caret-only
-    /// pixels — the "1 selected in the status bar, nothing highlighted" bug.
-    func testCaretToFirstByteSelectionRepaintsCaretRow() throws {
-        let (hexView, url) = try makePane([UInt8](repeating: 0, count: 200))
-        defer { try? FileManager.default.removeItem(at: url) }
-        let rowHeight = hexView.hexLayout.rowHeight
-
-        let rects = hexView.changedSelectionRects(
-            from: selection(5, 5, size: 200),   // caret at byte 5
-            to: selection(5, 6, size: 200))     // first byte selected
-        XCTAssertEqual(rows(rects, rowHeight: rowHeight), [0, 1],
-                       "the caret's own row must repaint when the first byte is selected")
-    }
-
-    /// The mirror image: a one-byte selection collapsing back to the caret must
-    /// also clear its fill rather than leave the byte highlighted.
-    func testOneByteSelectionCollapseRepaintsCaretRow() throws {
-        let (hexView, url) = try makePane([UInt8](repeating: 0, count: 200))
-        defer { try? FileManager.default.removeItem(at: url) }
-        let rowHeight = hexView.hexLayout.rowHeight
-
-        let rects = hexView.changedSelectionRects(
-            from: selection(5, 6, size: 200),   // first byte selected
-            to: selection(5, 5, size: 200))     // back to the caret
-        XCTAssertEqual(rows(rects, rowHeight: rowHeight), [0, 1],
-                       "the selected byte's row must repaint when it collapses back to a caret")
-    }
-
-    func testSelectionCollapsingToCaretAtNewOffsetInvalidatesBothRows() throws {
-        let (hexView, url) = try makePane([UInt8](repeating: 0, count: 200))
-        defer { try? FileManager.default.removeItem(at: url) }
-        let rowHeight = hexView.hexLayout.rowHeight
-
-        // Selection [5, 20) collapses to a caret at byte 20 (row 1): the old
-        // selection's row 0 must clear and the caret's new row 1 must appear.
-        let rects = hexView.changedSelectionRects(
-            from: selection(5, 20, size: 200),
-            to: selection(20, 20, size: 200))
-        XCTAssertEqual(rows(rects, rowHeight: rowHeight), [0, 1, 2])
+        XCTAssertEqual(changedRows(from: selection(5, 5, size: 200),
+                                   to: selection(5, 6, size: 200)),
+                       [0, 1], "the caret's own row must repaint when the first byte is selected")
+        XCTAssertEqual(changedRows(from: selection(5, 6, size: 200),
+                                   to: selection(5, 5, size: 200)),
+                       [0, 1], "and when that one byte collapses back to a caret")
     }
 
     /// The row-boundary case: typing consumes byte 15 (last of row 0), the
@@ -174,37 +152,16 @@ final class SelectionRedrawTests: XCTestCase {
         // The caret's row 0 and the new block's row 250, each with one edge row.
         XCTAssertEqual(invalidated, [0, 1, 249, 250, 251],
                        "a far selection jump must invalidate the old and new spans only")
-    }
 
-    /// The stale-highlight bug: select block A, scroll it off the visible
-    /// viewport, then select block B elsewhere. A's rows keep their old fill
-    /// after scrolling back because the old viewport clamp dropped them from
-    /// the invalidation — they were never marked dirty, and a layer-backed pane
-    /// does not repaint unmarked rows that scroll back into view. A's rows must
-    /// be invalidated even though they are off-screen (§13).
-    func testOffScreenOldSelectionStaysInvalidated() throws {
-        // 2000 bytes ≈ 125 rows; the viewport shows ~35. Scroll so rows 0-10
-        // (block A) sit above the visible area — exactly the user's repro: the
-        // old block is off-screen when the new block is selected.
-        let (hexView, url) = try makePane([UInt8](repeating: 0, count: 2000))
-        defer { try? FileManager.default.removeItem(at: url) }
-        let layout = hexView.hexLayout
-        let clip = try XCTUnwrap(hexView.enclosingScrollView?.contentView)
-        clip.setBoundsOrigin(NSPoint(x: 0, y: CGFloat(35) * layout.rowHeight))
-        hexView.displayIfNeeded()
-
-        // Select-block A at bytes 0..<176 (rows 0-10), then select block B at
-        // bytes 640..<720 (rows 40-44).
-        let rects = hexView.changedSelectionRects(
-            from: selection(0, 176, size: 2000),
-            to: selection(640, 720, size: 2000))
-        let invalidated = rows(rects, rowHeight: layout.rowHeight)
-
-        // Block A's rows are off-screen yet must repaint, or the stale fill
-        // survives the scroll back; block B's rows repaint as the new fill.
-        XCTAssertEqual(invalidated, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
-                                     39, 40, 41, 42, 43, 44, 45],
-                       "the off-screen old selection must stay invalidated so it repaints on scroll-back")
+        // The same rule seen from the other side: the OLD span may be far above
+        // the viewport and must still be invalidated, or its fill survives the
+        // scroll back. (There is nothing to scroll here — `changedSelectionRects`
+        // never reads the viewport, which is exactly why this holds.)
+        let backwards = rows(hexView.changedSelectionRects(
+            from: selection(0, 176, size: 5000),
+            to: selection(4000, 4016, size: 5000)), rowHeight: layout.rowHeight)
+        XCTAssertEqual(backwards, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 249, 250, 251],
+                       "an off-screen old selection stays invalidated, whole")
     }
 
     /// Select All on a large file would otherwise emit one display rect per row

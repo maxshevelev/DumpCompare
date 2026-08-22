@@ -46,64 +46,42 @@ final class OffsetContextMenuTests: XCTestCase {
 
     // MARK: - Offset-column and hex-byte hits
 
-    /// A right-click on an address maps to that row's start offset, which is
-    /// what the "Select block from here" sheet will pre-fill.
-    func testRightClickOnOffsetMapsToRowStart() throws {
+    /// A right-click on an address maps to that row's start offset — what the
+    /// "Select block from here" sheet pre-fills — and frames the address rather
+    /// than a byte. The first row's 0x00000000 is a valid start like any other.
+    func testOffsetAnchorFramesRowAddress() throws {
         let (_, _, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 48))
         defer { try? FileManager.default.removeItem(at: url) }
 
-        let event = mouse(.rightMouseDown, at: offsetCentre(hexView, row: 2), window: window)
-        XCTAssertEqual(hexView.rightClickedOffset(for: event), 0x20)
-    }
-
-    /// The first row's address is 0x00000000 — a valid selection start.
-    func testRightClickOnFirstRowMapsToZero() throws {
-        let (_, _, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 16))
-        defer { try? FileManager.default.removeItem(at: url) }
-
-        let event = mouse(.rightMouseDown, at: offsetCentre(hexView, row: 0), window: window)
-        XCTAssertEqual(hexView.rightClickedOffset(for: event), 0)
+        for (row, expected) in [(0, UInt64(0)), (1, 0x10), (2, 0x20)] {
+            let event = mouse(.rightMouseDown, at: offsetCentre(hexView, row: row), window: window)
+            let anchor = try XCTUnwrap(hexView.contextMenuAnchor(for: event),
+                                       "row \(row)'s address must anchor a menu")
+            XCTAssertEqual(anchor.offset, expected,
+                           "row \(row)'s address maps to its own start offset")
+            XCTAssertFalse(anchor.framesByte,
+                           "the offset-column frame spans the row's address")
+        }
     }
 
     /// A right-click on a hex byte anchors the SAME menu to that byte's own
-    /// offset, framed as a single byte (§10.2).
+    /// offset, framed as a single byte, on any row (§10.2).
     func testRightClickOnHexByteMapsToByteOffset() throws {
-        let (_, _, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 32))
-        defer { try? FileManager.default.removeItem(at: url) }
-
-        let layout = hexView.hexLayout
-        let local = CGPoint(x: layout.hexByteX(column: 4) + layout.charWidth,
-                            y: CGFloat(0) * layout.rowHeight)
-        let event = mouse(.rightMouseDown, at: hexView.convert(local, to: nil), window: window)
-        let anchor = try XCTUnwrap(hexView.contextMenuAnchor(for: event))
-        XCTAssertEqual(anchor.offset, 0x04,
-                       "the context offset is the clicked byte's own offset")
-        XCTAssertTrue(anchor.framesByte,
-                      "the frame must wrap the byte, not the offset column")
-    }
-
-    /// The byte anchor works on any row, not just the first.
-    func testRightClickOnHexByteInLaterRowMapsToByteOffset() throws {
         let (_, _, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 48))
         defer { try? FileManager.default.removeItem(at: url) }
 
         let layout = hexView.hexLayout
-        let local = CGPoint(x: layout.hexByteX(column: 3) + layout.charWidth,
-                            y: CGFloat(2) * layout.rowHeight)
-        let event = mouse(.rightMouseDown, at: hexView.convert(local, to: nil), window: window)
-        XCTAssertEqual(hexView.rightClickedOffset(for: event), 0x23)
-    }
-
-    /// A right-click on the Offset column frames the row address, not a byte.
-    func testOffsetAnchorFramesRowAddress() throws {
-        let (_, _, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 32))
-        defer { try? FileManager.default.removeItem(at: url) }
-
-        let event = mouse(.rightMouseDown, at: offsetCentre(hexView, row: 1), window: window)
-        let anchor = try XCTUnwrap(hexView.contextMenuAnchor(for: event))
-        XCTAssertEqual(anchor.offset, 0x10)
-        XCTAssertFalse(anchor.framesByte,
-                       "the offset-column frame spans the row's address")
+        for (row, column, expected) in [(0, 4, UInt64(0x04)), (2, 3, 0x23)] {
+            let local = CGPoint(x: layout.hexByteX(column: column) + layout.charWidth,
+                                y: CGFloat(row) * layout.rowHeight)
+            let event = mouse(.rightMouseDown, at: hexView.convert(local, to: nil), window: window)
+            let anchor = try XCTUnwrap(hexView.contextMenuAnchor(for: event),
+                                       "row \(row) column \(column) must anchor a menu")
+            XCTAssertEqual(anchor.offset, expected,
+                           "the context offset is the clicked byte's own offset")
+            XCTAssertTrue(anchor.framesByte,
+                          "the frame must wrap the byte, not the offset column")
+        }
     }
 
     /// The ASCII column is not a byte address — right-clicking it stays inert.
@@ -117,36 +95,30 @@ final class OffsetContextMenuTests: XCTestCase {
         XCTAssertNil(hexView.rightClickedOffset(for: event))
     }
 
-    /// A placeholder byte in the empty caret row past EOF has no offset to
-    /// anchor a menu to — even in the hex column.
-    func testRightClickOnEOFPlaceholderHexByteIsIgnored() throws {
+    /// Nothing past EOF anchors a menu: a file ending exactly on a row boundary
+    /// keeps a trailing caret row, and neither its placeholder hex byte nor its
+    /// address is a block to start from. An empty file is the same rule with
+    /// that row first.
+    func testRightClickPastEOFIsIgnored() throws {
         let (_, _, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 32))
         defer { try? FileManager.default.removeItem(at: url) }
 
         let layout = hexView.hexLayout
-        let local = CGPoint(x: layout.hexByteX(column: 0) + layout.charWidth,
-                            y: CGFloat(2) * layout.rowHeight)  // caret row past EOF
-        let event = mouse(.rightMouseDown, at: hexView.convert(local, to: nil), window: window)
-        XCTAssertNil(hexView.rightClickedOffset(for: event))
-    }
+        let placeholder = CGPoint(x: layout.hexByteX(column: 0) + layout.charWidth,
+                                  y: CGFloat(2) * layout.rowHeight)  // caret row past EOF
+        let onByte = mouse(.rightMouseDown, at: hexView.convert(placeholder, to: nil), window: window)
+        XCTAssertNil(hexView.rightClickedOffset(for: onByte),
+                     "the caret row's placeholder byte has no offset")
 
-    /// A file that ends exactly on a row boundary keeps a trailing caret row
-    /// whose address is past EOF — there is no block to start there.
-    func testRightClickOnEmptyCaretRowIsIgnored() throws {
-        let (_, _, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 16))
-        defer { try? FileManager.default.removeItem(at: url) }
+        let onAddress = mouse(.rightMouseDown, at: offsetCentre(hexView, row: 2), window: window)
+        XCTAssertNil(hexView.rightClickedOffset(for: onAddress),
+                     "nor does the caret row's own address")
 
-        let event = mouse(.rightMouseDown, at: offsetCentre(hexView, row: 1), window: window)
-        XCTAssertNil(hexView.rightClickedOffset(for: event))
-    }
-
-    /// An empty file offers no address to start a block from.
-    func testRightClickOnEmptyFileIsIgnored() throws {
-        let (_, _, hexView, window, url) = try makePane([])
-        defer { try? FileManager.default.removeItem(at: url) }
-
-        let event = mouse(.rightMouseDown, at: offsetCentre(hexView, row: 0), window: window)
-        XCTAssertNil(hexView.rightClickedOffset(for: event))
+        let (_, _, emptyHex, emptyWindow, emptyURL) = try makePane([])
+        defer { try? FileManager.default.removeItem(at: emptyURL) }
+        let onEmpty = mouse(.rightMouseDown, at: offsetCentre(emptyHex, row: 0), window: emptyWindow)
+        XCTAssertNil(emptyHex.rightClickedOffset(for: onEmpty),
+                     "an empty file offers no address to start a block from")
     }
 
     // MARK: - Menu anchor state
@@ -239,20 +211,12 @@ final class OffsetContextMenuTests: XCTestCase {
         XCTAssertTrue(dispatched, "the Copy offset action must dispatch")
         XCTAssertEqual(pasteboard.string(forType: .string), "24",
                        "the copied offset must carry no 0x prefix")
-    }
 
-    /// Copying a zero offset yields "0", not a padded or prefixed form.
-    func testCopyOffsetOfZero() {
-        let controller = MainViewController()
-        let menu = controller.makeOffsetMenu(for: PaneViewModel(), offset: 0)
-        let pasteboard = NSPasteboard.general
-        let savedString = pasteboard.string(forType: .string)
-        defer {
-            pasteboard.clearContents()
-            if let savedString { pasteboard.setString(savedString, forType: .string) }
-        }
-        NSApp.sendAction(menu.items[0].action!, to: menu.items[0].target, from: menu.items[0])
-        XCTAssertEqual(pasteboard.string(forType: .string), "0")
+        // Zero is neither padded nor prefixed either.
+        let zero = controller.makeOffsetMenu(for: PaneViewModel(), offset: 0)
+        NSApp.sendAction(zero.items[0].action!, to: zero.items[0].target, from: zero.items[0])
+        XCTAssertEqual(pasteboard.string(forType: .string), "0",
+                       "offset zero copies as \"0\", unpadded")
     }
 
     // MARK: - Selection-aware menu (§10.2)
@@ -287,23 +251,10 @@ final class OffsetContextMenuTests: XCTestCase {
         XCTAssertTrue(menu.items[5].isSeparatorItem)
     }
 
-    /// A right-click on a byte OUTSIDE the selection keeps the plain offset
-    /// menu — no selection actions.
-    func testMenuOmitsSelectionActionsWhenByteOutsideSelection() throws {
-        let (_, pane, _, _, url) = try makePane([UInt8](repeating: 0x11, count: 48))
-        defer { try? FileManager.default.removeItem(at: url) }
-        pane.setSelection(SelectionModel(start: 0x10, end: 0x20, fileSize: 48))
-
-        let controller = MainViewController()
-        let menu = controller.makeOffsetMenu(for: pane, offset: 0x24)
-        XCTAssertEqual(menu.items.map(\.title),
-                       ["Copy offset", "", "Select block from here", "",
-                        "Toggle Bookmark at 0x00000020"])
-    }
-
     /// Selection membership is half-open: the byte at `start` qualifies, the
-    /// byte just past `end` does not.
-    func testSelectionMembershipIsHalfOpen() throws {
+    /// byte just past `end` does not. A byte outside gets the plain offset menu
+    /// back, with no selection actions in front of it.
+    func testOnlyBytesInsideTheHalfOpenSelectionGetSelectionActions() throws {
         let (_, pane, _, _, url) = try makePane([UInt8](repeating: 0x11, count: 48))
         defer { try? FileManager.default.removeItem(at: url) }
         pane.setSelection(SelectionModel(start: 0x10, end: 0x20, fileSize: 48))
@@ -312,9 +263,16 @@ final class OffsetContextMenuTests: XCTestCase {
         let inside = controller.makeOffsetMenu(for: pane, offset: 0x10)
         XCTAssertEqual(inside.items.map(\.title)[0], "Copy",
                        "the selection start byte is inside the selection")
-        let boundary = controller.makeOffsetMenu(for: pane, offset: 0x20)
-        XCTAssertEqual(boundary.items.map(\.title)[0], "Copy offset",
-                       "the byte past the selection end is outside")
+
+        // 0x20 is `end` itself — one past the last selected byte — and 0x24 is
+        // well clear of it; both keep the plain menu, all five items of it.
+        for outside: UInt64 in [0x20, 0x24] {
+            let menu = controller.makeOffsetMenu(for: pane, offset: outside)
+            XCTAssertEqual(menu.items.map(\.title),
+                           ["Copy offset", "", "Select block from here", "",
+                            "Toggle Bookmark at 0x00000020"],
+                           "0x\(String(outside, radix: 16)) is outside: no selection actions")
+        }
     }
 
     /// The context Copy copies the RIGHT-CLICKED pane's selection bytes — never

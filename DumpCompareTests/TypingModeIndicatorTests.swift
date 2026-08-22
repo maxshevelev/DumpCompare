@@ -25,19 +25,17 @@ final class TypingModeIndicatorTests: XCTestCase {
         return rgb.redComponent - rgb.blueComponent
     }
 
-    func testOverwriteModeShowsOVRInTheStatusBar() throws {
-        let (pane, _, url) = try makePane([0x11, 0x22])
+    /// The indicator in both of its states, in the pane it belongs to: a fresh
+    /// pane sits in overwrite mode and says so quietly, turning insert mode on
+    /// makes it red, and turning it off goes back.
+    func testTheStatusBarShowsOVRInGreyAndINSInRed() throws {
+        let (pane, viewModel, url) = try makePane([0x11, 0x22])
         defer { try? FileManager.default.removeItem(at: url) }
 
         XCTAssertEqual(pane.typingModeLabel.stringValue, "OVR")
         XCTAssertLessThan(redness(pane.typingModeLabel.textColor), 0.2,
                           "overwrite is the quiet default, not a warning")
         XCTAssertEqual(pane.typingModeLabel.accessibilityLabel(), "Overwrite mode")
-    }
-
-    func testTurningInsertModeOnShowsINSInRed() throws {
-        let (pane, viewModel, url) = try makePane([0x11, 0x22])
-        defer { try? FileManager.default.removeItem(at: url) }
 
         viewModel.isInsertMode = true
 
@@ -49,6 +47,8 @@ final class TypingModeIndicatorTests: XCTestCase {
         viewModel.isInsertMode = false
         XCTAssertEqual(pane.typingModeLabel.stringValue, "OVR")
         XCTAssertLessThan(redness(pane.typingModeLabel.textColor), 0.2)
+        XCTAssertEqual(pane.typingModeLabel.accessibilityLabel(), "Overwrite mode",
+                       "and the accessibility label goes back with it")
     }
 
     /// A pane built while the mode is already on shows INS immediately — the

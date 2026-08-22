@@ -164,28 +164,15 @@ final class ZoomToFitTests: XCTestCase {
         // Zoom-to-fit must be much smaller than the preferred (max) frame.
         XCTAssertLessThan(frame.width, 1000)
         XCTAssertLessThan(frame.height, 1000)
-    }
 
-    func testPerformZoomUsesContentWidthAndHeight() throws {
-        let controller = makeController()
-        let window = controller.window!
-        let mainVC = controller.mainViewController
-        let url = try tempFile([UInt8](repeating: 0x41, count: 256))
-        defer { cleanup(mainVC, url) }
-        try mainVC.windowModel.pane1.open(url: url)
-        mainVC.apply(mode: .singleFile)
-        window.setFrame(NSRect(x: 100, y: 100, width: 1200, height: 700), display: false)
-        let before = window.frame
-
+        // And the Zoom gesture actually routes through that delegate method:
+        // the window is not on screen here, so `performZoom` applies the
+        // standard frame synchronously instead of animating to it.
         window.performZoom(nil)
-
-        // The window is not on screen here, so zoom applies the standard frame
-        // synchronously instead of animating.
-        let pane = try XCTUnwrap(findPane(in: mainVC.view))
-        XCTAssertEqual(window.frame.width, expectedFrameWidth(for: pane.contentFitWidth, window: window),
-                       accuracy: 1)
-        XCTAssertEqual(window.frame.height, expectedFrameHeight(for: pane.contentFitHeight, window: window),
-                       accuracy: 1)
+        XCTAssertEqual(window.frame.width, frame.width, accuracy: 1,
+                       "performZoom applies the width the delegate returned")
+        XCTAssertEqual(window.frame.height, frame.height, accuracy: 1,
+                       "and its height")
         XCTAssertEqual(window.frame.origin.x, before.origin.x, accuracy: 0.5, "x must be kept")
     }
 

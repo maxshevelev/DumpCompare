@@ -23,36 +23,23 @@ final class PaneHeaderIconTests: XCTestCase {
         return (pane, url)
     }
 
-    func testHeaderShowsDocumentGlyphBeforeTheName() throws {
+    /// The glyph's state machine, walked in one pane: a clean file shows the
+    /// rendered "document" outline before its name, an unsaved edit fills it in,
+    /// and saving takes it back to the outline.
+    func testTheDocumentGlyphFollowsTheUnsavedState() throws {
         let (pane, url) = try makePane([0x11, 0x22])
         defer { try? FileManager.default.removeItem(at: url) }
+
         let icon = try documentIcon(of: pane)
         XCTAssertNotNil(icon.image, "the header must render a document glyph")
-        XCTAssertEqual(pane.documentSymbolName, "document")
-    }
-
-    func testEditingSwitchesToDocumentFill() throws {
-        let (pane, url) = try makePane([0x11, 0x22])
-        defer { try? FileManager.default.removeItem(at: url) }
-        try documentIcon(of: pane)
-        XCTAssertEqual(pane.documentSymbolName, "document")
+        XCTAssertEqual(pane.documentSymbolName, "document",
+                       "a clean file gets the outline")
 
         pane.viewModel.moveCaret(to: 0)
         pane.viewModel.typeHexNibble(0xA)
         pane.viewModel.typeHexNibble(0x5)
         XCTAssertEqual(pane.documentSymbolName, "document.fill",
                        "an unsaved edit must switch the glyph to document.fill")
-    }
-
-    func testSavingRevertsToDocumentOutline() throws {
-        let (pane, url) = try makePane([0x11, 0x22])
-        defer { try? FileManager.default.removeItem(at: url) }
-        try documentIcon(of: pane)
-
-        pane.viewModel.moveCaret(to: 0)
-        pane.viewModel.typeHexNibble(0xA)
-        pane.viewModel.typeHexNibble(0x5)
-        XCTAssertEqual(pane.documentSymbolName, "document.fill")
 
         try pane.viewModel.save()
         XCTAssertEqual(pane.documentSymbolName, "document",

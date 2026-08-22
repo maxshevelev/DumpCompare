@@ -100,50 +100,56 @@ final class AutoscrollSelectionTests: XCTestCase {
         XCTAssertEqual(pane.hexSelection().end, 5 * 16 + 4)
     }
 
-    /// Regression for the real-app report "на статус-баре под панелью автоскролл
-    /// останавливается": the pane's scroll view sits above a 24px status bar, so a
-    /// pointer parked on the bar is past the pane's bottom edge yet still INSIDE
-    /// the window. Holding it still there must keep scrolling, exactly as holding
-    /// it outside the window does.
+    /// The reported freeze: with the pointer held still just past the pane's
+    /// edge, the pane scrolled once and stopped. Both geometries it happened at
+    /// are checked here — a small overshoot below the scroll view, and the
+    /// status bar, which is inside the window but outside the scroll view — and
+    /// each is held for half a second, so the test pays one second in total
+    /// rather than two.
     ///
-    /// This is the decisive case, and it must scroll far enough to prove the
-    /// timer KEEPS going rather than firing once and dying: the old code armed
-    /// the timer, scrolled a single step, then saw its own pre-scroll pointer
-    /// coordinate now inside the post-scroll viewport and stopped — so the pane
-    /// crept ~one step and froze. Holding the pointer for a full second must
-    /// move it several viewport heights to rule that out.
-    func testAutoscrollContinuesWhilePointerHeldOnStatusBar() throws {
-        let (filePane, pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 4096))
+    /// The overshoot is deliberately small (20 pt, and the status bar is 12 pt):
+    /// the bug was specific to small overshoots, where the old pre-scroll check
+    /// outran the step. A large overshoot masked it.
+    func testAutoscrollKeepsGoingWhileThePointerIsHeldStillPastTheEdge() throws {
+        let (_, pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 4096))
         defer { try? FileManager.default.removeItem(at: url) }
 
         let scroll = scroll(hexView)
         let clip = scroll.contentView
-        // The status bar is the bottom 24px strip of the pane, below the scroll
-        // view. In window coordinates (y up) its point is just under the scroll
-        // view's bottom edge.
-        let scrollWindowFrame = scroll.convert(scroll.bounds, to: nil)
-        let statusPoint = NSPoint(x: scrollWindowFrame.midX, y: scrollWindowFrame.minY - 12)
-        XCTAssertGreaterThan(statusPoint.y, 0, "the status-bar point must be inside the window")
-        XCTAssertLessThan(statusPoint.y, window.frame.height, "the status-bar point must not be below the window")
-
-        hexView.mouseDown(with: mouse(.leftMouseDown, at: byteCentre(hexView, row: 0, column: 0), window: window))
-        hexView.mouseDragged(with: mouse(.leftMouseDragged, at: statusPoint, window: window))
-
-        let originAfterDrag = clip.bounds.origin.y
-        XCTAssertGreaterThan(originAfterDrag, 0, "the drag onto the status bar must scroll the pane")
-
-        // Hold the pointer still: run the event-tracking run loop, which must keep
-        // firing the autoscroll timer with no new drag events. A full second at
-        // ~30 ticks/s with a ~17px step should move the pane far beyond what one
-        // frozen tick could produce.
         let tracking = RunLoop.Mode(rawValue: "kCFRunLoopEventTrackingMode")
-        for _ in 0..<20 {
-            RunLoop.main.run(mode: tracking, before: Date().addingTimeInterval(0.05))
+        /// Half a second of event-tracking run loop — where the autoscroll timer
+        /// is registered — with no further drag events.
+        func holdStill() {
+            for _ in 0..<10 {
+                RunLoop.main.run(mode: tracking, before: Date().addingTimeInterval(0.05))
+            }
         }
 
-        XCTAssertGreaterThan(clip.bounds.origin.y, originAfterDrag + 200,
-                             "holding still on the status bar must keep scrolling far past one step")
-        XCTAssertGreaterThan(pane.hexSelection().end, 0)
+        hexView.mouseDown(with: mouse(.leftMouseDown, at: byteCentre(hexView, row: 0, column: 0), window: window))
+
+        // Phase 1: just past the scroll view's bottom edge.
+        let pastEdge = bytePoint(hexView, atY: clip.bounds.height + 20)
+        hexView.mouseDragged(with: mouse(.leftMouseDragged, at: pastEdge, window: window))
+        let afterFirstDrag = clip.bounds.origin.y
+        XCTAssertGreaterThan(afterFirstDrag, 0, "the drag past the edge must scroll the pane")
+        holdStill()
+        let afterFirstHold = clip.bounds.origin.y
+        XCTAssertGreaterThan(afterFirstHold, afterFirstDrag + 100,
+                             "held still past the edge, the pane must keep scrolling — one step would stop here")
+
+        // Phase 2: the status bar, inside the window but outside the scroll
+        // view — the point the bug was reported at.
+        let scrollWindowFrame = scroll.convert(scroll.bounds, to: nil)
+        let statusPoint = NSPoint(x: scrollWindowFrame.midX, y: scrollWindowFrame.minY - 12)
+        XCTAssertGreaterThan(statusPoint.y, 0, "premise: the status-bar point is inside the window")
+        XCTAssertLessThan(statusPoint.y, window.frame.height, "premise: and not below it")
+        hexView.mouseDragged(with: mouse(.leftMouseDragged, at: statusPoint, window: window))
+        holdStill()
+        XCTAssertGreaterThan(clip.bounds.origin.y, afterFirstHold + 100,
+                             "and it keeps scrolling with the pointer on the status bar too")
+
+        XCTAssertGreaterThan(pane.hexSelection().end, 0,
+                             "the selection extends all the while, without any mouse movement")
         hexView.mouseUp(with: mouse(.leftMouseUp, at: statusPoint, window: window))
     }
 
@@ -257,48 +263,6 @@ final class AutoscrollSelectionTests: XCTestCase {
                              "speed must grow as the pointer moves further past the edge")
         XCTAssertGreaterThan(increments[2], increments[1],
                              "speed must keep growing with the overshoot")
-    }
-
-    /// Holding the pointer STILL beyond the edge must keep scrolling — the pane
-    /// is driven by a repeating timer, so it advances even though no new
-    /// `mouseDragged` events arrive. The timer is registered for both the
-    /// event-tracking and the common run-loop modes; the event-tracking mode is
-    /// what a unit test can spin, and a live `NSApplication.run` probe confirmed
-    /// the real drag loop fires the `.common` registration the same way.
-    func testAutoscrollContinuesWhilePointerHeldStillPastEdge() throws {
-        let (_, pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 4096))
-        defer { try? FileManager.default.removeItem(at: url) }
-
-        let clip = scroll(hexView).contentView
-        let visibleHeight = clip.bounds.height
-
-        hexView.mouseDown(with: mouse(.leftMouseDown, at: byteCentre(hexView, row: 0, column: 0), window: window))
-        // A SMALL overshoot (20px) deliberately: the bug's freeze was specific
-        // to small overshoots — exactly where the status bar (12px) and a
-        // pointer barely past the edge sit. (A large overshoot masked it
-        // because the old pre-scroll check was outrun by the bigger step.)
-        let below = bytePoint(hexView, atY: visibleHeight + 20)
-        hexView.mouseDragged(with: mouse(.leftMouseDragged, at: below, window: window))
-
-        let originAfterDrag = clip.bounds.origin.y
-        XCTAssertGreaterThan(originAfterDrag, 0)
-
-        // No further drag events: the pointer is held still beyond the edge.
-        // Run the run loop in the event-tracking mode, where the timer is also
-        // registered, and verify it keeps firing with no new drag events.
-        let tracking = RunLoop.Mode(rawValue: "kCFRunLoopEventTrackingMode")
-        for _ in 0..<20 {
-            RunLoop.main.run(mode: tracking, before: Date().addingTimeInterval(0.05))
-        }
-
-        // A full second of held-still ticks must move the pane far beyond the
-        // single step a frozen timer could produce (the old bug scrolled once,
-        // then stopped). One ~17px step would leave it near originAfterDrag.
-        XCTAssertGreaterThan(clip.bounds.origin.y, originAfterDrag + 200,
-                             "the pane must keep scrolling while the pointer is held still past the edge")
-        XCTAssertGreaterThan(pane.hexSelection().end, 0,
-                             "the selection must keep extending without mouse movement")
-        hexView.mouseUp(with: mouse(.leftMouseUp, at: below, window: window))
     }
 
     /// The autoscroll timer stops once the document has fully scrolled to the

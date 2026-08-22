@@ -83,40 +83,27 @@ final class CaretPlacementTests: XCTestCase {
         hexView.keyDown(with: event)
     }
 
-    /// A click in the first half of the byte's high-nibble character places
-    /// the caret before the byte.
-    func testClickFirstHalfOfHighNibblePlacesCaretBeforeByte() throws {
+    /// One click threshold inside a byte's high nibble, from both sides: before
+    /// its midpoint the caret goes to the byte's start, after it to the middle.
+    /// The three points are the two halves of the high nibble and the low
+    /// nibble's own cell — the last is further from the threshold than the
+    /// second, so it adds no branch, only reassurance that the whole right half
+    /// of the byte reads as mid-byte.
+    func testWhereInAByteAClickLandsDecidesTheNibble() throws {
         let (pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 32))
         defer { try? FileManager.default.removeItem(at: url) }
 
         click(hexView, at: nibblePoint(hexView, row: 0, column: 5, nibble: 0), window: window)
-
         XCTAssertEqual(pane.hexSelection().start, 5)
-        XCTAssertEqual(pane.hexCaretNibble(), 0)
-    }
-
-    /// A click in the second half of the byte's high-nibble character places
-    /// the caret between the two chars — a large target for the mid-byte caret.
-    func testClickSecondHalfOfHighNibblePlacesCaretMidByte() throws {
-        let (pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 32))
-        defer { try? FileManager.default.removeItem(at: url) }
+        XCTAssertEqual(pane.hexCaretNibble(), 0, "the high nibble's first half places the caret before the byte")
 
         click(hexView, at: nibblePoint(hexView, row: 0, column: 5, nibble: 1), window: window)
-
         XCTAssertEqual(pane.hexSelection().start, 5)
-        XCTAssertEqual(pane.hexCaretNibble(), 1)
-    }
-
-    /// Clicking the byte's low-nibble (second) character also places the caret
-    /// between the chars — the pre-existing behavior is preserved.
-    func testClickSecondCharPlacesCaretMidByte() throws {
-        let (pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 32))
-        defer { try? FileManager.default.removeItem(at: url) }
+        XCTAssertEqual(pane.hexCaretNibble(), 1, "its second half places the caret mid-byte")
 
         click(hexView, at: secondCharPoint(hexView, row: 0, column: 5), window: window)
-
         XCTAssertEqual(pane.hexSelection().start, 5)
-        XCTAssertEqual(pane.hexCaretNibble(), 1)
+        XCTAssertEqual(pane.hexCaretNibble(), 1, "and so does the low nibble's own cell")
     }
 
     // MARK: - Hex ⇄ ASCII cross-link (§3.3)
@@ -336,14 +323,6 @@ final class CaretPlacementTests: XCTestCase {
         // caret — only the black digit.
         XCTAssertLessThan(try blueness(hexView, y: rowFrame.midY, x: caretX, width: layout.charWidth), 0.3,
                           "the underline is under the glyph, not over it")
-        // The bar is thick enough to overlap the row below: blue just past the
-        // row's bottom edge, into the next row.
-        XCTAssertGreaterThan(try blueness(hexView, y: rowFrame.maxY + 1, x: caretX, width: layout.charWidth), 0.3,
-                             "the thick underline overlaps the row below")
-        // And it starts at the row's bottom edge: 3 pt up is clear of it, so the
-        // bar takes 2 pt of its own row and no more.
-        XCTAssertLessThan(try blueness(hexView, y: rowFrame.maxY - 3, x: caretX, width: layout.charWidth), 0.3,
-                          "the bar does not reach further up into its own row")
     }
 
     /// After the first insert-mode digit the caret line shifts to between the

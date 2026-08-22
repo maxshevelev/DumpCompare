@@ -256,35 +256,23 @@ final class PaneViewModelTests: XCTestCase {
         XCTAssertEqual(pane.caretOffset, 0)
     }
 
-    func testUndoOfAFillPutsTheSelectionBack() throws {
+    func testUndoOfAFillPutsTheSelectionAndCaretBack() throws {
         let (pane, url) = try openPane([0x00, 0x01, 0x02, 0x03, 0x04])
         defer { try? FileManager.default.removeItem(at: url) }
         let size = pane.fileSize
         pane.setSelection(SelectionModel(start: 1, end: 4, fileSize: size))
         pane.fillSelection(with: [0xFF])
         XCTAssertTrue(pane.hexSelection().isEmpty, "the fill collapses the selection")
+        XCTAssertEqual(pane.caretOffset, 1, "a fill leaves the caret at the selection start")
 
         try pane.undo()
         XCTAssertEqual(pane.hexSelection(), SelectionModel(start: 1, end: 4, fileSize: size),
                        "undo re-selects the region the fill covered")
+        XCTAssertEqual(pane.caretOffset, 1, "and returns the caret to where the fill began")
 
         try pane.redo()
         XCTAssertTrue(pane.hexSelection().isEmpty,
                       "redo leaves what the fill left — a caret at the range start")
-        XCTAssertEqual(pane.caretOffset, 1)
-    }
-
-    func testFillUndoRedoRestoreCaretToSelectionStart() throws {
-        let (pane, url) = try openPane([0x00, 0x01, 0x02, 0x03, 0x04])
-        defer { try? FileManager.default.removeItem(at: url) }
-        pane.setSelection(SelectionModel(start: 1, end: 4, fileSize: pane.fileSize))
-        pane.fillSelection(with: [0xFF])
-        XCTAssertEqual(pane.caretOffset, 1, "a fill leaves the caret at the selection start")
-
-        try pane.undo()
-        XCTAssertEqual(pane.caretOffset, 1, "undo returns to where the fill began")
-
-        try pane.redo()
         XCTAssertEqual(pane.caretOffset, 1, "redo lands where the fill left the caret")
     }
 
@@ -558,53 +546,37 @@ final class PaneViewModelTests: XCTestCase {
         XCTAssertEqual(sel.end, 3)
     }
 
-    /// Repeated Shift+Right must grow the selection past anchor + 1: the
-    /// moving end is `selection.end`, while the normalized `start` is the fixed
-    /// anchor — moving from `start` froze the selection at one byte.
-    func testShiftRightExtendsForwardByteByByte() throws {
+    /// One rule, both directions: the end the arrow moves is the moving one and
+    /// the other is a fixed anchor. So repeated Shift+Right grows past
+    /// anchor + 1 (moving the normalized `start` instead froze the selection at
+    /// one byte), Shift+Left keeps walking the left edge left instead of
+    /// bouncing off `start`, and reversing direction shrinks from the end that
+    /// was moving rather than re-anchoring at the opposite edge.
+    func testShiftArrowsGrowAndShrinkFromTheMovingEnd() throws {
         let (pane, url) = try openPane(Array(repeating: 0x00, count: 16))
         defer { try? FileManager.default.removeItem(at: url) }
-        pane.moveCaret(to: 5)
-        pane.moveCaret(by: 1, extendSelection: true)
-        pane.moveCaret(by: 1, extendSelection: true)
-        pane.moveCaret(by: 1, extendSelection: true)
-        let sel = pane.hexSelection()
-        XCTAssertEqual(sel.start, 5)
-        XCTAssertEqual(sel.end, 8)
-    }
 
-    /// Shift+Left extends backward: the moving end is the left edge, and
-    /// `moveCaret(by:)` must keep walking it left, not bounce off `start`.
-    func testShiftLeftExtendsBackwardByteByByte() throws {
-        let (pane, url) = try openPane(Array(repeating: 0x00, count: 16))
-        defer { try? FileManager.default.removeItem(at: url) }
-        pane.moveCaret(to: 5)
-        pane.moveCaret(by: -1, extendSelection: true)
-        pane.moveCaret(by: -1, extendSelection: true)
-        pane.moveCaret(by: -1, extendSelection: true)
-        let sel = pane.hexSelection()
-        XCTAssertEqual(sel.start, 2)
-        XCTAssertEqual(sel.end, 5)
-    }
-
-    /// Reversing direction must shrink from the moving end, not re-anchor at
-    /// the opposite edge and start growing the other way.
-    func testShiftArrowDirectionFlipShrinksFromMovingEnd() throws {
-        let (pane, url) = try openPane(Array(repeating: 0x00, count: 16))
-        defer { try? FileManager.default.removeItem(at: url) }
         pane.moveCaret(to: 5)
         pane.moveCaret(by: 1, extendSelection: true)   // (5,6)
         pane.moveCaret(by: 1, extendSelection: true)   // (5,7)
-        pane.moveCaret(by: -1, extendSelection: true)  // shrink back to (5,6)
-        XCTAssertEqual(pane.hexSelection().start, 5)
-        XCTAssertEqual(pane.hexSelection().end, 6)
+        pane.moveCaret(by: 1, extendSelection: true)   // (5,8)
+        XCTAssertEqual(pane.hexSelection().start, 5, "the anchor stays where the caret was")
+        XCTAssertEqual(pane.hexSelection().end, 8, "Shift+Right grows past anchor + 1")
+
+        pane.moveCaret(by: -1, extendSelection: true)  // shrink back to (5,7)
+        XCTAssertEqual(pane.hexSelection().start, 5, "the flip does not re-anchor")
+        XCTAssertEqual(pane.hexSelection().end, 7, "it shrinks from the end that was moving")
 
         pane.moveCaret(to: 5)
         pane.moveCaret(by: -1, extendSelection: true)  // (4,5)
         pane.moveCaret(by: -1, extendSelection: true)  // (3,5)
-        pane.moveCaret(by: 1, extendSelection: true)   // shrink back to (4,5)
-        XCTAssertEqual(pane.hexSelection().start, 4)
-        XCTAssertEqual(pane.hexSelection().end, 5)
+        pane.moveCaret(by: -1, extendSelection: true)  // (2,5)
+        XCTAssertEqual(pane.hexSelection().start, 2, "Shift+Left keeps walking the left edge left")
+        XCTAssertEqual(pane.hexSelection().end, 5, "with the anchor fixed on the right")
+
+        pane.moveCaret(by: 1, extendSelection: true)   // shrink back to (3,5)
+        XCTAssertEqual(pane.hexSelection().start, 3, "and the flip shrinks that left edge back")
+        XCTAssertEqual(pane.hexSelection().end, 5, "leaving the anchor alone")
     }
 
     // MARK: - Find
@@ -643,10 +615,12 @@ final class PaneViewModelTests: XCTestCase {
 
     // MARK: - Insert mode typing
 
-    /// The first hex digit in insert mode inserts a new byte at the caret with
-    /// the high nibble set and the low nibble empty; the tail shifts right and
-    /// the caret stays on the new byte so the next digit fills it.
-    func testInsertModeFirstHexNibbleInsertsByteWithEmptyLowNibble() throws {
+    /// Two hex digits in insert mode make ONE new byte: the first inserts it at
+    /// the caret with the high nibble set and the low nibble empty (the tail
+    /// shifts right, the caret stays on the new byte so the next digit fills
+    /// it), and the second fills that low nibble in place — no second insertion
+    /// — then advances past the completed byte.
+    func testInsertModeHexNibblesInsertOneByteThenFillItInPlace() throws {
         let (pane, url) = try openPane([0x00])
         defer { try? FileManager.default.removeItem(at: url) }
         pane.isInsertMode = true
@@ -657,21 +631,12 @@ final class PaneViewModelTests: XCTestCase {
         XCTAssertEqual(pane.hexByteStates(in: 0..<2).map(\.byte), [0xA0, 0x00])
         XCTAssertEqual(pane.caretOffset, 0, "the caret stays on the new byte")
         XCTAssertEqual(pane.hexCaretNibble(), 1)
-    }
 
-    /// The second hex digit fills the low nibble in place (no new insertion)
-    /// and advances past the completed byte.
-    func testInsertModeSecondHexNibbleFillsInPlaceThenAdvances() throws {
-        let (pane, url) = try openPane([0x00])
-        defer { try? FileManager.default.removeItem(at: url) }
-        pane.isInsertMode = true
-
-        pane.typeHexNibble(0xA)   // insert 0xA0
         pane.typeHexNibble(0xB)   // fill low nibble → 0xAB, advance
 
-        XCTAssertEqual(pane.fileSize, 2)
+        XCTAssertEqual(pane.fileSize, 2, "the second digit inserts nothing")
         XCTAssertEqual(pane.hexByteStates(in: 0..<2).map(\.byte), [0xAB, 0x00])
-        XCTAssertEqual(pane.caretOffset, 1)
+        XCTAssertEqual(pane.caretOffset, 1, "and the caret advances past the finished byte")
         XCTAssertEqual(pane.hexCaretNibble(), 0)
     }
 
@@ -1026,23 +991,22 @@ final class PaneViewModelTests: XCTestCase {
         pane.typeHexNibble(0xB)
         XCTAssertEqual(pane.hexByteStates(in: 0..<5).map(\.byte), [0x11, 0xAB, 0x22, 0x33, 0x44])
         XCTAssertEqual(pane.caretOffset, 2)
-    }
 
-    /// The same end state for an ASCII character: the byte lands at the
-    /// selection's start and nothing stays selected. (This one holds either way
-    /// — a whole byte has no half-typed state to be seen in, and the advance
-    /// past it collapses the selection anyway — so it pins the result, not the
-    /// drop.)
-    func testInsertModeASCIITypingDropsTheSelection() throws {
-        let (pane, url) = try openPane([0x11, 0x22, 0x33, 0x44])
-        defer { try? FileManager.default.removeItem(at: url) }
-        pane.isInsertMode = true
-        pane.setSelection(SelectionModel(start: 1, end: 3, fileSize: 4))
+        // The same end state for an ASCII character, on its own file: the byte
+        // lands at the selection's start and nothing stays selected. (That one
+        // holds either way — a whole byte has no half-typed state to be seen
+        // in, and the advance past it collapses the selection anyway — so it
+        // pins the result, not the drop.)
+        let (ascii, asciiURL) = try openPane([0x11, 0x22, 0x33, 0x44])
+        defer { try? FileManager.default.removeItem(at: asciiURL) }
+        ascii.isInsertMode = true
+        ascii.setSelection(SelectionModel(start: 1, end: 3, fileSize: 4))
 
-        pane.typeASCII(0x41)
+        ascii.typeASCII(0x41)
 
-        XCTAssertEqual(pane.hexByteStates(in: 0..<5).map(\.byte), [0x11, 0x41, 0x22, 0x33, 0x44])
-        XCTAssertTrue(pane.hexSelection().isEmpty)
+        XCTAssertEqual(ascii.hexByteStates(in: 0..<5).map(\.byte), [0x11, 0x41, 0x22, 0x33, 0x44],
+                       "the ASCII byte lands at the selection's start")
+        XCTAssertTrue(ascii.hexSelection().isEmpty, "and nothing stays selected")
     }
 
     // MARK: - The nibble group ends with the byte (§7.5.1)
@@ -1071,11 +1035,12 @@ final class PaneViewModelTests: XCTestCase {
     }
 
     /// The insert-mode rollback must take back only the byte it is rolling
-    /// back. A half-typed byte left behind by a caret move is committed, so
-    /// Backspace on a *later* pending byte cannot reach it — before the group
-    /// closed on caret movement, cancelling the group reverted both bytes and
-    /// left nothing on the undo stack to recover the first.
-    func testRollbackLeavesAnEarlierHalfTypedByteAlone() throws {
+    /// back: whatever was committed before it — a half-typed byte the caret
+    /// moved off, or an edit made in overwrite mode before the mode was switched
+    /// on — survives. Before the group closed on caret movement, cancelling the
+    /// group reverted both bytes and left nothing on the undo stack to recover
+    /// the first.
+    func testRollbackLeavesEarlierCommittedEditsAlone() throws {
         let (pane, url) = try openPane([0x11, 0x22, 0x33])
         defer { try? FileManager.default.removeItem(at: url) }
         pane.isInsertMode = true
@@ -1093,22 +1058,20 @@ final class PaneViewModelTests: XCTestCase {
         XCTAssertTrue(pane.status.canUndo, "and it is still on the undo stack")
         XCTAssertTrue(try pane.undo())
         XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0x11, 0x22, 0x33])
-    }
 
-    /// The same, for an edit made in overwrite mode before the mode was
-    /// switched on: the rollback of an inserted byte must not revert it.
-    func testRollbackLeavesAnOverwriteModeEditAlone() throws {
-        let (pane, url) = try openPane([0x11, 0x22, 0x33])
-        defer { try? FileManager.default.removeItem(at: url) }
+        // The same for an overwrite-mode edit, which needs its own file because
+        // the mode has to start off.
+        let (mixed, mixedURL) = try openPane([0x11, 0x22, 0x33])
+        defer { try? FileManager.default.removeItem(at: mixedURL) }
 
-        pane.typeHexNibble(0xA)   // overwrite mode: 0x11 -> 0xA1
-        pane.moveCaret(to: 2)
-        pane.isInsertMode = true
-        pane.typeHexNibble(0xB)   // insert 0xB0 at 2
-        pane.deleteBackward()     // roll the inserted byte back
+        mixed.typeHexNibble(0xA)   // overwrite mode: 0x11 -> 0xA1
+        mixed.moveCaret(to: 2)
+        mixed.isInsertMode = true
+        mixed.typeHexNibble(0xB)   // insert 0xB0 at 2
+        mixed.deleteBackward()     // roll the inserted byte back
 
-        XCTAssertEqual(pane.fileSize, 3)
-        XCTAssertEqual(pane.hexByteStates(in: 0..<3).map(\.byte), [0xA1, 0x22, 0x33],
+        XCTAssertEqual(mixed.fileSize, 3)
+        XCTAssertEqual(mixed.hexByteStates(in: 0..<3).map(\.byte), [0xA1, 0x22, 0x33],
                        "the overwrite-mode edit survives the rollback")
     }
 

@@ -68,10 +68,18 @@ final class MouseSelectionTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: url) }
 
         drag(hexView, window: window, from: (0, 0), to: (0, 5))
+        XCTAssertEqual(pane.hexSelection().start, 0)
+        XCTAssertEqual(pane.hexSelection().end, 6,
+                       "bytes 0…5: byte 5 joined when the pointer passed its centre")
 
-        let sel = pane.hexSelection()
-        XCTAssertEqual(sel.start, 0)
-        XCTAssertEqual(sel.end, 6)   // bytes 0…5; byte 5 joined at its centre
+        // The same rule across a row boundary, and from an anchor that is not
+        // the row's first byte — the anchor is just where mouseDown landed.
+        drag(hexView, window: window, from: (0, 0), to: (1, 3))
+        XCTAssertEqual(pane.hexSelection().end, 20, "row 0 (16 bytes) plus bytes 16…19")
+
+        drag(hexView, window: window, from: (0, 3), to: (0, 5))
+        XCTAssertEqual(pane.hexSelection().start, 3, "the anchor is the byte the drag started on")
+        XCTAssertEqual(pane.hexSelection().end, 6)
     }
 
     func testDragSelectsLastByteOfRow() throws {
@@ -85,17 +93,6 @@ final class MouseSelectionTests: XCTestCase {
         XCTAssertEqual(sel.end, 16)  // the row's last byte needs no next byte
     }
 
-    func testDragAcrossRowsSelectsThroughSecondRow() throws {
-        let (_, pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 32))
-        defer { try? FileManager.default.removeItem(at: url) }
-
-        drag(hexView, window: window, from: (0, 0), to: (1, 3))
-
-        let sel = pane.hexSelection()
-        XCTAssertEqual(sel.start, 0)
-        XCTAssertEqual(sel.end, 20)  // row 0 (16) + bytes 16…19
-    }
-
     func testDragPastEndClampsToFileSize() throws {
         // 20-byte file: one full row + 4 bytes on row 1.
         let (_, pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 20))
@@ -106,17 +103,6 @@ final class MouseSelectionTests: XCTestCase {
         let sel = pane.hexSelection()
         XCTAssertEqual(sel.start, 0)
         XCTAssertEqual(sel.end, 20)  // clamped to EOF
-    }
-
-    func testDragFromMiddleAnchor() throws {
-        let (_, pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 32))
-        defer { try? FileManager.default.removeItem(at: url) }
-
-        drag(hexView, window: window, from: (0, 3), to: (0, 5))
-
-        let sel = pane.hexSelection()
-        XCTAssertEqual(sel.start, 3)
-        XCTAssertEqual(sel.end, 6)
     }
 
     /// A plain click still places the caret exactly on the clicked byte — the

@@ -13,10 +13,11 @@ final class EmptyStateViewTests: XCTestCase {
         return view
     }
 
-    /// The Open File affordance is now an icon button: the titled button is
-    /// gone, replaced by a borderless button whose image carries the "Open File"
-    /// accessibility label and fires the open-panel action.
-    func testOpenFileIconReplacesTitledButton() {
+    /// The whole landing screen, from one built view: the Open File affordance
+    /// is an icon button — the titled button is gone, replaced by a borderless
+    /// button whose image carries the "Open File" accessibility label and fires
+    /// the open-panel action — under the headline and the up-to-two-files hint.
+    func testOpenFileIconReplacesTitledButtonUnderTheHeadlineAndHint() {
         let view = makeEmptyView()
         let buttons = descendants(of: view, NSButton.self)
 
@@ -28,12 +29,8 @@ final class EmptyStateViewTests: XCTestCase {
         XCTAssertFalse(icon.isBordered)
         XCTAssertNotNil(icon.image)
         XCTAssertEqual(icon.action, #selector(MainViewController.presentOpenPanel))
-    }
 
-    func testHeadlineAndHint() {
-        let view = makeEmptyView()
         let labels = descendants(of: view, NSTextField.self).map { $0.stringValue }
-
         XCTAssertTrue(labels.contains("Drop files here"), "the headline must be shown")
         XCTAssertTrue(labels.contains("Up to two files can be compared side by side."),
                       "the up-to-two-files hint must be shown")

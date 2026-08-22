@@ -106,6 +106,9 @@ final class HexLayoutTests: XCTestCase {
         XCTAssertEqual(l.rowCount(fileSize: 16), 2)   // extra row so caret at EOF is reachable
         XCTAssertEqual(l.rowCount(fileSize: 17), 2)
         XCTAssertEqual(l.rowCount(fileSize: 32), 3)
+        // The document's height is those rows at the fixed row pitch.
+        XCTAssertEqual(l.totalHeight(fileSize: 0), 17)
+        XCTAssertEqual(l.totalHeight(fileSize: 16), 34)
     }
 
     func testByteOffsetAndRowColumnRoundTrip() {
@@ -116,12 +119,6 @@ final class HexLayoutTests: XCTestCase {
         XCTAssertEqual(column, 3)
         XCTAssertEqual(l.byteOffset(row: 5, column: 15), 95)
         XCTAssertEqual(l.byteOffset(row: 0, column: 0), 0)
-    }
-
-    func testTotalHeight() {
-        let l = makeLayout()
-        XCTAssertEqual(l.totalHeight(fileSize: 0), 17)
-        XCTAssertEqual(l.totalHeight(fileSize: 16), 34)
     }
 
     // MARK: - Column geometry
@@ -258,14 +255,10 @@ final class HexLayoutTests: XCTestCase {
         XCTAssertEqual(l.dragEndOffset(point: CGPoint(x: 460, y: 0), rowCount: 10), 15)
         XCTAssertEqual(l.dragEndOffset(point: CGPoint(x: 467, y: 0), rowCount: 10), 15)
         XCTAssertEqual(l.dragEndOffset(point: CGPoint(x: 468, y: 0), rowCount: 10), 16)
-        XCTAssertEqual(l.dragEndOffset(point: CGPoint(x: 491, y: 0), rowCount: 10), 16)
-    }
-
-    func testDragEndOffsetMovesToNextRow() {
-        let l = makeLayout()
-        // Row 1 starts at byte offset 16.
+        // Row 1 starts at byte 16, and the same boundaries apply there.
         XCTAssertEqual(l.dragEndOffset(point: CGPoint(x: 100, y: 17), rowCount: 10), 17)
         XCTAssertEqual(l.dragEndOffset(point: CGPoint(x: 468, y: 17), rowCount: 10), 32)
+        XCTAssertEqual(l.dragEndOffset(point: CGPoint(x: 491, y: 0), rowCount: 10), 16)
     }
 
     func testDragEndOffsetAsciiRegion() {

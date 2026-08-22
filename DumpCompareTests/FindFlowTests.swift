@@ -341,20 +341,30 @@ final class FindFlowTests: XCTestCase {
     }
 
     /// Picking an older search from the pattern combo's list loads its pattern
-    /// and encoding into the fields — and must NOT run a search.
-    func testFindRecentDropdownLoadsSearchWithoutSearching() throws {
-        // Seed history: most recent first, so "DE AD" is the default and
-        // "AA BB" is the older entry the dropdown will load.
+    /// and its own encoding into the fields — and must NOT run a search. The
+    /// same pattern saved under two encodings is two distinct labelled items, so
+    /// picking one of them switches the encoding with the pattern unchanged.
+    func testFindRecentDropdownLoadsAPatternAndItsEncodingWithoutSearching() throws {
+        // Seed history: most recent last, so "DE AD" is the default and the
+        // others are the older entries the dropdown will load.
         FindHistoryStore.record(pattern: "AA BB", encoding: .ascii)
+        FindHistoryStore.record(pattern: "ABCD", encoding: .ascii)
+        FindHistoryStore.record(pattern: "ABCD", encoding: .hex)
         FindHistoryStore.record(pattern: "DE AD", encoding: .hex)
 
-        let bytes: [UInt8] = [0xDE, 0xAD, 0x41, 0x41, 0x20, 0x42, 0x42]
+        // Every seeded search has a match in the file, so a stray search would
+        // leave a selection behind for the assertions below to catch.
+        let bytes: [UInt8] = [0xDE, 0xAD,                          // "DE AD" hex
+                              0x41, 0x41, 0x20, 0x42, 0x42,        // "AA BB" ASCII
+                              0x41, 0x42, 0x43, 0x44,              // "ABCD" ASCII
+                              0xAB, 0xCD]                          // "ABCD" hex
         let (controller, window, url) = try makeController(bytes)
         defer { cleanup(controller, url) }
 
         controller.findPattern()
         let (combo, encoding, _, _) = try barControls(window)
         XCTAssertEqual(combo.stringValue, "DE AD", "most recent search must be the default")
+        XCTAssertEqual(encoding.titleOfSelectedItem, "Hex bytes", "with its own encoding")
 
         let index = combo.indexOfItem(withObjectValue: "AA BB — ASCII")
         XCTAssertGreaterThanOrEqual(index, 0, "the combo must list the AA BB search")
@@ -367,6 +377,25 @@ final class FindFlowTests: XCTestCase {
         XCTAssertEqual(encoding.titleOfSelectedItem, "Text — ASCII")
         XCTAssertTrue(controller.windowModel.pane1.hexSelection().isEmpty,
                       "picking a recent search must load it, not run it")
+
+        // One pattern under two encodings: two distinct items, each restoring
+        // its own encoding.
+        let asciiIndex = combo.indexOfItem(withObjectValue: "ABCD — ASCII")
+        let hexIndex = combo.indexOfItem(withObjectValue: "ABCD — Hex")
+        XCTAssertGreaterThanOrEqual(asciiIndex, 0, "the ASCII pair must be listed")
+        XCTAssertGreaterThanOrEqual(hexIndex, 0, "the Hex pair must be listed")
+        XCTAssertNotEqual(asciiIndex, hexIndex, "the two pairs are distinct items")
+
+        XCTAssertTrue(pickFromHistory(combo, at: hexIndex, expecting: "ABCD"),
+                      "the Hex pair must load into the field")
+        XCTAssertEqual(encoding.titleOfSelectedItem, "Hex bytes")
+        XCTAssertTrue(pickFromHistory(combo, at: asciiIndex, expecting: "ABCD"),
+                      "and the ASCII pair after it")
+        XCTAssertEqual(combo.stringValue, "ABCD", "the pattern is unchanged between the two")
+        XCTAssertEqual(encoding.titleOfSelectedItem, "Text — ASCII",
+                       "but the encoding follows the pair that was picked")
+        XCTAssertTrue(controller.windowModel.pane1.hexSelection().isEmpty,
+                      "and still nothing was searched")
     }
 
     /// The history is capped at 10 entries, most recent first.
@@ -405,40 +434,6 @@ final class FindFlowTests: XCTestCase {
         XCTAssertEqual(recent.count, 2, "the pair is still one entry")
         XCTAssertEqual(recent.first?.caseSensitive, true,
                        "re-recording the pair carries the new case flag")
-    }
-
-    /// The same pattern saved under two encodings appears as two labelled items
-    /// in the dropdown; picking one restores its own encoding without running a
-    /// search.
-    func testFindHistorySamePatternDifferentEncodingsLoadIndependently() throws {
-        FindHistoryStore.record(pattern: "ABCD", encoding: .ascii)
-        FindHistoryStore.record(pattern: "ABCD", encoding: .hex)
-
-        let bytes: [UInt8] = Array("ABCD".utf8)
-        let (controller, window, url) = try makeController(bytes)
-        defer { cleanup(controller, url) }
-
-        controller.findPattern()
-        let (combo, encoding, _, _) = try barControls(window)
-
-        // The most recent pair (hex) is offered by default.
-        XCTAssertEqual(combo.stringValue, "ABCD")
-        XCTAssertEqual(encoding.titleOfSelectedItem, "Hex bytes")
-
-        // Both pairs are listed as distinct, encoding-labelled items.
-        let asciiIndex = combo.indexOfItem(withObjectValue: "ABCD — ASCII")
-        let hexIndex = combo.indexOfItem(withObjectValue: "ABCD — Hex")
-        XCTAssertGreaterThanOrEqual(asciiIndex, 0, "the ASCII pair must be listed")
-        XCTAssertGreaterThanOrEqual(hexIndex, 0, "the Hex pair must be listed")
-        XCTAssertNotEqual(asciiIndex, hexIndex, "the two pairs are distinct items")
-
-        // Pick the ASCII pair: field keeps the pattern, popup switches to ASCII.
-        XCTAssertTrue(pickFromHistory(combo, at: asciiIndex, expecting: "ABCD"),
-                      "the picked search must load into the field")
-        XCTAssertEqual(combo.stringValue, "ABCD")
-        XCTAssertEqual(encoding.titleOfSelectedItem, "Text — ASCII")
-        XCTAssertTrue(controller.windowModel.pane1.hexSelection().isEmpty,
-                      "picking a recent search must load it, not run it")
     }
 
     /// Reopening Find with a remembered pattern must not search on its own.
@@ -498,24 +493,6 @@ final class FindFlowTests: XCTestCase {
     }
 
     // MARK: - Case sensitivity (§11)
-
-    /// The Aa toggle is off by default (case-insensitive, like TextEdit) and is
-    /// disabled for hex patterns, where it is meaningless.
-    func testCaseToggleDefaultsOffAndDisabledForHex() throws {
-        let (controller, window, url) = try makeController([0x41, 0x42, 0x43])
-        defer { cleanup(controller, url) }
-
-        controller.findPattern()
-        let (_, encoding, _, caseToggle) = try barControls(window)
-        XCTAssertEqual(encoding.titleOfSelectedItem, "Hex bytes")
-        XCTAssertEqual(caseToggle.state, .off, "case-insensitive must be the default")
-        XCTAssertFalse(caseToggle.isEnabled, "case sensitivity is meaningless for hex")
-
-        // Switching to a text encoding enables the toggle.
-        encoding.selectItem(at: SearchEncoding.allCases.firstIndex(of: .utf8)!)
-        encoding.sendAction(encoding.action, to: encoding.target)
-        XCTAssertTrue(caseToggle.isEnabled, "text encodings can be searched case-sensitively")
-    }
 
     /// The toggle actually changes matching: "hi" finds "Hi" by default,
     /// finds only exact "hi" with the toggle on, and "hI" has no match then.
@@ -990,23 +967,6 @@ final class FindFlowTests: XCTestCase {
                        "the dump must reclaim the panel's height")
     }
 
-    /// Setting the split view's panel height moves the divider so the panel
-    /// takes exactly that much — the mechanism a native drag drives.
-    func testSearchResultsPanelResizesToRequestedHeight() throws {
-        let (controller, window, url) = try makeController([0xDE, 0xAD, 0x00, 0x00, 0x00, 0x00])
-        defer { cleanup(controller, url) }
-
-        controller.findPattern()
-        let view = try runSearchAll("DE AD", in: window)
-        let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
-        let split = paneView.searchResultsSplit
-
-        split.setPanelHeight(120)
-        window.layoutIfNeeded()
-        XCTAssertEqual(view.frame.height, expectedPanelHeight(120, split: split), accuracy: 0.5,
-                       "the panel height must take effect")
-    }
-
     /// The user's chosen height is restored on the next Search All.
     func testSearchResultsPanelRestoresPersistedHeight() throws {
         let (controller, window, url) = try makeController([0xDE, 0xAD, 0x00, 0x00, 0x00, 0x00])
@@ -1087,11 +1047,12 @@ final class FindFlowTests: XCTestCase {
                        "a height chosen in this session must apply as-is on the next show")
     }
 
-    /// The native divider clamps: the panel can't shrink below its minimum nor
-    /// grow past the point that would squeeze the hex dump away. The clamp is
-    /// enforced by the split delegate when `setPosition` (or a drag) targets an
-    /// out-of-range divider — `setPanelHeight` asks for the raw height and the
-    /// split clamps it.
+    /// The native divider applies what it is asked for and clamps what it
+    /// cannot: an in-range height takes effect verbatim, while the panel can't
+    /// shrink below its minimum nor grow past the point that would squeeze the
+    /// hex dump away. The clamp is enforced by the split delegate when
+    /// `setPosition` (or a drag) targets an out-of-range divider —
+    /// `setPanelHeight` asks for the raw height and the split clamps it.
     func testSearchResultsPanelDividerClamps() throws {
         let (controller, window, url) = try makeController([0xDE, 0xAD])
         defer { cleanup(controller, url) }
@@ -1101,6 +1062,19 @@ final class FindFlowTests: XCTestCase {
         let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
         let split = paneView.searchResultsSplit
         window.layoutIfNeeded()
+
+        // 120 pt is in range for this window, so it is applied as asked — the
+        // mechanism a native drag drives. Both premises are asserted, so the
+        // literal below cannot pass by being clamped to something else.
+        let room = split.bounds.height - split.dividerThickness
+        XCTAssertGreaterThanOrEqual(120, FilePaneView.minSearchResultsHeight,
+                                    "premise: 120 pt clears the panel's own minimum")
+        XCTAssertLessThanOrEqual(120, room - FilePaneView.minHexHeightInPane,
+                                 "premise: 120 pt still leaves the dump its minimum")
+        split.setPanelHeight(120)
+        window.layoutIfNeeded()
+        XCTAssertEqual(view.frame.height, 120, accuracy: 0.5,
+                       "an in-range panel height must take effect unchanged")
 
         // Asking for less than the panel's minimum clamps up to the minimum.
         split.setPanelHeight(10)
@@ -1188,8 +1162,9 @@ final class FindFlowTests: XCTestCase {
 
     /// The scan folds ASCII letter *bytes*, which models case only for a
     /// single-byte ASCII-compatible encoding. The toggle must therefore be
-    /// offered for ASCII and UTF-8 and withheld for hex and both UTF-16s.
-    func testCaseToggleOfferedOnlyForASCIIAndUTF8() throws {
+    /// offered for ASCII and UTF-8 and withheld for hex and both UTF-16s — and
+    /// where it is offered it starts off, case-insensitive like TextEdit.
+    func testCaseToggleDefaultsOffAndIsOfferedOnlyForASCIIAndUTF8() throws {
         XCTAssertTrue(FindBarView.supportsCaseFolding(.ascii))
         XCTAssertTrue(FindBarView.supportsCaseFolding(.utf8))
         XCTAssertFalse(FindBarView.supportsCaseFolding(.hex))
@@ -1201,6 +1176,7 @@ final class FindFlowTests: XCTestCase {
         defer { cleanup(controller, url) }
         controller.findPattern()
         let (_, encoding, _, caseToggle) = try barControls(window)
+        XCTAssertEqual(caseToggle.state, .off, "case-insensitive must be the default")
 
         for (mode, expected) in [(SearchEncoding.utf8, true), (.utf16LE, false),
                                  (.utf16BE, false), (.hex, false)] {

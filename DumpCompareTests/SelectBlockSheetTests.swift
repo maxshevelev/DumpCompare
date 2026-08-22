@@ -84,46 +84,43 @@ final class SelectBlockSheetTests: XCTestCase {
 
     /// §10: focus must not select the "0x" prefix — the caret sits right after
     /// it so the user types hex digits immediately (and deletes the prefix only
-    /// for a decimal value).
-    func testFocusPositionsCaretAfterThe0xPrefix() {
+    /// for a decimal value). The rule belongs to EVERY field, not just the one
+    /// `viewDidAppear` focuses, so the same sheet is asked twice.
+    func testFocusPositionsCaretAfterThe0xPrefixInEveryField() {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 260),
                               styleMask: [.titled], backing: .buffered, defer: false)
         defer { window.orderOut(nil) }
         let (sheet, _) = makeSheet()
         window.contentView = sheet.view
+
         sheet.viewDidAppear()
-        guard let editor = window.firstResponder as? NSTextView else {
+        guard let first = window.firstResponder as? NSTextView else {
             return XCTFail("the field's editor must be first responder after focus")
         }
-        XCTAssertEqual(editor.selectedRange.location, 2,
+        XCTAssertEqual(first.selectedRange.location, 2,
                        "the caret must sit after the 0x prefix")
-        XCTAssertEqual(editor.selectedRange.length, 0,
+        XCTAssertEqual(first.selectedRange.length, 0,
                        "the prefix must not be selected")
-    }
 
-    /// §10: the rule applies to EVERY field, not just the first one — clicking
-    /// into the End field must also leave the caret after its "0x" prefix.
-    func testNonFirstFieldAlsoPositionsCaretAfterThePrefix() {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 260),
-                              styleMask: [.titled], backing: .buffered, defer: false)
-        defer { window.orderOut(nil) }
-        let (sheet, _) = makeSheet()
-        window.contentView = sheet.view
         window.makeFirstResponder(sheet.endField)
-        guard let editor = window.firstResponder as? NSTextView else {
-            return XCTFail("the field's editor must be first responder")
+        guard let end = window.firstResponder as? NSTextView else {
+            return XCTFail("the End field's editor must be first responder")
         }
-        XCTAssertEqual(editor.selectedRange.location, 2,
-                       "the caret must sit after the 0x prefix")
-        XCTAssertEqual(editor.selectedRange.length, 0,
-                       "the prefix must not be selected")
+        XCTAssertEqual(end.selectedRange.location, 2,
+                       "a field focused later gets the same caret placement")
+        XCTAssertEqual(end.selectedRange.length, 0,
+                       "and the same unselected prefix")
     }
 
     // MARK: - Radio switching
 
-    func testSwitchingToLengthDisablesEndButKeepsItsValue() {
+    /// The radios activate exactly one of End / Length in either direction, and
+    /// the field being disabled keeps whatever was already typed into it — so
+    /// switching modes to look at the other one loses nothing (§10.2).
+    func testSwitchingTheActiveFieldDisablesTheOtherButKeepsItsValue() {
         let (sheet, _) = makeSheet()
         sheet.endField.stringValue = "0x100"
+        sheet.lengthField.stringValue = "0x40"
 
         sheet.lengthRadio.performClick(nil)
 
@@ -133,12 +130,7 @@ final class SelectBlockSheetTests: XCTestCase {
         XCTAssertFalse(sheet.endField.isEnabled)
         XCTAssertEqual(sheet.endField.stringValue, "0x100",
                        "the disabled End field must keep the value already entered")
-    }
 
-    func testSwitchingBackToEndRestoresTheDisabledLengthValue() {
-        let (sheet, _) = makeSheet()
-        sheet.lengthField.stringValue = "0x40"
-        sheet.lengthRadio.performClick(nil)   // activate Length
         sheet.endRadio.performClick(nil)      // back to End
 
         XCTAssertEqual(sheet.endRadio.state, .on)
@@ -188,20 +180,20 @@ final class SelectBlockSheetTests: XCTestCase {
         XCTAssertEqual(sheet.validate(), "Start must not exceed end.")
     }
 
-    func testValidationRejectsEndBeyondFile() {
-        let (sheet, _) = makeSheet(fileSize: 0x80)
-        sheet.startField.stringValue = "0x10"
-        sheet.endField.stringValue = "0x100"
-        XCTAssertEqual(sheet.validate(), "End is beyond the end of the file.")
-    }
-
     /// End is a byte address, so the last byte (fileSize - 1) is fine, but the
-    /// byte PAST EOF (fileSize) is not — there is no last byte there.
-    func testValidationRejectsEndEqualToFileSize() {
+    /// byte PAST EOF (fileSize) is not — there is no last byte there — and
+    /// neither is anything further out.
+    func testValidationRejectsEndAtOrBeyondFileSize() {
         let (sheet, _) = makeSheet(fileSize: 0x80)
         sheet.startField.stringValue = "0x10"
+
         sheet.endField.stringValue = "0x80"
-        XCTAssertEqual(sheet.validate(), "End is beyond the end of the file.")
+        XCTAssertEqual(sheet.validate(), "End is beyond the end of the file.",
+                       "fileSize itself is one past the file's last byte")
+
+        sheet.endField.stringValue = "0x100"
+        XCTAssertEqual(sheet.validate(), "End is beyond the end of the file.",
+                       "and an address well past EOF is rejected the same way")
     }
 
     /// A block that ends at the file's last byte is valid and reaches EOF.
@@ -267,8 +259,9 @@ final class SelectBlockSheetTests: XCTestCase {
     }
 
     /// The error clears as soon as the whole form becomes valid — the user
-    /// typed a correct value, so the stale message must not linger.
-    func testLiveValidationClearsErrorWhenValueBecomesValid() {
+    /// typed a correct value, so the stale message must not linger. The prefix
+    /// is only for hex, so a decimal value (prefix deleted) clears it too.
+    func testLiveValidationClearsTheErrorForAValidHexOrDecimalValue() {
         let (sheet, _) = makeSheet()
         let window = hostingWindow(for: sheet)
         defer { window.orderOut(nil) }
@@ -279,17 +272,11 @@ final class SelectBlockSheetTests: XCTestCase {
         sheet.endField.stringValue = "0x30"
         type("0x20", into: sheet.startField)
         XCTAssertTrue(sheet.errorLabel.isHidden,
-                      "a valid offset must clear the live error")
-    }
+                      "a valid hex offset must clear the live error")
 
-    /// The prefix is only for hex — a decimal value (prefix deleted) validates
-    /// live too.
-    func testLiveValidationAcceptsDecimalAfterRemovingPrefix() {
-        let (sheet, _) = makeSheet()
-        let window = hostingWindow(for: sheet)
-        defer { window.orderOut(nil) }
-        window.makeFirstResponder(sheet.startField)
-        sheet.endField.stringValue = "0x30"
+        type("0x", into: sheet.startField)   // back to invalid
+        XCTAssertFalse(sheet.errorLabel.isHidden,
+                       "an incomplete offset brings the error back")
         type("32", into: sheet.startField)
         XCTAssertTrue(sheet.errorLabel.isHidden,
                       "a decimal offset must validate like hex")

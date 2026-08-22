@@ -240,6 +240,18 @@ final class ContentRedrawTests: XCTestCase {
         // not the whole pane.
         XCTAssertEqual(companionContent, [.bytes(in: 5..<6)])
         XCTAssertTrue(ownContent.isEmpty, "the companion's own content channel must not fire")
+
+        // The same rule for an undo that changes the length: the net edit is a
+        // delete of the inserted span, so the notification runs from the insert
+        // offset through EOF — over the larger of the two panes, so EOF-only
+        // differences repaint too.
+        try paneA.pasteInsert([0xFF, 0xFE])
+        companionContent.removeAll()
+        try paneA.undo()
+        // The caret is still at 5 from the edit above, so that is where the
+        // insert — and therefore the repaint — starts.
+        XCTAssertEqual(companionContent, [.bytes(in: 5..<100)],
+                       "undo of an insert repaints the companion from the insert through EOF")
     }
 
     /// `deleteBytes` and `pasteInsert` change the file length mid-file — every
@@ -270,38 +282,6 @@ final class ContentRedrawTests: XCTestCase {
         try paneA.pasteInsert([0xFF, 0xFE])    // A: 92 → 94
         XCTAssertEqual(companionContent, [.bytes(in: 0..<100)],
                        "an insert shifts every byte at/past the caret, so the companion repaints every row")
-    }
-
-    /// Undo of a length-changing edit derives its net DiffEdit (a delete here),
-    /// so the companion repaints from the delete offset through EOF instead of
-    /// a full-pane notification — the same incremental path as a byte undo, but
-    /// with a range that covers every offset the size change can have shifted.
-    func testUndoOfLengthChangingEditInvalidatesCompanionDiff() throws {
-        let urlA = try tempFile([UInt8](repeating: 0, count: 100))
-        let urlB = try tempFile([UInt8](repeating: 0, count: 100))
-        defer {
-            try? FileManager.default.removeItem(at: urlA)
-            try? FileManager.default.removeItem(at: urlB)
-        }
-        let paneA = PaneViewModel()
-        let paneB = PaneViewModel()
-        try paneA.open(url: urlA)
-        try paneB.open(url: urlB)
-        paneA.companion = paneB
-        paneB.companion = paneA
-
-        var companionContent: [HexViewChange] = []
-        paneB.onCompanionContentChanged = { companionContent.append($0) }
-
-        try paneA.pasteInsert([0xFF, 0xFE])   // A: 100 → 102
-        companionContent.removeAll()
-
-        // Undoing the insert shrinks A back to 100; the net edit is a delete of
-        // the inserted span, and the notification spans the larger of the two
-        // panes' sizes (both 100 here) so EOF-only differences are repainted.
-        try paneA.undo()
-        XCTAssertEqual(companionContent, [.bytes(in: 0..<100)],
-                       "undo of an insert derives a delete from the insert offset through EOF")
     }
 
     func testStructuralEditsStayFullRefresh() throws {
