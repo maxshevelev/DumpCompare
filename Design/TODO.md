@@ -160,9 +160,8 @@ clears the forward stack.
 **What.** The remaining work from `Design/TEST_REVIEW.md` §3: about 60 merges,
 the table-driven consolidation of the core suite (87 tests into ~25, and the two
 storage suites into one conformance suite that covers both implementations), 12
-rewrites of tests that still cannot fail, the shared `TestSupport.swift` that
-replaces 32 copies of `tempFile`, and the seams that would replace ~10 s of
-sleeps.
+rewrites of tests that still cannot fail, and the seams that would replace ~10 s
+of sleeps. (§3.4, the shared test helpers, is done.)
 
 **Why.** The first pass is done and the suite is green and honest (674 → 633 app
 tests, three tests that had never run now running). What is left is not urgent —

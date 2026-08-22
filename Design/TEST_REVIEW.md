@@ -20,6 +20,7 @@ guarding code the app no longer calls.
 | | before | after |
 |---|---|---|
 | App tests | 674 | 633 |
+| Duplicated test helpers | 60 copies | 1 file |
 | Core tests | 291 declared / 291 run | 281 / 281 |
 | Test-body time (app) | 67.1 s | 66.4 s |
 
@@ -194,7 +195,7 @@ Two more worth doing while there: seed the RNG in the three property tests
 drag, after which `ProportionalSplitView.setPosition` — a method whose docstring
 says "used by tests" — can go.
 
-### 3.4 Shared test helpers — 1 file, ~250 lines removed (1–2 h)
+### 3.4 Shared test helpers — DONE (commit `36cec75`)
 
 `tempFile(_:)` is copied into **32** test classes, `descendants(of:_:)` into 12,
 `pumpUntil` into 6, the synthetic `mouse(_:at:window:)` into 6. Several copies
@@ -202,10 +203,21 @@ never delete their files (the host is sandboxed, so they accumulate in its
 container). A draft `TestSupport.swift` exists in the job's scratch directory
 with all four as an `XCTestCase` extension plus `addTeardownBlock` cleanup.
 
-**The catch, learned the hard way:** a private method with the same signature as
-a method on an `XCTestCase` extension is an *illegal override*, not a shadow. The
-extension therefore cannot land incrementally — it has to arrive in the same
-commit that deletes all 32 copies. Mechanical, but all at once.
+Done: `DumpCompareTests/TestSupport.swift` holds all four, 477 lines of
+duplication removed across 37 files, and `tempFile` now registers its own
+teardown so nothing is left in the host's container.
+
+**Two things it taught, both worth keeping:** a private method with the same
+signature as a method on an `XCTestCase` extension is an illegal *override*, not
+a shadow — so the shared file and the deletions must land in one commit. And
+`BackgroundOperationTests`' poller was async (`Task.sleep`), not run-loop based,
+because an async test cannot spin `RunLoop.main` to wait for the `Task` it is
+suspended in. Swapping in the sync poller did not fail that test — it silently
+stopped running it, and xcodebuild's own "Executed N tests" summary did not
+notice (it reported 602 where 633 test cases actually ran). **The check that
+caught it was diffing the list of test cases that ran against the same list from
+before the change.** Worth doing after any change that touches shared test
+infrastructure.
 
 ### 3.5 Seams instead of sleeps (2 h)
 
