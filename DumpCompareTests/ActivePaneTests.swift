@@ -209,10 +209,53 @@ final class ActivePaneTests: XCTestCase {
         ])
     }
 
-    /// A mirrored selection spanning several rows becomes one closed loop per
-    /// column — a rectangle around the whole span with no seam at the row
-    /// boundary.
-    func testMirrorContourSpansFullRows() throws {
+    /// One closed outline, whatever rows the span covers (§3.3). All four shapes
+    /// a multi-row span can take go through the same table, because they differ
+    /// in nothing but the *topology* of the resulting loop:
+    ///
+    /// * full rows only — a plain rectangle, no seam at the row boundary;
+    /// * partial first and last row — a staircase stepping in on the first row's
+    ///   left and the last row's right;
+    /// * partial first row, last row ending at column 15 — no right step to make;
+    /// * first row starting at column 0, partial last row — no left step.
+    ///
+    /// The last two are where the beak lived: a step edge of zero length leaves a
+    /// pair of coincident vertices, and dropping only those leaves a
+    /// straight-through vertex whose 0° "corner" the rounding pass sweeps into a
+    /// semicircle bulging out of the outline. Both are asserted here as
+    /// structure rather than as coordinates — every edge moves along exactly one
+    /// axis (no zero-length edge survives) and consecutive edges alternate
+    /// direction (no straight-through vertex survives) — which states the rule
+    /// itself instead of one point array that happens to satisfy it.
+    ///
+    /// What each vertex's x *is* — how far an edge pads outside the glyphs — is
+    /// pinned absolutely by `testMirrorContourPadsOnlyAtWordBoundaries`,
+    /// `testOppositePaneMirrorsSelectionWithContour` and
+    /// `testMirrorClampsToPaneFileSize`. Here an edge only has to sit on the
+    /// right column's cell boundary, at most `mirrorContourPadding` outside it —
+    /// enough to catch a step landing on the neighbouring byte.
+    func testMirrorContourTopologyFollowsTheRowsTheSpanCovers() throws {
+        /// A span and the loop shape it must produce. `stepsAtFirstRowBottom` is
+        /// "the span starts mid-row, so the left edge steps in"; `stepsAtLastRowTop`
+        /// is "the span ends before column 15, so the right edge steps in".
+        struct Shape {
+            let what: String
+            let span: Range<UInt64>
+            let vertices: Int
+            let stepsAtFirstRowBottom: Bool
+            let stepsAtLastRowTop: Bool
+        }
+        let shapes = [
+            Shape(what: "rows 1 and 2 in full", span: 16..<48, vertices: 4,
+                  stepsAtFirstRowBottom: false, stepsAtLastRowTop: false),
+            Shape(what: "rows 0 (cols 4-15), 1 (all), 2 (cols 0-5)", span: 4..<38, vertices: 8,
+                  stepsAtFirstRowBottom: true, stepsAtLastRowTop: true),
+            Shape(what: "rows 0 (cols 4-15), 1 and 2 in full", span: 4..<48, vertices: 6,
+                  stepsAtFirstRowBottom: true, stepsAtLastRowTop: false),
+            Shape(what: "row 0 in full, row 1 (cols 0-5)", span: 0..<22, vertices: 6,
+                  stepsAtFirstRowBottom: false, stepsAtLastRowTop: true),
+        ]
+
         let (cv, _, url1, url2) = try makeComparisonView()
         defer { try? FileManager.default.removeItem(at: url1); try? FileManager.default.removeItem(at: url2) }
 
@@ -221,142 +264,120 @@ final class ActivePaneTests: XCTestCase {
         vm1.companion = vm2
         vm2.companion = vm1
 
-        // Pane 2 selects rows 1 and 2 in full (bytes 16…47, end exclusive).
-        vm2.setSelection(SelectionModel(start: 16, end: 48, fileSize: 1024))
-
         let hex1 = try hexView(of: cv.paneView1)
-        let loops = hex1.mirrorContours()
-        XCTAssertEqual(loops.count, 2, "one loop around the whole hex span, one around the whole ASCII span")
         let layout = hex1.hexLayout
         let pad = HexView.mirrorContourPadding
-        XCTAssertEqual(loops[0], [
-            CGPoint(x: layout.hexByteX(column: 0) - pad, y: layout.rowFrame(row: 1).minY),
-            CGPoint(x: layout.hexByteX(column: 15) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 1).minY),
-            CGPoint(x: layout.hexByteX(column: 15) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 2).maxY),
-            CGPoint(x: layout.hexByteX(column: 0) - pad, y: layout.rowFrame(row: 2).maxY),
-        ])
-        XCTAssertEqual(loops[1], [
-            CGPoint(x: layout.asciiX(column: 0) - pad, y: layout.rowFrame(row: 1).minY),
-            CGPoint(x: layout.asciiX(column: 15) + layout.charWidth + pad, y: layout.rowFrame(row: 1).minY),
-            CGPoint(x: layout.asciiX(column: 15) + layout.charWidth + pad, y: layout.rowFrame(row: 2).maxY),
-            CGPoint(x: layout.asciiX(column: 0) - pad, y: layout.rowFrame(row: 2).maxY),
-        ])
-    }
+        // Both regions' cells, as x ranges per column: the loop's vertical edges
+        // must land on one of these boundaries.
+        let cells: [(name: String, minX: (Int) -> CGFloat, maxX: (Int) -> CGFloat)] = [
+            ("hex", { layout.hexByteX(column: $0) },
+                    { layout.hexByteX(column: $0) + layout.hexByteWidth }),
+            ("ASCII", { layout.asciiX(column: $0) },
+                      { layout.asciiX(column: $0) + layout.charWidth }),
+        ]
+        let last = HexLayout.bytesPerRow - 1
 
-    /// A selection that starts and ends mid-row steps the contour inward on the
-    /// first row's left and the last row's right — one closed outline tracing
-    /// the whole selection, not per-row frames.
-    func testMirrorContourStepsAroundPartialRows() throws {
-        let (cv, _, url1, url2) = try makeComparisonView()
-        defer { try? FileManager.default.removeItem(at: url1); try? FileManager.default.removeItem(at: url2) }
+        for shape in shapes {
+            vm2.setSelection(SelectionModel(start: shape.span.lowerBound,
+                                            end: shape.span.upperBound, fileSize: 1024))
+            let loops = hex1.mirrorContours()
+            XCTAssertEqual(loops.count, 2,
+                           "\(shape.what): one loop around the hex span, one around the ASCII span")
+            guard loops.count == 2 else { continue }
 
-        let vm1 = cv.paneView1.viewModel
-        let vm2 = cv.paneView2.viewModel
-        vm1.companion = vm2
-        vm2.companion = vm1
+            let rows = Int(HexLayout.bytesPerRow)
+            let firstRow = Int(shape.span.lowerBound) / rows
+            let lastRow = (Int(shape.span.upperBound) - 1) / rows
+            let firstCol = Int(shape.span.lowerBound) % rows
+            let lastCol = (Int(shape.span.upperBound) - 1) % rows
+            let top = layout.rowFrame(row: firstRow).minY
+            let bottom = layout.rowFrame(row: lastRow).maxY
+            let firstRowBottom = layout.rowFrame(row: firstRow).maxY
+            let lastRowTop = layout.rowFrame(row: lastRow).minY
+            XCTAssertTrue(firstRow < lastRow, "\(shape.what): the fixture must span several rows")
 
-        // Rows 0 (cols 4–15), 1 (all), and 2 (cols 0–5).
-        vm2.setSelection(SelectionModel(start: 4, end: 38, fileSize: 1024))
+            for (region, (name, cellMinX, cellMaxX)) in zip(loops, cells) {
+                let label = "\(shape.what) [\(name)]"
+                XCTAssertEqual(region.count, shape.vertices,
+                               "\(label): the outline must have exactly \(shape.vertices) corners — "
+                                   + "a surviving zero-length step or straight-through vertex adds one")
 
-        let hex1 = try hexView(of: cv.paneView1)
-        let loops = hex1.mirrorContours()
-        XCTAssertEqual(loops.count, 2)
-        let layout = hex1.hexLayout
-        let pad = HexView.mirrorContourPadding
-        XCTAssertEqual(loops[0], [
-            CGPoint(x: layout.hexByteX(column: 4) - pad, y: layout.rowFrame(row: 0).minY),
-            CGPoint(x: layout.hexByteX(column: 15) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 0).minY),
-            CGPoint(x: layout.hexByteX(column: 15) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 2).minY),
-            CGPoint(x: layout.hexByteX(column: 5) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 2).minY),
-            CGPoint(x: layout.hexByteX(column: 5) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 2).maxY),
-            CGPoint(x: layout.hexByteX(column: 0) - pad, y: layout.rowFrame(row: 2).maxY),
-            CGPoint(x: layout.hexByteX(column: 0) - pad, y: layout.rowFrame(row: 0).maxY),
-            CGPoint(x: layout.hexByteX(column: 4) - pad, y: layout.rowFrame(row: 0).maxY),
-        ])
-    }
+                // A closed rectilinear loop with no degenerate edge and no
+                // straight-through vertex: the anti-beak rule, stated directly.
+                let n = region.count
+                for i in 0..<n {
+                    let a = region[i], b = region[(i + 1) % n], c = region[(i + 2) % n]
+                    let horizontal = a.y == b.y && a.x != b.x
+                    let vertical = a.x == b.x && a.y != b.y
+                    XCTAssertTrue(horizontal || vertical,
+                                  "\(label): edge \(i) \(a)->\(b) must move along exactly one axis "
+                                      + "— a zero-length or diagonal edge means a vertex was not dropped")
+                    let nextHorizontal = b.y == c.y && b.x != c.x
+                    XCTAssertNotEqual(horizontal, nextHorizontal,
+                                      "\(label): vertex \((i + 1) % n) at \(b) is straight-through — "
+                                          + "its 0° turn rounds into a beak")
+                }
 
-    /// A selection that ends exactly at the row's last column has no right step
-    /// to make: the right edge runs straight down to the bottom, and the left
-    /// edge steps in on the first row only. A leftover zero-length step would
-    /// collapse into a collinear vertex whose 0° "corner" rounds into a
-    /// semicircular beak bulging out of the outline near the bottom-right
-    /// corner (§3.3).
-    func testMirrorContourEndingAtRowEndHasNoStepBeak() throws {
-        let (cv, _, url1, url2) = try makeComparisonView()
-        defer { try? FileManager.default.removeItem(at: url1); try? FileManager.default.removeItem(at: url2) }
+                // Which row edges the outline touches, and nothing else: a step
+                // exists exactly where the span really is partial.
+                var levels: [CGFloat: [CGFloat]] = [:]
+                for point in region { levels[point.y, default: []].append(point.x) }
+                var expected: Set<CGFloat> = [top, bottom]
+                if shape.stepsAtFirstRowBottom { expected.insert(firstRowBottom) }
+                if shape.stepsAtLastRowTop { expected.insert(lastRowTop) }
+                XCTAssertEqual(Set(levels.keys), expected,
+                               "\(label): the outline may only turn at the row edges its span is "
+                                   + "partial at — a step at any other row edge is a seam")
 
-        let vm1 = cv.paneView1.viewModel
-        let vm2 = cv.paneView2.viewModel
-        vm1.companion = vm2
-        vm2.companion = vm1
+                /// Asserts that `x` sits on `column`'s left (or right) cell
+                /// boundary, flush or at most `pad` outside it.
+                func assertLeftEdge(_ x: CGFloat, isLeftOf column: Int, _ message: String) {
+                    XCTAssertTrue((cellMinX(column) - pad...cellMinX(column)).contains(x),
+                                  "\(label): \(message) — x \(x) is not the left edge of column "
+                                      + "\(column) (\(cellMinX(column)))")
+                }
+                func assertRightEdge(_ x: CGFloat, isRightOf column: Int, _ message: String) {
+                    XCTAssertTrue((cellMaxX(column)...cellMaxX(column) + pad).contains(x),
+                                  "\(label): \(message) — x \(x) is not the right edge of column "
+                                      + "\(column) (\(cellMaxX(column)))")
+                }
 
-        // Rows 0 (cols 4–15), 1 (all), and 2 (cols 0…15): the selection ends at
-        // the row's last column, so the right edge has no step to make.
-        vm2.setSelection(SelectionModel(start: 4, end: 48, fileSize: 1024))
-
-        let hex1 = try hexView(of: cv.paneView1)
-        let loops = hex1.mirrorContours()
-        XCTAssertEqual(loops.count, 2)
-        let layout = hex1.hexLayout
-        let pad = HexView.mirrorContourPadding
-        // Six corners — no straight-through vertex on the right edge.
-        XCTAssertEqual(loops[0], [
-            CGPoint(x: layout.hexByteX(column: 4) - pad, y: layout.rowFrame(row: 0).minY),
-            CGPoint(x: layout.hexByteX(column: 15) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 0).minY),
-            CGPoint(x: layout.hexByteX(column: 15) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 2).maxY),
-            CGPoint(x: layout.hexByteX(column: 0) - pad, y: layout.rowFrame(row: 2).maxY),
-            CGPoint(x: layout.hexByteX(column: 0) - pad, y: layout.rowFrame(row: 0).maxY),
-            CGPoint(x: layout.hexByteX(column: 4) - pad, y: layout.rowFrame(row: 0).maxY),
-        ])
-        // The ASCII loop collapses the same way: right edge pads (outer edge),
-        // left edge at column 4 is flush (mid-column).
-        XCTAssertEqual(loops[1], [
-            CGPoint(x: layout.asciiX(column: 4), y: layout.rowFrame(row: 0).minY),
-            CGPoint(x: layout.asciiX(column: 15) + layout.charWidth + pad, y: layout.rowFrame(row: 0).minY),
-            CGPoint(x: layout.asciiX(column: 15) + layout.charWidth + pad, y: layout.rowFrame(row: 2).maxY),
-            CGPoint(x: layout.asciiX(column: 0) - pad, y: layout.rowFrame(row: 2).maxY),
-            CGPoint(x: layout.asciiX(column: 0) - pad, y: layout.rowFrame(row: 0).maxY),
-            CGPoint(x: layout.asciiX(column: 4), y: layout.rowFrame(row: 0).maxY),
-        ])
-    }
-
-    /// The mirror image of the end-of-row case: a selection that starts exactly
-    /// at the row's first column has no left step to make, so the left edge runs
-    /// straight down and only the right edge steps in on the last row (§3.3).
-    func testMirrorContourStartingAtRowStartHasNoStepBeak() throws {
-        let (cv, _, url1, url2) = try makeComparisonView()
-        defer { try? FileManager.default.removeItem(at: url1); try? FileManager.default.removeItem(at: url2) }
-
-        let vm1 = cv.paneView1.viewModel
-        let vm2 = cv.paneView2.viewModel
-        vm1.companion = vm2
-        vm2.companion = vm1
-
-        // Rows 0 (all) and 1 (cols 0…5): the selection starts at the row's first
-        // column, so the left edge has no step to make.
-        vm2.setSelection(SelectionModel(start: 0, end: 22, fileSize: 1024))
-
-        let hex1 = try hexView(of: cv.paneView1)
-        let loops = hex1.mirrorContours()
-        XCTAssertEqual(loops.count, 2)
-        let layout = hex1.hexLayout
-        let pad = HexView.mirrorContourPadding
-        XCTAssertEqual(loops[0], [
-            CGPoint(x: layout.hexByteX(column: 0) - pad, y: layout.rowFrame(row: 0).minY),
-            CGPoint(x: layout.hexByteX(column: 15) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 0).minY),
-            CGPoint(x: layout.hexByteX(column: 15) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 1).minY),
-            CGPoint(x: layout.hexByteX(column: 5) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 1).minY),
-            CGPoint(x: layout.hexByteX(column: 5) + layout.hexByteWidth + pad, y: layout.rowFrame(row: 1).maxY),
-            CGPoint(x: layout.hexByteX(column: 0) - pad, y: layout.rowFrame(row: 1).maxY),
-        ])
-        XCTAssertEqual(loops[1], [
-            CGPoint(x: layout.asciiX(column: 0) - pad, y: layout.rowFrame(row: 0).minY),
-            CGPoint(x: layout.asciiX(column: 15) + layout.charWidth + pad, y: layout.rowFrame(row: 0).minY),
-            CGPoint(x: layout.asciiX(column: 15) + layout.charWidth + pad, y: layout.rowFrame(row: 1).minY),
-            CGPoint(x: layout.asciiX(column: 5) + layout.charWidth, y: layout.rowFrame(row: 1).minY),
-            CGPoint(x: layout.asciiX(column: 5) + layout.charWidth, y: layout.rowFrame(row: 1).maxY),
-            CGPoint(x: layout.asciiX(column: 0) - pad, y: layout.rowFrame(row: 1).maxY),
-        ])
+                // The top edge runs from the first selected byte to the end of
+                // its row; the bottom edge from the start of the last row to the
+                // last selected byte.
+                let topXs = (levels[top] ?? []).sorted()
+                XCTAssertEqual(topXs.count, 2, "\(label): the top edge has two ends")
+                if topXs.count == 2 {
+                    assertLeftEdge(topXs[0], isLeftOf: firstCol, "the outline starts at the first selected byte")
+                    assertRightEdge(topXs[1], isRightOf: last, "the first row runs to the end of the row")
+                }
+                let bottomXs = (levels[bottom] ?? []).sorted()
+                XCTAssertEqual(bottomXs.count, 2, "\(label): the bottom edge has two ends")
+                if bottomXs.count == 2 {
+                    assertLeftEdge(bottomXs[0], isLeftOf: 0, "the last row starts at the row's first byte")
+                    assertRightEdge(bottomXs[1], isRightOf: lastCol, "the outline ends at the last selected byte")
+                }
+                // A step is a pair on one side: the left edge steps out to column
+                // 0 below the first row, the right edge steps in to the last
+                // selected byte above the last row.
+                if shape.stepsAtFirstRowBottom {
+                    let stepXs = (levels[firstRowBottom] ?? []).sorted()
+                    XCTAssertEqual(stepXs.count, 2, "\(label): the left step has two ends")
+                    if stepXs.count == 2 {
+                        assertLeftEdge(stepXs[0], isLeftOf: 0, "below the first row the outline reaches column 0")
+                        assertLeftEdge(stepXs[1], isLeftOf: firstCol, "the left step starts under the first selected byte")
+                    }
+                }
+                if shape.stepsAtLastRowTop {
+                    let stepXs = (levels[lastRowTop] ?? []).sorted()
+                    XCTAssertEqual(stepXs.count, 2, "\(label): the right step has two ends")
+                    if stepXs.count == 2 {
+                        assertRightEdge(stepXs[0], isRightOf: lastCol, "the right step ends over the last selected byte")
+                        assertRightEdge(stepXs[1], isRightOf: last, "above the last row the outline reaches column 15")
+                    }
+                }
+            }
+        }
     }
 
     /// With words larger than one byte, the hex contour pads only at word

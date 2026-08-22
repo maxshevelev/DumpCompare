@@ -108,7 +108,10 @@ final class GoToBookmarksTests: XCTestCase {
                      "a default button would take Return away from the list")
     }
 
-    func testAnUnparseableOffsetShowsAnErrorAndGoesNowhere() {
+    /// The two arms of one rule: Return is silent when the field holds an offset
+    /// and loud when it does not — and a refused Return goes nowhere and leaves
+    /// the form up to be corrected.
+    func testReturnIsSilentOnAValidOffsetAndLoudOnOneThatDoesNotParse() {
         let (form, _, jumps, closes) = makeForm()
         var beeps = 0
         form.beep = { beeps += 1 }
@@ -116,10 +119,17 @@ final class GoToBookmarksTests: XCTestCase {
 
         form.goToTypedOffset()
 
-        XCTAssertTrue(jumps().isEmpty)
+        XCTAssertTrue(jumps().isEmpty, "an offset that does not parse is nowhere to go")
         XCTAssertEqual(closes(), 0, "an invalid offset leaves the form up to correct it")
-        XCTAssertFalse(form.errorLabel.stringValue.isEmpty)
+        XCTAssertFalse(form.errorLabel.stringValue.isEmpty, "and the message says so")
         XCTAssertEqual(beeps, 1, "Return on an offset that does not parse says so out loud")
+
+        form.offsetCombo.stringValue = "0x30"
+        form.goToTypedOffset()
+
+        XCTAssertEqual(jumps(), [0x30], "corrected, the same Return jumps")
+        XCTAssertEqual(closes(), 1, "and dismisses the form")
+        XCTAssertEqual(beeps, 1, "a valid Return is silent — the sound belongs to the refusal")
     }
 
     // MARK: - Validation while typing (§10.1)
@@ -157,19 +167,6 @@ final class GoToBookmarksTests: XCTestCase {
         XCTAssertEqual(form.offsetCombo.stringValue, "0x")
         XCTAssertFalse(form.goButton.isEnabled)
         XCTAssertEqual(form.errorLabel.stringValue, "")
-    }
-
-    /// A valid offset does not beep — the sound belongs to the refused Return.
-    func testReturnOnAValidOffsetIsSilent() {
-        let (form, _, jumps, _) = makeForm()
-        var beeps = 0
-        form.beep = { beeps += 1 }
-        form.offsetCombo.stringValue = "0x30"
-
-        form.goToTypedOffset()
-
-        XCTAssertEqual(jumps(), [0x30])
-        XCTAssertEqual(beeps, 0)
     }
 
     /// Picking a recent address re-enables the button: the field's own text
@@ -211,32 +208,46 @@ final class GoToBookmarksTests: XCTestCase {
         XCTAssertEqual(closes(), 0)
     }
 
-    /// ⌥⌘B is opened to go to a bookmark, so the list arrives with its first one
-    /// offered — the jump still takes a Return.
-    func testTheListOpensWithItsFirstBookmarkSelected() {
-        let (form, _, jumps, _) = makeForm(rows: [0x200: "", 0x10: ""], focus: .bookmarks)
+    /// Both arms of the preselection rule: ⌥⌘B is opened to go to a bookmark, so
+    /// the list arrives with its first one offered — the jump still takes a
+    /// Return — while ⌘G is about typing an address, so the list offers nothing.
+    ///
+    /// Neither arm asserts the real first-responder handoff: `viewDidAppear`'s
+    /// `makeFirstResponder` needs a key window, which a headless test host has
+    /// not got. What is checked is the selection the focus decides, which is what
+    /// Return then acts on.
+    func testTheListPreselectsItsFirstBookmarkOnlyWhenTheFormOpensForIt() {
+        let (list, _, listJumps, _) = makeForm(rows: [0x200: "", 0x10: ""], focus: .bookmarks)
 
-        form.viewDidAppear()
+        list.viewDidAppear()
 
-        XCTAssertEqual(form.bookmarkTable.selectedRow, 0)
-        XCTAssertTrue(jumps().isEmpty, "a selection is an offer, not a jump")
-        form.goToSelectedBookmark()
-        XCTAssertEqual(jumps(), [0x10], "the list is sorted by address")
-    }
+        XCTAssertEqual(list.bookmarkTable.selectedRow, 0,
+                       "opened for the list, the first bookmark is offered")
+        XCTAssertTrue(listJumps().isEmpty, "a selection is an offer, not a jump")
+        list.goToSelectedBookmark()
+        XCTAssertEqual(listJumps(), [0x10], "the list is sorted by address")
 
-    func testTheFieldKeepsTheFocusWhenTheFormIsOpenedForIt() {
-        let (form, _, _, _) = makeForm(rows: [0x10: ""], focus: .offsetField)
+        let (field, _, fieldJumps, _) = makeForm(rows: [0x10: ""], focus: .offsetField)
 
-        form.viewDidAppear()
+        field.viewDidAppear()
 
-        XCTAssertEqual(form.bookmarkTable.selectedRow, -1,
+        XCTAssertEqual(field.bookmarkTable.selectedRow, -1,
                        "⌘G is about typing an address; the list offers nothing yet")
+        XCTAssertTrue(fieldJumps().isEmpty, "and opening the form goes nowhere by itself")
     }
 
     // MARK: - The mouse
 
+    /// A double click anywhere in a row opens that bookmark's editor — one click
+    /// means one thing, and *going* to a bookmark is Return and the Go To button
+    /// (§20.5).
+    ///
+    /// One test covers "wherever in the row" because `handleDoubleClick` ignores
+    /// its `column` outright: both columns are passed here so the two call sites
+    /// are exercised, but the production code branches on neither, so a
+    /// column-by-column pair of tests could not fail apart.
     func testADoubleClickOpensTheBookmarksEditor() throws {
-        let (form, _, jumps, closes) = makeForm(rows: [0x10: "", 0x100: "NVRAM"])
+        let (form, _, jumps, closes) = makeForm(rows: [0x10: "EC table", 0x100: "NVRAM"])
         var presented: [BookmarkEditPopoverController] = []
         form.editPopoverPresenter = { presented.append($0) }
 
@@ -244,20 +255,16 @@ final class GoToBookmarksTests: XCTestCase {
 
         let popover = try XCTUnwrap(presented.first, "the editor opened on the clicked row")
         XCTAssertEqual(popover.row, 0x100)
+        XCTAssertTrue(form.isEditingBookmark, "the form knows its editor is up")
         XCTAssertTrue(jumps().isEmpty, "opening a bookmark is not going to it")
         XCTAssertEqual(closes(), 0, "and the form stays up behind it")
-    }
 
-    /// The same wherever in the row the click lands: one click means one thing,
-    /// and *going* to a bookmark is Return and the Go To button (§20.5).
-    func testADoubleClickOnTheNameOpensTheEditorToo() throws {
-        let (form, _, jumps, _) = makeForm(rows: [0x10: "EC table"])
-        var presented: [BookmarkEditPopoverController] = []
-        form.editPopoverPresenter = { presented.append($0) }
+        XCTAssertTrue(form.cancelBookmarkEdit(), "there was an editor to close")
 
         form.handleDoubleClick(row: 0, column: form.nameColumnIndex)
 
-        XCTAssertEqual(presented.count, 1)
+        XCTAssertEqual(presented.count, 2, "a click on the name opens the editor too")
+        XCTAssertEqual(presented.last?.row, 0x10, "on the row that was clicked")
         XCTAssertTrue(form.isEditingBookmark)
         XCTAssertTrue(jumps().isEmpty)
     }
@@ -345,35 +352,34 @@ final class GoToBookmarksTests: XCTestCase {
 
     /// The selection is the form's, not the table's: a table view's selection is
     /// a row number, and a row number is a rendering detail. `reloadData` alone
-    /// clears the table — the form puts its selection back (§20.5).
+    /// clears the table — the form puts its selection back — and a bookmark made
+    /// elsewhere renumbers the rows without the selection leaving the bookmark it
+    /// was on (§20.5).
     func testTheSelectionLivesInTheFormNotTheTable() throws {
-        let (form, _, _, _) = makeForm(rows: [0x10: "a", 0x20: "b"])
+        let (form, store, _, _) = makeForm(rows: [0x100: "a", 0x200: "b"])
 
         form.bookmarkTable.selectRowIndexes([1], byExtendingSelection: false)
-        XCTAssertEqual(form.selectedBookmarkRow, 0x20,
+        XCTAssertEqual(form.selectedBookmarkRow, 0x200,
                        "the user's pick is written down as a bookmark")
 
         form.bookmarkTable.reloadData()   // as any table reload does
         XCTAssertEqual(form.bookmarkTable.selectedRow, -1, "the table forgot")
-        XCTAssertEqual(form.selectedBookmarkRow, 0x20, "the form did not")
+        XCTAssertEqual(form.selectedBookmarkRow, 0x200, "the form did not")
 
         form.reloadBookmarks()
         XCTAssertEqual(form.bookmarkTable.selectedRow, 1, "and it told the table again")
-        XCTAssertEqual(form.selectedBookmark, Bookmark(row: 0x20, name: "b"))
-    }
+        XCTAssertEqual(form.selectedBookmark, Bookmark(row: 0x200, name: "b"))
 
-    /// A bookmark made elsewhere renumbers the rows; the selection stays on the
-    /// bookmark it was on rather than on the row number it had.
-    func testTheSelectionSurvivesAChangeFromOutside() throws {
-        let (form, store, _, _) = makeForm(rows: [0x100: "a", 0x200: "b"])
+        // A bookmark added above the selected one moves it down the list.
         form.bookmarkTable.selectRowIndexes([0], byExtendingSelection: false)
-
         store.add(rowContaining: 0x10, name: "before them")
         form.reloadBookmarks()
 
         XCTAssertEqual(form.bookmarks.map(\.row), [0x10, 0x100, 0x200])
         XCTAssertEqual(form.selectedBookmark?.row, 0x100,
                        "still the same bookmark, one row further down")
+        XCTAssertEqual(form.bookmarkTable.selectedRow, 1,
+                       "and the table was told its new row number")
     }
 
     /// Its Delete removes the bookmark from the list too.
@@ -396,9 +402,12 @@ final class GoToBookmarksTests: XCTestCase {
     }
 
     /// Escape closes the editor before it closes the form: editing a bookmark and
-    /// pressing Escape must not throw the window away (§10.1).
+    /// pressing Escape must not throw the window away (§10.1). With no edit
+    /// running the same key closes the form — that is the Cancel button's key
+    /// equivalent doing its ordinary job, which is why the button both answers
+    /// Escape and says "Close".
     func testEscapeClosesTheEditorFirstAndTheFormSecond() throws {
-        let (form, store, _, closes) = makeForm(rows: [0x10: "EC table"])
+        let (form, store, jumps, closes) = makeForm(rows: [0x10: "EC table"])
         var presented: [BookmarkEditPopoverController] = []
         form.editPopoverPresenter = { presented.append($0) }
         form.bookmarkTable.selectRowIndexes([0], byExtendingSelection: false)
@@ -417,6 +426,11 @@ final class GoToBookmarksTests: XCTestCase {
 
         _ = form.view.performKeyEquivalent(with: escape)
         XCTAssertEqual(closes(), 1, "and the next Escape closes it")
+        XCTAssertTrue(jumps().isEmpty, "leaving the form goes nowhere")
+        XCTAssertEqual(form.cancelButton.keyEquivalent, "\u{1B}",
+                       "the second Escape is the Cancel button's own key (§10.1)")
+        XCTAssertEqual(form.cancelButton.title, "Close",
+                       "nothing here is undone by leaving, so the button says Close")
     }
 
     // MARK: - Managing the list (§20.5)
@@ -462,24 +476,30 @@ final class GoToBookmarksTests: XCTestCase {
         return try XCTUnwrap((cell as? NSTableCellView)?.textField)
     }
 
-    /// An unnamed bookmark is described by what is AT it — the row's bytes as
-    /// the dump shows them (§20.5). The address is already in the column beside
+    /// What the name column says, over the three rows one list can hold at once:
+    /// a named bookmark shows its name, and an unnamed one is described by what
+    /// is AT it — the row's bytes as the dump shows them, and only the bytes the
+    /// file really has there (§20.5). The address is already in the column beside
     /// it, so repeating that would say nothing new.
-    func testAnUnnamedBookmarkShowsTheRowsBytes() throws {
-        let (form, _, _, _) = makeForm(rows: [0x10: ""], fill: 0xFF)
-        let field = try nameField(form, row: 0)
+    func testTheNameColumnShowsTheNameOrElseTheRowsBytes() throws {
+        // 0x104 bytes of 0xFF: 0x100 is the last row and holds four of them.
+        let (form, _, _, _) = makeForm(rows: [0x10: "", 0x20: "EC table", 0x100: ""],
+                                       fileSize: 0x104, fill: 0xFF)
+        XCTAssertEqual(form.bookmarks.map(\.row), [0x10, 0x20, 0x100],
+                       "the fixture is the three rows this test reads")
 
-        XCTAssertEqual(field.stringValue, "")
-        XCTAssertEqual(field.placeholderAttributedString?.string,
-                       "FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF")
-    }
+        let unnamed = try nameField(form, row: 0)
+        XCTAssertEqual(unnamed.stringValue, "", "an unnamed bookmark has no name to show")
+        XCTAssertEqual(unnamed.placeholderAttributedString?.string,
+                       "FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF",
+                       "so it shows the whole row of bytes instead")
 
-    /// A named bookmark shows its name; the bytes are only what stands in for a
-    /// name that is not there.
-    func testANamedBookmarkShowsItsName() throws {
-        let (form, _, _, _) = makeForm(rows: [0x10: "EC table"])
+        XCTAssertEqual(try nameField(form, row: 1).stringValue, "EC table",
+                       "a named bookmark shows its name; the bytes only stand in for one")
 
-        XCTAssertEqual(try nameField(form, row: 0).stringValue, "EC table")
+        XCTAssertEqual(try nameField(form, row: 2).placeholderAttributedString?.string,
+                       "FF FF FF FF",
+                       "the file's last row is partial, so only its four bytes are shown")
     }
 
     /// A bookmark is an absolute address and stays in the list where the file
@@ -489,15 +509,6 @@ final class GoToBookmarksTests: XCTestCase {
 
         XCTAssertEqual(try nameField(form, row: 0).placeholderAttributedString?.string,
                        "Past the end of the file")
-    }
-
-    /// The last row of a file is usually a partial one — only the bytes that are
-    /// there are shown.
-    func testTheLastRowShowsOnlyTheBytesItHas() throws {
-        let (form, _, _, _) = makeForm(rows: [0x100: ""], fileSize: 0x104, fill: 0xAB)
-
-        XCTAssertEqual(try nameField(form, row: 0).placeholderAttributedString?.string,
-                       "AB AB AB AB")
     }
 
     /// §20.5: bare hex digits in the list — a whole column of addresses in a
@@ -653,8 +664,9 @@ final class GoToBookmarksTests: XCTestCase {
     }
 
     /// The list's right-click menu removes a bookmark: ⌫ does it too, but nothing
-    /// on screen says so (§20.5).
-    func testTheListsContextMenuDeletesABookmark() throws {
+    /// on screen says so (§20.5). With no row clicked and none selected it
+    /// removes nothing — the same "there is no row" guard, from the other side.
+    func testTheListsContextMenuDeletesABookmarkAndNothingWithNoRow() throws {
         let (form, store, jumps, closes) = makeForm(rows: [0x10: "", 0x20: "", 0x30: ""])
         let menu = try XCTUnwrap(form.bookmarkTable.menu, "the list has a context menu")
         let item = try XCTUnwrap(menu.items.first { $0.title == "Delete Bookmark" })
@@ -670,33 +682,14 @@ final class GoToBookmarksTests: XCTestCase {
         XCTAssertEqual(form.bookmarks.map(\.row), [0x10, 0x30], "the list followed")
         XCTAssertTrue(jumps().isEmpty, "deleting is not going")
         XCTAssertEqual(closes(), 0, "and the form stays up")
-    }
 
-    /// With nothing clicked and nothing selected it removes nothing.
-    func testTheContextMenuRemovesNothingWithNoRow() throws {
-        let (form, store, _, _) = makeForm(rows: [0x10: ""])
         form.bookmarkTable.deselectAll(nil)
-
         form.deleteClickedBookmark()
 
-        XCTAssertEqual(store.bookmarks.count, 1)
+        XCTAssertEqual(store.bookmarks.map(\.row), [0x10, 0x30],
+                       "with nothing clicked and nothing selected there is nothing to delete")
     }
 
-    // MARK: - Escape is two-level (§10.1)
-
-    /// With no edit running, the same key closes the form — that is the Cancel
-    /// button's key equivalent doing its ordinary job.
-    func testEscapeAtRestClosesTheForm() throws {
-        let (form, _, jumps, closes) = makeForm(rows: [0x10: ""])
-
-        _ = form.view.performKeyEquivalent(with: try keyDown("\u{1B}", keyCode: 53))
-
-        XCTAssertEqual(closes(), 1)
-        XCTAssertTrue(jumps().isEmpty, "leaving the form goes nowhere")
-        XCTAssertEqual(form.cancelButton.keyEquivalent, "\u{1B}")
-        XCTAssertEqual(form.cancelButton.title, "Close",
-                       "nothing here is undone by leaving, so the button says Close")
-    }
 
     // MARK: - Recently typed offsets
 

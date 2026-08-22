@@ -46,19 +46,22 @@ final class BookmarkDragTests: XCTestCase {
     }
 
     /// Dragging down onto a marked row jumps past it — a mark sliding by
-    /// another, never two marks merging into one row.
-    func testAMarkedRowIsJumpedOverGoingDown() {
-        let store = self.store([0x00, 0x20])
+    /// another, never two marks merging into one row — and a run of marked rows
+    /// is jumped as a whole, since every row of it is taken.
+    func testGoingDownAMarkJumpsTheWholeRunOfMarkedRows() {
+        let one = self.store([0x00, 0x20])
 
-        XCTAssertEqual(store.move(rowContaining: 0x00, to: 0x20, lastRow: 0x100), 0x30)
-        XCTAssertEqual(store.bookmarks.map(\.row), [0x20, 0x30])
-    }
+        XCTAssertEqual(one.move(rowContaining: 0x00, to: 0x20, lastRow: 0x100), 0x30,
+                       "a single marked row is passed by one row")
+        XCTAssertEqual(one.bookmarks.map(\.row), [0x20, 0x30],
+                       "both marks are still there, one per row")
 
-    func testARunOfMarkedRowsIsJumpedOverWhole() {
-        let store = self.store([0x00, 0x20, 0x30, 0x40])
+        let run = self.store([0x00, 0x20, 0x30, 0x40])
 
-        XCTAssertEqual(store.move(rowContaining: 0x00, to: 0x20, lastRow: 0x100), 0x50,
+        XCTAssertEqual(run.move(rowContaining: 0x00, to: 0x20, lastRow: 0x100), 0x50,
                        "the first free row past the block")
+        XCTAssertEqual(run.bookmarks.map(\.row), [0x20, 0x30, 0x40, 0x50],
+                       "the run is untouched and the dragged mark landed past it")
     }
 
     func testAMarkedRowIsJumpedOverGoingUp() {
@@ -177,24 +180,14 @@ final class BookmarkDragTests: XCTestCase {
         return hexView.convert(local, to: nil)
     }
 
-    func testDraggingAMarkMovesTheBookmark() throws {
-        let (pane, hexView, window, store) = try makePane()
-        store.add(rowContaining: 0x20, name: "EC table")
-
-        hexView.mouseDown(with: try mouse(.leftMouseDown, at: addressPoint(hexView, row: 2), window: window))
-        hexView.mouseDragged(with: try mouse(.leftMouseDragged, at: addressPoint(hexView, row: 5), window: window))
-        hexView.mouseUp(with: try mouse(.leftMouseUp, at: addressPoint(hexView, row: 5), window: window))
-
-        XCTAssertEqual(store.bookmarks, [Bookmark(row: 0x50, name: "EC table")])
-        XCTAssertTrue(pane.hexSelection().isEmpty,
-                      "moving a mark is not selecting: the press left a caret, the drag left it alone")
-    }
-
     /// The mark follows the pointer through every row it crosses, so a drag past
-    /// several rows ends where the pointer is rather than one row along.
-    func testAMarkFollowsThePointerAcrossSeveralSteps() throws {
-        let (_, hexView, window, store) = try makePane()
-        store.add(rowContaining: 0x00)
+    /// several rows ends where the pointer is rather than one row along — and it
+    /// carries its name there. The whole gesture belongs to the mark: it leaves
+    /// no selection behind, which is the one way a dragged mark differs from a
+    /// dragged pointer anywhere else in the dump (§20.6).
+    func testAMarkFollowsThePointerAcrossSeveralStepsWithoutSelecting() throws {
+        let (pane, hexView, window, store) = try makePane()
+        store.add(rowContaining: 0x00, name: "EC table")
 
         hexView.mouseDown(with: try mouse(.leftMouseDown, at: addressPoint(hexView, row: 0), window: window))
         for row in 1...4 {
@@ -203,6 +196,11 @@ final class BookmarkDragTests: XCTestCase {
                            "the mark is on the row under the pointer")
         }
         hexView.mouseUp(with: try mouse(.leftMouseUp, at: addressPoint(hexView, row: 4), window: window))
+
+        XCTAssertEqual(store.bookmarks, [Bookmark(row: 0x40, name: "EC table")],
+                       "the drag left one mark, on the pointer's row, still named")
+        XCTAssertTrue(pane.hexSelection().isEmpty,
+                      "moving a mark is not selecting: the press left a caret, the drag left it alone")
     }
 
     /// End to end: the store's jump rule is what the gesture feels like.

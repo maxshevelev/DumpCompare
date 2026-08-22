@@ -375,34 +375,6 @@ final class BookmarkTests: XCTestCase {
                              "a byte's menu doesn't touch the row's mark")
     }
 
-    /// The mark is otherwise purely visual, so the pane's accessibility value
-    /// says whether the caret's row carries one (§15, §20.4).
-    func testAccessibilityValueSaysWhetherTheCaretsRowIsBookmarked() throws {
-        let url = try tempFile([UInt8](repeating: 0x11, count: 48))
-        defer { try? FileManager.default.removeItem(at: url) }
-        let pane = PaneViewModel()
-        try pane.open(url: url)
-        let store = BookmarkStore()
-        pane.bookmarkStore = store
-
-        let hex = HexView()
-        hex.dataSource = pane
-        hex.delegate = pane
-        hex.reloadData()
-        pane.moveCaret(to: 20)
-
-        let plain = try XCTUnwrap(hex.accessibilityValue() as? String)
-        XCTAssertFalse(plain.contains("Bookmarked"), "an unmarked row says nothing about bookmarks")
-
-        store.toggle(rowContaining: 20)
-        let marked = try XCTUnwrap(hex.accessibilityValue() as? String)
-        XCTAssertTrue(marked.contains("Bookmarked row"), "a marked row says so: \(marked)")
-
-        pane.moveCaret(to: 40)      // row 32, unmarked
-        let elsewhere = try XCTUnwrap(hex.accessibilityValue() as? String)
-        XCTAssertFalse(elsewhere.contains("Bookmarked"), "the mark belongs to its own row")
-    }
-
     // MARK: - The app's own wiring
 
     /// A pane view hosting a real hex view in a real window, in one half of it
@@ -660,6 +632,15 @@ final class BookmarkTests: XCTestCase {
         clickedAway.popoverDidClose(Notification(name: NSPopover.didCloseNotification))
         XCTAssertEqual(clickEvents(), ["commit:16:new"],
                        "a click outside keeps the typed name")
+
+        // A dismissal keeps what can be kept: the name, and the address only if
+        // it names a row. A half-typed address does not move the bookmark.
+        let (halfTyped, halfTypedEvents) = popover(existing: nil)
+        halfTyped.offsetField.stringValue = "0x"
+        halfTyped.nameField.stringValue = "ME region"
+        halfTyped.popoverDidClose(Notification(name: NSPopover.didCloseNotification))
+        XCTAssertEqual(halfTypedEvents(), ["commit:16:ME region"],
+                       "a half-typed address leaves the bookmark on its own row, named")
     }
 
     /// Only the first outcome counts: the close that follows a Return or an Esc
@@ -826,22 +807,6 @@ final class BookmarkTests: XCTestCase {
         XCTAssertEqual(controller.editedRow, 0x10, "its own row is always available to it")
     }
 
-    /// A click outside keeps what can be kept: the name, and the address only if
-    /// it names a row. A half-typed address does not move the bookmark.
-    func testADismissalKeepsTheNameAndIgnoresAHalfTypedAddress() throws {
-        var events: [String] = []
-        let controller = BookmarkEditPopoverController(
-            row: 0x10, existingName: nil,
-            onCommit: { events.append("commit:\($0):\($1)") }, onCancel: {})
-        controller.loadViewIfNeeded()
-        controller.offsetField.stringValue = "0x"
-        controller.nameField.stringValue = "ME region"
-
-        controller.popoverDidClose(Notification(name: NSPopover.didCloseNotification))
-
-        XCTAssertEqual(events, ["commit:16:ME region"],
-                       "the bookmark stays on its row, with the name")
-    }
 
     /// The pane view anchors the popover on the mark itself, and the mark's rect
     /// is the same one the right-click focus ring uses (§20.4).
@@ -903,10 +868,13 @@ final class BookmarkTests: XCTestCase {
     }
 
     /// ⌘D marks the caret's row and immediately asks for its name: the mark is
-    /// already there (visible while the name is typed), and Return with nothing
-    /// typed leaves it unnamed — the ⌘D, Return gesture.
-    func testToggleMarksTheRowAndAsksForItsName() throws {
-        let (controller, close) = try makeControllerWithFile()
+    /// already there (visible while the name is typed), and the popover's Return
+    /// writes back whatever it was given — nothing (the mark stays unnamed), a
+    /// name (trimmed by the store), or a different address (the mark moves there,
+    /// before it was ever named). One path, `toggleBookmark` → the request's
+    /// `commit`, walked with each of the three things a Return can carry.
+    func testToggleMarksTheRowAsksForItsNameAndCommitsWhatWasTyped() throws {
+        let (controller, close) = try makeControllerWithFile(bytes: 256)
         defer { close() }
         let store = controller.windowModel.bookmarkStore
         let requests = captureEditing(controller)
@@ -923,20 +891,25 @@ final class BookmarkTests: XCTestCase {
         request.commit(request.row, "")
         XCTAssertEqual(store.bookmarks, [Bookmark(row: 16, name: "")],
                        "Return with nothing typed keeps the mark, unnamed")
-    }
 
-    /// ⌘D, a name, Return: the mark keeps what was typed, trimmed by the store.
-    func testCommittingANameNamesTheMark() throws {
-        let (controller, close) = try makeControllerWithFile()
-        defer { close() }
-        let store = controller.windowModel.bookmarkStore
-        let requests = captureEditing(controller)
-        controller.windowModel.pane1.moveCaret(to: 20)
-
+        // ⌘D, a name, Return: the mark keeps what was typed, trimmed.
+        controller.windowModel.pane1.moveCaret(to: 40)
         controller.toggleBookmark()
-        let named = try XCTUnwrap(requests().first)
+        XCTAssertEqual(requests().count, 2, "the second ⌘D asked for a name of its own")
+        let named = try XCTUnwrap(requests().last)
         named.commit(named.row, "  ME region ")
-        XCTAssertEqual(store.bookmarks, [Bookmark(row: 16, name: "ME region")])
+        XCTAssertEqual(store.bookmarks, [Bookmark(row: 16, name: ""),
+                                         Bookmark(row: 32, name: "ME region")],
+                       "the typed name is stored trimmed, on the row ⌘D marked")
+
+        // ⌘D, correct the address, Return: the new mark moves before it is named.
+        controller.windowModel.pane1.moveCaret(to: 0x50)
+        controller.toggleBookmark()
+        try XCTUnwrap(requests().last).commit(0x80, "vendor block")
+        XCTAssertEqual(store.bookmarks, [Bookmark(row: 16, name: ""),
+                                         Bookmark(row: 32, name: "ME region"),
+                                         Bookmark(row: 0x80, name: "vendor block")],
+                       "the mark landed on the address that was typed, not on the caret's row")
     }
 
     /// Esc on a popover that opened by marking a row removes the mark again: the
@@ -985,23 +958,11 @@ final class BookmarkTests: XCTestCase {
                        "one bookmark, on the row that was typed, still named")
     }
 
-    /// The same on a mark that was just made: ⌘D, correct the address, Return.
-    func testANewMarkCanBeMovedBeforeItIsEvenNamed() throws {
-        let (controller, close) = try makeControllerWithFile(bytes: 256)
-        defer { close() }
-        let store = controller.windowModel.bookmarkStore
-        let requests = captureEditing(controller)
-        controller.windowModel.pane1.moveCaret(to: 20)
-
-        controller.toggleBookmark()
-        try XCTUnwrap(requests().first).commit(0x80, "vendor block")
-
-        XCTAssertEqual(store.bookmarks, [Bookmark(row: 0x80, name: "vendor block")])
-    }
-
-    /// The command hands the popover a way to remove the bookmark, and pressing
-    /// it takes the mark off the row.
-    func testEditOffersDeleteAndItRemovesTheMark() throws {
+    /// Delete belongs to an existing mark and to nothing else: editing one hands
+    /// the popover a way to remove it, and pressing that takes the mark off the
+    /// row. A mark that is still being named is offered none — its Esc already
+    /// does that, and two ways to undo one half-finished act is one too many.
+    func testOnlyAnExistingMarksEditOffersDeleteAndItRemovesTheMark() throws {
         let (controller, close) = try makeControllerWithFile()
         defer { close() }
         let store = controller.windowModel.bookmarkStore
@@ -1014,20 +975,14 @@ final class BookmarkTests: XCTestCase {
         let delete = try XCTUnwrap(request.delete, "editing an existing mark can remove it")
         delete()
 
-        XCTAssertTrue(store.bookmarks.isEmpty)
-    }
+        XCTAssertTrue(store.bookmarks.isEmpty, "Delete took the mark off the row")
 
-    /// A mark that is still being named offers no Delete: its Esc already does
-    /// that, and two ways to undo one half-finished act is one too many.
-    func testANewMarkIsOfferedNoDelete() throws {
-        let (controller, close) = try makeControllerWithFile()
-        defer { close() }
-        let requests = captureEditing(controller)
-        controller.windowModel.pane1.moveCaret(to: 20)
-
+        // The row is bare again, so ⌘D makes a new mark — which is offered no
+        // Delete at all.
         controller.toggleBookmark()
-
-        XCTAssertNil(try XCTUnwrap(requests().first).delete)
+        XCTAssertEqual(requests().count, 2, "⌘D asked to name the new mark")
+        XCTAssertNil(try XCTUnwrap(requests().last).delete,
+                     "a mark still being named has no Delete: Esc is its way out")
     }
 
     /// ⇧⌘D edits through the same popover: it opens with the current name, and
@@ -1340,8 +1295,10 @@ final class BookmarkTests: XCTestCase {
                        "an unnamed mark has nothing to add to the address it is drawn on")
     }
 
-    /// VoiceOver reads the name too, not just that the row is marked (§15).
-    func testAccessibilityValueCarriesTheName() throws {
+    /// The mark is otherwise purely visual, so the pane's accessibility value is
+    /// the only place VoiceOver learns of it: whether the caret's row carries one
+    /// at all, and what it is called (§15, §20.4).
+    func testAccessibilityValueSaysWhetherTheCaretsRowIsMarkedAndWhatItIsCalled() throws {
         let url = try tempFile([UInt8](repeating: 0x11, count: 48))
         defer { try? FileManager.default.removeItem(at: url) }
         let pane = PaneViewModel()
@@ -1354,6 +1311,9 @@ final class BookmarkTests: XCTestCase {
         hex.reloadData()
         pane.moveCaret(to: 20)
 
+        let plain = try XCTUnwrap(hex.accessibilityValue() as? String)
+        XCTAssertFalse(plain.contains("Bookmarked"), "an unmarked row says nothing about bookmarks")
+
         store.add(rowContaining: 20, name: "ME region")
         let value = try XCTUnwrap(hex.accessibilityValue() as? String)
         XCTAssertTrue(value.contains("Bookmarked row: ME region."), value)
@@ -1361,6 +1321,10 @@ final class BookmarkTests: XCTestCase {
         store.rename(rowContaining: 20, to: "")
         let unnamed = try XCTUnwrap(hex.accessibilityValue() as? String)
         XCTAssertTrue(unnamed.contains("Bookmarked row: 0x00000010."), unnamed)
+
+        pane.moveCaret(to: 40)      // row 32, unmarked
+        let elsewhere = try XCTUnwrap(hex.accessibilityValue() as? String)
+        XCTAssertFalse(elsewhere.contains("Bookmarked"), "the mark belongs to its own row")
     }
 }
 

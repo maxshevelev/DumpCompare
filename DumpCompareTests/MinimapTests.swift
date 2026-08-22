@@ -284,23 +284,23 @@ final class MinimapTests: XCTestCase {
         }
     }
 
-    func testComparisonSideBySideSplitsPanelVertically() throws {
-        let (_, window) = try makeComparisonWindow(vertical: true)
-        let (split, panel) = try minimapViews(window)
-        split.setPanelVisible(true, animated: false)
-        window.layoutIfNeeded()
-        guard case .sideBySide = panel.mapLayout else {
-            return XCTFail("side-by-side comparison splits the minimap vertically, got \(panel.mapLayout)")
+    /// The map layout mirrors the pane arrangement, both ways: panes side by side
+    /// split the panel vertically, panes stacked split it horizontally.
+    func testTheMapLayoutMirrorsThePaneArrangementBothWays() throws {
+        let (_, sideBySideWindow) = try makeComparisonWindow(vertical: true)
+        let (sideBySideSplit, sideBySidePanel) = try minimapViews(sideBySideWindow)
+        sideBySideSplit.setPanelVisible(true, animated: false)
+        sideBySideWindow.layoutIfNeeded()
+        guard case .sideBySide = sideBySidePanel.mapLayout else {
+            return XCTFail("side-by-side comparison splits the minimap vertically, got \(sideBySidePanel.mapLayout)")
         }
-    }
 
-    func testComparisonStackedSplitsPanelHorizontally() throws {
-        let (_, window) = try makeComparisonWindow(vertical: false)
-        let (split, panel) = try minimapViews(window)
-        split.setPanelVisible(true, animated: false)
-        window.layoutIfNeeded()
-        guard case .stacked(let fraction) = panel.mapLayout else {
-            return XCTFail("stacked comparison splits the minimap horizontally, got \(panel.mapLayout)")
+        let (_, stackedWindow) = try makeComparisonWindow(vertical: false)
+        let (stackedSplit, stackedPanel) = try minimapViews(stackedWindow)
+        stackedSplit.setPanelVisible(true, animated: false)
+        stackedWindow.layoutIfNeeded()
+        guard case .stacked(let fraction) = stackedPanel.mapLayout else {
+            return XCTFail("stacked comparison splits the minimap horizontally, got \(stackedPanel.mapLayout)")
         }
         XCTAssertEqual(fraction, 0.5, accuracy: 0.001,
                        "a fresh comparison starts at a 50/50 split")
@@ -400,18 +400,28 @@ final class MinimapTests: XCTestCase {
         XCTAssertEqual(rows[0].cells[2], .significant)
     }
 
-    func testModifiedCellsMarkEditedBytes() throws {
+    /// Modified cells come from the panes' own per-byte state, so overwriting a
+    /// byte with the value it already held is not a modification — exactly as the
+    /// panes' red foreground rule has it — while a byte given a new value is.
+    func testModifiedCellsMarkEditedBytesAndNotRetypedOnes() throws {
         // A freshly opened file has nothing modified; editing a byte turns its
         // cell's isModified flag on. No wait: the cells are read as they are
         // drawn, so the edit is on the map the moment it lands.
         let bytes: [UInt8] = [0x00, 0x41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                               0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
         let (controller, _, panel) = try makeSingleFileWindow(bytes)
+        let pane = controller.windowModel.pane1
         XCTAssertFalse(try XCTUnwrap(panel.visibleCells(forMapAt: 0).first)
             .cells.contains(where: \.isModified), "no edits yet → no modified cells")
 
-        controller.windowModel.pane1.moveCaret(to: 1)
-        controller.windowModel.pane1.typeASCII(0x42)
+        // Byte 1 already holds 0x41: typing it again is not an edit.
+        pane.moveCaret(to: 1)
+        pane.typeASCII(0x41)
+        XCTAssertFalse(try XCTUnwrap(panel.visibleCells(forMapAt: 0).first).cells[1].isModified,
+                       "0x41 over 0x41 leaves the byte as it was on disk")
+
+        pane.moveCaret(to: 1)
+        pane.typeASCII(0x42)
 
         let row = try XCTUnwrap(panel.visibleCells(forMapAt: 0).first)
         XCTAssertEqual(row.cells[1],
@@ -768,13 +778,16 @@ final class MinimapTests: XCTestCase {
 
     /// Grabbing the band and pulling it down scrolls the panes forward — the map
     /// is a proportional scrollbar over the whole file, so a short drag covers a
-    /// lot of a big file.
-    func testDraggingTheBandScrollsThePanes() throws {
+    /// lot of a big file. It is a scroll gesture and nothing else, so the caret
+    /// stays where the user left it.
+    func testDraggingTheBandScrollsThePanesAndLeavesTheCaretAlone() throws {
         let bytes = [UInt8](repeating: 0x41, count: 100_000)
-        let (_, window, panel) = try makeSingleFileWindow(bytes)
+        let (controller, window, panel) = try makeSingleFileWindow(bytes)
         _ = pumpUntil(2.0) { panel.viewport(forMapAt: 0) != nil }
         let start = try XCTUnwrap(panel.viewport(forMapAt: 0))
         XCTAssertEqual(start.lowerBound, 0, "the pane starts at the top of the file")
+        let pane = controller.windowModel.pane1
+        pane.moveCaret(to: 64)
         let band = try XCTUnwrap(panel.viewportRects().first)
 
         panel.mouseDown(with: try mouseEvent(.leftMouseDown, at: NSPoint(x: band.midX, y: band.midY),
@@ -791,6 +804,8 @@ final class MinimapTests: XCTestCase {
         XCTAssertGreaterThan(moved.lowerBound, start.lowerBound,
                              "dragging the band down scrolled the pane forward")
         XCTAssertGreaterThan(panel.topRow, 0, "and the map's window followed it")
+        XCTAssertEqual(pane.hexSelection().start, 64,
+                       "the drag scrolled and left the caret where it was")
     }
 
     /// Dragging back up returns to the file's start rather than overshooting into
@@ -824,24 +839,6 @@ final class MinimapTests: XCTestCase {
     }
 
     // MARK: - Modified cells
-
-    /// Modified cells come from the panes' own per-byte state, so overwriting a
-    /// byte with the value it already held is not a modification — exactly as the
-    /// panes' red foreground rule has it.
-    func testRetypingTheSameValueLeavesTheCellUnmodified() throws {
-        let (controller, _, panel) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 16))
-        let pane = controller.windowModel.pane1
-
-        pane.moveCaret(to: 3)
-        pane.typeASCII(0x41)   // the value it already had
-        pane.moveCaret(to: 1)
-        pane.typeASCII(0x42)   // a new value
-
-        let row = try XCTUnwrap(panel.visibleCells(forMapAt: 0).first)
-        XCTAssertTrue(row.cells[1].isModified, "0x42 over 0x41 is a modification")
-        XCTAssertFalse(row.cells[3].isModified,
-                       "0x41 over 0x41 leaves the byte as it was on disk")
-    }
 
     /// Saving clears modified state without changing a byte. The map reads that
     /// state per repaint, but nothing else tells it to repaint, so the pane's
@@ -966,30 +963,6 @@ final class MinimapTests: XCTestCase {
         let right = try XCTUnwrap(panel.byteOffset(at: NSPoint(x: area.maxX - MinimapView.contentPadding - 1,
                                                               y: 1)))
         XCTAssertEqual(right.offset, 15, "the rightmost cell of row 0 is byte 15")
-    }
-
-    /// Grabbing the band is a scroll gesture, so it must not disturb the caret.
-    func testDraggingTheBandLeavesTheCaretAlone() throws {
-        let bytes = [UInt8](repeating: 0x41, count: 100_000)
-        let (controller, window, panel) = try makeSingleFileWindow(bytes)
-        _ = pumpUntil(2.0) { panel.viewport(forMapAt: 0) != nil }
-        let pane = controller.windowModel.pane1
-        pane.moveCaret(to: 64)
-        let band = try XCTUnwrap(panel.viewportRects().first)
-
-        panel.mouseDown(with: try mouseEvent(.leftMouseDown,
-                                            at: NSPoint(x: band.midX, y: band.midY), in: panel))
-        panel.mouseDragged(with: try mouseEvent(.leftMouseDragged,
-                                               at: NSPoint(x: band.midX, y: band.midY + 100),
-                                               in: panel))
-        panel.mouseUp(with: try mouseEvent(.leftMouseUp,
-                                          at: NSPoint(x: band.midX, y: band.midY + 100), in: panel))
-        window.layoutIfNeeded()
-        _ = pumpUntil(2.0) { (panel.viewport(forMapAt: 0)?.lowerBound ?? 0) > 0 }
-
-        XCTAssertGreaterThan(try XCTUnwrap(panel.viewport(forMapAt: 0)).lowerBound, 0,
-                             "the drag scrolled the pane")
-        XCTAssertEqual(pane.hexSelection().start, 64, "and left the caret where it was")
     }
 
     /// In comparison mode a click on the second map targets the second pane and
@@ -2264,17 +2237,24 @@ final class MinimapTests: XCTestCase {
                        "and no stand-in is drawn once it has settled")
     }
 
-    /// The chrome has to survive the map's own repaint. AppKit hands the map a
-    /// dirty rect covering the whole panel — 49 pt above its own top — and an
-    /// `NSView` does not clip its drawing by default, so the map's background
-    /// fill painted over the header and took the mode switch with it. Rendered
-    /// through the *panel*, not the header: rendering the header alone hides
-    /// exactly this bug, which is how it survived a first round of tests.
+    /// The chrome has to survive the map's own repaint — the header above the map
+    /// and the status bar below it alike. AppKit hands the map a dirty rect
+    /// covering the whole panel — 49 pt above its own top — and an `NSView` does
+    /// not clip its drawing by default, so the map's background fill painted over
+    /// the header and took the mode switch with it, and hid the progress bar
+    /// underneath. Both are the single `clipsToBounds = true` that fixed it, so
+    /// they are read off one render of the *panel*: rendering the header alone
+    /// hides exactly this bug, which is how it survived a first round of tests.
     func testTheMapDoesNotPaintOverTheChrome() throws {
         let (_, window, _) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 4096))
         let chrome = try panelChrome(window)
         let control = chrome.modeSwitch
         XCTAssertGreaterThan(control.bounds.width, 40, "the switch has room to draw in")
+        chrome.setRebuildProgress(0.5)
+        window.layoutIfNeeded()
+        let bar = chrome.progressBar
+        XCTAssertFalse(bar.isHidden, "a rebuild in progress shows the bar")
+        XCTAssertGreaterThan(bar.bounds.width, 20, "the bar has room to draw in")
 
         let rep = try XCTUnwrap(chrome.bitmapImageRepForCachingDisplay(in: chrome.bounds))
         chrome.cacheDisplay(in: chrome.bounds, to: rep)
@@ -2294,47 +2274,19 @@ final class MinimapTests: XCTestCase {
                 + abs(x.blueComponent - y.blueComponent) + abs(x.alphaComponent - y.alphaComponent)
         }
 
-        // Inside the switch's selected half, above its label; and the header's
-        // own margin beside it, which the switch never covers.
-        let inside = control.convert(NSPoint(x: control.bounds.width * 0.25,
-                                             y: control.bounds.height * 0.25), to: chrome)
-        let beside = NSPoint(x: 3, y: inside.y)
-        XCTAssertGreaterThan(try distance(try sample(inside), try sample(beside)), 0.1,
+        // Above the map: inside the switch's selected half, above its label; and
+        // the header's own margin beside it, which the switch never covers.
+        let switchInside = control.convert(NSPoint(x: control.bounds.width * 0.25,
+                                                   y: control.bounds.height * 0.25), to: chrome)
+        let beside = NSPoint(x: 3, y: switchInside.y)
+        XCTAssertGreaterThan(try distance(try sample(switchInside), try sample(beside)), 0.1,
                              "the switch is still there after the map has drawn")
-    }
 
-    /// The status bar is below the map, so the same unclipped fill hid it. The
-    /// progress bar has to survive the map's paint too.
-    func testTheMapDoesNotPaintOverTheStatusBar() throws {
-        let (_, window, _) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: 4096))
-        let chrome = try panelChrome(window)
-        chrome.setRebuildProgress(0.5)
-        window.layoutIfNeeded()
-        let bar = chrome.progressBar
-        XCTAssertFalse(bar.isHidden)
-        XCTAssertGreaterThan(bar.bounds.width, 20, "the bar has room to draw in")
-
-        let rep = try XCTUnwrap(chrome.bitmapImageRepForCachingDisplay(in: chrome.bounds))
-        chrome.cacheDisplay(in: chrome.bounds, to: rep)
-        let scale = CGFloat(rep.pixelsHigh) / chrome.bounds.height
-        func sample(_ point: NSPoint) throws -> NSColor {
-            let x = Int(point.x * scale)
-            let y = Int((chrome.bounds.height - point.y) * scale)
-            return try XCTUnwrap(rep.colorAt(x: min(max(x, 0), rep.pixelsWide - 1),
-                                             y: min(max(y, 0), rep.pixelsHigh - 1)))
-        }
-        func distance(_ a: NSColor, _ b: NSColor) throws -> CGFloat {
-            let x = try XCTUnwrap(a.usingColorSpace(.deviceRGB))
-            let y = try XCTUnwrap(b.usingColorSpace(.deviceRGB))
-            return abs(x.redComponent - y.redComponent) + abs(x.greenComponent - y.greenComponent)
-                + abs(x.blueComponent - y.blueComponent) + abs(x.alphaComponent - y.alphaComponent)
-        }
-
-        // The filled part of the bar, against the status bar's own background
-        // just above it.
-        let inside = bar.convert(NSPoint(x: bar.bounds.width * 0.2, y: bar.bounds.midY), to: chrome)
-        let above = NSPoint(x: inside.x, y: bar.convert(bar.bounds, to: chrome).maxY + 4)
-        XCTAssertGreaterThan(try distance(try sample(inside), try sample(above)), 0.1,
+        // Below the map: the filled part of the progress bar, against the status
+        // bar's own background just above it.
+        let barInside = bar.convert(NSPoint(x: bar.bounds.width * 0.2, y: bar.bounds.midY), to: chrome)
+        let above = NSPoint(x: barInside.x, y: bar.convert(bar.bounds, to: chrome).maxY + 4)
+        XCTAssertGreaterThan(try distance(try sample(barInside), try sample(above)), 0.1,
                              "the progress bar is still there after the map has drawn")
     }
 

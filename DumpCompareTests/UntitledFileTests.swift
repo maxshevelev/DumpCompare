@@ -100,34 +100,13 @@ final class UntitledFileTests: XCTestCase {
 
     // MARK: - Pane header (§3.4)
 
-    func testUntitledHeaderShowsPlusBadgeAndUntitledName() throws {
-        let viewModel = PaneViewModel()
-        viewModel.openUntitled()
-        let pane = FilePaneView(viewModel: viewModel)
-        defer { viewModel.close() }
-        _ = try documentIcon(of: pane)
-
-        XCTAssertEqual(viewModel.status.fileName, "Untitled")
-        XCTAssertEqual(pane.documentSymbolName, "document.badge.plus",
-                       "a clean untitled file carries the outline plus badge")
-    }
-
-    func testUntitledHeaderFillsAfterEdit() throws {
-        let viewModel = PaneViewModel()
-        viewModel.openUntitled()
-        let pane = FilePaneView(viewModel: viewModel)
-        defer { viewModel.close() }
-        _ = try documentIcon(of: pane)
-        XCTAssertEqual(pane.documentSymbolName, "document.badge.plus")
-
-        viewModel.typeHexNibble(0xB)
-        viewModel.typeHexNibble(0x7)
-
-        XCTAssertEqual(pane.documentSymbolName, "document.badge.plus.fill",
-                       "an edited untitled file keeps its plus badge and fills it")
-    }
-
-    func testSaveAsSwitchesHeaderBackToDocumentGlyph() throws {
+    /// One glyph state machine, walked end to end: a new untitled document wears
+    /// the outline plus badge, the first edit fills it, and Save As drops the
+    /// badge for the plain document glyph. Each step is the same
+    /// `documentSymbolName` derived from the same two flags (untitled, dirty), so
+    /// a red assertion here still points at one cause: the header read the wrong
+    /// state for that stage.
+    func testTheHeaderGlyphGoesFromPlusToFilledToDocument() throws {
         let viewModel = PaneViewModel()
         viewModel.openUntitled()
         let pane = FilePaneView(viewModel: viewModel)
@@ -138,9 +117,16 @@ final class UntitledFileTests: XCTestCase {
         }
         _ = try documentIcon(of: pane)
 
+        XCTAssertEqual(viewModel.status.fileName, "Untitled",
+                       "an untitled document names itself Untitled in the header")
+        XCTAssertEqual(pane.documentSymbolName, "document.badge.plus",
+                       "a clean untitled file carries the outline plus badge")
+
         viewModel.typeHexNibble(0xC)
         viewModel.typeHexNibble(0xD)
-        XCTAssertEqual(pane.documentSymbolName, "document.badge.plus.fill")
+
+        XCTAssertEqual(pane.documentSymbolName, "document.badge.plus.fill",
+                       "an edited untitled file keeps its plus badge and fills it")
 
         try viewModel.saveAs(to: url)
 
