@@ -18,6 +18,65 @@ be held to — they are there to tell a half-day from a week.
 
 ## Next
 
+### Segments — a dump as the pieces it is made of
+
+**What.** A partition of a pane's content: contiguous named pieces covering the
+file, cut where the user says. A cut line between rows in the offset column, a
+pale tint behind the bytes of each piece — gaps included, the Offset column left
+alone — a colour strip beside the minimap that reads as its legend, the caret's
+piece in the status bar, and a form where the partition is edited and written out:
+one file per piece, or one piece to a file.
+
+**Why.** It is the model the two-chip round trip needs (see below), but it stands
+on its own: "write these 4 MB out", "put the donor's region back", "where does
+this half end" are bench operations that today need `dd` and hand-counted
+offsets. And it is the honest shape for the thing a join produces — a bookmark at
+a seam is wrong after the second join, because a mark is an address and a seam is
+the edge of content that moves.
+
+**How.** `Design/SEGMENTS_PLAN.md`, six stages. Model first (it follows the
+content, updated from the net edit the comparison index already consumes), then
+the tint and the status bar, then the form, then writing out, then the strip,
+then replacing a piece from a file. No dragging of cuts and no click-to-select in
+the margin — deliberately, because the segmentation is what the round trip depends
+on and a slipped mouse must not be able to move it.
+
+**Cost.** 24–30 hours over six stages, each ending with the app working: the
+model, cuts you can make and see, the form, writing pieces out, the ribbon,
+replacing a piece from a file. Stages 1–2 are useful alone.
+
+### Join a second chip's dump into a pane
+
+**What.** Append or insert a whole file into a pane — from the File menu, the
+pane's own menu, or by dropping it on a band at the pane's top or bottom edge —
+and split a pane's content back into two files at a chosen offset. A join marks
+the boundary with a bookmark; a split writes `name_1.bin` and `name_2.bin`.
+
+**Why.** On many boards the BIOS region is two SPI flash chips, so the bench
+workflow is: read both, join them in the right order, hand the whole image to the
+tools that expect one (an ME region update, a BIOS parameter editor, a donor
+comparison), then split it back at the same boundary and flash each half. Steps
+one and four are the only part of that round trip DumpCompare cannot do, and they
+are why it currently happens in `dd` with the offsets written on paper.
+
+**How.** **`Design/JOIN_SPLIT_PLAN.md`**, a layer on the segments feature above —
+a join is how a file becomes a piece, and "split the file" is that feature's Save
+All as Separate Files, so this plan adds no split command at all. The joined document
+detaches from its source file (so ⌘S can never overwrite an 8 MB dump with a
+16 MB image) while keeping the file-backed base, so joining two 1 GB images does
+not mean 2 GB of RAM; it is Untitled, because a dump off a programmer is called
+`W25Q128FV_20260821_1a2b3c4d.bin` and half of that name would be a lie about the
+joined file — what the halves were is kept in the join bookmark instead; the split
+sheet takes an offset — a bookmark fills it in, but it stays typable, because
+bookmarks live only as long as the window and the round trip through external
+tools can include a restart; and both output files are written to temporaries and
+renamed together, so a failure publishes neither.
+
+**Cost.** 13–17 hours on top of the segments feature — the model, the commands,
+the drop bands, polish. The design decisions are settled (they are listed
+at the end of the plan): two commands rather than one with a dialog, bookmarks
+never shift, and a dirty pane gets one warning with Cancel and Continue.
+
 ### Instant hover callouts, the way Xcode shows them
 
 **What.** A small floating capsule — text on a rounded background with a shadow —
@@ -165,7 +224,52 @@ clears the forward stack.
 
 ## Someday
 
-*(nothing yet)*
+### Zones — named intervals of a dump
+
+**What.** A zone is a named half-open range, living beside bookmarks: they mark
+points, zones mark stretches. Drawn as brackets in a gutter beside the offset
+column and on the minimap, listed in a tree, exportable to a file and
+replaceable from one. Later, possibly: a document assembled from zones mapped
+onto several files, and zone maps produced by a parser plugin.
+
+**Why.** A flash image has structure — descriptor, ME, GbE, BIOS region,
+firmware volumes inside it — and the app currently shows none of it. A zone map
+turns 16 MB of hex into something with landmarks, and "save this zone" /
+"replace this zone from a file" are the two operations a bench performs on a
+region that today need `dd` and hand-counted offsets.
+
+**How.** Thought through in **`Design/ZONES_IDEA.md`** — not a plan, a taken-apart
+idea. The short version: the concept splits into *annotation* (a named range you
+see and act on: cheap, orthogonal, useful alone) and *composition* (the pane
+assembled from pieces of several files: an architecture, not a feature), and only
+the first should be built first. Two of the three deciding questions are answered
+already: zones belong to the pane (unlike bookmarks, because a parsed map
+describes *this* file), and they **follow the content** — the join/split case
+settled that, and `JOIN_SPLIT_PLAN.md` therefore builds the model as segments.
+What is left for this entry is the chrome and the screen budget: the gutter, the
+minimap bracket, the tree. The screen budget is the part to look at before
+writing anything: the gutter takes width from the grid, and the minimap's 10 pt
+margin already holds the viewport marker and the bookmark arrows.
+
+**Cost.** 20–30 hours for the visible half if the segment model already exists;
+composition is that again, a parser plugin is its own project.
+
+### A project file
+
+**What.** Save a session rather than a file: the bookmarks, which files were
+open in which pane, the pane arrangement, maybe the comparison and the word
+size — reopened as one thing.
+
+**Why.** Bookmarks are session-only today (§20.1), which is right as far as it
+goes, but the two-chip round trip (`JOIN_SPLIT_PLAN.md`) shows where it runs out:
+the boundary offset matters across a restart, and so does "these two dumps belong
+together". Persisting bookmarks alone would answer half of that and invent a
+format for the other half later.
+
+**How.** Not designed. The question to answer first is whether a project is a
+file the user saves deliberately or a window state the app restores by itself —
+and that decides nearly everything else. Worth doing when the need is real, not
+before.
 
 ---
 
