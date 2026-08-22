@@ -69,6 +69,18 @@ final class HeaderFitWidthTests: XCTestCase {
         view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil)
     }
 
+    /// Drags the divider to `x` (in the split view's own coordinates) with
+    /// synthesized mouse events — the gesture the app actually offers, and the
+    /// only way a test can move this divider.
+    private func dragDivider(of cv: ComparisonView, to x: CGFloat, window: NSWindow) {
+        let sv = cv.splitView
+        let start = NSPoint(x: sv.arrangedSubviews[0].frame.maxX, y: sv.bounds.midY)
+        let target = NSPoint(x: x, y: sv.bounds.midY)
+        sv.mouseDown(with: mouse(.leftMouseDown, at: sv.convert(start, to: nil), window: window))
+        sv.mouseDragged(with: mouse(.leftMouseDragged, at: sv.convert(target, to: nil), window: window))
+        sv.mouseUp(with: mouse(.leftMouseUp, at: sv.convert(target, to: nil), window: window))
+    }
+
     private func doubleClick(header: PaneHeaderView, window: NSWindow) {
         let p = windowPoint(header)
         header.mouseDown(with: mouse(.leftMouseDown, at: p, window: window, clickCount: 1))
@@ -111,7 +123,9 @@ final class HeaderFitWidthTests: XCTestCase {
         // Drag the divider far right so pane1 is comfortably wider than its
         // content (hex grid + slack).
         let wide = cv.paneView1.contentFitWidth + 50
-        cv.splitView.setPosition(wide, ofDividerAt: 0)
+        dragDivider(of: cv, to: wide, window: window)
+        XCTAssertEqual(cv.paneView1.frame.width, wide, accuracy: 1,
+                       "premise: the drag landed where it was aimed")
         XCTAssertGreaterThan(cv.paneView1.frame.width, cv.paneView1.contentFitWidth)
 
         doubleClick(header: try header(of: cv.paneView1), window: window)
@@ -121,17 +135,28 @@ final class HeaderFitWidthTests: XCTestCase {
 
     /// Stacked mode is full-width, so a header double-click must not re-arrange
     /// the vertical split.
+    ///
+    /// The window is narrower than the hex grid on purpose. At the 800 pt the
+    /// other tests use, a stacked pane is already wider than its content, so
+    /// `fitContentWidth` returns at the same early guard the test above covers
+    /// and the stacked case is never reached — the version of this test that did
+    /// that passed with `fitPane`'s stacked guard deleted.
     func testHeaderDoubleClickIsANoOpInStackedMode() throws {
-        let (cv, window) = try makeComparisonView(width: 800)
+        let (cv, window) = try makeComparisonView(width: 400)
         UserDefaults.standard.set(false, forKey: "ComparisonPaneLayoutIsVertical")
         cv.splitView.isVertical = false
         window.layoutIfNeeded()
+        let heightBefore = cv.paneView1.frame.height
 
-        // Panes are full-width: the horizontal content already fits.
-        XCTAssertGreaterThanOrEqual(cv.paneView1.frame.width, cv.paneView1.contentFitWidth)
+        // Premise: the pane does NOT fit its content, so the fit path is
+        // genuinely entered and only the stacked guard can stop it.
+        XCTAssertLessThan(cv.paneView2.frame.width, cv.paneView2.contentFitWidth,
+                          "premise: a full-width stacked pane is still narrower than its grid")
 
         doubleClick(header: try header(of: cv.paneView2), window: window)
 
+        XCTAssertEqual(cv.paneView1.frame.height, heightBefore, accuracy: 1,
+                       "a stacked header double-click must not move the divider")
         XCTAssertEqual(cv.paneView1.frame.height, cv.paneView2.frame.height, accuracy: 1)
         XCTAssertEqual(cv.paneView1.frame.width, cv.splitView.bounds.width, accuracy: 1)
     }

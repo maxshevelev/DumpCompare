@@ -1716,8 +1716,10 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// The two boxes the markers occupy, level with the middle of the band: an
     /// equilateral triangle's box either side, apex `overviewMarkerInset` short
     /// of the map's content edge. Shared by drawing and by invalidation, which is
-    /// what keeps a scroll's repaint this small.
-    private func overviewMarkerRects(for band: NSRect) -> [NSRect] {
+    /// what keeps a scroll's repaint this small. Internal so a test can measure
+    /// the viewport marker against a bookmark's mark (§19.6) — the two must be
+    /// the same arrow at two sizes, and nothing else exposes this one's geometry.
+    func overviewMarkerRects(for band: NSRect) -> [NSRect] {
         let side = Self.viewportMarkerSide
         let inset = Self.overviewMarkerInset
         guard Self.marginMarkerReach(side: side) + inset <= Self.contentPadding else { return [] }

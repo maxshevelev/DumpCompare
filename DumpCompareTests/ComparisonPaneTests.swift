@@ -138,9 +138,15 @@ final class ComparisonPaneTests: XCTestCase {
         pair.1.moveCaret(to: 1)
         XCTAssertEqual(pair.0.caretOffset, 3)
         XCTAssertEqual(pair.1.caretOffset, 1)
-        // …but each pane still mirrors the other's selection.
-        XCTAssertEqual(pair.1.hexMirroredSelection(), pair.0.hexSelection())
-        XCTAssertEqual(pair.0.hexMirroredSelection(), pair.1.hexSelection())
+        // …but each pane still mirrors the other's caret, and the two mirrors
+        // are at different offsets. Written out rather than compared with
+        // `other.hexSelection()`, which is `hexMirroredSelection`'s own body and
+        // so held for any mirror at all — including one that mirrored the pane's
+        // own selection back at itself.
+        XCTAssertEqual(pair.1.hexMirroredSelection(), SelectionModel.empty(at: 3, fileSize: 5),
+                       "pane 2 sees pane 1's caret at 3")
+        XCTAssertEqual(pair.0.hexMirroredSelection(), SelectionModel.empty(at: 1, fileSize: 5),
+                       "and pane 1 sees pane 2's caret at 1")
     }
 
     /// A bare caret (empty selection) mirrors as an empty selection, which the

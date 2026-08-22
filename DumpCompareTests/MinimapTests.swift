@@ -83,6 +83,18 @@ final class MinimapTests: XCTestCase {
         return (split, panel)
     }
 
+    /// Drags a stacked `ProportionalSplitView`'s divider to `y` (its own,
+    /// flipped coordinates) with synthesized mouse events — the gesture the app
+    /// offers. A real window is required: the drag reads
+    /// `event.locationInWindow`.
+    private func dragDivider(of sv: ProportionalSplitView, to y: CGFloat, window: NSWindow) {
+        let start = NSPoint(x: sv.bounds.midX, y: sv.arrangedSubviews[0].frame.maxY)
+        let target = NSPoint(x: sv.bounds.midX, y: y)
+        sv.mouseDown(with: mouse(.leftMouseDown, at: sv.convert(start, to: nil), window: window))
+        sv.mouseDragged(with: mouse(.leftMouseDragged, at: sv.convert(target, to: nil), window: window))
+        sv.mouseUp(with: mouse(.leftMouseUp, at: sv.convert(target, to: nil), window: window))
+    }
+
     // MARK: - Show / hide
 
     func testMinimapIsHiddenOnLaunch() throws {
@@ -315,7 +327,8 @@ final class MinimapTests: XCTestCase {
         let paneSplit = try XCTUnwrap(descendants(of: window.contentView!, ProportionalSplitView.self).first,
                                       "the comparison's pane split")
         let available = paneSplit.bounds.height - paneSplit.dividerThickness
-        paneSplit.setPosition(available * 0.25, ofDividerAt: 0)
+        // Moved by the real divider drag — the only way the app offers.
+        dragDivider(of: paneSplit, to: available * 0.25, window: window)
         window.layoutIfNeeded()
 
         guard case .stacked(let fraction) = panel.mapLayout else {
@@ -1470,16 +1483,29 @@ final class MinimapTests: XCTestCase {
 
     /// A visible page is a fraction of a pixel on a dump, so in overview the band
     /// gets a floor and reads as a position marker.
+    ///
+    /// The viewport is set directly to a single 16-byte row of a 256 KiB file —
+    /// a genuinely sub-pixel extent, so the floor is what decides the height.
+    /// The old fixture used the pane's own visible page, which measured a shade
+    /// *over* a pixel: the floor never ran, and the expectation was the
+    /// production expression (`2 * overviewRowHeight`) besides.
     func testOverviewViewportBandHasAPixelFloor() throws {
-        let (_, _, panel) = try makeOverviewWindow([UInt8](repeating: 0x41, count: 256 * 1024))
-        _ = pumpUntil(2.0) { !panel.viewportRects().isEmpty }
+        let (_, window, panel) = try makeOverviewWindow([UInt8](repeating: 0x41, count: 256 * 1024))
+        // The floor is two device pixels, which is 1 pt on a Retina backing
+        // store. Asserted rather than computed, so a 1× display fails here
+        // loudly instead of quietly measuring something else.
+        XCTAssertEqual(window.backingScaleFactor, 2,
+                       "premise: a 2× backing store, where two device pixels are 1 pt")
+        XCTAssertLessThan(panel.bounds.height * 16 / CGFloat(256 * 1024), 1,
+                          "premise: 16 bytes of this file is a small fraction of a point of "
+                          + "map — well under the floor, so the floor is what decides")
+
+        panel.setViewports([0..<16])
         let band = try XCTUnwrap(panel.viewportRects().first)
-        // A page of this file measures a shade over one pixel, so the floor is
-        // not what decides the height here — but the band must never fall below
-        // it, which is the guarantee that keeps it findable on a real dump.
-        XCTAssertGreaterThanOrEqual(band.height, 2 * panel.overviewRowHeight)
-        XCTAssertLessThan(band.height, 5, "and it stays a marker, not a slab")
-        XCTAssertEqual(band.minY, 0, accuracy: panel.overviewRowHeight,
+
+        XCTAssertEqual(band.height, 1, accuracy: 0.001,
+                       "a sub-pixel page still stands two device pixels tall")
+        XCTAssertEqual(band.minY, 0, accuracy: 0.001,
                        "sitting at the top while the pane is at the file's start")
     }
 
@@ -1647,18 +1673,21 @@ final class MinimapTests: XCTestCase {
     /// The shading stays inside the tonal band the dump itself occupies: a slice
     /// of pure padding is drawn muted rather than left blank, and a full slice
     /// stops well short of solid ink. Black-on-white read nothing like the dump.
+    ///
+    /// Every bound here is written out. Comparing `tone(0)` with
+    /// `overviewMinTone` and `tone(255)` with `overviewMaxTone` restated
+    /// `overviewTone`'s own formula: both held for a minimum of 0 (bare paper) or
+    /// a maximum of 1 (solid black), which is exactly what this test is for.
     func testOverviewToneStaysInTheDumpsRange() {
-        XCTAssertEqual(MinimapView.overviewTone(density: 0), MinimapView.overviewMinTone,
-                       accuracy: 0.001, "padding inside the file is muted, not blank")
-        XCTAssertEqual(MinimapView.overviewTone(density: 255), MinimapView.overviewMaxTone,
-                       accuracy: 0.001, "a full slice stops short of solid ink")
-        XCTAssertLessThan(MinimapView.overviewMaxTone, 0.7, "never near-black")
-        XCTAssertGreaterThan(MinimapView.overviewMinTone, 0.0, "never bare paper")
-        // Monotonic, and a sparse slice separates from an empty one.
         let steps = (0...255).map { MinimapView.overviewTone(density: UInt8($0)) }
+
+        XCTAssertGreaterThan(steps[0], 0.05, "padding inside the file is muted, not blank")
+        XCTAssertLessThan(steps[255], 0.6, "a full slice stops short of solid ink")
+        XCTAssertGreaterThan(steps[255] - steps[0], 0.3,
+                             "and the band between them is wide enough to read as a range")
         XCTAssertEqual(steps, steps.sorted(), "tone rises with density")
-        XCTAssertGreaterThan(MinimapView.overviewTone(density: 20) - MinimapView.overviewMinTone,
-                            0.03, "a sparse slice is distinguishable from empty")
+        XCTAssertGreaterThan(steps[20] - steps[0], 0.03,
+                             "a sparse slice is distinguishable from empty")
     }
 
     /// The same line as `sampleRow`, as colours rather than brightness. Needed

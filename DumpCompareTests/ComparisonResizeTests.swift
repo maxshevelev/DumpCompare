@@ -5,24 +5,24 @@ import XCTest
 /// §3.3: the two comparison panes split 50/50 by default (fresh comparison),
 /// the divider can be dragged to any ratio, and window resizes preserve that
 /// ratio proportionally instead of handing the whole delta to one pane.
+///
+/// The ratio is set by the same synthesized divider drag `DividerDragTests`
+/// uses, in a real window — `ProportionalSplitView.setPosition` existed only for
+/// these tests, so driving it proved nothing about the gesture the app offers.
+/// A window (not a bare container) is required: the drag reads
+/// `event.locationInWindow`, and without a window AppKit's window-coordinate
+/// conversion flips the y-axis, which would silently invert a stacked drag.
 @MainActor
 final class ComparisonResizeTests: XCTestCase {
+    private var windows: [NSWindow] = []
+
     override func tearDown() {
-        removeTempFiles()
+        for window in windows { window.orderOut(nil) }
+        windows = []
         super.tearDown()
     }
 
-    /// Every file this class writes, deleted in `tearDown`: the test host is
-    /// sandboxed, so these land in the app's own container and stay there — a
-    /// few thousand of them had piled up before this was added.
-    private var tempFiles: [URL] = []
-
-    private func removeTempFiles() {
-        for url in tempFiles { try? FileManager.default.removeItem(at: url) }
-        tempFiles = []
-    }
-
-    private func makeComparisonView(vertical: Bool) throws -> (ComparisonView, NSView) {
+    private func makeComparisonView(vertical: Bool) throws -> (ComparisonView, NSWindow) {
         UserDefaults.standard.set(vertical, forKey: "ComparisonPaneLayoutIsVertical")
         let url1 = try tempFile([UInt8](repeating: 0x41, count: 4096))
         let url2 = try tempFile([UInt8](repeating: 0x42, count: 512))
@@ -35,7 +35,8 @@ final class ComparisonResizeTests: XCTestCase {
             return (l, r)
         }
         let cv = ComparisonView(coordinator: coordinator, paneView1: FilePaneView(viewModel: p1), paneView2: FilePaneView(viewModel: p2))
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 1200, height: 600))
+        let window = makeTestWindow(width: 1200, height: 600)
+        let container = try XCTUnwrap(window.contentView)
         cv.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(cv)
         NSLayoutConstraint.activate([
@@ -44,8 +45,24 @@ final class ComparisonResizeTests: XCTestCase {
             cv.topAnchor.constraint(equalTo: container.topAnchor),
             cv.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
-        container.layoutSubtreeIfNeeded()
-        return (cv, container)
+        window.layoutIfNeeded()
+        windows.append(window)
+        addTeardownBlock { @MainActor in
+            p1.close()
+            p2.close()
+        }
+        return (cv, window)
+    }
+
+    /// Drags the horizontal divider to `y` (the split view's own, flipped
+    /// coordinates) with synthesized mouse events.
+    private func dragStackedDivider(of cv: ComparisonView, to y: CGFloat, window: NSWindow) {
+        let sv = cv.splitView
+        let start = NSPoint(x: sv.bounds.midX, y: sv.arrangedSubviews[0].frame.maxY)
+        let target = NSPoint(x: sv.bounds.midX, y: y)
+        sv.mouseDown(with: mouse(.leftMouseDown, at: sv.convert(start, to: nil), window: window))
+        sv.mouseDragged(with: mouse(.leftMouseDragged, at: sv.convert(target, to: nil), window: window))
+        sv.mouseUp(with: mouse(.leftMouseUp, at: sv.convert(target, to: nil), window: window))
     }
 
     func testDefaultSplitIsEven() throws {
@@ -55,23 +72,25 @@ final class ComparisonResizeTests: XCTestCase {
     }
 
     func testStackedResizeKeepsHeightRatio() throws {
-        let (cv, container) = try makeComparisonView(vertical: false)
+        let (cv, window) = try makeComparisonView(vertical: false)
 
-        // Drag the horizontal divider to ~70/30 of the 600pt height (420pt to
-        // the top pane), then resize; the ratio must persist proportionally.
-        cv.splitView.setPosition(420, ofDividerAt: 0)
+        // Drag the horizontal divider to 70/30 of the space the two panes share
+        // (the 600 pt height less the divider), then resize; the ratio must
+        // persist proportionally.
+        let sharedBefore = 600 - cv.splitView.dividerThickness
+        dragStackedDivider(of: cv, to: 0.7 * sharedBefore, window: window)
         cv.layoutSubtreeIfNeeded()
-        let ratioBefore = cv.paneView1.frame.height / (cv.paneView1.frame.height + cv.paneView2.frame.height)
-        XCTAssertEqual(ratioBefore, 0.7, accuracy: 0.01)
+        XCTAssertEqual(cv.paneView1.frame.height / (cv.paneView1.frame.height + cv.paneView2.frame.height),
+                       0.7, accuracy: 0.005, "premise: the drag landed at 70/30")
 
-        container.setFrameSize(NSSize(width: 800, height: 1500))
-        container.layoutSubtreeIfNeeded()
+        window.setContentSize(NSSize(width: 800, height: 1500))
+        window.layoutIfNeeded()
 
         let h1 = cv.paneView1.frame.height
         let h2 = cv.paneView2.frame.height
-        XCTAssertEqual(h1 / (h1 + h2), ratioBefore, accuracy: 0.01)
+        XCTAssertEqual(h1 / (h1 + h2), 0.7, accuracy: 0.005)
         let available = 1500 - cv.splitView.dividerThickness
-        XCTAssertEqual(h1, ratioBefore * available, accuracy: 1)
-        XCTAssertEqual(h2, (1 - ratioBefore) * available, accuracy: 1)
+        XCTAssertEqual(h1, 0.7 * available, accuracy: 1)
+        XCTAssertEqual(h2, 0.3 * available, accuracy: 1)
     }
 }

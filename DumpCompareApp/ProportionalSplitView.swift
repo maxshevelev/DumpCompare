@@ -47,14 +47,14 @@ import Cocoa
 ///
 /// The divider-range overrides compensate for NSSplitView reporting a
 /// degenerate range (min > max, pinned around the current position) for Auto
-/// Layout subviews in a stacked split, which made `setPosition` clamp to a
-/// no-op.
+/// Layout subviews in a stacked split, which clamped a programmatic divider move
+/// to a no-op.
 final class ProportionalSplitView: NSSplitView {
     /// Fraction (0...1) of the split axis given to the first pane, stored per
     /// pane layout (§3.3): side-by-side (vertical) and stacked (horizontal) each
     /// keep their own divider proportion, so dragging the divider in one
     /// arrangement never changes the other's. 0.5 until a divider drag or
-    /// `setPosition` changes it; resizes never touch it.
+    /// a 50/50 reset changes it; resizes never touch it.
     private var verticalFraction: CGFloat = 0.5
     private var horizontalFraction: CGFloat = 0.5
 
@@ -66,9 +66,9 @@ final class ProportionalSplitView: NSSplitView {
         set { if isVertical { verticalFraction = newValue } else { horizontalFraction = newValue } }
     }
 
-    /// Called whenever the divider fraction changes — a drag, a programmatic
-    /// `setPosition`, an animation tick, the 50/50 reset. The minimap uses it
-    /// to keep its stacked divider line glued to the panes' divider.
+    /// Called whenever the divider fraction changes — a drag, an animation tick,
+    /// the 50/50 reset, a fit-to-content move. The minimap uses it to keep its
+    /// stacked divider line glued to the panes' divider.
     var onFractionChanged: (() -> Void)?
 
     /// The current split fraction of the first pane along the split axis
@@ -289,9 +289,11 @@ final class ProportionalSplitView: NSSplitView {
         guard available > 0 else { return }
         let delta = axisValue(point) - dragStartMouseAxis
         let newFirst = min(max(dragStartThickness + delta, 0), available)
-        fraction = newFirst / available
-        needsLayout = true
-        layout()
+        // Through `setFraction`, so the drag reports the new proportion like
+        // every other divider move does: the minimap's stacked divider line is
+        // glued to this one via `onFractionChanged` (§19), and a hand-rolled
+        // "assign, re-lay out" here left it behind while the panes moved.
+        setFraction(newFirst / available)
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -301,18 +303,6 @@ final class ProportionalSplitView: NSSplitView {
         }
         isDraggingDivider = false
         NSCursor.pop()
-    }
-
-    /// Programmatic divider moves (used by tests) update the ratio too.
-    override func setPosition(_ position: CGFloat, ofDividerAt dividerIndex: Int) {
-        fractionTimer?.invalidate()
-        fractionTimer = nil
-        let available = axisAvailable()
-        guard available > 0 else {
-            super.setPosition(position, ofDividerAt: dividerIndex)
-            return
-        }
-        setFraction(min(max(position / available, 0), 1))
     }
 
     // MARK: - Fraction animation (§3.3)

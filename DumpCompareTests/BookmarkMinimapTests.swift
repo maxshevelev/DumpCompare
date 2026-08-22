@@ -187,36 +187,53 @@ final class BookmarkMinimapTests: XCTestCase {
     /// at the map — because both say the same kind of thing about a position. The
     /// bookmark's is the smaller of the two: they can share a margin, and the
     /// viewport is the one the eye should find first.
+    ///
+    /// The shape is read off the box itself. Asserting `box.height` against
+    /// `bookmarkMarkSide` — the very constant the box is built from — held for
+    /// any value at all, 0 included, so the mark could vanish with this test
+    /// green. `MinimapTests.testTheMapsGeometryIsWhatTheSpecSays` pins the
+    /// constants absolutely; this test's job is the *shape*.
     func testBothMarkersAreEquilateralTrianglesAndTheBookmarkIsSmaller() throws {
         let (controller, panel) = try makeWindow(sizes: (0x4000, nil))
         controller.windowModel.bookmarkStore.add(rowContaining: 0x400)
         panel.display()
 
         let box = try XCTUnwrap(panel.bookmarkMarkRect(row: 0x400, forMapAt: 0))
-        XCTAssertEqual(box.height, MinimapView.bookmarkMarkSide, accuracy: 0.01,
-                       "the triangle's base is its height in the margin")
-        XCTAssertEqual(box.width, MinimapView.bookmarkMarkSide * sqrt(3) / 2, accuracy: 0.01,
-                       "and it reaches an equilateral triangle's height across it")
-        XCTAssertLessThan(MinimapView.bookmarkMarkSide, MinimapView.viewportMarkerSide,
-                          "a bookmark's mark is the smaller one")
-        XCTAssertLessThanOrEqual(
-            MinimapView.marginMarkerReach(side: MinimapView.viewportMarkerSide)
-                + MinimapView.overviewMarkerInset,
-            MinimapView.contentPadding,
-            "the bigger marker still fits the margin it points across")
+        XCTAssertEqual(box.height, 7, accuracy: 0.01,
+                       "the bookmark arrow's base is 7 pt of the margin (§19.4.3)")
+        XCTAssertEqual(box.width, box.height * sqrt(3) / 2, accuracy: 0.01,
+                       "and it reaches an equilateral triangle's height across the margin")
+
+        let band = try XCTUnwrap(panel.viewportRects().first, "the pane's visible slice")
+        let viewportBox = try XCTUnwrap(panel.overviewMarkerRects(for: band).first,
+                                        "the viewport's own margin marker")
+        XCTAssertLessThan(box.height, viewportBox.height,
+                          "a bookmark's mark is the smaller of the two")
+        XCTAssertLessThanOrEqual(viewportBox.maxX, MinimapView.contentPadding,
+                                 "and the bigger marker still fits the margin it points across")
     }
 
     /// Both markers point at the same line — the content's edge, less the inset —
     /// so a mark and the viewport read as the same kind of arrow at two sizes.
+    ///
+    /// Both apexes are measured. The previous version restated
+    /// `bookmarkMarkRect`'s own expression and never looked at the viewport
+    /// marker at all, so the fact in the name was untested.
     func testBothMarkersApexOnTheSameLine() throws {
         let (controller, panel) = try makeWindow(sizes: (0x4000, nil))
         controller.windowModel.bookmarkStore.add(rowContaining: 0x400)
         panel.display()
 
         let box = try XCTUnwrap(panel.bookmarkMarkRect(row: 0x400, forMapAt: 0))
-        XCTAssertEqual(box.maxX, MinimapView.contentPadding - MinimapView.overviewMarkerInset,
-                       accuracy: 0.01,
-                       "the apex stops the same distance short of the content as the viewport's")
+        let band = try XCTUnwrap(panel.viewportRects().first, "the pane's visible slice")
+        // A single map's marks go in its left margin, so the left viewport
+        // marker — the one that also points right — is the mark's counterpart.
+        let viewportBox = try XCTUnwrap(panel.overviewMarkerRects(for: band).first)
+
+        XCTAssertEqual(box.maxX, viewportBox.maxX, accuracy: 0.01,
+                       "a mark's apex and the viewport marker's stop on the same line")
+        XCTAssertLessThan(box.maxX, MinimapView.contentPadding,
+                          "and both stop short of the map's content, so no byte is covered")
     }
 
     // MARK: - Hovering a mark (§19.4.3)
