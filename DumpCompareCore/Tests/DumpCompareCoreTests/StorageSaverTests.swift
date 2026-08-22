@@ -125,6 +125,28 @@ final class StorageSaverTests: XCTestCase {
         XCTAssertEqual(try TestSupport.readAll(target), Data([0x01, 0xFF, 0x02, 0x03]))
     }
 
+    /// The case the fallback exists for and the one it got wrong: a plain
+    /// **Save** of a length-changing edit, in the sandbox, where the file being
+    /// written IS the file the overlay still reads its base from.
+    ///
+    /// Writing straight into it opened the target with `O_TRUNC`, which emptied
+    /// the base before a single byte had been read out of it — so the save wrote
+    /// the overlay's zero-padded short reads over the user's file. A 3-byte
+    /// dump with one inserted byte came out as `00 FF 00 00`.
+    func testAPlainSaveThroughTheDirectWritePathKeepsTheContent() throws {
+        let target = try makeTargetInAnUnwritableDirectory(Data([0x01, 0x02, 0x03]))
+        let base = try FileBackedStorage(url: target)
+        let storage = EditOverlayStorage(base: base)
+        try storage.insert(at: 1, bytes: [0xFF])
+        XCTAssertFalse(storage.canPatchInPlace,
+                       "premise: a length-changing edit cannot be patched in place")
+
+        try StorageSaver.save(storage, to: target)
+
+        XCTAssertEqual(try TestSupport.readAll(target), Data([0x01, 0xFF, 0x02, 0x03]),
+                       "the file the base was read from must not be truncated before it is read")
+    }
+
     /// The direct write must truncate: writing content shorter than what the
     /// chosen file already held cannot leave the tail of the older version
     /// behind, or the saved file ends in bytes from a stranger.

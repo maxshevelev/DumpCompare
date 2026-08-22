@@ -95,25 +95,50 @@ public enum StorageSaver {
         }
     }
 
-    /// Writes the full content directly into `url`, streaming in bounded chunks
-    /// via `pwrite(2)`. Used when the atomic swap is impossible because the
-    /// target directory is not writable (sandbox): the app owns the user-selected
-    /// file, so `open(2)` with write access succeeds even though no sibling file
-    /// could be created. Not atomic — a failed save can leave a partial file —
-    /// but it is the only option the sandbox permits.
+    /// Writes the full content into `url` itself, for when the atomic swap is
+    /// impossible because the target's directory is not writable (the sandbox:
+    /// the app owns the user-selected file but not the folder around it, so
+    /// `open(2)` succeeds where creating a sibling does not). Not atomic — a
+    /// failed save can leave a partial file — but it is the only option the
+    /// sandbox permits.
+    ///
+    /// The content is materialized into the app's OWN temporary directory first,
+    /// and only then does the target get opened for writing. That order is the
+    /// whole point: on a plain Save the target *is* the file the overlay still
+    /// reads its base from, and opening it for writing empties it — so reading
+    /// the content afterwards read a truncated base and wrote its zero padding
+    /// over the user's dump. A three-byte file with one inserted byte was saved
+    /// as `00 FF 00 00`.
     private static func rewriteDirectly(_ storage: EditOverlayStorage, to url: URL) throws {
+        let fileManager = FileManager.default
+        let staging = fileManager.temporaryDirectory
+            .appendingPathComponent("DumpCompare-save-\(UUID().uuidString)")
+        guard fileManager.createFile(atPath: staging.path, contents: nil) else {
+            throw StorageError.writeFailed
+        }
+        defer { try? fileManager.removeItem(at: staging) }
+
+        let staged = try FileHandle(forWritingTo: staging)
+        do {
+            try writeContent(of: storage, to: staged)
+            try staged.synchronize()
+            try staged.close()
+        } catch {
+            try? staged.close()
+            throw error
+        }
+
+        // Nothing reads the target any more, so it can be emptied and refilled.
         let fd = Darwin.open(url.path, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
         guard fd >= 0 else { throw StorageError.fromOpenError(errno) }
         defer { Darwin.close(fd) }
 
+        let reader = try FileHandle(forReadingFrom: staging)
+        defer { try? reader.close() }
         var offset: UInt64 = 0
-        let size = storage.size
-        while offset < size {
-            let step = min(UInt64(1024 * 1024), size - offset)
-            let bytes = try storage.read(at: offset, length: Int(step))
-            guard !bytes.isEmpty else { break }
-            try pwriteAll(fd, bytes: bytes, at: off_t(offset))
-            offset += UInt64(bytes.count)
+        while let chunk = try reader.read(upToCount: 1024 * 1024), !chunk.isEmpty {
+            try pwriteAll(fd, bytes: [UInt8](chunk), at: off_t(offset))
+            offset += UInt64(chunk.count)
         }
         if Darwin.fsync(fd) != 0 {
             throw StorageError.writeFailed
