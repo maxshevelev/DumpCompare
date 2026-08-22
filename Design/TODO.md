@@ -155,6 +155,26 @@ what records and what does not, and that is where the tests should be pointed �
 a jump records, an arrow key does not, walking back does not record, a new jump
 clears the forward stack.
 
+### Finish the test-suite revision
+
+**What.** The remaining work from `Design/TEST_REVIEW.md` §3: about 60 merges,
+the table-driven consolidation of the core suite (87 tests into ~25, and the two
+storage suites into one conformance suite that covers both implementations), 12
+rewrites of tests that still cannot fail, the shared `TestSupport.swift` that
+replaces 32 copies of `tempFile`, and the seams that would replace ~10 s of
+sleeps.
+
+**Why.** The first pass is done and the suite is green and honest (674 → 633 app
+tests, three tests that had never run now running). What is left is not urgent —
+nothing on the list is a hole in coverage — but it is the difference between a
+suite that is correct and one that is cheap to add to.
+
+**How.** The report carries the per-item lists and the order. Two entries there
+need a decision rather than work: whether `DiffEngine.findBlock` and
+`SearchEngine.findAll` are dead code to delete or library API to keep (§3.7).
+
+**Cost.** 10–14 hours all told, splittable — every item in §3 stands alone.
+
 ---
 
 ## Later
