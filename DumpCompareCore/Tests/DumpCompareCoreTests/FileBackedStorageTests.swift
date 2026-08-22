@@ -2,19 +2,31 @@ import XCTest
 @testable import DumpCompareCore
 
 final class FileBackedStorageTests: XCTestCase {
-    func testSizeAndFullRead() throws {
-        let data = Data([0x01, 0x02, 0x03, 0x04, 0x05])
-        let storage = try TestSupport.makeStorage(data)
-        XCTAssertEqual(storage.size, 5)
-        XCTAssertEqual(try storage.read(at: 0, length: 10), [0x01, 0x02, 0x03, 0x04, 0x05])
-    }
-
-    func testReadClampsAtEOF() throws {
-        let storage = try TestSupport.makeStorage(Data([0xAA, 0xBB, 0xCC]))
-        XCTAssertEqual(try storage.read(at: 1, length: 5), [0xBB, 0xCC])
-        XCTAssertEqual(try storage.read(at: 2, length: 3), [0xCC])
-        XCTAssertEqual(try storage.read(at: 3, length: 1), [])
-        XCTAssertEqual(try storage.read(at: 100, length: 4), [])
+    /// A read is always clamped to EOF and never throws for asking too much: it
+    /// returns what is there, down to nothing at all.
+    func testReadsAreClampedToEOF() throws {
+        let cases: [(name: String, file: [UInt8], offset: UInt64, length: Int, expected: [UInt8])] = [
+            ("the whole file, asking for more than it holds",
+             [0x01, 0x02, 0x03, 0x04, 0x05], 0, 10, [0x01, 0x02, 0x03, 0x04, 0x05]),
+            ("from the middle, past the end",
+             [0xAA, 0xBB, 0xCC], 1, 5, [0xBB, 0xCC]),
+            ("the last byte",
+             [0xAA, 0xBB, 0xCC], 2, 3, [0xCC]),
+            ("an offset exactly at EOF",
+             [0xAA, 0xBB, 0xCC], 3, 1, []),
+            ("an offset far past EOF",
+             [0xAA, 0xBB, 0xCC], 100, 4, []),
+            ("an empty file",
+             [], 0, 10, []),
+            ("a zero-length read",
+             [0x01], 0, 0, []),
+        ]
+        for testCase in cases {
+            let storage = try TestSupport.makeStorage(Data(testCase.file))
+            XCTAssertEqual(storage.size, UInt64(testCase.file.count), "\(testCase.name): size")
+            XCTAssertEqual(try storage.read(at: testCase.offset, length: testCase.length),
+                           testCase.expected, testCase.name)
+        }
     }
 
     func testReadAcrossChunkBoundaries() throws {
@@ -29,29 +41,26 @@ final class FileBackedStorageTests: XCTestCase {
         XCTAssertEqual(try storage.read(at: 15, length: 1), [15])
     }
 
-    func testEmptyFile() throws {
-        let storage = try TestSupport.makeStorage(Data())
-        XCTAssertEqual(storage.size, 0)
-        XCTAssertEqual(try storage.read(at: 0, length: 10), [])
-    }
-
-    func testZeroLengthReadReturnsEmpty() throws {
-        let storage = try TestSupport.makeStorage(Data([0x01]))
-        XCTAssertEqual(try storage.read(at: 0, length: 0), [])
-    }
-
-    func testMissingFileThrows() {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("missing-\(UUID().uuidString).bin")
-        XCTAssertThrowsError(try FileBackedStorage(url: url)) { error in
-            XCTAssertEqual(error as? StorageError, .fileNotFound)
-        }
-    }
-
-    func testDirectoryThrows() throws {
-        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("dc-dir-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        XCTAssertThrowsError(try FileBackedStorage(url: dir)) { error in
-            XCTAssertEqual(error as? StorageError, .isDirectory)
+    /// Opening something that is not a readable file fails with the specific
+    /// error §16 maps to its own alert, not a generic one.
+    func testOpenErrors() throws {
+        let cases: [(name: String, url: () throws -> URL, expected: StorageError)] = [
+            ("a path with no file at it", {
+                FileManager.default.temporaryDirectory
+                    .appendingPathComponent("missing-\(UUID().uuidString).bin")
+            }, .fileNotFound),
+            ("a directory", {
+                let dir = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("dc-dir-\(UUID().uuidString)")
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                return dir
+            }, .isDirectory),
+        ]
+        for testCase in cases {
+            let url = try testCase.url()
+            XCTAssertThrowsError(try FileBackedStorage(url: url), testCase.name) { error in
+                XCTAssertEqual(error as? StorageError, testCase.expected, testCase.name)
+            }
         }
     }
 

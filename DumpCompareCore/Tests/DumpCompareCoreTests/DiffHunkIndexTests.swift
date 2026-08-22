@@ -23,11 +23,18 @@ final class DiffHunkIndexTests: XCTestCase {
 
     // MARK: - Grouping
 
+    /// Differences within the grouping distance are one change, and the hunk it
+    /// forms runs from its first differing byte to its last — never rounded out
+    /// to a row, never including the matching run that follows.
     func testDifferencesCloserThanTheGapBecomeOneHunk() {
         let (left, right) = pair(count: 512, differingAt: [0x10, 0x13, 0x40])
-        let hunks = DiffHunkIndex(index: index(left, right), gap: 256)
-        XCTAssertEqual(hunks.hunks, [0x10..<0x41],
-                       "differences within the grouping distance are one change")
+        XCTAssertEqual(DiffHunkIndex(index: index(left, right), gap: 256).hunks, [0x10..<0x41],
+                       "three differences inside the distance are one change")
+
+        let (boundedLeft, boundedRight) = pair(count: 512, differingAt: [0x23, 0x2F])
+        XCTAssertEqual(DiffHunkIndex(index: index(boundedLeft, boundedRight), gap: 256).hunks,
+                       [0x23..<0x30],
+                       "the hunk is bounded by its own differing bytes")
     }
 
     func testDifferencesFartherApartThanTheGapStaySeparateHunks() {
@@ -61,14 +68,6 @@ final class DiffHunkIndexTests: XCTestCase {
             XCTAssertEqual(DiffHunkIndex(index: index(left, right), gap: 16).hunks.count, 2,
                            "17 bytes apart exceeds a 16-byte gap regardless of phase (start \(start))")
         }
-    }
-
-    /// A hunk's bounds are its first and last differing byte — never rounded out
-    /// to a row, and never including the matching run that follows it.
-    func testAHunkIsBoundedByDifferingBytes() {
-        let (left, right) = pair(count: 512, differingAt: [0x23, 0x2F])
-        let hunks = DiffHunkIndex(index: index(left, right), gap: 256)
-        XCTAssertEqual(hunks.hunks, [0x23..<0x30])
     }
 
     /// A region where differing bytes alternate with matching ones — the case

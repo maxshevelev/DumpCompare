@@ -10,18 +10,58 @@ final class ChunkCacheTests: XCTestCase {
         Array(repeating: value, count: count)
     }
 
-    func testInsertAndRetrieve() {
-        let cache = makeCache(chunkSize: 16, budget: 1024)
-        cache.setChunk(0, bytes: chunk(0xAA))
-        cache.setChunk(1, bytes: chunk(0xBB))
-        XCTAssertEqual(cache.chunk(0), chunk(0xAA))
-        XCTAssertEqual(cache.chunk(1), chunk(0xBB))
-        XCTAssertEqual(cache.count, 2)
-    }
-
-    func testMissingChunkReturnsNil() {
-        let cache = makeCache(chunkSize: 16, budget: 1024)
-        XCTAssertNil(cache.chunk(99))
+    /// The cache as a map: insert, look up, replace, remove. Every case runs
+    /// under a budget far larger than it stores, so nothing is evicted and only
+    /// the map behaviour shows — eviction has its own tests below.
+    func testMapOperations() {
+        let cases: [(name: String, act: (ChunkCache) -> Void,
+                     present: [(index: UInt64, value: UInt8)], absent: [UInt64],
+                     count: Int, cachedBytes: Int?)] = [
+            ("insert and retrieve",
+             {
+                 $0.setChunk(0, bytes: self.chunk(0xAA))
+                 $0.setChunk(1, bytes: self.chunk(0xBB))
+             },
+             [(0, 0xAA), (1, 0xBB)], [], 2, 32),
+            ("a chunk that was never inserted is missing",
+             { _ in },
+             [], [99], 0, 0),
+            ("replacing a chunk keeps one entry",
+             {
+                 $0.setChunk(3, bytes: self.chunk(0x01))
+                 $0.setChunk(3, bytes: self.chunk(0x02))
+             },
+             [(3, 0x02)], [], 1, 16),
+            ("remove drops just that entry",
+             {
+                 $0.setChunk(7, bytes: self.chunk(0))
+                 $0.setChunk(8, bytes: self.chunk(0))
+                 $0.remove(7)
+             },
+             [(8, 0)], [7], 1, 16),
+            ("removeAll empties the cache",
+             {
+                 for i in 0..<5 { $0.setChunk(UInt64(i), bytes: self.chunk(0)) }
+                 $0.removeAll()
+             },
+             [], [0, 4], 0, 0),
+        ]
+        for testCase in cases {
+            let cache = makeCache(chunkSize: 16, budget: 1024)
+            testCase.act(cache)
+            for hit in testCase.present {
+                XCTAssertEqual(cache.chunk(hit.index), chunk(hit.value),
+                               "\(testCase.name): chunk \(hit.index)")
+            }
+            for index in testCase.absent {
+                XCTAssertNil(cache.chunk(index), "\(testCase.name): chunk \(index)")
+            }
+            XCTAssertEqual(cache.count, testCase.count, "\(testCase.name): count")
+            if let cachedBytes = testCase.cachedBytes {
+                XCTAssertEqual(cache.cachedByteCount, cachedBytes,
+                               "\(testCase.name): cachedByteCount")
+            }
+        }
     }
 
     func testEvictsLeastRecentlyUsed() {
@@ -42,30 +82,6 @@ final class ChunkCacheTests: XCTestCase {
         cache.setChunk(4, bytes: chunk(0))
         XCTAssertNotNil(cache.chunk(0))
         XCTAssertNil(cache.chunk(1))
-    }
-
-    func testReplaceUpdatesSize() {
-        let cache = makeCache(chunkSize: 16, budget: 1024)
-        cache.setChunk(3, bytes: chunk(0x01))
-        cache.setChunk(3, bytes: chunk(0x02))
-        XCTAssertEqual(cache.chunk(3), chunk(0x02))
-        XCTAssertEqual(cache.count, 1)
-    }
-
-    func testRemove() {
-        let cache = makeCache(chunkSize: 16, budget: 1024)
-        cache.setChunk(7, bytes: chunk(0))
-        cache.remove(7)
-        XCTAssertNil(cache.chunk(7))
-        XCTAssertEqual(cache.count, 0)
-    }
-
-    func testRemoveAll() {
-        let cache = makeCache(chunkSize: 16, budget: 1024)
-        for i in 0..<5 { cache.setChunk(UInt64(i), bytes: chunk(0)) }
-        cache.removeAll()
-        XCTAssertEqual(cache.count, 0)
-        XCTAssertEqual(cache.cachedByteCount, 0)
     }
 
     func testCachedByteCountTracksBudget() {

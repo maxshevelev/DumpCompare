@@ -25,27 +25,35 @@ final class StorageSaverTests: XCTestCase {
         XCTAssertEqual(try TestSupport.readAll(url), Data([0x11, 0x00, 0x00, 0x00, 0x44, 0x00, 0x99]))
     }
 
-    func testRewriteAfterInsert() throws {
-        let (s, url) = try makeEditable(Data([0x00, 0x01, 0x02, 0x03]))
-        try s.insert(at: 2, bytes: [0xFF])
-        XCTAssertFalse(s.canPatchInPlace)
-        try StorageSaver.save(s, to: url)
-        XCTAssertEqual(try TestSupport.readAll(url), Data([0x00, 0x01, 0xFF, 0x02, 0x03]))
-    }
-
-    func testRewriteAfterDelete() throws {
-        let (s, url) = try makeEditable(Data([0x00, 0x01, 0x02, 0x03, 0x04]))
-        try s.delete(range: 1..<3)
-        try StorageSaver.save(s, to: url)
-        XCTAssertEqual(try TestSupport.readAll(url), Data([0x00, 0x03, 0x04]))
-    }
-
-    func testRewritePreservesOverlayAfterLengthChange() throws {
-        let (s, url) = try makeEditable(Data([0x00, 0x01, 0x02, 0x03]))
-        try s.overwrite(range: 0..<1, with: [0x99])
-        try s.insert(at: 4, bytes: [0xEE])
-        try StorageSaver.save(s, to: url)
-        XCTAssertEqual(try TestSupport.readAll(url), Data([0x99, 0x01, 0x02, 0x03, 0xEE]))
+    /// Once an edit has shifted an offset the file cannot be patched in place, so
+    /// saving rewrites it whole — and the rewritten file must hold the overlay's
+    /// current content, overwrites included.
+    func testRewriteAfterALengthChange() throws {
+        let cases: [(name: String, initial: [UInt8],
+                     edit: (EditOverlayStorage) throws -> Void, expected: [UInt8])] = [
+            ("after an insert",
+             [0x00, 0x01, 0x02, 0x03],
+             { try $0.insert(at: 2, bytes: [0xFF]) },
+             [0x00, 0x01, 0xFF, 0x02, 0x03]),
+            ("after a delete",
+             [0x00, 0x01, 0x02, 0x03, 0x04],
+             { try $0.delete(range: 1..<3) },
+             [0x00, 0x03, 0x04]),
+            ("an overwrite made before the insert survives the rewrite",
+             [0x00, 0x01, 0x02, 0x03],
+             {
+                 try $0.overwrite(range: 0..<1, with: [0x99])
+                 try $0.insert(at: 4, bytes: [0xEE])
+             },
+             [0x99, 0x01, 0x02, 0x03, 0xEE]),
+        ]
+        for testCase in cases {
+            let (s, url) = try makeEditable(Data(testCase.initial))
+            try testCase.edit(s)
+            XCTAssertFalse(s.canPatchInPlace, "\(testCase.name): the edit shifted an offset")
+            try StorageSaver.save(s, to: url)
+            XCTAssertEqual(try TestSupport.readAll(url), Data(testCase.expected), testCase.name)
+        }
     }
 
     func testSavingCleanStorageIsNoop() throws {
@@ -54,36 +62,33 @@ final class StorageSaverTests: XCTestCase {
         XCTAssertEqual(try TestSupport.readAll(url), Data([0x01]))
     }
 
-    func testSaveCanWriteToNewLocation() throws {
-        let (s, url) = try makeEditable(Data([0x00, 0x01]))
-        try s.append([0x02, 0x03])
-        let target = url.deletingLastPathComponent().appendingPathComponent("copy-\(UUID().uuidString).bin")
-        try StorageSaver.save(s, to: target)
-        XCTAssertEqual(try TestSupport.readAll(target), Data([0x00, 0x01, 0x02, 0x03]))
-    }
-
-    func testSaveInMemoryStorageToNewLocation() throws {
-        // Untitled document: an in-memory base has no on-disk original, so a
-        // save to a new location must fully rewrite (no patch-in-place).
-        let s = EditOverlayStorage(base: MemoryBackedStorage())
-        try s.overwrite(range: 0..<2, with: [0xAB, 0xCD])
-        let target = FileManager.default.temporaryDirectory
-            .appendingPathComponent("untitled-saved-\(UUID().uuidString).bin")
-        defer { try? FileManager.default.removeItem(at: target) }
-
-        try StorageSaver.save(s, to: target)
-        XCTAssertEqual(try TestSupport.readAll(target), Data([0xAB, 0xCD]))
-    }
-
-    func testSaveEmptyInMemoryStorageToNewLocation() throws {
-        // An empty untitled document saved without typing anything.
-        let s = EditOverlayStorage(base: MemoryBackedStorage())
-        let target = FileManager.default.temporaryDirectory
-            .appendingPathComponent("untitled-empty-\(UUID().uuidString).bin")
-        defer { try? FileManager.default.removeItem(at: target) }
-
-        try StorageSaver.save(s, to: target)
-        XCTAssertEqual(try TestSupport.readAll(target), Data())
+    /// Save As: the target is not the file the base reads from, so the content is
+    /// always written whole — from a file-backed base, from an untitled
+    /// (in-memory) one, and from an untitled one nothing was typed into.
+    func testSaveToANewLocation() throws {
+        let cases: [(name: String, make: () throws -> EditOverlayStorage, expected: [UInt8])] = [
+            ("from a file-backed base", {
+                let (s, _) = try self.makeEditable(Data([0x00, 0x01]))
+                try s.append([0x02, 0x03])
+                return s
+            }, [0x00, 0x01, 0x02, 0x03]),
+            ("from an untitled document", {
+                let s = EditOverlayStorage(base: MemoryBackedStorage())
+                try s.overwrite(range: 0..<2, with: [0xAB, 0xCD])
+                return s
+            }, [0xAB, 0xCD]),
+            ("from an untitled document nothing was typed into", {
+                EditOverlayStorage(base: MemoryBackedStorage())
+            }, []),
+        ]
+        for testCase in cases {
+            let s = try testCase.make()
+            let target = FileManager.default.temporaryDirectory
+                .appendingPathComponent("save-as-\(UUID().uuidString).bin")
+            defer { try? FileManager.default.removeItem(at: target) }
+            try StorageSaver.save(s, to: target)
+            XCTAssertEqual(try TestSupport.readAll(target), Data(testCase.expected), testCase.name)
+        }
     }
 
     func testSaveFailureThrowsAndLeavesOriginalIntact() throws {

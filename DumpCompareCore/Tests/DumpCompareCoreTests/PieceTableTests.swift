@@ -33,35 +33,65 @@ final class PieceTableTests: XCTestCase {
         XCTAssertEqual(table.segments(in: 0..<10), [])
     }
 
+    /// One labelled case: a fresh table of `baseSize`, the edits to make, and the
+    /// layout, size, piece count and added ranges that must result.
+    private struct Case {
+        let name: String
+        let baseSize: UInt64
+        let edit: (inout PieceTable) -> Void
+        let layout: String
+        let size: UInt64
+        var pieceCount: Int?
+        var addedRanges: [Range<UInt64>]?
+    }
+
+    private func check(_ cases: [Case], file: StaticString = #filePath, line: UInt = #line) {
+        for testCase in cases {
+            var table = PieceTable(baseSize: testCase.baseSize)
+            testCase.edit(&table)
+            XCTAssertEqual(layout(table), testCase.layout, "\(testCase.name): layout",
+                           file: file, line: line)
+            XCTAssertEqual(table.size, testCase.size, "\(testCase.name): size",
+                           file: file, line: line)
+            if let pieceCount = testCase.pieceCount {
+                XCTAssertEqual(table.pieceCount, pieceCount, "\(testCase.name): pieceCount",
+                               file: file, line: line)
+            }
+            if let addedRanges = testCase.addedRanges {
+                XCTAssertEqual(table.addedRanges, addedRanges, "\(testCase.name): addedRanges",
+                               file: file, line: line)
+            }
+        }
+    }
+
     // MARK: - Insert
 
-    func testInsertInTheMiddleSplitsOnePieceIntoThree() {
-        var table = PieceTable(baseSize: 100)
-        table.insert(at: 40, addedRange: 0..<2)
-
-        XCTAssertEqual(table.size, 102)
-        XCTAssertEqual(table.pieceCount, 3)
-        XCTAssertEqual(layout(table), "b0-40 a0-2 b40-100")
-        XCTAssertEqual(table.addedRanges, [40..<42])
-    }
-
-    func testInsertAtTheStartAndAtTheEnd() {
-        var table = PieceTable(baseSize: 10)
-        table.insert(at: 0, addedRange: 0..<1)
-        XCTAssertEqual(layout(table), "a0-1 b0-10")
-
-        table.insert(at: table.size, addedRange: 1..<2)
-        XCTAssertEqual(layout(table), "a0-1 b0-10 a1-2")
-        XCTAssertEqual(table.size, 12)
-        XCTAssertEqual(table.addedRanges, [0..<1, 11..<12])
-    }
-
-    /// An offset past the end inserts at the end rather than leaving a hole.
-    func testInsertBeyondTheEndLandsAtTheEnd() {
-        var table = PieceTable(baseSize: 10)
-        table.insert(at: 999, addedRange: 0..<3)
-        XCTAssertEqual(layout(table), "b0-10 a0-3")
-        XCTAssertEqual(table.size, 13)
+    func testInsertPositions() {
+        check([
+            Case(name: "in the middle splits one piece into three",
+                 baseSize: 100,
+                 edit: { $0.insert(at: 40, addedRange: 0..<2) },
+                 layout: "b0-40 a0-2 b40-100", size: 102,
+                 pieceCount: 3, addedRanges: [40..<42]),
+            Case(name: "at the start",
+                 baseSize: 10,
+                 edit: { $0.insert(at: 0, addedRange: 0..<1) },
+                 layout: "a0-1 b0-10", size: 11,
+                 addedRanges: [0..<1]),
+            Case(name: "at the start, then at the end",
+                 baseSize: 10,
+                 edit: {
+                     $0.insert(at: 0, addedRange: 0..<1)
+                     $0.insert(at: $0.size, addedRange: 1..<2)
+                 },
+                 layout: "a0-1 b0-10 a1-2", size: 12,
+                 addedRanges: [0..<1, 11..<12]),
+            // An offset past the end inserts at the end rather than leaving a hole.
+            Case(name: "past the end lands at the end",
+                 baseSize: 10,
+                 edit: { $0.insert(at: 999, addedRange: 0..<3) },
+                 layout: "b0-10 a0-3", size: 13),
+        ])
     }
 
     /// A typed run must not cost one piece per keystroke: successive inserts of
@@ -91,12 +121,33 @@ final class PieceTableTests: XCTestCase {
 
     // MARK: - Delete
 
-    func testDeleteInsideOnePiece() {
-        var table = PieceTable(baseSize: 100)
-        table.delete(20..<30)
-
-        XCTAssertEqual(table.size, 90)
-        XCTAssertEqual(layout(table), "b0-20 b30-100")
+    /// Deletes against an unedited base, where there is one piece to cut and the
+    /// range is the only variable: inside it, all of it, past its end, and the
+    /// ranges that must do nothing.
+    func testDeletesOnAPlainBase() {
+        check([
+            Case(name: "inside one piece",
+                 baseSize: 100,
+                 edit: { $0.delete(20..<30) },
+                 layout: "b0-20 b30-100", size: 90),
+            Case(name: "everything leaves no pieces",
+                 baseSize: 100,
+                 edit: { $0.delete(0..<100) },
+                 layout: "", size: 0,
+                 pieceCount: 0),
+            Case(name: "an end past EOF is clamped",
+                 baseSize: 10,
+                 edit: { $0.delete(8..<999) },
+                 layout: "b0-8", size: 8),
+            Case(name: "an empty range does nothing",
+                 baseSize: 10,
+                 edit: { $0.delete(4..<4) },
+                 layout: "b0-10", size: 10),
+            Case(name: "a range entirely past EOF does nothing",
+                 baseSize: 10,
+                 edit: { $0.delete(20..<30) },
+                 layout: "b0-10", size: 10),
+        ])
     }
 
     func testDeleteSpanningSeveralPieces() {
@@ -116,23 +167,6 @@ final class PieceTableTests: XCTestCase {
 
         XCTAssertEqual(layout(table), "b0-50 a0-5 a8-10 b50-100")
         XCTAssertEqual(table.addedRanges, [50..<57], "adjacent added ranges merge")
-    }
-
-    func testDeleteEverything() {
-        var table = PieceTable(baseSize: 100)
-        table.delete(0..<100)
-        XCTAssertEqual(table.size, 0)
-        XCTAssertEqual(table.pieceCount, 0)
-    }
-
-    func testDeleteClampsToTheEndAndIgnoresEmptyRanges() {
-        var table = PieceTable(baseSize: 10)
-        table.delete(8..<999)
-        XCTAssertEqual(layout(table), "b0-8")
-        table.delete(4..<4)
-        XCTAssertEqual(layout(table), "b0-8")
-        table.delete(20..<30)
-        XCTAssertEqual(layout(table), "b0-8")
     }
 
     // MARK: - Replace (overwrite)

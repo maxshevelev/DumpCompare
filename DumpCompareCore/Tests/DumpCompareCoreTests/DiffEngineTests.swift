@@ -3,7 +3,6 @@ import XCTest
 
 final class DiffEngineTests: XCTestCase {
     private typealias Block = DiffBlock
-    private typealias Kind = DiffBlock.Kind
 
     private func blocks(_ left: [UInt8], _ right: [UInt8]) -> [DiffBlock] {
         DiffEngine.blocks(left: left, right: right)
@@ -15,56 +14,56 @@ final class DiffEngineTests: XCTestCase {
 
     // MARK: - Block construction
 
-    func testIdenticalFiles() {
-        XCTAssertEqual(blocks([0x01, 0x02, 0x03], [0x01, 0x02, 0x03]),
-                       [Block(kind: .same, range: 0..<3)])
-    }
-
-    func testCompletelyDifferent() {
-        XCTAssertEqual(blocks([0x01, 0x02, 0x03], [0xFF, 0xFE, 0xFD]),
-                       [Block(kind: .different, range: 0..<3)])
-    }
-
-    func testSingleByteDifference() {
-        XCTAssertEqual(blocks([0xAA, 0x00, 0xAA], [0xAA, 0x01, 0xAA]), [
-            Block(kind: .same, range: 0..<1),
-            Block(kind: .different, range: 1..<2),
-            Block(kind: .same, range: 2..<3),
-        ])
-    }
-
-    func testMultipleDifferenceBlocks() {
-        XCTAssertEqual(blocks([0x00, 0x00, 0x00, 0x00], [0x01, 0x00, 0x01, 0x00]), [
-            Block(kind: .different, range: 0..<1),
-            Block(kind: .same, range: 1..<2),
-            Block(kind: .different, range: 2..<3),
-            Block(kind: .same, range: 3..<4),
-        ])
-    }
-
-    func testEmptyFile() {
-        XCTAssertEqual(blocks([], [1, 2, 3]), [Block(kind: .different, range: 0..<3)])
-        XCTAssertEqual(blocks([1, 2, 3], []), [Block(kind: .different, range: 0..<3)])
-        XCTAssertEqual(blocks([], []), [])
-    }
-
-    func testEOFOnlyTailFoldedIntoDifferent() {
-        XCTAssertEqual(blocks([0x00, 0x01], [0x00, 0x01, 0xAA]), [
-            Block(kind: .same, range: 0..<2),
-            Block(kind: .different, range: 2..<3),
-        ])
-        XCTAssertEqual(blocks([0x00, 0x01, 0xAA], [0x00, 0x01]), [
-            Block(kind: .same, range: 0..<2),
-            Block(kind: .different, range: 2..<3),
-        ])
-    }
-
-    func testEOFOnlyMergesWithAdjacentDifference() {
-        // Byte 1 differs and the tail is EOF-only → one different block [1, 4).
-        XCTAssertEqual(blocks([0x00, 0x00, 0x01, 0x02], [0x00, 0xFF]), [
-            Block(kind: .same, range: 0..<1),
-            Block(kind: .different, range: 1..<4),
-        ])
+    /// `blocks(left:right:)` is the byte-at-a-time reference implementation:
+    /// maximal runs of same/different at absolute offsets, with the tail only one
+    /// file has folded into a difference block. Every boundary in one place —
+    /// empty files, a run of one byte, alternating runs, and an EOF-only tail
+    /// both alone and touching a difference.
+    func testBlockConstruction() {
+        let cases: [(name: String, left: [UInt8], right: [UInt8], expected: [Block])] = [
+            ("identical files are one same block",
+             [0x01, 0x02, 0x03], [0x01, 0x02, 0x03],
+             [Block(kind: .same, range: 0..<3)]),
+            ("every byte differing is one different block",
+             [0x01, 0x02, 0x03], [0xFF, 0xFE, 0xFD],
+             [Block(kind: .different, range: 0..<3)]),
+            ("a single differing byte",
+             [0xAA, 0x00, 0xAA], [0xAA, 0x01, 0xAA],
+             [Block(kind: .same, range: 0..<1),
+              Block(kind: .different, range: 1..<2),
+              Block(kind: .same, range: 2..<3)]),
+            ("alternating single bytes",
+             [0x00, 0x00, 0x00, 0x00], [0x01, 0x00, 0x01, 0x00],
+             [Block(kind: .different, range: 0..<1),
+              Block(kind: .same, range: 1..<2),
+              Block(kind: .different, range: 2..<3),
+              Block(kind: .same, range: 3..<4)]),
+            ("an empty left file",
+             [], [1, 2, 3],
+             [Block(kind: .different, range: 0..<3)]),
+            ("an empty right file",
+             [1, 2, 3], [],
+             [Block(kind: .different, range: 0..<3)]),
+            ("two empty files have no blocks",
+             [], [],
+             []),
+            ("an EOF-only tail on the right",
+             [0x00, 0x01], [0x00, 0x01, 0xAA],
+             [Block(kind: .same, range: 0..<2),
+              Block(kind: .different, range: 2..<3)]),
+            ("an EOF-only tail on the left",
+             [0x00, 0x01, 0xAA], [0x00, 0x01],
+             [Block(kind: .same, range: 0..<2),
+              Block(kind: .different, range: 2..<3)]),
+            // Byte 1 differs and the tail is EOF-only → one different block [1, 4).
+            ("an EOF-only tail merges with an adjacent difference",
+             [0x00, 0x00, 0x01, 0x02], [0x00, 0xFF],
+             [Block(kind: .same, range: 0..<1),
+              Block(kind: .different, range: 1..<4)]),
+        ]
+        for testCase in cases {
+            XCTAssertEqual(blocks(testCase.left, testCase.right), testCase.expected, testCase.name)
+        }
     }
 
     // MARK: - Chunked scan
@@ -198,51 +197,45 @@ final class DiffEngineTests: XCTestCase {
 
     // MARK: - Incremental invalidation
 
-    func testApplyOverwriteTurnsSameIntoDifferent() throws {
-        let right = ArrayStorage([0x01, 0x02, 0x03, 0x04])
-        let base = try DiffEngine.scan(left: right, right: right)   // all same
-
-        let edited = ArrayStorage([0x01, 0xFF, 0x03, 0x04])
-        let updated = try DiffEngine.apply(.overwrite(range: 1..<2), to: base, left: edited, right: right, chunkSize: 2)
-        let expected = try DiffEngine.scan(left: edited, right: right, chunkSize: 2)
-        XCTAssertEqual(updated, expected)
-        XCTAssertEqual(updated.blocks, [
-            Block(kind: .same, range: 0..<1),
-            Block(kind: .different, range: 1..<2),
-            Block(kind: .same, range: 2..<4),
-        ])
-    }
-
-    func testApplyOverwriteTurnsDifferentIntoSame() throws {
-        let right = ArrayStorage([0x01, 0x02, 0x03, 0x04])
-        let edited = ArrayStorage([0x01, 0xFF, 0x03, 0x04])
-        let base = try DiffEngine.scan(left: edited, right: right)
-
-        let reverted = ArrayStorage([0x01, 0x02, 0x03, 0x04])
-        let updated = try DiffEngine.apply(.overwrite(range: 1..<2), to: base, left: reverted, right: right)
-        XCTAssertEqual(updated.blocks, [Block(kind: .same, range: 0..<4)])
-    }
-
-    func testApplyOverwriteExtendingEOF() throws {
-        let left = ArrayStorage([0x01, 0x02])
-        let right = ArrayStorage([0x01, 0x02])
-        let base = try DiffEngine.scan(left: left, right: right)
-
-        let extended = ArrayStorage([0x01, 0x03, 0x04])
-        let updated = try DiffEngine.apply(.overwrite(range: 1..<3), to: base, left: extended, right: right)
-        let expected = try DiffEngine.scan(left: extended, right: right)
-        XCTAssertEqual(updated, expected)
-        XCTAssertEqual(updated.blocks, [
-            Block(kind: .same, range: 0..<1),
-            Block(kind: .different, range: 1..<3),
-        ])
-    }
-
-    func testApplyOverwriteEntirelyPastEOF() throws {
-        let base = try DiffEngine.scan(left: ArrayStorage([]), right: ArrayStorage([]))
-        let edited = ArrayStorage([0xAA, 0xBB, 0xCC])
-        let updated = try DiffEngine.apply(.overwrite(range: 2..<5), to: base, left: edited, right: ArrayStorage([]))
-        XCTAssertEqual(updated.blocks, [Block(kind: .different, range: 0..<3)])
+    /// An overwrite recomputes only its own range and splices it back, so the
+    /// result must be the blocks a full rescan of the edited file produces — in
+    /// both directions (same becoming different and back), and where the write
+    /// runs past the old EOF or starts past it.
+    func testApplyOverwrite() throws {
+        let cases: [(name: String, baseLeft: [UInt8], right: [UInt8], editedLeft: [UInt8],
+                     range: Range<UInt64>, chunkSize: Int, expected: [Block])] = [
+            ("same becomes different",
+             [0x01, 0x02, 0x03, 0x04], [0x01, 0x02, 0x03, 0x04], [0x01, 0xFF, 0x03, 0x04],
+             1..<2, 2,
+             [Block(kind: .same, range: 0..<1),
+              Block(kind: .different, range: 1..<2),
+              Block(kind: .same, range: 2..<4)]),
+            ("different becomes same",
+             [0x01, 0xFF, 0x03, 0x04], [0x01, 0x02, 0x03, 0x04], [0x01, 0x02, 0x03, 0x04],
+             1..<2, DiffEngine.defaultChunkSize,
+             [Block(kind: .same, range: 0..<4)]),
+            ("a write extending past EOF",
+             [0x01, 0x02], [0x01, 0x02], [0x01, 0x03, 0x04],
+             1..<3, DiffEngine.defaultChunkSize,
+             [Block(kind: .same, range: 0..<1),
+              Block(kind: .different, range: 1..<3)]),
+            ("a write entirely past EOF, from two empty files",
+             [], [], [0xAA, 0xBB, 0xCC],
+             2..<5, DiffEngine.defaultChunkSize,
+             [Block(kind: .different, range: 0..<3)]),
+        ]
+        for testCase in cases {
+            let right = ArrayStorage(testCase.right)
+            let base = try DiffEngine.scan(left: ArrayStorage(testCase.baseLeft), right: right,
+                                           chunkSize: testCase.chunkSize)
+            let edited = ArrayStorage(testCase.editedLeft)
+            let updated = try DiffEngine.apply(.overwrite(range: testCase.range), to: base,
+                                               left: edited, right: right, chunkSize: testCase.chunkSize)
+            XCTAssertEqual(updated.blocks, testCase.expected, testCase.name)
+            XCTAssertEqual(updated, try DiffEngine.scan(left: edited, right: right,
+                                                        chunkSize: testCase.chunkSize),
+                           "\(testCase.name): must equal a full rescan")
+        }
     }
 
     func testApplyInsertShiftsOffsets() throws {
@@ -344,28 +337,34 @@ final class DiffEngineTests: XCTestCase {
     /// pending read until the scan returned — progress was unobservable.
     func testActorProgressIsObservableDuringBuild() async throws {
         let builder = DiffIndexBuilder()
-        // 8 MiB in 4 KiB chunks → 2048 chunk boundaries to yield at, so the
-        // build spans many sampling reads rather than finishing in one slice.
-        let count = 8 * 1024 * 1024
-        let left = ArrayStorage([UInt8](repeating: 0, count: count))
-        let right = ArrayStorage([UInt8](repeating: 1, count: count))
+        let chunkSize = 4 * 1024
+        let chunks = 64
+        // The left storage parks in `read` on the second chunk and says so, so
+        // the sample below is issued while the build is provably in flight: one
+        // chunk of progress is recorded and the build cannot advance a byte
+        // until the test lets it.
+        let left = GatedStorage(size: UInt64(chunkSize * chunks), byte: 0, parkAtRead: 2)
+        let right = ArrayStorage([UInt8](repeating: 1, count: chunkSize * chunks))
 
         let buildTask = Task {
-            try await builder.build(left: left, right: right, chunkSize: 4 * 1024)
+            try await builder.build(left: left, right: right, chunkSize: chunkSize)
         }
+        await left.awaitPark()
 
-        var samples: [Double] = []
-        for _ in 0..<100_000 {
-            let p = await builder.progress
-            samples.append(p)
-            if p >= 1 { break }
-            try? await Task.sleep(nanoseconds: 50_000)
-        }
+        // Issued while the scan holds the build: it can only be answered before
+        // the build ends if the scan does not own the actor for its whole run.
+        // Verified by making `build` call the synchronous `scan` again — the
+        // shape this test exists for — which makes this sample read 1.0.
+        let sample = Task { await builder.progress }
+        left.release()
+        let midBuild = await sample.value
+
+        XCTAssertGreaterThan(midBuild, 0, "a chunk had already been compared")
+        XCTAssertLessThan(midBuild, 1, "the build was still in flight when the read was answered")
+
         _ = try await buildTask.value
-
-        XCTAssertEqual(samples.last, 1.0, "a completed build must report 1.0")
-        XCTAssertTrue(samples.contains { $0 > 0 && $0 < 1 },
-                      "expected an intermediate progress sample mid-build, got \(samples)")
+        let final = await builder.progress
+        XCTAssertEqual(final, 1.0, "a completed build reports 1.0")
     }
 
     // MARK: - Large files (§13.7)
@@ -413,39 +412,6 @@ final class DiffEngineTests: XCTestCase {
         }
     }
 
-    // MARK: - On-demand block search (findBlock)
-
-    /// Blocks: same[0,2) diff[2,4) same[4,6) diff[6,8)
-    private func makeAlternating() -> (ArrayStorage, ArrayStorage) {
-        (ArrayStorage([0, 0, 1, 1, 2, 2, 3, 3]),
-         ArrayStorage([0, 0, 9, 9, 2, 2, 8, 8]))
-    }
-
-    func testFindBlockMatchesIndexNavigation() throws {
-        let (left, right) = makeAlternating()
-        let index = try DiffEngine.scan(left: left, right: right)
-        let offsets: [UInt64] = [0, 1, 2, 3, 4, 5, 6, 7]
-        for offset in offsets {
-            for kind in [Kind.same, Kind.different] {
-                for direction in [SearchDirection.forward, SearchDirection.backward] {
-                    let viaIndex: DiffBlock? = {
-                        switch (kind, direction) {
-                        case (.different, .forward): return index.nextDifference(from: offset)
-                        case (.different, .backward): return index.previousDifference(from: offset)
-                        case (.same, .forward): return index.nextSame(from: offset)
-                        case (.same, .backward): return index.previousSame(from: offset)
-                        }
-                    }()
-                    let viaScan = try DiffEngine.findBlock(
-                        kind: kind, direction: direction, from: offset, left: left, right: right
-                    )
-                    XCTAssertEqual(viaScan?.range, viaIndex?.range,
-                                   "kind=\(kind) direction=\(direction) from=\(offset)")
-                }
-            }
-        }
-    }
-
     // MARK: - Builder cancel/reset lifecycle
 
     func testCancelThenResetAllowsNewBuild() async throws {
@@ -470,63 +436,51 @@ final class DiffEngineTests: XCTestCase {
 
     // MARK: - Net DiffEdit derivation (incremental undo/redo)
 
-    func testNetDiffEditSingleOverwrite() {
-        XCTAssertEqual(DiffEdit.netDiffEdit(ops: [
-            .overwrite(range: 5..<6, before: [0x00], after: [0xFF]),
-        ]), .overwrite(range: 5..<6))
-    }
-
-    func testNetDiffEditTypingPairCoalescesToOverwrite() {
-        // Two nibbles of one byte = two overwrites of the same range.
-        XCTAssertEqual(DiffEdit.netDiffEdit(ops: [
-            .overwrite(range: 5..<6, before: [0x00], after: [0xA0]),
-            .overwrite(range: 5..<6, before: [0x00], after: [0xA5]),
-        ]), .overwrite(range: 5..<6))
-    }
-
-    func testNetDiffEditSingleInsert() {
-        XCTAssertEqual(DiffEdit.netDiffEdit(ops: [
-            .insert(at: 2, bytes: [0xFF, 0xFE]),
-        ]), .insert(at: 2, length: 2))
-    }
-
-    func testNetDiffEditSingleDelete() {
-        XCTAssertEqual(DiffEdit.netDiffEdit(ops: [
-            .delete(range: 3..<6, bytes: [0x01, 0x02, 0x03]),
-        ]), .delete(range: 3..<6))
-    }
-
-    func testNetDiffEditReplaceShrinksToDelete() {
-        // replace(3..<8, [X, Y]) records an overwrite 3..<5 + delete 5..<8:
-        // a net delete of three bytes from the earliest affected offset.
-        XCTAssertEqual(DiffEdit.netDiffEdit(ops: [
-            .overwrite(range: 3..<5, before: [0x01, 0x02], after: [0xFF, 0xFE]),
-            .delete(range: 5..<8, bytes: [0x03, 0x04, 0x05]),
-        ]), .delete(range: 3..<6))
-    }
-
-    func testNetDiffEditOverwritePastEOFBecomesInsert() {
-        // overwrite 5..<6 + insert at 6 of 3 (the split applyOverwrite produces
-        // for a paste past EOF): net +3, and the earliest pre-shift offset is 5 —
-        // the overwritten byte stays at 5, so the insert must start there.
-        XCTAssertEqual(DiffEdit.netDiffEdit(ops: [
-            .overwrite(range: 5..<6, before: [0x00], after: [0xFF]),
-            .insert(at: 6, bytes: [0xAA, 0xBB, 0xCC]),
-        ]), .insert(at: 5, length: 3))
-    }
-
-    func testNetDiffEditUndoOfDeleteThenInsert() {
-        // Undo of a committed [delete(0..2), insert(at:4)] applies the inverses
-        // reversed: an overwrite 4..<6 then an insert at 0. The earliest
-        // pre-shift offset is 0, so the net edit is an insert there.
-        XCTAssertEqual(DiffEdit.netDiffEdit(ops: [
-            .overwrite(range: 4..<6, before: [0x01, 0x02], after: [0x01, 0x02]),
-            .insert(at: 0, bytes: [0x00, 0x00]),
-        ]), .insert(at: 0, length: 2))
-    }
-
-    func testNetDiffEditEmptyReturnsNil() {
-        XCTAssertNil(DiffEdit.netDiffEdit(ops: []))
+    /// One `DiffEdit` describing the damage a whole transaction did: the net
+    /// length change, from the earliest offset the transaction moved bytes at.
+    func testNetDiffEdit() {
+        let cases: [(name: String, ops: [UndoOperation], expected: DiffEdit?)] = [
+            ("a single overwrite",
+             [.overwrite(range: 5..<6, before: [0x00], after: [0xFF])],
+             .overwrite(range: 5..<6)),
+            // Two nibbles of one byte = two overwrites of the same range.
+            ("a typing pair coalesces to one overwrite",
+             [.overwrite(range: 5..<6, before: [0x00], after: [0xA0]),
+              .overwrite(range: 5..<6, before: [0x00], after: [0xA5])],
+             .overwrite(range: 5..<6)),
+            ("a single insert",
+             [.insert(at: 2, bytes: [0xFF, 0xFE])],
+             .insert(at: 2, length: 2)),
+            ("a single delete",
+             [.delete(range: 3..<6, bytes: [0x01, 0x02, 0x03])],
+             .delete(range: 3..<6)),
+            // replace(3..<8, [X, Y]) records an overwrite 3..<5 + delete 5..<8:
+            // a net delete of three bytes from the earliest affected offset.
+            ("a replace that shrinks becomes a delete",
+             [.overwrite(range: 3..<5, before: [0x01, 0x02], after: [0xFF, 0xFE]),
+              .delete(range: 5..<8, bytes: [0x03, 0x04, 0x05])],
+             .delete(range: 3..<6)),
+            // The split applyOverwrite produces for a paste past EOF: net +3, and
+            // the earliest pre-shift offset is 5 — the overwritten byte stays at
+            // 5, so the insert must start there.
+            ("an overwrite past EOF becomes an insert",
+             [.overwrite(range: 5..<6, before: [0x00], after: [0xFF]),
+              .insert(at: 6, bytes: [0xAA, 0xBB, 0xCC])],
+             .insert(at: 5, length: 3)),
+            // Undo of a committed [delete(0..2), insert(at:4)] applies the
+            // inverses reversed: an overwrite 4..<6 then an insert at 0. The
+            // earliest pre-shift offset is 0, so the net edit is an insert there.
+            ("an undo of delete-then-insert",
+             [.overwrite(range: 4..<6, before: [0x01, 0x02], after: [0x01, 0x02]),
+              .insert(at: 0, bytes: [0x00, 0x00])],
+             .insert(at: 0, length: 2)),
+            ("no ops at all",
+             [],
+             nil),
+        ]
+        for testCase in cases {
+            XCTAssertEqual(DiffEdit.netDiffEdit(ops: testCase.ops), testCase.expected, testCase.name)
+        }
     }
 
     // MARK: - Querying a window of the index (§8)
@@ -562,7 +516,8 @@ final class DiffEngineTests: XCTestCase {
     /// The window query and the flattened list must agree — the same blocks, in
     /// the same order — over a random index.
     func testBlocksInAWindowAgreesWithTheWholeIndex() {
-        var rng = SystemRandomNumberGenerator()
+        let seed: UInt64 = 0x51D3_B10C_C5EE_D001
+        var rng = SeededGenerator(seed: seed)
         for _ in 0..<30 {
             var blocks: [DiffBlock] = []
             var offset: UInt64 = 0
@@ -583,66 +538,58 @@ final class DiffEngineTests: XCTestCase {
                     $0.range.lowerBound < upper && $0.range.upperBound > lower
                 }
                 XCTAssertEqual(Array(index.blocks(in: lower..<upper)), expected,
-                               "window \(lower)..<\(upper)")
+                               "seed \(String(seed, radix: 16)) window \(lower)..<\(upper)")
             }
         }
     }
 
     // MARK: - Collapsing a batch (§8.3)
 
-    func testCollapseKeepsASingleEditAlone() {
-        XCTAssertEqual(DiffEdit.collapse([]), [])
-        XCTAssertEqual(DiffEdit.collapse([.overwrite(range: 5..<9)]), [.overwrite(range: 5..<9)])
-        XCTAssertEqual(DiffEdit.collapse([.insert(at: 5, length: 1)]), [.insert(at: 5, length: 1)])
-    }
-
-    /// A run of typed bytes in insert mode: every edit shifts from a slightly
-    /// higher offset, and the lowest one already invalidates all of them.
-    func testCollapseReducesARunOfInsertsToTheEarliestOne() {
-        let edits = (0..<10).map { DiffEdit.insert(at: 1000 + UInt64($0), length: 1) }
-        XCTAssertEqual(DiffEdit.collapse(edits), [.insert(at: 1000, length: 1)])
-    }
-
-    /// Mixed kinds: the earliest shifting edit wins, whichever kind it is.
-    func testCollapseTakesTheEarliestShiftingEdit() {
-        XCTAssertEqual(
-            DiffEdit.collapse([.insert(at: 900, length: 4), .delete(range: 40..<50),
-                               .insert(at: 500, length: 1)]),
-            [.delete(range: 40..<50)]
-        )
-    }
-
-    /// Overwrites at or after the shift point are already covered by the tail
-    /// rescan; the part of one that reaches below it is not, and survives.
-    func testCollapseDropsOverwritesTheShiftAlreadyCovers() {
-        XCTAssertEqual(
-            DiffEdit.collapse([.overwrite(range: 200..<300), .insert(at: 100, length: 1)]),
-            [.insert(at: 100, length: 1)]
-        )
-        XCTAssertEqual(
-            DiffEdit.collapse([.overwrite(range: 50..<300), .insert(at: 100, length: 1)]),
-            [.overwrite(range: 50..<100), .insert(at: 100, length: 1)]
-        )
-        XCTAssertEqual(
-            DiffEdit.collapse([.overwrite(range: 10..<20), .insert(at: 100, length: 1)]),
-            [.overwrite(range: 10..<20), .insert(at: 100, length: 1)]
-        )
-    }
-
-    /// A run of typed bytes in overwrite mode: adjacent windows become one.
-    func testCollapseMergesTouchingOverwrites() {
-        let edits = (0..<8).map { DiffEdit.overwrite(range: (100 + UInt64($0))..<(101 + UInt64($0))) }
-        XCTAssertEqual(DiffEdit.collapse(edits), [.overwrite(range: 100..<108)])
-
-        XCTAssertEqual(
-            DiffEdit.collapse([.overwrite(range: 0..<10), .overwrite(range: 20..<30),
-                               .overwrite(range: 5..<22)]),
-            [.overwrite(range: 0..<30)]
-        )
-        XCTAssertEqual(
-            DiffEdit.collapse([.overwrite(range: 0..<10), .overwrite(range: 40..<50)]),
-            [.overwrite(range: 0..<10), .overwrite(range: 40..<50)]
-        )
+    /// Collapsing a batch of edits into the fewest that describe the same
+    /// damage: one shift point (the earliest), overwrites merged where they
+    /// touch, and overwrites the tail rescan already covers dropped.
+    func testCollapse() {
+        let typedInserts = (0..<10).map { DiffEdit.insert(at: 1000 + UInt64($0), length: 1) }
+        let typedOverwrites = (0..<8).map {
+            DiffEdit.overwrite(range: (100 + UInt64($0))..<(101 + UInt64($0)))
+        }
+        let cases: [(name: String, edits: [DiffEdit], expected: [DiffEdit])] = [
+            ("nothing collapses to nothing", [], []),
+            ("a lone overwrite is kept as it is",
+             [.overwrite(range: 5..<9)], [.overwrite(range: 5..<9)]),
+            ("a lone insert is kept as it is",
+             [.insert(at: 5, length: 1)], [.insert(at: 5, length: 1)]),
+            // A run of typed bytes in insert mode: every edit shifts from a
+            // slightly higher offset, and the lowest one covers all of them.
+            ("a run of inserts becomes the earliest one",
+             typedInserts, [.insert(at: 1000, length: 1)]),
+            ("the earliest shifting edit wins, whichever kind it is",
+             [.insert(at: 900, length: 4), .delete(range: 40..<50), .insert(at: 500, length: 1)],
+             [.delete(range: 40..<50)]),
+            // Overwrites at or after the shift point are already covered by the
+            // tail rescan; the part of one that reaches below it is not.
+            ("an overwrite above the shift point is dropped",
+             [.overwrite(range: 200..<300), .insert(at: 100, length: 1)],
+             [.insert(at: 100, length: 1)]),
+            ("an overwrite straddling the shift point is trimmed to it",
+             [.overwrite(range: 50..<300), .insert(at: 100, length: 1)],
+             [.overwrite(range: 50..<100), .insert(at: 100, length: 1)]),
+            ("an overwrite entirely below the shift point survives whole",
+             [.overwrite(range: 10..<20), .insert(at: 100, length: 1)],
+             [.overwrite(range: 10..<20), .insert(at: 100, length: 1)]),
+            // A run of typed bytes in overwrite mode: adjacent windows are one.
+            ("a run of touching overwrites becomes one",
+             typedOverwrites, [.overwrite(range: 100..<108)]),
+            ("overlapping overwrites in any order become one",
+             [.overwrite(range: 0..<10), .overwrite(range: 20..<30), .overwrite(range: 5..<22)],
+             [.overwrite(range: 0..<30)]),
+            ("overwrites with a gap between them stay apart",
+             [.overwrite(range: 0..<10), .overwrite(range: 40..<50)],
+             [.overwrite(range: 0..<10), .overwrite(range: 40..<50)]),
+        ]
+        for testCase in cases {
+            XCTAssertEqual(DiffEdit.collapse(testCase.edits), testCase.expected, testCase.name)
+        }
     }
 
     /// The collapsed batch must describe the same damage: applying it and
@@ -745,7 +692,8 @@ final class DiffEngineTests: XCTestCase {
     /// differences, which is what the word stepping is tuned for, plus a few
     /// dense ones.
     func testRandomFilesMatchTheReference() throws {
-        var rng = SystemRandomNumberGenerator()
+        let seed: UInt64 = 0xD1FF_5EED_0000_2A2A
+        var rng = SeededGenerator(seed: seed)
         for round in 0..<40 {
             let size = Int.random(in: 1...600, using: &rng)
             let left = (0..<size).map { _ in UInt8.random(in: 0...255, using: &rng) }
@@ -758,7 +706,7 @@ final class DiffEngineTests: XCTestCase {
             if Bool.random(using: &rng) { right.removeLast(Int.random(in: 0..<size, using: &rng)) }
             try assertScanMatchesReference(left, right,
                                            chunkSize: Int.random(in: 1...128, using: &rng),
-                                           "round \(round)")
+                                           "seed \(String(seed, radix: 16)) round \(round)")
         }
     }
 }

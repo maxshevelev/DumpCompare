@@ -30,67 +30,68 @@ final class BinaryDocumentTests: XCTestCase {
         XCTAssertFalse(doc.canRedo)
     }
 
-    func testOverwriteUndoRedo() throws {
-        let (doc, _) = try makeDocument([0x00, 0x01, 0x02, 0x03])
-        try doc.overwrite(range: 1..<2, with: [0xAA])
-        XCTAssertEqual(try readAll(doc), [0x00, 0xAA, 0x02, 0x03])
-        XCTAssertTrue(doc.isDirty)
+    /// Each mutation is one undoable transaction: it changes the content, marks
+    /// the document dirty, and a single undo takes the file back to exactly what
+    /// it was opened with — with nothing left to undo behind it.
+    func testMutationUndoRedo() throws {
+        let cases: [(name: String, initial: [UInt8],
+                     mutate: (BinaryDocument) throws -> Void, edited: [UInt8])] = [
+            ("overwrite", [0x00, 0x01, 0x02, 0x03],
+             { try $0.overwrite(range: 1..<2, with: [0xAA]) },
+             [0x00, 0xAA, 0x02, 0x03]),
+            ("insert", [0x00, 0x01, 0x02, 0x03],
+             { try $0.insert(at: 2, bytes: [0xFF, 0xFE]) },
+             [0x00, 0x01, 0xFF, 0xFE, 0x02, 0x03]),
+            ("delete", [0x00, 0x01, 0x02, 0x03, 0x04],
+             { try $0.delete(range: 1..<3) },
+             [0x00, 0x03, 0x04]),
+        ]
+        for testCase in cases {
+            let (doc, _) = try makeDocument(testCase.initial)
+            try testCase.mutate(doc)
+            XCTAssertEqual(try readAll(doc), testCase.edited, "\(testCase.name): after the edit")
+            XCTAssertTrue(doc.isDirty, "\(testCase.name): the edit is unsaved")
 
-        try doc.undo()
-        XCTAssertEqual(try readAll(doc), [0x00, 0x01, 0x02, 0x03])
-        XCTAssertFalse(doc.canUndo)
+            try doc.undo()
+            XCTAssertEqual(try readAll(doc), testCase.initial, "\(testCase.name): after undo")
+            XCTAssertFalse(doc.canUndo, "\(testCase.name): one edit, one undo")
 
-        try doc.redo()
-        XCTAssertEqual(try readAll(doc), [0x00, 0xAA, 0x02, 0x03])
-        XCTAssertTrue(doc.canUndo)
+            try doc.redo()
+            XCTAssertEqual(try readAll(doc), testCase.edited, "\(testCase.name): after redo")
+            XCTAssertTrue(doc.canUndo, "\(testCase.name): the redone edit is undoable again")
+        }
     }
 
-    func testInsertUndoRedo() throws {
-        let (doc, _) = try makeDocument([0x00, 0x01, 0x02, 0x03])
-        try doc.insert(at: 2, bytes: [0xFF, 0xFE])
-        XCTAssertEqual(try readAll(doc), [0x00, 0x01, 0xFF, 0xFE, 0x02, 0x03])
-
-        try doc.undo()
-        XCTAssertEqual(try readAll(doc), [0x00, 0x01, 0x02, 0x03])
-
-        try doc.redo()
-        XCTAssertEqual(try readAll(doc), [0x00, 0x01, 0xFF, 0xFE, 0x02, 0x03])
+    /// A fill repeats its pattern across the range, truncating it at the range's
+    /// end and clamping the range at EOF. An empty pattern writes nothing at all.
+    func testFill() throws {
+        let cases: [(name: String, initial: [UInt8], pattern: [UInt8],
+                     range: Range<UInt64>, expected: [UInt8])] = [
+            ("the pattern repeats and is cut off at the range's end",
+             [0x01, 0x02, 0x03, 0x04, 0x05, 0x06], [0xDE, 0xAD], 1..<6,
+             [0x01, 0xDE, 0xAD, 0xDE, 0xAD, 0xDE]),
+            ("a pattern longer than the range is truncated",
+             [0x01, 0x02, 0x03], [0xAA, 0xBB, 0xCC, 0xDD], 1..<3,
+             [0x01, 0xAA, 0xBB]),
+            ("a range past EOF is clamped, and the file does not grow",
+             [0x01, 0x02, 0x03], [0xFF], 1..<10,
+             [0x01, 0xFF, 0xFF]),
+            ("an empty pattern is a no-op",
+             [0x01, 0x02, 0x03], [], 0..<2,
+             [0x01, 0x02, 0x03]),
+        ]
+        for testCase in cases {
+            let (doc, _) = try makeDocument(testCase.initial)
+            try doc.fill(pattern: testCase.pattern, in: testCase.range)
+            XCTAssertEqual(try readAll(doc), testCase.expected, testCase.name)
+            XCTAssertEqual(doc.isDirty, testCase.expected != testCase.initial,
+                           "\(testCase.name): dirty only if something was written")
+        }
     }
 
-    func testDeleteUndoRedo() throws {
-        let (doc, _) = try makeDocument([0x00, 0x01, 0x02, 0x03, 0x04])
-        try doc.delete(range: 1..<3)
-        XCTAssertEqual(try readAll(doc), [0x00, 0x03, 0x04])
-
-        try doc.undo()
-        XCTAssertEqual(try readAll(doc), [0x00, 0x01, 0x02, 0x03, 0x04])
-
-        try doc.redo()
-        XCTAssertEqual(try readAll(doc), [0x00, 0x03, 0x04])
-    }
-
-    func testFillZeroUndoRestores() throws {
-        let (doc, _) = try makeDocument([0x00, 0x01, 0x02, 0x03])
-        try doc.fillZero(in: 1..<3)
-        XCTAssertEqual(try readAll(doc), [0x00, 0x00, 0x00, 0x03])
-
-        try doc.undo()
-        XCTAssertEqual(try readAll(doc), [0x00, 0x01, 0x02, 0x03])
-    }
-
-    func testFillPatternRepeatsAcrossRange() throws {
-        let (doc, _) = try makeDocument([0x01, 0x02, 0x03, 0x04, 0x05, 0x06])
-        try doc.fill(pattern: [0xDE, 0xAD], in: 1..<6)
-        XCTAssertEqual(try readAll(doc), [0x01, 0xDE, 0xAD, 0xDE, 0xAD, 0xDE])
-    }
-
-    func testFillPatternLongerThanRangeTruncates() throws {
-        let (doc, _) = try makeDocument([0x01, 0x02, 0x03])
-        try doc.fill(pattern: [0xAA, 0xBB, 0xCC, 0xDD], in: 1..<3)
-        XCTAssertEqual(try readAll(doc), [0x01, 0xAA, 0xBB])
-    }
-
-    func testFillPatternUndoRedo() throws {
+    /// A fill is one transaction, whichever entry point wrote it — the pattern
+    /// fill or the `fillZero` wrapper the Fill dialog's zero button calls.
+    func testFillUndoRedo() throws {
         let (doc, _) = try makeDocument([0x01, 0x02, 0x03, 0x04])
         try doc.fill(pattern: [0xDE, 0xAD], in: 0..<4)
         XCTAssertEqual(try readAll(doc), [0xDE, 0xAD, 0xDE, 0xAD])
@@ -100,19 +101,13 @@ final class BinaryDocumentTests: XCTestCase {
 
         try doc.redo()
         XCTAssertEqual(try readAll(doc), [0xDE, 0xAD, 0xDE, 0xAD])
-    }
 
-    func testFillEmptyPatternIsNoOp() throws {
-        let (doc, _) = try makeDocument([0x01, 0x02, 0x03])
-        try doc.fill(pattern: [], in: 0..<2)
-        XCTAssertEqual(try readAll(doc), [0x01, 0x02, 0x03])
-        XCTAssertFalse(doc.isDirty)
-    }
+        let (zeroed, _) = try makeDocument([0x00, 0x01, 0x02, 0x03])
+        try zeroed.fillZero(in: 1..<3)
+        XCTAssertEqual(try readAll(zeroed), [0x00, 0x00, 0x00, 0x03])
 
-    func testFillClampsToEndOfFile() throws {
-        let (doc, _) = try makeDocument([0x01, 0x02, 0x03])
-        try doc.fill(pattern: [0xFF], in: 1..<10)
-        XCTAssertEqual(try readAll(doc), [0x01, 0xFF, 0xFF])
+        try zeroed.undo()
+        XCTAssertEqual(try readAll(zeroed), [0x00, 0x01, 0x02, 0x03])
     }
 
     func testOverwritePastEOFUndoShrinks() throws {

@@ -18,37 +18,41 @@ final class TextDecoderTests: XCTestCase {
 
     // MARK: - 5.1 cp1252 vectors
 
-    func testCp1252Vector1() {
+    /// The spec's two 16-byte vectors, decoded whole. One character per byte, so
+    /// each expected string states every byte's rendering at its own position.
+    /// (Both spec example strings are 15 characters — an off-by-one typo; the
+    /// one-character-per-byte rule is the source of truth.)
+    func testCp1252Vectors() {
         let d = decoder("cp1252")
-        let bytes: [UInt8] = [0x11, 0x00, 0x00, 0x9C, 0x90, 0x02, 0x00, 0xD6,
-                              0x00, 0x00, 0x00, 0x05, 0xFF, 0xFF, 0xFF, 0xFF]
-        // Per-byte expectations (the source of truth).
-        XCTAssertEqual(d.decode(bytes[3]), "œ")   // 0x9C
-        XCTAssertEqual(d.decode(bytes[7]), "Ö")   // 0xD6
-        XCTAssertEqual(d.decode(bytes[13]), "ÿ")  // 0xFF
-        XCTAssertEqual(d.decode(bytes[15]), "ÿ")
-        XCTAssertEqual(d.isDisplayable(bytes[4]), false)  // 0x90 undefined
-        // 16 bytes -> 16 characters, one per byte. (The spec's example string
-        // is 15 characters — an off-by-one typo; the per-byte rules above are
-        // the source of truth.)
-        let s = decodeAll(d, bytes)
-        XCTAssertEqual(s.count, bytes.count)
-        XCTAssertEqual(s, "...œ...Ö....ÿÿÿÿ")
-    }
-
-    func testCp1252Vector2() {
-        let d = decoder("cp1252")
-        let bytes: [UInt8] = [0x00, 0x0F, 0xA0, 0x00, 0x00, 0x0D, 0x40, 0x00,
-                              0x00, 0x09, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00]
-        // 0xA0 NO-BREAK SPACE displays as a regular space.
-        XCTAssertEqual(d.decode(bytes[2]), " ")
-        XCTAssertEqual(d.isDisplayable(bytes[2]), true)
-        XCTAssertEqual(d.decode(bytes[6]), "@")  // 0x40
-        XCTAssertEqual(d.decode(bytes[10]), "€") // 0x80
-        // 16 bytes -> 16 characters (spec example string is 15 — off by one).
-        let s = decodeAll(d, bytes)
-        XCTAssertEqual(s.count, bytes.count)
-        XCTAssertEqual(s, ".. ...@...€.....")
+        let cases: [(name: String, bytes: [UInt8], expected: String,
+                     displayable: [Int], undisplayable: [Int])] = [
+            // 0x9C œ at 3, 0xD6 Ö at 7, 0xFF ÿ in the tail; 0x90 at 4 is one of
+            // cp1252's undefined slots.
+            ("vector 1",
+             [0x11, 0x00, 0x00, 0x9C, 0x90, 0x02, 0x00, 0xD6,
+              0x00, 0x00, 0x00, 0x05, 0xFF, 0xFF, 0xFF, 0xFF],
+             "...œ...Ö....ÿÿÿÿ", [3, 7, 15], [4]),
+            // 0xA0 NO-BREAK SPACE at 2 displays as a regular space, 0x40 @ at 6,
+            // 0x80 € at 10.
+            ("vector 2",
+             [0x00, 0x0F, 0xA0, 0x00, 0x00, 0x0D, 0x40, 0x00,
+              0x00, 0x09, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00],
+             ".. ...@...€.....", [2, 6, 10], []),
+        ]
+        for testCase in cases {
+            let decoded = decodeAll(d, testCase.bytes)
+            XCTAssertEqual(decoded.count, testCase.bytes.count,
+                           "\(testCase.name): one character per byte")
+            XCTAssertEqual(decoded, testCase.expected, testCase.name)
+            for index in testCase.displayable {
+                XCTAssertTrue(d.isDisplayable(testCase.bytes[index]),
+                              "\(testCase.name): byte \(index) is displayable")
+            }
+            for index in testCase.undisplayable {
+                XCTAssertFalse(d.isDisplayable(testCase.bytes[index]),
+                               "\(testCase.name): byte \(index) is not displayable")
+            }
+        }
     }
 
     // MARK: - 5.2 Undefined cp1252 slots
@@ -138,17 +142,13 @@ final class TextDecoderTests: XCTestCase {
     // MARK: - 5.6 Alignment property
 
     func testAlignmentDecodedLengthEqualsByteCount() {
-        var seed: UInt64 = 0x123456789ABCDEF
+        let seed: UInt64 = 0x0123_4567_89AB_CDEF
+        var rng = SeededGenerator(seed: seed)
+        let d = decoder("cp1252")
         for length in 0..<64 {
-            var bytes: [UInt8] = []
-            bytes.reserveCapacity(length)
-            for _ in 0..<length {
-                seed = seed &* 6364136223846793005 &+ 1442695040888963407
-                bytes.append(UInt8(truncatingIfNeeded: seed >> 32))
-            }
-            let d = decoder("cp1252")
+            let bytes = (0..<length).map { _ in UInt8.random(in: 0...255, using: &rng) }
             XCTAssertEqual(d.decode(bytes[...]).count, bytes.count,
-                           "length \(length)")
+                           "seed \(String(seed, radix: 16)) length \(length)")
         }
     }
 
@@ -211,26 +211,32 @@ final class TextDecoderTests: XCTestCase {
         XCTAssertEqual(reopened.settings.placeholder, "·")
     }
 
-    func testStoreCorruptedValuesFallBack() {
-        let (store, suite) = makeSuiteStore()
-        defer { removeSuite(suite) }
+    /// A stored value the app cannot use is ignored in favour of the default —
+    /// whether it names no table, is more than one character, or is empty. Each
+    /// field falls back on its own: an unusable table does not discard a
+    /// perfectly good placeholder.
+    func testStoreFallsBackOnUnusableValues() {
+        let cases: [(name: String, identifier: String, placeholder: String,
+                     expected: TextDecodingSettings)] = [
+            ("an unknown table and a two-character placeholder",
+             "bogus-table", "??", .default),
+            ("empty strings",
+             "", "", .default),
+            ("a usable placeholder but no such table",
+             "bogus-table", "·",
+             TextDecodingSettings(identifier: TextDecodingSettings.default.identifier,
+                                  placeholder: "·")),
+        ]
+        for testCase in cases {
+            let (store, suite) = makeSuiteStore()
+            defer { removeSuite(suite) }
 
-        let defaults = UserDefaults(suiteName: suite)!
-        defaults.set("bogus-table", forKey: TextDecodingSettingsStore.identifierKey)
-        defaults.set("??", forKey: TextDecodingSettingsStore.placeholderKey)
+            let defaults = UserDefaults(suiteName: suite)!
+            defaults.set(testCase.identifier, forKey: TextDecodingSettingsStore.identifierKey)
+            defaults.set(testCase.placeholder, forKey: TextDecodingSettingsStore.placeholderKey)
 
-        XCTAssertEqual(store.settings, TextDecodingSettings.default)
-    }
-
-    func testStoreEmptyIdentifierAndPlaceholderFallBack() {
-        let (store, suite) = makeSuiteStore()
-        defer { removeSuite(suite) }
-
-        let defaults = UserDefaults(suiteName: suite)!
-        defaults.set("", forKey: TextDecodingSettingsStore.identifierKey)
-        defaults.set("", forKey: TextDecodingSettingsStore.placeholderKey)
-
-        XCTAssertEqual(store.settings, TextDecodingSettings.default)
+            XCTAssertEqual(store.settings, testCase.expected, testCase.name)
+        }
     }
 
     func testStoreResetToDefaults() {

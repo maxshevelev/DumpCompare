@@ -69,21 +69,26 @@ final class SearchEngineTests: XCTestCase {
         XCTAssertEqual(try find([0xBE, 0xEF], in: bytes, from: 0), 2..<4)
     }
 
-    func testFindNoMatch() throws {
-        let bytes: [UInt8] = [0x00, 0x01, 0x02]
-        XCTAssertNil(try find([0xAA, 0xBB], in: bytes))
-        XCTAssertNil(try find([0xAA, 0xBB], in: bytes, direction: .backward))
-        XCTAssertNil(try find([0x05], in: bytes))
-    }
-
-    func testFindPatternLongerThanFile() throws {
-        XCTAssertNil(try find([0x00, 0x01, 0x02, 0x03], in: [0x00, 0x01]))
-    }
-
-    func testFindSingleByte() throws {
-        let bytes: [UInt8] = [0xAA, 0x00, 0xAA, 0x00]
-        XCTAssertEqual(try find([0xAA], in: bytes, from: 0), 0..<1)
-        XCTAssertEqual(try find([0xAA], in: bytes, from: 1), 2..<3)
+    /// The edges of `find`: nothing to find, nothing that could fit, a
+    /// one-byte pattern (the shortest window there is), and a match ending
+    /// exactly at EOF.
+    func testFindEdges() throws {
+        let cases: [(name: String, pattern: [UInt8], bytes: [UInt8], from: UInt64,
+                     direction: SearchDirection, expected: Range<UInt64>?)] = [
+            ("no match, forward", [0xAA, 0xBB], [0x00, 0x01, 0x02], 0, .forward, nil),
+            ("no match, backward from EOF", [0xAA, 0xBB], [0x00, 0x01, 0x02], 3, .backward, nil),
+            ("no match for a single byte", [0x05], [0x00, 0x01, 0x02], 0, .forward, nil),
+            ("a pattern longer than the file", [0x00, 0x01, 0x02, 0x03], [0x00, 0x01], 0, .forward, nil),
+            ("a single byte at the start", [0xAA], [0xAA, 0x00, 0xAA, 0x00], 0, .forward, 0..<1),
+            ("a single byte past the first match", [0xAA], [0xAA, 0x00, 0xAA, 0x00], 1, .forward, 2..<3),
+            ("a match ending at EOF", [0xAA, 0xBB], [0x00, 0x01, 0xAA, 0xBB], 0, .forward, 2..<4),
+            ("the last byte of the file", [0xBB], [0x00, 0x01, 0xAA, 0xBB], 0, .forward, 3..<4),
+        ]
+        for testCase in cases {
+            XCTAssertEqual(try find(testCase.pattern, in: testCase.bytes, from: testCase.from,
+                                    direction: testCase.direction),
+                           testCase.expected, testCase.name)
+        }
     }
 
     func testFindBackward() throws {
@@ -91,15 +96,15 @@ final class SearchEngineTests: XCTestCase {
         XCTAssertEqual(try find([0xDE, 0xAD], in: bytes, from: 7, direction: .backward), 5..<7)
         XCTAssertEqual(try find([0xDE, 0xAD], in: bytes, from: 5, direction: .backward), 0..<2)
         XCTAssertEqual(try find([0xDE, 0xAD], in: bytes, from: 4, direction: .backward), 0..<2)
-        XCTAssertNil(try find([0xDE, 0xAD], in: bytes, from: 0, direction: .backward))
-    }
-
-    func testFindBackwardSingleByte() throws {
-        let bytes: [UInt8] = [0xAA, 0x00, 0xAA, 0x00]
-        XCTAssertEqual(try find([0xAA], in: bytes, from: 4, direction: .backward), 2..<3)
-        XCTAssertEqual(try find([0xAA], in: bytes, from: 1, direction: .backward), 0..<1)
         // A caret at 0 has nothing before it, so there is no previous match.
-        XCTAssertNil(try find([0xAA], in: bytes, from: 0, direction: .backward))
+        XCTAssertNil(try find([0xDE, 0xAD], in: bytes, from: 0, direction: .backward))
+
+        // A one-byte pattern: the shortest window, where the overlap arithmetic
+        // that walks backward has nothing to spare.
+        let single: [UInt8] = [0xAA, 0x00, 0xAA, 0x00]
+        XCTAssertEqual(try find([0xAA], in: single, from: 4, direction: .backward), 2..<3)
+        XCTAssertEqual(try find([0xAA], in: single, from: 1, direction: .backward), 0..<1)
+        XCTAssertNil(try find([0xAA], in: single, from: 0, direction: .backward))
     }
 
     func testFindBackwardExcludesMatchStartingAtCaret() throws {
@@ -108,12 +113,6 @@ final class SearchEngineTests: XCTestCase {
         // that same match instead of moving backward.
         let bytes: [UInt8] = [0xAA, 0x00, 0xAA, 0x00, 0xAA]
         XCTAssertEqual(try find([0xAA], in: bytes, from: 4, direction: .backward), 2..<3)
-    }
-
-    func testFindMatchAtEOF() throws {
-        let bytes: [UInt8] = [0x00, 0x01, 0xAA, 0xBB]
-        XCTAssertEqual(try find([0xAA, 0xBB], in: bytes), 2..<4)
-        XCTAssertEqual(try find([0xBB], in: bytes), 3..<4)
     }
 
     func testFindAcrossChunkBoundary() throws {
@@ -232,9 +231,20 @@ final class SearchEngineTests: XCTestCase {
         XCTAssertEqual(try findAll([0xBE], in: bytes), [2..<3, 6..<7])
     }
 
-    func testFindAllSingleByteEveryByte() throws {
-        let bytes: [UInt8] = [0xAA, 0xAA, 0xAA]
-        XCTAssertEqual(try findAll([0xAA], in: bytes), [0..<1, 1..<2, 2..<3])
+    /// The same edges for `findAll`, whose answer is a list rather than one
+    /// range: every byte matching, nothing matching, nothing that could fit, and
+    /// a match ending exactly at EOF.
+    func testFindAllEdges() throws {
+        let cases: [(name: String, pattern: [UInt8], bytes: [UInt8], expected: [Range<UInt64>])] = [
+            ("a single byte matching every byte", [0xAA], [0xAA, 0xAA, 0xAA], [0..<1, 1..<2, 2..<3]),
+            ("no match", [0xAA, 0xBB], [0x00, 0x01, 0x02], []),
+            ("a pattern longer than the file", [0x00, 0x01, 0x02, 0x03], [0x00, 0x01], []),
+            ("a match ending at EOF", [0xAA, 0xBB], [0x00, 0x01, 0xAA, 0xBB], [2..<4]),
+        ]
+        for testCase in cases {
+            XCTAssertEqual(try findAll(testCase.pattern, in: testCase.bytes), testCase.expected,
+                           testCase.name)
+        }
     }
 
     /// Consecutive matches never overlap: after a match the scan resumes just
@@ -264,20 +274,6 @@ final class SearchEngineTests: XCTestCase {
     func testFindAllMatchAtChunkBoundaryIsCountedOnce() throws {
         let bytes: [UInt8] = [0x00, 0x00, 0x00, 0x00, 0xAA, 0xBB, 0x00]
         XCTAssertEqual(try findAll([0xAA, 0xBB], in: bytes, chunkSize: 4), [4..<6])
-    }
-
-    func testFindAllNoMatch() throws {
-        let bytes: [UInt8] = [0x00, 0x01, 0x02]
-        XCTAssertEqual(try findAll([0xAA, 0xBB], in: bytes), [])
-    }
-
-    func testFindAllPatternLongerThanFile() throws {
-        XCTAssertEqual(try findAll([0x00, 0x01, 0x02, 0x03], in: [0x00, 0x01]), [])
-    }
-
-    func testFindAllMatchAtEOF() throws {
-        let bytes: [UInt8] = [0x00, 0x01, 0xAA, 0xBB]
-        XCTAssertEqual(try findAll([0xAA, 0xBB], in: bytes), [2..<4])
     }
 
     func testFindAllCaseInsensitive() throws {
@@ -385,25 +381,40 @@ final class SearchEngineTests: XCTestCase {
     /// loop). Here we assert the loop actually ends before the scan could
     /// possibly finish.
     func testFindAllStreamCancellationStopsIteration() async throws {
-        // 32 MB where every byte matches. The scan physically cannot produce all
-        // ~33M matches in the cancel delay, so a result far short of that proves
-        // the consumer was interrupted rather than draining to the end. The
-        // `maxResults` is set to the whole file so the match cap cannot stop the
-        // scan before the cancel does.
-        let bytes = [UInt8](repeating: 0xAA, count: 1 << 25)
-        let stream = SearchEngine.findAllStream(pattern: [0xAA], in: ArrayStorage(bytes), maxResults: bytes.count)
+        // Every byte matches, and the storage parks the scan inside its second
+        // read: only the first chunk's matches can ever have been yielded when
+        // the cancel lands, so "some arrived" and "not all of them" are both
+        // facts rather than a bet on how fast the scan runs. `maxResults` is the
+        // whole file so the cap cannot end the scan before the cancel does.
+        let chunkSize = 64
+        let total = chunkSize * 8
+        let storage = GatedStorage(size: UInt64(total), byte: 0xAA, parkAtRead: 2)
+        let stream = SearchEngine.findAllStream(pattern: [0xAA], in: storage,
+                                                chunkSize: chunkSize, maxResults: total)
+
+        let firstMatch = expectation(description: "the first match reached the consumer")
         let task = Task { () -> Int in
+            var iterator = stream.makeAsyncIterator()
             var count = 0
-            for try await _ in stream { count += 1 }
+            if let first = try await iterator.next() {
+                XCTAssertEqual(first, 0..<1, "matches arrive in file order")
+                count += 1
+                firstMatch.fulfill()
+            }
+            while try await iterator.next() != nil { count += 1 }
             return count
         }
-        // Let a match or two stream in, then cancel; the suspended loop ends.
-        try await Task.sleep(nanoseconds: 20_000_000)
+        await fulfillment(of: [firstMatch], timeout: 5)
+
         task.cancel()
         let count = try await task.value
-        XCTAssertGreaterThan(count, 0, "some matches must have streamed before the cancel")
-        XCTAssertLessThan(count, bytes.count,
-                          "cancelling the consumer must stop the iteration short of the full result")
+        storage.release()   // let the parked scan thread go
+
+        XCTAssertGreaterThan(count, 0, "the matches that arrived before the cancel are kept")
+        XCTAssertLessThanOrEqual(count, chunkSize,
+                                 "the scan is parked after one chunk, so it cannot have yielded more")
+        XCTAssertLessThan(count, total,
+                          "cancelling the consumer stops the iteration short of the full result")
     }
 
     /// A Search All stops once the match cap is reached: the stream delivers the

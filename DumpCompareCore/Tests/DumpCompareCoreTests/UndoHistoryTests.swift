@@ -179,34 +179,39 @@ final class UndoHistoryTests: XCTestCase {
         XCTAssertEqual(ops(history.undo(batch: false)), [[op(1)]])
     }
 
-    func testBatchDoesNotCrossASeriesBoundary() {
-        let history = UndoHistory()
-        history.record([op(0)], seriesID: 1)
-        history.record([op(1)], seriesID: 2)
-
-        XCTAssertEqual(ops(history.undo(batch: false)), [[op(1)]])
-        // The top is series 1, the last undo was series 2 → no batch.
-        XCTAssertEqual(ops(history.undo(batch: true)), [[op(0)]])
-    }
-
-    func testBatchDoesNotApplyAfterANonSeriesUndo() {
-        let history = UndoHistory()
-        history.record([op(0)])                    // no series
-        history.record([op(1)], seriesID: 1)
-
-        XCTAssertEqual(ops(history.undo(batch: false)), [[op(1)]])
-        // The top has no seriesID → no batch.
-        XCTAssertEqual(ops(history.undo(batch: true)), [[op(0)]])
-    }
-
-    func testNewRecordClearsTheFastRollbackState() {
-        let history = UndoHistory()
-        history.record([op(0)], seriesID: 1)
-        history.record([op(1)], seriesID: 1)
-
-        XCTAssertEqual(ops(history.undo(batch: false)), [[op(1)]])
-        history.record([op(2)])                    // a new edit breaks the fast window
-        XCTAssertEqual(ops(history.undo(batch: true)), [[op(2)]])
+    /// When the fast repeat must *not* fold a series: the whole point of the
+    /// batch window is that it only rolls back what one uninterrupted typing run
+    /// recorded. In each case the second press comes back with a single
+    /// transaction, exactly as if `batch` had not been asked for.
+    func testBatchIsRefusedOutsideOneTypingRun() {
+        let cases: [(name: String, records: [(UInt64, UInt64?)],
+                     firstUndo: [[UndoOperation]],
+                     interlude: [(UInt64, UInt64?)],
+                     batchUndo: [[UndoOperation]])] = [
+            // The top is series 1, the last undo was series 2 → no batch.
+            ("the batch stops at a series boundary",
+             [(0, 1), (1, 2)], [[op(1)]], [], [[op(0)]]),
+            // The top has no seriesID at all → no batch.
+            ("a transaction with no series is never batched",
+             [(0, nil), (1, 1)], [[op(1)]], [], [[op(0)]]),
+            // A new edit between the two presses breaks the fast window, so the
+            // second press undoes that edit alone.
+            ("a new edit closes the fast window",
+             [(0, 1), (1, 1)], [[op(1)]], [(2, nil)], [[op(2)]]),
+        ]
+        for testCase in cases {
+            let history = UndoHistory()
+            for (offset, series) in testCase.records {
+                history.record([op(offset)], seriesID: series)
+            }
+            XCTAssertEqual(ops(history.undo(batch: false)), testCase.firstUndo,
+                           "\(testCase.name): the first press")
+            for (offset, series) in testCase.interlude {
+                history.record([op(offset)], seriesID: series)
+            }
+            XCTAssertEqual(ops(history.undo(batch: true)), testCase.batchUndo,
+                           "\(testCase.name): the second press")
+        }
     }
 
     func testRedoOfABatchRestoresByteByByteStructure() {
