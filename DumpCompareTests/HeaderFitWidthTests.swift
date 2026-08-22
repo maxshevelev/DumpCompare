@@ -31,14 +31,6 @@ final class HeaderFitWidthTests: XCTestCase {
         tempFiles = []
     }
 
-    private func tempFile(_ bytes: [UInt8]) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("fit-width-\(UUID().uuidString).bin")
-        try Data(bytes).write(to: url)
-        tempFiles.append(url)
-        return url
-    }
-
     /// Builds a ComparisonView pinned into a real window of `width` points.
     private func makeComparisonView(width: CGFloat) throws -> (ComparisonView, NSWindow) {
         let url1 = try tempFile([UInt8](repeating: 0x41, count: 1024))
@@ -75,13 +67,6 @@ final class HeaderFitWidthTests: XCTestCase {
 
     private func windowPoint(_ view: NSView) -> NSPoint {
         view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil)
-    }
-
-    private func mouse(_ type: NSEvent.EventType, at p: NSPoint, window: NSWindow, clickCount: Int = 1) -> NSEvent {
-        NSEvent.mouseEvent(with: type, location: p, modifierFlags: [],
-                           timestamp: ProcessInfo.processInfo.systemUptime,
-                           windowNumber: window.windowNumber, context: nil,
-                           eventNumber: 0, clickCount: clickCount, pressure: 1)!
     }
 
     private func doubleClick(header: PaneHeaderView, window: NSWindow) {

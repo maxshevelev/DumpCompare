@@ -14,13 +14,6 @@ final class OffsetContextMenuTests: XCTestCase {
         UserDefaults.standard.set(1, forKey: WordSize.userDefaultsKey)
     }
 
-    private func tempFile(_ bytes: [UInt8]) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("offset-menu-\(UUID().uuidString).bin")
-        try Data(bytes).write(to: url)
-        return url
-    }
-
     /// A pane hosting a real hex view in a real window. The temp file stays on
     /// disk (the pane reads it lazily) and the caller removes it when done.
     private func makePane(_ bytes: [UInt8]) throws -> (FilePaneView, PaneViewModel, HexView, NSWindow, URL) {
@@ -41,13 +34,6 @@ final class OffsetContextMenuTests: XCTestCase {
         window.layoutIfNeeded()
         let hexView = try XCTUnwrap(filePane.scrollView.documentView as? HexView)
         return (filePane, pane, hexView, window, url)
-    }
-
-    private func mouse(_ type: NSEvent.EventType, at p: NSPoint, window: NSWindow) -> NSEvent {
-        NSEvent.mouseEvent(with: type, location: p, modifierFlags: [],
-                           timestamp: ProcessInfo.processInfo.systemUptime,
-                           windowNumber: window.windowNumber, context: nil,
-                           eventNumber: 0, clickCount: 1, pressure: 1)!
     }
 
     /// Window point of a right-click on `row`'s address in the Offset column.

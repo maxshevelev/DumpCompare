@@ -19,13 +19,6 @@ final class FillSelectionTests: XCTestCase {
         super.tearDown()
     }
 
-    private func tempFile(_ bytes: [UInt8]) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("fill-\(UUID().uuidString).bin")
-        try Data(bytes).write(to: url)
-        return url
-    }
-
     private func makeController(_ bytes: [UInt8], selection: SelectionModel) throws -> (MainViewController, NSWindow, URL) {
         let url = try tempFile(bytes)
         let controller = MainViewController()
@@ -38,24 +31,6 @@ final class FillSelectionTests: XCTestCase {
         controller.apply(mode: .singleFile)
         window.layoutIfNeeded()
         return (controller, window, url)
-    }
-
-    private func descendants<T: NSView>(of view: NSView, _ type: T.Type) -> [T] {
-        var result: [T] = []
-        for sub in view.subviews {
-            if let match = sub as? T { result.append(match) }
-            result.append(contentsOf: descendants(of: sub, type))
-        }
-        return result
-    }
-
-    private func pumpUntil(_ timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if condition() { return true }
-            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
-        }
-        return condition()
     }
 
     /// The attached sheet's editable bytes field (default `FF`) and OK button.

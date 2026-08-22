@@ -13,23 +13,6 @@ import XCTest
 /// they fail if that stops being true.
 @MainActor
 final class ToolbarValidationTests: XCTestCase {
-    private func tempFile(_ bytes: [UInt8]) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("toolbar-valid-\(UUID().uuidString).bin")
-        try Data(bytes).write(to: url)
-        return url
-    }
-
-    @discardableResult
-    private func pumpUntil(_ timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if condition() { return true }
-            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
-        }
-        return condition()
-    }
-
     private func descendants(of view: NSView) -> [NSView] {
         view.subviews + view.subviews.flatMap(descendants(of:))
     }

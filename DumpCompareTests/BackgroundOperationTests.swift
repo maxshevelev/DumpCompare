@@ -6,19 +6,6 @@ import XCTest
 /// finish, and cancel routing to the owner's action.
 @MainActor
 final class BackgroundOperationTests: XCTestCase {
-    /// Pumps the main actor until `condition` holds or the deadline passes.
-    /// `report`/`finish` hop to the main actor, so their effects are only
-    /// visible after a suspension point lets the queued main-actor tasks run.
-    @discardableResult
-    private func pumpUntil(_ timeout: TimeInterval, _ condition: () -> Bool) async -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if condition() { return true }
-            try? await Task.sleep(nanoseconds: 10_000_000)
-        }
-        return condition()
-    }
-
     /// Updates that move the bar by less than ~1% are skipped; every ≥1% step
     /// is dispatched to the main actor.
     func testReportThrottlesToOnePercentSteps() async {
@@ -33,7 +20,7 @@ final class BackgroundOperationTests: XCTestCase {
         op.report(0.02)
         op.report(0.5)
 
-        let settled = await pumpUntil(2) { reported.count == 3 }
+        let settled = await awaitUntil(2) { reported.count == 3 }
         XCTAssertTrue(settled, "the dispatched progress updates never landed")
         XCTAssertEqual(reported.first ?? -1, 0.01, accuracy: 1e-9,
                        "0.001–0.005 are < 1% away from 0 and must be skipped")
@@ -51,7 +38,7 @@ final class BackgroundOperationTests: XCTestCase {
         op.report(0.995)
         op.report(1)
 
-        let settled = await pumpUntil(2) { reported.last == 1 }
+        let settled = await awaitUntil(2) { reported.last == 1 }
         XCTAssertTrue(settled, "the final 1 must always be dispatched")
     }
 
@@ -66,7 +53,7 @@ final class BackgroundOperationTests: XCTestCase {
         op.report(0.5)
         op.report(1.5)
 
-        let settled = await pumpUntil(2) { reported.count == 2 }
+        let settled = await awaitUntil(2) { reported.count == 2 }
         XCTAssertTrue(settled, "the clamped updates never landed")
         XCTAssertEqual(reported.first ?? -1, 0.5, accuracy: 1e-9)
         XCTAssertEqual(reported.last ?? -1, 1, accuracy: 1e-9)
@@ -82,7 +69,7 @@ final class BackgroundOperationTests: XCTestCase {
         op.finish()
         op.finish()
 
-        let settled = await pumpUntil(2) { finishCount == 1 }
+        let settled = await awaitUntil(2) { finishCount == 1 }
         XCTAssertTrue(settled, "onFinish must fire exactly once")
 
         var reported: [Double] = []

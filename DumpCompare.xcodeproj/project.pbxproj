@@ -92,6 +92,7 @@
 		F22E5BE6C522ABA4E1AB95C7 /* BookmarkMinimapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F189C34D5AB2C07E056E3153 /* BookmarkMinimapTests.swift */; };
 		F4B6EF4BE70FBAC6B370975B /* MinimapSplitView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E9DE8C8DCB9742D00A031D6 /* MinimapSplitView.swift */; };
 		FC15B3B76A3DB244F7A1BBEE /* ActivePaneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0947EB3C44A8B0879C9B66A /* ActivePaneTests.swift */; };
+		FC89C9381F04CF1A1E46F3DC /* TestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C493FB0DA34423850B00F051 /* TestSupport.swift */; };
 		FD51EAC14BECCAC66D3AC19F /* ComparisonCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7338140948096ABDADE950FE /* ComparisonCoordinatorTests.swift */; };
 		FE72BF847B03FAA82DA321EE /* CaretPlacementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70B7EBE980B4A83830DD34D6 /* CaretPlacementTests.swift */; };
 /* End PBXBuildFile section */
@@ -175,6 +176,7 @@
 		B7A094B2E245E822EEB75E7F /* EditingSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditingSettingsTests.swift; sourceTree = "<group>"; };
 		B9A7DE8E7791AA34BDA2EAB1 /* WordSizeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WordSizeTests.swift; sourceTree = "<group>"; };
 		BE9F686DC291219019034AF9 /* SettingsWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowController.swift; sourceTree = "<group>"; };
+		C493FB0DA34423850B00F051 /* TestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestSupport.swift; sourceTree = "<group>"; };
 		C6B628E64567341A9AB617D6 /* TitleBarMenuTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TitleBarMenuTests.swift; sourceTree = "<group>"; };
 		C8F0ABAC4DEEBAE7DD9A62BB /* HexLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HexLayoutTests.swift; sourceTree = "<group>"; };
 		C93800C61BCBEC68735E074A /* AppearanceSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppearanceSettings.swift; sourceTree = "<group>"; };
@@ -334,6 +336,7 @@
 				7FC713959D9654C564AB34E0 /* PaneViewModelTests.swift */,
 				467E6E8B85C387891E7A7C56 /* SelectBlockSheetTests.swift */,
 				01DD6E4191B6BA3EBD959277 /* SelectionRedrawTests.swift */,
+				C493FB0DA34423850B00F051 /* TestSupport.swift */,
 				E9BBBA06BD7728DB1217E802 /* TextVerticalAlignmentTests.swift */,
 				C6B628E64567341A9AB617D6 /* TitleBarMenuTests.swift */,
 				19B4629E1E5C13B990345DDA /* ToolbarValidationTests.swift */,
@@ -528,6 +531,7 @@
 				3D4497C958650F03D3B40CC7 /* PanelAppearanceTests.swift in Sources */,
 				666ED5D024C7EE6E759D1392 /* SelectBlockSheetTests.swift in Sources */,
 				3B7237924700BD2DF3631C20 /* SelectionRedrawTests.swift in Sources */,
+				FC89C9381F04CF1A1E46F3DC /* TestSupport.swift in Sources */,
 				B4812C24F46A9A662D650DC3 /* TextVerticalAlignmentTests.swift in Sources */,
 				59F525D82A21BA453FA1001C /* TitleBarMenuTests.swift in Sources */,
 				1D538ECD5ACD42E2BE53460B /* ToolbarValidationTests.swift in Sources */,

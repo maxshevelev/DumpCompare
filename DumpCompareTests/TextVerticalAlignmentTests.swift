@@ -19,13 +19,6 @@ final class TextVerticalAlignmentTests: XCTestCase {
         UserDefaults.standard.set(1, forKey: WordSize.userDefaultsKey)
     }
 
-    private func tempFile(_ bytes: [UInt8]) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("align-\(UUID().uuidString).bin")
-        try Data(bytes).write(to: url)
-        return url
-    }
-
     /// A real `HexView` backed by a real `PaneViewModel`, rendered straight to a
     /// bitmap without a window or scroll view, so the test measures the hex
     /// view's own drawing rather than the window's compositing.

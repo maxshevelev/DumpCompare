@@ -7,22 +7,6 @@ import XCTest
 /// are unsaved changes. The fill replaces the "*" the title used to append.
 @MainActor
 final class PaneHeaderIconTests: XCTestCase {
-    private func tempFile(_ bytes: [UInt8]) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("pane-header-\(UUID().uuidString).bin")
-        try Data(bytes).write(to: url)
-        return url
-    }
-
-    private func descendants<T: NSView>(of view: NSView, _ type: T.Type) -> [T] {
-        var result: [T] = []
-        for sub in view.subviews {
-            if let match = sub as? T { result.append(match) }
-            result.append(contentsOf: descendants(of: sub, type))
-        }
-        return result
-    }
-
     /// The pane's document glyph: the NSImageView inside the PaneHeaderView.
     private func documentIcon(of pane: FilePaneView) throws -> NSImageView {
         let header = try XCTUnwrap(descendants(of: pane, PaneHeaderView.self).first)

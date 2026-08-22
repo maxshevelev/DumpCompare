@@ -19,23 +19,6 @@ final class BookmarkMinimapTests: XCTestCase {
         super.tearDown()
     }
 
-    private func tempFile(_ bytes: [UInt8]) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("bmmap-\(UUID().uuidString).bin")
-        try Data(bytes).write(to: url)
-        tempFiles.append(url)
-        return url
-    }
-
-    private func pumpUntil(_ timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if condition() { return true }
-            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
-        }
-        return condition()
-    }
-
     /// A controller in a real window with the minimap panel shown, and the files
     /// given open. `sizes.1 == nil` opens a single file.
     private func makeWindow(sizes: (Int, Int?), vertical: Bool = true)
@@ -71,10 +54,6 @@ final class BookmarkMinimapTests: XCTestCase {
             controller.windowModel.pane2.close()
         }
         return (controller, panel)
-    }
-
-    private func descendants<T: NSView>(of view: NSView, _ type: T.Type) -> [T] {
-        ((view as? T).map { [$0] } ?? []) + view.subviews.flatMap { descendants(of: $0, type) }
     }
 
     /// How purple a pixel is: purple has red and blue well above green, which no

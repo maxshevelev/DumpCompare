@@ -58,34 +58,6 @@ final class MinimapTests: XCTestCase {
         tempFiles = []
     }
 
-    private func tempFile(_ bytes: [UInt8]) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("minimap-\(UUID().uuidString).bin")
-        try Data(bytes).write(to: url)
-        tempFiles.append(url)
-        return url
-    }
-
-    private func descendants<T: NSView>(of view: NSView, _ type: T.Type) -> [T] {
-        var result: [T] = []
-        for sub in view.subviews {
-            if let match = sub as? T { result.append(match) }
-            result.append(contentsOf: descendants(of: sub, type))
-        }
-        return result
-    }
-
-    /// Pumps the main runloop until `condition` holds or the deadline passes.
-    @discardableResult
-    private func pumpUntil(_ timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if condition() { return true }
-            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
-        }
-        return condition()
-    }
-
     /// A real controller in a real window, laid out at a known size. The
     /// minimap needs no open file at stage 1, but the window gives the split
     /// real bounds so the divider pin and panel width all have room to work.

@@ -17,13 +17,6 @@ final class ContentRedrawTests: XCTestCase {
         UserDefaults.standard.set(1, forKey: WordSize.userDefaultsKey)
     }
 
-    private func tempFile(_ bytes: [UInt8]) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("content-redraw-\(UUID().uuidString).bin")
-        try Data(bytes).write(to: url)
-        return url
-    }
-
     /// A pane hosting a real hex view in a real window (same pattern as
     /// `SelectionRedrawTests.makePane`), so `contentChangeRects` runs against a
     /// real layout and viewport. The temp file stays on disk; the caller

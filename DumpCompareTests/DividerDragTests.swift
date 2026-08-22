@@ -27,14 +27,6 @@ final class DividerDragTests: XCTestCase {
         tempFiles = []
     }
 
-    private func tempFile(_ bytes: [UInt8]) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("drag-test-\(UUID().uuidString).bin")
-        try Data(bytes).write(to: url)
-        tempFiles.append(url)
-        return url
-    }
-
     /// Builds a ComparisonView pinned into a real window. Points returned are
     /// in the split view's own coordinates; `windowPoint` converts them for the
     /// synthesized events.
@@ -67,13 +59,6 @@ final class DividerDragTests: XCTestCase {
 
     private func windowPoint(_ splitView: NSSplitView, _ point: NSPoint) -> NSPoint {
         splitView.convert(point, to: nil)
-    }
-
-    private func mouse(_ type: NSEvent.EventType, at p: NSPoint, window: NSWindow, clickCount: Int = 1) -> NSEvent {
-        NSEvent.mouseEvent(with: type, location: p, modifierFlags: [],
-                           timestamp: ProcessInfo.processInfo.systemUptime,
-                           windowNumber: window.windowNumber, context: nil,
-                           eventNumber: 0, clickCount: clickCount, pressure: 1)!
     }
 
     /// Drags the divider from its current spot to `target` (both in the split

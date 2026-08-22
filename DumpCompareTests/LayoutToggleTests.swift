@@ -37,14 +37,6 @@ final class LayoutToggleTests: XCTestCase {
         tempFiles = []
     }
 
-    private func tempFile(_ bytes: [UInt8]) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("toggle-test-\(UUID().uuidString).bin")
-        try Data(bytes).write(to: url)
-        tempFiles.append(url)
-        return url
-    }
-
     /// Runs the window through several display + runloop turns so the re-fit /
     /// restore cycle NSSplitView triggers on orientation change settles.
     private func settle(_ window: NSWindow, turns: Int = 4) {
@@ -57,25 +49,6 @@ final class LayoutToggleTests: XCTestCase {
 
     private func windowPoint(_ splitView: NSSplitView, _ point: NSPoint) -> NSPoint {
         splitView.convert(point, to: nil)
-    }
-
-    /// All `type` views anywhere under `view`. The comparison view no longer sits
-    /// directly in the controller's root view — it lives inside a content
-    /// container below the find bar — so a direct-subviews lookup would miss it.
-    private func descendants<T: NSView>(of view: NSView, _ type: T.Type) -> [T] {
-        var result: [T] = []
-        for sub in view.subviews {
-            if let match = sub as? T { result.append(match) }
-            result.append(contentsOf: descendants(of: sub, type))
-        }
-        return result
-    }
-
-    private func mouse(_ type: NSEvent.EventType, at p: NSPoint, window: NSWindow) -> NSEvent {
-        NSEvent.mouseEvent(with: type, location: p, modifierFlags: [],
-                           timestamp: ProcessInfo.processInfo.systemUptime,
-                           windowNumber: window.windowNumber, context: nil,
-                           eventNumber: 0, clickCount: 1, pressure: 1)!
     }
 
     func testToggleKeepsWindowSizeAndDividerWorks() throws {

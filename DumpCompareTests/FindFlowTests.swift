@@ -42,14 +42,6 @@ final class FindFlowTests: XCTestCase {
         tempFiles = []
     }
 
-    private func tempFile(_ bytes: [UInt8]) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("find-\(UUID().uuidString).bin")
-        try Data(bytes).write(to: url)
-        tempFiles.append(url)
-        return url
-    }
-
     /// A real controller in a real window with one file open (single-file mode).
     /// The test host resizes the window to the pane's fitting size (which, with
     /// the hex dump's content-sized scroll view, would leave the results-panel
@@ -71,26 +63,6 @@ final class FindFlowTests: XCTestCase {
         window.contentView?.heightAnchor.constraint(greaterThanOrEqualToConstant: 600).isActive = true
         window.layoutIfNeeded()
         return (controller, window, url)
-    }
-
-    private func descendants<T: NSView>(of view: NSView, _ type: T.Type) -> [T] {
-        var result: [T] = []
-        for sub in view.subviews {
-            if let match = sub as? T { result.append(match) }
-            result.append(contentsOf: descendants(of: sub, type))
-        }
-        return result
-    }
-
-    /// Pumps the main runloop until `condition` holds or the deadline passes.
-    @discardableResult
-    private func pumpUntil(_ timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if condition() { return true }
-            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
-        }
-        return condition()
     }
 
     /// Close the pane and delete the temp file. Closing stops the file watcher:

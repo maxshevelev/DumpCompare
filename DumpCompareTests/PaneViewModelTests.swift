@@ -6,13 +6,6 @@ import XCTest
 /// delete, selection overwrite, paste, undo/redo, modified-byte detection).
 @MainActor
 final class PaneViewModelTests: XCTestCase {
-    private func tempFile(_ bytes: [UInt8]) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("pane-test-\(UUID().uuidString).bin")
-        try Data(bytes).write(to: url)
-        return url
-    }
-
     private func openPane(_ bytes: [UInt8]) throws -> (PaneViewModel, URL) {
         let url = try tempFile(bytes)
         let pane = PaneViewModel()

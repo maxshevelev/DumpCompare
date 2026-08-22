@@ -22,13 +22,6 @@ final class ActivePaneTests: XCTestCase {
         UserDefaults.standard.set(1, forKey: WordSize.userDefaultsKey)
     }
 
-    private func tempFile(_ bytes: [UInt8]) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("active-pane-\(UUID().uuidString).bin")
-        try Data(bytes).write(to: url)
-        return url
-    }
-
     private func makeComparisonView(bytes1: [UInt8]? = nil, bytes2: [UInt8]? = nil) throws -> (ComparisonView, NSWindow, URL, URL) {
         let url1 = try tempFile(bytes1 ?? [UInt8](repeating: 0x41, count: 1024))
         let url2 = try tempFile(bytes2 ?? [UInt8](repeating: 0x42, count: 1024))
@@ -64,13 +57,6 @@ final class ActivePaneTests: XCTestCase {
 
     private func hexView(of pane: FilePaneView) throws -> HexView {
         try XCTUnwrap(pane.scrollView.documentView as? HexView)
-    }
-
-    private func mouse(_ type: NSEvent.EventType, at p: NSPoint, window: NSWindow) -> NSEvent {
-        NSEvent.mouseEvent(with: type, location: p, modifierFlags: [],
-                           timestamp: ProcessInfo.processInfo.systemUptime,
-                           windowNumber: window.windowNumber, context: nil,
-                           eventNumber: 0, clickCount: 1, pressure: 1)!
     }
 
     /// Window point of the centre of byte `column` in `row` — a real clickable

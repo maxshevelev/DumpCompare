@@ -17,13 +17,6 @@ final class HexColumnHeaderTests: XCTestCase {
         UserDefaults.standard.set(1, forKey: WordSize.userDefaultsKey)
     }
 
-    private func tempFile(_ bytes: [UInt8]) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("colheader-\(UUID().uuidString).bin")
-        try Data(bytes).write(to: url)
-        return url
-    }
-
     /// A real pane with a file open, so the header's hexView geometry is live.
     private func makePane(_ bytes: [UInt8]) throws -> (FilePaneView, HexColumnHeaderView, HexView, URL) {
         let url = try tempFile(bytes)

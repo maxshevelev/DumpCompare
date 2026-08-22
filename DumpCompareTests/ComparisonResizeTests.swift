@@ -22,14 +22,6 @@ final class ComparisonResizeTests: XCTestCase {
         tempFiles = []
     }
 
-    private func tempFile(_ bytes: [UInt8]) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("resize-test-\(UUID().uuidString).bin")
-        try Data(bytes).write(to: url)
-        tempFiles.append(url)
-        return url
-    }
-
     private func makeComparisonView(vertical: Bool) throws -> (ComparisonView, NSView) {
         UserDefaults.standard.set(vertical, forKey: "ComparisonPaneLayoutIsVertical")
         let url1 = try tempFile([UInt8](repeating: 0x41, count: 4096))

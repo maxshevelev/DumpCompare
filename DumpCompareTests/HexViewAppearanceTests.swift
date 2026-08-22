@@ -19,13 +19,6 @@ final class HexViewAppearanceTests: XCTestCase {
         super.tearDown()
     }
 
-    private func tempFile(_ bytes: [UInt8]) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("appearance-\(UUID().uuidString).bin")
-        try Data(bytes).write(to: url)
-        return url
-    }
-
     /// A real `HexView` backed by a real `PaneViewModel` (no window/scroll view
     /// needed — we only read layout metrics).
     private func makeHexView(_ bytes: [UInt8]) throws -> (HexView, PaneViewModel, URL) {

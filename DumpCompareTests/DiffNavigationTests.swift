@@ -9,33 +9,6 @@ import XCTest
 /// through the synchronized scroll (§9).
 @MainActor
 final class DiffNavigationTests: XCTestCase {
-    private func tempFile(_ bytes: [UInt8]) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("diff-nav-\(UUID().uuidString).bin")
-        try Data(bytes).write(to: url)
-        return url
-    }
-
-    private func descendants<T: NSView>(of view: NSView, _ type: T.Type) -> [T] {
-        var result: [T] = []
-        for sub in view.subviews {
-            if let match = sub as? T { result.append(match) }
-            result.append(contentsOf: descendants(of: sub, type))
-        }
-        return result
-    }
-
-    /// Pumps the main runloop until `condition` holds or the deadline passes.
-    @discardableResult
-    private func pumpUntil(_ timeout: TimeInterval, _ condition: () -> Bool) -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if condition() { return true }
-            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
-        }
-        return condition()
-    }
-
     /// Two 300-row files: a difference at row 100 and a difference at row 250,
     /// both far below the initial viewport. Blocks run
     /// same·diff·same·diff·same (§10.3):

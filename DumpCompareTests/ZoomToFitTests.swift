@@ -8,13 +8,6 @@ import XCTest
 /// put; only the bottom edge moves.
 @MainActor
 final class ZoomToFitTests: XCTestCase {
-    private func tempFile(_ bytes: [UInt8]) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("zoom-test-\(UUID().uuidString).bin")
-        try Data(bytes).write(to: url)
-        return url
-    }
-
     private func findPanes(in view: NSView) -> [FilePaneView] {
         var found: [FilePaneView] = []
         if let pane = view as? FilePaneView {

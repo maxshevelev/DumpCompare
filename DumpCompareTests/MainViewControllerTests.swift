@@ -10,13 +10,6 @@ import XCTest
 /// pane mid-test (§5.5).
 @MainActor
 final class MainViewControllerTests: XCTestCase {
-    private func tempFile(_ bytes: [UInt8]) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("mvc-alert-\(UUID().uuidString).bin")
-        try Data(bytes).write(to: url)
-        return url
-    }
-
     /// This suite runs under the XCTest runner, so the flag must be true here
     /// (and false in a normal app launch). If detection ever fails, every
     /// `presentModal` starts blocking and the suite hangs again.

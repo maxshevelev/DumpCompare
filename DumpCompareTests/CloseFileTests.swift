@@ -8,13 +8,6 @@ import XCTest
 /// `onClose`, so the single-file (×) was visible but ignored.
 @MainActor
 final class CloseFileTests: XCTestCase {
-    private func tempFile(_ bytes: [UInt8]) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("close-\(UUID().uuidString).bin")
-        try Data(bytes).write(to: url)
-        return url
-    }
-
     /// A real controller in a real window with one file open (single-file mode).
     private func makeController(_ bytes: [UInt8]) throws -> (MainViewController, NSWindow, URL) {
         let url = try tempFile(bytes)
@@ -27,15 +20,6 @@ final class CloseFileTests: XCTestCase {
         controller.apply(mode: .singleFile)
         window.layoutIfNeeded()
         return (controller, window, url)
-    }
-
-    private func descendants<T: NSView>(of view: NSView, _ type: T.Type) -> [T] {
-        var result: [T] = []
-        for sub in view.subviews {
-            if let match = sub as? T { result.append(match) }
-            result.append(contentsOf: descendants(of: sub, type))
-        }
-        return result
     }
 
     private func closeButton(in view: NSView) throws -> NSButton {

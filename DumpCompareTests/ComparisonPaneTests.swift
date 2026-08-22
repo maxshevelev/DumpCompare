@@ -7,13 +7,6 @@ import XCTest
 /// caret/selection synchronization by absolute offset (§9).
 @MainActor
 final class ComparisonPaneTests: XCTestCase {
-    private func tempFile(_ bytes: [UInt8]) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("comp-pane-test-\(UUID().uuidString).bin")
-        try Data(bytes).write(to: url)
-        return url
-    }
-
     /// Opens both files and cross-wires them as companions. Files stay on disk
     /// for the whole test (the storages read them lazily). Bind the returned
     /// tuple to a `let` for the test's lifetime: the panes reference each other

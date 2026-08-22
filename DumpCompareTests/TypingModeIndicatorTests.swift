@@ -8,13 +8,6 @@ import XCTest
 /// open, and it flips the moment the mode does, without waiting for an edit.
 @MainActor
 final class TypingModeIndicatorTests: XCTestCase {
-    private func tempFile(_ bytes: [UInt8]) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("mode-indicator-\(UUID().uuidString).bin")
-        try Data(bytes).write(to: url)
-        return url
-    }
-
     private func makePane(_ bytes: [UInt8]) throws -> (FilePaneView, PaneViewModel, URL) {
         let url = try tempFile(bytes)
         let viewModel = PaneViewModel()

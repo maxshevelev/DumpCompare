@@ -7,15 +7,6 @@ import XCTest
 /// action the button used.
 @MainActor
 final class EmptyStateViewTests: XCTestCase {
-    private func descendants<T: NSView>(of view: NSView, _ type: T.Type) -> [T] {
-        var result: [T] = []
-        for sub in view.subviews {
-            if let match = sub as? T { result.append(match) }
-            result.append(contentsOf: descendants(of: sub, type))
-        }
-        return result
-    }
-
     private func makeEmptyView() -> EmptyStateView {
         let view = EmptyStateView()
         view.frame = NSRect(x: 0, y: 0, width: 600, height: 400)

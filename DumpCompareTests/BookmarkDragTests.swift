@@ -162,13 +162,6 @@ final class BookmarkDragTests: XCTestCase {
         return (pane, hexView, window, store)
     }
 
-    private func mouse(_ type: NSEvent.EventType, at point: NSPoint, window: NSWindow) throws -> NSEvent {
-        try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
-                                         timestamp: ProcessInfo.processInfo.systemUptime,
-                                         windowNumber: window.windowNumber, context: nil,
-                                         eventNumber: 0, clickCount: 1, pressure: 1))
-    }
-
     /// Window point over the address of `row` — where its mark is drawn (§20.4).
     private func addressPoint(_ hexView: HexView, row: Int) -> NSPoint {
         let frame = hexView.hexLayout.offsetColumnFrame(row: row)

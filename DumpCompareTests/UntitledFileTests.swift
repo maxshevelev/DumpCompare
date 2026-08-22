@@ -12,15 +12,6 @@ final class UntitledFileTests: XCTestCase {
             .appendingPathComponent("untitled-\(UUID().uuidString)-\(name)")
     }
 
-    private func descendants<T: NSView>(of view: NSView, _ type: T.Type) -> [T] {
-        var result: [T] = []
-        for sub in view.subviews {
-            if let match = sub as? T { result.append(match) }
-            result.append(contentsOf: descendants(of: sub, type))
-        }
-        return result
-    }
-
     /// The pane's document glyph: the NSImageView inside the PaneHeaderView.
     private func documentIcon(of pane: FilePaneView) throws -> NSImageView {
         let header = try XCTUnwrap(descendants(of: pane, PaneHeaderView.self).first)

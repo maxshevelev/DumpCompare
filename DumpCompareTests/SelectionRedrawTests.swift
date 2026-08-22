@@ -21,13 +21,6 @@ final class SelectionRedrawTests: XCTestCase {
         UserDefaults.standard.set(1, forKey: WordSize.userDefaultsKey)
     }
 
-    private func tempFile(_ bytes: [UInt8]) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("sel-redraw-\(UUID().uuidString).bin")
-        try Data(bytes).write(to: url)
-        return url
-    }
-
     /// A pane hosting a real hex view in a real window (same pattern as
     /// `MouseSelectionTests`), so `changedSelectionRects` runs against a real
     /// layout. The temp file stays on disk; the caller removes it when done.

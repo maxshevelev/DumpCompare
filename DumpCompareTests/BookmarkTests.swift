@@ -33,13 +33,6 @@ final class BookmarkTests: XCTestCase {
         super.tearDown()
     }
 
-    private func tempFile(_ bytes: [UInt8]) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("bookmark-\(UUID().uuidString).bin")
-        try Data(bytes).write(to: url)
-        return url
-    }
-
     // MARK: - Store arithmetic
 
     /// A bookmark snaps to its row: any offset in a row marks that row's start,

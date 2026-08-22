@@ -39,14 +39,6 @@ final class GoToBookmarksTests: XCTestCase {
         tempFiles = []
     }
 
-    private func tempFile(_ bytes: [UInt8]) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("goto-\(UUID().uuidString).bin")
-        try Data(bytes).write(to: url)
-        tempFiles.append(url)
-        return url
-    }
-
     // MARK: - The form on its own
 
     /// The form in a real window (the table needs a layout to build its cell

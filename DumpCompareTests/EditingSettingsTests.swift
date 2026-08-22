@@ -21,13 +21,6 @@ final class EditingSettingsTests: XCTestCase {
         super.tearDown()
     }
 
-    private func tempFile(_ bytes: [UInt8]) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("editing-settings-\(UUID().uuidString).bin")
-        try Data(bytes).write(to: url)
-        return url
-    }
-
     // MARK: - The stored value
 
     func testWarningsAreOnUntilSwitchedOff() {

@@ -53,13 +53,6 @@ final class TitleBarMenuTests: XCTestCase {
         }
     }
 
-    private func tempFile(_ bytes: [UInt8]) throws -> URL {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("titlebar-\(UUID().uuidString).bin")
-        try Data(bytes).write(to: url)
-        return url
-    }
-
     // MARK: - App menu bar File submenu
 
     func testFileMenuCarriesEveryFileMenuItem() {
@@ -189,12 +182,4 @@ final class TitleBarMenuTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func descendants<T: NSView>(of view: NSView, _ type: T.Type) -> [T] {
-        var result: [T] = []
-        for sub in view.subviews {
-            if let match = sub as? T { result.append(match) }
-            result.append(contentsOf: descendants(of: sub, type))
-        }
-        return result
-    }
 }
