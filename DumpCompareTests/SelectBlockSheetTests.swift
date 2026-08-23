@@ -38,23 +38,42 @@ final class SelectBlockSheetTests: XCTestCase {
     /// A sheet is as tall as its own rows: a floor of 200 pt left the one-field
     /// sheets with a hand's width of nothing between the field and the buttons,
     /// because the slack had to go somewhere (§10).
+    /// A sheet is as tall as its own rows: nothing pads it out to a minimum.
+    ///
+    /// The regression this guards is the fixed `heightAnchor >= 200` the sheets
+    /// once carried, which stretched a one-row sheet to a height it had no use
+    /// for and left a void above the buttons. So the test states exactly that: a
+    /// one-row sheet fits in less than that floor, and a three-row sheet is
+    /// taller than a one-row sheet.
+    ///
+    /// No absolute platform metrics. The earlier version asserted the gap above
+    /// the buttons was under 40 pt — it measured 38 on the machine it was written
+    /// on, so two points of headroom, and it failed on a macOS version whose
+    /// controls are slightly taller. That was a claim about AppKit's metrics
+    /// wearing this sheet's name; 200 is not a metric, it is the constant that
+    /// was removed.
     func testASheetIsAsTallAsItsRows() throws {
+        /// The floor the sheets used to impose on themselves.
+        let removedHeightFloor: CGFloat = 200
+
         let fill = FillSheetController(selectionCount: 64) { _ in }
         fill.loadViewIfNeeded()
         fill.view.layoutSubtreeIfNeeded()
-        let field = try XCTUnwrap(fill.firstField())
-        let fieldFrame = fill.view.convert(field.bounds, from: field)
-        let buttons = fill.view.convert(fill.buttonRow.bounds, from: fill.buttonRow)
-        // The sheet's root view is not flipped, so lower means a smaller y.
-        let gap = fieldFrame.minY - buttons.maxY
-        XCTAssertGreaterThan(gap, 0, "the buttons are below the field")
-        XCTAssertLessThan(gap, 40, "and not a hand's width away")
-
         let block = SelectBlockSheetController(fileSize: 0x100) { _ in }
         block.loadViewIfNeeded()
         block.view.layoutSubtreeIfNeeded()
+
+        XCTAssertLessThan(fill.view.fittingSize.height, removedHeightFloor,
+                          "one row of fields must not be stretched to the old floor")
         XCTAssertGreaterThan(block.view.fittingSize.height, fill.view.fittingSize.height,
                              "three rows of fields make a taller sheet than one")
+
+        // And the buttons are still below the fields rather than through them.
+        let field = try XCTUnwrap(fill.firstField())
+        let fieldFrame = fill.view.convert(field.bounds, from: field)
+        let buttons = fill.view.convert(fill.buttonRow.bounds, from: fill.buttonRow)
+        XCTAssertGreaterThan(fieldFrame.minY, buttons.maxY,
+                             "the buttons sit below the field, not over it")
     }
 
     /// The validation message lines up with the fields it is about, not with the
