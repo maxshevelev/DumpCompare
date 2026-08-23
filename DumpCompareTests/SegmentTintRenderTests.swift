@@ -3,9 +3,9 @@ import XCTest
 @testable import DumpCompare
 
 /// §21.3 the tint, measured off a real `HexView`'s pixels rather than described:
-/// a piece's rows carry a pale band edge to edge — the Offset column included —
-/// gaps included, split at the mid-gap between the two bytes a cut separates,
-/// and stopping at EOF. The band is the bottom of the layering stack — the
+/// a piece's rows carry a pale band edge to edge — from the panel's own left
+/// edge, the Offset column included — gaps included, split at the mid-gap
+/// between the two bytes a cut separates, and stopping at EOF. The band is the bottom of the layering stack — the
 /// offset column, a difference, and a selection are all drawn over it, so what
 /// a byte *is* outranks which piece it belongs to, and a bookmark's arrow is
 /// never buried under the band.
@@ -117,10 +117,10 @@ final class SegmentTintRenderTests: XCTestCase {
                       "the before-text gap takes the piece's colour too")
     }
 
-    /// The band is edge to edge (§21.3): it reaches the Offset column, so the
-    /// address stands on the piece's colour rather than the paper. Sampled at
-    /// the column's left edge, clear of the address glyphs.
-    func testTheOffsetColumnIsTinted() throws {
+    /// The band is edge to edge (§21.3): it reaches the panel's own left edge,
+    /// so the strip before the Offset column — and the column itself — stand on
+    /// the piece's colour rather than the paper.
+    func testTheBandReachesThePanelsEdge() throws {
         let (hexView, pane, url) = try makeHexView([UInt8](repeating: 0x41, count: 32))
         defer { try? FileManager.default.removeItem(at: url) }
         XCTAssertTrue(pane.segmentStore.addCut(at: 16))
@@ -128,10 +128,17 @@ final class SegmentTintRenderTests: XCTestCase {
         let layout = hexView.hexLayout
         let y = topY(layout, row: 0)
 
-        let offsetX = layout.leftPadding + 2
-        let offsetPixel = try pixel(hexView, x: offsetX, y: y)
+        // The strip between the panel's edge and the Offset column's first
+        // glyph: paper before, the piece's colour now.
+        let stripX = layout.leftPadding / 2
+        let stripPixel = try pixel(hexView, x: stripX, y: y)
+        let offsetPixel = try pixel(hexView, x: layout.leftPadding + 2, y: y)
         let tintedPixel = try pixel(hexView, x: layout.hexByteX(column: 3) + layout.hexByteWidth / 2, y: y)
 
+        XCTAssertGreaterThan(distance(stripPixel, .white), 0.15,
+                             "the band reaches the panel's edge, not the offset column's start")
+        XCTAssertTrue(sameTint(stripPixel, tintedPixel),
+                      "the strip before the Offset column takes the piece's colour")
         XCTAssertGreaterThan(distance(offsetPixel, .white), 0.15,
                              "the Offset column is tinted, edge to edge")
         XCTAssertTrue(sameTint(offsetPixel, tintedPixel),

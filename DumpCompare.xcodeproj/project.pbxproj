@@ -87,6 +87,8 @@
 		D56ABFDA0674ADF2EA2D57A2 /* TypingModeIndicatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAB9141A276D1D3ABE1A8DA1 /* TypingModeIndicatorTests.swift */; };
 		D6ED287D2A8DB2A57583D655 /* EditingSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7A094B2E245E822EEB75E7F /* EditingSettingsTests.swift */; };
 		D9839CD03A47C08FDD11F56A /* GoToBookmarksForm.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D99A26B60D8F318F39CD981 /* GoToBookmarksForm.swift */; };
+		3E88B4B49E0847783B6B6C0A /* SegmentsForm.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35A39846DCB53C955800A665 /* SegmentsForm.swift */; };
+		B7E3C9D2A1F44E589C0D2E11 /* SegmentsFormTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4F8A1B6D3E24F7A8B5C9D22 /* SegmentsFormTests.swift */; };
 		DAF5D3E696B50F5661DC7CC7 /* MinimapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27C6A9590239BF0BA6B2EC2B /* MinimapTests.swift */; };
 		DFC3C74F422D6ABD6F424B03 /* SearchResultsSplitView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B72AB146FFF18805F8C88D4 /* SearchResultsSplitView.swift */; };
 		E277C195099E972758654BB6 /* MainWindowMenuTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4F1945C5B2DF090953B5150 /* MainWindowMenuTests.swift */; };
@@ -139,6 +141,8 @@
 		39D2A05C7DA0DE400C947364 /* LayoutToggleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LayoutToggleTests.swift; sourceTree = "<group>"; };
 		3CEC5406939AEF4D7D0DCDBE /* FindFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FindFlowTests.swift; sourceTree = "<group>"; };
 		3D99A26B60D8F318F39CD981 /* GoToBookmarksForm.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoToBookmarksForm.swift; sourceTree = "<group>"; };
+		35A39846DCB53C955800A665 /* SegmentsForm.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentsForm.swift; sourceTree = "<group>"; };
+		C4F8A1B6D3E24F7A8B5C9D22 /* SegmentsFormTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentsFormTests.swift; sourceTree = "<group>"; };
 		3EAF3044B457DFB2C4EC889D /* CutEditPopover.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CutEditPopover.swift; sourceTree = "<group>"; };
 		407514C243C2AD42122D02CD /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		443E56A308DC1D5D8E806F72 /* FileChangeWatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileChangeWatcher.swift; sourceTree = "<group>"; };
@@ -288,6 +292,7 @@
 				0B72AB146FFF18805F8C88D4 /* SearchResultsSplitView.swift */,
 				94F9798D65C19064B84DBD0D /* SearchResultsView.swift */,
 				F984C7BD6FD6F4E6EFA4D783 /* SegmentStore.swift */,
+				35A39846DCB53C955800A665 /* SegmentsForm.swift */,
 				BE9F686DC291219019034AF9 /* SettingsWindowController.swift */,
 				4B1D587B9291F026D4B00A15 /* SheetControllers.swift */,
 				843BDADF6DC010ED5707D0F2 /* SingleFileDropView.swift */,
@@ -355,6 +360,7 @@
 				D8FE77BD408D4E768F8FC6EF /* SegmentPaletteTests.swift */,
 				98E9F6B84E53934F8BA5EF7D /* SegmentStoreTests.swift */,
 				7163FEB7459D03892D3A4BB8 /* SegmentTintRenderTests.swift */,
+				C4F8A1B6D3E24F7A8B5C9D22 /* SegmentsFormTests.swift */,
 				467E6E8B85C387891E7A7C56 /* SelectBlockSheetTests.swift */,
 				01DD6E4191B6BA3EBD959277 /* SelectionRedrawTests.swift */,
 				C493FB0DA34423850B00F051 /* TestSupport.swift */,
@@ -499,6 +505,7 @@
 				DFC3C74F422D6ABD6F424B03 /* SearchResultsSplitView.swift in Sources */,
 				B46F403617E9FED68876637C /* SearchResultsView.swift in Sources */,
 				6806AAFB2B69538E8F48431E /* SegmentStore.swift in Sources */,
+				3E88B4B49E0847783B6B6C0A /* SegmentsForm.swift in Sources */,
 				C35E1583998132707D8E1749 /* SettingsWindowController.swift in Sources */,
 				E4B2D90C3A49F9CAA976DCEF /* SheetControllers.swift in Sources */,
 				C469DA232E32792EBE3B5607 /* SingleFileDropView.swift in Sources */,
@@ -557,6 +564,7 @@
 				BA09A682770E765EA63950E5 /* SegmentPaletteTests.swift in Sources */,
 				821693F5E7539F5B8A1EEE35 /* SegmentStoreTests.swift in Sources */,
 				4841F7FC6C31CBD6FCD650EE /* SegmentTintRenderTests.swift in Sources */,
+				B7E3C9D2A1F44E589C0D2E11 /* SegmentsFormTests.swift in Sources */,
 				666ED5D024C7EE6E759D1392 /* SelectBlockSheetTests.swift in Sources */,
 				3B7237924700BD2DF3631C20 /* SelectionRedrawTests.swift in Sources */,
 				FC89C9381F04CF1A1E46F3DC /* TestSupport.swift in Sources */,

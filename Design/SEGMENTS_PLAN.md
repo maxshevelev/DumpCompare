@@ -140,14 +140,16 @@ hover text says which of the two it is under the pointer — the piece in the mi
 of a block, the boundary near a cut (`S0 │ S1 — 0x400000`), so the target
 announces itself.
 
-**3. The caret's segment in the status bar.** `S1: 400000-C00000 (8 MB)` — the
+**3. The caret's segment in the status bar.** `S1: 0002E6-400000 (255 KB)` — the
 label, the piece's half-open range in bare hex (no `0x` prefix), and its size,
-as one block beside the offsets the bar already shows. The caret's offset is
-shown the same way: bare hex, no `0x` prefix and no decimal. No new chrome,
-present whether or not the minimap is open, and it answers the question that
-comes up while scrolling — *which piece am I in?* Shown only when the pane has
-two or more pieces: `S0` beside a whole file is noise, and the readout appearing
-at all is itself the signal that this dump is partitioned.
+rounded to a whole value of its abbreviation. Every address in the bar — the
+caret's offset and the piece's bounds — is zero-padded to the width of the
+file's largest address (the last piece's exclusive end, which can be the file's
+own size), so they read as aligned columns. No new chrome, present whether or
+not the minimap is open, and it answers the question that comes up while
+scrolling — *which piece am I in?* Shown only when the pane has two or more
+pieces: `S0` beside a whole file is noise, and the readout appearing at all is
+itself the signal that this dump is partitioned.
 
 **No click-to-select.** Selecting a whole piece is a rare act and a stray click
 should not do it: selection stays a menu item. The one thing a plain click does is
@@ -479,30 +481,41 @@ and selections. No form, no strip, no writing out.
   cells** — §20.5's lesson, a field in a row is edited by a click on an
   already-selected row and collides with the double click that activates it.
 - The row editor: the popover from stage 2 — **offset** and **description**, the
-  offset validated as it is typed (§10.1), Return committing, Esc restoring —
-  opened by a double click on the row or from the row's context menu. One panel
-  makes a cut and changes one; moving a cut is typing a number in it, deliberately,
-  since cuts do not drag.
+  offset validated as it is typed (§10.1) and the description opened with the
+  piece's current name (so editing a named piece does not open blank), Return
+  committing, Esc restoring — opened by a double click on the row or from the
+  row's context menu. One panel makes a cut and changes one; moving a cut is
+  typing a number in it, deliberately, since cuts do not drag.
 - **A `+`/`−` footer under the table**, the way Apple's own tables do it (the
   Target Dependencies pane in Xcode is the reference): a hairline, then two
-  borderless small buttons at the left — `plus` opens the Add Cut popover,
-  anchored to the button itself, and `minus` removes the selected **piece** —
-  merging its bytes into a neighbour that keeps its name. `−` is disabled only
-  with no selection, or when the pane is a single piece; it is enabled on **S0**
-  too, which is removed by re-opening the piece below at the file start (what was
-  S1 becomes S0). Icon-only, so both carry a tooltip and an accessibility label.
+  borderless small buttons at the left, the same width so `−` does not read as a
+  smaller, disabled button — `plus` opens the Add Cut popover, anchored to the
+  button itself, with the offset field **empty** (just the `0x` prefix) and the
+  caret on it: from the form there is no caret to start from, the offset is the
+  thing to be filled in, and an unfilled offset makes no segment. `minus`
+  removes the selected **piece** — merging its bytes into a neighbour that keeps
+  its name. `−` is disabled only when the pane is a single piece (no neighbour to
+  merge into); it is enabled on **S0** too, which is removed by re-opening the
+  piece below at the file start (what was S1 becomes S0). Icon-only, so both
+  carry a tooltip and an accessibility label.
 - **The row's context menu** carries what acts on one piece: *Save Segment…*,
   *Replace Segment from File…*, *Edit…*, *Remove Segment* — the same menu the
   strip beside the map offers (§21.3), so one shape in both places.
 - The dialog's own button row holds only what acts on the whole partition:
-  **Save All as Separate Files…** and **Close**.
-- Keys: Return goes to the selected piece's start; ⌫ is `−`.
+  **Remove All** at the left — every cut at once, back to one piece named for
+  the file, and it asks before acting — then **Save All as Separate Files…** and
+  **Close** at the right.
+- Keys: ⌥⌘S opens the form (⌘S is Save, ⇧⌘S is Save As, so the form takes the
+  Option variant); Return goes to the selected piece's start; ⌫ is `−`.
 - Tests: the table's contents against a partitioned pane; the popover's commit
-  moving a cut and changing a description; `+` opening the popover anchored to
-  itself; `−` disabled with nothing selected and on a single-piece pane, enabled
-  on S1 **and** on S0 (removing S0 renumbers the piece below to S0); `⌫` doing
-  what `−` does; the row menu's items, their targets and the piece each carries;
-  the form following a cut made elsewhere in the app; Return navigating. (The
+  moving a cut and changing a description, and the description opening with the
+  piece's current name; `+` opening the popover with an empty `0x` offset, the
+  caret on it, and no segment made while it is unfilled; `−` the same width as
+  `+`, disabled on a single-piece pane and enabled on every piece once
+  partitioned (S0 included, removing S0 renumbers the piece below to S0);
+  **Remove All** asking first and, once confirmed, leaving one piece named for
+  the file; the row menu's items, their targets and the piece each carries; the
+  form following a cut made elsewhere in the app; Return navigating. (The
   popover's own validation is stage 2's, tested once.)
 - Spec: §21.4.
 

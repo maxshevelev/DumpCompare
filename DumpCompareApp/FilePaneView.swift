@@ -846,19 +846,25 @@ final class FilePaneView: NSView {
 
     private func updateStatus() {
         let status = viewModel.status
+        // Every address in the bar takes the same width: the hex digits of the
+        // file's largest address — the last piece's exclusive end, which can be
+        // the file's own size — so the offset and the segment's bounds read as
+        // aligned columns, zero-padded to that width (§21.3).
+        let width = status.fileSize > 0 ? String(status.fileSize, radix: 16).count : 1
+        func address(_ value: UInt64) -> String {
+            String(value, radix: 16, uppercase: true).leftPadded(to: width, with: "0")
+        }
         var parts: [String] = []
-        parts.append("Offset \(String(format: "%X", status.cursorOffset))")
+        parts.append("Offset \(address(status.cursorOffset))")
         if status.selectionLength > 0 {
             parts.append("\(status.selectionLength) selected")
         }
         // The caret's piece, beside the offset (§21.3): one block,
-        // "S1: <start>-<end> (length)" — bare hex, no 0x prefix. Absent when
-        // the pane is one piece — its appearing is the signal the dump is
-        // partitioned.
+        // "S1: <start>-<end> (length)" — bare hex, no 0x prefix, zero-padded to
+        // the bar's address width. Absent when the pane is one piece — its
+        // appearing is the signal the dump is partitioned.
         if let seg = status.segment {
-            let start = String(format: "%X", seg.range.lowerBound)
-            let end = String(format: "%X", seg.range.upperBound)
-            parts.append("\(seg.label): \(start)-\(end) (\(Self.friendlySize(seg.range.upperBound - seg.range.lowerBound)))")
+            parts.append("\(seg.label): \(address(seg.range.lowerBound))-\(address(seg.range.upperBound)) (\(Self.friendlySize(seg.range.upperBound - seg.range.lowerBound)))")
         }
         parts.append(Self.friendlySize(status.fileSize))
         if status.isDirty {
@@ -883,7 +889,10 @@ final class FilePaneView: NSView {
         typingModeLabel.setAccessibilityLabel(isInsertMode ? "Insert mode" : "Overwrite mode")
     }
 
-    private static func friendlySize(_ bytes: UInt64) -> String {
+    /// The app's byte-size format ("8 B", "255 KB", "4 MB") — whole values of
+    /// the abbreviation, rounded, shared with the status bar's segment readout
+    /// (§21.3) and the Segments form's size column (§21.4).
+    static func friendlySize(_ bytes: UInt64) -> String {
         let units = ["B", "KB", "MB", "GB", "TB"]
         var value = Double(bytes)
         var index = 0
@@ -894,7 +903,14 @@ final class FilePaneView: NSView {
         if index == 0 {
             return "\(bytes) B"
         }
-        return String(format: "%.1f %@", value, units[index])
+        // Rounded to a whole value of the abbreviation: "255 KB", not "255.5 KB".
+        // The loop leaves value < 1024, so the only way rounding reaches 1024 is
+        // the last half-unit, which rolls up to one of the next unit.
+        let rounded = Int(value.rounded())
+        if rounded >= 1024, index < units.count - 1 {
+            return "1 \(units[index + 1])"
+        }
+        return "\(rounded) \(units[index])"
     }
 }
 

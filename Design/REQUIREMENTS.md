@@ -2070,15 +2070,15 @@ and every operation that writes is explicit about it.
 21.3 The tint
 
 - **A pale tint behind the bytes.** Each piece fills its own rows with a muted,
-  desaturated background — solid, and edge to edge: from the row's left edge,
-  across the Offset column, through the gaps between the two 8-byte groups and
-  before the decoded-text column, out to the row's right edge. The gaps take the
+  desaturated background — solid, and edge to edge: from the panel's own left
+  edge, across the Offset column, through the gaps between the two 8-byte groups
+  and before the decoded-text column, out to the row's right edge. The gaps take the
   colour of the piece they sit beside, which is what reads as one continuous
   stretch rather than a row of tinted cells; they are also what keeps the tint
   visible under a difference, because the orange fill paints byte cells only
   (§8.2) and leaves the gaps alone.
-- **The Offset column is tinted too.** The band runs the full width of the row,
-  so the column takes the colour of the piece beside it. The addresses, the
+- **The Offset column is tinted too.** The band runs from the panel's left edge
+  to the row's right edge, so the column takes the colour of the piece beside it. The addresses, the
   bookmark's mark and the right-click ring (§20.4) are drawn on top of the tint,
   so the column stays legible and the mark is never swallowed by the fill.
 - **A mid-row cut is drawn exactly**, byte by byte: the bytes before it keep the
@@ -2099,9 +2099,14 @@ and every operation that writes is explicit about it.
   rows either side.
 - **The status bar reads the caret's piece** as one block, `S1: <start>-<end>
   (length)` — the label, the piece's half-open range in bare hex (no `0x`
-  prefix), and its size. The caret's offset is shown the same way, bare hex with
-  no decimal. The block is absent when the pane is a single piece: its appearing
-  is the signal that the dump is partitioned.
+  prefix), and its size, rounded to a whole value of its abbreviation ("255 KB",
+  not "255.5 KB"). The caret's offset is shown the same way, bare hex with no
+  decimal. Every address in the bar — the caret's offset and the piece's bounds —
+  is zero-padded to the width of the file's largest address (the last piece's
+  exclusive end, which can be the file's own size), so they read as aligned
+  columns: `Offset 0002E6 · S1: 0002E6-400000 (255 KB)`. The block is absent
+  when the pane is a single piece: its appearing is the signal that the dump is
+  partitioned.
 - **The palette** is a small set of pastels — light green, light pink, pale
   blue, pale yellow, lavender, peach — cycled by label, in the spirit of how
   Fusion 360 tints components: enough colour to tell one piece from the next,
@@ -2123,3 +2128,59 @@ and every operation that writes is explicit about it.
   4. *Two sets, one order.* A light-theme set and a dark-theme set of the same
      hues at the other end of the lightness range, resolved the way the rest of
      the colours resolve, so S1 is "the pink one" in both themes.
+
+21.4 The Segments form
+
+- **The form is where the partition is read and edited** — a modal window
+  presented like the Go To form (§10.1): one window, centred over the window it
+  edits, no new pattern. It follows the pane's store through the same
+  `onChange` the tint and the status bar follow (§21.3), so a cut made while it
+  is open — from the dump's own context menu, or from the form's own +/− — is
+  in the list the moment it lands. Modality costs nothing here, because nothing
+  in the form needs the dump to move underneath it: a cut is made by typing an
+  offset, not by aiming at a row.
+- **The table** shows the pieces in file order: label, start, size, name. The
+  label is positional (§21.1); the start is the piece's opening offset in the
+  app's address shape (§10); the size is the piece's length in the app's
+  byte-size shape; the name is what the user gave it, and a piece never named
+  shows an empty cell. The rows are **not editable** — §20.5's lesson: a field
+  in a row is edited by a click on an already-selected row, and that collides
+  with the double click that activates the row. A row is edited by
+  double-clicking it, or by Edit… from its context menu.
+- **The row editor is the Add Cut popover** (§21.3), repurposed: the offset
+  field opens at the piece's own start and is validated as it is typed
+  (§10.1), and the description field opens with the piece's current name, so
+  editing a named piece does not open blank. For a piece that is not S0, legal
+  means strictly inside the interval the cut currently bounds — so the field
+  opens not red, and the cut can be moved to any offset between its neighbours,
+  never across one (§21.2). For S0 the offset is locked to 0, so only the name
+  can change. Return commits — moving the cut and renaming the piece in one act;
+  Esc restores.
+- **A +/− footer under the table**, the way Apple's own tables do it: a
+  hairline, then two borderless icon buttons at the left, the same width, so
+  **−** does not read as a smaller, disabled button beside a full **+**.
+  **+** opens the Add Cut popover anchored to the button itself, with the
+  offset field empty — just the `0x` prefix, as everywhere an offset is typed —
+  and the caret on the offset: from the form there is no caret to start from, so
+  the offset is the thing to be filled in, and leaving it unfilled makes no
+  segment. **−** removes the selected piece, merging its bytes into a neighbour
+  that keeps its name (§21.2); it is disabled only when the pane is a single
+  piece — there is no neighbour to merge into — and is enabled on S0 too:
+  removing S0 reopens the piece below at the file start, so what was S1 becomes
+  S0. Icon-only, so both carry a tooltip and an accessibility label.
+- **The row's context menu** carries what acts on one piece: *Save Segment…*,
+  *Replace Segment from File…*, *Edit…*, *Remove Segment* — the same menu the
+  strip beside the map offers (§21.3), so one shape in both places. Save
+  Segment… arrives with §21.5 and Replace Segment from File… with §21.6; until
+  then the items are present and disabled.
+- **The button row** holds only what acts on the whole partition: **Remove
+  All** at the left, which removes every cut at once — back to one piece, the
+  whole file, named for it — and asks before acting, since it is destructive;
+  then **Save All as Separate Files…**, which arrives with §21.5 and is
+  disabled until then, and **Close** at the right.
+- **Keys**: ⌥⌘S opens the form (⌘S is Save, ⇧⌘S is Save As, so the form takes
+  the Option variant, the way Bookmarks… takes ⌥⌘B). Return goes to the
+  selected piece's start — the form closes and the caret lands there, revealed
+  the way the Go To form's jump reveals (§10.1); with nothing selected, nothing
+  happens. ⌫ does what − does. Escape is two-level: it closes the row editor
+  first, and only a second press closes the form.

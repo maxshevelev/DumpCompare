@@ -260,9 +260,10 @@ final class SegmentCommandsTests: XCTestCase {
         XCTAssertNil(pane.status.segment, "back to one piece, the readout is gone")
     }
 
-    /// §21.3 the status bar's format: the caret's offset is bare hex (no `0x`
-    /// prefix, no decimal), and the caret's piece is one block
-    /// `S1: <start>-<end> (length)`, the range in bare hex.
+    /// §21.3 the status bar's format: the caret's offset and the piece's bounds
+    /// are bare hex (no `0x` prefix, no decimal), zero-padded to the width of
+    /// the file's largest address, and the piece is one block
+    /// `S1: <start>-<end> (length)`.
     func testTheStatusBarRendersBareHexAndOneSegmentBlock() throws {
         let url = try tempFile([UInt8](repeating: 0x11, count: 16))
         defer { try? FileManager.default.removeItem(at: url) }
@@ -276,8 +277,32 @@ final class SegmentCommandsTests: XCTestCase {
         view.frame = NSRect(x: 0, y: 0, width: 800, height: 400)
         view.layoutSubtreeIfNeeded()
 
-        // Caret 0xC; the cut at 8 makes S1 = [8, 16) = 8-10, 8 B; the file is 16 B.
+        // The file's largest address is 0x10 (its size), two hex digits, so every
+        // address is padded to two: caret 0xC → "0C", S1 = [8, 16) → "08-10".
         XCTAssertEqual(view.statusLabel.stringValue,
-                       "Offset C  ·  S1: 8-10 (8 B)  ·  16 B")
+                       "Offset 0C  ·  S1: 08-10 (8 B)  ·  16 B")
+    }
+
+    /// §21.3 the padding width follows the file's largest address, and the
+    /// piece's length is a whole value of its abbreviation: a 4 MB file whose
+    /// last piece ends at 0x400000 pads every address to six digits and shows
+    /// the piece's length rounded, not to a decimal.
+    func testTheStatusBarPadsToTheFilesLargestAddressAndRoundsTheLength() throws {
+        let size: UInt64 = 0x400000   // 4 MB, six hex digits
+        let url = try tempFile([UInt8](repeating: 0x11, count: Int(size)))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let viewModel = PaneViewModel()
+        try viewModel.open(url: url)
+        // A cut at 0x2E6: S1 = [0x2E6, 0x400000), length 0x400000 - 0x2E6.
+        viewModel.segmentStore.addCut(at: 0x2E6)
+        viewModel.setSelection(SelectionModel.empty(at: 0x2E6, fileSize: size))
+
+        let view = FilePaneView(viewModel: viewModel)
+        view.frame = NSRect(x: 0, y: 0, width: 800, height: 400)
+        view.layoutSubtreeIfNeeded()
+
+        // 0x400000 - 0x2E6 = 4193562 B = 3.999 MB → "4 MB"; the file is "4 MB".
+        XCTAssertEqual(view.statusLabel.stringValue,
+                       "Offset 0002E6  ·  S1: 0002E6-400000 (4 MB)  ·  4 MB")
     }
 }

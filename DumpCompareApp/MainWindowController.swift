@@ -334,6 +334,14 @@ final class MainWindowController: NSWindowController {
         editMenu.addItem(.separator())
         editMenu.addItem(withTitle: "Add Cut…", action: #selector(MainViewController.addCut), keyEquivalent: "")
         editMenu.addItem(withTitle: "Remove Segment", action: #selector(MainViewController.removeSegment(_:)), keyEquivalent: "")
+        // Segments…: the partition's own form (§21.4) — the list the two
+        // commands above edit, with a row editor and the Save All button.
+        // ⌥⌘S opens it: ⌘S is Save and ⇧⌘S is Save As, so the form takes the
+        // Option variant, the way Bookmarks… takes ⌥⌘B over the system's ⌘B.
+        let segmentsItem = editMenu.addItem(withTitle: "Segments…",
+                                            action: #selector(MainViewController.showSegments),
+                                            keyEquivalent: "s")
+        segmentsItem.keyEquivalentModifierMask = [.command, .option]
         return editMenu
     }
 

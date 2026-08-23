@@ -161,6 +161,12 @@ final class PaneViewModel: HexViewDataSource {
     /// open, close, and revert.
     private(set) var segmentStore: SegmentStore
 
+    /// Fired when the pane's segment partition changes — the Segments form
+    /// follows it this way (§21.4), the way the Go To form follows the window's
+    /// bookmark store (§20.5). Set by the form while it is open; the pane's own
+    /// repaint runs through the content-change channel, not here.
+    var onSegmentsChanged: (() -> Void)?
+
     /// The snapshot stack parallel to the document's undo stack (§21.2): each
     /// entry is the segment state *before* the transaction it sits under, so
     /// undo restores by snapshot rather than by inverse edit (a delete that
@@ -488,6 +494,7 @@ final class PaneViewModel: HexViewDataSource {
         // being set up.
         segmentStore.onChange = { [weak self] range in
             self?.notify(contentChange: .bytes(in: range))
+            self?.onSegmentsChanged?()
         }
     }
 

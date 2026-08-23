@@ -891,9 +891,9 @@ final class HexView: NSView, NSViewToolTipOwner {
         let rowEnd = rowStart + UInt64(HexLayout.bytesPerRow)
         let rowY = layout.rowFrame(row: row).minY
 
-        // Segment tint: a pale band behind the whole row — edge to edge, the
-        // Offset column included — split at any cut that falls inside the row
-        // (§21.3). It is the bottom of the layering stack: the offset column,
+        // Segment tint: a pale band behind the whole row — from the panel's
+        // left edge to the row's right edge, the Offset column included — split
+        // at any cut that falls inside the row (§21.3). It is the bottom of the layering stack: the offset column,
         // the difference and selection fills, and the glyphs are all drawn over
         // it, so what a byte *is* outranks which piece it belongs to. Drawn
         // whenever any band of the row is repainted, because the band reaches
@@ -1015,8 +1015,8 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// tinted cells. The edges are where the eye looks for a boundary, so they
     /// are placed to read cleanly:
     ///
-    /// - A piece that opens the row starts at the row's left edge — the band
-    ///   reaches the Offset column, not just the bytes.
+    /// - A piece that opens the row starts at the panel's own left edge — the
+    ///   band reaches past the Offset column to the edge, not just the bytes.
     /// - A piece that closes the row ends at the row's right edge.
     /// - A boundary *inside* the row falls at the middle of the gap between the
     ///   two bytes it separates. Two adjacent pieces meet at exactly that point,
@@ -1047,11 +1047,12 @@ final class HexView: NSView, NSViewToolTipOwner {
             let last = Int(end - rowStart) - 1
             HexTheme.segmentTints[span.colorIndex].setFill()
 
-            // Left edge: the row's left edge when the piece opens the row (the
-            // band reaches the Offset column), else the mid-gap before its first
-            // byte. Right edge: the row's right edge when the piece closes the
-            // row, else the mid-gap after its last byte.
-            let left = first == 0 ? layout.leftPadding : midGapX(before: first)
+            // Left edge: the panel's own left edge when the piece opens the row
+            // (the band reaches past the Offset column to the edge), else the
+            // mid-gap before its first byte. Right edge: the row's right edge
+            // when the piece closes the row, else the mid-gap after its last
+            // byte.
+            let left = first == 0 ? bounds.minX : midGapX(before: first)
             let right = last == HexLayout.bytesPerRow - 1
                 ? bounds.maxX
                 : midGapX(before: last + 1)

@@ -2779,6 +2779,45 @@ final class MainViewController: NSViewController {
         presentAsModalWindow(form)
     }
 
+    /// Segments…: the partition's own form — the pieces in a table with a row
+    /// editor, a +/− footer, and the Save All button (§21.4). Presented like
+    /// the Go To form: a modal window that follows the pane's store, so a cut
+    /// made under it from the dump's own context menu is seen in the list.
+    @objc func showSegments() {
+        presentSegmentsForm()
+    }
+
+    /// Where the form goes, so a test can drive it instead: it is presented in
+    /// a modal window, and a modal window has no one to dismiss it under XCTest.
+    var segmentsFormPresenter: ((SegmentsFormController) -> Void)?
+
+    /// The form on screen, so a cut made under it (from the dump's context
+    /// menu, or from the form's own +/−) refreshes what it shows (§21.4).
+    private weak var openSegmentsForm: SegmentsFormController?
+
+    private func presentSegmentsForm() {
+        guard activePane.isOpen else { return }
+        let pane = activePane
+        let form = SegmentsFormController(
+            pane: pane,
+            // The app's own jump (§10.1): both panes in comparison mode, the
+            // row revealed, the hex view focused — the same act as the Go To
+            // form's Return.
+            onGo: { [weak self] offset in self?.goTo(offset: offset) }
+        )
+        pane.onSegmentsChanged = { [weak self] in
+            self?.openSegmentsForm?.reloadSegments()
+        }
+        openSegmentsForm = form
+        if let segmentsFormPresenter {
+            segmentsFormPresenter(form)
+            return
+        }
+        // A window, not a sheet: it holds a list the user manages, and it is
+        // centred over the window it edits.
+        presentAsModalWindow(form)
+    }
+
     /// The bytes on a bookmarked row of the ACTIVE pane, for the list to show
     /// where an unnamed bookmark's name would be (§20.5). Nil when the row is
     /// past that pane's end: a bookmark is an absolute address and stays in the

@@ -25,12 +25,32 @@ final class CutEditPopoverController: NSViewController, NSTextFieldDelegate {
     private(set) var offsetField: NSTextField!
     private(set) var descriptionField: NSTextField!
 
-    private let prefillOffset: UInt64
-    private let fileSize: UInt64
-    /// Whether an offset already holds a cut. The bounds (0 and EOF) are the
-    /// popover's own to check — every piece must stay non-empty (§21.2).
-    private let isAlreadyACut: (UInt64) -> Bool
+    /// The offset the field starts at — the caret's for a cut opened from the
+    /// dump, the piece's own start for an edit. Nil for a cut opened from the
+    /// Segments form's `+`, where the field starts empty ("0x") and the offset
+    /// is the thing to be filled in (§21.4).
+    private let prefillOffset: UInt64?
+    /// The name the description field starts with — empty for a new cut, the
+    /// piece's current name for an edit, so editing a named piece does not open
+    /// blank (§21.4).
+    private let prefillDescription: String
+    /// Which field the caret goes to on open: the offset for a new cut (the
+    /// offset is the thing to be filled in), the description for an edit (the
+    /// offset is already right, the name is the thing to change). Internal so a
+    /// test can read the decision the focus makes — the handoff itself needs a
+    /// key window a headless host has not got (§20.5's lesson).
+    let focusOffset: Bool
+    /// Whether an offset is a legal cut for this popover — the bounds (0 and
+    /// EOF) and any seam another cut already holds for a *new* cut, the interval
+    /// the cut bounds for a *move* (the current offset legal, so the field opens
+    /// not red). The popover checks it as the offset is typed (§10.1); Return
+    /// refuses while it says no.
+    private let validate: (UInt64) -> Bool
     private let onCommit: (UInt64, String) -> Void
+    /// Called when the popover is dismissed without committing — Esc, or a click
+    /// outside with a red field — so the presenter that opened it can forget it
+    /// (the bookmark's editor does the same for its own, §20.3).
+    private let onCancel: (() -> Void)?
 
     /// What a refused Return sounds like. A closure so a test can hear it: a
     /// beep leaves no trace of its own.
@@ -45,19 +65,63 @@ final class CutEditPopoverController: NSViewController, NSTextFieldDelegate {
     /// outcome on the same popover.
     private var settled = false
 
+    /// The popover that makes a cut (§21.3): a legal cut is strictly inside the
+    /// file and not on a seam another cut already holds — every piece must stay
+    /// non-empty (§21.2).
     /// - Parameters:
-    ///   - prefillOffset: the offset the field starts at — the caret's.
+    ///   - prefillOffset: the offset the field starts at — the caret's, or nil
+    ///     for a field that opens empty ("0x") and waits to be filled.
     ///   - fileSize: the pane's file size, which bounds a legal cut.
     ///   - isAlreadyACut: whether an offset another cut already holds.
+    ///   - prefillDescription: the name the description field starts with.
+    ///   - focusOffset: whether the caret goes to the offset field on open —
+    ///     true for a field that opens empty, where the offset is the thing to
+    ///     be filled in; false (the default) for a pre-filled offset, where the
+    ///     description is.
     ///   - onCommit: the cut's offset and the name for the piece that starts
     ///     there.
-    init(prefillOffset: UInt64, fileSize: UInt64,
+    init(prefillOffset: UInt64?, fileSize: UInt64,
          isAlreadyACut: @escaping (UInt64) -> Bool,
-         onCommit: @escaping (UInt64, String) -> Void) {
+         prefillDescription: String = "",
+         focusOffset: Bool = false,
+         onCommit: @escaping (UInt64, String) -> Void,
+         onCancel: (() -> Void)? = nil) {
         self.prefillOffset = prefillOffset
-        self.fileSize = fileSize
-        self.isAlreadyACut = isAlreadyACut
+        self.prefillDescription = prefillDescription
+        self.focusOffset = focusOffset
+        self.validate = { offset in
+            offset > 0 && offset < fileSize && !isAlreadyACut(offset)
+        }
         self.onCommit = onCommit
+        self.onCancel = onCancel
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    /// The popover that edits a piece (§21.4): the offset is judged by `validate`
+    /// — for a move, the interval the cut bounds (the current offset legal, so
+    /// the field opens not red); for S0, locked to 0, so only the name changes.
+    /// - Parameters:
+    ///   - prefillOffset: the offset the field starts at — the piece's start.
+    ///   - validate: whether an offset is a legal cut here.
+    ///   - prefillDescription: the name the description field starts with — the
+    ///     piece's current name, so editing a named piece does not open blank.
+    ///   - focusOffset: whether the caret goes to the offset field on open —
+    ///     false (the default) for an edit, where the description is the thing
+    ///     to change.
+    ///   - onCommit: the cut's offset and the name for the piece that starts
+    ///     there.
+    init(prefillOffset: UInt64,
+         validate: @escaping (UInt64) -> Bool,
+         prefillDescription: String = "",
+         focusOffset: Bool = false,
+         onCommit: @escaping (UInt64, String) -> Void,
+         onCancel: (() -> Void)? = nil) {
+        self.prefillOffset = prefillOffset
+        self.prefillDescription = prefillDescription
+        self.focusOffset = focusOffset
+        self.validate = validate
+        self.onCommit = onCommit
+        self.onCancel = onCancel
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -69,8 +133,11 @@ final class CutEditPopoverController: NSViewController, NSTextFieldDelegate {
     override func loadView() {
         // The address in the shape the dialogs write one (§10), in the dump's
         // own font: this field is read far more often than it is edited, so it
-        // has to read as an address first and behave as a field second.
-        let offset = NSTextField(string: String(format: "0x%X", prefillOffset))
+        // has to read as an address first and behave as a field second. A cut
+        // opened from the Segments form's `+` starts empty — just the "0x" the
+        // user types over — because the offset is the thing to be filled in.
+        let offsetText = prefillOffset.map { String(format: "0x%X", $0) } ?? "0x"
+        let offset = OffsetField(string: offsetText)
         offset.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         offset.delegate = self
         offset.translatesAutoresizingMaskIntoConstraints = false
@@ -80,8 +147,9 @@ final class CutEditPopoverController: NSViewController, NSTextFieldDelegate {
         // A plain field: AppKit selects its whole text on focus, which is what
         // a name wants — the popover opens with the field ready to be filled.
         // Its placeholder says what the field is for, so the field needs no
-        // label beside it and can have the popover's whole width.
-        let description = NSTextField(string: "")
+        // label beside it and can have the popover's whole width. An edit opens
+        // with the piece's current name, so renaming does not start from blank.
+        let description = NSTextField(string: prefillDescription)
         description.font = .systemFont(ofSize: 12)
         description.placeholderString = "Description"
         description.delegate = self
@@ -122,11 +190,12 @@ final class CutEditPopoverController: NSViewController, NSTextFieldDelegate {
 
     override func viewDidAppear() {
         super.viewDidAppear()
-        // The caret goes straight into the DESCRIPTION, the way the bookmark's
-        // does into its name: the offset is already right — it is there to be
-        // corrected, not filled in — so "Add Cut…, type, Return" makes a named
-        // cut without a click, and typing a description works without a Tab.
-        view.window?.makeFirstResponder(descriptionField)
+        // The caret goes straight into the field that is the thing to be filled
+        // in: the DESCRIPTION when the offset is already right (a cut from the
+        // dump, an edit — "type, Return" makes a named cut without a click), the
+        // OFFSET when it opens empty (the Segments form's `+`), where the offset
+        // is what has to be typed.
+        view.window?.makeFirstResponder(focusOffset ? offsetField : descriptionField)
     }
 
     // MARK: - Presenting
@@ -151,11 +220,11 @@ final class CutEditPopoverController: NSViewController, NSTextFieldDelegate {
     // MARK: - The offset field
 
     /// The offset the Offset field currently names, or nil when it names none:
-    /// the text does not parse as an offset (§10), it is 0 or at EOF (every
-    /// piece must stay non-empty, §21.2), or another cut already holds it.
+    /// the text does not parse as an offset (§10), or `validate` says it is not
+    /// a legal cut here.
     var editedOffset: UInt64? {
         guard let offset = try? OffsetParser.parse(offsetField.stringValue) else { return nil }
-        guard offset > 0, offset < fileSize, !isAlreadyACut(offset) else { return nil }
+        guard validate(offset) else { return nil }
         return offset
     }
 
@@ -195,6 +264,7 @@ final class CutEditPopoverController: NSViewController, NSTextFieldDelegate {
     func cancel() {
         guard !settled else { return }
         settled = true
+        onCancel?()
         popover?.performClose(nil)
     }
 
@@ -215,6 +285,21 @@ final class CutEditPopoverController: NSViewController, NSTextFieldDelegate {
     }
 }
 
+/// The offset field: it does not select its whole text when it gains focus —
+/// the caret lands after the existing text (the "0x" prefix), the way every
+/// other offset field in the app does (§10), so a field that opens as "0x" is
+/// ready to have hex digits typed after the prefix rather than to replace it.
+private final class OffsetField: NSTextField {
+    override func becomeFirstResponder() -> Bool {
+        let focused = super.becomeFirstResponder()
+        if focused, let editor = currentEditor() as? NSTextView {
+            let length = (stringValue as NSString).length
+            editor.selectedRange = NSRange(location: length, length: 0)
+        }
+        return focused
+    }
+}
+
 extension CutEditPopoverController: NSPopoverDelegate {
     /// A popover dismissed by anything but the two keys — a click outside it,
     /// the window losing focus — keeps what was typed when the offset is legal:
@@ -226,6 +311,10 @@ extension CutEditPopoverController: NSPopoverDelegate {
         settled = true
         if let target = editedOffset {
             onCommit(target, descriptionField.stringValue)
+        } else {
+            // A red field is not a cut the user asked for: it closes without
+            // committing, and the presenter that opened it is told.
+            onCancel?()
         }
     }
 }
