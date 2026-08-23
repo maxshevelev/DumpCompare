@@ -326,6 +326,13 @@ final class MainWindowController: NSWindowController {
                                              action: #selector(MainViewController.showBookmarks),
                                              keyEquivalent: "b")
         bookmarksItem.keyEquivalentModifierMask = [.command, .option]
+        // The segment pair (§21.3). No key equivalents: both are deliberate acts
+        // reached from a menu, and the fast path is Split Here in the dump's own
+        // context menu. Add Cut… opens the offset-and-description popover;
+        // Remove Cut merges the caret's piece with the one above it.
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "Add Cut…", action: #selector(MainViewController.addCut), keyEquivalent: "")
+        editMenu.addItem(withTitle: "Remove Cut", action: #selector(MainViewController.removeCut), keyEquivalent: "")
         return editMenu
     }
 

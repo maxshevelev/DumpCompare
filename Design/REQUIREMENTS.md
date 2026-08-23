@@ -325,6 +325,12 @@ Visual states:
      modified, or selected in its byte cells, and the arrow is drawn on top of
      the Offset column without disturbing them.
 
+The layering, bottom to top, for a byte cell: the segment tint (§21.3), then the
+difference fill (1), the selection fill (4), and the text — modified bytes red
+(2), muted `0x00`/`0xFF` grey, the caret over everything. A state covers the
+tint, which is correct: what a byte *is* outranks which piece it belongs to, and
+the piece stays readable in the gaps and the rows either side.
+
 =====================================================================
 7. EDITING MODEL
 =====================================================================
@@ -1975,19 +1981,21 @@ which would lose its name.
 =====================================================================
 
 A segmentation is a *partition* of the pane's content: pieces that are
-contiguous, never overlap, and cover the file completely. N pieces are N−1
-**cuts**, so the model is an ordered list of cut offsets, one name per piece —
-and a gap or an overlap is impossible by construction rather than by
-validation. Every open file has at least one segment: itself. Nothing about a
-segment changes the bytes; a partition is a way of *reading* a file, and every
-operation that writes is explicit about it.
+contiguous, never overlap, and cover the file completely. The model is an
+ordered list of **pieces**, each recorded by its opening offset and its name —
+a cut is simply a piece's opening, other than the first piece's — and a gap or
+an overlap is impossible by construction rather than by validation. Every open
+file has at least one segment: itself, so the list is never empty. Nothing
+about a segment changes the bytes; a partition is a way of *reading* a file,
+and every operation that writes is explicit about it.
 
 21.1 What a segment is
 
 - A segment is a piece of the file's content: a contiguous, non-overlapping
   stretch that, with its neighbours, covers the whole file. A segmentation is a
-  partition — an ordered list of cut offsets — so a gap or an overlap cannot be
-  represented, let alone validated. N pieces are N−1 cuts.
+  partition — an ordered list of pieces, each its opening offset and its name —
+  so a gap or an overlap cannot be represented, let alone validated. A cut is a
+  piece's opening, other than the first piece's: N pieces are N−1 cuts.
 - A segment is the pane's, not the window's: it describes one file's make-up,
   and the other pane holds a different file. Swapping panes swaps them; closing
   a file drops its partition. That is the opposite of a bookmark (§20), which
@@ -2011,14 +2019,24 @@ operation that writes is explicit about it.
 21.2 The model
 
 - A segment is a value: the piece's half-open byte range and a name; the label
-  is derived from its position, never stored.
-- The store keeps **cuts, not ranges**: a partition is its boundaries, so the
-  ranges and the labels are derived from the cut list and the file's size. It
-  answers the questions the panes ask — the piece containing an offset, the
-  pieces in file order — and the editing verbs: add a cut (splitting the piece
-  that contains it; the earlier piece keeps its name, the new one starts
-  unnamed), remove a cut (merging the two pieces it separated into the earlier
-  one, which keeps its name), move a cut, and rename a piece.
+  is derived from its position, never stored. It is built only by the partition
+  that owns it, so a segment cannot be fabricated with boundaries no partition
+  holds.
+- The store keeps **pieces, not ranges**: each piece is its opening offset and
+  its name, so the ranges and the labels are derived from the piece list and
+  the file's size, and there is no second array to keep in step with the
+  offsets. It answers the questions the panes ask — the piece containing an
+  offset, the pieces in file order — and the editing verbs: add a cut
+  (splitting the piece that contains it; the earlier piece keeps its name, the
+  new one starts unnamed), remove a cut (merging the two pieces it separated
+  into the earlier one, which keeps its name), move a cut, and rename a piece.
+- **A snapshot is a frozen, self-consistent view.** The partition is an
+  immutable value, and the store holds a `current` one; taking a snapshot — for
+  undo, or to paint a page from one point in time — copies that value, so two
+  pieces read from the same snapshot rest on the same boundaries even if the
+  store moves on in between. A paint job takes `current` once and draws the
+  whole page from it, so it cannot split across two boundaries if a cut lands
+  mid-job.
 - A cut is refused at 0, at EOF, or on an existing cut: every piece must stay
   non-empty.
 - **Following the content.** A cut travels with the content — the opposite rule
@@ -2044,3 +2062,48 @@ operation that writes is explicit about it.
 - One instance lives on the pane's view model, beside its document. The store
   holds no bytes and is AppKit-free, so its arithmetic is unit-testable in the
   app suite.
+
+21.3 The tint
+
+- **A pale tint behind the bytes.** Each piece fills its own rows with a muted,
+  desaturated background — solid, and including the gaps: between the two 8-byte
+  groups, before the decoded-text column, and out to the row's right edge. The
+  gaps take the colour of the piece they sit beside, which is what reads as one
+  continuous stretch rather than a row of tinted cells; they are also what keeps
+  the tint visible under a difference, because the orange fill paints byte cells
+  only (§8.2) and leaves the gaps alone.
+- **The Offset column is not tinted.** It carries the addresses, the bookmark's
+  fill and the right-click ring (§20.4), and a segment colour behind those would
+  be a third thing competing in the column. The tint starts after it.
+- **A mid-row cut is drawn exactly**, byte by byte: the bytes before it keep the
+  earlier piece's colour, the bytes after it take the next one's, and the step is
+  visible inside the row where it belongs. A boundary is not obliged to land on
+  the row grid, so nothing is rounded, dashed or apologised for.
+- **Past EOF there is no tint**: no bytes, no piece. The EOF cue (§15) stands as
+  it does today.
+- **The layering, bottom to top** (an addition to §6's stack): segment tint,
+  difference fill, selection fill, then the text — modified bytes red, muted
+  `0x00`/`0xFF` grey, the caret over everything. Selection and difference cover
+  the tint, which is correct: what a byte *is* outranks which piece it belongs
+  to, and the piece is still readable in the gaps and in the rows either side.
+- **The palette** is a small set of pastels — light green, light pink, pale
+  blue, pale yellow, lavender, peach — cycled by label, in the spirit of how
+  Fusion 360 tints components: enough colour to tell one piece from the next,
+  never enough to draw the eye. Six is plenty; a dump will not have more pieces
+  than that in practice, and if it does the palette repeats, which is harmless
+  because what has to be distinguishable is *neighbours*, not every pair. Four
+  rules it has to satisfy, and each is a test rather than an opinion:
+  1. *Background weight.* Barely off the paper: the tint sits under text, so its
+     contrast with the paper is small and its contrast with the *ink* is what
+     must survive — including the muted `0x00`/`0xFF` at 40 % alpha (§6), which
+     is most of a dump.
+  2. *Adjacent contrast.* Consecutive entries must be plainly different from
+     each other, since that is what draws the boundary. Measured, not eyeballed:
+     a minimum channel distance between neighbouring entries in the cycle.
+  3. *No conflict with the states drawn over it.* An orange difference and the
+     accent selection must still read as themselves on every tint, and no tint
+     may be mistakable for either — so nothing in the orange band, nothing at
+     the accent's saturation, and nothing close to the bookmark purple.
+  4. *Two sets, one order.* A light-theme set and a dark-theme set of the same
+     hues at the other end of the lightness range, resolved the way the rest of
+     the colours resolve, so S1 is "the pink one" in both themes.

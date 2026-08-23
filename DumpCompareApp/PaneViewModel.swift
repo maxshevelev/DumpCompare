@@ -21,6 +21,15 @@ enum HexInputRegion {
     case ascii
 }
 
+/// One piece as the status bar reads it (§21.3): the label the bar shows and
+/// the range it renders.
+struct SegmentReadout: Equatable {
+    /// Positional label: "S0", "S1", …
+    let label: String
+    /// The piece's half-open byte range.
+    let range: Range<UInt64>
+}
+
 /// Read-only snapshot of the pane's status-bar fields (§15).
 struct PaneStatus: Equatable {
     var fileName = ""
@@ -38,6 +47,10 @@ struct PaneStatus: Equatable {
     /// The typing mode this pane is in (§7.6) — the status bar shows it as
     /// INS/OVR.
     var isInsertMode = false
+    /// The piece the caret is in, for the status bar's readout (§21.3). Nil when
+    /// the pane is a single piece: the readout appearing at all is the signal
+    /// that the dump is partitioned.
+    var segment: SegmentReadout?
 }
 
 /// Pane-level save error: an untitled document has no file yet, so it needs a
@@ -468,6 +481,14 @@ final class PaneViewModel: HexViewDataSource {
         doc.onTransactionCommitted = { [weak self] in
             self?.segmentTransactionCommitted()
         }
+        // A change to the partition repaints the rows it touches (§21.3): the
+        // tint is the only thing that moves, so the content-change channel
+        // invalidates exactly those rows. Set after the reset so the reset's own
+        // change does not fire a redundant invalidation while the pane is still
+        // being set up.
+        segmentStore.onChange = { [weak self] range in
+            self?.notify(contentChange: .bytes(in: range))
+        }
     }
 
     /// Captures the partition before an edit lands, so the transaction the edit
@@ -635,6 +656,22 @@ final class PaneViewModel: HexViewDataSource {
         bookmarkStore?.rows(in: range) ?? []
     }
 
+    /// The segment pieces in `range`, with the palette index that tints each,
+    /// for the row's background tint (§21.3). Empty when the pane is one piece
+    /// (no cuts): a single colour over a whole file is noise, and the readout
+    /// appearing at all is the signal that the dump is partitioned.
+    func hexSegmentSpans(in range: Range<UInt64>) -> [HexSegmentSpan] {
+        // One partition value per paint job: the whole drawn range tints from a
+        // single `current`, so the page cannot split across two boundaries if a
+        // cut lands mid-draw (§21.3).
+        let current = segmentStore.current
+        guard current.pieces.count > 1 else { return [] }
+        return current.segments
+            .filter { $0.range.overlaps(range) }
+            .map { HexSegmentSpan(range: $0.range,
+                                  colorIndex: $0.index % HexTheme.segmentTints.count) }
+    }
+
     /// The bookmark on the row containing `offset` (§20.2) — what the mark's
     /// tooltip and VoiceOver read, and what tells a right-clicked address from
     /// an unmarked one.
@@ -690,8 +727,19 @@ final class PaneViewModel: HexViewDataSource {
             isUntitled: isUntitled,
             canUndo: doc.canUndo,
             canRedo: doc.canRedo,
-            isInsertMode: isInsertMode
+            isInsertMode: isInsertMode,
+            segment: segmentReadout(caret: caret)
         )
+    }
+
+    /// The status bar's readout of the piece the caret is in (§21.3) — nil when
+    /// the pane is a single piece, where the readout's absence is the signal
+    /// that the dump is not partitioned.
+    private func segmentReadout(caret: UInt64) -> SegmentReadout? {
+        let current = segmentStore.current
+        guard current.pieces.count > 1,
+              let piece = current.segment(containing: caret) else { return nil }
+        return SegmentReadout(label: "S\(piece.index)", range: piece.range)
     }
 
     var caretOffset: UInt64 { document?.selection.start ?? 0 }

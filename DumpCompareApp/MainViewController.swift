@@ -1986,6 +1986,15 @@ final class MainViewController: NSViewController {
                                   keyEquivalent: "")
         select.target = self
         select.representedObject = OffsetContextTarget(pane: pane, offset: offset)
+        // Split Here (§21.3): a cut at the clicked byte, or at the clicked
+        // address (the row's start). It belongs with the other address-scoped
+        // commands — the offset is the thing that was clicked, and there is
+        // nothing to type.
+        let split = menu.addItem(withTitle: "Split Here",
+                                 action: #selector(splitHere(_:)),
+                                 keyEquivalent: "")
+        split.target = self
+        split.representedObject = OffsetContextTarget(pane: pane, offset: offset)
         menu.addItem(.separator())
         addBookmarkMenuItems(to: menu, for: pane, offset: offset)
         return menu
@@ -2640,6 +2649,78 @@ final class MainViewController: NSViewController {
     @objc func editBookmarkAtOffset(_ sender: Any?) {
         guard let target = offsetContextTarget(from: sender) else { return }
         editBookmarkInPane(target.pane, rowContaining: target.offset)
+    }
+
+    // MARK: - Segments (§21)
+
+    /// The cut edit request: the pane, the offset the field starts at, and what
+    /// committing means.
+    struct CutEditRequest {
+        let pane: PaneViewModel
+        let prefillOffset: UInt64
+        let commit: (UInt64, String) -> Void
+    }
+
+    /// Where a cut edit request goes. Nil means the real popover on the caret's
+    /// cell; a test replaces it to capture the request instead, because a
+    /// popover anchored in a window that is never on screen closes the instant
+    /// it opens — the commands' own behaviour is what those tests are about.
+    var cutEditPresenter: ((CutEditRequest) -> Void)?
+
+    /// Edit ▸ Add Cut…: the caret's offset, in a popover with a description —
+    /// the cut for an offset you know as a number rather than as a position
+    /// (§21.3). No key equivalent: a deliberate act reached from the menu.
+    @objc func addCut() {
+        let pane = activePane
+        presentCutEditPopover(in: pane, prefill: pane.caretOffset)
+    }
+
+    /// Edit ▸ Remove Cut: merges the caret's piece with the one above it — the
+    /// cut at the piece's start. Disabled on the first piece, which has no cut
+    /// above it (§21.3). The bytes are untouched: removing a cut changes how the
+    /// file is read, not the file.
+    @objc func removeCut() {
+        let pane = activePane
+        let caret = pane.caretOffset
+        guard let piece = pane.segmentStore.segment(containing: caret),
+              piece.range.lowerBound > 0 else { return }
+        pane.segmentStore.removeCut(at: piece.range.lowerBound)
+    }
+
+    /// Offset context menu ▸ Split Here: a cut at the right-clicked byte, or at
+    /// the right-clicked address (the row's start) — no dialog, because the
+    /// offset is the thing that was clicked and there is nothing to type
+    /// (§21.3). This is how a cut normally gets made.
+    @objc func splitHere(_ sender: Any?) {
+        guard let target = offsetContextTarget(from: sender) else { return }
+        target.pane.segmentStore.addCut(at: target.offset)
+    }
+
+    /// Presents the cut popover on `pane`'s caret (§21.3). The offset starts at
+    /// `prefill` (the caret's) and is validated as it is typed; committing makes
+    /// the cut and names the piece that starts there.
+    private func presentCutEditPopover(in pane: PaneViewModel, prefill: UInt64) {
+        let request = CutEditRequest(
+            pane: pane, prefillOffset: prefill,
+            commit: { offset, name in
+                guard pane.segmentStore.addCut(at: offset) else { return }
+                // The cut splits the piece at `offset`; the new piece is the one
+                // that *starts* there, so it is the one the description names.
+                if let piece = pane.segmentStore.segment(containing: offset) {
+                    pane.segmentStore.rename(piece.index, to: name)
+                }
+            }
+        )
+        if let cutEditPresenter {
+            cutEditPresenter(request)
+            return
+        }
+        guard let paneView = filePaneView(for: pane) else { return }
+        paneView.presentCutEditPopover(
+            prefillOffset: prefill, fileSize: pane.fileSize,
+            isAlreadyACut: { pane.segmentStore.cuts.contains($0) },
+            onCommit: request.commit
+        )
     }
 
     // MARK: - Dialogs (§10)
@@ -3311,6 +3392,15 @@ extension MainViewController: NSMenuItemValidation {
             // what makes one (§20.3).
             return activePane.isOpen
                 && windowModel.bookmarkStore.bookmark(atRowContaining: activePane.hexSelection().start) != nil
+        case #selector(addCut):
+            // A cut needs bytes to split: an empty pane has none (§21.3).
+            return activePane.isOpen && activePane.fileSize > 0
+        case #selector(removeCut):
+            // The first piece has no cut above it, so there is nothing to remove
+            // while the caret is in it (§21.3).
+            let pane = activePane
+            guard pane.isOpen else { return false }
+            return (pane.segmentStore.segment(containing: pane.caretOffset)?.range.lowerBound ?? 0) > 0
         case #selector(revertDocument):
             // Nothing on disk to revert an untitled document to.
             return activePane.isOpen && !activePane.isUntitled
@@ -3331,6 +3421,13 @@ extension MainViewController: NSMenuItemValidation {
              #selector(deletePaneSelection(_:)):
             // Right-click selection actions act on the pane they were built for.
             return (menuItem.representedObject as? OffsetContextTarget)?.pane.isOpen ?? false
+        case #selector(splitHere(_:)):
+            // A cut must sit strictly inside the file and not on a seam another
+            // cut already holds — every piece must stay non-empty (§21.2).
+            guard let target = menuItem.representedObject as? OffsetContextTarget,
+                  target.pane.isOpen else { return false }
+            return target.offset > 0 && target.offset < target.pane.fileSize
+                && !target.pane.segmentStore.cuts.contains(target.offset)
         case #selector(fillSelectionWithBytes):
             let pane = activePane
             return pane.isOpen && !pane.hexSelection().isEmpty

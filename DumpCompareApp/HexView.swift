@@ -15,6 +15,14 @@ enum HexViewChange: Equatable {
     case textDecoding
 }
 
+/// One piece of the segment partition that intersects a drawn range, with the
+/// palette index that tints it (§21.3). The range is the piece's full byte
+/// range; the drawing clamps it to the row it fills.
+struct HexSegmentSpan: Equatable {
+    let range: Range<UInt64>
+    let colorIndex: Int
+}
+
 /// Supplies the bytes and selection the hex view renders (§6).
 @MainActor
 protocol HexViewDataSource: AnyObject {
@@ -29,6 +37,11 @@ protocol HexViewDataSource: AnyObject {
     /// column's per-row drawing (§20). A set per range rather than a call per
     /// row, the same shape as `hexByteStates`.
     func hexBookmarkedRows(in range: Range<UInt64>) -> Set<UInt64>
+    /// The segment pieces in `range` (a range of offsets), with the palette
+    /// index that tints each, for the row's background tint (§21.3). A list per
+    /// range rather than a call per row, the same shape as `hexBookmarkedRows`.
+    /// Empty when the pane is one piece (no cuts) — there is nothing to tint.
+    func hexSegmentSpans(in range: Range<UInt64>) -> [HexSegmentSpan]
     /// The bookmark on the row containing `offset`, if any (§20.2). One row, not
     /// a range: this answers the questions about a single row — what the mark's
     /// tooltip says, what VoiceOver reads, whether a right-clicked address
@@ -789,6 +802,18 @@ final class HexView: NSView, NSViewToolTipOwner {
             bookmarkedRows = dataSource.hexBookmarkedRows(in: lower..<upper)
         }
 
+        // The segment pieces in the drawn range, asked once per range rather
+        // than per row (§21.3) — the same shape as `hexBookmarkedRows`. Each row
+        // tints the spans that intersect it, split at any cut that falls inside.
+        let segmentSpans: [HexSegmentSpan]
+        if rows.isEmpty {
+            segmentSpans = []
+        } else {
+            let lower = UInt64(rows.lowerBound) * UInt64(HexLayout.bytesPerRow)
+            let upper = UInt64(rows.upperBound) * UInt64(HexLayout.bytesPerRow)
+            segmentSpans = dataSource.hexSegmentSpans(in: lower..<upper)
+        }
+
         // The row whose address carries a right-click menu, if any. A bookmarked
         // row shows that menu through its own mark — outlined instead of filled
         // (§20.4) — because the accent ring lands on top of the fill. A menu
@@ -807,7 +832,8 @@ final class HexView: NSView, NSViewToolTipOwner {
                 selection: selection, baseline: baseline,
                 drawsOffset: drawsOffset, drawsHex: drawsHex, drawsAscii: drawsAscii,
                 isBookmarked: bookmarkedRows.contains(rowAddress),
-                bookmarkOutlined: rowAddress == contextMenuRowAddress
+                bookmarkOutlined: rowAddress == contextMenuRowAddress,
+                segmentSpans: segmentSpans
             )
         }
 
@@ -859,7 +885,8 @@ final class HexView: NSView, NSViewToolTipOwner {
     private func drawRow(row: Int, layout: HexLayout, fileSize: UInt64,
                          selection: SelectionModel, baseline: CGFloat,
                          drawsOffset: Bool, drawsHex: Bool, drawsAscii: Bool,
-                         isBookmarked: Bool, bookmarkOutlined: Bool) {
+                         isBookmarked: Bool, bookmarkOutlined: Bool,
+                         segmentSpans: [HexSegmentSpan]) {
         let rowStart = layout.byteOffset(row: row, column: 0)
         let rowEnd = rowStart + UInt64(HexLayout.bytesPerRow)
         let rowY = layout.rowFrame(row: row).minY
@@ -883,6 +910,16 @@ final class HexView: NSView, NSViewToolTipOwner {
                 draw(text: offsetText, in: layout.offsetColumnFrame(row: row),
                      baseline: baseline, color: HexTheme.inkBlue)
             }
+        }
+
+        // Segment tint: a pale band behind the bytes, from the end of the Offset
+        // column to the row's right edge, gaps included, split at any cut that
+        // falls inside the row (§21.3). Drawn before the difference and selection
+        // fills, so those cover it — what a byte *is* outranks which piece it
+        // belongs to. The Offset column is not tinted.
+        if drawsHex || drawsAscii {
+            drawSegmentTint(row: row, rowStart: rowStart, rowEnd: rowEnd,
+                            fileSize: fileSize, layout: layout, spans: segmentSpans)
         }
 
         let states = dataSource?.hexByteStates(in: rowStart..<rowEnd) ?? []
@@ -959,6 +996,88 @@ final class HexView: NSView, NSViewToolTipOwner {
                 }
             } else {
                 drawAsciiCells(states: states, layout: layout, rowY: rowY, baseline: baseline)
+            }
+        }
+    }
+
+    /// Fills the segment tint for one row (§21.3): a pale band from the end of
+    /// the Offset column to the row's right edge, gaps included, split at any
+    /// cut that falls inside the row. The Offset column is not tinted, and past
+    /// the file's end there is no tint — no bytes, no piece.
+    ///
+    /// The hex and ASCII regions are filled separately, each a continuous rect
+    /// across the piece's bytes (the same shape as the selection fill), so a
+    /// mid-row cut steps the colour at the byte in *both* columns. The gaps —
+    /// after the Offset column, between the two 8-byte groups, before the
+    /// decoded-text column, and out to the row's right edge — take the colour of
+    /// the piece they sit beside, which is what reads as one continuous stretch
+    /// rather than a row of tinted cells.
+    private func drawSegmentTint(row: Int, rowStart: UInt64, rowEnd: UInt64,
+                                 fileSize: UInt64, layout: HexLayout,
+                                 spans: [HexSegmentSpan]) {
+        guard !spans.isEmpty else { return }
+        let rowY = layout.rowFrame(row: row).minY
+        let rowHeight = layout.rowHeight
+        // The row's bytes end at the file size; past EOF there is no tint.
+        let lastByte = min(rowEnd, fileSize)
+        guard lastByte > rowStart else { return }
+
+        // The band runs from the end of the Offset column (not tinted, §21.3) to
+        // the row's right edge.
+        let tintLeft = layout.leftPadding + layout.offsetColumnWidth
+        let tintRight = bounds.maxX
+        let hexLeft = layout.hexByteX(column: 0)
+        let hexRight = layout.hexByteX(column: HexLayout.bytesPerRow - 1) + layout.hexByteWidth
+        let asciiLeft = layout.asciiX(column: 0)
+        let asciiRight = layout.asciiX(column: HexLayout.bytesPerRow - 1) + layout.charWidth
+
+        for span in spans {
+            // The piece's bytes within this row, clamped to the present bytes.
+            let start = max(span.range.lowerBound, rowStart)
+            let end = min(span.range.upperBound, lastByte)
+            guard end > start else { continue }
+            let first = Int(start - rowStart)
+            let last = Int(end - rowStart) - 1
+            HexTheme.segmentTints[span.colorIndex].setFill()
+
+            // Hex region: a continuous rect across the piece's bytes, covering
+            // the between-groups gap when the piece spans both groups.
+            let hexRect = CGRect(x: layout.hexByteX(column: first), y: rowY,
+                                 width: layout.hexByteX(column: last) + layout.hexByteWidth
+                                     - layout.hexByteX(column: first),
+                                 height: rowHeight)
+            NSBezierPath(rect: hexRect).fill()
+            // ASCII region: the piece's decoded characters.
+            let asciiRect = CGRect(x: layout.asciiX(column: first), y: rowY,
+                                   width: layout.asciiX(column: last) + layout.charWidth
+                                       - layout.asciiX(column: first),
+                                   height: rowHeight)
+            NSBezierPath(rect: asciiRect).fill()
+
+            // The gaps take the colour of the piece they sit beside: the gap
+            // after the Offset column when the piece opens the row, the one
+            // before the decoded text and the stretch out to the row's right
+            // edge when it closes it.
+            if first == 0 {
+                NSBezierPath(rect: CGRect(x: tintLeft, y: rowY,
+                                          width: hexLeft - tintLeft, height: rowHeight)).fill()
+            }
+            if last == HexLayout.bytesPerRow - 1 {
+                NSBezierPath(rect: CGRect(x: hexRight, y: rowY,
+                                          width: asciiLeft - hexRight, height: rowHeight)).fill()
+                NSBezierPath(rect: CGRect(x: asciiRight, y: rowY,
+                                          width: tintRight - asciiRight, height: rowHeight)).fill()
+            }
+            // The gap between the two 8-byte groups takes the colour of the
+            // piece that holds the byte just left of it (column 7): when the
+            // piece spans both groups that is the whole piece, and when a cut
+            // lands exactly on the boundary the gap still stays solid, with the
+            // step at the cut — byte 8's cell — rather than a hole of paper.
+            if first <= HexLayout.groupSize - 1, last >= HexLayout.groupSize - 1 {
+                let gapStart = layout.hexByteX(column: HexLayout.groupSize - 1) + layout.hexByteWidth
+                let gapEnd = layout.hexByteX(column: HexLayout.groupSize)
+                NSBezierPath(rect: CGRect(x: gapStart, y: rowY,
+                                          width: gapEnd - gapStart, height: rowHeight)).fill()
             }
         }
     }
@@ -1388,6 +1507,21 @@ final class HexView: NSView, NSViewToolTipOwner {
     func bookmarkMarkRect(forRowContaining offset: UInt64) -> CGRect {
         let layout = currentLayout
         return Self.bookmarkMarkBody(in: layout, row: layout.rowColumn(of: offset).row)
+    }
+
+    /// The rect a cut's popover points at: the caret's own byte cell in the hex
+    /// column, in this view's coordinates. The popover is about where the cut
+    /// will land, so it hangs off the caret rather than off the pane (§21.3).
+    /// `.zero` when there is no caret to point at (no file, or a caret past EOF).
+    func caretRect() -> CGRect {
+        guard let dataSource else { return .zero }
+        let layout = currentLayout
+        let offset = dataSource.hexSelection().start
+        let (row, column) = layout.rowColumn(of: offset)
+        guard UInt64(row) < layout.rowCount(fileSize: dataSource.fileSize) else { return .zero }
+        let rowFrame = layout.rowFrame(row: row)
+        return CGRect(x: layout.hexByteX(column: column), y: rowFrame.minY,
+                      width: layout.hexByteWidth, height: rowFrame.height)
     }
 
     /// How far the bookmark mark's tip reaches past its body for a mark of
@@ -2365,6 +2499,57 @@ enum HexTheme {
     /// Thin frame mirroring the opposite pane's selection onto this pane
     /// (§3.3). The accent color ties the two panes' views of the same range.
     static let mirrorFrame = NSColor.controlAccentColor
+
+    /// The six segment tints, cycled by label (§21.3): S0 light green, S1 light
+    /// pink, S2 pale blue, S3 pale yellow, S4 lavender, S5 peach. A small set of
+    /// pastels — enough colour to tell one piece from the next, never enough to
+    /// draw the eye — in the spirit of how Fusion 360 tints components.
+    ///
+    /// Two sets, one order: the light-theme set sits barely off the paper, the
+    /// dark-theme set is the same hues at the other end of the lightness range,
+    /// so S1 is "the pink one" in both. Each set is checked by test against the
+    /// three rules that make a tint a tint rather than a state: it stays
+    /// legible under the muted `0x00`/`0xFF` fill, neighbours are plainly
+    /// different (that is what draws the boundary), and nothing is mistakable
+    /// for the orange difference, the accent selection, or the bookmark purple.
+    static let segmentTints: [NSColor] = [
+        // S0 — light green
+        NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? NSColor(srgbRed: 0.16, green: 0.25, blue: 0.17, alpha: 1)
+                : NSColor(srgbRed: 0.84, green: 0.94, blue: 0.84, alpha: 1)
+        },
+        // S1 — light pink
+        NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? NSColor(srgbRed: 0.29, green: 0.17, blue: 0.21, alpha: 1)
+                : NSColor(srgbRed: 0.97, green: 0.85, blue: 0.88, alpha: 1)
+        },
+        // S2 — pale blue
+        NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? NSColor(srgbRed: 0.16, green: 0.22, blue: 0.30, alpha: 1)
+                : NSColor(srgbRed: 0.84, green: 0.90, blue: 0.98, alpha: 1)
+        },
+        // S3 — pale yellow
+        NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? NSColor(srgbRed: 0.29, green: 0.27, blue: 0.15, alpha: 1)
+                : NSColor(srgbRed: 0.98, green: 0.95, blue: 0.80, alpha: 1)
+        },
+        // S4 — lavender
+        NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? NSColor(srgbRed: 0.23, green: 0.19, blue: 0.31, alpha: 1)
+                : NSColor(srgbRed: 0.89, green: 0.85, blue: 0.97, alpha: 1)
+        },
+        // S5 — peach
+        NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? NSColor(srgbRed: 0.31, green: 0.23, blue: 0.16, alpha: 1)
+                : NSColor(srgbRed: 0.99, green: 0.89, blue: 0.82, alpha: 1)
+        },
+    ]
 }
 
 extension String {

@@ -566,6 +566,34 @@ final class FilePaneView: NSView {
         return controller
     }
 
+    /// Shows the cut popover on the caret's cell (§21.3). The caret is scrolled
+    /// into view first if it is not there: a popover has to point at something
+    /// the user can see, and Add Cut… can be chosen with the caret just off
+    /// screen.
+    ///
+    /// The pane view presents it because the caret's rect is the hex view's to
+    /// give — the controller says which offset it starts at, which offsets are
+    /// already cut, and what the two keys mean.
+    @discardableResult
+    func presentCutEditPopover(
+        prefillOffset: UInt64, fileSize: UInt64,
+        isAlreadyACut: @escaping (UInt64) -> Bool,
+        onCommit: @escaping (UInt64, String) -> Void
+    ) -> CutEditPopoverController {
+        if !hexView.visibleByteRange().contains(prefillOffset) {
+            hexView.revealOffsetCentered(prefillOffset)
+            // The scroll has to land before the anchor rect is read, or the
+            // popover points at where the caret used to be.
+            scrollView.contentView.layoutSubtreeIfNeeded()
+        }
+        let controller = CutEditPopoverController(
+            prefillOffset: prefillOffset, fileSize: fileSize,
+            isAlreadyACut: isAlreadyACut, onCommit: onCommit
+        )
+        controller.show(relativeTo: hexView.caretRect(), of: hexView)
+        return controller
+    }
+
     /// Shows a transient message (e.g. "No match found.") in the status bar,
     /// replacing the regular status for a couple of seconds, then restoring it.
     /// Used by the Find bar for errors and empty results (§11).
@@ -818,6 +846,14 @@ final class FilePaneView: NSView {
         parts.append("Offset \(status.cursorHex) (\(status.cursorDecimal))")
         if status.selectionLength > 0 {
             parts.append("\(status.selectionLength) selected")
+        }
+        // The caret's piece, beside the offsets (§21.3): label, range, size.
+        // Absent when the pane is one piece — its appearing is the signal the
+        // dump is partitioned.
+        if let seg = status.segment {
+            parts.append(seg.label)
+            parts.append(String(format: "0x%X–0x%X", seg.range.lowerBound, seg.range.upperBound))
+            parts.append(Self.friendlySize(seg.range.upperBound - seg.range.lowerBound))
         }
         parts.append(Self.friendlySize(status.fileSize))
         if status.isDirty {

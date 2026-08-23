@@ -77,6 +77,51 @@ final class SegmentStoreTests: XCTestCase {
         XCTAssertEqual(forward.segments.map(\.range), [0..<4, 4..<8, 8..<16])
     }
 
+    // MARK: - Invalidation (§21.3)
+
+    /// A cut repaints from the cut to the end, not the whole file: the pieces
+    /// before it keep their colour and label, so their rows are untouched. The
+    /// new piece and every later one renumber, so everything from the cut on
+    /// moves.
+    func testACutInvalidatesFromItselfToEnd() {
+        let store = SegmentStore(size: 32, name: "dump.bin")
+        var fired: [Range<UInt64>] = []
+        store.onChange = { fired.append($0) }
+
+        store.addCut(at: 8)
+
+        XCTAssertEqual(fired, [8..<32], "a cut repaints from the cut to the end, not from 0")
+    }
+
+    /// Removing a cut is the same rule in reverse: the merged piece and every
+    /// later one change colour, so the repaint runs from the removed cut on.
+    func testRemovingACutInvalidatesFromItselfToEnd() {
+        let store = SegmentStore(size: 32, name: "dump.bin")
+        store.addCut(at: 8)
+        store.addCut(at: 16)
+
+        var fired: [Range<UInt64>] = []
+        store.onChange = { fired.append($0) }
+
+        store.removeCut(at: 8)
+
+        XCTAssertEqual(fired, [8..<32], "a removal repaints from the removed cut to the end")
+    }
+
+    /// A rename changes no drawing — the tint is by position, not name, and the
+    /// status bar reads the label and range — so it fires no invalidation at all.
+    func testARenameInvalidatesNothing() {
+        let store = SegmentStore(size: 32, name: "dump.bin")
+        store.addCut(at: 8)
+
+        var fired = 0
+        store.onChange = { _ in fired += 1 }
+
+        store.rename(1, to: "second")
+
+        XCTAssertEqual(fired, 0, "a name is not a drawing")
+    }
+
     // MARK: - Following the content (§21.2)
 
     func testAnInsertBeforeACutMovesIt() {
@@ -165,6 +210,85 @@ final class SegmentStoreTests: XCTestCase {
         XCTAssertEqual(store.segments[0].range, 0..<8)
         XCTAssertEqual(store.segments[1].range, 8..<16)
         XCTAssertEqual(store.segments[1].name, "second")
+    }
+
+    /// Restoring a snapshot whose pieces match the store's is a no-op — no
+    /// invalidation — even when the size differs: the tints depend only on the
+    /// piece boundaries, so an undo that moved no cut (a length edit in a file
+    /// with no cuts) leaves them where they were, and the content edit's own
+    /// repaint already covers the bytes.
+    func testRestoringTheSamePiecesInvalidatesNothing() {
+        let store = SegmentStore(size: 100, name: "dump.bin")
+        let snapshot = store.snapshot()
+
+        // The size changes (an insert's undo) but the single piece's start does
+        // not, so the boundaries are untouched.
+        store.apply(.insert(at: 5, length: 2), newSize: 102)
+
+        var fired = 0
+        store.onChange = { _ in fired += 1 }
+
+        store.restore(snapshot)
+
+        XCTAssertEqual(fired, 0, "same pieces, different size: no repaint")
+        XCTAssertEqual(store.contentSize, 100, "the size is restored")
+    }
+
+    /// Restoring a snapshot whose pieces differ does fire the invalidation —
+    /// the undo of a cut is a repaint, unlike the undo of a length edit.
+    func testRestoringDifferentPiecesInvalidates() {
+        let store = SegmentStore(size: 16, name: "dump.bin")
+        store.addCut(at: 8)
+        let snapshot = store.snapshot()
+        store.removeCut(at: 8)
+
+        var fired = 0
+        store.onChange = { _ in fired += 1 }
+
+        store.restore(snapshot)
+
+        XCTAssertEqual(fired, 1, "different pieces: the tints repaint")
+        XCTAssertEqual(store.cuts, [8])
+    }
+
+    // MARK: - The snapshot is a frozen view (copy-on-write)
+
+    /// A snapshot keeps the boundaries it was taken on, even after the store
+    /// moves on: two pieces read from one `Segmentation` rest on the same
+    /// partition, so a view held across a mutation (a popover left open, a page
+    /// mid-paint) cannot split across two boundaries (§21.3). The store's copy
+    /// and the snapshot share `pieces`'s buffer until one is written, so the
+    /// snapshot stays on the old buffer while the store moves to a new one.
+    func testASnapshotIsAFrozenViewIndependentOfTheStore() {
+        let store = SegmentStore(size: 32, name: "dump.bin")
+        store.addCut(at: 8)
+        let before = store.snapshot()
+        XCTAssertEqual(before.segments.map(\.range), [0..<8, 8..<32])
+
+        // The store moves on: a new cut, then a delete that swallows the first.
+        store.addCut(at: 16)
+        store.apply(.delete(range: 0..<8), newSize: 24)
+
+        // The store's current partition has changed…
+        XCTAssertNotEqual(store.segments.map(\.range), [0..<8, 8..<32])
+        // …but the snapshot still holds the boundaries it was taken on.
+        XCTAssertEqual(before.segments.map(\.range), [0..<8, 8..<32])
+        XCTAssertEqual(before.segments[1].name, "")
+    }
+
+    /// `current` is a value copy, not a live handle: reading it, then mutating
+    /// the store, leaves the read value on the old partition. This is what lets
+    /// a paint job grab `current` once and draw the whole page from it.
+    func testCurrentIsAValueCopyNotALiveHandle() {
+        let store = SegmentStore(size: 16, name: "dump.bin")
+        let view = store.current
+        XCTAssertEqual(view.pieces.map(\.start), [0])
+
+        store.addCut(at: 8)
+
+        // The view is frozen on the pre-cut partition; the store has moved on.
+        XCTAssertEqual(view.pieces.map(\.start), [0])
+        XCTAssertEqual(store.current.pieces.map(\.start), [0, 8])
     }
 
     // MARK: - Containment
