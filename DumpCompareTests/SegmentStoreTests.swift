@@ -291,6 +291,96 @@ final class SegmentStoreTests: XCTestCase {
         XCTAssertEqual(store.current.pieces.map(\.start), [0, 8])
     }
 
+    // MARK: - Moving a cut (§21.2)
+
+    /// A cut may only move within the interval it currently bounds — strictly
+    /// between the neighbouring cuts (or the file's end) — so it never jumps
+    /// over another cut. The piece it opened keeps its name, which travels with
+    /// the boundary.
+    func testMoveCutIsConfinedToItsOwnInterval() {
+        let store = SegmentStore(size: 16, name: "dump.bin")
+        store.addCut(at: 4)
+        store.addCut(at: 8)
+        // Three pieces: [0,4) [4,8) [8,16). Name the middle piece.
+        store.rename(1, to: "middle")
+
+        // The cut at 4 bounds (0, 8): it may move to 6, inside that interval.
+        XCTAssertEqual(store.moveCut(from: 4, to: 6), 6)
+        XCTAssertEqual(store.cuts, [6, 8])
+        // The piece that opened at 4 (now 6) keeps its name.
+        XCTAssertEqual(store.segments[1].name, "middle")
+
+        // Landing on the neighbouring cut at 8 is refused…
+        XCTAssertNil(store.moveCut(from: 6, to: 8), "a cut cannot land on another cut")
+        // …and jumping past it (to 10, in the next interval) is refused too.
+        XCTAssertNil(store.moveCut(from: 6, to: 10), "a cut cannot jump over another cut")
+        XCTAssertEqual(store.cuts, [6, 8], "a refused move leaves the cut where it was")
+    }
+
+    /// A cut at the file's end bounds (the previous cut, EOF): it may move up to
+    /// just before EOF, but not onto it or before the file start.
+    func testMoveCutTowardTheBoundsStopsShortOfThem() {
+        let store = SegmentStore(size: 16, name: "dump.bin")
+        store.addCut(at: 8)
+        // The cut at 8 bounds (0, 16): it may move to 12…
+        XCTAssertEqual(store.moveCut(from: 8, to: 12), 12)
+        XCTAssertEqual(store.cuts, [12])
+        // …but not onto EOF…
+        XCTAssertNil(store.moveCut(from: 12, to: 16), "a cut cannot land on EOF")
+        // …nor before the file start.
+        XCTAssertNil(store.moveCut(from: 12, to: 0), "a cut cannot land on the file start")
+        XCTAssertEqual(store.cuts, [12])
+    }
+
+    // MARK: - Removing a piece (§21.3)
+
+    /// Removing a piece that is not S0 merges its bytes into the piece above,
+    /// which keeps its name; the removed piece is simply dropped.
+    func testRemovingAPieceMergesIntoThePieceAbove() {
+        let store = SegmentStore(size: 16, name: "dump.bin")
+        store.addCut(at: 4)
+        store.addCut(at: 8)
+        // Three pieces: [0,4) [4,8) [8,16).
+        store.rename(0, to: "first")
+        store.rename(1, to: "middle")
+
+        // Remove the middle piece (index 1): the piece above absorbs it.
+        XCTAssertTrue(store.removePiece(at: 1))
+        XCTAssertEqual(store.cuts, [8])
+        XCTAssertEqual(store.segments.map(\.range), [0..<8, 8..<16])
+        // The absorbing piece keeps its own name, not the removed piece's.
+        XCTAssertEqual(store.segments[0].name, "first")
+    }
+
+    /// Removing S0 reopens the piece below at the file start: what was S1
+    /// becomes S0, keeping its own name.
+    func testRemovingS0PromotesThePieceBelow() {
+        let store = SegmentStore(size: 16, name: "dump.bin")
+        store.addCut(at: 8)
+        // Two pieces: [0,8) [8,16).
+        store.rename(1, to: "second")
+
+        XCTAssertTrue(store.removePiece(at: 0))
+        XCTAssertEqual(store.cuts, [])
+        XCTAssertEqual(store.segments.count, 1)
+        XCTAssertEqual(store.segments[0].range, 0..<16)
+        // The promoted piece (what was S1) keeps its name.
+        XCTAssertEqual(store.segments[0].name, "second")
+    }
+
+    /// Removing a piece is refused when there is only one piece — there is no
+    /// neighbour to merge into — and when the index is out of range.
+    func testRemovingTheOnlyPieceOrAnOutOfRangeIndexIsRefused() {
+        let store = SegmentStore(size: 16, name: "dump.bin")
+        XCTAssertFalse(store.removePiece(at: 0), "a single piece has no neighbour to merge into")
+        XCTAssertEqual(store.segments.count, 1)
+
+        store.addCut(at: 8)
+        XCTAssertFalse(store.removePiece(at: 5), "no piece at index 5")
+        XCTAssertFalse(store.removePiece(at: -1), "no piece at index -1")
+        XCTAssertEqual(store.cuts, [8], "a refused removal leaves the partition whole")
+    }
+
     // MARK: - Containment
 
     func testSegmentContainingIsHalfOpenAtBothEnds() {

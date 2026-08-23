@@ -188,15 +188,21 @@ final class OffsetContextMenuTests: XCTestCase {
         let controller = MainViewController()
         let menu = controller.makeOffsetMenu(for: PaneViewModel(), offset: 0x24)
 
-        XCTAssertEqual(menu.items.count, 6,
-                       "Copy offset, separator, Select block from here, Split Here, separator, Toggle Bookmark")
+        XCTAssertEqual(menu.items.count, 8,
+                       "Copy offset, separator, Select block from here, separator, " +
+                       "Split Here, Remove Segment, separator, Toggle Bookmark")
         XCTAssertEqual(menu.items[0].title, "Copy offset")
         XCTAssertEqual(menu.items[0].action, #selector(MainViewController.copyOffset(_:)))
         XCTAssertTrue(menu.items[1].isSeparatorItem)
         XCTAssertEqual(menu.items[2].title, "Select block from here")
         XCTAssertEqual(menu.items[2].action, #selector(MainViewController.selectBlockFromHere(_:)))
-        XCTAssertEqual(menu.items[3].title, "Split Here")
-        XCTAssertEqual(menu.items[3].action, #selector(MainViewController.splitHere(_:)))
+        // The segment block: its own separators, Split Here and Remove Segment.
+        XCTAssertTrue(menu.items[3].isSeparatorItem)
+        XCTAssertEqual(menu.items[4].title, "Split Here")
+        XCTAssertEqual(menu.items[4].action, #selector(MainViewController.splitHere(_:)))
+        XCTAssertEqual(menu.items[5].title, "Remove Segment")
+        XCTAssertEqual(menu.items[5].action, #selector(MainViewController.removeSegment(_:)))
+        XCTAssertTrue(menu.items[6].isSeparatorItem)
 
         // Snapshot the clipboard so the test leaves it untouched. Restore by
         // re-writing the string — resurrecting `pasteboardItems` throws
@@ -238,7 +244,9 @@ final class OffsetContextMenuTests: XCTestCase {
                        ["Copy", "Fill Selection with…", "Delete Bytes…",
                         "",                     // separator
                         "Copy offset", "",
-                        "Select block from here", "Split Here", "",
+                        "Select block from here", "",
+                        // The segment block: its own separators (§21.3).
+                        "Split Here", "Remove Segment", "",
                         // The bookmark block: one item marks and unmarks, and an
                         // unmarked row has nothing to rename (§20.3).
                         "Toggle Bookmark at 0x00000010"])
@@ -271,7 +279,8 @@ final class OffsetContextMenuTests: XCTestCase {
         for outside: UInt64 in [0x20, 0x24] {
             let menu = controller.makeOffsetMenu(for: pane, offset: outside)
             XCTAssertEqual(menu.items.map(\.title),
-                           ["Copy offset", "", "Select block from here", "Split Here", "",
+                           ["Copy offset", "", "Select block from here", "",
+                            "Split Here", "Remove Segment", "",
                             "Toggle Bookmark at 0x00000020"],
                            "0x\(String(outside, radix: 16)) is outside: no selection actions")
         }

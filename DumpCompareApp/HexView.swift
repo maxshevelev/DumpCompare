@@ -891,7 +891,20 @@ final class HexView: NSView, NSViewToolTipOwner {
         let rowEnd = rowStart + UInt64(HexLayout.bytesPerRow)
         let rowY = layout.rowFrame(row: row).minY
 
-        // Offset column.
+        // Segment tint: a pale band behind the whole row — edge to edge, the
+        // Offset column included — split at any cut that falls inside the row
+        // (§21.3). It is the bottom of the layering stack: the offset column,
+        // the difference and selection fills, and the glyphs are all drawn over
+        // it, so what a byte *is* outranks which piece it belongs to. Drawn
+        // whenever any band of the row is repainted, because the band reaches
+        // every band — clipped to the dirty rect, it repaints only the part that
+        // is actually being redrawn.
+        if drawsOffset || drawsHex || drawsAscii {
+            drawSegmentTint(row: row, rowStart: rowStart, rowEnd: rowEnd,
+                            fileSize: fileSize, layout: layout, spans: segmentSpans)
+        }
+
+        // Offset column, on top of the tint.
         if drawsOffset {
             let offsetText = String(rowStart, radix: 16, uppercase: true).leftPadded(to: layout.offsetColumnChars, with: "0")
             if isBookmarked {
@@ -902,6 +915,9 @@ final class HexView: NSView, NSViewToolTipOwner {
                 // for text on a filled selection. While the row's own right-click
                 // menu is up the mark is a purple outline instead: there is no
                 // fill to read against, so the address keeps its ink (§20.4).
+                // Drawn after the segment tint, so the arrow's tip — which
+                // reaches into the gap past the Offset column — is never buried
+                // under a piece's band (§21.3).
                 drawBookmarkMark(in: layout, row: row, outlined: bookmarkOutlined)
                 draw(text: offsetText, in: layout.offsetColumnFrame(row: row),
                      baseline: baseline,
@@ -910,16 +926,6 @@ final class HexView: NSView, NSViewToolTipOwner {
                 draw(text: offsetText, in: layout.offsetColumnFrame(row: row),
                      baseline: baseline, color: HexTheme.inkBlue)
             }
-        }
-
-        // Segment tint: a pale band behind the bytes, from the end of the Offset
-        // column to the row's right edge, gaps included, split at any cut that
-        // falls inside the row (§21.3). Drawn before the difference and selection
-        // fills, so those cover it — what a byte *is* outranks which piece it
-        // belongs to. The Offset column is not tinted.
-        if drawsHex || drawsAscii {
-            drawSegmentTint(row: row, rowStart: rowStart, rowEnd: rowEnd,
-                            fileSize: fileSize, layout: layout, spans: segmentSpans)
         }
 
         let states = dataSource?.hexByteStates(in: rowStart..<rowEnd) ?? []
@@ -1000,18 +1006,21 @@ final class HexView: NSView, NSViewToolTipOwner {
         }
     }
 
-    /// Fills the segment tint for one row (§21.3): a pale band from the end of
-    /// the Offset column to the row's right edge, gaps included, split at any
-    /// cut that falls inside the row. The Offset column is not tinted, and past
-    /// the file's end there is no tint — no bytes, no piece.
+    /// Fills the segment tint for one row (§21.3): a pale band edge to edge —
+    /// the Offset column included — split at any cut that falls inside the row.
+    /// Past the file's end there is no tint: no bytes, no piece.
     ///
-    /// The hex and ASCII regions are filled separately, each a continuous rect
-    /// across the piece's bytes (the same shape as the selection fill), so a
-    /// mid-row cut steps the colour at the byte in *both* columns. The gaps —
-    /// after the Offset column, between the two 8-byte groups, before the
-    /// decoded-text column, and out to the row's right edge — take the colour of
-    /// the piece they sit beside, which is what reads as one continuous stretch
-    /// rather than a row of tinted cells.
+    /// Each piece is one continuous rect from its left edge to its right edge,
+    /// so a row of pieces reads as one unbroken stretch rather than a row of
+    /// tinted cells. The edges are where the eye looks for a boundary, so they
+    /// are placed to read cleanly:
+    ///
+    /// - A piece that opens the row starts at the row's left edge — the band
+    ///   reaches the Offset column, not just the bytes.
+    /// - A piece that closes the row ends at the row's right edge.
+    /// - A boundary *inside* the row falls at the middle of the gap between the
+    ///   two bytes it separates. Two adjacent pieces meet at exactly that point,
+    ///   so there is no slit of paper between their fills.
     private func drawSegmentTint(row: Int, rowStart: UInt64, rowEnd: UInt64,
                                  fileSize: UInt64, layout: HexLayout,
                                  spans: [HexSegmentSpan]) {
@@ -1022,14 +1031,12 @@ final class HexView: NSView, NSViewToolTipOwner {
         let lastByte = min(rowEnd, fileSize)
         guard lastByte > rowStart else { return }
 
-        // The band runs from the end of the Offset column (not tinted, §21.3) to
-        // the row's right edge.
-        let tintLeft = layout.leftPadding + layout.offsetColumnWidth
-        let tintRight = bounds.maxX
-        let hexLeft = layout.hexByteX(column: 0)
-        let hexRight = layout.hexByteX(column: HexLayout.bytesPerRow - 1) + layout.hexByteWidth
-        let asciiLeft = layout.asciiX(column: 0)
-        let asciiRight = layout.asciiX(column: HexLayout.bytesPerRow - 1) + layout.charWidth
+        // The middle of the gap between byte `column - 1` and byte `column` in
+        // the hex column — the place a boundary between the two bytes falls.
+        func midGapX(before column: Int) -> CGFloat {
+            (layout.hexByteX(column: column - 1) + layout.hexByteWidth
+             + layout.hexByteX(column: column)) / 2
+        }
 
         for span in spans {
             // The piece's bytes within this row, clamped to the present bytes.
@@ -1040,45 +1047,16 @@ final class HexView: NSView, NSViewToolTipOwner {
             let last = Int(end - rowStart) - 1
             HexTheme.segmentTints[span.colorIndex].setFill()
 
-            // Hex region: a continuous rect across the piece's bytes, covering
-            // the between-groups gap when the piece spans both groups.
-            let hexRect = CGRect(x: layout.hexByteX(column: first), y: rowY,
-                                 width: layout.hexByteX(column: last) + layout.hexByteWidth
-                                     - layout.hexByteX(column: first),
-                                 height: rowHeight)
-            NSBezierPath(rect: hexRect).fill()
-            // ASCII region: the piece's decoded characters.
-            let asciiRect = CGRect(x: layout.asciiX(column: first), y: rowY,
-                                   width: layout.asciiX(column: last) + layout.charWidth
-                                       - layout.asciiX(column: first),
-                                   height: rowHeight)
-            NSBezierPath(rect: asciiRect).fill()
-
-            // The gaps take the colour of the piece they sit beside: the gap
-            // after the Offset column when the piece opens the row, the one
-            // before the decoded text and the stretch out to the row's right
-            // edge when it closes it.
-            if first == 0 {
-                NSBezierPath(rect: CGRect(x: tintLeft, y: rowY,
-                                          width: hexLeft - tintLeft, height: rowHeight)).fill()
-            }
-            if last == HexLayout.bytesPerRow - 1 {
-                NSBezierPath(rect: CGRect(x: hexRight, y: rowY,
-                                          width: asciiLeft - hexRight, height: rowHeight)).fill()
-                NSBezierPath(rect: CGRect(x: asciiRight, y: rowY,
-                                          width: tintRight - asciiRight, height: rowHeight)).fill()
-            }
-            // The gap between the two 8-byte groups takes the colour of the
-            // piece that holds the byte just left of it (column 7): when the
-            // piece spans both groups that is the whole piece, and when a cut
-            // lands exactly on the boundary the gap still stays solid, with the
-            // step at the cut — byte 8's cell — rather than a hole of paper.
-            if first <= HexLayout.groupSize - 1, last >= HexLayout.groupSize - 1 {
-                let gapStart = layout.hexByteX(column: HexLayout.groupSize - 1) + layout.hexByteWidth
-                let gapEnd = layout.hexByteX(column: HexLayout.groupSize)
-                NSBezierPath(rect: CGRect(x: gapStart, y: rowY,
-                                          width: gapEnd - gapStart, height: rowHeight)).fill()
-            }
+            // Left edge: the row's left edge when the piece opens the row (the
+            // band reaches the Offset column), else the mid-gap before its first
+            // byte. Right edge: the row's right edge when the piece closes the
+            // row, else the mid-gap after its last byte.
+            let left = first == 0 ? layout.leftPadding : midGapX(before: first)
+            let right = last == HexLayout.bytesPerRow - 1
+                ? bounds.maxX
+                : midGapX(before: last + 1)
+            NSBezierPath(rect: CGRect(x: left, y: rowY,
+                                      width: right - left, height: rowHeight)).fill()
         }
     }
 
@@ -1509,19 +1487,27 @@ final class HexView: NSView, NSViewToolTipOwner {
         return Self.bookmarkMarkBody(in: layout, row: layout.rowColumn(of: offset).row)
     }
 
-    /// The rect a cut's popover points at: the caret's own byte cell in the hex
+    /// The rect a cut's popover points at: the byte cell for `offset` in the hex
     /// column, in this view's coordinates. The popover is about where the cut
-    /// will land, so it hangs off the caret rather than off the pane (§21.3).
-    /// `.zero` when there is no caret to point at (no file, or a caret past EOF).
-    func caretRect() -> CGRect {
+    /// will land, so it hangs off that byte rather than off the pane (§21.3).
+    /// `.zero` when there is no byte to point at (no file, or an offset past
+    /// EOF).
+    func byteCellRect(for offset: UInt64) -> CGRect {
         guard let dataSource else { return .zero }
         let layout = currentLayout
-        let offset = dataSource.hexSelection().start
         let (row, column) = layout.rowColumn(of: offset)
         guard UInt64(row) < layout.rowCount(fileSize: dataSource.fileSize) else { return .zero }
         let rowFrame = layout.rowFrame(row: row)
         return CGRect(x: layout.hexByteX(column: column), y: rowFrame.minY,
                       width: layout.hexByteWidth, height: rowFrame.height)
+    }
+
+    /// The rect a cut's popover points at: the caret's own byte cell in the hex
+    /// column. The popover is about where the cut will land, so it hangs off the
+    /// caret rather than off the pane (§21.3).
+    func caretRect() -> CGRect {
+        guard let dataSource else { return .zero }
+        return byteCellRect(for: dataSource.hexSelection().start)
     }
 
     /// How far the bookmark mark's tip reaches past its body for a mark of

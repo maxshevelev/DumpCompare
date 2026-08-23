@@ -3,11 +3,12 @@ import XCTest
 @testable import DumpCompare
 
 /// §21.3 the tint, measured off a real `HexView`'s pixels rather than described:
-/// a piece's rows carry a pale band from the end of the Offset column to the
-/// row's right edge, gaps included, split at the exact byte a cut falls on, and
-/// stopping at EOF. The band is the bottom of the layering stack — a difference
-/// and a selection are drawn over it, so what a byte *is* outranks which piece
-/// it belongs to.
+/// a piece's rows carry a pale band edge to edge — the Offset column included —
+/// gaps included, split at the mid-gap between the two bytes a cut separates,
+/// and stopping at EOF. The band is the bottom of the layering stack — the
+/// offset column, a difference, and a selection are all drawn over it, so what
+/// a byte *is* outranks which piece it belongs to, and a bookmark's arrow is
+/// never buried under the band.
 ///
 /// The view is pinned to Aqua so the dynamic colours resolve to fixed values and
 /// the sampling is deterministic. The background is `textBackgroundColor` (white
@@ -116,10 +117,10 @@ final class SegmentTintRenderTests: XCTestCase {
                       "the before-text gap takes the piece's colour too")
     }
 
-    /// The Offset column is the one part of the row the band does not reach
-    /// (§21.3): the address stays on the paper even when the bytes beside it are
-    /// tinted. Sampled at the column's left edge, clear of the address glyphs.
-    func testTheOffsetColumnIsNotTinted() throws {
+    /// The band is edge to edge (§21.3): it reaches the Offset column, so the
+    /// address stands on the piece's colour rather than the paper. Sampled at
+    /// the column's left edge, clear of the address glyphs.
+    func testTheOffsetColumnIsTinted() throws {
         let (hexView, pane, url) = try makeHexView([UInt8](repeating: 0x41, count: 32))
         defer { try? FileManager.default.removeItem(at: url) }
         XCTAssertTrue(pane.segmentStore.addCut(at: 16))
@@ -131,10 +132,10 @@ final class SegmentTintRenderTests: XCTestCase {
         let offsetPixel = try pixel(hexView, x: offsetX, y: y)
         let tintedPixel = try pixel(hexView, x: layout.hexByteX(column: 3) + layout.hexByteWidth / 2, y: y)
 
-        XCTAssertLessThan(distance(offsetPixel, .white), 0.10,
-                          "the Offset column stays on the paper")
-        XCTAssertGreaterThan(distance(tintedPixel, .white), 0.15,
-                             "…while the bytes beside it are tinted")
+        XCTAssertGreaterThan(distance(offsetPixel, .white), 0.15,
+                             "the Offset column is tinted, edge to edge")
+        XCTAssertTrue(sameTint(offsetPixel, tintedPixel),
+                      "the Offset column takes the colour of the piece beside it")
     }
 
     // MARK: - The mid-row split
@@ -157,6 +158,60 @@ final class SegmentTintRenderTests: XCTestCase {
         XCTAssertGreaterThan(distance(right, .white), 0.15, "the byte right of the cut is tinted")
         XCTAssertGreaterThan(distance(left, right), 0.12,
                              "the two sides of the cut are different tints")
+    }
+
+    /// The boundary between two pieces falls at the middle of the gap between
+    /// the two bytes it separates (§21.3) — and the two fills meet at exactly
+    /// that point, so there is no slit of paper between them. A run of pixels
+    /// across the whole gap must read as tint, never the paper.
+    func testTheMidRowBoundaryLeavesNoPaperSlit() throws {
+        let (hexView, pane, url) = try makeHexView([UInt8](repeating: 0x41, count: 32))
+        defer { try? FileManager.default.removeItem(at: url) }
+        XCTAssertTrue(pane.segmentStore.addCut(at: 5), "a cut mid-row, at byte 5")
+        hexView.reloadData()
+        let layout = hexView.hexLayout
+        let y = topY(layout, row: 0)
+
+        // The gap the cut separates: from byte 4's cell right edge to byte 5's
+        // cell left edge. Every pixel across it is a tint — the left half S0,
+        // the right half S1 — and none is the paper.
+        let gapStart = layout.hexByteX(column: 4) + layout.hexByteWidth
+        let gapEnd = layout.hexByteX(column: 5)
+        let step = (gapEnd - gapStart) / 8
+        var x = gapStart
+        while x < gapEnd {
+            let pixel = try pixel(hexView, x: x, y: y)
+            XCTAssertGreaterThan(distance(pixel, .white), 0.15,
+                                 "no paper slit at x=\(x) across the cut's gap")
+            x += step
+        }
+    }
+
+    /// A bookmark's arrow is drawn over the segment tint (§21.3): its tip
+    /// reaches into the gap past the Offset column, and that tip keeps the
+    /// bookmark's purple rather than being buried under the piece's band.
+    /// Sampled at the tip's widest point — the row's middle.
+    func testTheBookmarkTipIsDrawnOverTheTint() throws {
+        let (hexView, pane, url) = try makeHexView([UInt8](repeating: 0x41, count: 32))
+        defer { try? FileManager.default.removeItem(at: url) }
+        XCTAssertTrue(pane.segmentStore.addCut(at: 16))
+        let store = BookmarkStore()
+        pane.bookmarkStore = store
+        store.add(rowContaining: 0)
+        hexView.reloadData()
+        let layout = hexView.hexLayout
+        let rowFrame = layout.rowFrame(row: 0)
+        let y = rowFrame.midY
+
+        // The tip: from the mark body's right edge into the gap past the Offset
+        // column, widest at the row's middle.
+        let bodyRight = layout.leftPadding + layout.offsetColumnWidth + HexView.mirrorContourPadding
+        let tipReach = HexView.bookmarkTipReach(height: rowFrame.height, gap: layout.gapAfterOffset)
+        let tip = try pixel(hexView, x: bodyRight + tipReach / 2, y: y)
+        let tint = try pixel(hexView, x: layout.hexByteX(column: 3) + layout.hexByteWidth / 2, y: y)
+
+        XCTAssertGreaterThan(distance(tip, tint), 0.12,
+                             "the bookmark's tip is not buried under the piece's tint")
     }
 
     // MARK: - Layering: the tint is the bottom of the stack

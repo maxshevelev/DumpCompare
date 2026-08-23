@@ -2028,8 +2028,12 @@ and every operation that writes is explicit about it.
   offsets. It answers the questions the panes ask — the piece containing an
   offset, the pieces in file order — and the editing verbs: add a cut
   (splitting the piece that contains it; the earlier piece keeps its name, the
-  new one starts unnamed), remove a cut (merging the two pieces it separated
-  into the earlier one, which keeps its name), move a cut, and rename a piece.
+  new one starts unnamed), remove a segment (dropping the piece and merging its
+  bytes into a neighbour, which keeps its name — removing S0 reopens the piece
+  below at the file start, so what was S1 becomes S0), move a cut (only within
+  the interval it currently bounds, so it never jumps over another cut; the
+  piece it opens keeps its name, which travels with the boundary), and rename a
+  piece.
 - **A snapshot is a frozen, self-consistent view.** The partition is an
   immutable value, and the store holds a `current` one; taking a snapshot — for
   undo, or to paint a page from one point in time — copies that value, so two
@@ -2066,26 +2070,38 @@ and every operation that writes is explicit about it.
 21.3 The tint
 
 - **A pale tint behind the bytes.** Each piece fills its own rows with a muted,
-  desaturated background — solid, and including the gaps: between the two 8-byte
-  groups, before the decoded-text column, and out to the row's right edge. The
-  gaps take the colour of the piece they sit beside, which is what reads as one
-  continuous stretch rather than a row of tinted cells; they are also what keeps
-  the tint visible under a difference, because the orange fill paints byte cells
-  only (§8.2) and leaves the gaps alone.
-- **The Offset column is not tinted.** It carries the addresses, the bookmark's
-  fill and the right-click ring (§20.4), and a segment colour behind those would
-  be a third thing competing in the column. The tint starts after it.
+  desaturated background — solid, and edge to edge: from the row's left edge,
+  across the Offset column, through the gaps between the two 8-byte groups and
+  before the decoded-text column, out to the row's right edge. The gaps take the
+  colour of the piece they sit beside, which is what reads as one continuous
+  stretch rather than a row of tinted cells; they are also what keeps the tint
+  visible under a difference, because the orange fill paints byte cells only
+  (§8.2) and leaves the gaps alone.
+- **The Offset column is tinted too.** The band runs the full width of the row,
+  so the column takes the colour of the piece beside it. The addresses, the
+  bookmark's mark and the right-click ring (§20.4) are drawn on top of the tint,
+  so the column stays legible and the mark is never swallowed by the fill.
 - **A mid-row cut is drawn exactly**, byte by byte: the bytes before it keep the
   earlier piece's colour, the bytes after it take the next one's, and the step is
-  visible inside the row where it belongs. A boundary is not obliged to land on
-  the row grid, so nothing is rounded, dashed or apologised for.
+  visible inside the row where it belongs. The boundary passes through the middle
+  of the gap between the two bytes it separates, and the two fills meet there —
+  no uncoloured slit between them. A boundary is not obliged to land on the row
+  grid, so nothing is rounded, dashed or apologised for.
 - **Past EOF there is no tint**: no bytes, no piece. The EOF cue (§15) stands as
   it does today.
 - **The layering, bottom to top** (an addition to §6's stack): segment tint,
-  difference fill, selection fill, then the text — modified bytes red, muted
-  `0x00`/`0xFF` grey, the caret over everything. Selection and difference cover
-  the tint, which is correct: what a byte *is* outranks which piece it belongs
-  to, and the piece is still readable in the gaps and in the rows either side.
+  then the Offset column's addresses and the bookmark's mark, then the difference
+  fill, the selection fill, and the text — modified bytes red, muted
+  `0x00`/`0xFF` grey, the caret over everything. The bookmark's mark sits above
+  the tint, so a mark on a tinted row is never swallowed by it. Selection and
+  difference cover the tint, which is correct: what a byte *is* outranks which
+  piece it belongs to, and the piece is still readable in the gaps and in the
+  rows either side.
+- **The status bar reads the caret's piece** as one block, `S1: <start>-<end>
+  (length)` — the label, the piece's half-open range in bare hex (no `0x`
+  prefix), and its size. The caret's offset is shown the same way, bare hex with
+  no decimal. The block is absent when the pane is a single piece: its appearing
+  is the signal that the dump is partitioned.
 - **The palette** is a small set of pastels — light green, light pink, pale
   blue, pale yellow, lavender, peach — cycled by label, in the spirit of how
   Fusion 360 tints components: enough colour to tell one piece from the next,

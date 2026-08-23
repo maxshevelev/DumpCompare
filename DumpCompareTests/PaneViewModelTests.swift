@@ -23,7 +23,7 @@ final class PaneViewModelTests: XCTestCase {
         XCTAssertEqual(pane.fileSize, 4)
         XCTAssertEqual(pane.status.fileName, url.lastPathComponent)
         XCTAssertEqual(pane.status.fileSize, 4)
-        XCTAssertEqual(pane.status.cursorHex, "0x0")
+        XCTAssertEqual(pane.status.cursorOffset, 0)
         XCTAssertFalse(pane.status.isDirty)
         XCTAssertFalse(pane.status.isReadOnly)
     }

@@ -129,18 +129,50 @@ struct Segmentation: Equatable {
         return offset..<contentSize
     }
 
-    /// Moves the cut at `from` to `offset` — the same as removing the cut at
-    /// `from` (the piece that opened there merges into the earlier one, dropping
-    /// its name) and adding a cut at `offset` (a new, unnamed piece), so the
-    /// name handling matches doing the two by hand. Returns the whole file's
-    /// range (the colour of every piece at and after `from` can change), or nil
-    /// when there was no cut at `from` or the move was refused (0, EOF, or onto
-    /// another cut).
+    /// Removes the piece at `index`, merging its bytes into a neighbour and
+    /// keeping that neighbour's name (§21.3): the piece above absorbs it when
+    /// `index` is not 0; the piece below absorbs it when it is 0, reopening at
+    /// the file start and renumbering to S0 — what was S1 becomes S0. Returns
+    /// the offset range whose drawing changed (from the removed piece's start to
+    /// the end), or nil when there is only one piece — no neighbour to merge
+    /// into.
+    @discardableResult
+    mutating func removePiece(at index: Int) -> Range<UInt64>? {
+        guard pieces.count > 1, pieces.indices.contains(index) else { return nil }
+        let removedStart = pieces[index].start
+        if index == 0 {
+            // The piece below absorbs S0 and takes its place: it reopens at 0
+            // and keeps its own name, so what was S1 is now S0.
+            pieces[1].start = 0
+            pieces.removeFirst()
+        } else {
+            // The piece above absorbs it and keeps its name; the removed piece
+            // is simply dropped from the partition.
+            pieces.remove(at: index)
+        }
+        return removedStart..<contentSize
+    }
+
+    /// Moves the cut at `from` to `offset`, sliding the boundary between the two
+    /// pieces it separates (§21.2). The cut may only move within the interval it
+    /// currently bounds — strictly between the neighbouring cuts (or the file's
+    /// end) — so it never jumps over another cut: the partition's structure is
+    /// preserved, and the piece that opened at `from` keeps its name, which
+    /// travels with the boundary. Returns the whole file's range (the colour of
+    /// every piece at and after `from` can change), or nil when there was no cut
+    /// at `from` or the move was refused (onto a neighbouring cut, or past one).
     @discardableResult
     mutating func moveCut(from: UInt64, to offset: UInt64) -> Range<UInt64>? {
         guard from != offset,
-              removeCut(at: from) != nil,
-              addCut(at: offset) != nil else { return nil }
+              let i = pieces.firstIndex(where: { $0.start == from }), i >= 1
+        else { return nil }
+        // The cut at `from` opens piece `i`; the interval it bounds is
+        // (the previous cut, the next cut or the file's end). Moving inside it
+        // keeps the pieces sorted and non-empty, and drops no name.
+        let lower = pieces[i - 1].start
+        let upper = i + 1 < pieces.count ? pieces[i + 1].start : contentSize
+        guard offset > lower, offset < upper else { return nil }
+        pieces[i].start = offset
         return 0..<contentSize
     }
 
@@ -326,11 +358,23 @@ final class SegmentStore {
         return true
     }
 
-    /// Moves the cut at `from` to `offset` — the same as removing the cut at
-    /// `from` (the piece that opened there merges into the earlier one, dropping
-    /// its name) and adding a cut at `offset` (a new, unnamed piece). Returns the
-    /// new offset, or nil when there was no cut at `from` or the move was refused
-    /// (0, EOF, or onto another cut).
+    /// Removes the piece at `index`, merging its bytes into a neighbour and
+    /// keeping that neighbour's name (§21.3). Returns whether there was a piece
+    /// to remove (refused when there is only one piece — no neighbour to merge
+    /// into).
+    @discardableResult
+    func removePiece(at index: Int) -> Bool {
+        guard let range = current.removePiece(at: index) else { return false }
+        onChange?(range)
+        return true
+    }
+
+    /// Moves the cut at `from` to `offset`, sliding the boundary between the two
+    /// pieces it separates. The cut may only move within the interval it
+    /// currently bounds, so it never jumps over another cut and the piece that
+    /// opened at `from` keeps its name (§21.2). Returns the new offset, or nil
+    /// when there was no cut at `from` or the move was refused (onto a
+    /// neighbouring cut, or past one).
     @discardableResult
     func moveCut(from: UInt64, to offset: UInt64) -> UInt64? {
         guard let range = current.moveCut(from: from, to: offset) else { return nil }

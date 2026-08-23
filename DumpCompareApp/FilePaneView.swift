@@ -106,7 +106,9 @@ final class FilePaneView: NSView {
     /// pane tracks it for tests and VoiceOver.
     private(set) var documentSymbolName = "document"
     private let lockLabel = NSTextField(labelWithString: "")
-    private let statusLabel = NSTextField(labelWithString: "")
+    /// The status bar's main readout. Internal (not private) so a test can read
+    /// the rendered string, the way `typingModeLabel` is.
+    let statusLabel = NSTextField(labelWithString: "")
     /// The typing-mode indicator at the right end of the status bar: `OVR` in
     /// the status bar's own quiet grey, `INS` in the insert caret's red (§7.6).
     /// Insert mode grows the file on every keystroke, so it is the state that
@@ -590,7 +592,9 @@ final class FilePaneView: NSView {
             prefillOffset: prefillOffset, fileSize: fileSize,
             isAlreadyACut: isAlreadyACut, onCommit: onCommit
         )
-        controller.show(relativeTo: hexView.caretRect(), of: hexView)
+        // The popover hangs off the byte it is pre-filled with — the caret for
+        // Add Cut…, the right-clicked byte for Split Here (§21.3).
+        controller.show(relativeTo: hexView.byteCellRect(for: prefillOffset), of: hexView)
         return controller
     }
 
@@ -843,17 +847,18 @@ final class FilePaneView: NSView {
     private func updateStatus() {
         let status = viewModel.status
         var parts: [String] = []
-        parts.append("Offset \(status.cursorHex) (\(status.cursorDecimal))")
+        parts.append("Offset \(String(format: "%X", status.cursorOffset))")
         if status.selectionLength > 0 {
             parts.append("\(status.selectionLength) selected")
         }
-        // The caret's piece, beside the offsets (§21.3): label, range, size.
-        // Absent when the pane is one piece — its appearing is the signal the
-        // dump is partitioned.
+        // The caret's piece, beside the offset (§21.3): one block,
+        // "S1: <start>-<end> (length)" — bare hex, no 0x prefix. Absent when
+        // the pane is one piece — its appearing is the signal the dump is
+        // partitioned.
         if let seg = status.segment {
-            parts.append(seg.label)
-            parts.append(String(format: "0x%X–0x%X", seg.range.lowerBound, seg.range.upperBound))
-            parts.append(Self.friendlySize(seg.range.upperBound - seg.range.lowerBound))
+            let start = String(format: "%X", seg.range.lowerBound)
+            let end = String(format: "%X", seg.range.upperBound)
+            parts.append("\(seg.label): \(start)-\(end) (\(Self.friendlySize(seg.range.upperBound - seg.range.lowerBound)))")
         }
         parts.append(Self.friendlySize(status.fileSize))
         if status.isDirty {

@@ -60,28 +60,35 @@ description — it describes, it does not identify; the label identifies.
 Three places, in the order they earn their keep.
 
 **1. A pale tint behind the bytes.** Each piece fills its own rows with a muted,
-desaturated background — **solid, and including the gaps**: between the two
-8-byte groups, before the decoded-text column, and out to the row's right edge.
-The gaps are what makes it read as one continuous stretch rather than a row of
-tinted cells, and they are also what keeps the tint visible under a difference,
-because the orange fill paints byte cells only (§8.2) and leaves the gaps alone.
+desaturated background — **solid, and edge to edge**: from the row's left edge,
+across the Offset column, through the gaps between the two 8-byte groups and
+before the decoded-text column, out to the row's right edge. The gaps are what
+makes it read as one continuous stretch rather than a row of tinted cells, and
+they are also what keeps the tint visible under a difference, because the orange
+fill paints byte cells only (§8.2) and leaves the gaps alone.
 
-- **The Offset column is not tinted.** It carries addresses, the bookmark's fill
-  and the right-click ring (§20.4), and a segment colour behind those would be a
-  third thing competing in a 64 pt column. The tint starts after it.
+- **The Offset column is tinted too.** The band runs the full width of the row,
+  so the column takes the colour of the piece beside it. The addresses, the
+  bookmark's mark and the right-click ring (§20.4) are drawn on top of the tint,
+  so the column stays legible and the mark is never swallowed by the fill.
 - **A mid-row cut is drawn exactly**, byte by byte: the bytes before it keep the
   earlier piece's colour, the bytes after it take the next one's, and the step is
-  visible inside the row where it belongs. This is the whole reason a fill beats a
-  line — a boundary is not obliged to land on the row grid, and nothing has to be
+  visible inside the row where it belongs. The boundary passes through the middle
+  of the gap between the two bytes it separates, and the two fills meet there —
+  no uncoloured slit between them. This is the whole reason a fill beats a line —
+  a boundary is not obliged to land on the row grid, and nothing has to be
   rounded, dashed or apologised for. (A file whose size is not a multiple of 16,
   or any insert of a length that is not, puts every later cut off the grid.)
 - **Past EOF there is no tint**: no bytes, no piece. The hatching (§6) stands as
   it does today.
 - **The layering, bottom to top** (an addition to §6's stack): segment tint,
-  difference fill, selection fill, then the text — modified bytes red, muted
-  `0x00`/`0xFF` grey, the caret over everything. Selection and difference cover
-  the tint, which is correct: what a byte *is* outranks which piece it belongs
-  to, and the piece is still readable in the gaps and in the rows either side.
+  then the Offset column's addresses and the bookmark's mark, then the difference
+  fill, the selection fill, and the text — modified bytes red, muted
+  `0x00`/`0xFF` grey, the caret over everything. The bookmark's mark sits above
+  the tint, so a mark on a tinted row is never swallowed by it. Selection and
+  difference cover the tint, which is correct: what a byte *is* outranks which
+  piece it belongs to, and the piece is still readable in the gaps and in the
+  rows either side.
 - **The palette** is a small set of **pastels** — light green, light pink, pale
   blue, pale yellow, lavender, peach — cycled by label, in the spirit of how
   Fusion 360 tints components: enough colour to tell one piece from the next,
@@ -133,12 +140,14 @@ hover text says which of the two it is under the pointer — the piece in the mi
 of a block, the boundary near a cut (`S0 │ S1 — 0x400000`), so the target
 announces itself.
 
-**3. The caret's segment in the status bar.** `S1 · 0x400000–0xC00000 · 8 MB`,
-beside the offsets the bar already shows. No new chrome, present whether or not
-the minimap is open, and it answers the question that comes up while scrolling —
-*which piece am I in?* Shown only when the pane has two or more pieces: `S0`
-beside a whole file is noise, and the readout appearing at all is itself the
-signal that this dump is partitioned.
+**3. The caret's segment in the status bar.** `S1: 400000-C00000 (8 MB)` — the
+label, the piece's half-open range in bare hex (no `0x` prefix), and its size,
+as one block beside the offsets the bar already shows. The caret's offset is
+shown the same way: bare hex, no `0x` prefix and no decimal. No new chrome,
+present whether or not the minimap is open, and it answers the question that
+comes up while scrolling — *which piece am I in?* Shown only when the pane has
+two or more pieces: `S0` beside a whole file is noise, and the readout appearing
+at all is itself the signal that this dump is partitioned.
 
 **No click-to-select.** Selecting a whole piece is a rare act and a stray click
 should not do it: selection stays a menu item. The one thing a plain click does is
@@ -149,7 +158,11 @@ which is the opposite of a gesture you trip over.
 be cheap to reuse, and it is still the wrong answer here: the segmentation is the
 thing the two-chip round trip depends on, and a boundary that can be nudged by a
 slipped mouse is a boundary you have to re-check every time. Cuts move by typing
-an offset, which is deliberate by construction.
+an offset, which is deliberate by construction — and a cut may only move within
+the interval it currently bounds, strictly between its neighbouring cuts (or the
+file's end). It can never jump over another cut, so the partition's structure is
+preserved: the piece it opened keeps its name, and the name travels with the
+boundary. A typed offset past a neighbouring cut is refused, not wrapped.
 
 ## Acting on them
 
@@ -164,15 +177,28 @@ an offset, which is deliberate by construction.
   the file. (Deleting the *bytes* of a piece is Delete Bytes on a selection,
   §7.2, and says so.)
 
-Right-clicking a tinted row offers **Split Here** — a cut at the byte or address
-under the pointer, no dialog — and the same piece menu as the strip, plus
-**Remove Cut**.
+Right-clicking a tinted row offers the same piece menu as the strip, plus the
+segment pair described below.
 
 **And in the dump's own context menu.** The offset context menu (§10.2) already
 carries the address-scoped commands — Copy offset, Select block from here, the
-bookmark pair — and **Split Segment Here** belongs with them: right-click an
-address and the cut lands at that row's start; right-click a byte and it lands at
-that byte. Both are honestly "here", and neither rounds.
+bookmark pair — and the segment pair belongs with them, **set off in its own
+block between separators** so the partition commands read as a group distinct
+from the selection and bookmark commands. It is the same block whether the menu
+was opened on a byte or on the Offset column's address, and it carries two
+commands:
+
+- **Split Here** — opens the same offset-and-description popover Add Cut… opens
+  (stage 2), **pre-filled with the address the menu was opened on**: right-click
+  an address and it is that row's start; right-click a byte and it is that byte.
+  Both are honestly "here", and neither rounds. The popover is the one editor
+  that creates and edits a cut, as one popover does for a bookmark (§20.3).
+- **Remove Segment** — removes the piece the caret (or the right-clicked
+  position) sits in, merging its bytes into a neighbour that keeps its name.
+  It acts on a *position inside a segment*, not on a cut point, which is why it
+  is named for the segment rather than the cut. It is enabled whenever the pane
+  has more than one piece — including **S0**, which is removed by re-opening the
+  piece below at the file start, so what was S1 becomes S0.
 
 ## The Segments form
 
@@ -201,11 +227,14 @@ the Go To form (§10.1):
   row or from the row's context menu. Moving a cut is typing a number in that
   popover.
 - **Split Segment Here** splits the segment the caret is in, at the caret's
-  exact byte — no rounding, ever, because the export reads these offsets. **Remove Cut** merges the selected segment with the one above.
+  exact byte — no rounding, ever, because the export reads these offsets.
+  **Remove Segment** removes the selected piece, merging its bytes into a
+  neighbour that keeps its name (removing S0 reopens the piece below at the file
+  start, so what was S1 becomes S0).
 - **Save Segment…** writes the selected one; **Save All as Separate Files…**
   writes every one in a single act — which is what "split the file" *is* once
   segments exist.
-- Return goes to the selected segment's start; ⌫ removes the cut above it. The
+- Return goes to the selected segment's start; ⌫ removes the selected piece. The
   form follows the store, so a join or an edit made elsewhere shows up in it.
 
 ### Writing segments out
@@ -289,6 +318,7 @@ struct Segment: Equatable {
     func segment(containing offset: UInt64) -> Segment?
     @discardableResult func addCut(at offset: UInt64) -> Bool
     @discardableResult func removeCut(at offset: UInt64) -> Bool
+    @discardableResult func removePiece(at index: Int) -> Bool   // S0 reopens the piece below at 0
     @discardableResult func moveCut(from: UInt64, to offset: UInt64) -> UInt64?
     func rename(_ index: Int, to name: String)
     func apply(_ edit: DiffEdit, newSize: UInt64)
@@ -370,31 +400,43 @@ status bar says which piece the caret is in.
 - Commands: **Edit ▸ Add Cut…**, which opens a popover with an **offset** and a
   **description** — the offset pre-filled with the caret's and validated as it is
   typed (§10.1), refusing 0, EOF and an offset another cut already holds — and
-  **Remove Cut**, disabled when the caret's piece is the first. No key
-  equivalents: both are deliberate acts reached from a menu, and the fast path is
-  the one below.
+  **Remove Segment**, enabled whenever the pane has more than one piece (it acts
+  on the piece the caret sits in, so it is never "disabled on the first piece" —
+  removing S0 reopens the piece below at the file start). No key equivalents:
+  both are deliberate acts reached from a menu, and the fast path is the one
+  below.
 - **Split Here** in the dump's own context menu, on the byte or the address that
-  was right-clicked: no dialog, because the offset is the thing that was clicked
-  and there is nothing to type. This is how a cut normally gets made; Add Cut… is
-  for an offset you know as a number rather than as a position.
+  was right-clicked: it opens the same offset-and-description popover Add Cut…
+  opens, pre-filled with the address the menu was opened on. This is how a cut
+  normally gets made; Add Cut… is for an offset you know as a number rather than
+  as a position.
+- The segment pair (**Split Here**, **Remove Segment**) sits in the context menu
+  as its own block between separators, distinct from the selection and bookmark
+  commands, and is the same block whether the menu was opened on a byte or on the
+  Offset column's address.
 - The popover is the *same* editor that changes an existing cut (stage 3), so one
   panel creates and edits, as one popover does for a bookmark (§20.3).
 - `HexViewDataSource.hexSegmentSpans(in:)` answering, for a drawn row range, the
   pieces it touches with their byte ranges and colour indices — asked once per
   range like `hexBookmarkedRows(in:)`, resolved by binary search over `cuts`.
 - `HexTheme.segmentTints`: six pastels, resolved per theme, cycled by label.
-- `HexView.drawRow` fills the tint **before** everything else it draws: from the
-  end of the Offset column to the row's right edge, gaps included, split at the
-  exact byte where a cut falls inside the row, and stopping at EOF.
+- `HexView.drawRow` fills the tint **before** everything else it draws: edge to
+  edge, the Offset column included, gaps included, a mid-row boundary passing
+  through the middle of the gap between the two bytes it separates (the two fills
+  meet, no uncoloured slit), and stopping at EOF. The Offset column's addresses
+  and the bookmark's mark are drawn on top of the tint.
 - Invalidation: `SegmentStore.onChange` → only the rows the changed offsets touch,
   through the existing content-change channel (§13).
 - The status bar's segment readout, shown only with two or more pieces.
 - Tests:
   - a render test reading the tint in the gap between the two hex groups and in
     the gap before the decoded text — the gaps are the rule, not a side effect;
-  - `testTheOffsetColumnIsNotTinted`, sampling inside it;
-  - `testAMidRowCutSplitsTheTintAtTheByte` — different tints either side of byte
-    5 in the same row, which is the case a line could not draw;
+  - `testTheOffsetColumnIsTinted`, sampling inside it — the band is edge to edge;
+  - `testTheMidRowBoundaryLeavesNoPaperSlit` — a cut at byte 5, walking the pixels
+    across the gap between bytes 4 and 5, none of them paper; the two fills meet
+    at the mid-gap;
+  - `testTheBookmarkTipIsDrawnOverTheTint` — a mark on a tinted row keeps its tip
+    above the fill;
   - `testADifferenceStillReadsOrangeOverTheTint` and
     `testTheTintShowsThroughADifferencesGaps`;
   - `testASelectionCoversTheTint`;
@@ -407,13 +449,15 @@ status bar says which piece the caret is in.
     fill, the accent and the bookmark purple;
   - the popover's commit making a cut at a typed offset, and its refusals (0,
     EOF, an offset already cut) beeping rather than committing;
-  - `testSplitHereCutsAtTheClickedByte`, and at the clicked *address*, which means
-    that row's start;
-  - the menu items and their validation; a redraw test asserting a cut
-    invalidates its own rows and not the document;
-  - `testTheStatusBarNamesTheCaretsPiece` and its single-piece silence.
-- Spec: §21.3 (the tint, the gaps, the mid-row split, the Offset column's
-  exemption) and the §6 addition to the layering stack.
+  - **Split Here** opening the Add Cut popover pre-filled with the clicked
+    address — on a byte and on the Offset column's address alike;
+  - the menu items and their validation, the segment pair set off between
+    separators; a redraw test asserting a cut invalidates its own rows and not
+    the document;
+  - `testTheStatusBarNamesTheCaretsPiece` as one block `S1: <start>-<end>
+    (length)`, bare hex, and its single-piece silence.
+- Spec: §21.3 (the tint, the gaps, the mid-row split, the Offset column's tint,
+  the status-bar readout) and the §6 addition to the layering stack.
 
 **Done when** a dump can be cut where you right-click it or at an offset you
 type, uncut again, and the pieces are visible while scrolling — under differences
@@ -442,21 +486,24 @@ and selections. No form, no strip, no writing out.
 - **A `+`/`−` footer under the table**, the way Apple's own tables do it (the
   Target Dependencies pane in Xcode is the reference): a hairline, then two
   borderless small buttons at the left — `plus` opens the Add Cut popover,
-  anchored to the button itself, and `minus` removes the selected piece's cut.
-  `−` is disabled with no selection and on **S0**, which has no cut above it.
-  Icon-only, so both carry a tooltip and an accessibility label.
+  anchored to the button itself, and `minus` removes the selected **piece** —
+  merging its bytes into a neighbour that keeps its name. `−` is disabled only
+  with no selection, or when the pane is a single piece; it is enabled on **S0**
+  too, which is removed by re-opening the piece below at the file start (what was
+  S1 becomes S0). Icon-only, so both carry a tooltip and an accessibility label.
 - **The row's context menu** carries what acts on one piece: *Save Segment…*,
-  *Replace Segment from File…*, *Edit…*, *Remove Cut* — the same menu the strip
-  beside the map offers (§21.3), so one shape in both places.
+  *Replace Segment from File…*, *Edit…*, *Remove Segment* — the same menu the
+  strip beside the map offers (§21.3), so one shape in both places.
 - The dialog's own button row holds only what acts on the whole partition:
   **Save All as Separate Files…** and **Close**.
 - Keys: Return goes to the selected piece's start; ⌫ is `−`.
 - Tests: the table's contents against a partitioned pane; the popover's commit
   moving a cut and changing a description; `+` opening the popover anchored to
-  itself; `−` disabled with nothing selected **and** on S0, enabled on S1;
-  `⌫` doing what `−` does; the row menu's items, their targets and the piece each
-  carries; the form following a cut made elsewhere in the app; Return navigating.
-  (The popover's own validation is stage 2's, tested once.)
+  itself; `−` disabled with nothing selected and on a single-piece pane, enabled
+  on S1 **and** on S0 (removing S0 renumbers the piece below to S0); `⌫` doing
+  what `−` does; the row menu's items, their targets and the piece each carries;
+  the form following a cut made elsewhere in the app; Return navigating. (The
+  popover's own validation is stage 2's, tested once.)
 - Spec: §21.4.
 
 **Done when** the partition can be built, renamed and rearranged entirely from

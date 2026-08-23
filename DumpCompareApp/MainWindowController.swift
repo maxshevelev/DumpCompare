@@ -329,10 +329,11 @@ final class MainWindowController: NSWindowController {
         // The segment pair (§21.3). No key equivalents: both are deliberate acts
         // reached from a menu, and the fast path is Split Here in the dump's own
         // context menu. Add Cut… opens the offset-and-description popover;
-        // Remove Cut merges the caret's piece with the one above it.
+        // Remove Segment deletes the piece the caret sits in, merging it with a
+        // neighbour — it acts on the caret's position, not on a cut point.
         editMenu.addItem(.separator())
         editMenu.addItem(withTitle: "Add Cut…", action: #selector(MainViewController.addCut), keyEquivalent: "")
-        editMenu.addItem(withTitle: "Remove Cut", action: #selector(MainViewController.removeCut), keyEquivalent: "")
+        editMenu.addItem(withTitle: "Remove Segment", action: #selector(MainViewController.removeSegment(_:)), keyEquivalent: "")
         return editMenu
     }
 

@@ -34,8 +34,8 @@ struct SegmentReadout: Equatable {
 struct PaneStatus: Equatable {
     var fileName = ""
     var fileSize: UInt64 = 0
-    var cursorHex = ""
-    var cursorDecimal = ""
+    /// The caret's offset, raw — the view renders it as bare hex (§21.3).
+    var cursorOffset: UInt64 = 0
     var selectionLength: UInt64 = 0
     var isDirty = false
     var isReadOnly = false
@@ -719,8 +719,7 @@ final class PaneViewModel: HexViewDataSource {
         return PaneStatus(
             fileName: isUntitled ? "Untitled" : doc.url.lastPathComponent,
             fileSize: doc.size,
-            cursorHex: String(format: "0x%X", caret),
-            cursorDecimal: "\(caret)",
+            cursorOffset: caret,
             selectionLength: doc.selection.count,
             isDirty: doc.isDirty,
             isReadOnly: doc.readOnly,
