@@ -2006,7 +2006,10 @@ and every operation that writes is explicit about it.
   C at the start, and the first seam moves.
 - The label is positional — S0, S1, S2 … in file order — and renumbers whenever
   a cut is added or removed. Zero-based, like every other offset in the app
-  (§10). Every segment always has one, so nothing is ever nameless.
+  (§10). Every segment always has one, so nothing is ever nameless. The
+  `S<index>` shape is built in one place, so the form's label column, the status
+  bar, the menu titles and the saved file names all read it the same — and making
+  the suffix configurable later is a change to that one place.
 - The name is optional and survives renumbering: rename a piece and add a cut
   before it later, and the piece keeps its name while its label changes. A
   segment with no name is still shown as its label, never blank. Two pieces may
@@ -2157,8 +2160,14 @@ and every operation that writes is explicit about it.
   can change. Return commits — moving the cut and renaming the piece in one act;
   Esc restores.
 - **A +/− footer under the table**, the way Apple's own tables do it: a
-  hairline, then two borderless icon buttons at the left, the same width, so
-  **−** does not read as a smaller, disabled button beside a full **+**.
+  hairline, then two borderless icon buttons at the left, the same size, so
+  **−** does not read as a smaller, disabled button beside a full **+**. The
+  system **plus**/**minus** symbols, borderless — a plain icon on the form's own
+  ground, no bezel. The two glyphs have different bounding boxes (a cross vs a
+  bar) and a borderless image button sizes itself to that box, so each glyph is
+  drawn at its natural size into the same square bitmap: the box is the size,
+  the two buttons come out equal with no size constraints, and the bar stays a
+  thin bar centred in its button.
   **+** opens the Add Cut popover anchored to the button itself, with the
   offset field empty — just the `0x` prefix, as everywhere an offset is typed —
   and the caret on the offset: from the form there is no caret to start from, so
@@ -2168,19 +2177,65 @@ and every operation that writes is explicit about it.
   piece — there is no neighbour to merge into — and is enabled on S0 too:
   removing S0 reopens the piece below at the file start, so what was S1 becomes
   S0. Icon-only, so both carry a tooltip and an accessibility label.
+- **A wider gap separates the footer from the button row** than the table from
+  the footer: the footer is the list's own controls, the button row the
+  dialog's, and the space says "these are two different groups".
+- **The Add Cut popover anchors to what it acts on** — the form's **+** button,
+  the row it edits, the byte Split Here was invoked on — but the Edit menu's
+  *Add Cut…* centres it in the pane instead: it is a dialog pre-filled with the
+  caret's offset, not a pointer at a byte, so it does not hang off the caret.
 - **The row's context menu** carries what acts on one piece: *Save Segment…*,
   *Replace Segment from File…*, *Edit…*, *Remove Segment* — the same menu the
   strip beside the map offers (§21.3), so one shape in both places. Save
-  Segment… arrives with §21.5 and Replace Segment from File… with §21.6; until
-  then the items are present and disabled.
+  Segment… is live (§21.5); Replace Segment from File… arrives with §21.6 and
+  is disabled until then. *Remove Segment* names the piece it will remove —
+  *Remove Segment S1*, not a bare *Remove Segment* — the way the Edit menu's and
+  the offset context menu's items do (§21.3).
 - **The button row** holds only what acts on the whole partition: **Remove
   All** at the left, which removes every cut at once — back to one piece, the
   whole file, named for it — and asks before acting, since it is destructive;
-  then **Save All as Separate Files…**, which arrives with §21.5 and is
-  disabled until then, and **Close** at the right.
+  then **Save All as Separate Files…** (§21.5), and **Close** at the right.
+  **Save All** is available only when the dump is actually partitioned — with a
+  single piece there is nothing to separate, so it is a plain save and the
+  button stays disabled until a cut makes a second piece.
 - **Keys**: ⌥⌘S opens the form (⌘S is Save, ⇧⌘S is Save As, so the form takes
   the Option variant, the way Bookmarks… takes ⌥⌘B). Return goes to the
   selected piece's start — the form closes and the caret lands there, revealed
   the way the Go To form's jump reveals (§10.1); with nothing selected, nothing
   happens. ⌫ does what − does. Escape is two-level: it closes the row editor
   first, and only a second press closes the form.
+
+21.5 Writing pieces out
+
+- **A partition is written out as its pieces, all or nothing.** Each piece is
+  written to a temporary name in the target directory and fsynced; only when
+  every piece is a complete, fsynced temp are they renamed into place. A
+  failure or a cancel removes every temporary and publishes nothing, so the
+  directory is left exactly as it was (§5.2, the multi-file generalization of
+  the single-file atomic write). The read is chunked, so a large piece is
+  streamed rather than loaded whole into RAM.
+- **Save All as Separate Files…** writes the whole partition. The folder is
+  chosen with an open panel in directory mode — a save panel grants access to
+  one file and this writes N, so the sandbox would refuse the rest. Each piece
+  becomes `<name>_S<i>.bin`, named for the document (`bios_S0.bin`,
+  `bios_S1.bin`, …). Before anything is written, one confirmation previews
+  every piece — `S0 → bios_S0.bin (4 MB)` — and names the files that would be
+  replaced; a cancel writes nothing.
+- **Save Segment…** writes one piece to one file — the ordinary save panel,
+  pre-filled with `<name>_S<i>.bin`. It acts on a single piece, so it lives in
+  the row's context menu (and the strip's, §21.3), never in the button row,
+  which is for the whole partition. The panel's own replace confirmation covers
+  the overwrite. The save panel grants the one file it names, not the folder
+  around it (§5.2), so the sibling temp the all-or-nothing path needs cannot be
+  created; with a single part there is nothing to keep atomic against, so the
+  write falls back to writing that part straight into the file the user chose —
+  the same fallback the single-file Save As takes. Not atomic, but the only
+  option the sandbox permits. A multi-part write has no such fallback: it needs
+  the directory the open panel in directory mode grants.
+- **The write runs as a background operation** with its name, progress and (×)
+  in the active pane's status bar, the way a search does (§14.4); a new write
+  cancels the one in flight. A cancel stops the write and leaves the directory
+  as it was.
+- **The write reads the document's current bytes**, so unsaved edits are in
+  what lands on disk — the pieces are a snapshot of the dump as it is, not as
+  it was last saved.

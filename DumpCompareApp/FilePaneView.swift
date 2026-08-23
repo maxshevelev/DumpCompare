@@ -568,33 +568,46 @@ final class FilePaneView: NSView {
         return controller
     }
 
-    /// Shows the cut popover on the caret's cell (§21.3). The caret is scrolled
-    /// into view first if it is not there: a popover has to point at something
-    /// the user can see, and Add Cut… can be chosen with the caret just off
-    /// screen.
+    /// Shows the cut popover (§21.3). The pane view presents it because the
+    /// anchor rect is the hex view's to give — the controller says which offset
+    /// it starts at, which offsets are already cut, and what the two keys mean.
     ///
-    /// The pane view presents it because the caret's rect is the hex view's to
-    /// give — the controller says which offset it starts at, which offsets are
-    /// already cut, and what the two keys mean.
+    /// With `anchoredToOffset` (the default, Split Here) the popover hangs off the
+    /// byte it is pre-filled with, and that byte is scrolled into view first if it
+    /// is not there: a popover has to point at something the user can see. With it
+    /// off (Add Cut…) the popover is centred in the pane's visible area instead of
+    /// stuck to the caret — the offset is still pre-filled with the caret's, but
+    /// the popover is a dialog, not a pointer.
     @discardableResult
     func presentCutEditPopover(
         prefillOffset: UInt64, fileSize: UInt64,
         isAlreadyACut: @escaping (UInt64) -> Bool,
-        onCommit: @escaping (UInt64, String) -> Void
+        onCommit: @escaping (UInt64, String) -> Void,
+        anchoredToOffset: Bool = true
     ) -> CutEditPopoverController {
-        if !hexView.visibleByteRange().contains(prefillOffset) {
-            hexView.revealOffsetCentered(prefillOffset)
-            // The scroll has to land before the anchor rect is read, or the
-            // popover points at where the caret used to be.
-            scrollView.contentView.layoutSubtreeIfNeeded()
-        }
         let controller = CutEditPopoverController(
             prefillOffset: prefillOffset, fileSize: fileSize,
             isAlreadyACut: isAlreadyACut, onCommit: onCommit
         )
-        // The popover hangs off the byte it is pre-filled with — the caret for
-        // Add Cut…, the right-clicked byte for Split Here (§21.3).
-        controller.show(relativeTo: hexView.byteCellRect(for: prefillOffset), of: hexView)
+        if anchoredToOffset {
+            if !hexView.visibleByteRange().contains(prefillOffset) {
+                hexView.revealOffsetCentered(prefillOffset)
+                // The scroll has to land before the anchor rect is read, or the
+                // popover points at where the caret used to be.
+                scrollView.contentView.layoutSubtreeIfNeeded()
+            }
+            // The popover hangs off the byte it is pre-filled with — the
+            // right-clicked byte for Split Here (§21.3).
+            controller.show(relativeTo: hexView.byteCellRect(for: prefillOffset), of: hexView)
+        } else {
+            // Add Cut…: centred in the pane's visible area, not stuck to the
+            // caret (§21.3). The visible rect is in the hex view's own
+            // coordinates, so it is already the anchor's coordinate space.
+            let visible = scrollView.documentVisibleRect
+            controller.show(
+                relativeTo: NSRect(x: visible.midX, y: visible.midY, width: 1, height: 1),
+                of: hexView)
+        }
         return controller
     }
 

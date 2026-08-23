@@ -60,6 +60,16 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
     /// shows. Returns whether to proceed.
     var confirmRemoveAll: (() -> Bool)?
 
+    /// The save actions, owned by the controller (§21.5). The form is modal and
+    /// has no status bar of its own, so the panels, the overwrite confirmation
+    /// and the write's progress all live in the window that presents it; the form
+    /// only says *what* to save. `saveAll` writes every piece; `savePiece` writes
+    /// one. Each returns whether the write actually started: when it did, the form
+    /// closes so the status bar's progress is visible; when the user cancelled a
+    /// panel, the form stays open.
+    var saveAll: (() -> Bool)?
+    var savePiece: ((Segment) -> Bool)?
+
     /// The popover on screen, if any: Escape closes it before it closes the form
     /// (§10.1), and it must not outlive the piece it is editing.
     private weak var openEditPopover: CutEditPopoverController?
@@ -108,8 +118,13 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
         tableHeight = scrollView.heightAnchor.constraint(equalToConstant: 0)
         root.addArrangedSubview(scrollView)
 
-        root.addArrangedSubview(makeFooter())
+        let footer = makeFooter()
+        root.addArrangedSubview(footer)
         root.addArrangedSubview(makeButtonRow())
+        // A wider gap between the +/− footer and the button row: the footer is
+        // the list's own controls, the button row the dialog's, and the space
+        // says "these are two different groups" (§21.4).
+        root.setCustomSpacing(20, after: footer)
 
         // A root that can claim Escape before the Close button's key equivalent
         // does — that is the whole of the two-level Escape (§10.1).
@@ -146,7 +161,7 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
 
     /// The list and its `+`/`−` footer. The footer is the way Apple's own tables
     /// do it (the Target Dependencies pane in Xcode is the reference): a hairline,
-    /// then two borderless small buttons at the left (§21.4).
+    /// then two small borderless icon buttons at the left, the same width (§21.4).
     private func makeTable() -> NSScrollView {
         let labelColumn = NSTableColumn(identifier: ColumnID.label)
         labelColumn.title = "Segment"
@@ -209,29 +224,54 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
         return scrollView
     }
 
-    /// The `+`/`−` footer under the table (§21.4): a hairline, then two
-    /// borderless small buttons at the left. `+` opens the Add Cut popover,
-    /// anchored to the button itself; `−` removes the selected piece.
+    /// The `+`/`−` footer under the table (§21.4): a hairline, then two small
+    /// borderless icon buttons at the left, the same width. `+` opens the Add Cut
+    /// popover, anchored to the button itself; `−` removes the selected piece.
     private func makeFooter() -> NSView {
         let hairline = NSBox()
         hairline.boxType = .separator
         hairline.translatesAutoresizingMaskIntoConstraints = false
 
+        // Borderless: a plain thin icon on the form's own ground, no bezel
+        // (§21.4). The system `plus`/`minus` symbols, tinted a subdued grey so
+        // they read as controls.
+        //
+        // The two glyphs have different bounding boxes — the `+` is a full
+        // cross, the `−` a short bar — and a borderless image button sizes
+        // itself to that box, so `−` would read as a smaller button beside `+`.
+        // Drawing each glyph at its natural size into the same square bitmap
+        // makes both buttons the same size with no size constraints: the box is
+        // the size, and the glyph keeps its own proportions centred inside it.
+        func footerIcon(_ name: String, _ description: String) -> NSImage {
+            let glyph = NSImage(systemSymbolName: name, accessibilityDescription: description)?
+                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .regular))
+                ?? NSImage()
+            let side: CGFloat = 18
+            let image = NSImage(size: NSSize(width: side, height: side), flipped: false) { rect in
+                let g = glyph.size
+                glyph.draw(at: NSPoint(x: (rect.width - g.width) / 2, y: (rect.height - g.height) / 2),
+                           from: .zero, operation: .sourceOver, fraction: 1)
+                return true
+            }
+            image.isTemplate = true
+            return image
+        }
+
         let plus = NSButton(title: "", target: self, action: #selector(addCutPressed))
-        plus.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "Add Cut")
+        plus.image = footerIcon("plus", "Add Cut")
         plus.imagePosition = .imageOnly
         plus.isBordered = false
-        plus.bezelStyle = .smallSquare
+        plus.contentTintColor = .secondaryLabelColor
         plus.toolTip = "Add Cut…"
         plus.setAccessibilityLabel("Add Cut")
         plus.translatesAutoresizingMaskIntoConstraints = false
         addButton = plus
 
         let minus = NSButton(title: "", target: self, action: #selector(removeCutPressed))
-        minus.image = NSImage(systemSymbolName: "minus", accessibilityDescription: "Remove Segment")
+        minus.image = footerIcon("minus", "Remove Segment")
         minus.imagePosition = .imageOnly
         minus.isBordered = false
-        minus.bezelStyle = .smallSquare
+        minus.contentTintColor = .secondaryLabelColor
         minus.toolTip = "Remove Segment"
         minus.setAccessibilityLabel("Remove Segment")
         minus.translatesAutoresizingMaskIntoConstraints = false
@@ -244,11 +284,6 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
         buttonRow.orientation = .horizontal
         buttonRow.spacing = 6
         buttonRow.translatesAutoresizingMaskIntoConstraints = false
-        // The two symbols are the same size: "−" must not read as a smaller,
-        // disabled button beside a full "+". Activated only once both buttons
-        // share the row as an ancestor — a constraint between views that do
-        // not is an exception at layout time.
-        minus.widthAnchor.constraint(equalTo: plus.widthAnchor).isActive = true
 
         let footer = NSStackView(views: [hairline, buttonRow])
         footer.orientation = .vertical
@@ -272,14 +307,10 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         // Save All as Separate Files… writes the partition out as its pieces
-        // (§21.5) — Stage 4. In Stage 3 the command is the seam that stage lands
-        // on; the button is present so the row's shape is the final one.
+        // (§21.5): the controller's directory panel, the overwrite confirmation,
+        // and the write with its status-bar progress.
         let saveAll = NSButton(title: "Save All as Separate Files…",
                                target: self, action: #selector(saveAllPressed))
-        // Stage 4 lands the panel and the writer; until then the button is the
-        // seam and is greyed, so the row's shape is final without the act being
-        // a silent no-op.
-        saveAll.isEnabled = false
         saveAllButton = saveAll
 
         // Close, not Cancel: nothing in this form is undone by leaving it. A
@@ -424,10 +455,13 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
     private func updateRemoveButton() {
         // `−` and Remove All both need a neighbour to merge into: both are
         // disabled on a single piece and enabled the moment the dump is
-        // partitioned.
-        let removable = pane.segmentStore.segments.count > 1
-        removeButton.isEnabled = removable
-        removeAllButton.isEnabled = removable
+        // partitioned. Save All as Separate Files joins them: with one piece
+        // there is nothing to separate, so it is a plain save and stays disabled
+        // (§21.4).
+        let partitioned = pane.segmentStore.segments.count > 1
+        removeButton.isEnabled = partitioned
+        removeAllButton.isEnabled = partitioned
+        saveAllButton.isEnabled = partitioned
     }
 
     // MARK: - The row editor (§21.4)
@@ -643,11 +677,14 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
         removeSegment(atIndex: piece.index)
     }
 
-    /// Save Segment… (§21.5): writes the piece under the click to a file. Stage 4
-    /// lands the panel and the writer; this is the seam it reaches.
+    /// Save Segment… (§21.5): writes the piece under the click to a file — the
+    /// ordinary save panel, one file. It acts on one piece, so it is a row-menu
+    /// command, never a button (the button row is for the whole partition).
+    /// The form closes only when the write actually started; a cancelled panel
+    /// leaves it open.
     @objc func saveSegment(_ sender: Any?) {
-        // Stage 4: the ordinary save panel, one file, on the piece the menu was
-        // built for.
+        guard let piece = pieceForMenuAction() else { return }
+        if savePiece?(piece) == true { closeForm() }
     }
 
     /// Replace Segment from File… (§21.6): reads the piece under the click from a
@@ -682,11 +719,12 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
     }
 
     /// Save All as Separate Files… (§21.5): writes the whole partition out as its
-    /// pieces. Stage 4 lands the directory panel, the preview and the writer; this
-    /// is the seam it reaches.
+    /// pieces. The controller chooses the directory (directory mode), confirms any
+    /// overwrite, and runs the write with the status bar's progress; the form
+    /// closes only when the write actually started, so a cancelled panel leaves it
+    /// open.
     @objc func saveAllPressed() {
-        // Stage 4: a directory chosen in directory mode, a base name pre-filled
-        // from the document, a preview of what will be written.
+        if saveAll?() == true { closeForm() }
     }
 
     @objc private func closePressed() {
@@ -704,17 +742,21 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
     // MARK: - Menu validation (§21.4)
 
     /// The row menu and the button row enable themselves by what they can act on:
-    /// Save Segment…, Replace Segment from File… and Save All as Separate Files…
-    /// are Stage 4/6, so they are greyed until those stages land — the shape is
-    /// the final one, the acts are not yet. Remove Segment needs a piece with a
-    /// neighbour to merge into.
+    /// Save Segment… needs a piece under the click, Remove Segment needs a piece
+    /// with a neighbour to merge into. Replace Segment from File… is Stage 6, so
+    /// it stays greyed until that stage lands.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
-        case #selector(saveSegment(_:)), #selector(replaceSegmentFromFile(_:)),
-             #selector(saveAllPressed):
-            return false   // Stage 4/6
+        case #selector(saveSegment(_:)):
+            return pieceForMenuAction() != nil
+        case #selector(replaceSegmentFromFile(_:)):
+            return false   // Stage 6
         case #selector(removeClickedSegment):
-            return pieceForMenuAction() != nil && pane.segmentStore.segments.count > 1
+            let piece = pieceForMenuAction()
+            // Name the piece the item will remove, so the menu says what it will
+            // do (§21.4) — "Remove Segment S1", not a bare "Remove Segment".
+            menuItem.title = piece.map { "Remove Segment \($0.label)" } ?? "Remove Segment"
+            return piece != nil && pane.segmentStore.segments.count > 1
         default:
             return true
         }
@@ -747,7 +789,7 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
             let cell = makeCell(tableColumn)
             cell.restingTextColor = .labelColor
             cell.textField?.font = .systemFont(ofSize: 12, weight: .semibold)
-            cell.textField?.stringValue = "S\(segment.index)"
+            cell.textField?.stringValue = segment.label
             return cell
         case ColumnID.start:
             let cell = makeCell(tableColumn)

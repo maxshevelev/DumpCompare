@@ -200,7 +200,9 @@ commands:
   It acts on a *position inside a segment*, not on a cut point, which is why it
   is named for the segment rather than the cut. It is enabled whenever the pane
   has more than one piece — including **S0**, which is removed by re-opening the
-  piece below at the file start, so what was S1 becomes S0.
+  piece below at the file start, so what was S1 becomes S0. The menu item names
+  the piece it will remove — *Remove Segment S1*, not a bare *Remove Segment* —
+  in the Edit menu, the offset context menu and the form's row menu alike.
 
 ## The Segments form
 
@@ -260,7 +262,12 @@ half of `JOIN_SPLIT_PLAN.md` specified:
 - **All or nothing**: each part goes to a temporary name in the target directory,
   is fsynced, and they are renamed into place together; a failure removes the
   temporaries and reports, publishing nothing half-written. (§5.2's lesson, and
-  the bug behind commit `5bbef2a`.)
+  the bug behind commit `5bbef2a`.) The exception is a single **Save Segment…**:
+  the save panel grants the one file it names, not the folder around it, so the
+  sibling temp cannot be created. With one part there is nothing to keep atomic
+  against, so it is written straight into the file the user chose — the same
+  fallback the single-file Save As takes. Not atomic, but the only option the
+  sandbox permits; a multi-part write has no such fallback.
 - Existing files are named in **one** confirmation before anything is written.
 - Unsaved edits are included — the content written is what the pane shows.
 - A large write runs as a background operation with progress and a cancel button
@@ -290,7 +297,7 @@ insert-and-shift is a later decision, not a silent one.
 | Closing the file | The segments go with it; nothing is persisted (a project file would change that, TODO) |
 | Comparison mode | Each pane has its own partition, its own tint colours, its own strip and its own form contents |
 | Replace Segment from File with a size mismatch | Refused, both sizes named |
-| Save All with one segment | Allowed, writes one file — a degenerate but coherent case |
+| Save All with one segment | Disabled — with a single piece there is nothing to separate, so it is a plain save |
 | Click on the strip's middle | Nothing: caret, selection and scroll position unchanged |
 | Click within 4 pt of a cut | The caret lands on the cut's exact offset, centred; the nearer cut wins |
 | Click near the strip's top or bottom end | Nothing — the file's start and end are not cuts |
@@ -307,6 +314,7 @@ struct Segment: Equatable {
     let index: Int          // positional label: S0, S1, …
     let range: Range<UInt64>
     var name: String        // empty means "no name", never shown blank
+    var label: String { "S\(index)" }   // the one place the "S" is built
 }
 
 @MainActor final class SegmentStore {
@@ -401,12 +409,15 @@ status bar says which piece the caret is in.
 
 - Commands: **Edit ▸ Add Cut…**, which opens a popover with an **offset** and a
   **description** — the offset pre-filled with the caret's and validated as it is
-  typed (§10.1), refusing 0, EOF and an offset another cut already holds — and
-  **Remove Segment**, enabled whenever the pane has more than one piece (it acts
-  on the piece the caret sits in, so it is never "disabled on the first piece" —
-  removing S0 reopens the piece below at the file start). No key equivalents:
-  both are deliberate acts reached from a menu, and the fast path is the one
-  below.
+  typed (§10.1), refusing 0, EOF and an offset another cut already holds. The
+  popover is centred in the pane, not anchored to the caret: it is a dialog
+  pre-filled with a number, not a pointer at a byte (Split Here, below, is the
+  one that anchors to a byte). And **Remove Segment**, which names the piece the
+  caret sits in — *Remove Segment S1*, not a bare *Remove Segment* — enabled
+  whenever the pane has more than one piece (it acts on the piece the caret sits
+  in, so it is never "disabled on the first piece" — removing S0 reopens the
+  piece below at the file start). No key equivalents: both are deliberate acts
+  reached from a menu, and the fast path is the one below.
 - **Split Here** in the dump's own context menu, on the byte or the address that
   was right-clicked: it opens the same offset-and-description popover Add Cut…
   opens, pre-filled with the address the menu was opened on. This is how a cut
@@ -452,10 +463,13 @@ status bar says which piece the caret is in.
   - the popover's commit making a cut at a typed offset, and its refusals (0,
     EOF, an offset already cut) beeping rather than committing;
   - **Split Here** opening the Add Cut popover pre-filled with the clicked
-    address — on a byte and on the Offset column's address alike;
+    address — on a byte and on the Offset column's address alike — anchored to
+    that byte, while **Add Cut…** presents the same popover centred in the pane,
+    not anchored to the caret;
   - the menu items and their validation, the segment pair set off between
-    separators; a redraw test asserting a cut invalidates its own rows and not
-    the document;
+    separators, and **Remove Segment** naming the piece it will remove (the
+    caret's piece in the Edit menu, the right-clicked byte's in the offset menu);
+    a redraw test asserting a cut invalidates its own rows and not the document;
   - `testTheStatusBarNamesTheCaretsPiece` as one block `S1: <start>-<end>
     (length)`, bare hex, and its single-piece silence.
 - Spec: §21.3 (the tint, the gaps, the mid-row split, the Offset column's tint,
@@ -488,8 +502,11 @@ and selections. No form, no strip, no writing out.
   typing a number in it, deliberately, since cuts do not drag.
 - **A `+`/`−` footer under the table**, the way Apple's own tables do it (the
   Target Dependencies pane in Xcode is the reference): a hairline, then two
-  borderless small buttons at the left, the same width so `−` does not read as a
-  smaller, disabled button — `plus` opens the Add Cut popover, anchored to the
+  borderless small buttons at the left, the same size so `−` does not read as
+  a smaller, disabled button — the system `plus`/`minus` symbols, borderless,
+  each drawn at its natural size into the same square bitmap (the glyphs have
+  different bounding boxes, and a borderless image button sizes to that box) —
+  `plus` opens the Add Cut popover, anchored to the
   button itself, with the offset field **empty** (just the `0x` prefix) and the
   caret on it: from the form there is no caret to start from, the offset is the
   thing to be filled in, and an unfilled offset makes no segment. `minus`
@@ -497,26 +514,35 @@ and selections. No form, no strip, no writing out.
   its name. `−` is disabled only when the pane is a single piece (no neighbour to
   merge into); it is enabled on **S0** too, which is removed by re-opening the
   piece below at the file start (what was S1 becomes S0). Icon-only, so both
-  carry a tooltip and an accessibility label.
+  carry a tooltip and an accessibility label. A wider gap separates the footer
+  from the button row than the table from the footer: the footer is the list's
+  own controls, the button row the dialog's.
 - **The row's context menu** carries what acts on one piece: *Save Segment…*,
   *Replace Segment from File…*, *Edit…*, *Remove Segment* — the same menu the
-  strip beside the map offers (§21.3), so one shape in both places.
+  strip beside the map offers (§21.3), so one shape in both places. *Remove
+  Segment* names the piece it will remove, the way the other menus' items do.
 - The dialog's own button row holds only what acts on the whole partition:
   **Remove All** at the left — every cut at once, back to one piece named for
-  the file, and it asks before acting — then **Save All as Separate Files…** and
-  **Close** at the right.
+  the file, and it asks before acting — then **Save All as Separate Files…**
+  (available only when the dump is partitioned into more than one piece — with
+  a single piece there is nothing to separate) and **Close** at the right.
 - Keys: ⌥⌘S opens the form (⌘S is Save, ⇧⌘S is Save As, so the form takes the
   Option variant); Return goes to the selected piece's start; ⌫ is `−`.
 - Tests: the table's contents against a partitioned pane; the popover's commit
   moving a cut and changing a description, and the description opening with the
   piece's current name; `+` opening the popover with an empty `0x` offset, the
-  caret on it, and no segment made while it is unfilled; `−` the same width as
-  `+`, disabled on a single-piece pane and enabled on every piece once
-  partitioned (S0 included, removing S0 renumbers the piece below to S0);
+  caret on it, and no segment made while it is unfilled; `−` and `+` borderless
+  and the same size, so `−` does not read as a smaller, disabled button,
+  disabled on a single-piece pane and enabled on every piece once partitioned
+  (S0 included, removing S0 renumbers the piece below to S0); **Save All**
+  disabled on a single-piece pane and enabled once partitioned; the wider gap
+  between
+  the footer and the button row than between the table and the footer;
   **Remove All** asking first and, once confirmed, leaving one piece named for
-  the file; the row menu's items, their targets and the piece each carries; the
-  form following a cut made elsewhere in the app; Return navigating. (The
-  popover's own validation is stage 2's, tested once.)
+  the file; the row menu's items, their targets and the piece each carries, and
+  Remove Segment naming the piece it will remove; the form following a cut made
+  elsewhere in the app; Return navigating. (The popover's own validation is
+  stage 2's, tested once.)
 - Spec: §21.4.
 
 **Done when** the partition can be built, renamed and rearranged entirely from
@@ -533,17 +559,24 @@ its pieces.
   nothing (§5.2, and the lesson behind `5bbef2a`).
 - **Save All as Separate Files…**: a directory chosen with an open panel in
   directory mode (a save panel grants access to one file and this writes N — the
-  sandbox would refuse the rest), a base name pre-filled from the document, and a
-  preview listing what will be written: `S0 → bios_S0.bin (4 MB)`.
+  sandbox would refuse the rest), a base name taken from the document
+  (`bios_S0.bin`, `bios_S1.bin`, …), and a preview listing what will be written:
+  `S0 → bios_S0.bin (4 MB)`.
 - **Save Segment…** — from the row's context menu or the strip's, never a button:
   it acts on one piece, and the form's button row is for the whole partition. The
-  ordinary save panel, one file.
-- One overwrite confirmation naming every file that would be replaced, before
-  anything is written.
+  ordinary save panel, one file, pre-filled with `<name>_S<i>.bin`; the panel's
+  own replace confirmation covers the overwrite, so no separate one. The save
+  panel grants the file, not its folder, so the sibling temp cannot be created;
+  with a single part the write falls back to writing straight into the chosen
+  file (§21.5).
+- One overwrite confirmation, before anything is written: the same dialog that
+  previews the parts also names the files that would be replaced (a section that
+  appears only when a target exists). A cancel writes nothing.
 - Progress and cancel in the status bar for a large write (§14.4).
 - Tests: core tests for the writer (the bytes of each part, the atomicity — a
   forced failure on the last part leaves nothing behind and no temporaries — a
-  cancel mid-write, a single-piece write); app tests for the preview's mapping,
+  cancel mid-write, a single-piece write, and the single-part fallback into a
+  file whose directory is not writable); app tests for the preview's mapping,
   the confirmation's inputs, and that the written content includes unsaved edits.
 - Spec: §21.5.
 

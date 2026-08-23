@@ -22,6 +22,27 @@ final class SegmentStoreTests: XCTestCase {
         XCTAssertEqual(store.segments[0].name, "dump.bin")
     }
 
+    // MARK: - The positional label
+
+    /// The label is built in one place — `S<index>` — and the instance and the
+    /// index-only forms agree, so the form's label column, the status bar, the
+    /// menu titles, the saved file names and the Save All preview all read the
+    /// same shape (§21.4).
+    func testTheLabelIsBuiltInOnePlace() {
+        let store = SegmentStore(size: 16, name: "dump.bin")
+        store.addCut(at: 8)
+        store.addCut(at: 12)
+
+        // Three pieces: the labels are S0, S1, S2 — the one shape every site
+        // that names a piece reads.
+        XCTAssertEqual(store.segments.map(\.label), ["S0", "S1", "S2"])
+        // A site that has only the index (the Save All preview) formats it the
+        // same way as a site that has the piece.
+        for segment in store.segments {
+            XCTAssertEqual(segment.label, Segment.label(for: segment.index))
+        }
+    }
+
     // MARK: - Cuts
 
     func testACutMakesTwoPiecesAndRenumbersThem() {

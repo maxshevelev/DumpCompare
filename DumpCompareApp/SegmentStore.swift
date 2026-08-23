@@ -17,6 +17,17 @@ struct Segment: Equatable {
     /// blank). Survives renumbering.
     let name: String
 
+    /// The piece's positional label — "S0", "S1", … in file order.
+    var label: String { Self.label(for: index) }
+
+    /// The positional label for the piece at `index` — "S0", "S1", … The one
+    /// place the "S" prefix is built, so every site that names a piece (the
+    /// form's label column, the status bar, the Remove Segment menu items, the
+    /// saved file names, the Save All preview) reads the same shape. The prefix
+    /// is a constant for now; making the label format configurable is a change
+    /// to this one line.
+    static func label(for index: Int) -> String { "S\(index)" }
+
     /// Built only by the partition that owns it: a `Segment` is a piece of one
     /// specific `Segmentation`, so it cannot be fabricated with boundaries no
     /// partition actually holds.

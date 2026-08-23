@@ -82,10 +82,34 @@ final class SegmentCommandsTests: XCTestCase {
 
         XCTAssertEqual(request.prefillOffset, 5, "the popover starts at the clicked byte")
         XCTAssertTrue(request.pane === pane, "the popover is for the right-clicked pane")
+        XCTAssertTrue(request.anchoredToOffset,
+                      "Split Here hangs off the byte it was invoked on")
         // Committing the pre-filled offset makes the cut at that byte.
         request.commit(5, "")
         XCTAssertEqual(pane.segmentStore.cuts, [5], "committing the prefill cuts at the clicked byte")
         XCTAssertEqual(pane.segmentStore.segments.map(\.range), [0..<5, 5..<32])
+    }
+
+    /// Add Cut… presents the same popover but centred in the pane, not anchored
+    /// to the caret (§21.3): the offset is still pre-filled with the caret's, but
+    /// the request is not anchored to an offset.
+    func testAddCutPresentsACentredPopover() throws {
+        let (controller, window, url) = try makeController([UInt8](repeating: 0x11, count: 16))
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+        pane.setSelection(SelectionModel.empty(at: 5, fileSize: 16))
+
+        var captured: MainViewController.CutEditRequest?
+        controller.cutEditPresenter = { captured = $0 }
+        controller.addCut()
+        controller.cutEditPresenter = nil
+
+        let request = try XCTUnwrap(captured, "Add Cut… must present the cut popover")
+        XCTAssertFalse(request.anchoredToOffset,
+                       "Add Cut… centres the popover instead of anchoring it to the caret")
+        XCTAssertEqual(request.prefillOffset, 5, "the offset is still pre-filled with the caret's")
+        XCTAssertTrue(request.pane === pane, "the popover is for the active pane")
+        _ = window
     }
 
     /// Right-clicking an address opens the popover pre-filled with the row's
@@ -153,11 +177,43 @@ final class SegmentCommandsTests: XCTestCase {
         pane.segmentStore.addCut(at: 8)
         pane.setSelection(SelectionModel.empty(at: 4, fileSize: 16))
         XCTAssertTrue(controller.validateMenuItem(item), "S0 is removable once the dump is partitioned")
+        XCTAssertEqual(item.title, "Remove Segment S0",
+                       "the item names the piece the caret is in, not a bare 'Remove Segment'")
 
         // The caret in the second piece (S1): also removable, merging into S0.
         pane.setSelection(SelectionModel.empty(at: 12, fileSize: 16))
         XCTAssertTrue(controller.validateMenuItem(item), "a later piece is removable too")
+        XCTAssertEqual(item.title, "Remove Segment S1",
+                       "moving the caret renames the item to the piece it will now remove")
         _ = window
+    }
+
+    /// The offset context menu's Remove Segment names the piece the right-clicked
+    /// byte is in — the same naming as the Edit menu's item, but resolved from the
+    /// byte that was clicked rather than the caret (§21.3).
+    func testTheOffsetMenusRemoveSegmentNamesTheClickedPiecesPiece() throws {
+        let (pane, url) = try makePane([UInt8](repeating: 0x11, count: 16))
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.segmentStore.addCut(at: 8)   // S0 = [0,8), S1 = [8,16)
+        let controller = MainViewController()
+
+        func removeItem(at offset: UInt64) throws -> NSMenuItem {
+            let menu = controller.makeOffsetMenu(for: pane, offset: offset)
+            return try XCTUnwrap(
+                menu.items.first { $0.action == #selector(MainViewController.removeSegment(_:)) },
+                "the offset menu must offer Remove Segment")
+        }
+
+        // A byte in S1 names S1.
+        let inS1 = try removeItem(at: 12)
+        XCTAssertTrue(controller.validateMenuItem(inS1), "S1 has a neighbour, so it is removable")
+        XCTAssertEqual(inS1.title, "Remove Segment S1",
+                       "the item names the piece the right-clicked byte is in")
+
+        // A byte in S0 names S0.
+        let inS0 = try removeItem(at: 4)
+        XCTAssertTrue(controller.validateMenuItem(inS0))
+        XCTAssertEqual(inS0.title, "Remove Segment S0")
     }
 
     /// Split Here is offered whenever the pane has bytes — the offset is NOT

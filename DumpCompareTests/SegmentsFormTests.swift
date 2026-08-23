@@ -305,13 +305,56 @@ final class SegmentsFormTests: XCTestCase {
                       "and it stays enabled with no selection")
     }
 
-    /// `−` is the same width as `+`, so it does not read as a smaller, disabled
-    /// button beside a full `+` (§21.4).
-    func testMinusIsTheSameWidthAsPlus() throws {
+    /// Save All as Separate Files… is available only when the dump is actually
+    /// partitioned — with a single piece there is nothing to separate, so the
+    /// button stays disabled until a cut makes a second piece (§21.4).
+    func testSaveAllIsAvailableOnlyWithMoreThanOneSegment() throws {
+        let (single, _, _, _, _) = try makeForm()
+        single.selectSegment(atIndex: 0)
+        XCTAssertFalse(single.saveAllButton.isEnabled,
+                       "a single piece has nothing to save out as pieces")
+
+        let (partitioned, _, _, _, _) = try makeForm(cuts: [8])
+        XCTAssertTrue(partitioned.saveAllButton.isEnabled,
+                      "two pieces: there is something to save out")
+    }
+
+    /// `+` and `−` are borderless and the same size — both width and height — so
+    /// `−` does not read as a smaller button beside a full `+` (§21.4). The two
+    /// glyphs have different bounding boxes (a cross vs a bar), so the buttons
+    /// only come out equal because both images are given the same square box.
+    func testTheFooterButtonsAreBorderlessAndTheSameSize() throws {
         let (form, _, _, _, _) = try makeForm()
         XCTAssertGreaterThan(form.addButton.frame.width, 0, "the footer is laid out")
-        XCTAssertEqual(form.removeButton.frame.width, form.addButton.frame.width,
-                       "the two footer buttons are the same width")
+        XCTAssertEqual(form.removeButton.frame.size, form.addButton.frame.size,
+                       "the two footer buttons are the same size")
+        XCTAssertFalse(form.addButton.isBordered, "the + button is borderless")
+        XCTAssertFalse(form.removeButton.isBordered, "the − button is borderless")
+    }
+
+    /// There is a wider gap between the +/− footer and the button row than
+    /// between the table and the footer: the footer is the list's own controls,
+    /// the button row the dialog's, and the space says "two different groups"
+    /// (§21.4). Measured on the laid-out frames, so it is the rendered result,
+    /// not the constraint that produces it.
+    func testThereIsAGapBetweenTheFooterAndTheButtonRow() throws {
+        let (form, _, _, _, _) = try makeForm(cuts: [8])
+        let root = try XCTUnwrap(form.view.subviews.first as? NSStackView,
+                                 "the form's content is a vertical stack")
+        let arranged = root.arrangedSubviews
+        XCTAssertEqual(arranged.count, 3, "the table, the footer, and the button row")
+        let table = arranged[0]
+        let footer = arranged[1]
+        let buttonRow = arranged[2]
+
+        // In the root's non-flipped coordinates the table is on top, so the gap
+        // between two stacked views is the upper one's bottom to the lower one's
+        // top.
+        let gapTableToFooter = table.frame.minY - footer.frame.maxY
+        let gapFooterToButtonRow = footer.frame.minY - buttonRow.frame.maxY
+
+        XCTAssertGreaterThan(gapFooterToButtonRow, gapTableToFooter,
+                             "the footer sits further from the button row than from the table")
     }
 
     // MARK: - The button row
@@ -405,8 +448,9 @@ final class SegmentsFormTests: XCTestCase {
     // MARK: - The row's context menu
 
     /// The row menu carries what acts on one piece — Save Segment…, Replace
-    /// Segment from File…, Edit…, Remove Segment — all aimed at the form, with
-    /// the Stage 4/6 acts greyed until they land.
+    /// Segment from File…, Edit…, Remove Segment — all aimed at the form. Save
+    /// Segment… (Stage 4) is live once a piece is selected; Replace Segment from
+    /// File… (Stage 6) stays greyed until it lands.
     func testTheRowMenuCarriesThePieceActions() throws {
         let (form, _, _, _, _) = try makeForm(cuts: [8, 16])
         let menu = try XCTUnwrap(form.segmentTable.menu)
@@ -422,10 +466,13 @@ final class SegmentsFormTests: XCTestCase {
         let save = try XCTUnwrap(menu.items.first { $0.title == "Save Segment…" })
         let replace = try XCTUnwrap(menu.items.first { $0.title == "Replace Segment from File…" })
         let remove = try XCTUnwrap(menu.items.first { $0.title == "Remove Segment" })
-        XCTAssertFalse(form.validateMenuItem(save), "Save Segment… is Stage 4")
+        XCTAssertTrue(form.validateMenuItem(save),
+                      "Save Segment… is live once a piece is selected")
         XCTAssertFalse(form.validateMenuItem(replace), "Replace Segment from File… is Stage 6")
         XCTAssertTrue(form.validateMenuItem(remove),
                       "Remove Segment needs a piece with a neighbour, and there is one")
+        XCTAssertEqual(remove.title, "Remove Segment S1",
+                       "the item names the piece it will remove, not a bare 'Remove Segment'")
     }
 
     /// The row menu's Remove Segment acts on the piece the menu was built for

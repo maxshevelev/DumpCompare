@@ -46,6 +46,7 @@
 		6C4A2D07C512800E3647C334 /* SandboxBookmarkStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EF3302417C4C7338004CE67 /* SandboxBookmarkStore.swift */; };
 		7108A4ABF852A054F1F5E641 /* OffsetContextMenuTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 209E4194094A04377AA5F50F /* OffsetContextMenuTests.swift */; };
 		710ECC65E66F697855FF6398 /* SegmentCommandsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD60D91BEDA4290B2A565D76 /* SegmentCommandsTests.swift */; };
+		7F3A9C2E5B1D4E8F0A6C3B9D /* SegmentSaveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E4B0D3F6C2A5E9D1B7F4C0E /* SegmentSaveTests.swift */; };
 		726842FD40A84C81A0D57099 /* HexViewAppearanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02B9500D140BE09B6006859B /* HexViewAppearanceTests.swift */; };
 		72FE060ED1406764B2E18350 /* HexLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8F0ABAC4DEEBAE7DD9A62BB /* HexLayoutTests.swift */; };
 		7462B5E629767BD0EEA05A74 /* HexColumnHeaderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B554959FC1439079D92C91E /* HexColumnHeaderTests.swift */; };
@@ -196,6 +197,7 @@
 		C8F0ABAC4DEEBAE7DD9A62BB /* HexLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HexLayoutTests.swift; sourceTree = "<group>"; };
 		C93800C61BCBEC68735E074A /* AppearanceSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppearanceSettings.swift; sourceTree = "<group>"; };
 		CD60D91BEDA4290B2A565D76 /* SegmentCommandsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentCommandsTests.swift; sourceTree = "<group>"; };
+		8E4B0D3F6C2A5E9D1B7F4C0E /* SegmentSaveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentSaveTests.swift; sourceTree = "<group>"; };
 		D2B3A4DD743DCCA1D634B456 /* EmptyStateViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EmptyStateViewTests.swift; sourceTree = "<group>"; };
 		D4F1945C5B2DF090953B5150 /* MainWindowMenuTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainWindowMenuTests.swift; sourceTree = "<group>"; };
 		D56C7E4027097952395DD0AF /* NewFileAndSwapTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewFileAndSwapTests.swift; sourceTree = "<group>"; };
@@ -357,6 +359,7 @@
 				96966FE774DE9A046371E9AC /* PanelAppearanceTests.swift */,
 				7FC713959D9654C564AB34E0 /* PaneViewModelTests.swift */,
 				CD60D91BEDA4290B2A565D76 /* SegmentCommandsTests.swift */,
+				8E4B0D3F6C2A5E9D1B7F4C0E /* SegmentSaveTests.swift */,
 				D8FE77BD408D4E768F8FC6EF /* SegmentPaletteTests.swift */,
 				98E9F6B84E53934F8BA5EF7D /* SegmentStoreTests.swift */,
 				7163FEB7459D03892D3A4BB8 /* SegmentTintRenderTests.swift */,
@@ -561,6 +564,7 @@
 				E48043200E726B8423B101CD /* PaneViewModelTests.swift in Sources */,
 				3D4497C958650F03D3B40CC7 /* PanelAppearanceTests.swift in Sources */,
 				710ECC65E66F697855FF6398 /* SegmentCommandsTests.swift in Sources */,
+				7F3A9C2E5B1D4E8F0A6C3B9D /* SegmentSaveTests.swift in Sources */,
 				BA09A682770E765EA63950E5 /* SegmentPaletteTests.swift in Sources */,
 				821693F5E7539F5B8A1EEE35 /* SegmentStoreTests.swift in Sources */,
 				4841F7FC6C31CBD6FCD650EE /* SegmentTintRenderTests.swift in Sources */,

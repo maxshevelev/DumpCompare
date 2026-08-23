@@ -745,7 +745,7 @@ final class PaneViewModel: HexViewDataSource {
         let current = segmentStore.current
         guard current.pieces.count > 1,
               let piece = current.segment(containing: caret) else { return nil }
-        return SegmentReadout(label: "S\(piece.index)", range: piece.range)
+        return SegmentReadout(label: piece.label, range: piece.range)
     }
 
     var caretOffset: UInt64 { document?.selection.start ?? 0 }

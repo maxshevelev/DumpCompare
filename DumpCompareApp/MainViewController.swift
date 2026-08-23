@@ -48,6 +48,29 @@ final class MainViewController: NSViewController {
     /// The active search operation, surfaced in the active pane's status bar
     /// while a search runs (§14.4).
     private var findOperation: BackgroundOperation?
+    /// The in-flight segment write (Save All / Save Segment, §21.5), surfaced in
+    /// the active pane's status bar while it runs, like a search (§14.4).
+    private var segmentWriteTask: Task<Void, Never>?
+    private var segmentWriteOperation: BackgroundOperation?
+
+    // MARK: - Segment save seams (§21.5)
+
+    /// Where the Save All directory panel goes, so a test can drive it instead:
+    /// a modal panel has no one to click it under XCTest. Called with the panel
+    /// (already configured for directory mode); returns the chosen directory or
+    /// nil when the user cancelled.
+    var segmentDirectoryPanel: ((NSOpenPanel) -> URL?)?
+    /// Where the Save Segment panel goes; the same shape, for one file.
+    var segmentSavePanel: ((NSSavePanel) -> URL?)?
+    /// Where the Save All confirmation goes: the test captures the alert (its
+    /// preview names every part, and it names every file that would be replaced)
+    /// and decides. Returns the alert's response.
+    var segmentWriteConfirm: ((NSAlert) -> NSApplication.ModalResponse)?
+    /// How the write runs. In production it is a background Task with a
+    /// `BackgroundOperation` (status-bar progress and cancel, §14.4); a test
+    /// replaces it with an inline run so it can assert on the written bytes
+    /// without waiting on a task.
+    var segmentWriteRunner: (([SegmentWriter.Part], any ByteStorage, URL) -> Void)?
     /// Monotonic token identifying the current Search All. Each new search
     /// bumps it; a running search compares its captured token against the live
     /// one before touching the results panel, so a superseded search can never
@@ -2664,11 +2687,12 @@ final class MainViewController: NSViewController {
 
     // MARK: - Segments (§21)
 
-    /// The cut edit request: the pane, the offset the field starts at, and what
-    /// committing means.
+    /// The cut edit request: the pane, the offset the field starts at, where the
+    /// popover anchors, and what committing means.
     struct CutEditRequest {
         let pane: PaneViewModel
         let prefillOffset: UInt64
+        let anchoredToOffset: Bool
         let commit: (UInt64, String) -> Void
     }
 
@@ -2680,10 +2704,12 @@ final class MainViewController: NSViewController {
 
     /// Edit ▸ Add Cut…: the caret's offset, in a popover with a description —
     /// the cut for an offset you know as a number rather than as a position
-    /// (§21.3). No key equivalent: a deliberate act reached from the menu.
+    /// (§21.3). No key equivalent: a deliberate act reached from the menu. The
+    /// popover is centred in the pane, not anchored to the caret: it is a dialog
+    /// pre-filled with a number, not a pointer at a byte.
     @objc func addCut() {
         let pane = activePane
-        presentCutEditPopover(in: pane, prefill: pane.caretOffset)
+        presentCutEditPopover(in: pane, prefill: pane.caretOffset, anchoredToOffset: false)
     }
 
     /// Remove Segment: deletes the piece a position sits in, merging it with a
@@ -2713,12 +2739,15 @@ final class MainViewController: NSViewController {
         presentCutEditPopover(in: target.pane, prefill: target.offset)
     }
 
-    /// Presents the cut popover on `pane`'s caret (§21.3). The offset starts at
-    /// `prefill` (the caret's) and is validated as it is typed; committing makes
-    /// the cut and names the piece that starts there.
-    private func presentCutEditPopover(in pane: PaneViewModel, prefill: UInt64) {
+    /// Presents the cut popover for `pane` (§21.3). The offset starts at
+    /// `prefill` (the caret's, or the right-clicked byte's) and is validated as
+    /// it is typed; committing makes the cut and names the piece that starts
+    /// there. With `anchoredToOffset` the popover hangs off that byte; without
+    /// it (Add Cut…) it is centred in the pane's visible area.
+    private func presentCutEditPopover(in pane: PaneViewModel, prefill: UInt64,
+                                       anchoredToOffset: Bool = true) {
         let request = CutEditRequest(
-            pane: pane, prefillOffset: prefill,
+            pane: pane, prefillOffset: prefill, anchoredToOffset: anchoredToOffset,
             commit: { offset, name in
                 guard pane.segmentStore.addCut(at: offset) else { return }
                 // The cut splits the piece at `offset`; the new piece is the one
@@ -2736,7 +2765,7 @@ final class MainViewController: NSViewController {
         paneView.presentCutEditPopover(
             prefillOffset: prefill, fileSize: pane.fileSize,
             isAlreadyACut: { pane.segmentStore.cuts.contains($0) },
-            onCommit: request.commit
+            onCommit: request.commit, anchoredToOffset: anchoredToOffset
         )
     }
 
@@ -2805,6 +2834,11 @@ final class MainViewController: NSViewController {
             // form's Return.
             onGo: { [weak self] offset in self?.goTo(offset: offset) }
         )
+        // The save actions live here, not in the form (§21.5): the form is
+        // modal and has no status bar of its own, so the panels, the overwrite
+        // confirmation and the write's progress all run from the window.
+        form.saveAll = { [weak self] in self?.saveAllPieces(of: pane) ?? false }
+        form.savePiece = { [weak self] piece in self?.savePiece(piece, of: pane) ?? false }
         pane.onSegmentsChanged = { [weak self] in
             self?.openSegmentsForm?.reloadSegments()
         }
@@ -2816,6 +2850,139 @@ final class MainViewController: NSViewController {
         // A window, not a sheet: it holds a list the user manages, and it is
         // centred over the window it edits.
         presentAsModalWindow(form)
+    }
+
+    // MARK: - Writing pieces out (§21.5)
+
+    /// Save All as Separate Files…: writes the whole partition out as its pieces.
+    /// The directory is chosen in directory mode (a save panel grants access to
+    /// one file and this writes N — the sandbox would refuse the rest), the base
+    /// name comes from the document, and one confirmation previews what will be
+    /// written and names every file that would be replaced, before anything is
+    /// written. Returns whether the write actually started — the form closes on
+    /// true and stays open when the user cancelled a panel.
+    private func saveAllPieces(of pane: PaneViewModel) -> Bool {
+        guard pane.isOpen, let storage = pane.byteStorage else { return false }
+        let segments = pane.segmentStore.segments
+        guard !segments.isEmpty else { return false }
+
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Choose"
+        panel.message = "Choose the folder the segments will be written to."
+        let directory: URL?
+        if let segmentDirectoryPanel {
+            directory = segmentDirectoryPanel(panel)
+        } else {
+            directory = panel.runModal() == .OK ? panel.url : nil
+        }
+        guard let directory else { return false }
+
+        // One file per piece, named for the document: `bios_S0.bin`, `bios_S1.bin`, …
+        let baseName = pane.document?.url.lastPathComponent ?? "Untitled"
+        let parts = segments.map {
+            SegmentWriter.Part(range: $0.range, name: "\(baseName)_\($0.label).bin")
+        }
+
+        guard confirmSegmentWrite(parts: parts, in: directory) else { return false }
+        runSegmentWrite(parts: parts, from: storage, to: directory)
+        return true
+    }
+
+    /// Save Segment…: writes the one piece under the click to a file — the
+    /// ordinary save panel, one file. The panel's own replace confirmation covers
+    /// the overwrite, so there is no separate one here. Returns whether the write
+    /// actually started.
+    private func savePiece(_ piece: Segment, of pane: PaneViewModel) -> Bool {
+        guard pane.isOpen, let storage = pane.byteStorage else { return false }
+        let baseName = pane.document?.url.lastPathComponent ?? "Untitled"
+
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "\(baseName)_\(piece.label).bin"
+        panel.allowedContentTypes = []
+        panel.canCreateDirectories = true
+        let url: URL?
+        if let segmentSavePanel {
+            url = segmentSavePanel(panel)
+        } else {
+            url = panel.runModal() == .OK ? panel.url : nil
+        }
+        guard let url else { return false }
+
+        let part = SegmentWriter.Part(range: piece.range, name: url.lastPathComponent)
+        runSegmentWrite(parts: [part], from: storage, to: url.deletingLastPathComponent())
+        return true
+    }
+
+    /// The one confirmation before a Save All writes (§21.5): a preview of every
+    /// part — `S0 → bios_S0.bin (4 MB)` — and, when any of the target files
+    /// already exist, the names of the ones that would be replaced. Shown before
+    /// anything is written.
+    private func confirmSegmentWrite(parts: [SegmentWriter.Part], in directory: URL) -> Bool {
+        let fileManager = FileManager.default
+        // The parts are in file order (S0, S1, …), so the position is the label.
+        let lines = parts.enumerated().map { index, part in
+            "\(Segment.label(for: index)) → \(part.name) (\(FilePaneView.friendlySize(UInt64(part.range.count))))"
+        }
+        let existing = parts.filter {
+            fileManager.fileExists(atPath: directory.appendingPathComponent($0.name).path)
+        }
+        let alert = NSAlert()
+        alert.messageText = "Save \(parts.count) Segment\(parts.count == 1 ? "" : "s")?"
+        var informative = lines.joined(separator: "\n")
+        if !existing.isEmpty {
+            informative += "\n\nThese files will be replaced:\n"
+                + existing.map(\.name).joined(separator: "\n")
+        }
+        alert.informativeText = informative
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        let response: NSApplication.ModalResponse
+        if let segmentWriteConfirm {
+            response = segmentWriteConfirm(alert)
+        } else {
+            response = Self.presentModal(alert, defaultInTest: .alertSecondButtonReturn)  // Cancel in tests
+        }
+        return response == .alertFirstButtonReturn
+    }
+
+    /// Runs the write off the main thread, with the name, progress and (×) in the
+    /// active pane's status bar while it runs (§14.4). A new write cancels any
+    /// in-flight one. The write is all or nothing (§21.5): a failure or a cancel
+    /// publishes nothing and leaves the directory as it was.
+    private func runSegmentWrite(parts: [SegmentWriter.Part], from storage: any ByteStorage,
+                                 to directory: URL) {
+        if let segmentWriteRunner {
+            segmentWriteRunner(parts, storage, directory)
+            return
+        }
+        segmentWriteTask?.cancel()
+        segmentWriteOperation?.finish()
+        let operation = BackgroundOperation(name: "Writing \(parts.count) segment\(parts.count == 1 ? "" : "s")…") { [weak self] in
+            self?.segmentWriteTask?.cancel()
+        }
+        segmentWriteOperation = operation
+        activeFilePane?.beginOperation(operation)
+        segmentWriteTask = Task { [weak self] in
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try SegmentWriter.write(
+                        parts, from: storage, to: directory,
+                        shouldCancel: { Task.isCancelled },
+                        progress: { operation.report($0) }
+                    )
+                }.value
+                operation.finish()
+            } catch is CancellationError {
+                operation.finish()
+            } catch {
+                operation.finish()
+                self?.presentFileError("Saving segments failed.", error, url: directory)
+            }
+        }
     }
 
     /// The bytes on a bookmarked row of the ACTIVE pane, for the list to show
@@ -3464,8 +3631,11 @@ extension MainViewController: NSMenuItemValidation {
                 position = pane.caretOffset
             }
             guard pane.isOpen else { return false }
-            return pane.segmentStore.segment(containing: position) != nil
-                && pane.segmentStore.current.pieces.count > 1
+            let piece = pane.segmentStore.segment(containing: position)
+            // Name the piece the item will remove, so the menu says what it will
+            // do (§21.3) — "Remove Segment S1", not a bare "Remove Segment".
+            menuItem.title = piece.map { "Remove Segment \($0.label)" } ?? "Remove Segment"
+            return piece != nil && pane.segmentStore.current.pieces.count > 1
         case #selector(revertDocument):
             // Nothing on disk to revert an untitled document to.
             return activePane.isOpen && !activePane.isUntitled
