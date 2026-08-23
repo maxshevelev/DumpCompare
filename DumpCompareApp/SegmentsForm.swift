@@ -92,8 +92,12 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
         self.pane = pane
         self.onGo = onGo
         super.init(nibName: nil, bundle: nil)
-        // The presented window takes its title from here (§10.1).
-        title = "Segments"
+        // The presented window takes its title from here (§10.1). Segments are
+        // bound to a file, not the window, so the title names the file whose
+        // partition is shown (§21.4) — "Segments — <file>", or just "Segments"
+        // for an untitled pane, which has no file to name.
+        let fileName = pane.isUntitled ? "" : (pane.document?.url.lastPathComponent ?? "")
+        title = fileName.isEmpty ? "Segments" : "Segments — \(fileName)"
     }
 
     @available(*, unavailable)
@@ -195,6 +199,10 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
         table.dataSource = self
         table.delegate = self
         table.rowHeight = 20
+        // No vertical intercell gap: the label's pill is inset 1 pt from the row's
+        // own top and bottom, so the row's full height is what the pill measures
+        // against (§21.4). The horizontal gap stays the table's default.
+        table.intercellSpacing = NSSize(width: 3, height: 0)
         table.allowsMultipleSelection = false
         table.allowsEmptySelection = true
         table.allowsColumnReordering = false
@@ -788,6 +796,13 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
         case ColumnID.label:
             let cell = makeCell(tableColumn)
             cell.restingTextColor = .labelColor
+            // The label sits on a pill of the piece's own tint — the same tint
+            // the dump's rows carry, so the table's swatch agrees with the data
+            // it names (§21.4). A single piece has nothing to separate, so the
+            // pill is absent — the same rule the strip follows (§21.3).
+            if segments.count > 1 {
+                cell.pillTint = HexTheme.segmentTints[segment.index % HexTheme.segmentTints.count]
+            }
             cell.textField?.font = .systemFont(ofSize: 12, weight: .semibold)
             cell.textField?.stringValue = segment.label
             return cell
@@ -871,13 +886,28 @@ private final class SegmentTableView: NSTableView {
 /// in it means one thing — select the row, or activate it on a double click.
 private final class SegmentCellView: NSTableCellView {
     /// The label's inset from each side of the cell.
-    static let labelInset: CGFloat = 4
+    static let labelInset: CGFloat = 6
+
+    /// The pill's room on each side of the label: the pill hugs the text — a
+    /// little wider than it, not the full column — and the label is centred in
+    /// it (§21.4).
+    static let pillHPadding: CGFloat = 6
 
     /// The colour the label has on paper. On a selected row every cell switches
     /// to the colour for text on a selection instead — a colour set by hand has to
-    /// follow the style by hand (§20.5).
+    /// follow the style by hand (§20.5). A pill cell is the exception: its text
+    /// sits on the pill, not on the selection, so it keeps its resting colour
+    /// whether the row is selected or not (§21.4).
     var restingTextColor: NSColor = .labelColor {
         didSet { applyBackgroundStyle() }
+    }
+
+    /// The pill the label sits on — the piece's own tint, a rounded band that hugs
+    /// the label (a little wider than it, not the full column) with a 1 pt gap
+    /// from the row's top and bottom. Set only on the label cell; nil on the other
+    /// cells, which have no pill (§21.4).
+    var pillTint: NSColor? {
+        didSet { needsDisplay = true }
     }
 
     override var backgroundStyle: NSView.BackgroundStyle {
@@ -885,8 +915,51 @@ private final class SegmentCellView: NSTableCellView {
     }
 
     private func applyBackgroundStyle() {
+        if pillTint != nil {
+            // The text is on the pill, not on the selection: it keeps its resting
+            // colour whether the row is selected or not (§21.4). The pill's own
+            // colour switches on a selected row (to the tint's saturated shade,
+            // which the hover on the strip also shows — §21.3), so redraw it.
+            textField?.textColor = restingTextColor
+            needsDisplay = true
+            return
+        }
         let selected = backgroundStyle == .emphasized
         textField?.textColor = selected ? .alternateSelectedControlTextColor : restingTextColor
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        // The pill is the label's ground: a rounded band of the piece's tint that
+        // hugs the label — a little wider and taller than the text, not the full
+        // column — with the label centred in it and a 1 pt gap from the row's top
+        // and bottom (the row's full height, the vertical intercell gap being
+        // zero). Drawn here, under the text field, so the label sits on it — and
+        // on a selected row the pill is painted over the selection, so it stays
+        // visible (§21.4).
+        //
+        // The pill's colour: the piece's tint, resolved for the current
+        // appearance. On a selected row the text inverts to the colour for text
+        // on a selection, so the pill paints its saturated shade — the same
+        // shade a hovered strip block uses — to keep the label legible (§21.4).
+        if let pillTint, let field = textField, !field.stringValue.isEmpty {
+            let font = field.font ?? NSFont.systemFont(ofSize: 12)
+            let textWidth = (field.stringValue as NSString)
+                .size(withAttributes: [.font: font]).width
+            // The label is left-aligned at `labelInset`; the pill hugs it with
+            // `pillHPadding` of room on each side, so the label is centred in it.
+            let pillX = Self.labelInset - Self.pillHPadding
+            let pill = NSRect(x: pillX, y: 1,
+                              width: textWidth + Self.pillHPadding * 2,
+                              height: max(0, bounds.height - 2))
+            let radius = pill.height / 2
+            let path = NSBezierPath(roundedRect: pill, xRadius: radius, yRadius: radius)
+            let tint = backgroundStyle == .emphasized
+                ? HexTheme.saturatedHighlight(of: pillTint, in: effectiveAppearance)
+                : pillTint
+            (tint.usingColorSpace(.deviceRGB) ?? tint).setFill()
+            path.fill()
+        }
+        super.draw(dirtyRect)
     }
 
     init(identifier: NSUserInterfaceItemIdentifier) {
@@ -915,3 +988,4 @@ private final class SegmentCellView: NSTableCellView {
         fatalError("init(coder:) is not supported")
     }
 }
+

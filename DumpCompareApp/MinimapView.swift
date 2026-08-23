@@ -56,6 +56,15 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         var selection: Range<UInt64>?
     }
 
+    /// One piece of a pane's partition, as the strip beside the map paints it:
+    /// the piece's byte range and which tint it wears (its index into
+    /// `HexTheme.segmentTints`). The tint is by *position* — the piece's index
+    /// in the partition — so the strip and the dump's row tints are the same
+    /// legend, and a boundary on the strip is a boundary in the dump (§21.3).
+    struct SegmentBlock: Equatable {
+        let range: Range<UInt64>
+        let colorIndex: Int
+    }
     /// One mini hex row of the map: the per-byte state of each of its 1...16
     /// cells (the last row of a file holds fewer when its final hex row is short).
     struct ByteRow {
@@ -175,10 +184,36 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// scales with the panel's own width.
     static let sideBySideGutterFraction: CGFloat = 0.05
 
+    /// The colour strip's width — the legend beside each map that paints the
+    /// partition at a glance (§19.4.4). Six points: wide enough to read as a
+    /// swatch at a glance, narrow enough to stay a margin and not a second map.
+    static let segmentStripWidth: CGFloat = 6
+
+    /// The gap between the strip and the map's content — a sliver of paper that
+    /// keeps the legend from crowding the dump it names, and that the render
+    /// test checks is actually empty (nothing is painted in it).
+    static let segmentStripGap: CGFloat = 2
+
     private(set) var mapLayout: MapLayout = .single
     /// The maps currently drawn (file sizes + selections). Readable so tests can
     /// inspect them.
     private(set) var maps: [Map] = []
+
+    /// The per-pane partitions the strip beside each map paints, by map index.
+    /// The strip is absent for a pane with a single piece (or no file): a single
+    /// colour over a whole file is noise, the same rule the dump's row tint
+    /// follows (§21.3) — so a one-piece pane stores its lone block but draws no
+    /// strip, and the strip appears the moment a cut makes a second piece.
+    private(set) var segmentBlocks: [[SegmentBlock]] = []
+
+    /// The strip block under the pointer, if any — the one `drawSegmentStrip`
+    /// paints with a more saturated shade, so the hovered piece reads as "the
+    /// one under the cursor" without changing what colour it is (§19.4.4). Nil
+    /// when the pointer is off every strip.
+    private var hoveredStripBlock: (mapIndex: Int, pieceIndex: Int)?
+
+    /// The tracking area that feeds the strip's hover highlight.
+    private var stripTrackingArea: NSTrackingArea?
 
     /// The byte range each map's pane currently has visible, by map index —
     /// what the grey viewport band mirrors, and what the map's own window is
@@ -245,6 +280,9 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     func setMapLayout(_ layout: MapLayout) {
         guard !mapLayout.equivalent(to: layout) else { return }
         mapLayout = layout
+        // The strips move with the layout, so a hover on the old position is
+        // stale: clear it (the next mouse move re-establishes it).
+        hoveredStripBlock = nil
         updateTopRow()
         invalidateAll()
     }
@@ -430,6 +468,17 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         guard overviewSummaries.indices.contains(index) else { return nil }
         let summary = overviewSummaries[index]
         return summary.rowCount > 0 ? summary : nil
+    }
+
+    /// Replaces the per-pane partitions the strip paints. A cut, a removal, a
+    /// rename's neighbour renumber, or a content edit that moves a cut all land
+    /// here; the guard keeps a repaint out of the no-ops (a rename fires no
+    /// invalidation, and neither does re-handing the same partition). Readable
+    /// so tests can assert what the strip will draw.
+    func setSegmentBlocks(_ blocks: [[SegmentBlock]]) {
+        guard segmentBlocks != blocks else { return }
+        segmentBlocks = blocks
+        invalidateAll()
     }
 
     /// Replaces the maps (file sizes). Selections are re-applied by the caller
@@ -658,6 +707,43 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         }
     }
 
+    /// Paints the segment strip beside each map: one colour band per piece, from
+    /// `HexTheme.segmentTints` — the same tints as the dump's own row background,
+    /// so the 6 pt legend and the data it names agree on colour (§19.4.4). A band
+    /// runs from one cut to the next, at the y the map's own rows use, so a
+    /// boundary on the strip is a boundary in the dump. The block under the
+    /// pointer is painted a louder shade of its own tint (§19.4.4). The gap
+    /// beside the content is left unpainted: it is paper, not a piece.
+    private func drawSegmentStrip(dirtyRect: NSRect) {
+        for index in maps.indices {
+            guard let strip = segmentStripRect(forMapAt: index),
+                  strip.intersects(dirtyRect) else { continue }
+            let area = area(forMapAt: index)
+            let clip = strip.intersection(dirtyRect)
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(rect: strip).addClip()
+            for (pieceIndex, block) in segmentBlocks[index].enumerated() {
+                let y0 = stripY(of: block.range.lowerBound, in: area)
+                let y1 = stripY(of: block.range.upperBound, in: area)
+                guard y1 > y0 else { continue }
+                let band = NSRect(x: strip.minX, y: y0, width: strip.width, height: y1 - y0)
+                guard band.intersects(clip) else { continue }
+                let tint = HexTheme.segmentTints[block.colorIndex % HexTheme.segmentTints.count]
+                // The block under the pointer is painted a more saturated shade
+                // of its own tint — the same colour, just louder, so the hovered
+                // piece reads as "the one under the cursor" (§19.4.4).
+                let isHovered = hoveredStripBlock?.mapIndex == index
+                    && hoveredStripBlock?.pieceIndex == pieceIndex
+                let fill = isHovered
+                    ? HexTheme.saturatedHighlight(of: tint, in: effectiveAppearance)
+                    : tint
+                (fill.usingColorSpace(.deviceRGB) ?? fill).setFill()
+                band.fill()
+            }
+            NSGraphicsContext.restoreGraphicsState()
+        }
+    }
+
     // MARK: - The margin markers' shape (§19.6, §19.4.3)
 
     /// An equilateral triangle's height for a base of `side` — what a marker
@@ -722,14 +808,49 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         return nil
     }
 
-    /// What hovering a mark says: `offset: name`, or just the offset when the
-    /// bookmark has no name — bare digits, as the list writes them (§20.5). A mark carries no text, so this is the only place a
-    /// name shows on the map — and the address is worth saying even for a named
-    /// bookmark, because on a map the address is the one thing the arrow's
-    /// position only approximates (§19.4.3). Anywhere else on the panel answers
-    /// with nothing, which shows no tooltip at all.
+    /// The current name of a piece — the store fires no invalidation for a
+    /// rename, so the strip asks for it at hover time rather than storing a copy
+    /// that would go stale (§21.3).
+    var segmentPieceName: ((_ mapIndex: Int, _ pieceIndex: Int) -> String)?
+
+    /// The hover text for a point on the segment strip, or "" for none. A point
+    /// within the snap distance of a cut names the boundary (the offset); a point
+    /// over a piece names the piece — its label, range, size and name, the shape
+    /// the form's list writes (§19.4.4, §21.4).
+    func segmentStripTooltipText(at point: NSPoint) -> String {
+        for index in maps.indices {
+            guard let strip = segmentStripRect(forMapAt: index), strip.contains(point) else { continue }
+            // A cut within the snap distance names the boundary, not the piece:
+            // the pointer is on the line between two colours, and the line is
+            // the more precise fact.
+            if let (_, offset) = nearestCut(to: point, in: index) {
+                return "0x\(String(offset, radix: 16).uppercased())"
+            }
+            guard let pieceIndex = segmentPiece(at: point, onMapAt: index) else { continue }
+            let block = segmentBlocks[index][pieceIndex]
+            let label = Segment.label(for: pieceIndex)
+            let start = String(block.range.lowerBound, radix: 16).uppercased()
+            let end = String(block.range.upperBound, radix: 16).uppercased()
+            let size = FilePaneView.friendlySize(UInt64(block.range.count))
+            var text = "\(label) — 0x\(start)…0x\(end), \(size)"
+            if let name = segmentPieceName?(index, pieceIndex), !name.isEmpty {
+                text += " · \(name)"
+            }
+            return text
+        }
+        return ""
+    }
+
+    /// What hovering the panel says: the segment strip's answer for a point on
+    /// it, else a bookmark's for a point on its mark, else nothing (no tooltip).
+    /// The strip is checked first: it is a legend the user reads, and its answer
+    /// is the more specific one where the two could overlap (§19.4.4, §19.4.3).
     func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag,
               point: NSPoint, userData data: UnsafeMutableRawPointer?) -> String {
+        let stripText = segmentStripTooltipText(at: point)
+        if !stripText.isEmpty {
+            return stripText
+        }
         guard let bookmark = bookmark(atMarkPoint: point) else { return "" }
         let address = Bookmark.bareAddressLabel(bookmark.row)
         return bookmark.name.isEmpty ? address : "\(address): \(bookmark.name)"
@@ -875,6 +996,52 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         }
     }
 
+    /// The strip's hover highlight needs mouse-moved events, which AppKit only
+    /// delivers for a tracking area. The area covers the whole panel (the strip
+    /// can sit in any map's margin or gutter), and `.inVisibleRect` keeps it
+    /// glued to the bounds across a resize.
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let area = stripTrackingArea {
+            removeTrackingArea(area)
+        }
+        stripTrackingArea = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self,
+            userInfo: nil)
+        addTrackingArea(stripTrackingArea!)
+    }
+
+    /// The strip block under `point`, if any — the map and piece whose strip the
+    /// pointer is on. Reuses the strip's own hit-test, so the highlight names the
+    /// same piece the tooltip and the menu do (§19.4.4).
+    private func stripBlock(at point: NSPoint) -> (mapIndex: Int, pieceIndex: Int)? {
+        for index in maps.indices {
+            if let pieceIndex = segmentPiece(at: point, onMapAt: index) {
+                return (index, pieceIndex)
+            }
+        }
+        return nil
+    }
+
+    /// Sets the hovered strip block, repainting only the strips that change —
+    /// the one the pointer left and the one it landed on. A hover is not a file
+    /// change, so it must not repaint the maps (§19.9).
+    private func setHoveredStripBlock(_ block: (mapIndex: Int, pieceIndex: Int)?) {
+        guard hoveredStripBlock?.mapIndex != block?.mapIndex
+            || hoveredStripBlock?.pieceIndex != block?.pieceIndex else { return }
+        var rects: [NSRect] = []
+        if let old = hoveredStripBlock, let strip = segmentStripRect(forMapAt: old.mapIndex) {
+            rects.append(strip)
+        }
+        if let new = block, let strip = segmentStripRect(forMapAt: new.mapIndex) {
+            rects.append(strip)
+        }
+        hoveredStripBlock = block
+        invalidate(rects)
+    }
+
     override func layout() {
         super.layout()
         // The tooltip covers the panel, so its rect follows the bounds.
@@ -939,6 +1106,10 @@ final class MinimapView: NSView, NSViewToolTipOwner {
             case .overview: drawOverviewRows(forMapAt: index, in: content, dirtyRect: dirtyRect)
             }
         }
+        // The strip is a legend beside the content; the viewport band runs edge
+        // to edge past it, so the band is painted over the strip to stay the
+        // topmost "you are here" marker (§19.4.4).
+        drawSegmentStrip(dirtyRect: dirtyRect)
         drawViewports(dirtyRect: dirtyRect)
         // After the viewport, so a bookmark's mark is not buried under the grey
         // chevron when the two land in the same margin: there are few marks and
@@ -1093,6 +1264,11 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// visible gap between them is exactly the 5 % gutter — which scales with
     /// the panel — rather than the gutter plus two fixed pads. Never negative
     /// (a tiny map just collapses to no content).
+    ///
+    /// When a map's segment strip is visible, the strip takes the inner edge of
+    /// the gutter (see `segmentStripRect`), so the content is pulled in past it
+    /// to leave the strip its `segmentStripGap` of paper on each side — the
+    /// layout the user reads as Map – gap – strip – gap – separator (§19.4.4).
     private func contentArea(within area: NSRect, forMapAt index: Int) -> NSRect {
         let pad = Self.contentPadding
         switch mapLayout {
@@ -1101,12 +1277,84 @@ final class MinimapView: NSView, NSViewToolTipOwner {
                           width: max(0, area.width - pad * 2),
                           height: area.height)
         case .sideBySide:
-            // index 0 keeps the left pad (outer edge), index 1 the right one.
-            let inset = index == 0 ? (area.minX + pad) : area.minX
-            return NSRect(x: inset, y: area.minY,
-                          width: max(0, area.width - pad),
-                          height: area.height)
+            // index 0 keeps the left pad (outer edge); its strip sits in the
+            // gutter against the separator line, so the content's inner edge is
+            // pulled in past it to leave the strip its gap of paper (§19.4.4).
+            // index 1 keeps the right pad; its strip sits in its own right
+            // margin (like a single map's), so the content's inner edge meets
+            // the gutter and the strip lives in the outer padding.
+            if index == 0 {
+                let stripVisible = segmentStripVisible(forMapAt: index)
+                let stripSpan = Self.segmentStripGap * 2 + Self.segmentStripWidth
+                let x = area.minX + pad
+                let inner = stripVisible ? (bounds.midX - stripSpan) : area.maxX
+                return NSRect(x: x, y: area.minY,
+                              width: max(0, inner - x), height: area.height)
+            }
+            let x = area.minX
+            let inner = area.maxX - pad
+            return NSRect(x: x, y: area.minY,
+                          width: max(0, inner - x), height: area.height)
         }
+    }
+
+    // MARK: - The segment strip (§19.4.4)
+
+    /// Whether the strip is drawn for a map: only when its pane is actually
+    /// partitioned — two or more pieces. A single piece has nothing to separate,
+    /// so the legend is absent, the same rule the dump's row tint follows
+    /// (§21.3). The strip appears the moment a cut makes a second piece.
+    func segmentStripVisible(forMapAt index: Int) -> Bool {
+        segmentBlocks.indices.contains(index) && segmentBlocks[index].count > 1
+    }
+
+    /// The strip a map's partition is painted in, or nil when the pane is one
+    /// piece (or the map is not laid out). It runs the map's full height, so a
+    /// block's colour band sits at the same y as the rows it tints in the dump.
+    ///
+    /// Single and stacked maps paint it in the map's right margin, a
+    /// `segmentStripWidth` column exactly `segmentStripGap` of paper away from
+    /// the content's right edge — the same `segmentStripGap` of paper separates
+    /// the strip's right edge from the panel's right edge, so the strip sits
+    /// symmetrically in the margin, equidistant from the content and the panel
+    /// edge (§19.4.4). It is carved out of the margin the bookmark marks already
+    /// live in, so it does not move the content edge and the marks keep their
+    /// geometry.
+    ///
+    /// Side by side, the two maps' strips sit on opposite sides of the panel:
+    /// the left map's strip is in the gutter against the separator line (the
+    /// content is pulled in to make room — see `contentArea`), and the right
+    /// map's strip is in its own right margin, exactly as a single map's is.
+    /// Each strip is on the outer side of its own map, not tucked against the
+    /// separator (§19.4.4).
+    func segmentStripRect(forMapAt index: Int) -> NSRect? {
+        guard segmentStripVisible(forMapAt: index) else { return nil }
+        let area = area(forMapAt: index)
+        guard area.height > 0 else { return nil }
+        let x: CGFloat
+        switch mapLayout {
+        case .sideBySide where index == 0:
+            // The left map's strip sits in the gutter against the separator line.
+            x = bounds.midX - Self.segmentStripGap - Self.segmentStripWidth
+        default:
+            // Single, stacked, and the right map in side-by-side: the strip is in
+            // the map's own right margin, `segmentStripGap` of paper from the
+            // content's right edge — and the same `segmentStripGap` separates its
+            // right edge from the panel's right edge, so the strip sits
+            // symmetrically in the margin (§19.4.4).
+            let content = contentArea(within: area, forMapAt: index)
+            x = content.maxX + Self.segmentStripGap
+            guard x + Self.segmentStripWidth <= area.maxX else { return nil }
+        }
+        return NSRect(x: x, y: area.minY, width: Self.segmentStripWidth, height: area.height)
+    }
+
+    /// The y a byte offset sits at on a map's strip — the same mapping the map's
+    /// rows use, so a boundary on the strip is a boundary in the dump. Offsets
+    /// above the window come out negative and below it past the map's height;
+    /// the callers clip to the strip.
+    private func stripY(of offset: UInt64, in area: NSRect) -> CGFloat {
+        y(of: offset, in: area)
     }
 
     /// The overview's column geometry: 16 *contiguous* cells across the content
@@ -1831,8 +2079,64 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// drag of the band, which is a scrollbar gesture and leaves the caret be.
     var onSelectOffset: ((_ mapIndex: Int, _ offset: UInt64) -> Void)?
 
+    /// The right-click menu for a point on the segment strip, built by the
+    /// controller to act on the piece under it (§21.3). Nil when the point is not
+    /// on a strip piece, or the controller offers no menu.
+    var segmentStripMenu: ((_ mapIndex: Int, _ pieceIndex: Int, _ point: NSPoint) -> NSMenu?)?
+
+    /// The byte offset a y on a map stands for — the inverse of `y(of:in:)`. In
+    /// detail the window's first row is the base; in overview the whole extent
+    /// spans the drawn rows. Clamped to the file's start.
+    private func offset(atY y: CGFloat, in area: NSRect) -> UInt64 {
+        switch renderMode {
+        case .detail:
+            let row = Double(max(0, y - area.minY)) / Double(Self.rowStep) + Double(topRow)
+            return UInt64(row) * Self.bytesPerRow
+        case .overview:
+            let extent = overviewExtent()
+            let rows = overviewRowCount()
+            guard extent > 0, rows > 0 else { return 0 }
+            let fraction = min(1, max(0, (y - area.minY) / (CGFloat(rows) * overviewRowHeight)))
+            return UInt64(fraction * Double(extent))
+        }
+    }
+
+    /// The piece under a point on map `index`'s strip, by the byte the point's y
+    /// stands for — the inverse of the strip's own y mapping, so the piece a
+    /// hover or a right-click names is the one whose colour is under the pointer.
+    /// Nil when the point is not on the strip, or past the file's end.
+    func segmentPiece(at point: NSPoint, onMapAt index: Int) -> Int? {
+        guard let strip = segmentStripRect(forMapAt: index), strip.contains(point) else { return nil }
+        let area = area(forMapAt: index)
+        let offset = offset(atY: point.y, in: area)
+        guard offset < maps[index].fileSize else { return nil }
+        return segmentBlocks[index].firstIndex { $0.range.contains(offset) }
+    }
+
+    /// The pointer moved over the panel: update the strip's hover highlight.
+    /// The highlight is the only thing a move changes — the maps and the band
+    /// are untouched, so no scroll and no caret move ride on a hover.
+    override func mouseMoved(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        setHoveredStripBlock(stripBlock(at: point))
+    }
+
+    /// The pointer left the panel: clear the strip's hover highlight.
+    override func mouseExited(with event: NSEvent) {
+        setHoveredStripBlock(nil)
+    }
+
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
+        // The segment strip positions like the map does: a click on it means
+        // "take me here" — the caret goes to the byte the click's y stands for,
+        // or to the nearest cut's exact offset when one is in reach (§19.4.4).
+        // Checked before the band, which runs edge to edge and would otherwise
+        // swallow the strip's clicks as a drag.
+        if let (mapIndex, offset) = segmentStripClick(at: point) {
+            onSelectOffset?(mapIndex, offset)
+            return
+        }
         let bands = viewportRects()
         if let band = bands.first(where: { $0.contains(point) }) {
             // The band is the drag handle: grabbing it scrolls and must not
@@ -1895,6 +2199,54 @@ final class MinimapView: NSView, NSViewToolTipOwner {
             }
         }
         return best.map { (mapIndex: $0.mapIndex, offset: $0.offset) }
+    }
+
+    // MARK: - The segment strip's click (§19.4.4)
+
+    /// The map and byte a click on the segment strip stands for: the nearest cut
+    /// within the snap distance (the caret goes to its exact offset), or the byte
+    /// drawn at the click's y when no cut is in reach. The strip positions like
+    /// the map does — a click anywhere on it means "take me here" — a cut is just
+    /// a target worth snapping to, the way a bookmark's mark is (§19.6.1). Nil
+    /// when the point is not on any strip, so the caller falls through to the
+    /// map's own click meaning. Internal so tests can assert the target without
+    /// synthesizing clicks.
+    func segmentStripClick(at point: NSPoint) -> (mapIndex: Int, offset: UInt64)? {
+        for index in maps.indices {
+            guard let strip = segmentStripRect(forMapAt: index) else { continue }
+            // The strip is a 4 pt column; grow it by the snap distance so a cut
+            // at its very edge is still reachable, and a click just off it is not
+            // mistaken for the strip.
+            let hit = strip.insetBy(dx: -Self.bookmarkSnapDistance,
+                                    dy: -Self.bookmarkSnapDistance)
+            guard hit.contains(point) else { continue }
+            if let (mapIndex, offset) = nearestCut(to: point, in: index) {
+                return (mapIndex, offset)
+            }
+            // No cut in reach: the byte the click's y stands for, clamped to the
+            // file's own end (the strip's y can run a row past it).
+            let area = area(forMapAt: index)
+            let offset = offset(atY: point.y, in: area)
+            return (index, min(offset, maps[index].fileSize - 1))
+        }
+        return nil
+    }
+
+    /// The cut nearest `point` on map `index`, within the snap distance of it.
+    /// The cuts are the block boundaries — each block's start, except the first,
+    /// which is the file start, not a cut — and the nearest is by the cut's own y.
+    private func nearestCut(to point: NSPoint, in index: Int) -> (mapIndex: Int, offset: UInt64)? {
+        let area = area(forMapAt: index)
+        var best: (offset: UInt64, distance: CGFloat)?
+        for block in segmentBlocks[index].dropFirst() {
+            let cutY = stripY(of: block.range.lowerBound, in: area)
+            let distance = abs(point.y - cutY)
+            guard distance <= Self.bookmarkSnapDistance else { continue }
+            if best == nil || distance < best!.distance {
+                best = (block.range.lowerBound, distance)
+            }
+        }
+        return best.map { (mapIndex: index, offset: $0.offset) }
     }
 
     /// The map and byte a point on the panel lands on, by the *window* mapping —
@@ -1960,6 +2312,23 @@ final class MinimapView: NSView, NSViewToolTipOwner {
 
     override func mouseUp(with event: NSEvent) {
         dragGrabOffset = nil
+    }
+
+    /// A right-click on the segment strip offers the menu that acts on the piece
+    /// under it (§21.3) — the same menu the form's row offers, so one shape in
+    /// both places. The menu is built by the controller (it is the one that can
+    /// save, replace, select, edit, split and remove), and popped up here. A
+    /// right-click elsewhere on the panel does nothing: the map has no other
+    /// context menu.
+    override func rightMouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        for index in maps.indices {
+            guard let pieceIndex = segmentPiece(at: point, onMapAt: index) else { continue }
+            if let menu = segmentStripMenu?(index, pieceIndex, point) {
+                NSMenu.popUpContextMenu(menu, with: event, for: self)
+                return
+            }
+        }
     }
 
     /// Asks the panes to scroll so the viewport band's top lands at `bandTop`.

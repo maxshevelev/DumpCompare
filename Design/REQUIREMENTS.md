@@ -1453,6 +1453,45 @@ without opening anything.
   removing one repaints only the margins the marks live in, never the maps
   (§19.9). A rename repaints nothing: the arrows have not moved.
 
+19.4.4 The segment strip
+
+When a pane is cut into two or more pieces (§21), the partition is painted beside
+its map, so the whole of it is legible at a glance without opening anything.
+
+- The strip is a 6 pt column with a 2 pt gap — 8 pt of layout per map, present
+  only when that pane has two or more pieces. It runs the map's full height, so a
+  block's colour band sits at the same y as the rows it tints in the dump. In
+  single and stacked modes it sits in the map's **right margin**, beside the
+  content; in side-by-side comparison it sits in the **gutter against the
+  separator line** — map, 2 pt, strip, 2 pt, line — with the content's inner edge
+  pulled in past it, so the strip is never hidden behind the divider. The
+  bookmark marks are untouched: the strip takes margin or gutter space, so nothing
+  the map already draws moves. The viewport band runs edge to edge and is painted
+  **over** the strip, so the "you are here" marker stays the topmost thing on the
+  map (§19.5).
+- The strip is painted from the **same** `HexTheme.segmentTints` in the same
+  order as the dump, which is what makes it a legend rather than decoration: the
+  colour of a block is the colour of the piece it stands for, and the two agree
+  because they are the same source.
+- **Hovering the strip names the piece under the pointer**: `S1 —
+  0x400000…0xC00000, 8 MB · W25Q…bin` — the label, the range, the size, and the
+  piece's name. The name is read from the store at hover time, so a rename shows
+  without a repaint. Hovering a boundary near a cut names the cut instead. The
+  hovered block is also painted a more saturated shade of its own tint — the same
+  colour, just louder — so the piece under the cursor reads as the one being
+  pointed at.
+- A right-click on a block opens the menu that acts on that piece: **Save
+  Segment…**, **Replace Segment from File…**, **Select Segment** (the piece's
+  whole range, not a caret at its start), **Edit…** (the piece's own popover,
+  anchored to the block — not the form with the table of all segments), and
+  **Remove Segment** (the piece's bytes merge into a neighbour that keeps its
+  name). Each item carries the piece it acts on.
+- A left-click on the strip positions to the click location, the way a click on
+  the map does: the caret goes to the byte the click's y stands for, or to the
+  nearest cut's exact offset when one is within 4 pt — reusing the snapping the
+  bookmark marks already have (§19.6.1) with the cut list as the second source of
+  targets. The strip's ends clamp to the file's own start and last byte.
+
 19.5 The window onto the file (detail mode)
 
 Because the detail scale is fixed, a file taller than the panel does not fit:
@@ -2136,7 +2175,9 @@ and every operation that writes is explicit about it.
 
 - **The form is where the partition is read and edited** — a modal window
   presented like the Go To form (§10.1): one window, centred over the window it
-  edits, no new pattern. It follows the pane's store through the same
+  edits, no new pattern. The window's title is **Segments**, or **Segments —
+  <file>** when the pane names a file, so the form says whose partition it
+  edits. It follows the pane's store through the same
   `onChange` the tint and the status bar follow (§21.3), so a cut made while it
   is open — from the dump's own context menu, or from the form's own +/− — is
   in the list the moment it lands. Modality costs nothing here, because nothing
@@ -2146,14 +2187,24 @@ and every operation that writes is explicit about it.
   label is positional (§21.1); the start is the piece's opening offset in the
   app's address shape (§10); the size is the piece's length in the app's
   byte-size shape; the name is what the user gave it, and a piece never named
-  shows an empty cell. The rows are **not editable** — §20.5's lesson: a field
+  shows an empty cell. The label sits on a **pill of the piece's own tint**
+  (§21.3) — a rounded band that hugs the text with 6 pt of room on each side,
+  inset 1 pt from the row's top and bottom — so the row's colour is read before
+  the text is. The pill is absent when the label is empty, the same rule the
+  strip follows (§19.4.4): a piece with no name shows a bare cell. On a
+  selected row the pill is painted the tint's **saturated** shade, so the
+  selection is read in the piece's own colour rather than the accent's. The
+  rows are **not editable** — §20.5's lesson: a field
   in a row is edited by a click on an already-selected row, and that collides
   with the double click that activates the row. A row is edited by
   double-clicking it, or by Edit… from its context menu.
 - **The row editor is the Add Cut popover** (§21.3), repurposed: the offset
   field opens at the piece's own start and is validated as it is typed
   (§10.1), and the description field opens with the piece's current name, so
-  editing a named piece does not open blank. For a piece that is not S0, legal
+  editing a named piece does not open blank. A header line above the two fields
+  names the piece being edited — `S1: 0001000-0600000`, the label and its
+  half-open range in bare hex — so the popover says what it is for before the
+  offset is read. For a piece that is not S0, legal
   means strictly inside the interval the cut currently bounds — so the field
   opens not red, and the cut can be moved to any offset between its neighbours,
   never across one (§21.2). For S0 the offset is locked to 0, so only the name

@@ -221,6 +221,16 @@ final class MainViewController: NSViewController {
         minimapView.onSelectOffset = { [weak self] mapIndex, offset in
             self?.selectMinimapOffset(mapIndex: mapIndex, offset: offset)
         }
+        // The segment strip's legend answers (§19.4.4, §21.3): the piece's
+        // current name (asked for at hover time, since the store fires no
+        // invalidation for a rename), and the right-click menu that acts on the
+        // piece under the pointer — the same menu the form's row offers.
+        minimapView.segmentPieceName = { [weak self] mapIndex, pieceIndex in
+            self?.minimapSegmentName(mapIndex: mapIndex, pieceIndex: pieceIndex) ?? ""
+        }
+        minimapView.segmentStripMenu = { [weak self] mapIndex, pieceIndex, point in
+            self?.makeMinimapSegmentMenu(mapIndex: mapIndex, pieceIndex: pieceIndex, point: point)
+        }
         // The overview bins the file into one row per pixel, so a resize changes
         // the bins and the summary has to be recomputed (§19.4).
         minimapView.onOverviewRowCountChanged = { [weak self] in
@@ -276,6 +286,20 @@ final class MainViewController: NSViewController {
         self.mode = mode
         syncDiffNavigationToolbarItem()
         unwireComparison()
+        // The strip beside each map mirrors the pane's partition (§19.4.4): a
+        // cut, a removal, a moved cut, or a content edit that shifts one all
+        // repaint it. The pane fires this on every partition change, so it is
+        // set here — once per mode apply, on both panes — rather than where the
+        // form happens to be open. It reloads the form when it is open and syncs
+        // the strip whether or not it is.
+        windowModel.pane1.onSegmentsChanged = { [weak self] in
+            self?.openSegmentsForm?.reloadSegments()
+            self?.syncMinimapSegments()
+        }
+        windowModel.pane2.onSegmentsChanged = { [weak self] in
+            self?.openSegmentsForm?.reloadSegments()
+            self?.syncMinimapSegments()
+        }
         // The panes are about to be rebuilt, so an in-flight Search All would
         // stream into an orphaned view (and its × would be gone). Stop it here:
         // `hideFindBar` deliberately leaves a Search All running (§11).
@@ -1199,6 +1223,32 @@ final class MainViewController: NSViewController {
         minimapView.setBookmarks(windowModel.bookmarkStore.bookmarks)
     }
 
+    /// Hands the minimap the open panes' segment partitions, so the strip beside
+    /// each map paints the dump's pieces (§19.4.4). The tint is by *position* —
+    /// the piece's index into the partition — the same rule the dump's row tint
+    /// uses, so the strip and the dump are one legend. A pane with a single piece
+    /// hands its lone block; the minimap draws no strip for it, and the strip
+    /// appears the moment a cut makes a second piece.
+    private func syncMinimapSegments() {
+        let panes: [PaneViewModel?]
+        switch mode {
+        case .empty:
+            panes = []
+        case .singleFile:
+            panes = [windowModel.pane1]
+        case .comparison:
+            panes = [windowModel.pane1, windowModel.pane2]
+        }
+        let blocks: [[MinimapView.SegmentBlock]] = panes.map { pane in
+            guard let pane, pane.isOpen else { return [] }
+            return pane.segmentStore.segments.map {
+                MinimapView.SegmentBlock(range: $0.range,
+                                         colorIndex: $0.index % HexTheme.segmentTints.count)
+            }
+        }
+        minimapView.setSegmentBlocks(blocks)
+    }
+
     /// Hands the minimap the open files' sizes. That is all it needs to lay its
     /// maps out — everything it draws it pulls per repaint.
     private func refreshMinimapMaps() {
@@ -1207,6 +1257,10 @@ final class MainViewController: NSViewController {
         // The maps were just rebuilt, so the marks have to be handed over again
         // — and a file that grew or shrank changes which of them are drawn (§9).
         syncMinimapBookmarks()
+        // A content edit moves the cuts with the bytes (§21.2), so the strip's
+        // partition follows — and a file that opened or closed changes which
+        // panes have a partition at all.
+        syncMinimapSegments()
         // An insert or a delete can carry the file across the line where the
         // overview stops magnifying it, so the offer follows the size as well as
         // the panel's height (§19.4). The *mode* is deliberately not re-decided
@@ -1354,6 +1408,194 @@ final class MainViewController: NSViewController {
         guard pane.isOpen else { return }
         pane.moveCaret(to: offset)
         filePaneView(for: pane)?.revealOffsetCentered(offset)
+    }
+
+    // MARK: - The segment strip's legend (§19.4.4, §21.3)
+
+    /// The pane a minimap map stands for, by map index — the strip's menu and
+    /// hover both act through it. Nil in empty mode or for an index the mode
+    /// does not use.
+    private func minimapPane(at mapIndex: Int) -> PaneViewModel? {
+        switch mode {
+        case .empty:
+            return nil
+        case .singleFile:
+            return mapIndex == 0 ? windowModel.pane1 : nil
+        case .comparison:
+            return mapIndex == 0 ? windowModel.pane1 : (mapIndex == 1 ? windowModel.pane2 : nil)
+        }
+    }
+
+    /// The current name of the piece the strip's hover text names — asked for at
+    /// hover time, not stored, because the store fires no invalidation for a
+    /// rename (§21.3).
+    private func minimapSegmentName(mapIndex: Int, pieceIndex: Int) -> String {
+        guard let pane = minimapPane(at: mapIndex), pane.isOpen,
+              pieceIndex < pane.segmentStore.segments.count else { return "" }
+        return pane.segmentStore.segments[pieceIndex].name
+    }
+
+    /// The piece a strip-menu item acts on, carried in the item's
+    /// `representedObject` — the way the offset menu carries its target.
+    /// Internal so a test can verify the piece an item carries.
+    final class SegmentMenuTarget: NSObject {
+        let mapIndex: Int
+        let pieceIndex: Int
+        /// The pointer's own spot on the strip when the menu was opened, in the
+        /// minimap's coordinates — the anchor the Edit popover points at, so it
+        /// opens where the menu did rather than at the piece's whole block
+        /// (§21.4).
+        let point: NSPoint
+        init(mapIndex: Int, pieceIndex: Int, point: NSPoint) {
+            self.mapIndex = mapIndex
+            self.pieceIndex = pieceIndex
+            self.point = point
+        }
+    }
+
+    /// The right-click menu the segment strip offers for a piece: what acts on
+    /// the piece under the pointer (§21.3) — the form's row menu with the strip's
+    /// own Select. Each item carries the piece it acts on in its
+    /// `representedObject`, the way the offset menu carries its target.
+    private func makeMinimapSegmentMenu(mapIndex: Int, pieceIndex: Int, point: NSPoint) -> NSMenu? {
+        guard let pane = minimapPane(at: mapIndex), pane.isOpen,
+              pieceIndex < pane.segmentStore.segments.count else { return nil }
+        let target = SegmentMenuTarget(mapIndex: mapIndex, pieceIndex: pieceIndex, point: point)
+        // The piece's label names it in every item, so the menu says what it will
+        // act on — "Select Segment S1", not a bare "Select Segment" (§21.3).
+        let label = pane.segmentStore.segments[pieceIndex].label
+        let menu = NSMenu()
+
+        // Save Segment… writes one piece to a file (§21.5).
+        let save = menu.addItem(withTitle: "Save Segment \(label)…",
+                                action: #selector(minimapMenuSaveSegment(_:)), keyEquivalent: "")
+        save.target = self
+        save.representedObject = target
+
+        // Replace Segment from File… reads one piece from a file (§21.6) — Stage
+        // 6. Present now so the strip's shape is final; disabled until it lands.
+        let replace = menu.addItem(withTitle: "Replace Segment \(label) from File…",
+                                   action: #selector(minimapMenuReplaceSegment(_:)), keyEquivalent: "")
+        replace.target = self
+        replace.isEnabled = false
+
+        menu.addItem(.separator())
+
+        // Select Segment: the whole piece is selected — its full range, not a
+        // caret at its start (§21.3).
+        let select = menu.addItem(withTitle: "Select Segment \(label)",
+                                  action: #selector(minimapMenuSelectSegment(_:)), keyEquivalent: "")
+        select.target = self
+        select.representedObject = target
+
+        // Edit Segment: the popover that edits this piece — its offset and its
+        // name — anchored where the menu opened, not the form with the table of
+        // all segments (§21.4).
+        let edit = menu.addItem(withTitle: "Edit Segment \(label)",
+                                action: #selector(minimapMenuEditSegment(_:)), keyEquivalent: "")
+        edit.target = self
+        edit.representedObject = target
+
+        // Remove Segment: the piece's bytes merge into a neighbour that keeps
+        // its name (§21.3) — the same act as the form's row menu.
+        let remove = menu.addItem(withTitle: "Remove Segment \(label)",
+                                  action: #selector(minimapMenuRemoveSegment(_:)), keyEquivalent: "")
+        remove.target = self
+        remove.representedObject = target
+        return menu
+    }
+
+    /// Save Segment… from the strip's menu: the piece under the click, written to
+    /// a file (§21.5) — the same act as the form's row menu.
+    @objc private func minimapMenuSaveSegment(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? SegmentMenuTarget,
+              let pane = minimapPane(at: target.mapIndex), pane.isOpen,
+              target.pieceIndex < pane.segmentStore.segments.count else { return }
+        savePiece(pane.segmentStore.segments[target.pieceIndex], of: pane)
+    }
+
+    /// Replace Segment from File… from the strip's menu — Stage 6. A seam: the
+    /// item is present and disabled until that stage lands the swap.
+    @objc private func minimapMenuReplaceSegment(_ sender: NSMenuItem) {
+        // Stage 6: an open panel, one file, replacing the piece's bytes.
+    }
+
+    /// Select Segment from the strip's menu: the whole piece is selected — its
+    /// full range, not a caret at its start (§21.3). The reveal puts the
+    /// selection's start in view so the selection is seen to begin.
+    @objc private func minimapMenuSelectSegment(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? SegmentMenuTarget,
+              let pane = minimapPane(at: target.mapIndex), pane.isOpen,
+              target.pieceIndex < pane.segmentStore.segments.count else { return }
+        let piece = pane.segmentStore.segments[target.pieceIndex]
+        pane.select(range: piece.range)
+        filePaneView(for: pane)?.revealOffsetCentered(piece.range.lowerBound)
+    }
+
+    /// Edit… from the strip's menu: the popover that edits this piece — its
+    /// offset (movable within the interval the cut bounds, locked to 0 for S0)
+    /// and its name — anchored to the piece's own block on the strip (§21.4).
+    /// Not the form with the table of all segments.
+    @objc private func minimapMenuEditSegment(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? SegmentMenuTarget,
+              let pane = minimapPane(at: target.mapIndex), pane.isOpen,
+              target.pieceIndex < pane.segmentStore.segments.count else { return }
+        let index = target.pieceIndex
+        let segment = pane.segmentStore.segments[index]
+        let store = pane.segmentStore
+        let validate: (UInt64) -> Bool
+        if index == 0 {
+            // S0 has no cut to move: the offset is the file start, locked to 0,
+            // so the editor renames the piece and nothing else.
+            validate = { $0 == 0 }
+        } else {
+            // The cut at the piece's start bounds (the previous cut, the next cut
+            // or the file's end); moving inside it keeps the partition whole
+            // (§21.2). The current offset is legal, so the field opens not red.
+            let lower = store.segments[index - 1].range.lowerBound
+            let upper = index + 1 < store.segments.count
+                ? store.segments[index + 1].range.lowerBound
+                : store.contentSize
+            validate = { offset in offset > lower && offset < upper }
+        }
+        let from = segment.range.lowerBound
+        // The piece's label and range, above the two fields — "S1: 0001000-0600000"
+        // — so the popover says what it is for before the offset is read (§21.4).
+        let header = "\(segment.label): \(Bookmark.bareAddressLabel(segment.range.lowerBound))-\(Bookmark.bareAddressLabel(segment.range.upperBound))"
+        let controller = CutEditPopoverController(
+            prefillOffset: from, validate: validate,
+            // The piece's current name, so editing a named piece opens with the
+            // name to be changed rather than blank (§21.4).
+            prefillDescription: segment.name,
+            header: header,
+            onCommit: { [weak pane] offset, name in
+                guard let pane else { return }
+                // Moving the cut and renaming the piece are one act: the piece
+                // that opened at `from` is the one the description names, and its
+                // name travels with the boundary (§21.2).
+                if offset != from {
+                    pane.segmentStore.moveCut(from: from, to: offset)
+                }
+                pane.segmentStore.rename(index, to: name)
+            },
+            onCancel: nil
+        )
+        // Anchor the popover at the pointer's own spot on the strip, so it opens
+        // where the menu was opened — not at the piece's whole block (§21.4).
+        // The point was captured when the menu was built and stored in the
+        // target, so it is still here when the action fires.
+        let anchor = NSRect(origin: target.point, size: .zero)
+        controller.show(relativeTo: anchor, of: self.minimapView)
+    }
+
+    /// Remove Segment from the strip's menu: the piece's bytes merge into a
+    /// neighbour that keeps its name (§21.3) — the same act as the form's row
+    /// menu, on the piece under the pointer.
+    @objc private func minimapMenuRemoveSegment(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? SegmentMenuTarget,
+              let pane = minimapPane(at: target.mapIndex), pane.isOpen,
+              target.pieceIndex < pane.segmentStore.segments.count else { return }
+        pane.segmentStore.removePiece(at: target.pieceIndex)
     }
 
     /// Scrolls the panes so `offset`'s hex row sits at the top of the pane —
@@ -2824,9 +3066,9 @@ final class MainViewController: NSViewController {
     /// menu, or from the form's own +/−) refreshes what it shows (§21.4).
     private weak var openSegmentsForm: SegmentsFormController?
 
-    private func presentSegmentsForm() {
-        guard activePane.isOpen else { return }
-        let pane = activePane
+    private func presentSegmentsForm(pane: PaneViewModel? = nil, selecting pieceIndex: Int? = nil) {
+        let pane = pane ?? activePane
+        guard pane.isOpen else { return }
         let form = SegmentsFormController(
             pane: pane,
             // The app's own jump (§10.1): both panes in comparison mode, the
@@ -2839,17 +3081,21 @@ final class MainViewController: NSViewController {
         // confirmation and the write's progress all run from the window.
         form.saveAll = { [weak self] in self?.saveAllPieces(of: pane) ?? false }
         form.savePiece = { [weak self] piece in self?.savePiece(piece, of: pane) ?? false }
-        pane.onSegmentsChanged = { [weak self] in
-            self?.openSegmentsForm?.reloadSegments()
-        }
+        // The pane's `onSegmentsChanged` is set once per mode apply (§19.4.4):
+        // it reloads this form when it is open and syncs the minimap's strip
+        // whether or not it is, so a cut made here repaints the legend too.
         openSegmentsForm = form
         if let segmentsFormPresenter {
             segmentsFormPresenter(form)
-            return
+        } else {
+            // A window, not a sheet: it holds a list the user manages, and it is
+            // centred over the window it edits.
+            presentAsModalWindow(form)
         }
-        // A window, not a sheet: it holds a list the user manages, and it is
-        // centred over the window it edits.
-        presentAsModalWindow(form)
+        // The strip's Edit… opens the form on the piece under the pointer.
+        if let pieceIndex {
+            form.selectSegment(atIndex: pieceIndex)
+        }
     }
 
     // MARK: - Writing pieces out (§21.5)

@@ -172,12 +172,15 @@ boundary. A typed offset past a neighbouring cut is refused, not wrapped.
 
 - **Save Segment…** — writes just those bytes to a file.
 - **Replace Segment from File…** — replaces those bytes with a file's content.
-- **Select Segment** — makes it the selection, deliberately and only when asked.
-- **Edit…** — opens the same editor the form uses (name and start offset).
-- **Remove Cut Above** / **Remove Cut Below** — merges with the neighbour. The
-  bytes are untouched: removing a cut is a change to how the file is read, not to
-  the file. (Deleting the *bytes* of a piece is Delete Bytes on a selection,
-  §7.2, and says so.)
+- **Select Segment** — selects the piece's whole range, deliberately and only
+  when asked — the full region, not a caret at its start.
+- **Edit…** — opens the piece's own popover (name and start offset), anchored to
+  the block under the pointer — the same editor the form's row uses, not the form
+  with the table of all segments.
+- **Remove Segment** — removes the piece, merging its bytes into a neighbour
+  that keeps its name. The bytes are untouched: removing a piece is a change to
+  how the file is read, not to the file. (Deleting the *bytes* of a piece is
+  Delete Bytes on a selection, §7.2, and says so.)
 
 Right-clicking a tinted row offers the same piece menu as the strip, plus the
 segment pair described below.
@@ -594,8 +597,7 @@ failure leaves the directory as it was.
   order as the dump, which is what makes it a legend rather than decoration.
 - Hover text: `S1 — 0x400000…0xC00000, 8 MB · W25Q…bin`.
 - A right-click menu on the block: **Save Segment…**, **Replace Segment from
-  File…**, **Select Segment**, **Edit…**, **Split Segment Here**, **Remove Cut
-  Above/Below**.
+  File…**, **Select Segment**, **Edit…**, **Remove Segment**.
 - A left-click within 4 pt of a cut moves the caret to that cut's exact offset and
   reveals it centred, reusing the snapping the bookmark marks already have
   (`snappedOffset`, §19.6.1) with the cut list as the second source of targets.
@@ -614,6 +616,9 @@ failure leaves the directory as it was.
 **Done when** the partition is legible beside the map in both minimap modes, a
 boundary can be reached by clicking it, and every operation on a piece is one
 right-click away.
+
+**Done** (2026-08-23): the strip, its gap, the hover text, the right-click menu,
+and the click-snap are all in; 11 tests green. §19.4.4 added to the requirements.
 
 ### Stage 6 — Replace a piece from a file
 

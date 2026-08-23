@@ -34,6 +34,11 @@ final class CutEditPopoverController: NSViewController, NSTextFieldDelegate {
     /// piece's current name for an edit, so editing a named piece does not open
     /// blank (§21.4).
     private let prefillDescription: String
+    /// The line the popover opens with above the two fields — the piece being
+    /// edited, named by its label and the range it holds ("S1: 0001000-0600000"),
+    /// so the popover says what it is for before the offset is read (§21.4). Nil
+    /// for a cut that has no piece yet: there is nothing to name.
+    private let header: String?
     /// Which field the caret goes to on open: the offset for a new cut (the
     /// offset is the thing to be filled in), the description for an edit (the
     /// offset is already right, the name is the thing to change). Internal so a
@@ -89,6 +94,7 @@ final class CutEditPopoverController: NSViewController, NSTextFieldDelegate {
         self.prefillOffset = prefillOffset
         self.prefillDescription = prefillDescription
         self.focusOffset = focusOffset
+        self.header = nil
         self.validate = { offset in
             offset > 0 && offset < fileSize && !isAlreadyACut(offset)
         }
@@ -105,6 +111,9 @@ final class CutEditPopoverController: NSViewController, NSTextFieldDelegate {
     ///   - validate: whether an offset is a legal cut here.
     ///   - prefillDescription: the name the description field starts with — the
     ///     piece's current name, so editing a named piece does not open blank.
+    ///   - header: the line shown above the two fields — the piece's label and
+    ///     the range it holds ("S1: 0001000-0600000"), so the popover says what
+    ///     it is for before the offset is read (§21.4). Nil for no header.
     ///   - focusOffset: whether the caret goes to the offset field on open —
     ///     false (the default) for an edit, where the description is the thing
     ///     to change.
@@ -113,12 +122,14 @@ final class CutEditPopoverController: NSViewController, NSTextFieldDelegate {
     init(prefillOffset: UInt64,
          validate: @escaping (UInt64) -> Bool,
          prefillDescription: String = "",
+         header: String? = nil,
          focusOffset: Bool = false,
          onCommit: @escaping (UInt64, String) -> Void,
          onCancel: (() -> Void)? = nil) {
         self.prefillOffset = prefillOffset
         self.prefillDescription = prefillDescription
         self.focusOffset = focusOffset
+        self.header = header
         self.validate = validate
         self.onCommit = onCommit
         self.onCancel = onCancel
@@ -157,20 +168,38 @@ final class CutEditPopoverController: NSViewController, NSTextFieldDelegate {
         description.setAccessibilityLabel("Segment description")
         descriptionField = description
 
-        // Two lines: where the cut goes, and what the piece is called. Return
-        // and Esc are not spelled out — a popover with two fields is not where
-        // the keyboard needs explaining.
-        let stack = NSStackView(views: [offset, description])
+        // The piece's label and range, above the two fields — the popover says
+        // what it is for before the offset is read (§21.4). Only an edit has a
+        // piece to name; a new cut opens without it.
+        var headerLabel: NSTextField?
+        if let header, !header.isEmpty {
+            let label = NSTextField(labelWithString: header)
+            label.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+            label.textColor = .secondaryLabelColor
+            label.translatesAutoresizingMaskIntoConstraints = false
+            label.setAccessibilityLabel("Segment")
+            headerLabel = label
+        }
+
+        // Two lines: where the cut goes, and what the piece is called — and, for
+        // an edit, the piece it is naming, above them. Return and Esc are not
+        // spelled out — a popover with two fields is not where the keyboard
+        // needs explaining.
+        let arranged = headerLabel.map { [$0, offset, description] } ?? [offset, description]
+        let stack = NSStackView(views: arranged)
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
         stack.edgeInsets = NSEdgeInsets(top: 14, left: 16, bottom: 14, right: 16)
         stack.translatesAutoresizingMaskIntoConstraints = false
 
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: Self.width, height: 84))
+        // The header adds a line above the two fields; the popover grows to hold
+        // it rather than compress the fields it is about.
+        let height: CGFloat = headerLabel == nil ? 84 : 108
+        let root = NSView(frame: NSRect(x: 0, y: 0, width: Self.width, height: height))
         root.addSubview(stack)
         let inset = stack.edgeInsets.left + stack.edgeInsets.right
-        NSLayoutConstraint.activate([
+        var constraints: [NSLayoutConstraint] = [
             stack.topAnchor.constraint(equalTo: root.topAnchor),
             stack.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             stack.leadingAnchor.constraint(equalTo: root.leadingAnchor),
@@ -180,7 +209,12 @@ final class CutEditPopoverController: NSViewController, NSTextFieldDelegate {
             // longest thing a name can be is the width there is.
             offset.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -inset),
             description.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -inset),
-        ])
+        ]
+        // The header spans the popover too — the range is read, not typed.
+        if let headerLabel {
+            constraints.append(headerLabel.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -inset))
+        }
+        NSLayoutConstraint.activate(constraints)
         view = root
     }
 

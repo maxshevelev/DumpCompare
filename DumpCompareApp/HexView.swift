@@ -2537,6 +2537,37 @@ enum HexTheme {
                 : NSColor(srgbRed: 0.99, green: 0.89, blue: 0.82, alpha: 1)
         },
     ]
+
+    /// The colour a hovered strip block is painted in — the same hue as the
+    /// piece's tint, but louder, so the piece under the cursor stands out
+    /// without changing its identity (§19.4.4). The tints are pastels, so a
+    /// fixed step (rather than a multiplier) is what makes a pale tint read as
+    /// "the same colour, just louder". In dark theme the tints sit at the dark
+    /// end of the range, where pushing saturation alone does not lift a thin
+    /// strip off the near-black paper — so the hover lifts the brightness as
+    /// well as the saturation there.
+    static func saturatedHighlight(of color: NSColor, in appearance: NSAppearance) -> NSColor {
+        // The tint is a dynamic (catalog) colour, and the HSB component
+        // accessors are not valid on a catalog colour — it must first be
+        // resolved to a concrete colour in the given appearance (the view's,
+        // since this runs inside `draw`).
+        var resolved: NSColor?
+        appearance.performAsCurrentDrawingAppearance {
+            resolved = color.usingColorSpace(.sRGB)
+        }
+        guard let rgb = resolved else { return color }
+        let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        // Dark theme: the tint is dark, so the hover lifts brightness as well as
+        // saturation — a dark, muddy band does not read as a colour in a 6 pt
+        // strip, and saturation alone does not move it off the paper. Light
+        // theme: the tint is already bright, so only the saturation moves.
+        let saturation = min(1, rgb.saturationComponent + (isDark ? 0.20 : 0.30))
+        let brightness = isDark ? min(1, rgb.brightnessComponent + 0.35) : rgb.brightnessComponent
+        return NSColor(hue: rgb.hueComponent,
+                       saturation: saturation,
+                       brightness: brightness,
+                       alpha: rgb.alphaComponent)
+    }
 }
 
 extension String {

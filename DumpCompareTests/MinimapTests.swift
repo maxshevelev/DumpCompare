@@ -2664,4 +2664,483 @@ final class MinimapTests: XCTestCase {
                           "and it fits within the margin it is drawn in")
     }
 
+    // MARK: - The segment strip (§19.4.4)
+
+    /// A single-file window with the minimap shown and detail mode pinned, the
+    /// file partitioned by `cuts` (the piece boundaries, half-open). The pane is
+    /// returned so a test can read its caret and selection after a click.
+    private func makeSegmentedWindow(cuts: [UInt64], size: Int = 256) throws
+        -> (MainViewController, NSWindow, PaneViewModel) {
+        let url = try tempFile([UInt8](repeating: 0x41, count: size))
+        let (controller, window) = try makeController()
+        try controller.windowModel.pane1.open(url: url)
+        controller.apply(mode: .singleFile)
+        window.layoutIfNeeded()
+        controller.setMinimapRenderModeForTesting(.detail)
+        let pane = controller.windowModel.pane1
+        for cut in cuts {
+            pane.segmentStore.addCut(at: cut)
+        }
+        let (split, panel) = try minimapViews(window)
+        split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+        // The store fires its change synchronously, but the strip's repaint lands
+        // on the next run-loop pass — pump so a render test sees the new blocks.
+        _ = pumpUntil(2.0) {
+            panel.segmentBlocks.count == 1 && panel.segmentBlocks[0].count == cuts.count + 1
+        }
+        return (controller, window, pane)
+    }
+
+    /// The y an offset sits at on a map's strip — the same row mapping the map
+    /// uses, so a test can aim at a cut's exact y. Detail mode only (the tests
+    /// pin it), which is the mapping the strip's own y uses.
+    private func stripY(_ offset: UInt64, strip: NSRect, topRow: UInt64) -> CGFloat {
+        strip.minY + CGFloat(Double(offset) / Double(MinimapView.bytesPerRow) - Double(topRow))
+            * MinimapView.rowStep
+    }
+
+    /// The strip is absent while the pane is one piece — nothing to separate —
+    /// and appears the moment a cut makes a second one.
+    func testTheStripIsAbsentWithOnePieceAndPresentWithTwo() throws {
+        let (controller, window, _) = try makeSegmentedWindow(cuts: [])
+        let (_, panel) = try minimapViews(window)
+        XCTAssertFalse(panel.segmentStripVisible(forMapAt: 0),
+                       "one piece has no partition, so no strip")
+        XCTAssertNil(panel.segmentStripRect(forMapAt: 0),
+                     "and no strip rect to hit-test against")
+
+        // A cut makes a second piece, and the strip appears with it.
+        controller.windowModel.pane1.segmentStore.addCut(at: 128)
+        window.layoutIfNeeded()
+        XCTAssertTrue(panel.segmentStripVisible(forMapAt: 0),
+                      "a cut makes a second piece, and the strip appears")
+        let strip = try XCTUnwrap(panel.segmentStripRect(forMapAt: 0))
+        XCTAssertEqual(strip.width, MinimapView.segmentStripWidth,
+                       "the strip is six points wide")
+        XCTAssertEqual(strip.height, panel.bounds.height,
+                       "it runs the map's full height")
+    }
+
+    /// Side by side, each map's strip sits on the outer side of its own map: the
+    /// left map's strip is in the gutter against the separator line at the
+    /// panel's centre, and the right map's strip is in its own right margin,
+    /// exactly as a single map's is — each strip on the right edge of its own
+    /// half, not tucked against the separator (§19.4.4).
+    func testSideBySideStripsSitOnTheOuterSideOfEachMap() throws {
+        let (controller, window) = try makeComparisonWindow(vertical: true)
+        let (split, panel) = try minimapViews(window)
+        split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+        guard case .sideBySide = panel.mapLayout else {
+            return XCTFail("expected a side-by-side minimap, got \(panel.mapLayout)")
+        }
+        // A cut in each pane makes each strip visible.
+        controller.windowModel.pane1.segmentStore.addCut(at: 128)
+        controller.windowModel.pane2.segmentStore.addCut(at: 64)
+        _ = pumpUntil(2.0) {
+            panel.segmentBlocks.count == 2
+                && panel.segmentBlocks[0].count == 2
+                && panel.segmentBlocks[1].count == 2
+        }
+        let midX = panel.bounds.midX
+        let gap = MinimapView.segmentStripGap
+        let stripWidth = MinimapView.segmentStripWidth
+        let left = try XCTUnwrap(panel.segmentStripRect(forMapAt: 0),
+                                 "the left map's strip is in the gutter")
+        let right = try XCTUnwrap(panel.segmentStripRect(forMapAt: 1),
+                                  "the right map's strip is in its right margin")
+        // The left strip sits in the gutter against the separator line.
+        XCTAssertEqual(left.maxX, midX - gap,
+                       "the left strip sits its gap away from the separator line")
+        // The right strip sits in its own right margin: its gap of paper from the
+        // content's right edge, which is the map's right edge minus the padding.
+        let rightContentEdge = panel.bounds.maxX - MinimapView.contentPadding
+        XCTAssertEqual(right.minX, rightContentEdge + gap,
+                       "the right strip sits its gap away from its content's edge")
+        XCTAssertEqual(right.maxX, rightContentEdge + gap + stripWidth,
+                       "the right strip is in the right margin, not the gutter")
+        // Both strips are the same width.
+        XCTAssertEqual(left.width, stripWidth, "the left strip is six points wide")
+        XCTAssertEqual(right.width, stripWidth, "the right strip is six points wide")
+        // The right strip is on the right side of the panel, far from the
+        // separator — not tucked into the gutter the old layout put it in.
+        XCTAssertGreaterThan(right.minX, midX + gap,
+                             "the right strip is in its right margin, not the gutter")
+    }
+
+    /// With three pieces the strip carries three blocks, in the dump's order,
+    /// each with the colour index its piece's tint uses.
+    func testTheStripCarriesThePartitionInOrder() throws {
+        let (_, window, _) = try makeSegmentedWindow(cuts: [64, 128])
+        let (_, panel) = try minimapViews(window)
+        let blocks = try XCTUnwrap(panel.segmentBlocks.first)
+        XCTAssertEqual(blocks.count, 3, "two cuts make three pieces")
+        XCTAssertEqual(blocks.map(\.range), [0..<64, 64..<128, 128..<256],
+                       "the blocks are the pieces, in the dump's order")
+        XCTAssertEqual(blocks.map(\.colorIndex), [0, 1, 2],
+                       "each block carries the colour index its piece's tint uses")
+    }
+
+    /// The strip is painted from the same `segmentTints` the dump uses, in the
+    /// same order: a render test sampling the strip at each block's middle finds
+    /// that block's tint, and the boundaries sit at the cuts' own y.
+    func testTheStripPaintsTheBlocksInTheDumpsColours() throws {
+        let (_, window, _) = try makeSegmentedWindow(cuts: [64, 128])
+        let (_, panel) = try minimapViews(window)
+        let strip = try XCTUnwrap(panel.segmentStripRect(forMapAt: 0))
+        let blocks = try XCTUnwrap(panel.segmentBlocks.first)
+
+        // The viewport band is painted over the strip (the "you are here" marker,
+        // §19.4.4), and in light mode it is a dark grey at 14% that would darken
+        // every tint the test is about. Clear it so the strip's own ink — not the
+        // band's overlay — is what gets sampled.
+        panel.setViewports([])
+        window.layoutIfNeeded()
+
+        // `cacheDisplay` pulls every fill through the display's own profile on its
+        // way to the pixels, so a rep in that profile is where the ink actually
+        // lands. The expected tint must go through that same profile to be
+        // compared in the same space — otherwise the assertion measures the
+        // display's tone curve, not the strip's ink, and fails on any display
+        // whose curve is not the identity. The fill is set as device RGB in the
+        // draw code, so the tint's chain is sRGB -> device RGB -> display profile.
+        let rep = try XCTUnwrap(panel.bitmapImageRepForCachingDisplay(in: panel.bounds))
+        panel.cacheDisplay(in: panel.bounds, to: rep)
+        let displayCS = rep.colorSpace
+        let scaleX = CGFloat(rep.pixelsWide) / panel.bounds.width
+        let scaleY = CGFloat(rep.pixelsHigh) / panel.bounds.height
+
+        /// The colour at a point in the view's (flipped) coordinates, in the
+        /// rep's own (display) profile — the space the fill was rendered into.
+        func color(x: CGFloat, y: CGFloat) throws -> NSColor? {
+            let px = min(max(Int(x * scaleX), 0), rep.pixelsWide - 1)
+            let py = min(max(Int(y * scaleY), 0), rep.pixelsHigh - 1)
+            return rep.colorAt(x: px, y: py)
+        }
+
+        /// The tint as the strip would paint it: sRGB -> device RGB (the draw
+        /// code's own conversion) -> the display profile the render applies.
+        func paintedTint(_ index: Int) -> NSColor {
+            let tint = HexTheme.segmentTints[index]
+            return (tint.usingColorSpace(.deviceRGB) ?? tint).usingColorSpace(displayCS)
+                ?? tint
+        }
+
+        // Sample each block at its middle: the colour there is that block's tint.
+        for (i, block) in blocks.enumerated() {
+            let mid = (block.range.lowerBound + block.range.upperBound) / 2
+            let y = stripY(mid, strip: strip, topRow: panel.topRow)
+            let sampled = try XCTUnwrap(color(x: strip.midX, y: y),
+                                        "no colour at block \(i)'s middle")
+            let expected = paintedTint(block.colorIndex)
+            XCTAssertEqual(sampled.redComponent, expected.redComponent, accuracy: 0.06,
+                           "block \(i) is painted in its own tint (red)")
+            XCTAssertEqual(sampled.greenComponent, expected.greenComponent, accuracy: 0.06,
+                           "block \(i) is painted in its own tint (green)")
+            XCTAssertEqual(sampled.blueComponent, expected.blueComponent, accuracy: 0.06,
+                           "block \(i) is painted in its own tint (blue)")
+        }
+
+        // The boundaries sit at the cuts' own y: just above a cut is the upper
+        // block's tint, just below it the lower block's.
+        for cut in [UInt64(64), UInt64(128)] {
+            let cutY = stripY(cut, strip: strip, topRow: panel.topRow)
+            let above = try XCTUnwrap(color(x: strip.midX, y: cutY - 2))
+            let below = try XCTUnwrap(color(x: strip.midX, y: cutY + 2))
+            XCTAssertNotEqual(above, below,
+                              "the colour changes at the cut at 0x\(String(cut, radix: 16))")
+        }
+    }
+
+    /// The 2 pt gap between the strip and the content is actually empty — nothing
+    /// is painted in it. Sampled in the gap's middle, the colour is the panel's
+    /// paper, not a tint.
+    func testTheGapIsActuallyAGap() throws {
+        let (_, window, _) = try makeSegmentedWindow(cuts: [64, 128])
+        let (_, panel) = try minimapViews(window)
+        let strip = try XCTUnwrap(panel.segmentStripRect(forMapAt: 0))
+
+        let rep = try XCTUnwrap(panel.bitmapImageRepForCachingDisplay(in: panel.bounds))
+        panel.cacheDisplay(in: panel.bounds, to: rep)
+        let scaleX = CGFloat(rep.pixelsWide) / panel.bounds.width
+        let scaleY = CGFloat(rep.pixelsHigh) / panel.bounds.height
+
+        // The gap is the 2 pt between the content's right edge and the strip's
+        // left edge. Its middle is one point left of the strip.
+        let gapX = strip.minX - 1
+        let gapY = strip.minY + strip.height / 2
+        let px = min(max(Int(gapX * scaleX), 0), rep.pixelsWide - 1)
+        let py = min(max(Int(gapY * scaleY), 0), rep.pixelsHigh - 1)
+        let gapColor = try XCTUnwrap(rep.colorAt(x: px, y: py)?.usingColorSpace(.deviceRGB))
+
+        // The gap is paper, not a tint: it matches the panel's background.
+        let paper = NSColor.textBackgroundColor.usingColorSpace(.deviceRGB) ?? NSColor.textBackgroundColor
+        XCTAssertEqual(gapColor.redComponent, paper.redComponent, accuracy: 0.06,
+                       "the gap's red is the paper's")
+        XCTAssertEqual(gapColor.greenComponent, paper.greenComponent, accuracy: 0.06,
+                       "the gap's green is the paper's")
+        XCTAssertEqual(gapColor.blueComponent, paper.blueComponent, accuracy: 0.06,
+                       "the gap's blue is the paper's")
+    }
+
+    /// Hovering a piece names it: its label, its range, its size, and its name —
+    /// the legend the strip is.
+    func testTheStripHoverNamesAPiece() throws {
+        let (_, window, pane) = try makeSegmentedWindow(cuts: [64, 128])
+        let (_, panel) = try minimapViews(window)
+        let strip = try XCTUnwrap(panel.segmentStripRect(forMapAt: 0))
+        // The middle of S1 (the piece [64, 128)).
+        let y = stripY(96, strip: strip, topRow: panel.topRow)
+        let text = panel.segmentStripTooltipText(at: NSPoint(x: strip.midX, y: y))
+        XCTAssertTrue(text.contains("S1"), "the hover names the piece: \(text)")
+        XCTAssertTrue(text.contains("0x40"), "it gives the piece's start: \(text)")
+        XCTAssertTrue(text.contains("0x80"), "and its end: \(text)")
+        XCTAssertTrue(text.contains("64"), "and its size: \(text)")
+        // The name is asked for live at hover time (a rename fires no
+        // invalidation, so the strip cannot store a copy). A fresh cut's piece
+        // is unnamed; rename S1 and the hover picks up the new name.
+        pane.segmentStore.rename(1, to: "testpiece")
+        let named = panel.segmentStripTooltipText(at: NSPoint(x: strip.midX, y: y))
+        XCTAssertTrue(named.contains("testpiece"),
+                      "the hover names the piece's live name: \(named)")
+    }
+
+    /// Hovering a boundary — within the snap distance of a cut — names the cut's
+    /// offset, not a piece: the pointer is on the line between two colours, and
+    /// the line is the more precise fact.
+    func testTheStripHoverNamesABoundaryNearACut() throws {
+        let (_, window, _) = try makeSegmentedWindow(cuts: [64, 128])
+        let (_, panel) = try minimapViews(window)
+        let strip = try XCTUnwrap(panel.segmentStripRect(forMapAt: 0))
+        // Dead on the cut at 64.
+        let y = stripY(64, strip: strip, topRow: panel.topRow)
+        let text = panel.segmentStripTooltipText(at: NSPoint(x: strip.midX, y: y))
+        XCTAssertTrue(text == "0x40" || text.hasPrefix("0x40"),
+                      "a boundary names the cut's offset, got: \(text)")
+        XCTAssertFalse(text.contains("S1"), "and not a piece's label")
+    }
+
+    /// Hovering a strip block paints it a more saturated shade of its own tint —
+    /// the same colour, just louder — while the other blocks keep their tints
+    /// (§19.4.4).
+    func testHoveringAStripBlockPaintsItMoreSaturated() throws {
+        let (_, window, _) = try makeSegmentedWindow(cuts: [64, 128])
+        let (_, panel) = try minimapViews(window)
+        let strip = try XCTUnwrap(panel.segmentStripRect(forMapAt: 0))
+        let blocks = try XCTUnwrap(panel.segmentBlocks.first)
+        XCTAssertGreaterThanOrEqual(blocks.count, 2, "two cuts make at least two pieces")
+
+        // Hover the middle of the first block.
+        let block0Mid = (blocks[0].range.lowerBound + blocks[0].range.upperBound) / 2
+        let hoverY = stripY(block0Mid, strip: strip, topRow: panel.topRow)
+        let viewPoint = NSPoint(x: strip.midX, y: hoverY)
+        let windowPoint = panel.convert(viewPoint, to: nil)
+        let event = try XCTUnwrap(NSEvent.mouseEvent(with: .mouseMoved,
+                                       location: windowPoint,
+                                       modifierFlags: [],
+                                       timestamp: 0,
+                                       windowNumber: window.windowNumber,
+                                       context: nil,
+                                       eventNumber: 0,
+                                       clickCount: 0,
+                                       pressure: 0))
+        panel.mouseMoved(with: event)
+
+        // Render and sample the strip.
+        let rep = try XCTUnwrap(panel.bitmapImageRepForCachingDisplay(in: panel.bounds))
+        panel.cacheDisplay(in: panel.bounds, to: rep)
+        let scaleX = CGFloat(rep.pixelsWide) / panel.bounds.width
+        let scaleY = CGFloat(rep.pixelsHigh) / panel.bounds.height
+        func color(x: CGFloat, y: CGFloat) throws -> NSColor? {
+            let px = min(max(Int(x * scaleX), 0), rep.pixelsWide - 1)
+            let py = min(max(Int(y * scaleY), 0), rep.pixelsHigh - 1)
+            return rep.colorAt(x: px, y: py)?.usingColorSpace(.sRGB)
+        }
+
+        // The hovered block (block 0) is more saturated than its own tint.
+        // Resolve the tints under the view's own appearance — the same appearance
+        // the strip was drawn in — so the comparison is apples to apples.
+        let appearance = panel.effectiveAppearance
+        func resolvedTint(_ index: Int) -> NSColor {
+            var result: NSColor?
+            appearance.performAsCurrentDrawingAppearance {
+                result = HexTheme.segmentTints[index].usingColorSpace(.sRGB)
+            }
+            return result ?? HexTheme.segmentTints[index]
+        }
+        let hovered = try XCTUnwrap(color(x: strip.midX, y: hoverY),
+                                    "no colour at the hovered block's middle")
+        let tint0 = resolvedTint(blocks[0].colorIndex)
+        XCTAssertGreaterThan(hovered.saturationComponent, tint0.saturationComponent,
+                             "the hovered block is more saturated than its tint")
+
+        // A non-hovered block (block 1) keeps its tint — not more saturated.
+        let block1Mid = (blocks[1].range.lowerBound + blocks[1].range.upperBound) / 2
+        let block1Y = stripY(block1Mid, strip: strip, topRow: panel.topRow)
+        let other = try XCTUnwrap(color(x: strip.midX, y: block1Y),
+                                  "no colour at the other block's middle")
+        let tint1 = resolvedTint(blocks[1].colorIndex)
+        XCTAssertEqual(other.saturationComponent, tint1.saturationComponent, accuracy: 0.06,
+                       "a non-hovered block keeps its tint's saturation")
+    }
+
+    /// The strip's right-click menu carries the piece under the pointer and the
+    /// actions that act on it — Save, Replace (Stage 6, disabled), Select, Edit
+    /// (the piece's own popover), and Remove Segment — every item carrying the
+    /// piece's label, so the menu says what it will act on (§21.3).
+    func testTheStripMenuCarriesThePieceAndItsActions() throws {
+        let (_, window, _) = try makeSegmentedWindow(cuts: [64, 128])
+        let (_, panel) = try minimapViews(window)
+        let strip = try XCTUnwrap(panel.segmentStripRect(forMapAt: 0))
+        // The middle of S1, the piece under the pointer.
+        let y = stripY(96, strip: strip, topRow: panel.topRow)
+        let point = NSPoint(x: strip.midX, y: y)
+        let menu = try XCTUnwrap(panel.segmentStripMenu?(0, 1, point),
+                                 "the strip's menu closure is wired")
+        let titles = menu.items.map(\.title)
+        XCTAssertEqual(titles,
+                       ["Save Segment S1…", "Replace Segment S1 from File…", "",
+                        "Select Segment S1", "Edit Segment S1", "Remove Segment S1"],
+                       "the strip's menu is the form's row menu plus the strip's own Select")
+        // Replace is present but disabled until Stage 6 lands the swap.
+        let replace = try XCTUnwrap(menu.items.first { $0.title == "Replace Segment S1 from File…" })
+        XCTAssertFalse(replace.isEnabled, "Replace is disabled until Stage 6")
+        // Each live item carries the piece it acts on — S1, the piece under the
+        // pointer — in its representedObject.
+        for item in menu.items where !item.title.isEmpty && item.title != "Replace Segment S1 from File…" {
+            let target = try XCTUnwrap(item.representedObject as? MainViewController.SegmentMenuTarget,
+                                       "\(item.title) carries its piece")
+            XCTAssertEqual(target.pieceIndex, 1, "\(item.title) acts on S1, the piece under the pointer")
+        }
+    }
+
+    /// Select Segment from the strip's menu selects the piece's whole range —
+    /// not a caret at its start (§21.3). The control is the selection's
+    /// emptiness: the old act (a caret at the start) leaves it empty.
+    func testSelectSegmentSelectsTheWholePiece() throws {
+        let (_, window, pane) = try makeSegmentedWindow(cuts: [64, 128])
+        let (_, panel) = try minimapViews(window)
+        let strip = try XCTUnwrap(panel.segmentStripRect(forMapAt: 0))
+        let y = stripY(96, strip: strip, topRow: panel.topRow)
+        let menu = try XCTUnwrap(panel.segmentStripMenu?(0, 1, NSPoint(x: strip.midX, y: y)))
+        let item = try XCTUnwrap(menu.items.first { $0.title == "Select Segment S1" })
+        let action = try XCTUnwrap(item.action)
+        _ = NSApp.sendAction(action, to: item.target, from: item)
+        let selection = pane.hexSelection()
+        XCTAssertEqual(selection.start, 64, "the selection begins at the piece's start")
+        XCTAssertEqual(selection.end, 128, "the selection ends at the piece's end")
+        XCTAssertFalse(selection.isEmpty,
+                       "Select Segment selects the whole piece, not a caret at its start")
+    }
+
+    /// Remove Segment from the strip's menu drops the piece, merging its bytes
+    /// into the piece above, which keeps its name (§21.3) — the same act as the
+    /// form's row menu.
+    func testRemoveSegmentMergesThePieceIntoANeighbour() throws {
+        let (_, window, pane) = try makeSegmentedWindow(cuts: [64, 128])
+        let (_, panel) = try minimapViews(window)
+        let strip = try XCTUnwrap(panel.segmentStripRect(forMapAt: 0))
+        let y = stripY(96, strip: strip, topRow: panel.topRow)
+        let menu = try XCTUnwrap(panel.segmentStripMenu?(0, 1, NSPoint(x: strip.midX, y: y)))
+        let item = try XCTUnwrap(menu.items.first { $0.title == "Remove Segment S1" })
+        let action = try XCTUnwrap(item.action)
+        _ = NSApp.sendAction(action, to: item.target, from: item)
+        // S1 [64,128) is gone; S0 absorbs it, so the cut at 64 is dropped and
+        // the cut at 128 remains: two pieces, [0,128) and [128,256).
+        let segments = pane.segmentStore.segments
+        XCTAssertEqual(segments.count, 2, "removing S1 leaves two pieces")
+        XCTAssertEqual(segments[0].range, 0..<128, "S0 absorbs S1 and keeps its name")
+        XCTAssertEqual(segments[1].range, 128..<256, "the former S2 is now S1")
+    }
+
+    /// A click within the snap distance of a cut moves the caret to the cut's
+    /// exact offset — not the row the pixel's own y would have given. The control
+    /// is the point of the snap: the pixel's row is a different answer.
+    func testAClickNearACutLandsOnItsExactOffset() throws {
+        let (_, window, pane) = try makeSegmentedWindow(cuts: [64, 128])
+        let (_, panel) = try minimapViews(window)
+        let strip = try XCTUnwrap(panel.segmentStripRect(forMapAt: 0))
+        // A cut at 64 sits mid-row (row 4, byte 0); the pixel's own y would give
+        // the row's start, 64, only if the cut were row-aligned. Use a cut that
+        // is not: re-cut at 65 so the snap's answer (65) differs from the row's.
+        pane.segmentStore.addCut(at: 65)
+        window.layoutIfNeeded()
+        _ = pumpUntil(2.0) { panel.segmentBlocks.first?.count == 4 }
+        let cutY = stripY(65, strip: strip, topRow: panel.topRow)
+        // Click 2 pt below the cut — inside the snap distance, off the row start.
+        let point = NSPoint(x: strip.midX, y: cutY + 2)
+        panel.mouseDown(with: mouse(.leftMouseDown, at: panel.convert(point, to: nil), window: window))
+        XCTAssertEqual(pane.caretOffset, 65,
+                       "the caret lands on the cut's exact offset, not the row's start")
+        // The control: the pixel's own row would have given a different answer.
+        let rowAnswer = panel.byteOffset(at: point)
+        XCTAssertNotEqual(rowAnswer?.offset, 65,
+                          "the pixel's row is a different answer — that is the snap's point")
+    }
+
+    /// Two cuts both within the snap distance: the nearer one wins.
+    func testTheNearerCutWins() throws {
+        let (_, window, pane) = try makeSegmentedWindow(cuts: [64, 128])
+        let (_, panel) = try minimapViews(window)
+        let strip = try XCTUnwrap(panel.segmentStripRect(forMapAt: 0))
+        // Two cuts a row apart (64 and 80): a point between them is within 4 pt
+        // of both, and the nearer is the one aimed at.
+        pane.segmentStore.addCut(at: 80)
+        window.layoutIfNeeded()
+        _ = pumpUntil(2.0) { panel.segmentBlocks.first?.count == 4 }
+        let y64 = stripY(64, strip: strip, topRow: panel.topRow)
+        let y80 = stripY(80, strip: strip, topRow: panel.topRow)
+        // A point 1 pt below 80 (and 15 pt below 64): only 80 is in reach.
+        let point = NSPoint(x: strip.midX, y: y80 + 1)
+        let click = try XCTUnwrap(panel.segmentStripClick(at: point))
+        XCTAssertEqual(click.offset, 80, "the nearer cut wins")
+        // And a point 1 pt above 64 snaps to 64, not 80.
+        let point2 = NSPoint(x: strip.midX, y: y64 - 1)
+        let click2 = try XCTUnwrap(panel.segmentStripClick(at: point2))
+        XCTAssertEqual(click2.offset, 64, "and the other point snaps to the other cut")
+    }
+
+    /// A click in the middle of a block — not near any cut — positions to the
+    /// click location, the way a click on the map does: the caret goes to the
+    /// byte the click's y stands for (§19.4.4).
+    func testAClickInTheMiddleOfABlockPositionsThere() throws {
+        let (_, window, pane) = try makeSegmentedWindow(cuts: [64, 128])
+        let (_, panel) = try minimapViews(window)
+        let strip = try XCTUnwrap(panel.segmentStripRect(forMapAt: 0))
+        // The middle of S1, far from either cut (64 and 128 are 32 pt away in y).
+        let y = stripY(96, strip: strip, topRow: panel.topRow)
+        let point = NSPoint(x: strip.midX, y: y)
+        // The point is on the strip but not near a cut: a click there positions
+        // to the byte the click's y stands for.
+        let click = try XCTUnwrap(panel.segmentStripClick(at: point))
+        XCTAssertEqual(click.offset, 96,
+                       "the target is the byte the click's y stands for")
+        panel.mouseDown(with: mouse(.leftMouseDown, at: panel.convert(point, to: nil), window: window))
+        XCTAssertEqual(pane.caretOffset, 96, "the caret lands on the clicked byte")
+    }
+
+    /// A click at the strip's ends positions to the click location: the top is
+    /// the file's start (0), the bottom the file's last byte — the ends are not
+    /// cuts, but a click there still means "take me here" (§19.4.4).
+    func testAClickAtTheStripsEndsPositionsThere() throws {
+        let (_, window, pane) = try makeSegmentedWindow(cuts: [64, 128])
+        let (_, panel) = try minimapViews(window)
+        let strip = try XCTUnwrap(panel.segmentStripRect(forMapAt: 0))
+        let fileSize = pane.fileSize
+        // The strip's top is the file start (0).
+        let top = NSPoint(x: strip.midX, y: strip.minY + 1)
+        let clickTop = try XCTUnwrap(panel.segmentStripClick(at: top))
+        XCTAssertEqual(clickTop.offset, 0, "the top of the strip is the file's start")
+        panel.mouseDown(with: mouse(.leftMouseDown, at: panel.convert(top, to: nil), window: window))
+        XCTAssertEqual(pane.caretOffset, 0, "a click at the top goes to the file's start")
+        // The strip's bottom is the file end, which clamps to the last byte.
+        let bottom = NSPoint(x: strip.midX, y: strip.maxY - 1)
+        let clickBottom = try XCTUnwrap(panel.segmentStripClick(at: bottom))
+        XCTAssertEqual(clickBottom.offset, fileSize - 1,
+                       "the bottom of the strip clamps to the file's last byte")
+        panel.mouseDown(with: mouse(.leftMouseDown, at: panel.convert(bottom, to: nil), window: window))
+        XCTAssertEqual(pane.caretOffset, fileSize - 1, "a click at the bottom goes to the last byte")
+    }
+
 }
