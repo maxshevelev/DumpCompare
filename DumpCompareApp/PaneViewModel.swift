@@ -1225,15 +1225,10 @@ final class PaneViewModel: HexViewDataSource {
                 segmentStore.rename(1, to: sourceName)
             }
         }
-        // The caret and selection shift by the inserted length on an insert at
-        // the start, so they stay on the bytes they were on (§22.5); an append
-        // leaves them put.
-        if position == .start {
-            let sel = doc.selection
-            doc.setSelection(SelectionModel(start: sel.start + sourceSize,
-                                             end: sel.end + sourceSize,
-                                             fileSize: doc.size))
-        }
+        // The caret sits at the start of the added part (§22.5) — `doc.join`
+        // placed it there and recorded it as the transaction's post-edit
+        // selection, so redo of the join restores the same spot (and undo
+        // returns the pre-join caret). No caret work left for the pane.
         // The document detached: it is untitled now, with no on-disk reference
         // (the placeholder URL has no file behind it) and no watcher.
         isUntitled = true

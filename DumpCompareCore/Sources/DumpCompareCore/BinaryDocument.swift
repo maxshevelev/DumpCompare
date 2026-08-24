@@ -218,8 +218,16 @@ public final class BinaryDocument: @unchecked Sendable {
             preJoinAttachment = nil
             throw error
         }
-        // The join's transaction just committed; remember its serial so undo/redo
-        // can recognise it and re-attach/detach the file (§22.2).
+        // The caret goes to the start of the added part (§22.5) — the byte
+        // boundary the join opened — and that is what redo restores. The
+        // join's transaction just committed (transactionAwaitingSelection is
+        // set), so note the caret now, before detachIdentityOnly clears the
+        // flag; undo already returns the caret to its pre-join spot via
+        // selectionBefore.
+        selection = SelectionModel.empty(at: anchor, fileSize: storage.size)
+        noteSelectionAfterEdit()
+        // Remember the join's serial so undo/redo can recognise it and
+        // re-attach/detach the file (§22.2).
         joinSerial = undoHistory.lastCommittedSerial
         // Detach the identity only — the history is kept, so the join is undoable.
         detachIdentityOnly()

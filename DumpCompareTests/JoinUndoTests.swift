@@ -133,6 +133,30 @@ final class JoinUndoTests: XCTestCase {
         _ = window
     }
 
+    /// A join puts the caret at the start of the added part (§22.5) — the seam
+    /// for an append — and undo/redo restore it: undo returns the pre-join
+    /// caret, redo brings it back to the seam.
+    func testAJoinPutsTheCaretAtTheSeamAndUndoRedoRestoreIt() throws {
+        let (controller, window, url) = try makeController([UInt8](0x10..<0x20))
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+
+        // A pre-join caret, so the undo has a distinct spot to return to.
+        pane.setSelection(SelectionModel.empty(at: 3, fileSize: 16))
+        XCTAssertEqual(pane.caretOffset, 3)
+
+        let source = try makeSourceFile([0xA0, 0xA1, 0xA2])
+        try pane.join(contentsOf: source, at: .end)
+        XCTAssertEqual(pane.caretOffset, 16, "the caret is at the seam, the start of the added part")
+
+        _ = try pane.undo()
+        XCTAssertEqual(pane.caretOffset, 3, "undoing the join restores the pre-join caret")
+
+        _ = try pane.redo()
+        XCTAssertEqual(pane.caretOffset, 16, "redo brings the caret back to the seam")
+        _ = window
+    }
+
     // MARK: - Revert keeps the partition (§21.2)
 
     /// A Revert to Saved keeps the partition the user set up: the cut survives,

@@ -242,4 +242,49 @@ final class BinaryDocumentJoinTests: XCTestCase {
         try doc.join(contentsOf: ArrayStorage([0xA0]), at: .end)
         XCTAssertTrue(doc.isDirty, "the join's transaction makes the document dirty")
     }
+
+    // MARK: - The caret (§22.5)
+
+    /// A join at the end puts the caret at the seam — the old end, the start of
+    /// the added part — as a bare caret, not a selection.
+    func testAJoinAtEndPutsTheCaretAtTheSeam() throws {
+        let doc = makeDocument([UInt8](0x10..<0x20))
+        try doc.join(contentsOf: ArrayStorage([0xA0, 0xA1, 0xA2]), at: .end)
+        XCTAssertEqual(doc.selection.start, 16, "the caret is at the start of the added part")
+        XCTAssertEqual(doc.selection.count, 0, "the caret is bare, not a selection")
+    }
+
+    /// A join at the start puts the caret at 0 — the start of the added part.
+    func testAJoinAtStartPutsTheCaretAtZero() throws {
+        let doc = makeDocument([UInt8](0x10..<0x20))
+        try doc.join(contentsOf: ArrayStorage([0xA0, 0xA1, 0xA2]), at: .start)
+        XCTAssertEqual(doc.selection.start, 0, "the caret is at the start of the added part")
+        XCTAssertEqual(doc.selection.count, 0)
+    }
+
+    /// Undoing the join returns the caret to where it was before the join.
+    func testUndoingAJoinRestoresThePreJoinCaret() throws {
+        let doc = makeDocument([UInt8](0x10..<0x20))
+        doc.setSelection(SelectionModel.empty(at: 5, fileSize: doc.size))
+        try doc.join(contentsOf: ArrayStorage([0xA0, 0xA1]), at: .end)
+        XCTAssertEqual(doc.selection.start, 16, "the join moved the caret to the seam")
+
+        try doc.undo()
+
+        XCTAssertEqual(doc.selection.start, 5, "undoing the join restores the pre-join caret")
+    }
+
+    /// Redoing the join brings the caret back to the seam — the same spot the
+    /// forward join left it, not the bare end of the inserted bytes.
+    func testRedoingAJoinRestoresTheSeamCaret() throws {
+        let doc = makeDocument([UInt8](0x10..<0x20))
+        doc.setSelection(SelectionModel.empty(at: 5, fileSize: doc.size))
+        try doc.join(contentsOf: ArrayStorage([0xA0, 0xA1]), at: .end)
+        try doc.undo()
+        XCTAssertEqual(doc.selection.start, 5, "the undo returned the pre-join caret")
+
+        try doc.redo()
+
+        XCTAssertEqual(doc.selection.start, 16, "redo puts the caret back at the seam")
+    }
 }

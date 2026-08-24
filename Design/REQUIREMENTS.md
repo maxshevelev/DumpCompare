@@ -2463,4 +2463,4 @@ feature's Save All as Separate Files (§21.5).
 | Bookmarks made before an insert at start | Left where they are: a mark is an absolute offset (§20.1) and nothing shifts it — the seam is a segment precisely so that it is not subject to this |
 | Two joins in a row (append, then insert at start) | Three segments, all with the right offsets; the split sheet offers three files |
 | Comparison mode | A join changes one pane's length; the comparison re-indexes and the shorter file's tail reads as an EOF difference (§9) — no special case |
-| Caret and selection on an insert at start | Both shift by the inserted length, so they stay on the bytes they were on |
+| Caret after a join | At the start of the added part — the old end for an append, 0 for an insert at start. Undo returns the caret to its pre-join spot; redo brings it back to the seam |
