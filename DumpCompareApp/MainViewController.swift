@@ -277,15 +277,21 @@ final class MainViewController: NSViewController {
         // Showing the panel needs the current picture: while hidden it drew
         // nothing, so its maps and viewport are stale (§19).
         minimapSplit.onPanelVisibilityChanged = { [weak self] visible in
-            guard let self, visible else { return }
-            self.updateMinimapLayout()
-            self.refreshMinimapMaps()
-            // The mode was decided when the file opened, panel or no panel
-            // (§19.4) — showing the panel must not undo a choice made in it, only
-            // settle whether overview is on offer now that it has a height.
-            self.updateOverviewAvailability()
-            self.updateMinimapViewports()
-            self.rebuildOverview()
+            guard let self else { return }
+            if visible {
+                self.updateMinimapLayout()
+                self.refreshMinimapMaps()
+                // The mode was decided when the file opened, panel or no panel
+                // (§19.4) — showing the panel must not undo a choice made in it,
+                // only settle whether overview is on offer now that it has a height.
+                self.updateOverviewAvailability()
+                self.updateMinimapViewports()
+                self.rebuildOverview()
+            }
+            // The window grows or shrinks by the panel's width so the hex
+            // content area keeps its width (§19). The resize is instant; the
+            // panel's own divider animation then settles the content.
+            self.resizeWindowForMinimap(visible: visible)
         }
 
         apply(mode: .empty)
@@ -532,6 +538,23 @@ final class MainViewController: NSViewController {
     /// user's chosen width between shows.
     @objc func toggleMinimap() {
         minimapSplit.togglePanel(animated: true)
+    }
+
+    /// Grows or shrinks the window by the minimap panel's width so the hex
+    /// content area keeps its width when the panel is shown or hidden (§19).
+    /// The window grows or shrinks from the right edge; the left edge stays put.
+    private func resizeWindowForMinimap(visible: Bool) {
+        guard let window = view.window else { return }
+        let delta = minimapSplit.preferredPanelWidth + minimapSplit.dividerThickness
+        var frame = window.frame
+        frame.size.width = visible ? frame.size.width + delta : max(0, frame.size.width - delta)
+        // Keep the window on the visible screen: when growing, the right edge
+        // must not run off-screen; when shrinking, the left edge stays put.
+        if let visibleFrame = window.screen?.visibleFrame {
+            frame.origin.x = min(max(frame.origin.x, visibleFrame.minX),
+                                 visibleFrame.maxX - frame.size.width)
+        }
+        window.setFrame(frame, display: true, animate: false)
     }
 
     /// Recomputes the minimap's internal map split from the current window mode

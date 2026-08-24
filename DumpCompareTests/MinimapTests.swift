@@ -125,6 +125,28 @@ final class MinimapTests: XCTestCase {
         XCTAssertLessThan(panel.frame.width, 2, "the panel collapses back to the divider")
     }
 
+    /// Showing the minimap grows the window by the panel's width so the hex
+    /// content area keeps its width; hiding it shrinks the window back (§19).
+    func testToggleResizesWindowByPanelWidth() throws {
+        let (_, window) = try makeController()
+        let (split, _) = try minimapViews(window)
+
+        let initialWidth = window.frame.width
+        let delta = MinimapSplitView.minPanelWidth + split.dividerThickness
+
+        // Showing the panel grows the window by the panel's width.
+        split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+        XCTAssertEqual(window.frame.width, initialWidth + delta, accuracy: 1,
+                       "showing the minimap grows the window by the panel's width")
+
+        // Hiding it shrinks the window back.
+        split.setPanelVisible(false, animated: false)
+        window.layoutIfNeeded()
+        XCTAssertEqual(window.frame.width, initialWidth, accuracy: 1,
+                       "hiding the minimap shrinks the window back")
+    }
+
     // MARK: - Width clamp and persistence
 
     func testPanelWidthIsClampedAndPersisted() throws {

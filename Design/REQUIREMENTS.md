@@ -1333,6 +1333,10 @@ way to navigate them by pointing.
 - A window resize must not change the panel's width: the hex panes absorb
   the whole delta, and the clamp above holds at any window size.
 - Zoom-to-fit must make room for a visible panel on top of the hex grids.
+- Showing the panel grows the window by the panel's width (plus the divider)
+  and hiding it shrinks the window by the same amount, so the hex content
+  area keeps its width. The window grows or shrinks from the right edge; the
+  left edge stays put.
 
 19.3 Maps
 
