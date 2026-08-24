@@ -2353,7 +2353,7 @@ final class HexView: NSView, NSViewToolTipOwner {
         }
         let flags = event.modifierFlags
         if flags.contains(.command) || flags.contains(.control) {
-            // Cmd+A / Cmd+C / Cmd+V / Cmd+G… are handled by menu key
+            // Cmd+A / Cmd+C / Cmd+V / Cmd+L… are handled by menu key
             // equivalents; leave this keystroke to the menu system.
             super.keyDown(with: event)
             return

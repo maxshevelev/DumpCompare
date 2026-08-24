@@ -54,7 +54,7 @@ enum GoToHistoryStore {
 /// a bookmark lives in two places.
 @MainActor
 final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
-    /// Which half of the form the keyboard starts in: ⌘G is about typing an
+    /// Which half of the form the keyboard starts in: ⌘L is about typing an
     /// address, ⌥⌘B about picking one that is already marked.
     enum Focus {
         case offsetField
@@ -237,7 +237,7 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
         updateValidation(showsError: false)
     }
 
-    /// "Offset: [ 0x… ▾ ] ( Go To )" — the fast path unchanged: ⌘G, type,
+    /// "Offset: [ 0x… ▾ ] ( Go To )" — the fast path unchanged: ⌘L, type,
     /// Return. The button names the action rather than leaving Return to be
     /// guessed at, and the dropdown carries the addresses already visited.
     /// The gap between a row's label and its field — and between the message's
@@ -256,7 +256,7 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
         // Pre-filled with "0x" and the caret behind it (§10): hex is the
         // language of a dump, so the prefix is typed for the user. The last
         // address is deliberately NOT pre-filled — the caret sits at the end of
-        // the text, so a pre-filled address would turn ⌘G, type, Return into
+        // the text, so a pre-filled address would turn ⌘L, type, Return into
         // digits appended to the previous jump.
         combo.stringValue = "0x"
         combo.completes = false

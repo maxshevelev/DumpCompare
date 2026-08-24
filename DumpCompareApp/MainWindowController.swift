@@ -322,8 +322,8 @@ final class MainWindowController: NSWindowController {
         // is ⌘D's job, which opens the same popover, so this command only ever
         // edits, and is greyed out on a row that carries no mark (§20.3).
         editMenu.addItem(withTitle: "Edit Bookmark…", action: #selector(MainViewController.editBookmark), keyEquivalent: "D")
-        editMenu.addItem(withTitle: "Go To Position…", action: #selector(MainViewController.goToPosition), keyEquivalent: "g")
-        // ⌥⌘B opens the same form as ⌘G with the bookmark list focused (§10.1):
+        editMenu.addItem(withTitle: "Go To Position…", action: #selector(MainViewController.goToPosition), keyEquivalent: "l")
+        // ⌥⌘B opens the same form as ⌘L with the bookmark list focused (§10.1):
         // one window answers "go where?", and the two shortcuts differ only in
         // which half of it the keyboard starts in. ⌘B is the system's Bold, so
         // the list takes the Option variant.

@@ -3189,8 +3189,8 @@ final class MainViewController: NSViewController {
 
     // MARK: - Dialogs (§10)
 
-    /// ⌘G: the Go To / Bookmarks form with the offset field focused — the fast
-    /// path is unchanged, ⌘G, type, Return (§10.1).
+    /// ⌘L: the Go To / Bookmarks form with the offset field focused — the fast
+    /// path is unchanged, ⌘L, type, Return (§10.1).
     @objc func goToPosition() {
         presentGoToForm(focus: .offsetField)
     }

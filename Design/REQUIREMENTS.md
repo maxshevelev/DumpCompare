@@ -650,7 +650,7 @@ where?" — and split in two they would be two windows each offering half an
 answer: the addresses worth returning to are exactly the ones a user would
 otherwise be typing again.
 
-- Cmd+G opens the form with the offset field focused; Option+Cmd+B opens the same
+- Cmd+L opens the form with the offset field focused; Option+Cmd+B opens the same
   form with the bookmark list focused. The two shortcuts differ only in which
   half the keyboard starts in.
 - Either command needs a file open: with nothing open there is nothing to
@@ -663,7 +663,7 @@ otherwise be typing again.
 - The offset input field should be pre-filled with `0x` by default, with the
   caret behind the prefix so hex digits can be typed straight away. The last
   address is deliberately not pre-filled: the caret sits at the end of the text,
-  so a pre-filled address would turn Cmd+G, type, Return into digits appended to
+  so a pre-filled address would turn Cmd+L, type, Return into digits appended to
   the previous jump.
 - Offsets are zero-based.
 - Input parsing must be case-insensitive for hex.
@@ -779,7 +779,7 @@ Suggested shortcuts:
 - Previous difference: Cmd+Option+Left Arrow.
 - Next same block: Cmd+Option+Shift+Right Arrow.
 - Previous same block: Cmd+Option+Shift+Left Arrow.
-- Go To Position (the form's offset field): Cmd+G.
+- Go To Position (the form's offset field): Cmd+L.
 - Bookmarks (the same form, its list focused): Cmd+Option+B — Cmd+B is the
   system's Bold, so the list takes the Option variant.
 - Toggle Bookmark: Cmd+D; Edit Bookmark: Shift+Cmd+D (§20.3).
@@ -1990,7 +1990,7 @@ window, so nothing about a bookmark lives in two places.
 - Opened by Option+Cmd+B the list arrives with its first bookmark selected — the
   command exists to go to a bookmark, and the list is ordered by address, so the
   lowest one is a real default. The jump still takes a Return: a selection is an
-  offer, not an act. Opened by Cmd+G, which is about typing an address, the list
+  offer, not an act. Opened by Cmd+L, which is about typing an address, the list
   offers nothing.
 - **Empty state**: with no bookmarks the list says so and names the gesture that
   makes one (⌘D). It is a message over the table, not a row in it — a pseudo-row

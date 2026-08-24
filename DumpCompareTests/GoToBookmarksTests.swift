@@ -93,7 +93,7 @@ final class GoToBookmarksTests: XCTestCase {
 
     // MARK: - Return follows the focus (§10.1)
 
-    /// The fast path: ⌘G, type, Return. The field's own action carries Return —
+    /// The fast path: ⌘L, type, Return. The field's own action carries Return —
     /// the Go To button must NOT be a default button, or it would claim Return
     /// from the list as well.
     func testReturnInTheFieldGoesToTheTypedOffset() {
@@ -210,7 +210,7 @@ final class GoToBookmarksTests: XCTestCase {
 
     /// Both arms of the preselection rule: ⌥⌘B is opened to go to a bookmark, so
     /// the list arrives with its first one offered — the jump still takes a
-    /// Return — while ⌘G is about typing an address, so the list offers nothing.
+    /// Return — while ⌘L is about typing an address, so the list offers nothing.
     ///
     /// Neither arm asserts the real first-responder handoff: `viewDidAppear`'s
     /// `makeFirstResponder` needs a key window, which a headless test host has
@@ -232,7 +232,7 @@ final class GoToBookmarksTests: XCTestCase {
         field.viewDidAppear()
 
         XCTAssertEqual(field.bookmarkTable.selectedRow, -1,
-                       "⌘G is about typing an address; the list offers nothing yet")
+                       "⌘L is about typing an address; the list offers nothing yet")
         XCTAssertTrue(fieldJumps().isEmpty, "and opening the form goes nowhere by itself")
     }
 
@@ -939,7 +939,7 @@ final class GoToBookmarksTests: XCTestCase {
 
         let goTo = menu.items.first { $0.action == #selector(MainViewController.goToPosition) }
         XCTAssertEqual(goTo?.title, "Go To Position…")
-        XCTAssertEqual(goTo?.keyEquivalent, "g")
+        XCTAssertEqual(goTo?.keyEquivalent, "l")
         XCTAssertEqual(goTo?.keyEquivalentModifierMask, [.command])
 
         let bookmarks = menu.items.first { $0.action == #selector(MainViewController.showBookmarks) }
