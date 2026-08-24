@@ -62,6 +62,9 @@ final class MainViewController: NSViewController {
     var segmentDirectoryPanel: ((NSOpenPanel) -> URL?)?
     /// Where the Save Segment panel goes; the same shape, for one file.
     var segmentSavePanel: ((NSSavePanel) -> URL?)?
+    /// Where the Replace Segment from File… open panel goes; the same shape as
+    /// the save panel, for one file (§21.6).
+    var segmentOpenPanel: ((NSOpenPanel) -> URL?)?
     /// Where the Save All confirmation goes: the test captures the alert (its
     /// preview names every part, and it names every file that would be replaced)
     /// and decides. Returns the alert's response.
@@ -1472,12 +1475,12 @@ final class MainViewController: NSViewController {
         save.target = self
         save.representedObject = target
 
-        // Replace Segment from File… reads one piece from a file (§21.6) — Stage
-        // 6. Present now so the strip's shape is final; disabled until it lands.
+        // Replace Segment from File… reads one piece from a file (§21.6): the
+        // donor-region swap, the inverse of Save Segment.
         let replace = menu.addItem(withTitle: "Replace Segment \(label) from File…",
                                    action: #selector(minimapMenuReplaceSegment(_:)), keyEquivalent: "")
         replace.target = self
-        replace.isEnabled = false
+        replace.representedObject = target
 
         menu.addItem(.separator())
 
@@ -1514,10 +1517,14 @@ final class MainViewController: NSViewController {
         savePiece(pane.segmentStore.segments[target.pieceIndex], of: pane)
     }
 
-    /// Replace Segment from File… from the strip's menu — Stage 6. A seam: the
-    /// item is present and disabled until that stage lands the swap.
+    /// Replace Segment from File… from the strip's menu (§21.6): the piece under
+    /// the click, its bytes replaced from a file — the same act as the form's row
+    /// menu.
     @objc private func minimapMenuReplaceSegment(_ sender: NSMenuItem) {
-        // Stage 6: an open panel, one file, replacing the piece's bytes.
+        guard let target = sender.representedObject as? SegmentMenuTarget,
+              let pane = minimapPane(at: target.mapIndex), pane.isOpen,
+              target.pieceIndex < pane.segmentStore.segments.count else { return }
+        replacePiece(pane.segmentStore.segments[target.pieceIndex], of: pane)
     }
 
     /// Select Segment from the strip's menu: the whole piece is selected — its
@@ -3081,6 +3088,7 @@ final class MainViewController: NSViewController {
         // confirmation and the write's progress all run from the window.
         form.saveAll = { [weak self] in self?.saveAllPieces(of: pane) ?? false }
         form.savePiece = { [weak self] piece in self?.savePiece(piece, of: pane) ?? false }
+        form.replacePiece = { [weak self] piece in self?.replacePiece(piece, of: pane) ?? false }
         // The pane's `onSegmentsChanged` is set once per mode apply (§19.4.4):
         // it reloads this form when it is open and syncs the minimap's strip
         // whether or not it is, so a cut made here repaints the legend too.
@@ -3161,6 +3169,48 @@ final class MainViewController: NSViewController {
         let part = SegmentWriter.Part(range: piece.range, name: url.lastPathComponent)
         runSegmentWrite(parts: [part], from: storage, to: url.deletingLastPathComponent())
         return true
+    }
+
+    /// Replace Segment from File…: reads the one piece under the click from a
+    /// file (§21.6) — the ordinary open panel, one file, replacing the piece's
+    /// bytes. The file must match the piece's length; a mismatch is refused with
+    /// both sizes named, because making it an insert-and-shift is a decision, not
+    /// a default. Returns whether the swap actually started.
+    private func replacePiece(_ piece: Segment, of pane: PaneViewModel) -> Bool {
+        guard pane.isOpen else { return false }
+
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Replace"
+        panel.message = "Choose the file whose bytes replace \(piece.label)."
+        let url: URL?
+        if let segmentOpenPanel {
+            url = segmentOpenPanel(panel)
+        } else {
+            url = panel.runModal() == .OK ? panel.url : nil
+        }
+        guard let url else { return false }
+
+        do {
+            try pane.replaceSegment(piece, withContentsOf: url)
+            return true
+        } catch let error as SegmentReplaceError {
+            switch error {
+            case .lengthMismatch(let pieceLength, let donorLength):
+                presentAlert(
+                    title: "File size does not match the segment",
+                    message: "\(piece.label) is \(FilePaneView.friendlySize(pieceLength)) bytes, "
+                        + "but the file is \(FilePaneView.friendlySize(donorLength)). "
+                        + "The file must be exactly the same length to replace the piece."
+                )
+            }
+            return false
+        } catch {
+            presentFileError("Replacing the segment failed.", error, url: url)
+            return false
+        }
     }
 
     /// The one confirmation before a Save All writes (§21.5): a preview of every

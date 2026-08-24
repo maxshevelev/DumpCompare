@@ -2238,8 +2238,8 @@ and every operation that writes is explicit about it.
 - **The row's context menu** carries what acts on one piece: *Save Segment…*,
   *Replace Segment from File…*, *Edit…*, *Remove Segment* — the same menu the
   strip beside the map offers (§21.3), so one shape in both places. Save
-  Segment… is live (§21.5); Replace Segment from File… arrives with §21.6 and
-  is disabled until then. *Remove Segment* names the piece it will remove —
+  Segment… is live (§21.5); Replace Segment from File… is live (§21.6).
+  *Remove Segment* names the piece it will remove —
   *Remove Segment S1*, not a bare *Remove Segment* — the way the Edit menu's and
   the offset context menu's items do (§21.3).
 - **The button row** holds only what acts on the whole partition: **Remove
@@ -2290,3 +2290,22 @@ and every operation that writes is explicit about it.
 - **The write reads the document's current bytes**, so unsaved edits are in
   what lands on disk — the pieces are a snapshot of the dump as it is, not as
   it was last saved.
+
+21.6 Replacing a piece from a file
+
+- **The swap is the inverse of Save Segment** (§21.5): a piece's bytes are
+  replaced by the contents of a file the user chooses. The command lives in the
+  row's context menu and the strip's (§21.3) — *Replace Segment S<i> from File…*
+  — never in the button row, which is for the whole partition.
+- **The file must match the piece's length.** A mismatch is refused with an alert
+  naming both sizes — the piece's length and the file's — because making it an
+  insert-and-shift is a decision, not a default. The open panel grants the one
+  file it names, not the folder around it (§5.2).
+- **The swap streams in bounded chunks into one undo transaction.** The file is
+  read in slices and each slice is written to the document; the whole swap is a
+  single transaction, so undo takes the whole swap back as one step, and the file
+  is never loaded whole into RAM. A failure part-way rolls the partial swap back
+  as if it never happened.
+- **A same-length overwrite moves no cut** (§21.2): the document's size is
+  unchanged, so the partition's boundaries do not shift; only the bytes under the
+  piece change.

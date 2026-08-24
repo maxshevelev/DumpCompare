@@ -448,9 +448,9 @@ final class SegmentsFormTests: XCTestCase {
     // MARK: - The row's context menu
 
     /// The row menu carries what acts on one piece — Save Segment…, Replace
-    /// Segment from File…, Edit…, Remove Segment — all aimed at the form. Save
-    /// Segment… (Stage 4) is live once a piece is selected; Replace Segment from
-    /// File… (Stage 6) stays greyed until it lands.
+    /// Segment from File…, Edit…, Remove Segment — all aimed at the form. Both
+    /// Save Segment… (Stage 4) and Replace Segment from File… (Stage 6) are live
+    /// once a piece is selected.
     func testTheRowMenuCarriesThePieceActions() throws {
         let (form, _, _, _, _) = try makeForm(cuts: [8, 16])
         let menu = try XCTUnwrap(form.segmentTable.menu)
@@ -468,7 +468,8 @@ final class SegmentsFormTests: XCTestCase {
         let remove = try XCTUnwrap(menu.items.first { $0.title == "Remove Segment" })
         XCTAssertTrue(form.validateMenuItem(save),
                       "Save Segment… is live once a piece is selected")
-        XCTAssertFalse(form.validateMenuItem(replace), "Replace Segment from File… is Stage 6")
+        XCTAssertTrue(form.validateMenuItem(replace),
+                      "Replace Segment from File… is live once a piece is selected")
         XCTAssertTrue(form.validateMenuItem(remove),
                       "Remove Segment needs a piece with a neighbour, and there is one")
         XCTAssertEqual(remove.title, "Remove Segment S1",

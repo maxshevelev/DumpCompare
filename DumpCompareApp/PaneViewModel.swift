@@ -1102,6 +1102,41 @@ final class PaneViewModel: HexViewDataSource {
         notifyCompanionContentFullyChanged()
     }
 
+    // MARK: - Replace a piece from a file (§21.6)
+
+    /// Replaces `piece`'s bytes with the contents of the file at `url`, which
+    /// must match the piece's length (§21.6). The file is opened as the chunked
+    /// reader and streamed in, so it is never loaded whole into RAM.
+    func replaceSegment(_ piece: Segment, withContentsOf url: URL) throws {
+        let donor = try FileBackedStorage(url: url)
+        try replaceSegment(piece, withContentsOf: donor)
+    }
+
+    /// The chunked, same-length swap, given an already-open donor (§21.6). The
+    /// donor must match the piece's length; the whole swap is one transaction, so
+    /// undo takes it back as one step. A same-length overwrite moves no cut, so
+    /// there is no `applySegmentEdit` — only the content-change repaint.
+    func replaceSegment(_ piece: Segment, withContentsOf donor: any ByteStorage) throws {
+        guard let doc = document else { return }
+        breakTypingSeries()
+        let sizeBefore = doc.size
+        beginSegmentEdit()
+        do {
+            try SegmentReplacer.replace(range: piece.range, in: doc, withContentsOf: donor)
+        } catch {
+            // The gesture recorded nothing (a refused length, or a mid-stream
+            // failure rolled back), so the captured snapshot must not leak into
+            // the next edit.
+            discardPendingSegmentSnapshot()
+            throw error
+        }
+        // The engine's `.overwrite` recomputes the range, which covers the swap
+        // (a same-length overwrite, so the size is unchanged).
+        onEdit?(.overwrite(range: piece.range))
+        notifyAfterEdit(range: piece.range, sizeBefore: sizeBefore)
+        notifyCompanionContentFullyChanged()
+    }
+
     // MARK: - Caret & selection
 
     func moveCaret(by delta: Int64, extendSelection: Bool = false) {

@@ -2986,9 +2986,9 @@ final class MinimapTests: XCTestCase {
     }
 
     /// The strip's right-click menu carries the piece under the pointer and the
-    /// actions that act on it — Save, Replace (Stage 6, disabled), Select, Edit
-    /// (the piece's own popover), and Remove Segment — every item carrying the
-    /// piece's label, so the menu says what it will act on (§21.3).
+    /// actions that act on it — Save, Replace, Select, Edit (the piece's own
+    /// popover), and Remove Segment — every item carrying the piece's label, so
+    /// the menu says what it will act on (§21.3).
     func testTheStripMenuCarriesThePieceAndItsActions() throws {
         let (_, window, _) = try makeSegmentedWindow(cuts: [64, 128])
         let (_, panel) = try minimapViews(window)
@@ -3003,12 +3003,12 @@ final class MinimapTests: XCTestCase {
                        ["Save Segment S1…", "Replace Segment S1 from File…", "",
                         "Select Segment S1", "Edit Segment S1", "Remove Segment S1"],
                        "the strip's menu is the form's row menu plus the strip's own Select")
-        // Replace is present but disabled until Stage 6 lands the swap.
+        // Replace is present and live — Stage 6 landed the swap.
         let replace = try XCTUnwrap(menu.items.first { $0.title == "Replace Segment S1 from File…" })
-        XCTAssertFalse(replace.isEnabled, "Replace is disabled until Stage 6")
-        // Each live item carries the piece it acts on — S1, the piece under the
+        XCTAssertTrue(replace.isEnabled, "Replace is live — Stage 6 landed the swap")
+        // Each item carries the piece it acts on — S1, the piece under the
         // pointer — in its representedObject.
-        for item in menu.items where !item.title.isEmpty && item.title != "Replace Segment S1 from File…" {
+        for item in menu.items where !item.title.isEmpty {
             let target = try XCTUnwrap(item.representedObject as? MainViewController.SegmentMenuTarget,
                                        "\(item.title) carries its piece")
             XCTAssertEqual(target.pieceIndex, 1, "\(item.title) acts on S1, the piece under the pointer")

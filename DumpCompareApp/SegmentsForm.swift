@@ -69,6 +69,10 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
     /// panel, the form stays open.
     var saveAll: (() -> Bool)?
     var savePiece: ((Segment) -> Bool)?
+    /// The Replace Segment from File… action, owned by the controller (§21.6) —
+    /// the same shape as `savePiece`: the open panel and the swap run from the
+    /// window that presents the form. Returns whether the swap actually started.
+    var replacePiece: ((Segment) -> Bool)?
 
     /// The popover on screen, if any: Escape closes it before it closes the form
     /// (§10.1), and it must not outlive the piece it is editing.
@@ -696,9 +700,11 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
     }
 
     /// Replace Segment from File… (§21.6): reads the piece under the click from a
-    /// file. Stage 6 lands the panel and the read; this is the seam it reaches.
+    /// file — the inverse of Save Segment. The form closes only when the swap
+    /// actually started; a cancelled panel or a refused length leaves it open.
     @objc func replaceSegmentFromFile(_ sender: Any?) {
-        // Stage 6: an open panel, one file, replacing the piece's bytes.
+        guard let piece = pieceForMenuAction() else { return }
+        if replacePiece?(piece) == true { closeForm() }
     }
 
     // MARK: - The dialog's button row (§21.4)
@@ -750,15 +756,14 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
     // MARK: - Menu validation (§21.4)
 
     /// The row menu and the button row enable themselves by what they can act on:
-    /// Save Segment… needs a piece under the click, Remove Segment needs a piece
-    /// with a neighbour to merge into. Replace Segment from File… is Stage 6, so
-    /// it stays greyed until that stage lands.
+    /// Save Segment… and Replace Segment from File… need a piece under the click,
+    /// Remove Segment needs a piece with a neighbour to merge into.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
         case #selector(saveSegment(_:)):
             return pieceForMenuAction() != nil
         case #selector(replaceSegmentFromFile(_:)):
-            return false   // Stage 6
+            return pieceForMenuAction() != nil
         case #selector(removeClickedSegment):
             let piece = pieceForMenuAction()
             // Name the piece the item will remove, so the menu says what it will
