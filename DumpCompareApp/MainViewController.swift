@@ -3190,15 +3190,10 @@ final class MainViewController: NSViewController {
     // MARK: - Dialogs (§10)
 
     /// ⌘L: the Go To / Bookmarks form with the offset field focused — the fast
-    /// path is unchanged, ⌘L, type, Return (§10.1).
+    /// path is unchanged, ⌘L, type, Return (§10.1). Tab moves the keyboard to
+    /// the bookmark list, the other half of the same window (§20.5).
     @objc func goToPosition() {
         presentGoToForm(focus: .offsetField)
-    }
-
-    /// ⌥⌘B: the same form with the bookmark list focused, because going to a
-    /// bookmark is the other half of the same question (§20.5).
-    @objc func showBookmarks() {
-        presentGoToForm(focus: .bookmarks)
     }
 
     /// Where the form goes, so a test can drive it instead: it is presented in a
@@ -4070,7 +4065,6 @@ extension MainViewController: NSMenuItemValidation {
              #selector(deleteBytes),
              #selector(selectBlock),
              #selector(goToPosition),
-             #selector(showBookmarks),
              #selector(findPattern),
              #selector(selectAllBytes),
              #selector(toggleBookmark):

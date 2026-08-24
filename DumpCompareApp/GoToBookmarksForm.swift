@@ -379,9 +379,9 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
             view.window?.makeFirstResponder(offsetCombo)
         case .bookmarks:
             view.window?.makeFirstResponder(bookmarkTable)
-            // ⌥⌘B is opened to go to a bookmark, so the list offers its first
-            // one — the lowest address, the list being sorted by address. The
-            // jump still takes a Return: a selection is an offer, not an act.
+            // Opened for the list, the list offers its first one — the lowest
+            // address, the list being sorted by address. The jump still takes a
+            // Return: a selection is an offer, not an act.
             if selectedBookmarkRow == nil, let first = bookmarks.first {
                 applySelection(first.row)
             }

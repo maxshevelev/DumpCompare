@@ -650,11 +650,11 @@ where?" — and split in two they would be two windows each offering half an
 answer: the addresses worth returning to are exactly the ones a user would
 otherwise be typing again.
 
-- Cmd+L opens the form with the offset field focused; Option+Cmd+B opens the same
-  form with the bookmark list focused. The two shortcuts differ only in which
-  half the keyboard starts in.
-- Either command needs a file open: with nothing open there is nothing to
-  navigate, and both menu items are greyed out.
+- Cmd+L opens the form with the offset field focused; Tab moves the keyboard to
+  the bookmark list, the other half of the same window. There is no separate
+  Bookmarks menu item — the list is reached by Tab, not by a second command.
+- The command needs a file open: with nothing open there is nothing to
+  navigate, and the menu item is greyed out.
 - The field accepts a single absolute offset. A **Go To** button beside it names
   the action rather than leaving it to be guessed from Return.
 - Offset input must support:
@@ -780,8 +780,6 @@ Suggested shortcuts:
 - Next same block: Cmd+Option+Shift+Right Arrow.
 - Previous same block: Cmd+Option+Shift+Left Arrow.
 - Go To Position (the form's offset field): Cmd+L.
-- Bookmarks (the same form, its list focused): Cmd+Option+B — Cmd+B is the
-  system's Bold, so the list takes the Option variant.
 - Toggle Bookmark: Cmd+D; Edit Bookmark: Shift+Cmd+D (§20.3).
 
 Shortcuts may be adjusted, but must be discoverable in menus.
@@ -1987,11 +1985,9 @@ window, so nothing about a bookmark lives in two places.
   of them can be cleared without reaching for the mouse between presses;
   removing the last row selects the one now at the end. With nothing selected
   neither key does anything.
-- Opened by Option+Cmd+B the list arrives with its first bookmark selected — the
-  command exists to go to a bookmark, and the list is ordered by address, so the
-  lowest one is a real default. The jump still takes a Return: a selection is an
-  offer, not an act. Opened by Cmd+L, which is about typing an address, the list
-  offers nothing.
+- The form opens on the offset field — Cmd+L is about typing an address — so the
+  list offers nothing until the keyboard Tabs to it. Going to a bookmark still
+  takes a Return: a selection is an offer, not an act.
 - **Empty state**: with no bookmarks the list says so and names the gesture that
   makes one (⌘D). It is a message over the table, not a row in it — a pseudo-row
   would answer ⌫ and Return as if it held a bookmark.
@@ -2306,7 +2302,7 @@ and every operation that writes is explicit about it.
   single piece there is nothing to separate, so it is a plain save and the
   button stays disabled until a cut makes a second piece.
 - **Keys**: ⌥⌘S opens the form (⌘S is Save, ⇧⌘S is Save As, so the form takes
-  the Option variant, the way Bookmarks… takes ⌥⌘B). Return goes to the
+  the Option variant). Return goes to the
   selected piece's start — the form closes and the caret lands there, revealed
   the way the Go To form's jump reveals (§10.1); with nothing selected, nothing
   happens. ⌫ does what − does. Escape is two-level: it closes the row editor

@@ -323,14 +323,6 @@ final class MainWindowController: NSWindowController {
         // edits, and is greyed out on a row that carries no mark (§20.3).
         editMenu.addItem(withTitle: "Edit Bookmark…", action: #selector(MainViewController.editBookmark), keyEquivalent: "D")
         editMenu.addItem(withTitle: "Go To Position…", action: #selector(MainViewController.goToPosition), keyEquivalent: "l")
-        // ⌥⌘B opens the same form as ⌘L with the bookmark list focused (§10.1):
-        // one window answers "go where?", and the two shortcuts differ only in
-        // which half of it the keyboard starts in. ⌘B is the system's Bold, so
-        // the list takes the Option variant.
-        let bookmarksItem = editMenu.addItem(withTitle: "Bookmarks…",
-                                             action: #selector(MainViewController.showBookmarks),
-                                             keyEquivalent: "b")
-        bookmarksItem.keyEquivalentModifierMask = [.command, .option]
         // The segment pair (§21.3). No key equivalents: both are deliberate acts
         // reached from a menu, and the fast path is Split Here at «address» in the dump's own
         // context menu. Add Cut… opens the offset-and-description popover;
@@ -343,7 +335,7 @@ final class MainWindowController: NSWindowController {
         // Segments…: the partition's own form (§21.4) — the list the two
         // commands above edit, with a row editor and the Save All button.
         // ⌥⌘S opens it: ⌘S is Save and ⇧⌘S is Save As, so the form takes the
-        // Option variant, the way Bookmarks… takes ⌥⌘B over the system's ⌘B.
+        // Option variant.
         let segmentsItem = editMenu.addItem(withTitle: "Segments…",
                                             action: #selector(MainViewController.showSegments),
                                             keyEquivalent: "s")

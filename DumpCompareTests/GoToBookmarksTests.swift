@@ -793,15 +793,13 @@ final class GoToBookmarksTests: XCTestCase {
         return { forms }
     }
 
-    func testCmdGOpensTheFormOnTheFieldAndOptCmdBOnTheList() throws {
+    func testCmdLOpensTheFormOnTheField() throws {
         let (controller, forms) = try makeController(bytes: [UInt8](repeating: 0x11, count: 0x100))
 
         controller.goToPosition()
-        controller.showBookmarks()
 
-        XCTAssertEqual(forms().count, 2, "both commands open the one form")
+        XCTAssertEqual(forms().count, 1)
         XCTAssertEqual(forms().first?.focus, .offsetField)
-        XCTAssertEqual(forms().last?.focus, .bookmarks)
     }
 
     func testTheFormGoesToATypedOffset() throws {
@@ -848,7 +846,7 @@ final class GoToBookmarksTests: XCTestCase {
         let forms = captureForms(controller)
         controller.windowModel.bookmarkStore.add(rowContaining: 0x120, name: "EC table")
 
-        controller.showBookmarks()
+        controller.goToPosition()
         let form = try XCTUnwrap(forms().first)
         form.bookmarkTable.selectRowIndexes([0], byExtendingSelection: false)
         form.goToSelectedBookmark()
@@ -879,7 +877,7 @@ final class GoToBookmarksTests: XCTestCase {
         controller.windowModel.bookmarkStore.add(rowContaining: 0x20)
 
         controller.windowModel.setActivePane(1)
-        controller.showBookmarks()
+        controller.goToPosition()
         let form = try XCTUnwrap(forms().first)
 
         XCTAssertEqual(try nameField(form, row: 0).placeholderAttributedString?.string.prefix(5),
@@ -910,7 +908,7 @@ final class GoToBookmarksTests: XCTestCase {
     func testRemovingTheLastBookmarkBringsBackTheEmptyState() throws {
         let (controller, forms) = try makeController(bytes: [UInt8](repeating: 0x11, count: 0x100))
         controller.windowModel.bookmarkStore.add(rowContaining: 0x30)
-        controller.showBookmarks()
+        controller.goToPosition()
         let form = try XCTUnwrap(forms().first)
         form.bookmarkTable.selectRowIndexes([0], byExtendingSelection: false)
 
@@ -920,21 +918,20 @@ final class GoToBookmarksTests: XCTestCase {
         XCTAssertFalse(form.emptyLabel.isHidden)
     }
 
-    func testNeitherCommandOpensTheFormWithNoFileOpen() throws {
+    func testGoToDoesNotOpenTheFormWithNoFileOpen() throws {
         let wc = MainWindowController()
         let controller = try XCTUnwrap(wc.mainViewController)
         addTeardownBlock { @MainActor in wc.close() }
         let forms = captureForms(controller)
 
         controller.goToPosition()
-        controller.showBookmarks()
 
         XCTAssertTrue(forms().isEmpty, "there is nothing to navigate")
     }
 
     // MARK: - The menu (§10.3)
 
-    func testTheEditMenuOffersBothWaysIn() {
+    func testTheEditMenuOffersGoToWithNoSeparateBookmarksItem() {
         let menu = MainWindowController().makeEditMenu()
 
         let goTo = menu.items.first { $0.action == #selector(MainViewController.goToPosition) }
@@ -942,22 +939,19 @@ final class GoToBookmarksTests: XCTestCase {
         XCTAssertEqual(goTo?.keyEquivalent, "l")
         XCTAssertEqual(goTo?.keyEquivalentModifierMask, [.command])
 
-        let bookmarks = menu.items.first { $0.action == #selector(MainViewController.showBookmarks) }
-        XCTAssertEqual(bookmarks?.title, "Bookmarks…")
-        XCTAssertEqual(bookmarks?.keyEquivalent, "b")
-        XCTAssertEqual(bookmarks?.keyEquivalentModifierMask, [.command, .option])
+        // There is no separate Bookmarks item: the form's bookmark list is
+        // reached by Tab from the offset field, not by a second menu command.
+        XCTAssertFalse(menu.items.contains { $0.title == "Bookmarks…" })
     }
 
-    func testBothCommandsAreGreyedOutWithNoFileOpen() throws {
+    func testGoToIsGreyedOutWithNoFileOpen() throws {
         let wc = MainWindowController()
         let controller = try XCTUnwrap(wc.mainViewController)
         addTeardownBlock { @MainActor in wc.close() }
 
-        for selector in [#selector(MainViewController.goToPosition),
-                         #selector(MainViewController.showBookmarks)] {
-            let item = NSMenuItem(title: "", action: selector, keyEquivalent: "")
-            XCTAssertFalse(controller.validateMenuItem(item),
-                           "\(selector) needs a file to navigate")
-        }
+        let item = NSMenuItem(title: "", action: #selector(MainViewController.goToPosition),
+                              keyEquivalent: "")
+        XCTAssertFalse(controller.validateMenuItem(item),
+                       "go to needs a file to navigate")
     }
 }
