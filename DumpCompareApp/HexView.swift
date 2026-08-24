@@ -2577,7 +2577,11 @@ enum HexTheme {
     /// "the same colour, just louder". In dark theme the tints sit at the dark
     /// end of the range, where pushing saturation alone does not lift a thin
     /// strip off the near-black paper — so the hover lifts the brightness as
-    /// well as the saturation there.
+    /// well as the saturation there. In light theme the other tints are bright
+    /// enough to read against the white paper, so only the saturation moves —
+    /// but the green is the exception: a pale green reads as near-white at full
+    /// brightness, so its hover dips the brightness and pushes the saturation a
+    /// little further, so the band reads as a weighty green rather than a wash.
     static func saturatedHighlight(of color: NSColor, in appearance: NSAppearance) -> NSColor {
         // The tint is a dynamic (catalog) colour, and the HSB component
         // accessors are not valid on a catalog colour — it must first be
@@ -2591,10 +2595,24 @@ enum HexTheme {
         let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         // Dark theme: the tint is dark, so the hover lifts brightness as well as
         // saturation — a dark, muddy band does not read as a colour in a 6 pt
-        // strip, and saturation alone does not move it off the paper. Light
-        // theme: the tint is already bright, so only the saturation moves.
-        let saturation = min(1, rgb.saturationComponent + (isDark ? 0.20 : 0.30))
-        let brightness = isDark ? min(1, rgb.brightnessComponent + 0.35) : rgb.brightnessComponent
+        // strip, and saturation alone does not move it off the paper.
+        // Light theme: the tints are bright enough to read against the white
+        // paper, so only the saturation moves — except the green, whose pale hue
+        // reads as near-white at full brightness. Its hover dips the brightness
+        // and pushes the saturation a little further, so the band reads as a
+        // weighty green rather than a wash.
+        let isGreen = !isDark
+            && rgb.hueComponent >= 0.25 && rgb.hueComponent <= 0.45
+        let saturation = min(1, rgb.saturationComponent
+            + (isDark ? 0.20 : (isGreen ? 0.45 : 0.30)))
+        let brightness: CGFloat
+        if isDark {
+            brightness = min(1, rgb.brightnessComponent + 0.35)
+        } else if isGreen {
+            brightness = max(0, rgb.brightnessComponent - 0.12)
+        } else {
+            brightness = rgb.brightnessComponent
+        }
         return NSColor(hue: rgb.hueComponent,
                        saturation: saturation,
                        brightness: brightness,
