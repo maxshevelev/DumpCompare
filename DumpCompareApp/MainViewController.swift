@@ -65,6 +65,13 @@ final class MainViewController: NSViewController {
     /// Where the Replace Segment from File… open panel goes; the same shape as
     /// the save panel, for one file (§21.6).
     var segmentOpenPanel: ((NSOpenPanel) -> URL?)?
+    /// Where the join's open panel goes (Append File… / Insert File at Start…,
+    /// §22); the same shape as the replace panel, for one file.
+    var joinOpenPanel: ((NSOpenPanel) -> URL?)?
+    /// Where the join's dirty-pane confirmation goes: the test captures the
+    /// alert (its title and its two buttons — the operation's verb and Cancel)
+    /// and decides. Returns the alert's response (§22.2).
+    var joinConfirm: ((NSAlert) -> NSApplication.ModalResponse)?
     /// Where the Save All confirmation goes: the test captures the alert (its
     /// preview names every part, and it names every file that would be replaced)
     /// and decides. Returns the alert's response.
@@ -398,15 +405,6 @@ final class MainViewController: NSViewController {
             // was clicked (§20.3).
             wireBookmarkDoubleClick(pane1View, for: pane1)
             wireBookmarkDoubleClick(pane2View, for: pane2)
-            // Comparison-mode drops target the hovered pane (§4.3).
-            pane1View.enableFileDrop()
-            pane2View.enableFileDrop()
-            pane1View.onDropFiles = { [weak self] urls in
-                self?.handleComparisonDrop(targetPane: 0, urls: urls)
-            }
-            pane2View.onDropFiles = { [weak self] urls in
-                self?.handleComparisonDrop(targetPane: 1, urls: urls)
-            }
             // Each map's viewport rectangle mirrors its pane's visible slice (§19).
             trackMinimapViewport(for: pane1View)
             trackMinimapViewport(for: pane2View)
@@ -417,6 +415,15 @@ final class MainViewController: NSViewController {
             )
             view.onPaneActivated = { [weak self] index in
                 self?.activatePane(at: index)
+            }
+            // Comparison-mode drops target the hovered pane's bands (§22.4):
+            // the three bands (insert / replace / append) are the drop targets,
+            // so the panes themselves are not drop-registered.
+            view.bands1.onDrop = { [weak self] target, urls in
+                self?.handleComparisonBandDrop(targetPane: 0, target: target, urls: urls)
+            }
+            view.bands2.onDrop = { [weak self] target, urls in
+                self?.handleComparisonBandDrop(targetPane: 1, target: target, urls: urls)
             }
             pane1View.onClose = { [weak self] in self?.closePane(at: 0) }
             pane2View.onClose = { [weak self] in self?.closePane(at: 1) }
@@ -1781,8 +1788,31 @@ final class MainViewController: NSViewController {
         refreshMode()
     }
 
-    /// Single-file-mode drop onto one of the two visual targets (§4.3).
-    private func handleSingleFileDrop(target: SingleFileDropTarget, urls: [URL]) {
+    /// Comparison-mode drop onto one of a pane's three bands (§22.4): the
+    /// replace band uses the existing comparison replace behaviour, and the two
+    /// join bands join the first file into that pane (the rest ignored).
+    /// Internal (not private) so a test can drive the routing directly.
+    func handleComparisonBandDrop(targetPane: Int, target: SingleFileDropTarget, urls: [URL]) {
+        switch target {
+        case .replace, .addSecond:
+            // The replace band (and the defensive addSecond — comparison mode
+            // has no second-file target) use the existing replace behaviour.
+            handleComparisonDrop(targetPane: targetPane, urls: urls)
+        case .insertAtStart, .appendAtEnd:
+            let files = openableFiles(from: urls)
+            guard let first = files.first else { return }
+            let pane = targetPane == 0 ? windowModel.pane1 : windowModel.pane2
+            let position: JoinPosition = (target == .insertAtStart) ? .start : .end
+            join(url: first, at: position, in: pane)
+            let ignored = max(0, files.count - 1)
+            if ignored > 0 { notifyJoinIgnored(count: ignored) }
+            refreshMode()
+        }
+    }
+
+    /// Single-file-mode drop onto one of the targets or bands (§4.3, §22.4).
+    /// Internal (not private) so a test can drive the routing directly.
+    func handleSingleFileDrop(target: SingleFileDropTarget, urls: [URL]) {
         let files = openableFiles(from: urls)
         guard let first = files.first else { return }
         switch target {
@@ -1801,6 +1831,14 @@ final class MainViewController: NSViewController {
             windowModel.setActivePane(1)
             let ignored = max(0, files.count - 1)
             if ignored > 0 { notifyIgnored(count: ignored) }
+        case .insertAtStart, .appendAtEnd:
+            // First joins into the "this file" pane (pane 0 in single-file
+            // mode); the rest are ignored — joining a list in one gesture is
+            // deliberately not this (§22.4).
+            let position: JoinPosition = (target == .insertAtStart) ? .start : .end
+            join(url: first, at: position, in: windowModel.pane1)
+            let ignored = max(0, files.count - 1)
+            if ignored > 0 { notifyJoinIgnored(count: ignored) }
         }
         refreshMode()
     }
@@ -1818,6 +1856,14 @@ final class MainViewController: NSViewController {
         let noun = count == 1 ? "file was" : "files were"
         presentAlert(title: "Additional files ignored",
                      message: "\(count) \(noun) not opened because only two files can be compared at once.")
+    }
+
+    /// The join-band variant of the ignored-files notice (§22.4): a join takes
+    /// one file, so the extras are not joined, not opened.
+    private func notifyJoinIgnored(count: Int) {
+        let noun = count == 1 ? "file was" : "files were"
+        presentAlert(title: "Additional files ignored",
+                     message: "\(count) \(noun) not joined because only one file can be joined at a time.")
     }
 
     /// Opens `url` into the pane at `index`, enforcing §4.1 rules 4–6 (dirty
@@ -1905,6 +1951,109 @@ final class MainViewController: NSViewController {
     private func isOpenableFile(_ url: URL) -> Bool {
         let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey])
         return values?.isDirectory == false && values?.isPackage != true
+    }
+
+    // MARK: - File > Append File… / Insert File at Start… (§22)
+
+    /// File > Append File…: joins the chosen file's bytes after the active
+    /// pane's content (§22.1).
+    @objc func appendFile() {
+        joinFile(at: .end, in: activePane)
+    }
+
+    /// File > Insert File at Start…: joins the chosen file's bytes before the
+    /// active pane's content (§22.1).
+    @objc func insertFileAtStart() {
+        joinFile(at: .start, in: activePane)
+    }
+
+    /// The pane-menu twins: the same join, acting on the pane the menu was built
+    /// for (§22.1) rather than the active one.
+    @objc func appendFileInPane(_ sender: Any?) {
+        guard let pane = pane(from: sender) else { return }
+        joinFile(at: .end, in: pane)
+    }
+
+    @objc func insertFileAtStartInPane(_ sender: Any?) {
+        guard let pane = pane(from: sender) else { return }
+        joinFile(at: .start, in: pane)
+    }
+
+    /// The join command, shared by the File-menu and pane-menu items (§22).
+    /// Opens the one file, then joins it.
+    private func joinFile(at position: JoinPosition, in pane: PaneViewModel) {
+        guard pane.isOpen else { return }
+        let verb = (position == .start) ? "Insert" : "Append"
+
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = verb
+        panel.message = "Choose the file to \(position == .start ? "insert at the start of" : "append to") the pane's content."
+        let url: URL?
+        if let joinOpenPanel {
+            url = joinOpenPanel(panel)
+        } else {
+            url = panel.runModal() == .OK ? panel.url : nil
+        }
+        guard let url else { return }
+        join(url: url, at: position, in: pane)
+    }
+
+    /// Joins the file at `url` into `pane`: the dirty-pane warning (Cancel and
+    /// the operation's verb — §22.2), the join, and the transient status line.
+    /// Shared by the menu commands (after the open panel) and the drop bands
+    /// (§22.4), which already have the URL. An untitled dirty pane is joined
+    /// without a warning: there is no saved state to diverge from.
+    private func join(url: URL, at position: JoinPosition, in pane: PaneViewModel) {
+        guard pane.isOpen else { return }
+        let verb = (position == .start) ? "Insert" : "Append"
+
+        // §22.2: a dirty pane is warned about, with two buttons — Cancel and
+        // the operation's verb. An untitled dirty pane gets no alert: there is
+        // no saved state to diverge from.
+        if pane.status.isDirty && !pane.isUntitled {
+            let alert = NSAlert()
+            alert.messageText = "Join with unsaved changes?"
+            alert.informativeText = "“\(pane.status.fileName)” has unsaved changes. They travel into the joined image; the file on disk keeps its saved bytes."
+            alert.addButton(withTitle: verb)
+            alert.addButton(withTitle: "Cancel")
+            let response: NSApplication.ModalResponse
+            if let joinConfirm {
+                response = joinConfirm(alert)
+            } else {
+                response = Self.presentModal(alert, defaultInTest: .alertSecondButtonReturn)  // Cancel in tests
+            }
+            guard response == .alertFirstButtonReturn else { return }
+        }
+
+        // The name the pane's content carries now, remembered before the join
+        // detaches the document — the status line names both sources (§22.2).
+        let originalName = pane.status.fileName
+
+        do {
+            try pane.join(contentsOf: url, at: position)
+        } catch let error as JoinError {
+            switch error {
+            case .emptySource:
+                presentAlert(title: "File is empty",
+                             message: "“\(url.lastPathComponent)” has no bytes to join.")
+            }
+            return
+        } catch {
+            presentFileError("Could not join file.", error, url: url)
+            return
+        }
+
+        // §22.2: the transient status line names both sources and the total
+        // size, the way the app reports a search result, then yields back.
+        let total = pane.fileSize
+        let size = ByteCountFormatter.string(fromByteCount: Int64(total), countStyle: .file)
+        let message = (position == .start)
+            ? "Inserted \(url.lastPathComponent) before \(originalName). Total: \(size)."
+            : "Appended \(url.lastPathComponent) after \(originalName). Total: \(size)."
+        filePaneView(for: pane)?.showTransientMessage(message)
     }
 
     // MARK: - File > New File
@@ -2217,6 +2366,10 @@ final class MainViewController: NSViewController {
         add("Save", #selector(savePaneDocument(_:)), "s")
         add("Save As…", #selector(savePaneDocumentAs(_:)), "S")
         add("Revert to Saved", #selector(revertPaneDocument(_:)), "")
+        // The join twins (§22.1): beside the file-scoped commands, acting on
+        // THIS pane (the menu's representedObject) rather than the active one.
+        add("Append File…", #selector(appendFileInPane(_:)), "")
+        add("Insert File at Start…", #selector(insertFileAtStartInPane(_:)), "")
         // Show in Finder is header-only: it reveals THIS pane's file in the
         // Finder, which is a per-pane act, so the menu bar's File submenu
         // (active-pane) doesn't duplicate it.
@@ -3935,6 +4088,15 @@ extension MainViewController: NSMenuItemValidation {
         case #selector(revertDocument):
             // Nothing on disk to revert an untitled document to.
             return activePane.isOpen && !activePane.isUntitled
+        case #selector(appendFile),
+             #selector(insertFileAtStart):
+            // A join needs content to join into: an empty pane has nothing
+            // (§22.1). The File-menu items act on the active pane.
+            return activePane.isOpen
+        case #selector(appendFileInPane(_:)),
+             #selector(insertFileAtStartInPane(_:)):
+            // Context-menu items act on the pane they were built for.
+            return pane(from: menuItem)?.isOpen ?? false
         case #selector(savePaneDocument(_:)),
              #selector(savePaneDocumentAs(_:)):
             // Context-menu items act on the pane they were built for.

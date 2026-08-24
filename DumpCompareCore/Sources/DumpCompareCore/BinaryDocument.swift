@@ -8,6 +8,22 @@ public enum DocumentError: Error, Equatable, Sendable {
     case unsupportedStorage
 }
 
+/// Where a join places the source's bytes (§22.1): before the content or after
+/// it. Two positions rather than an arbitrary offset — the two commands are
+/// "Insert File at Start…" and "Append File…", and a join at any other offset
+/// would be an insert-and-shift the user did not ask for.
+public enum JoinPosition: Sendable {
+    case start
+    case end
+}
+
+/// Errors thrown by `BinaryDocument.join` (§22).
+public enum JoinError: Error, Equatable, Sendable {
+    /// The source has no bytes; joining it would add nothing and only detach the
+    /// document from its file, so it is refused before anything changes.
+    case emptySource
+}
+
 /// A single open binary file: the editable storage, its identity, read-only
 /// state, undo history, and selection (M2, §4.2, §5, §7.5).
 ///
@@ -134,6 +150,63 @@ public final class BinaryDocument: @unchecked Sendable {
         }
         record(ops)
         clampSelection()
+    }
+
+    // MARK: - Join (document-level, §22)
+
+    /// The size of each streamed chunk when joining: the same 1 MiB the
+    /// segment writer and replacer use, so a large source is never read whole
+    /// into memory (CLAUDE.md).
+    static let joinChunkSize = 1024 * 1024
+
+    /// Joins the bytes of `source` into this document, at the start or the end
+    /// (§22.1). The source is streamed in `joinChunkSize` chunks — each chunk
+    /// is inserted at the running offset, so its bytes land in order and the
+    /// original content stays after them (an insert at the start pushes the
+    /// original right; an append leaves it in place) — and the whole join is
+    /// one undo transaction: the edit group coalesces the chunks into a single
+    /// commit, so `onTransactionCommitted` fires exactly once.
+    ///
+    /// The join is a document-level act, not an edit (§22.2): it detaches the
+    /// document from the file it came from (the result is an untitled,
+    /// never-saved document) and clears the undo history, because the joined
+    /// content has no prior state to return to. The document is left dirty so a
+    /// close still warns. A mid-stream failure cancels the group and rethrows
+    /// with the document unchanged.
+    public func join(contentsOf source: any ByteStorage, at position: JoinPosition) throws {
+        guard source.size > 0 else { throw JoinError.emptySource }
+        let anchor: UInt64 = (position == .start) ? 0 : storage.size
+        beginEditGroup()
+        do {
+            var at = anchor
+            var readOffset: UInt64 = 0
+            while readOffset < source.size {
+                let chunk = try source.read(at: readOffset, length: Self.joinChunkSize)
+                guard !chunk.isEmpty else { break }
+                try insert(at: at, bytes: chunk)
+                at += UInt64(chunk.count)
+                readOffset += UInt64(chunk.count)
+            }
+            endEditGroup()
+        } catch {
+            try? cancelEditGroup()
+            throw error
+        }
+        detachFromURL()
+    }
+
+    /// Detaches the document from the file it came from: the join's result is
+    /// an untitled, never-saved document (§22.2), mirroring `openUntitled` —
+    /// placeholder URL, writable, and a cleared history that stays dirty so a
+    /// close warns instead of silently discarding the joined content.
+    private func detachFromURL() {
+        let placeholder = FileManager.default.temporaryDirectory.appendingPathComponent("Untitled")
+        url = placeholder
+        identity = FileIdentity(url: placeholder)
+        readOnly = false
+        currentSeriesID = nil
+        transactionAwaitingSelection = false
+        undoHistory.clearKeepingDirty()
     }
 
     // MARK: - Undo / Redo

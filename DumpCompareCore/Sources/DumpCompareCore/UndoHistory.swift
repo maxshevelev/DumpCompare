@@ -129,6 +129,11 @@ public final class UndoHistory: @unchecked Sendable {
     private var nextSerial: UInt64 = 1
     /// The serial `markSaved()` checkpointed; 0 means "the file as opened".
     private var savedSerial: UInt64 = 0
+    /// True after the history was cleared while keeping the document dirty — a
+    /// document-level act (a join) produced never-saved content that cannot be
+    /// undone (there is no prior state to return to) but must not be silently
+    /// discarded on close. Cleared by the next save or reset.
+    private var dirtyAfterClear = false
     private var undoTransactionCount = 0
 
     // Fast-rollback state:
@@ -137,8 +142,10 @@ public final class UndoHistory: @unchecked Sendable {
 
     public var canUndo: Bool { !undoSteps.isEmpty }
     public var canRedo: Bool { !redoSteps.isEmpty }
-    /// True when the current state differs from the last saved state.
-    public var isDirty: Bool { currentSerial != savedSerial }
+    /// True when the current state differs from the last saved state, or when
+    /// the document holds never-saved content a cleared history no longer names
+    /// (a join, §22.2): that content must still warn on close.
+    public var isDirty: Bool { dirtyAfterClear || currentSerial != savedSerial }
     /// Number of committed transactions.
     public var undoDepth: Int { undoTransactionCount }
 
@@ -234,6 +241,7 @@ public final class UndoHistory: @unchecked Sendable {
     /// successful save).
     public func markSaved() {
         savedSerial = currentSerial
+        dirtyAfterClear = false
     }
 
     /// Discards all history and the dirty checkpoint.
@@ -244,6 +252,23 @@ public final class UndoHistory: @unchecked Sendable {
         // current state is 0 again, and no future serial can collide with one a
         // caller still remembers.
         savedSerial = 0
+        dirtyAfterClear = false
+        undoTransactionCount = 0
+        lastUndoWasSeriesByte = false
+        lastUndoSeriesID = nil
+    }
+
+    /// Clears the undo/redo history but keeps the document marked as having
+    /// unsaved content. A document-level act (a join, §22.2) produces never-
+    /// saved content that cannot be undone — there is no prior state to return
+    /// to — yet it must not be silently discarded on close, so the dirty flag
+    /// survives the clear. A later save or reset clears it; edits made after the
+    /// clear undo as usual and never reach the cleared work.
+    public func clearKeepingDirty() {
+        undoSteps.removeAll()
+        redoSteps.removeAll()
+        savedSerial = 0
+        dirtyAfterClear = true
         undoTransactionCount = 0
         lastUndoWasSeriesByte = false
         lastUndoSeriesID = nil

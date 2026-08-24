@@ -1137,6 +1137,104 @@ final class PaneViewModel: HexViewDataSource {
         notifyCompanionContentFullyChanged()
     }
 
+    // MARK: - Join a file (§22)
+
+    /// Joins the file at `url` into this pane's content, at the start or the end
+    /// (§22.1). The file is opened as the chunked reader and streamed in, so it
+    /// is never loaded whole into RAM. The joined piece is named for the file it
+    /// came from (§22.3).
+    func join(contentsOf url: URL, at position: JoinPosition) throws {
+        try join(contentsOf: FileBackedStorage(url: url),
+                 named: url.lastPathComponent,
+                 at: position)
+    }
+
+    /// The chunked join, given an already-open source and the name to give the
+    /// joined piece (§22). The join is a document-level act, not an edit
+    /// (§22.2): it detaches the document from the file it came from (the result
+    /// is untitled and never-saved) and clears the undo history, because the
+    /// joined content has no prior state to return to. The document is left
+    /// dirty so a close still warns. The seam is a cut (§22.3): the content the
+    /// pane already held keeps the name of the file it was opened from, and the
+    /// joined bytes take `sourceName`.
+    func join(contentsOf source: any ByteStorage, named sourceName: String,
+              at position: JoinPosition) throws {
+        guard let doc = document else { return }
+        breakTypingSeries()
+        let sizeBefore = doc.size
+        let sourceSize = source.size
+        // The join commits its own transaction, but it is not undoable (§22.2),
+        // so no segment snapshot is captured (no `beginSegmentEdit`): the
+        // partition is set up directly below and the snapshot stacks are
+        // cleared, mirroring how open/revert reset the segments.
+        try doc.join(contentsOf: source, at: position)
+        // The join cleared the document's undo history; the parallel segment
+        // stacks go with it — the snapshots they hold no longer pair with any
+        // undo step.
+        segmentUndoStack.removeAll()
+        segmentRedoStack.removeAll()
+        pendingSegmentSnapshot = nil
+        // The insert moves the partition with the content and grows the content
+        // size (§21.2). This must run before the seam cut below: a cut is
+        // refused at the content's end, and for an append the seam IS the old
+        // end. For an insert at the start the new bytes join the piece that
+        // opens at 0, so the cut at the seam then splits them off as their own
+        // piece.
+        let edit: DiffEdit = (position == .start) ? .insert(at: 0, length: sourceSize)
+                                                  : .insert(at: sizeBefore, length: sourceSize)
+        applySegmentEdit(edit)
+        // The seam is a cut (§22.3): the insert left one piece spanning the
+        // joined content, so a cut at the seam splits it, and the renames put
+        // each half under the right name.
+        if sizeBefore == 0 {
+            // The pane was empty: the whole content is the source, so the one
+            // piece takes the source's name (there is no original content to
+            // name, and a cut at 0 or at EOF would be refused).
+            segmentStore.rename(0, to: sourceName)
+        } else {
+            let seam = (position == .start) ? sourceSize : sizeBefore
+            // For an insert at the start the cut splits the piece that opens at
+            // 0: the earlier half (the new bytes) keeps that piece's name and
+            // the later half (the original content) is left unnamed. So the
+            // original name is remembered from the piece before the cut — not
+            // from the document's URL, which is already untitled after a first
+            // join (§22.3: the content keeps the name it was opened with).
+            let originalName = (position == .start) ? segmentStore.segments[0].name : ""
+            segmentStore.addCut(at: seam)
+            if position == .start {
+                // Piece 0 is the joined bytes (take the source's name); piece 1
+                // is the original content (addCut left it unnamed, so name it).
+                segmentStore.rename(0, to: sourceName)
+                segmentStore.rename(1, to: originalName)
+            } else {
+                // Piece 0 is the original content (addCut kept its name); piece
+                // 1 is the joined bytes (take the source's name).
+                segmentStore.rename(1, to: sourceName)
+            }
+        }
+        // The caret and selection shift by the inserted length on an insert at
+        // the start, so they stay on the bytes they were on (§22.5); an append
+        // leaves them put.
+        if position == .start {
+            let sel = doc.selection
+            doc.setSelection(SelectionModel(start: sel.start + sourceSize,
+                                             end: sel.end + sourceSize,
+                                             fileSize: doc.size))
+        }
+        // The document detached: it is untitled now, with no on-disk reference
+        // (the placeholder URL has no file behind it) and no watcher.
+        isUntitled = true
+        refreshSavedStorage()
+        changeWatcher?.stop()
+        changeWatcher = nil
+        // The join is a length-changing edit: the whole pane repaints, the
+        // comparison index shifts for the insert, and the companion's diff
+        // background re-reads.
+        onEdit?(edit)
+        notify()
+        notifyCompanionContentFullyChanged()
+    }
+
     // MARK: - Caret & selection
 
     func moveCaret(by delta: Int64, extendSelection: Bool = false) {

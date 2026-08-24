@@ -177,6 +177,9 @@ Drop in empty mode:
 Drop in comparison mode:
 
 - dropping onto a specific pane targets that pane;
+- each occupied pane offers the three join/replace bands of §22.4 (insert at
+  start, replace, append at end) — there is no second-file target, because both
+  panes are occupied;
 - if multiple files are dropped:
   - first file targets the hovered pane;
   - second file opens in the other pane only if that pane is empty;
@@ -192,15 +195,23 @@ Drop in single-file mode:
 - the split orientation should match the current or default pane layout:
   - left/right layout: replace target on one side, add target on the other;
   - top/bottom layout: replace target on one side, add target on the other.
+- the “this file” half is further divided into the three join/replace bands of
+  §22.4 — Insert at Start (top), Replace Current File (middle), Append at End
+  (bottom) — so a file can be joined to the open pane as well as replaced; the
+  “Open as second file” half is unchanged.
 - if the user drops on “Replace current file”:
   - the first dropped file replaces the current file;
   - if a second dropped file exists, it opens as pane 2.
+- if the user drops on a join band (Insert at Start / Append at End):
+  - the first dropped file is joined to the pane at that end (§22);
+  - additional files are ignored with notification.
 - if the user drops on “Open as second file”:
   - the first dropped file opens as pane 2;
   - additional files are ignored with notification.
 - if the drag leaves the window or is cancelled, no change occurs.
 
-Dirty-state protection applies to drag-replacement too.
+Dirty-state protection applies to drag-replacement too, and the join warning of
+§22.2 applies to a drag-join of a dirty pane.
 
 =====================================================================
 5. FILE MODEL, DIRTY STATE, SAVE, AND SAVE AS
@@ -2309,3 +2320,132 @@ and every operation that writes is explicit about it.
 - **A same-length overwrite moves no cut** (§21.2): the document's size is
   unchanged, so the partition's boundaries do not shift; only the bytes under the
   piece change.
+
+22. JOIN
+=====================================================================
+
+A join brings a second file's bytes into a pane's content, at one end or the
+other. On plenty of boards the BIOS region is physically two SPI flash chips;
+the bench workflow is to read both, join them in the right order, hand the whole
+image to the tools that expect one BIOS, and split it back at the same boundary
+to flash each half. Everything between the join and the split — comparing,
+searching, patching — the app already does. A join is how a *file* becomes a
+piece: the seam it creates is a cut, and "split the file" is the segments
+feature's Save All as Separate Files (§21.5).
+
+22.1 The two commands
+
+- **File ▸ Append File…** — the chosen file's bytes go after the pane's content.
+- **File ▸ Insert File at Start…** — they go before it.
+- Both also sit in the pane's own menu (right-click the pane header), acting on
+  that pane rather than the active one, beside the file-scoped commands already
+  there (Save, Save As, Revert, Show in Finder, Close).
+- Both are enabled only when the pane holds a file — with nothing open, the
+  command is Open.
+- Two commands rather than one with a start/end choice in a dialog: the gesture
+  is common and should not stop to ask which end.
+
+22.2 The joined document is not the file it came from
+
+- **A join detaches the pane from its file.** The pane ends up holding a document
+  with no URL: untitled, never saved, and ⌘S opens a save panel rather than
+  writing the joined image over the dump it was opened from. Both source files
+  stay untouched on disk. The joined image has a different internal structure
+  from either half, and an accidental ⌘S in an 8 MB dump's window is exactly the
+  kind of mistake that costs a re-read of the chip.
+- **The join is not undoable.** ⌘Z would have to re-attach the document to the
+  file it left, which is not a state the model has. A join is a document-level
+  act like Open or New File: the undo stack is empty after it, and edits made
+  afterwards undo as usual.
+- **The join result is dirty.** The joined content has never been written to
+  disk, and it must not be silently discarded: closing the pane or the window
+  warns about it (Save / Don't Save / Cancel, §3.6), and the header carries the
+  modified-new-file badge. Saving it (Save As) clears the dirty state and gives
+  the document its name.
+- **A dirty pane is warned about, with two buttons: Cancel and the operation.**
+  Every dialog this feature adds has that shape — *Cancel* and *Append*, *Cancel*
+  and *Insert* — and none of them offers to save on the user's behalf. Deciding
+  what to do with unsaved bytes is the user's business; Cancel puts them back
+  exactly where they were, with ⌘S one keystroke away.
+  - What the alert says is what the action means: the join takes **the content
+    the pane shows, edits included**, and the file on disk keeps its saved bytes.
+    Nothing typed is lost — but a patch that never reached the file still has not
+    reached it, and after the join no document is attached to that file to save it
+    from. So the alert names the file, says the edits travel into the joined image
+    while the file keeps its own, and offers Cancel.
+  - An **untitled** dirty pane gets no alert: there is no saved state to diverge
+    from, and its content is carried like any other.
+- **Naming: the joined document is Untitled, and that is the honest answer.**
+  There is nothing to derive a name from: a dump off a programmer is
+  `W25Q128FV_20260821_1a2b3c4d.bin` — chip model, date, checksum — and neither
+  half's name says anything about the pair. Deriving a joined name would be a
+  long name that is now also wrong. So the joined document is Untitled, like any
+  document the app made rather than opened, and the user names it when they save
+  it — which in this workflow happens immediately. No name is derived from the
+  sources, in any case.
+- **Where "what am I looking at" actually lives.** An Untitled header says
+  nothing about the two dumps behind it. Two places carry it instead: the seam's
+  pieces are named for their sources (below) — the durable record of which half
+  came from which chip — and a transient status-bar line right after the join
+  names both sources and the total size, the way the app already reports "No
+  match found." and then yields the stats back (§14).
+
+22.3 The seam is a cut
+
+- A join creates a **cut** and names the pieces either side of it: the content
+  the pane already held keeps the name of the file it was opened from —
+  remembered even after the document detaches — and the joined bytes take the
+  name of the file they came from. Two joins in a row leave three pieces with the
+  right offsets, which is exactly what a bookmark at the seam could not do:
+  bookmarks are absolute by decision (§20.1) and an insert at the start moves the
+  first seam. Everything else about cuts — that they follow the content, how they
+  are drawn, how they are edited and written out — is §21.
+- **A join needs no new chrome.** The tint, the strip and the status-bar readout
+  all come from the segments feature; a join just adds a cut.
+- **Row alignment stops mattering.** A cut is a byte offset, so a join whose
+  boundary is not a multiple of 16 is simply a boundary — the cut line steps
+  through the row, per §21. A dump's size need not be a multiple of 16, and any
+  insert of a length that is not moves every later cut off the grid.
+
+22.4 Dropping a file to join it
+
+- **Single-file mode.** The existing axis split stays: half the window is about
+  *this* file, half is about a second file. The "this file" half is divided into
+  three horizontal bands — **Insert at Start** (top), **Replace Current File**
+  (middle), **Append at End** (bottom) — and the other half stays **Open as
+  Second File** (§4.3).
+  - The two join bands are strips at the top and bottom of the half, each 25 % of
+    the half's height, clamped to 48…120 pt so they stay hittable in a short
+    window and do not swallow the middle in a tall one. The Replace band takes
+    whatever is left between them.
+  - In the stacked arrangement the same three bands divide the top half.
+- **Comparison mode.** Each pane takes the three bands (insert / replace /
+  append) and there is no second-file target — both panes are occupied.
+- Feedback follows the existing drop targets: the band under the pointer
+  highlights and shows its title; the others stay quiet. A drop outside any band,
+  or a drag that leaves the window, changes nothing.
+- Rules that fall out:
+  - With an **empty pane** there is nothing to join to: the whole pane stays the
+    single "Open" target it is today.
+  - **Several files dropped** on a join band: the first is used and the rest are
+    ignored with the standard notification (§4.1 rule 3).
+  - Directories and packages are refused as they are now (§4).
+  - Dropping the file that is **already open in the pane** onto a join band is
+    allowed and doubles the content — two identical chips are a real case.
+
+22.5 Edge cases
+
+| case | behaviour |
+|---|---|
+| Pane empty | Join commands disabled; the drop area stays a single "Open" target |
+| Pane holds an untitled document | Join allowed — content is content, and the result is untitled either way |
+| Source file is read-only | Join allowed — it never writes to the source |
+| Joining a 0-byte file | Refused with a message; no cut, no dirty state |
+| Joining a file into itself | Allowed, doubles the content |
+| Joining a 1 GB file | Chunked, progress, cancellable; memory bounded by the add-buffer budget (§13) |
+| Pane was dirty before the join | A warning naming the file, with Cancel and the operation's own verb; the action carries the edits into the joined image and leaves the file's saved bytes alone |
+| Pane was dirty and untitled | No warning — nothing on disk to diverge from |
+| Bookmarks made before an insert at start | Left where they are: a mark is an absolute offset (§20.1) and nothing shifts it — the seam is a segment precisely so that it is not subject to this |
+| Two joins in a row (append, then insert at start) | Three segments, all with the right offsets; the split sheet offers three files |
+| Comparison mode | A join changes one pane's length; the comparison re-indexes and the shorter file's tail reads as an EOF difference (§9) — no special case |
+| Caret and selection on an insert at start | Both shift by the inserted length, so they stay on the bytes they were on |

@@ -269,6 +269,11 @@ final class MainWindowController: NSWindowController {
         add("Save", #selector(MainViewController.saveDocument), "s")
         add("Save As…", #selector(MainViewController.saveDocumentAs), "S")
         add("Revert to Saved", #selector(MainViewController.revertDocument), "")
+        // The join commands (§22.1): bring a second file's bytes into the active
+        // pane, at one end or the other. They act on the active pane, like the
+        // rest of the File submenu.
+        add("Append File…", #selector(MainViewController.appendFile), "")
+        add("Insert File at Start…", #selector(MainViewController.insertFileAtStart), "")
         fileMenu.addItem(.separator())
         // Close (⌘W) closes the active pane ("close document"); with no panes
         // open it falls back to closing the window (§3.5).
