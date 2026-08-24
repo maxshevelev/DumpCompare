@@ -332,7 +332,7 @@ final class MainWindowController: NSWindowController {
                                              keyEquivalent: "b")
         bookmarksItem.keyEquivalentModifierMask = [.command, .option]
         // The segment pair (§21.3). No key equivalents: both are deliberate acts
-        // reached from a menu, and the fast path is Split Here in the dump's own
+        // reached from a menu, and the fast path is Split Here at «address» in the dump's own
         // context menu. Add Cut… opens the offset-and-description popover;
         // Merge merges the piece the caret sits in into a neighbour — it acts on
         // the caret's position, not on a cut point. Its title is renamed by

@@ -48,11 +48,11 @@ final class SegmentCommandsTests: XCTestCase {
         try? FileManager.default.removeItem(at: url)
     }
 
-    /// The "Split Here" item of the offset menu for `pane` at `offset`.
+    /// The "Split Here at «address»" item of the offset menu for `pane` at `offset`.
     private func splitItem(for pane: PaneViewModel, offset: UInt64) throws -> NSMenuItem {
         let menu = MainViewController().makeOffsetMenu(for: pane, offset: offset)
-        return try XCTUnwrap(menu.items.first { $0.title == "Split Here" },
-                             "the offset menu must offer Split Here")
+        return try XCTUnwrap(menu.items.first { $0.title == "Split Here at \(offset.bareAddress)" },
+                             "the offset menu must offer Split Here at \(offset.bareAddress)")
     }
 
     /// Invokes `splitHere` on `item` with a capturing presenter, returning the

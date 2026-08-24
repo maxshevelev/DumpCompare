@@ -1219,14 +1219,14 @@ final class BookmarkTests: XCTestCase {
 
         // A byte in the middle of row 0x10, so the row address has to be derived.
         let unmarked = controller.makeOffsetMenu(for: pane, offset: 0x1B).items.map(\.title)
-        XCTAssertTrue(unmarked.contains("Toggle Bookmark at 0x00000010"),
+        XCTAssertTrue(unmarked.contains("Toggle Bookmark at 00000010"),
                       "the row's address, not the clicked byte's: \(unmarked)")
         XCTAssertFalse(unmarked.contains("Edit Bookmark…"),
                        "nothing to rename on an unmarked row")
 
         controller.windowModel.bookmarkStore.add(rowContaining: 0x1B, name: "ME region")
         let marked = controller.makeOffsetMenu(for: pane, offset: 0x1B).items.map(\.title)
-        XCTAssertTrue(marked.contains("Toggle Bookmark at 0x00000010"), "\(marked)")
+        XCTAssertTrue(marked.contains("Toggle Bookmark at 00000010"), "\(marked)")
         XCTAssertTrue(marked.contains("Edit Bookmark…"))
     }
 

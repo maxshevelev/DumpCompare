@@ -193,7 +193,7 @@ final class HexView: NSView, NSViewToolTipOwner {
 
     /// Builds the context menu shown when the user right-clicks an address in
     /// the Offset column or a byte in the hex column. The pane/controller
-    /// supplies it so the "Select block from here" and "Copy offset" actions
+    /// supplies it so the "Select Block from Here at «address»" and "Copy offset" actions
     /// resolve the exact offset and pane (§10.2). When nil (the default) the
     /// right-click falls through to `super` unchanged.
     var offsetMenuProvider: ((UInt64) -> NSMenu)?
@@ -2151,7 +2151,7 @@ final class HexView: NSView, NSViewToolTipOwner {
 
     /// Right-click on an address in the Offset column or on a byte in the hex
     /// column: frames the anchor with the standard focus ring and pops the
-    /// offset context menu ("Select block from here", "Copy offset") built by
+    /// offset context menu ("Select Block from Here at «address»", "Copy offset") built by
     /// `offsetMenuProvider`. `NSMenu.popUpContextMenu` runs the menu's tracking
     /// loop synchronously, so the frame stays up for the whole time the menu is
     /// visible and clears once it is dismissed (§10.2).
@@ -2625,5 +2625,19 @@ extension String {
     func leftPadded(to length: Int, with pad: String) -> String {
         guard count < length else { return self }
         return String(repeating: pad, count: length - count) + self
+    }
+}
+
+extension UInt64 {
+    /// The app's address for this offset: upper-case hex, at least eight digits
+    /// (§10) — the shape the Offset column, the bookmark list, and the context-
+    /// menu titles all share. `hexAddress` adds the `0x` prefix the offset input
+    /// fields carry on their own.
+    var bareAddress: String {
+        String(self, radix: 16, uppercase: true).leftPadded(to: 8, with: "0")
+    }
+
+    var hexAddress: String {
+        "0x" + bareAddress
     }
 }

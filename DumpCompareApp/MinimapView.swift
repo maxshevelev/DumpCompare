@@ -852,7 +852,7 @@ final class MinimapView: NSView, NSViewToolTipOwner {
             return stripText
         }
         guard let bookmark = bookmark(atMarkPoint: point) else { return "" }
-        let address = Bookmark.bareAddressLabel(bookmark.row)
+        let address = bookmark.row.bareAddress
         return bookmark.name.isEmpty ? address : "\(address): \(bookmark.name)"
     }
 

@@ -270,8 +270,8 @@ class SheetViewController: NSViewController {
 /// End is the address of the block's LAST byte (inclusive) — the selection's
 /// half-open `[start, end)` is built as `[start, end + 1)`.
 ///
-/// A `presetStart` opens the sheet from the offset context menu ("Select block
-/// from here"): Start is pre-filled with that address, the Length option is
+/// A `presetStart` opens the sheet from the offset context menu ("Select Block
+/// from Here at «address»"): Start is pre-filled with that address, the Length option is
 /// active from the start, and the cursor lands in the Length field.
 final class SelectBlockSheetController: SheetViewController {
     private let fileSize: UInt64
@@ -289,8 +289,8 @@ final class SelectBlockSheetController: SheetViewController {
         self.fileSize = fileSize
         self.presetStart = presetStart
         self.onSelect = onSelect
-        // No message when the start is already filled in ("Select block from
-        // here", §10.2): the Start field shows that address, the Length option is
+        // No message when the start is already filled in ("Select Block from Here at
+        // «address»", §10.2): the Start field shows that address, the Length option is
         // already the active one, and a sentence saying both was the sheet
         // narrating its own fields back at the user.
         super.init(title: "Select Block",
@@ -318,7 +318,7 @@ final class SelectBlockSheetController: SheetViewController {
         lengthField = length.field
 
         if presetStart != nil {
-            // §10.2 "Select block from here": Start is pre-filled with the
+            // §10.2 "Select Block from Here at «address»": Start is pre-filled with the
             // right-clicked address, so Length is the active option from the
             // start. `isEnabled = false` keeps the End field's value untouched.
             endRadio.state = .off

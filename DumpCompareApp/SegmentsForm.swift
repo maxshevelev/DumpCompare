@@ -524,7 +524,7 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
     /// The popover for the piece at `row` — its offset (movable within the
     /// interval the cut bounds, or locked to 0 for S0) and its name. One editor
     /// for a piece, wherever it is edited from: a double click, the row's context
-    /// menu, or the dump's own Split Here all reach the same popover (§21.3).
+    /// menu, or the dump's own Split Here at «address» all reach the same popover (§21.3).
     private func editSegment(atRow row: Int) {
         guard row >= 0, row < segments.count else { return }
         editSegment(atIndex: segments[row].index)
@@ -586,7 +586,7 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
     // MARK: - The +/− footer (§21.4)
 
     /// `+`: the Add Cut popover, anchored to the button itself — the same popover
-    /// the dump's Split Here opens (§21.3), so a cut made from the form and one
+    /// the dump's Split Here at «address» opens (§21.3), so a cut made from the form and one
     /// made from the bar are the same act.
     @objc func addCutPressed() {
         let store = pane.segmentStore
@@ -836,7 +836,7 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
             cell.textField?.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
             // The dump's own address shape (§6): bare digits, no "0x" — a whole
             // column of addresses does not need each one announcing that it is hex.
-            cell.textField?.stringValue = Bookmark.bareAddressLabel(segment.range.lowerBound)
+            cell.textField?.stringValue = segment.range.lowerBound.bareAddress
             return cell
         case ColumnID.size:
             let cell = makeCell(tableColumn)

@@ -175,7 +175,7 @@ final class FilePaneView: NSView {
     }
 
     /// Builds the context menu shown when the user right-clicks an address in
-    /// the hex dump's Offset column — the "Select block from here" menu — given
+    /// the hex dump's Offset column — the "Select Block from Here at «address»" menu — given
     /// the clicked offset. Built by MainViewController so the item resolves
     /// THIS pane even when it is not the active one (§10.2).
     var offsetMenuProvider: ((UInt64) -> NSMenu)? {
@@ -574,7 +574,7 @@ final class FilePaneView: NSView {
     /// anchor rect is the hex view's to give — the controller says which offset
     /// it starts at, which offsets are already cut, and what the two keys mean.
     ///
-    /// With `anchoredToOffset` (the default, Split Here) the popover hangs off the
+    /// With `anchoredToOffset` (the default, Split Here at «address») the popover hangs off the
     /// byte it is pre-filled with, and that byte is scrolled into view first if it
     /// is not there: a popover has to point at something the user can see. With it
     /// off (Add Cut…) the popover is centred in the pane's visible area instead of
@@ -599,7 +599,7 @@ final class FilePaneView: NSView {
                 scrollView.contentView.layoutSubtreeIfNeeded()
             }
             // The popover hangs off the byte it is pre-filled with — the
-            // right-clicked byte for Split Here (§21.3).
+            // right-clicked byte for Split Here at «address» (§21.3).
             controller.show(relativeTo: hexView.byteCellRect(for: prefillOffset), of: hexView)
         } else {
             // Add Cut…: centred in the pane's visible area, not stuck to the

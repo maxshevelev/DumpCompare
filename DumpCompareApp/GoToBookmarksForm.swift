@@ -32,7 +32,7 @@ enum GoToHistoryStore {
     /// Records a jump: moves its address to the front, dropping any older entry
     /// for the same address, and caps the list at `limit`.
     static func record(_ offset: UInt64) {
-        let label = Bookmark.addressLabel(offset)
+        let label = offset.hexAddress
         var entries = recent.filter { $0 != label }
         entries.insert(label, at: 0)
         defaults.set(Array(entries.prefix(limit)), forKey: userDefaultsKey)
@@ -712,7 +712,7 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
             // together (§20.4). Bare digits, no "0x" — a whole column of
             // addresses does not need each one announcing that it is hex.
             cell.restingTextColor = HexTheme.bookmarkColor
-            cell.textField?.stringValue = Bookmark.bareAddressLabel(bookmark.row)
+            cell.textField?.stringValue = bookmark.row.bareAddress
             return cell
         case ColumnID.name:
             let cell = (tableView.makeView(withIdentifier: ColumnID.name, owner: self) as? BookmarkCellView)

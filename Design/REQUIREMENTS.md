@@ -730,7 +730,7 @@ Rules:
   - length validity.
 - For start/end mode:
   - if start > end, show error or optionally swap after confirmation; default: error.
-- Opened from the offset context menu ("Select block from here", §10.2) the sheet
+- Opened from the offset context menu ("Select Block from Here at «address»", §10.2) the sheet
   carries no message line: the Start field already shows the address that was
   right-clicked and Length is already the active option, so a sentence saying
   both would be the sheet narrating its own fields.
@@ -2285,7 +2285,7 @@ and every operation that writes is explicit about it.
   the footer: the footer is the list's own controls, the button row the
   dialog's, and the space says "these are two different groups".
 - **The Add Cut popover anchors to what it acts on** — the form's **+** button,
-  the row it edits, the byte Split Here was invoked on — but the Edit menu's
+  the row it edits, the byte Split Here at «address» was invoked on — but the Edit menu's
   *Add Cut…* centres it in the pane instead: it is a dialog pre-filled with the
   caret's offset, not a pointer at a byte, so it does not hang off the caret.
 - **The row's context menu** carries what acts on one piece: *Save Segment…*,

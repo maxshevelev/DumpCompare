@@ -3,7 +3,7 @@ import XCTest
 @testable import DumpCompare
 
 /// Right-click on an address in the Offset column frames it and offers
-/// "Select block from here" (§10.2). `rightMouseDown` itself pops the menu with
+/// "Select Block from Here at «address»" (§10.2). `rightMouseDown` itself pops the menu with
 /// `NSMenu.popUpContextMenu`, which runs a blocking tracking loop, so these
 /// tests exercise the pieces around it: the hit-test → offset mapping that
 /// decides whether a right-click lands on an address at all.
@@ -47,7 +47,7 @@ final class OffsetContextMenuTests: XCTestCase {
     // MARK: - Offset-column and hex-byte hits
 
     /// A right-click on an address maps to that row's start offset — what the
-    /// "Select block from here" sheet pre-fills — and frames the address rather
+    /// "Select Block from Here at «address»" sheet pre-fills — and frames the address rather
     /// than a byte. The first row's 0x00000000 is a valid start like any other.
     func testOffsetAnchorFramesRowAddress() throws {
         let (_, _, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 48))
@@ -169,18 +169,18 @@ final class OffsetContextMenuTests: XCTestCase {
         filePane.offsetMenuProvider = { offset in
             received = offset
             let menu = NSMenu(title: "Offset")
-            menu.addItem(withTitle: "Select block from here", action: nil, keyEquivalent: "")
+            menu.addItem(withTitle: "Select Block from Here at \(offset.bareAddress)", action: nil, keyEquivalent: "")
             return menu
         }
         let menu = try XCTUnwrap(hexView.offsetMenuProvider?(0x20))
-        XCTAssertEqual(menu.items.map(\.title), ["Select block from here"])
+        XCTAssertEqual(menu.items.map(\.title), ["Select Block from Here at 00000020"])
         XCTAssertEqual(received, 0x20)
     }
 
     // MARK: - Copy offset
 
     /// The offset context menu leads with "Copy offset" (a separator splits it
-    /// from "Select block from here"); invoking it writes the right-clicked
+    /// from "Select Block from Here at «address»"); invoking it writes the right-clicked
     /// offset to the clipboard as BARE hex digits — no "0x" prefix, so a paste
     /// into an offset field (which already carries its own "0x") doesn't double
     /// it ("24", not "0x24").
@@ -189,16 +189,16 @@ final class OffsetContextMenuTests: XCTestCase {
         let menu = controller.makeOffsetMenu(for: PaneViewModel(), offset: 0x24)
 
         XCTAssertEqual(menu.items.count, 8,
-                       "Copy offset, separator, Select block from here, separator, " +
-                       "Split Here, Merge, separator, Toggle Bookmark")
+                       "Copy offset, separator, Select Block from Here at «addr», separator, " +
+                       "Split Here at «addr», Merge, separator, Toggle Bookmark at «addr»")
         XCTAssertEqual(menu.items[0].title, "Copy offset")
         XCTAssertEqual(menu.items[0].action, #selector(MainViewController.copyOffset(_:)))
         XCTAssertTrue(menu.items[1].isSeparatorItem)
-        XCTAssertEqual(menu.items[2].title, "Select block from here")
+        XCTAssertEqual(menu.items[2].title, "Select Block from Here at 00000024")
         XCTAssertEqual(menu.items[2].action, #selector(MainViewController.selectBlockFromHere(_:)))
         // The segment block: its own separators, Split Here and Merge.
         XCTAssertTrue(menu.items[3].isSeparatorItem)
-        XCTAssertEqual(menu.items[4].title, "Split Here")
+        XCTAssertEqual(menu.items[4].title, "Split Here at 00000024")
         XCTAssertEqual(menu.items[4].action, #selector(MainViewController.splitHere(_:)))
         XCTAssertEqual(menu.items[5].title, "Merge")
         XCTAssertEqual(menu.items[5].action, #selector(MainViewController.removeSegment(_:)))
@@ -244,12 +244,12 @@ final class OffsetContextMenuTests: XCTestCase {
                        ["Copy", "Fill Selection with…", "Delete Bytes…",
                         "",                     // separator
                         "Copy offset", "",
-                        "Select block from here", "",
+                        "Select Block from Here at 00000014", "",
                         // The segment block: its own separators (§21.3).
-                        "Split Here", "Merge", "",
+                        "Split Here at 00000014", "Merge", "",
                         // The bookmark block: one item marks and unmarks, and an
                         // unmarked row has nothing to rename (§20.3).
-                        "Toggle Bookmark at 0x00000010"])
+                        "Toggle Bookmark at 00000010"])
 
         // The selection items act on the pane they were built for.
         let copy = menu.items[0]
@@ -279,9 +279,9 @@ final class OffsetContextMenuTests: XCTestCase {
         for outside: UInt64 in [0x20, 0x24] {
             let menu = controller.makeOffsetMenu(for: pane, offset: outside)
             XCTAssertEqual(menu.items.map(\.title),
-                           ["Copy offset", "", "Select block from here", "",
-                            "Split Here", "Merge", "",
-                            "Toggle Bookmark at 0x00000020"],
+                           ["Copy offset", "", "Select Block from Here at \(outside.bareAddress)", "",
+                            "Split Here at \(outside.bareAddress)", "Merge", "",
+                            "Toggle Bookmark at \(BookmarkStore.row(containing: outside).bareAddress)"],
                            "0x\(String(outside, radix: 16)) is outside: no selection actions")
         }
     }

@@ -342,7 +342,7 @@ final class MainViewController: NSViewController {
             let pane = FilePaneView(viewModel: paneModel)
             // Header right-click menu: acts on THIS pane (§4/§5).
             pane.paneMenu = makePaneMenu(for: paneModel)
-            // Offset-column right-click menu ("Select block from here", §10.2).
+            // Offset-column right-click menu ("Select Block from Here at «address»", §10.2).
             pane.offsetMenuProvider = { [weak self] offset in
                 self?.makeOffsetMenu(for: paneModel, offset: offset) ?? NSMenu()
             }
@@ -394,7 +394,7 @@ final class MainViewController: NSViewController {
             // Header right-click menus act on their own pane (§4/§5).
             pane1View.paneMenu = makePaneMenu(for: pane1)
             pane2View.paneMenu = makePaneMenu(for: pane2)
-            // Offset-column right-click menus ("Select block from here", §10.2).
+            // Offset-column right-click menus ("Select Block from Here at «address»", §10.2).
             pane1View.offsetMenuProvider = { [weak self] offset in
                 self?.makeOffsetMenu(for: pane1, offset: offset) ?? NSMenu()
             }
@@ -1577,7 +1577,7 @@ final class MainViewController: NSViewController {
         let from = segment.range.lowerBound
         // The piece's label and range, above the two fields — "S1: 0001000-0600000"
         // — so the popover says what it is for before the offset is read (§21.4).
-        let header = "\(segment.label): \(Bookmark.bareAddressLabel(segment.range.lowerBound))-\(Bookmark.bareAddressLabel(segment.range.upperBound))"
+        let header = "\(segment.label): \(segment.range.lowerBound.bareAddress)-\(segment.range.upperBound.bareAddress)"
         let controller = CutEditPopoverController(
             prefillOffset: from, validate: validate,
             // The piece's current name, so editing a named piece opens with the
@@ -2401,8 +2401,8 @@ final class MainViewController: NSViewController {
     }
 
     /// Builds the context menu for a right-clicked address in the Offset column:
-    /// "Copy offset" (copies the hex offset to the clipboard), then "Select
-    /// block from here", both resolving THIS pane (the header-menu pattern of
+    /// "Copy offset" (copies the hex offset to the clipboard), then "Select Block
+    /// from Here at «address»", both resolving THIS pane (the header-menu pattern of
     /// §4/§5) and the clicked offset (§10.2). When the clicked byte lies inside
     /// the pane's current selection, the menu instead leads with selection-scoped
     /// actions — Copy, Fill Selection with…, Delete Bytes — that act on the
@@ -2420,7 +2420,7 @@ final class MainViewController: NSViewController {
         copy.target = self
         copy.representedObject = OffsetContextTarget(pane: pane, offset: offset)
         menu.addItem(.separator())
-        let select = menu.addItem(withTitle: "Select block from here",
+        let select = menu.addItem(withTitle: "Select Block from Here at \(offset.bareAddress)",
                                   action: #selector(selectBlockFromHere(_:)),
                                   keyEquivalent: "")
         select.target = self
@@ -2435,7 +2435,7 @@ final class MainViewController: NSViewController {
         return menu
     }
 
-    /// The segment block of the offset context menu (§21.3): *Split Here* opens
+    /// The segment block of the offset context menu (§21.3): *Split Here at «address»* opens
     /// the Add Cut popover pre-filled with the right-clicked byte or address,
     /// and *Merge* merges the piece that position sits into its neighbour. Both
     /// act on the right-clicked position — the thing the menu was opened on.
@@ -2448,7 +2448,7 @@ final class MainViewController: NSViewController {
             item.target = self
             item.representedObject = target
         }
-        add("Split Here", #selector(splitHere(_:)))
+        add("Split Here at \(offset.bareAddress)", #selector(splitHere(_:)))
         add("Merge", #selector(removeSegment(_:)))
     }
 
@@ -2459,7 +2459,7 @@ final class MainViewController: NSViewController {
     /// a byte marks its row (§20.1), and the title is what says so.
     private func addBookmarkMenuItems(to menu: NSMenu, for pane: PaneViewModel, offset: UInt64) {
         let target = OffsetContextTarget(pane: pane, offset: offset)
-        let address = Bookmark.addressLabel(BookmarkStore.row(containing: offset))
+        let address = BookmarkStore.row(containing: offset).bareAddress
         func add(_ title: String, _ action: Selector) {
             let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
             item.target = self
@@ -2519,7 +2519,7 @@ final class MainViewController: NSViewController {
         return comparisonView?.paneView2
     }
 
-    /// Offset context menu > Select block from here: opens the Select Block
+    /// Offset context menu > Select Block from Here at «address»: opens the Select Block
     /// sheet for the pane that was right-clicked — Start pre-filled with the
     /// clicked address, the Length option active, and the cursor in the Length
     /// field (§10.2).
@@ -3148,7 +3148,7 @@ final class MainViewController: NSViewController {
         pane.segmentStore.removePiece(at: piece.index)
     }
 
-    /// Offset context menu ▸ Split Here: the Add Cut popover, opened on the
+    /// Offset context menu ▸ Split Here at «address»: the Add Cut popover, opened on the
     /// right-clicked byte or address and pre-filled with it (§21.3) — the same
     /// dialog as Edit ▸ Add Cut…, so a cut made from the menu and one made from
     /// the bar are the same act. This is how a cut normally gets made.
@@ -4131,7 +4131,7 @@ extension MainViewController: NSMenuItemValidation {
             // Right-click selection actions act on the pane they were built for.
             return (menuItem.representedObject as? OffsetContextTarget)?.pane.isOpen ?? false
         case #selector(splitHere(_:)):
-            // Split Here opens the Add Cut popover pre-filled with the
+            // Split Here at «address» opens the Add Cut popover pre-filled with the
             // right-clicked offset; the popover validates the offset as it is
             // typed, so a file is all the menu item needs (§21.3).
             guard let target = menuItem.representedObject as? OffsetContextTarget,
@@ -4204,7 +4204,7 @@ private func pasteboardBytes() throws -> [UInt8] {
     throw PasteError.noClipboardData
 }
 
-/// Boxes the pane and clicked offset carried by a "Select block from here"
+/// Boxes the pane and clicked offset carried by a "Select Block from Here at «address»"
 /// menu item — `NSMenuItem.representedObject` can't hold a tuple (§10.2).
 private final class OffsetContextTarget: NSObject {
     let pane: PaneViewModel
