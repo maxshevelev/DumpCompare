@@ -826,6 +826,40 @@ difference block.
   thread: a pair of files whose differing bytes alternate with matching ones
   holds a block per byte.
 
+10.4 Caret reveal
+
+When an action moves the active pane's caret, the pane keeps the caret on
+screen. How far it scrolls is set by what kind of move it was, and the rule is
+enforced in one place — the caret reveal takes a mode the caller chooses — so a
+new command that moves the caret only has to say which kind of move it is:
+
+- A navigation command — a join, an undo, a redo — moves the caret to a place
+  the user did not step to. If the caret landed outside the visible viewport,
+  the pane scrolls so the caret's row is at the vertical centre of the pane,
+  clamped to the document's edges; if it landed on screen, the view is left
+  where it is. A command's destination is where the user is looking, not
+  something they have to hunt for. Redoing a join therefore puts the seam back
+  at the centre of the pane, the same as the join itself (§22.5).
+- Incremental navigation — the arrow and page keys, Home/End, and the mouse —
+  moves the caret a step at a time and takes the minimum scroll that keeps it
+  on screen. It never jumps the caret to the centre: a step across a viewport
+  edge scrolls one row, and a centred jump on every key press would disorient.
+- An edit follows its caret the same way: the caret moves by the length typed
+  or pasted, and the minimum scroll keeps it on screen without yanking the view
+  away from the work.
+- A content change that moves no caret — an in-place overwrite, a change to the
+  segment partition, a text-decoder rebuild — never reveals the caret at all: it
+  repaints the affected rows and leaves the scroll where it is. This is what
+  keeps a single action's own centring intact. A join fires its segment changes
+  and then its own navigation; if the intermediate repaint scrolled with the
+  follow rule, the seam would land at the top of the pane and the join's own
+  centring would see the row already on screen and do nothing. Scrolling the
+  caret is the selection and full channels' job; a content change never does it.
+- An explicit "go to" — Go To, a bookmark jump, a Find match, next/previous
+  block, the minimap, a selected search result — names its destination, so the
+  destination is centred whether or not it was already in view (§10.1, §10.3,
+  §11).
+
 =====================================================================
 11. SEARCH
 =====================================================================
@@ -1495,8 +1529,9 @@ its map, so the whole of it is legible at a glance without opening anything.
   Segment…**, **Replace Segment from File…**, **Select Segment** (the piece's
   whole range, not a caret at its start), **Edit…** (the piece's own popover,
   anchored to the block — not the form with the table of all segments), and
-  **Remove Segment** (the piece's bytes merge into a neighbour that keeps its
-  name). Each item carries the piece it acts on.
+  **Merge** (names the piece and the neighbour it merges into — *Merge S1 into
+  S0* — the piece's bytes merge into a neighbour that keeps its name). Each
+  item carries the piece it acts on.
 - A left-click on the strip positions to the click location, the way a click on
   the map does: the caret goes to the byte the click's y stands for, or to the
   nearest cut's exact offset when one is within 4 pt — reusing the snapping the
@@ -2238,11 +2273,14 @@ and every operation that writes is explicit about it.
   offset field empty — just the `0x` prefix, as everywhere an offset is typed —
   and the caret on the offset: from the form there is no caret to start from, so
   the offset is the thing to be filled in, and leaving it unfilled makes no
-  segment. **−** removes the selected piece, merging its bytes into a neighbour
-  that keeps its name (§21.2); it is disabled only when the pane is a single
+  segment. **−** merges the selected piece into a neighbour that keeps its
+  name (§21.2); it is disabled only when the pane is a single
   piece — there is no neighbour to merge into — and is enabled on S0 too:
-  removing S0 reopens the piece below at the file start, so what was S1 becomes
-  S0. Icon-only, so both carry a tooltip and an accessibility label.
+  merging S0 reopens the piece below at the file start, so what was S1 becomes
+  S0. Icon-only, so both carry a tooltip and an accessibility label; the
+  **−**'s tooltip and label name the selected piece and the neighbour it
+  merges into — *Merge S1 into S0* — the way the menu items do, and they
+  follow the selection as it changes.
 - **A wider gap separates the footer from the button row** than the table from
   the footer: the footer is the list's own controls, the button row the
   dialog's, and the space says "these are two different groups".
@@ -2251,13 +2289,16 @@ and every operation that writes is explicit about it.
   *Add Cut…* centres it in the pane instead: it is a dialog pre-filled with the
   caret's offset, not a pointer at a byte, so it does not hang off the caret.
 - **The row's context menu** carries what acts on one piece: *Save Segment…*,
-  *Replace Segment from File…*, *Edit…*, *Remove Segment* — the same menu the
+  *Replace Segment from File…*, *Edit…*, *Merge* — the same menu the
   strip beside the map offers (§21.3), so one shape in both places. Save
   Segment… is live (§21.5); Replace Segment from File… is live (§21.6).
-  *Remove Segment* names the piece it will remove —
-  *Remove Segment S1*, not a bare *Remove Segment* — the way the Edit menu's and
-  the offset context menu's items do (§21.3).
-- **The button row** holds only what acts on the whole partition: **Remove
+  Every item names the piece under the click, the way the strip's menu does:
+  *Save Segment S1…*, *Replace Segment S1 from File…*, *Edit Segment S1*, and
+  *Merge* names the piece and the neighbour it merges into —
+  *Merge S1 into S0*, not a bare *Merge* — the way the Edit menu's and
+  the offset context menu's items do (§21.3). With no piece under the click
+  the items fall back to their bare titles and are disabled.
+- **The button row** holds only what acts on the whole partition: **Merge
   All** at the left, which removes every cut at once — back to one piece, the
   whole file, named for it — and asks before acting, since it is destructive;
   then **Save All as Separate Files…** (§21.5), and **Close** at the right.
@@ -2464,3 +2505,4 @@ feature's Save All as Separate Files (§21.5).
 | Two joins in a row (append, then insert at start) | Three segments, all with the right offsets; the split sheet offers three files |
 | Comparison mode | A join changes one pane's length; the comparison re-indexes and the shorter file's tail reads as an EOF difference (§9) — no special case |
 | Caret after a join | At the start of the added part — the old end for an append, 0 for an insert at start. Undo returns the caret to its pre-join spot; redo brings it back to the seam |
+| The seam after a join | Revealed centred in the pane: the caret's row — the start of the added part — scrolls to the vertical centre, clamped to the document's edges, so the join's result is seen mid-pane rather than at its edge. Redoing the join re-centres the seam the same way (§10.4) |

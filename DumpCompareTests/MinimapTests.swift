@@ -2987,8 +2987,8 @@ final class MinimapTests: XCTestCase {
 
     /// The strip's right-click menu carries the piece under the pointer and the
     /// actions that act on it — Save, Replace, Select, Edit (the piece's own
-    /// popover), and Remove Segment — every item carrying the piece's label, so
-    /// the menu says what it will act on (§21.3).
+    /// popover), and Merge — every item naming the piece it acts on, so the
+    /// menu says what it will act on (§21.3).
     func testTheStripMenuCarriesThePieceAndItsActions() throws {
         let (_, window, _) = try makeSegmentedWindow(cuts: [64, 128])
         let (_, panel) = try minimapViews(window)
@@ -3001,7 +3001,7 @@ final class MinimapTests: XCTestCase {
         let titles = menu.items.map(\.title)
         XCTAssertEqual(titles,
                        ["Save Segment S1…", "Replace Segment S1 from File…", "",
-                        "Select Segment S1", "Edit Segment S1", "Remove Segment S1"],
+                        "Select Segment S1", "Edit Segment S1", "Merge S1 into S0"],
                        "the strip's menu is the form's row menu plus the strip's own Select")
         // Replace is present and live — Stage 6 landed the swap.
         let replace = try XCTUnwrap(menu.items.first { $0.title == "Replace Segment S1 from File…" })
@@ -3034,16 +3034,16 @@ final class MinimapTests: XCTestCase {
                        "Select Segment selects the whole piece, not a caret at its start")
     }
 
-    /// Remove Segment from the strip's menu drops the piece, merging its bytes
-    /// into the piece above, which keeps its name (§21.3) — the same act as the
-    /// form's row menu.
+    /// Merge from the strip's menu drops the piece, merging its bytes into the
+    /// piece above, which keeps its name (§21.3) — the same act as the form's
+    /// row menu.
     func testRemoveSegmentMergesThePieceIntoANeighbour() throws {
         let (_, window, pane) = try makeSegmentedWindow(cuts: [64, 128])
         let (_, panel) = try minimapViews(window)
         let strip = try XCTUnwrap(panel.segmentStripRect(forMapAt: 0))
         let y = stripY(96, strip: strip, topRow: panel.topRow)
         let menu = try XCTUnwrap(panel.segmentStripMenu?(0, 1, NSPoint(x: strip.midX, y: y)))
-        let item = try XCTUnwrap(menu.items.first { $0.title == "Remove Segment S1" })
+        let item = try XCTUnwrap(menu.items.first { $0.title == "Merge S1 into S0" })
         let action = try XCTUnwrap(item.action)
         _ = NSApp.sendAction(action, to: item.target, from: item)
         // S1 [64,128) is gone; S0 absorbs it, so the cut at 64 is dropped and

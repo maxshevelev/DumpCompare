@@ -4,7 +4,7 @@ import XCTest
 
 /// §21.3 the segment commands, exercised through the real `MainViewController`:
 /// Split Here (the offset context menu's path, which opens the Add Cut popover
-/// pre-filled with the right-clicked offset), the Add Cut… / Remove Segment menu
+/// pre-filled with the right-clicked offset), the Add Cut… / Merge menu
 /// validation, and the status bar's readout of the caret's piece.
 ///
 /// Split Here is the way a cut normally gets made — the offset is the thing
@@ -29,7 +29,7 @@ final class SegmentCommandsTests: XCTestCase {
     }
 
     /// A full controller whose active pane is open — the setup the
-    /// active-pane-based menu validation (Add Cut…, Remove Segment) reads.
+    /// active-pane-based menu validation (Add Cut…, Merge) reads.
     private func makeController(_ bytes: [UInt8]) throws -> (MainViewController, NSWindow, URL) {
         let url = try tempFile(bytes)
         let controller = MainViewController()
@@ -159,36 +159,36 @@ final class SegmentCommandsTests: XCTestCase {
         _ = window
     }
 
-    /// Remove Segment is disabled while the pane is a single piece — there is
+    /// Merge is disabled while the pane is a single piece — there is
     /// no neighbour to merge into — and enabled for every piece once the dump is
-    /// partitioned, including S0 (removing it reopens the piece below at the
+    /// partitioned, including S0 (merging it reopens the piece below at the
     /// file start).
     func testRemoveSegmentIsEnabledOnEveryPieceOncePartitioned() throws {
         let (controller, window, url) = try makeController([UInt8](repeating: 0x11, count: 16))
         defer { cleanup(controller, url) }
         let pane = controller.windowModel.pane1
-        let item = NSMenuItem(title: "Remove Segment", action: #selector(MainViewController.removeSegment(_:)), keyEquivalent: "")
+        let item = NSMenuItem(title: "Merge", action: #selector(MainViewController.removeSegment(_:)), keyEquivalent: "")
 
         // No cuts yet: one piece, nothing to merge into, so the command is off.
         XCTAssertFalse(controller.validateMenuItem(item), "a single piece has no neighbour to merge into")
 
         // A cut at 8: two pieces. The caret in the first piece (S0) is now
-        // removable — removing it reopens the piece below at the file start.
+        // mergeable — merging it reopens the piece below at the file start.
         pane.segmentStore.addCut(at: 8)
         pane.setSelection(SelectionModel.empty(at: 4, fileSize: 16))
-        XCTAssertTrue(controller.validateMenuItem(item), "S0 is removable once the dump is partitioned")
-        XCTAssertEqual(item.title, "Remove Segment S0",
-                       "the item names the piece the caret is in, not a bare 'Remove Segment'")
+        XCTAssertTrue(controller.validateMenuItem(item), "S0 is mergeable once the dump is partitioned")
+        XCTAssertEqual(item.title, "Merge S0 into S1",
+                       "the item names the piece and its neighbour, not a bare 'Merge'")
 
-        // The caret in the second piece (S1): also removable, merging into S0.
+        // The caret in the second piece (S1): also mergeable, into S0.
         pane.setSelection(SelectionModel.empty(at: 12, fileSize: 16))
-        XCTAssertTrue(controller.validateMenuItem(item), "a later piece is removable too")
-        XCTAssertEqual(item.title, "Remove Segment S1",
-                       "moving the caret renames the item to the piece it will now remove")
+        XCTAssertTrue(controller.validateMenuItem(item), "a later piece is mergeable too")
+        XCTAssertEqual(item.title, "Merge S1 into S0",
+                       "moving the caret renames the item to the piece it will now merge")
         _ = window
     }
 
-    /// The offset context menu's Remove Segment names the piece the right-clicked
+    /// The offset context menu's Merge names the piece the right-clicked
     /// byte is in — the same naming as the Edit menu's item, but resolved from the
     /// byte that was clicked rather than the caret (§21.3).
     func testTheOffsetMenusRemoveSegmentNamesTheClickedPiecesPiece() throws {
@@ -201,19 +201,19 @@ final class SegmentCommandsTests: XCTestCase {
             let menu = controller.makeOffsetMenu(for: pane, offset: offset)
             return try XCTUnwrap(
                 menu.items.first { $0.action == #selector(MainViewController.removeSegment(_:)) },
-                "the offset menu must offer Remove Segment")
+                "the offset menu must offer Merge")
         }
 
-        // A byte in S1 names S1.
+        // A byte in S1 names S1, merging into S0.
         let inS1 = try removeItem(at: 12)
-        XCTAssertTrue(controller.validateMenuItem(inS1), "S1 has a neighbour, so it is removable")
-        XCTAssertEqual(inS1.title, "Remove Segment S1",
+        XCTAssertTrue(controller.validateMenuItem(inS1), "S1 has a neighbour, so it is mergeable")
+        XCTAssertEqual(inS1.title, "Merge S1 into S0",
                        "the item names the piece the right-clicked byte is in")
 
-        // A byte in S0 names S0.
+        // A byte in S0 names S0, merging into S1.
         let inS0 = try removeItem(at: 4)
         XCTAssertTrue(controller.validateMenuItem(inS0))
-        XCTAssertEqual(inS0.title, "Remove Segment S0")
+        XCTAssertEqual(inS0.title, "Merge S0 into S1")
     }
 
     /// Split Here is offered whenever the pane has bytes — the offset is NOT
@@ -240,9 +240,9 @@ final class SegmentCommandsTests: XCTestCase {
         XCTAssertTrue(valid(8), "a seam another cut holds is offered; the popover refuses it")
     }
 
-    // MARK: - Remove Segment
+    // MARK: - Merge
 
-    /// Remove Segment merges the caret's piece with the one above it — dropping
+    /// Merge merges the caret's piece into the one above it — dropping
     /// the cut at the piece's start — leaving the bytes untouched.
     func testRemoveSegmentMergesTheCaretPieceWithTheOneAbove() throws {
         let (controller, window, url) = try makeController([UInt8](repeating: 0x11, count: 16))

@@ -194,8 +194,8 @@ final class SelectionRedrawTests: XCTestCase {
         try pane.open(url: url)
         var fullRefreshes = 0
         var selectionRefreshes = 0
-        pane.onChange = { fullRefreshes += 1 }
-        pane.onSelectionChanged = { selectionRefreshes += 1 }
+        pane.onChange = { _ in fullRefreshes += 1 }
+        pane.onSelectionChanged = { _ in selectionRefreshes += 1 }
 
         // The per-event sequence a drag produces, extended across 6 rows. The
         // input region stays `.hex`, so each region report is a no-op.
@@ -216,8 +216,8 @@ final class SelectionRedrawTests: XCTestCase {
         try pane.open(url: url)
         var fullRefreshes = 0
         var selectionRefreshes = 0
-        pane.onChange = { fullRefreshes += 1 }
-        pane.onSelectionChanged = { selectionRefreshes += 1 }
+        pane.onChange = { _ in fullRefreshes += 1 }
+        pane.onSelectionChanged = { _ in selectionRefreshes += 1 }
 
         pane.setInputRegion(.ascii)
         XCTAssertEqual(fullRefreshes, 0)

@@ -22,11 +22,22 @@ struct Segment: Equatable {
 
     /// The positional label for the piece at `index` — "S0", "S1", … The one
     /// place the "S" prefix is built, so every site that names a piece (the
-    /// form's label column, the status bar, the Remove Segment menu items, the
+    /// form's label column, the status bar, the Merge menu items, the
     /// saved file names, the Save All preview) reads the same shape. The prefix
     /// is a constant for now; making the label format configurable is a change
     /// to this one line.
     static func label(for index: Int) -> String { "S\(index)" }
+
+    /// The menu title for merging this piece into its neighbour —
+    /// "Merge S1 into S0": the piece that goes, and the neighbour that absorbs
+    /// it (the one above, or the one below for S0). The one place the "into
+    /// which" rule is written, so the Edit menu, the offset context menu, the
+    /// strip menu, and the form's row menu all read the same shape.
+    var mergeTitle: String { Self.mergeTitle(for: index) }
+    static func mergeTitle(for index: Int) -> String {
+        let neighbour = index == 0 ? 1 : index - 1
+        return "Merge \(label(for: index)) into \(label(for: neighbour))"
+    }
 
     /// Built only by the partition that owns it: a `Segment` is a piece of one
     /// specific `Segmentation`, so it cannot be fabricated with boundaries no

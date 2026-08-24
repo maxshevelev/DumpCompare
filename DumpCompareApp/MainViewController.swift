@@ -1506,9 +1506,11 @@ final class MainViewController: NSViewController {
         edit.target = self
         edit.representedObject = target
 
-        // Remove Segment: the piece's bytes merge into a neighbour that keeps
-        // its name (§21.3) — the same act as the form's row menu.
-        let remove = menu.addItem(withTitle: "Remove Segment \(label)",
+        // Merge: the piece's bytes merge into a neighbour that keeps its name
+        // (§21.3) — the same act as the form's row menu. The title names both
+        // the piece and the neighbour it merges into, so the menu says what it
+        // will do without a second look.
+        let remove = menu.addItem(withTitle: Segment.mergeTitle(for: pieceIndex),
                                   action: #selector(minimapMenuRemoveSegment(_:)), keyEquivalent: "")
         remove.target = self
         remove.representedObject = target
@@ -1602,9 +1604,9 @@ final class MainViewController: NSViewController {
         controller.show(relativeTo: anchor, of: self.minimapView)
     }
 
-    /// Remove Segment from the strip's menu: the piece's bytes merge into a
-    /// neighbour that keeps its name (§21.3) — the same act as the form's row
-    /// menu, on the piece under the pointer.
+    /// Merge from the strip's menu: the piece's bytes merge into a neighbour
+    /// that keeps its name (§21.3) — the same act as the form's row menu, on
+    /// the piece under the pointer.
     @objc private func minimapMenuRemoveSegment(_ sender: NSMenuItem) {
         guard let target = sender.representedObject as? SegmentMenuTarget,
               let pane = minimapPane(at: target.mapIndex), pane.isOpen,
@@ -2046,6 +2048,9 @@ final class MainViewController: NSViewController {
             return
         }
 
+        // The seam (the caret, at the start of the added part) is centred in the
+        // pane by the join's own `notify(centerCaret: true)` (§10.4, §22.5).
+
         // §22.2: the transient status line names both sources and the total
         // size, the way the app reports a search result, then yields back.
         let total = pane.fileSize
@@ -2423,8 +2428,10 @@ final class MainViewController: NSViewController {
 
     /// The segment block of the offset context menu (§21.3): *Split Here* opens
     /// the Add Cut popover pre-filled with the right-clicked byte or address,
-    /// and *Remove Segment* deletes the piece that position sits in. Both act on
-    /// the right-clicked position — the thing the menu was opened on.
+    /// and *Merge* merges the piece that position sits into its neighbour. Both
+    /// act on the right-clicked position — the thing the menu was opened on.
+    /// The Merge item's title is renamed by validation to name the piece and its
+    /// neighbour ("Merge S1 into S0").
     private func addSegmentMenuItems(to menu: NSMenu, for pane: PaneViewModel, offset: UInt64) {
         let target = OffsetContextTarget(pane: pane, offset: offset)
         func add(_ title: String, _ action: Selector) {
@@ -2433,7 +2440,7 @@ final class MainViewController: NSViewController {
             item.representedObject = target
         }
         add("Split Here", #selector(splitHere(_:)))
-        add("Remove Segment", #selector(removeSegment(_:)))
+        add("Merge", #selector(removeSegment(_:)))
     }
 
     /// The bookmark block of the offset context menu (§20.3). One item marks and
@@ -3114,12 +3121,12 @@ final class MainViewController: NSViewController {
         presentCutEditPopover(in: pane, prefill: pane.caretOffset, anchoredToOffset: false)
     }
 
-    /// Remove Segment: deletes the piece a position sits in, merging it with a
-    /// neighbour (§21.3). It acts on a position *inside* a piece — the caret's,
-    /// from the Edit menu; the right-clicked byte or address, from the context
-    /// menu — not on a cut point, which is why it is named for the segment. The
-    /// bytes are untouched: removing a piece changes how the file is read, not
-    /// the file.
+    /// Merge: merges the piece a position sits in into its neighbour (§21.3). It
+    /// acts on a position *inside* a piece — the caret's, from the Edit menu; the
+    /// right-clicked byte or address, from the context menu — not on a cut point.
+    /// The bytes are untouched: merging a piece changes how the file is read, not
+    /// the file. The menu title names the piece and the neighbour it merges into
+    /// ("Merge S1 into S0"), so it is never confused with deleting data.
     @objc func removeSegment(_ sender: Any?) {
         let (pane, position): (PaneViewModel, UInt64)
         if let target = offsetContextTarget(from: sender) {
@@ -4081,9 +4088,9 @@ extension MainViewController: NSMenuItemValidation {
             }
             guard pane.isOpen else { return false }
             let piece = pane.segmentStore.segment(containing: position)
-            // Name the piece the item will remove, so the menu says what it will
-            // do (§21.3) — "Remove Segment S1", not a bare "Remove Segment".
-            menuItem.title = piece.map { "Remove Segment \($0.label)" } ?? "Remove Segment"
+            // Name the piece and the neighbour it merges into, so the menu says
+            // what it will do (§21.3) — "Merge S1 into S0", not a bare "Merge".
+            menuItem.title = piece.map { $0.mergeTitle } ?? "Merge"
             return piece != nil && pane.segmentStore.current.pieces.count > 1
         case #selector(revertDocument):
             // Nothing on disk to revert an untitled document to.

@@ -1765,27 +1765,41 @@ final class HexView: NSView, NSViewToolTipOwner {
 
     // MARK: - Scrolling
 
-    /// Scrolls the caret into view within the enclosing scroll view.
+    /// Reveals the caret. `center` selects how: a navigation command that jumped
+    /// the caret (`center: true`) centres it when it landed outside the viewport
+    /// — the join's seam, a search hit, a go-to — while incremental navigation
+    /// (arrow keys, mouse, Home/End; `center: false`) takes the minimum scroll
+    /// that keeps the caret on screen, with no jump to the centre (§10.4).
     ///
     /// While a mouse drag is in progress the pane is driven by the pointer, not
     /// the caret: the drag anchor may legitimately scroll out of view, and
     /// yanking it back would fight the drag-selection autoscroll (§6). So the
     /// caret is revealed only outside a drag.
-    func revealCaret() {
+    func revealCaret(center: Bool = false) {
         guard !dragEngaged, let dataSource else { return }
-        let layout = currentLayout
         let selection = dataSource.hexSelection()
-        let (row, column) = layout.rowColumn(of: selection.start)
-        let region = dataSource.hexInputRegion()
-        let rect: CGRect
-        if region == .ascii {
-            rect = CGRect(x: layout.asciiX(column: column),
-                          y: layout.rowFrame(row: row).minY,
-                          width: layout.charWidth, height: layout.rowHeight)
+        let caret = selection.start
+        if center {
+            // A command moved the caret to a new location: if it is outside the
+            // viewport, centre it; if it is already on screen, leave the view put.
+            guard !isRowVisible(containing: caret) else { return }
+            centerRow(containing: caret)
         } else {
-            rect = layout.hexByteFrame(row: row, column: column)
+            // Incremental navigation: the minimum scroll that keeps the caret on
+            // screen — no jump to the centre, which would disorient (§10.4).
+            let layout = currentLayout
+            let (row, column) = layout.rowColumn(of: caret)
+            let region = dataSource.hexInputRegion()
+            let rect: CGRect
+            if region == .ascii {
+                rect = CGRect(x: layout.asciiX(column: column),
+                              y: layout.rowFrame(row: row).minY,
+                              width: layout.charWidth, height: layout.rowHeight)
+            } else {
+                rect = layout.hexByteFrame(row: row, column: column)
+            }
+            scrollToVisible(rect)
         }
-        scrollToVisible(rect)
     }
 
     /// Redraws the row the caret sits on without scrolling. Used when the
@@ -1814,11 +1828,12 @@ final class HexView: NSView, NSViewToolTipOwner {
         setNeedsDisplay(layout.rowFrame(row: row))
     }
 
-    /// Scrolls the row containing `offset` to the vertical centre of the visible
-    /// area (clamped to the document's edges), so the byte is shown mid-pane
-    /// instead of at its top or bottom edge. Used after a search result lands
-    /// (§11).
-    func revealOffsetCentered(_ offset: UInt64) {
+    /// The single "centre an offset" primitive: scrolls so the row containing
+    /// `offset` is at the vertical centre of the visible area (clamped to the
+    /// document's edges), so the byte is shown mid-pane rather than at its top
+    /// or bottom edge. Shared by the centred caret reveal and the "go to"
+    /// actions (§10.4, §11).
+    private func centerRow(containing offset: UInt64) {
         guard let scroll = enclosingScrollView else { return }
         let layout = currentLayout
         let (row, _) = layout.rowColumn(of: offset)
@@ -1829,6 +1844,23 @@ final class HexView: NSView, NSViewToolTipOwner {
         guard abs(originY - clip.bounds.origin.y) > 0.5 else { return }
         clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: originY))
         scroll.reflectScrolledClipView(clip)
+    }
+
+    /// Whether the row containing `offset` is already within the visible
+    /// viewport — the test that decides a centred reveal is needed at all: a
+    /// command that lands the caret on screen leaves the view where it is.
+    private func isRowVisible(containing offset: UInt64) -> Bool {
+        guard let scroll = enclosingScrollView else { return true }
+        let layout = currentLayout
+        let (row, _) = layout.rowColumn(of: offset)
+        return layout.rowFrame(row: row).intersects(scroll.contentView.bounds)
+    }
+
+    /// Always centres the row containing `offset` (a "go to" action: the caller
+    /// asked for this offset, so it is centred whether or not it was in view).
+    /// Used after a search result lands (§11).
+    func revealOffsetCentered(_ offset: UInt64) {
+        centerRow(containing: offset)
     }
 
     /// Scrolls the row containing `offset` to the *top* of the visible area

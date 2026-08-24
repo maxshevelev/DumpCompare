@@ -203,19 +203,26 @@ final class PaneViewModel: HexViewDataSource {
     var onMirroredSelectionChanged: (() -> Void)?
 
     /// Called after any change so the view can redraw and refresh the status bar.
-    var onChange: (() -> Void)?
+    /// Carries the caret-reveal mode (§10.4): `true` when a navigation command
+    /// jumped the caret (centre it if it landed off-screen), `false` for an
+    /// incremental move (the minimum scroll that keeps it on screen).
+    var onChange: ((Bool) -> Void)?
 
     /// Fired when only the caret/selection moved (no bytes changed), so the
     /// view can redraw just the rows the selection now covers differently — the
     /// hot path for mouse-drag selection, where a full redraw on every event
-    /// lags the cursor (§3.3).
-    var onSelectionChanged: (() -> Void)?
+    /// lags the cursor (§3.3). Carries the same caret-reveal mode as `onChange`
+    /// (§10.4).
+    var onSelectionChanged: ((Bool) -> Void)?
 
     /// Fired after a content change — bytes overwritten in this pane, or its
     /// text decoder rebuilt — carrying the affected region, so the view can
     /// redraw only the affected rows/columns instead of the whole pane (§3.3
-    /// extension). Not fired for length-changing edits (insert/delete, paste
-    /// insert, undo/redo/revert, open/save) — those still use `onChange`.
+    /// extension). It carries no caret-reveal mode: a content change never
+    /// moves the caret, so it must not scroll — revealing the caret is the
+    /// selection and full channels' job (§10.4). Not fired for length-changing
+    /// edits (insert/delete, paste insert, undo/redo/revert, open/save) — those
+    /// still use `onChange`.
     var onContentChanged: ((HexViewChange) -> Void)?
 
     /// Fired when the *companion* pane's bytes changed, so this pane can redraw
@@ -274,7 +281,9 @@ final class PaneViewModel: HexViewDataSource {
                 self.textDecoder = TextDecoderRegistry.make(identifier: settings.identifier, placeholder: settings.placeholder)
                 // A decoding change only affects the decoded-text column; the
                 // view redraws that band instead of the whole pane (§3.3
-                // extension).
+                // extension). The content channel repaints only — it never
+                // reveals the caret, which a decoding change does not move
+                // (§10.4).
                 self.onContentChanged?(.textDecoding)
             }
         }
@@ -1237,9 +1246,10 @@ final class PaneViewModel: HexViewDataSource {
         changeWatcher = nil
         // The join is a length-changing edit: the whole pane repaints, the
         // comparison index shifts for the insert, and the companion's diff
-        // background re-reads.
+        // background re-reads. It is a navigation command: the seam (the caret)
+        // is centred if it landed outside the viewport (§10.4).
         onEdit?(edit)
-        notify()
+        notify(centerCaret: true)
         notifyCompanionContentFullyChanged()
     }
 
@@ -1266,10 +1276,16 @@ final class PaneViewModel: HexViewDataSource {
             let amount = UInt64(-delta)
             target = amount > current ? 0 : current - amount
         }
-        moveCaret(to: target, extendSelection: extendSelection)
+        // Arrow/page keys are incremental navigation: follow the caret with the
+        // minimum scroll, never a jump to the centre (§10.4).
+        moveCaret(to: target, extendSelection: extendSelection, center: false)
     }
 
-    func moveCaret(to offset: UInt64, extendSelection: Bool = false) {
+    /// Moves the caret to `offset`. `center` (default `true`) marks it a
+    /// navigation command: the view centres the caret if it landed outside the
+    /// viewport (§10.4). Incremental callers — arrow keys, mouse, Home/End —
+    /// pass `false` for the minimum-scroll follow.
+    func moveCaret(to offset: UInt64, extendSelection: Bool = false, center: Bool = true) {
         guard let doc = document else { return }
         // Caret movement ends the byte being typed: it breaks the typing series
         // *and* closes the nibble group, so the half-typed byte left behind is
@@ -1299,7 +1315,7 @@ final class PaneViewModel: HexViewDataSource {
         // closing above — and Backspace no longer rolls it back from the new
         // position. Undo does.
         pendingInsertOffset = nil
-        notify(selectionChangedOnly: true)
+        notify(selectionChangedOnly: true, centerCaret: center)
     }
 
     func selectAll() {
@@ -1354,7 +1370,9 @@ final class PaneViewModel: HexViewDataSource {
         // Undoing the join's transaction re-attaches the document (§22.2); the
         // pane owns the watcher and `isUntitled`, so it follows.
         if doc.isAttached != attachedBefore { syncAttachment() }
-        notify()
+        // A navigation command: centre the restored caret if it landed outside
+        // the viewport (§10.4).
+        notify(centerCaret: true)
         return edit != nil
     }
 
@@ -1378,7 +1396,9 @@ final class PaneViewModel: HexViewDataSource {
         // Redoing the join's transaction re-detaches the document (§22.2); the
         // pane follows (see `undo`).
         if doc.isAttached != attachedBefore { syncAttachment() }
-        notify()
+        // A navigation command: centre the restored caret if it landed outside
+        // the viewport (§10.4).
+        notify(centerCaret: true)
         return edit != nil
     }
 
@@ -1534,7 +1554,14 @@ final class PaneViewModel: HexViewDataSource {
     ///   same rows so its live diff background catches up (§3.3 extension).
     /// - neither (plain `notify()`): a layout or lifecycle change (insert /
     ///   delete, undo/redo, open/save/revert) — the whole pane repaints.
-    private func notify(selectionChangedOnly: Bool = false, contentChange: HexViewChange? = nil) {
+    ///
+    /// `centerCaret` is the caret-reveal mode (§10.4) for the two caret-moving
+    /// routes: `true` when a navigation command jumped the caret (centre it if
+    /// it landed off-screen), `false` for an incremental move (the minimum
+    /// scroll that keeps it on screen). The content route ignores it — a
+    /// content change does not move the caret, so it never scrolls.
+    private func notify(selectionChangedOnly: Bool = false, contentChange: HexViewChange? = nil,
+                        centerCaret: Bool = false) {
         // Selections are independent per pane (§3.3): the companion must not
         // adopt this pane's selection — its hex view only redraws the frames
         // mirroring it.
@@ -1542,16 +1569,18 @@ final class PaneViewModel: HexViewDataSource {
         if let contentChange {
             // An edit in this pane changes the comparison difference in the
             // companion: it redraws the affected rows so its diff background
-            // recomputes against the new bytes (§3.3 extension).
+            // recomputes against the new bytes (§3.3 extension). The content
+            // channel repaints only — it never reveals the caret, which a
+            // content change does not move (§10.4).
             companion?.onCompanionContentChanged?(contentChange)
             onContentChanged?(contentChange)
         } else if selectionChangedOnly {
             // A pure selection move (drag, click, keyboard, Find): the bytes
             // are unchanged, so the view redraws only the rows the selection
             // now covers differently instead of the whole pane (§3.3).
-            onSelectionChanged?()
+            onSelectionChanged?(centerCaret)
         } else {
-            onChange?()
+            onChange?(centerCaret)
         }
         onCaretChanged?()
     }
@@ -1630,7 +1659,8 @@ extension PaneViewModel: HexEditorDelegate {
     }
 
     func hexEditor(_ editor: HexView, moveCaretTo offset: UInt64, extendSelection: Bool) {
-        moveCaret(to: offset, extendSelection: extendSelection)
+        // Home/End are keyboard navigation: follow the caret, don't centre (§10.4).
+        moveCaret(to: offset, extendSelection: extendSelection, center: false)
     }
 
     func hexEditorSelectAll(_ editor: HexView) {
@@ -1638,7 +1668,9 @@ extension PaneViewModel: HexEditorDelegate {
     }
 
     func hexEditor(_ editor: HexView, didClickAt offset: UInt64, region: HexInputRegion, extendSelection: Bool, nibble: Int) {
-        moveCaret(to: offset, extendSelection: extendSelection)
+        // A mouse click places the caret where the user pointed: follow, don't
+        // centre (§10.4).
+        moveCaret(to: offset, extendSelection: extendSelection, center: false)
         // A click can place the caret mid-byte (before the low nibble). Arrow
         // movement always lands on a byte's left boundary (`moveCaret` resets
         // the nibble), so only a direct click sets it (§3.3).

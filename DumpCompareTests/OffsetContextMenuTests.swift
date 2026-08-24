@@ -190,17 +190,17 @@ final class OffsetContextMenuTests: XCTestCase {
 
         XCTAssertEqual(menu.items.count, 8,
                        "Copy offset, separator, Select block from here, separator, " +
-                       "Split Here, Remove Segment, separator, Toggle Bookmark")
+                       "Split Here, Merge, separator, Toggle Bookmark")
         XCTAssertEqual(menu.items[0].title, "Copy offset")
         XCTAssertEqual(menu.items[0].action, #selector(MainViewController.copyOffset(_:)))
         XCTAssertTrue(menu.items[1].isSeparatorItem)
         XCTAssertEqual(menu.items[2].title, "Select block from here")
         XCTAssertEqual(menu.items[2].action, #selector(MainViewController.selectBlockFromHere(_:)))
-        // The segment block: its own separators, Split Here and Remove Segment.
+        // The segment block: its own separators, Split Here and Merge.
         XCTAssertTrue(menu.items[3].isSeparatorItem)
         XCTAssertEqual(menu.items[4].title, "Split Here")
         XCTAssertEqual(menu.items[4].action, #selector(MainViewController.splitHere(_:)))
-        XCTAssertEqual(menu.items[5].title, "Remove Segment")
+        XCTAssertEqual(menu.items[5].title, "Merge")
         XCTAssertEqual(menu.items[5].action, #selector(MainViewController.removeSegment(_:)))
         XCTAssertTrue(menu.items[6].isSeparatorItem)
 
@@ -246,7 +246,7 @@ final class OffsetContextMenuTests: XCTestCase {
                         "Copy offset", "",
                         "Select block from here", "",
                         // The segment block: its own separators (§21.3).
-                        "Split Here", "Remove Segment", "",
+                        "Split Here", "Merge", "",
                         // The bookmark block: one item marks and unmarks, and an
                         // unmarked row has nothing to rename (§20.3).
                         "Toggle Bookmark at 0x00000010"])
@@ -280,7 +280,7 @@ final class OffsetContextMenuTests: XCTestCase {
             let menu = controller.makeOffsetMenu(for: pane, offset: outside)
             XCTAssertEqual(menu.items.map(\.title),
                            ["Copy offset", "", "Select block from here", "",
-                            "Split Here", "Remove Segment", "",
+                            "Split Here", "Merge", "",
                             "Toggle Bookmark at 0x00000020"],
                            "0x\(String(outside, radix: 16)) is outside: no selection actions")
         }

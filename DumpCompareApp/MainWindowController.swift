@@ -334,11 +334,12 @@ final class MainWindowController: NSWindowController {
         // The segment pair (§21.3). No key equivalents: both are deliberate acts
         // reached from a menu, and the fast path is Split Here in the dump's own
         // context menu. Add Cut… opens the offset-and-description popover;
-        // Remove Segment deletes the piece the caret sits in, merging it with a
-        // neighbour — it acts on the caret's position, not on a cut point.
+        // Merge merges the piece the caret sits in into a neighbour — it acts on
+        // the caret's position, not on a cut point. Its title is renamed by
+        // validation to name the piece and its neighbour ("Merge S1 into S0").
         editMenu.addItem(.separator())
         editMenu.addItem(withTitle: "Add Cut…", action: #selector(MainViewController.addCut), keyEquivalent: "")
-        editMenu.addItem(withTitle: "Remove Segment", action: #selector(MainViewController.removeSegment(_:)), keyEquivalent: "")
+        editMenu.addItem(withTitle: "Merge", action: #selector(MainViewController.removeSegment(_:)), keyEquivalent: "")
         // Segments…: the partition's own form (§21.4) — the list the two
         // commands above edit, with a row editor and the Save All button.
         // ⌥⌘S opens it: ⌘S is Save and ⇧⌘S is Save As, so the form takes the

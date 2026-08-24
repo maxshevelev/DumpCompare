@@ -92,6 +92,17 @@ final class JoinTests: XCTestCase {
         }
     }
 
+    /// Recursively finds the first view of type `T` in the hierarchy rooted at
+    /// `root` — the pane's views are the controller's subviews, and the
+    /// controller keeps no test-reachable handle to them.
+    private func findView<T: NSView>(_ type: T.Type, in root: NSView) -> T? {
+        for subview in root.subviews {
+            if let match = subview as? T { return match }
+            if let found = findView(type, in: subview) { return found }
+        }
+        return nil
+    }
+
     // MARK: - The bytes after a join
 
     /// Append File… joins the chosen file's bytes after the pane's content. The
@@ -112,10 +123,11 @@ final class JoinTests: XCTestCase {
         XCTAssertEqual(pane.fileSize, 19)
         XCTAssertEqual(try paneBytes(pane, 0..<19),
                        [UInt8](0..<16) + [0xA0, 0xA1, 0xA2])
-        // The pane detached from its file: untitled, dirty, nothing to undo.
+        // The pane detached from its file: untitled and dirty, and the join is
+        // one undo step on top of any earlier edits (§22.2).
         XCTAssertTrue(pane.isUntitled, "the join detaches the pane from its file")
         XCTAssertTrue(pane.status.isDirty, "the joined content is unsaved")
-        XCTAssertFalse(pane.document?.canUndo ?? true, "the join is not undoable")
+        XCTAssertTrue(pane.document?.canUndo ?? false, "the join is one undo step")
         // The seam is a cut: two pieces, named for their sources.
         let pieces = pane.segmentStore.segments
         XCTAssertEqual(pieces.map(\.range), [0..<16, 16..<19],
@@ -237,12 +249,12 @@ final class JoinTests: XCTestCase {
         _ = window
     }
 
-    // MARK: - The caret shift
+    // MARK: - The caret after a join
 
-    /// An insert at the start shifts the caret and selection by the inserted
-    /// length, so they stay on the bytes they were on (§22.5); an append leaves
-    /// them put.
-    func testAnInsertAtStartShiftsTheSelection() throws {
+    /// A join puts the caret at the start of the added part (§22.5) — 0 for an
+    /// insert at the start, the new file's start — replacing whatever selection
+    /// the pane held.
+    func testAnInsertAtStartPutsTheCaretAtZero() throws {
         let (controller, window, _) = try makeController([UInt8](0..<16))
         defer { cleanup(controller, nil) }
         let pane = controller.windowModel.pane1
@@ -254,29 +266,110 @@ final class JoinTests: XCTestCase {
 
         controller.insertFileAtStart()
 
-        let sel = pane.hexSelection()
-        XCTAssertEqual(sel.start, 6, "the selection start shifts by the inserted length")
-        XCTAssertEqual(sel.end, 10, "the selection end shifts by the inserted length")
+        XCTAssertEqual(pane.caretOffset, 0,
+                       "the caret is at 0, the start of the added part")
         _ = window
     }
 
-    /// An append leaves the caret and selection where they were.
-    func testAnAppendLeavesTheSelectionPut() throws {
+    /// An append puts the caret at the seam — the start of the added part, the
+    /// old end — replacing whatever selection the pane held (§22.5).
+    func testAnAppendPutsTheCaretAtTheSeam() throws {
         let (controller, window, _) = try makeController([UInt8](0..<16))
         defer { cleanup(controller, nil) }
         let pane = controller.windowModel.pane1
         pane.setSelection(SelectionModel(start: 4, end: 8, fileSize: 16))
 
-        let source = try makeSourceFile([0xA0, 0xA1, 0xA2])
+        let source = try makeSourceFile([0xA0, 0xA1, 0xA2])  // 3 bytes
         let capture = JoinCapture()
         wire(controller, capture, sources: [source], confirmResponse: .alertFirstButtonReturn)
 
         controller.appendFile()
 
-        let sel = pane.hexSelection()
-        XCTAssertEqual(sel.start, 4, "an append leaves the selection start put")
-        XCTAssertEqual(sel.end, 8, "an append leaves the selection end put")
+        XCTAssertEqual(pane.caretOffset, 16,
+                       "the caret is at the seam, the start of the added part")
         _ = window
+    }
+
+    // MARK: - The seam's reveal
+
+    /// A join reveals its seam — the caret, at the start of the added part —
+    /// centred in the pane, so the result is seen mid-pane rather than at its
+    /// edge (§22.5). The file and the source are both large enough that the seam
+    /// sits mid-document and the centre is not clamped to an edge: the scroll
+    /// lands where the seam's row is centred, not where a plain into-view scroll
+    /// would leave it.
+    func testAnAppendRevealsTheSeamCentredInThePane() throws {
+        // Two 4096-byte halves: the seam lands at 4096, mid-document, so
+        // centring it is a real scroll, not a clamp to the top or the bottom.
+        let (controller, window, url) = try makeController([UInt8](repeating: 0x11, count: 4096))
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+
+        let source = try makeSourceFile([UInt8](repeating: 0x22, count: 4096))
+        let capture = JoinCapture()
+        wire(controller, capture, sources: [source], confirmResponse: .alertFirstButtonReturn)
+
+        controller.appendFile()
+
+        window.layoutIfNeeded()
+        let hexView = try XCTUnwrap(findView(HexView.self, in: controller.view),
+                                    "the pane hosts a hex view")
+        let clip = try XCTUnwrap(hexView.enclosingScrollView).contentView
+        let layout = hexView.hexLayout
+
+        // The seam is where the caret landed: the old end, now mid-document.
+        let seam = pane.caretOffset
+        XCTAssertEqual(seam, 4096, "the caret is at the start of the added part")
+        let (row, _) = layout.rowColumn(of: seam)
+        let rowFrame = layout.rowFrame(row: row)
+        let maxOriginY = max(0, hexView.bounds.height - clip.bounds.height)
+        let expected = min(max(0, rowFrame.midY - clip.bounds.height / 2), maxOriginY)
+
+        // The centre is a real position: not clamped to either edge.
+        XCTAssertGreaterThan(expected, 0, "the seam is below the top of the document")
+        XCTAssertLessThan(expected, maxOriginY, "the seam is above the bottom of the document")
+        XCTAssertEqual(clip.bounds.origin.y, expected, accuracy: 0.5,
+                       "the seam's row is centred in the pane, not merely scrolled into view")
+    }
+
+    /// Redoing a join re-centres the seam, the same as the join itself (§10.4,
+    /// §22.5): the undo returns the caret to where it was before the join (the
+    /// top of the file), and the redo restores it to the seam — outside the
+    /// viewport again — so the reveal centres it.
+    func testRedoingAnAppendRevealsTheSeamCentredInThePane() throws {
+        // Two 4096-byte halves: the seam lands at 4096, mid-document, so
+        // centring it is a real scroll, not a clamp to an edge.
+        let (controller, window, url) = try makeController([UInt8](repeating: 0x11, count: 4096))
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+
+        let source = try makeSourceFile([UInt8](repeating: 0x22, count: 4096))
+        let capture = JoinCapture()
+        wire(controller, capture, sources: [source], confirmResponse: .alertFirstButtonReturn)
+
+        controller.appendFile()
+        _ = try pane.undo()
+        _ = try pane.redo()
+
+        window.layoutIfNeeded()
+        let hexView = try XCTUnwrap(findView(HexView.self, in: controller.view),
+                                    "the pane hosts a hex view")
+        let clip = try XCTUnwrap(hexView.enclosingScrollView).contentView
+        let layout = hexView.hexLayout
+
+        // The redo restored the caret to the seam: the old end, mid-document.
+        let seam = pane.caretOffset
+        XCTAssertEqual(seam, 4096, "the redo put the caret back at the seam")
+        let (row, _) = layout.rowColumn(of: seam)
+        let rowFrame = layout.rowFrame(row: row)
+        let maxOriginY = max(0, hexView.bounds.height - clip.bounds.height)
+        let expected = min(max(0, rowFrame.midY - clip.bounds.height / 2), maxOriginY)
+
+        // The centre is a real position: not clamped to either edge.
+        XCTAssertGreaterThan(expected, 0, "the seam is below the top of the document")
+        XCTAssertLessThan(expected, maxOriginY, "the seam is above the bottom of the document")
+        XCTAssertEqual(clip.bounds.origin.y, expected, accuracy: 0.5,
+                       "redoing the join re-centres the seam in the pane")
     }
 
     // MARK: - The refusal

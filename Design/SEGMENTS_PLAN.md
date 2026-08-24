@@ -177,10 +177,10 @@ boundary. A typed offset past a neighbouring cut is refused, not wrapped.
 - **Edit…** — opens the piece's own popover (name and start offset), anchored to
   the block under the pointer — the same editor the form's row uses, not the form
   with the table of all segments.
-- **Remove Segment** — removes the piece, merging its bytes into a neighbour
-  that keeps its name. The bytes are untouched: removing a piece is a change to
-  how the file is read, not to the file. (Deleting the *bytes* of a piece is
-  Delete Bytes on a selection, §7.2, and says so.)
+- **Merge** — merges the piece into a neighbour that keeps its name. The bytes
+  are untouched: merging a piece is a change to how the file is read, not to the
+  file. (Deleting the *bytes* of a piece is Delete Bytes on a selection, §7.2,
+  and says so.) The item names the piece and its neighbour — *Merge S1 into S0*.
 
 Right-clicking a tinted row offers the same piece menu as the strip, plus the
 segment pair described below.
@@ -198,14 +198,13 @@ commands:
   an address and it is that row's start; right-click a byte and it is that byte.
   Both are honestly "here", and neither rounds. The popover is the one editor
   that creates and edits a cut, as one popover does for a bookmark (§20.3).
-- **Remove Segment** — removes the piece the caret (or the right-clicked
-  position) sits in, merging its bytes into a neighbour that keeps its name.
-  It acts on a *position inside a segment*, not on a cut point, which is why it
-  is named for the segment rather than the cut. It is enabled whenever the pane
-  has more than one piece — including **S0**, which is removed by re-opening the
-  piece below at the file start, so what was S1 becomes S0. The menu item names
-  the piece it will remove — *Remove Segment S1*, not a bare *Remove Segment* —
-  in the Edit menu, the offset context menu and the form's row menu alike.
+- **Merge** — merges the piece the caret (or the right-clicked position) sits
+  in into a neighbour that keeps its name. It acts on a *position inside a
+  segment*, not on a cut point. It is enabled whenever the pane has more than
+  one piece — including **S0**, which is merged by re-opening the piece below at
+  the file start, so what was S1 becomes S0. The menu item names the piece and
+  the neighbour it merges into — *Merge S1 into S0*, not a bare *Merge* — in the
+  Edit menu, the offset context menu and the form's row menu alike.
 
 ## The Segments form
 
@@ -235,13 +234,13 @@ the Go To form (§10.1):
   popover.
 - **Split Segment Here** splits the segment the caret is in, at the caret's
   exact byte — no rounding, ever, because the export reads these offsets.
-  **Remove Segment** removes the selected piece, merging its bytes into a
-  neighbour that keeps its name (removing S0 reopens the piece below at the file
-  start, so what was S1 becomes S0).
+  **Merge** merges the selected piece into a neighbour that keeps its name
+  (merging S0 reopens the piece below at the file start, so what was S1 becomes
+  S0).
 - **Save Segment…** writes the selected one; **Save All as Separate Files…**
   writes every one in a single act — which is what "split the file" *is* once
   segments exist.
-- Return goes to the selected segment's start; ⌫ removes the selected piece. The
+- Return goes to the selected segment's start; ⌫ merges the selected piece. The
   form follows the store, so a join or an edit made elsewhere shows up in it.
 
 ### Writing segments out
@@ -415,18 +414,19 @@ status bar says which piece the caret is in.
   typed (§10.1), refusing 0, EOF and an offset another cut already holds. The
   popover is centred in the pane, not anchored to the caret: it is a dialog
   pre-filled with a number, not a pointer at a byte (Split Here, below, is the
-  one that anchors to a byte). And **Remove Segment**, which names the piece the
-  caret sits in — *Remove Segment S1*, not a bare *Remove Segment* — enabled
-  whenever the pane has more than one piece (it acts on the piece the caret sits
-  in, so it is never "disabled on the first piece" — removing S0 reopens the
-  piece below at the file start). No key equivalents: both are deliberate acts
+  one that anchors to a byte). And **Merge**, which names the piece the caret
+  sits in and the neighbour it merges into — *Merge S1 into S0*, not a bare
+  *Merge* — enabled whenever the pane has more than one piece (it acts on the
+  piece the caret sits in, so it is never "disabled on the first piece" —
+  merging S0 reopens the piece below at the file start). No key equivalents:
+  both are deliberate acts
   reached from a menu, and the fast path is the one below.
 - **Split Here** in the dump's own context menu, on the byte or the address that
   was right-clicked: it opens the same offset-and-description popover Add Cut…
   opens, pre-filled with the address the menu was opened on. This is how a cut
   normally gets made; Add Cut… is for an offset you know as a number rather than
   as a position.
-- The segment pair (**Split Here**, **Remove Segment**) sits in the context menu
+- The segment pair (**Split Here**, **Merge**) sits in the context menu
   as its own block between separators, distinct from the selection and bookmark
   commands, and is the same block whether the menu was opened on a byte or on the
   Offset column's address.
@@ -470,7 +470,7 @@ status bar says which piece the caret is in.
     that byte, while **Add Cut…** presents the same popover centred in the pane,
     not anchored to the caret;
   - the menu items and their validation, the segment pair set off between
-    separators, and **Remove Segment** naming the piece it will remove (the
+    separators, and **Merge** naming the piece and its neighbour (the
     caret's piece in the Edit menu, the right-clicked byte's in the offset menu);
     a redraw test asserting a cut invalidates its own rows and not the document;
   - `testTheStatusBarNamesTheCaretsPiece` as one block `S1: <start>-<end>
@@ -513,19 +513,21 @@ and selections. No form, no strip, no writing out.
   button itself, with the offset field **empty** (just the `0x` prefix) and the
   caret on it: from the form there is no caret to start from, the offset is the
   thing to be filled in, and an unfilled offset makes no segment. `minus`
-  removes the selected **piece** — merging its bytes into a neighbour that keeps
-  its name. `−` is disabled only when the pane is a single piece (no neighbour to
-  merge into); it is enabled on **S0** too, which is removed by re-opening the
-  piece below at the file start (what was S1 becomes S0). Icon-only, so both
-  carry a tooltip and an accessibility label. A wider gap separates the footer
+  merges the selected **piece** into a neighbour that keeps its name. `−` is
+  disabled only when the pane is a single piece (no neighbour to merge into);
+  it is enabled on **S0** too, which is merged by re-opening the piece below at
+  the file start (what was S1 becomes S0). Icon-only, so both carry a tooltip
+  and an accessibility label; `−`'s tooltip and label name the selected piece
+  and its neighbour — *Merge S1 into S0* — following the selection. A wider gap
+  separates the footer
   from the button row than the table from the footer: the footer is the list's
   own controls, the button row the dialog's.
 - **The row's context menu** carries what acts on one piece: *Save Segment…*,
-  *Replace Segment from File…*, *Edit…*, *Remove Segment* — the same menu the
-  strip beside the map offers (§21.3), so one shape in both places. *Remove
-  Segment* names the piece it will remove, the way the other menus' items do.
+  *Replace Segment from File…*, *Edit…*, *Merge* — the same menu the
+  strip beside the map offers (§21.3), so one shape in both places. *Merge*
+  names the piece and its neighbour, the way the other menus' items do.
 - The dialog's own button row holds only what acts on the whole partition:
-  **Remove All** at the left — every cut at once, back to one piece named for
+  **Merge All** at the left — every cut at once, back to one piece named for
   the file, and it asks before acting — then **Save All as Separate Files…**
   (available only when the dump is partitioned into more than one piece — with
   a single piece there is nothing to separate) and **Close** at the right.
@@ -541,9 +543,9 @@ and selections. No form, no strip, no writing out.
   disabled on a single-piece pane and enabled once partitioned; the wider gap
   between
   the footer and the button row than between the table and the footer;
-  **Remove All** asking first and, once confirmed, leaving one piece named for
+  **Merge All** asking first and, once confirmed, leaving one piece named for
   the file; the row menu's items, their targets and the piece each carries, and
-  Remove Segment naming the piece it will remove; the form following a cut made
+  Merge naming the piece and its neighbour; the form following a cut made
   elsewhere in the app; Return navigating. (The popover's own validation is
   stage 2's, tested once.)
 - Spec: §21.4.
@@ -597,7 +599,7 @@ failure leaves the directory as it was.
   order as the dump, which is what makes it a legend rather than decoration.
 - Hover text: `S1 — 0x400000…0xC00000, 8 MB · W25Q…bin`.
 - A right-click menu on the block: **Save Segment…**, **Replace Segment from
-  File…**, **Select Segment**, **Edit…**, **Remove Segment**.
+  File…**, **Select Segment**, **Edit…**, **Merge**.
 - A left-click within 4 pt of a cut moves the caret to that cut's exact offset and
   reveals it centred, reusing the snapping the bookmark marks already have
   (`snappedOffset`, §19.6.1) with the cut list as the second source of targets.
