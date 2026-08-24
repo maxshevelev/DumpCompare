@@ -1591,7 +1591,7 @@ final class MainViewController: NSViewController {
         // where the menu was opened — not at the piece's whole block (§21.4).
         // The point was captured when the menu was built and stored in the
         // target, so it is still here when the action fires.
-        let anchor = NSRect(origin: target.point, size: .zero)
+        let anchor = NSRect(origin: target.point, size: .init(width: 0.1, height: 0.1))
         controller.show(relativeTo: anchor, of: self.minimapView)
     }
 
