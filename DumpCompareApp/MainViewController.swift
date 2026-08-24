@@ -1701,7 +1701,16 @@ final class MainViewController: NSViewController {
     }
 
     private func refreshMode() {
-        apply(mode: windowModel.openPaneCount == 0 ? .empty : (windowModel.openPaneCount == 1 ? .singleFile : .comparison))
+        let mode: WindowMode = windowModel.openPaneCount == 0 ? .empty : (windowModel.openPaneCount == 1 ? .singleFile : .comparison)
+        // A drop that joins into the current pane (append / insert at start)
+        // does not change the mode, and the join has already refreshed the pane
+        // and centred the seam (§10.4, §22.5). Re-applying the same mode would
+        // rebuild the pane from scratch, and the new pane's init follows the
+        // caret to the top of the viewport, undoing the centring. Skip the
+        // rebuild when the mode is unchanged: the operation that triggered this
+        // has already updated the pane through its own channels.
+        guard mode != self.mode else { return }
+        apply(mode: mode)
     }
 
     // MARK: - File > Open (§4.1)

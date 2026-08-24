@@ -2488,6 +2488,10 @@ feature's Save All as Separate Files (§21.5).
   - Directories and packages are refused as they are now (§4).
   - Dropping the file that is **already open in the pane** onto a join band is
     allowed and doubles the content — two identical chips are a real case.
+  - A drop that joins is the **same operation** as the menu's join (§22.2): the
+    pane handling — the seam cut, the caret at the start of the added part, the
+    seam revealed centred (§22.5) — does not depend on which UI action started
+    it.
 
 22.5 Edge cases
 

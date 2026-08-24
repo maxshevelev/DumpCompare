@@ -372,6 +372,43 @@ final class JoinTests: XCTestCase {
                        "redoing the join re-centres the seam in the pane")
     }
 
+    /// The same centring holds when the append is made by dropping the file on
+    /// the Append-at-End band, not from the menu (§22.5): the drop joins the
+    /// file and must leave the seam centred, exactly the way the menu command
+    /// does — the drop's post-join mode refresh must not rebuild the pane and
+    /// re-follow the caret to the top of the viewport. The sizes are the user's
+    /// repro: a 7,340,032-byte file with a 9,437,184-byte file appended, the
+    /// seam at 43.7% of the joined document.
+    func testDroppingAnAppendRevealsTheSeamCentredInThePane() throws {
+        let (controller, window, url) = try makeController([UInt8](repeating: 0x11, count: 7_340_032))
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+
+        let source = try makeSourceFile([UInt8](repeating: 0x22, count: 9_437_184))
+
+        controller.handleSingleFileDrop(target: .appendAtEnd, urls: [source])
+
+        window.layoutIfNeeded()
+        let hexView = try XCTUnwrap(findView(HexView.self, in: controller.view),
+                                    "the pane hosts a hex view")
+        let clip = try XCTUnwrap(hexView.enclosingScrollView).contentView
+        let layout = hexView.hexLayout
+
+        // The seam is where the caret landed: the old end, now mid-document.
+        let seam = pane.caretOffset
+        XCTAssertEqual(seam, 7_340_032, "the caret is at the start of the added part")
+        let (row, _) = layout.rowColumn(of: seam)
+        let rowFrame = layout.rowFrame(row: row)
+        let maxOriginY = max(0, hexView.bounds.height - clip.bounds.height)
+        let expected = min(max(0, rowFrame.midY - clip.bounds.height / 2), maxOriginY)
+
+        // The centre is a real position: not clamped to either edge.
+        XCTAssertGreaterThan(expected, 0, "the seam is below the top of the document")
+        XCTAssertLessThan(expected, maxOriginY, "the seam is above the bottom of the document")
+        XCTAssertEqual(clip.bounds.origin.y, expected, accuracy: 0.5,
+                       "the drop's join leaves the seam centred, as the menu's does")
+    }
+
     // MARK: - The refusal
 
     /// A 0-byte source is refused before anything changes: the pane is
