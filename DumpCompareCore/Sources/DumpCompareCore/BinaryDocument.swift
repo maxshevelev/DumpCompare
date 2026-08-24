@@ -50,6 +50,25 @@ public final class BinaryDocument: @unchecked Sendable {
     /// restore the partition (§21.2). `nil` under pure unit tests.
     public var onTransactionCommitted: (() -> Void)?
 
+    /// The placeholder a detached document points at: a temp-dir path with no
+    /// file behind it, giving the document an identity until a real location is
+    /// chosen (§22.2). Shared by the join's detach and the pane's `openUntitled`.
+    public static let placeholderURL: URL =
+        FileManager.default.temporaryDirectory.appendingPathComponent("Untitled")
+
+    /// Whether the document is attached to a real file, as opposed to the
+    /// placeholder a join detaches it to (§22.2). The pane reads this after an
+    /// undo/redo to follow the document's attachment (watcher, `isUntitled`).
+    public var isAttached: Bool { url != Self.placeholderURL }
+
+    /// The serial of the join's transaction, so undo/redo can recognise it and
+    /// re-attach/detach the file (§22.2). `nil` when there is no join on the
+    /// undo or redo stack.
+    private var joinSerial: UInt64?
+    /// The file attachment the document had before the join detached it, kept so
+    /// undoing the join re-attaches to the original file (§22.2).
+    private var preJoinAttachment: (url: URL, identity: FileIdentity, readOnly: Bool)?
+
     // MARK: - Init
 
     /// Opens `url` for editing. The file must exist and be a regular file.
@@ -167,14 +186,20 @@ public final class BinaryDocument: @unchecked Sendable {
     /// one undo transaction: the edit group coalesces the chunks into a single
     /// commit, so `onTransactionCommitted` fires exactly once.
     ///
-    /// The join is a document-level act, not an edit (§22.2): it detaches the
-    /// document from the file it came from (the result is an untitled,
-    /// never-saved document) and clears the undo history, because the joined
-    /// content has no prior state to return to. The document is left dirty so a
-    /// close still warns. A mid-stream failure cancels the group and rethrows
-    /// with the document unchanged.
+    /// The join is a document-level act (§22.2): it detaches the document from
+    /// the file it came from (the result is an untitled, never-saved document),
+    /// but it is **undoable** — the byte insert is a normal transaction on the
+    /// undo stack, and the pre-join file attachment is remembered so undoing the
+    /// join re-attaches the document to the original file. The join stacks on
+    /// top of any earlier edits, which undo as usual. The document is left dirty
+    /// so a close still warns. A mid-stream failure cancels the group and
+    /// rethrows with the document unchanged.
     public func join(contentsOf source: any ByteStorage, at position: JoinPosition) throws {
         guard source.size > 0 else { throw JoinError.emptySource }
+        // Remember the file the document is attached to, so undoing the join can
+        // re-attach to it (§22.2). Captured before the insert, which is what
+        // commits the transaction.
+        preJoinAttachment = (url: url, identity: identity, readOnly: readOnly)
         let anchor: UInt64 = (position == .start) ? 0 : storage.size
         beginEditGroup()
         do {
@@ -190,23 +215,36 @@ public final class BinaryDocument: @unchecked Sendable {
             endEditGroup()
         } catch {
             try? cancelEditGroup()
+            preJoinAttachment = nil
             throw error
         }
-        detachFromURL()
+        // The join's transaction just committed; remember its serial so undo/redo
+        // can recognise it and re-attach/detach the file (§22.2).
+        joinSerial = undoHistory.lastCommittedSerial
+        // Detach the identity only — the history is kept, so the join is undoable.
+        detachIdentityOnly()
     }
 
     /// Detaches the document from the file it came from: the join's result is
     /// an untitled, never-saved document (§22.2), mirroring `openUntitled` —
-    /// placeholder URL, writable, and a cleared history that stays dirty so a
-    /// close warns instead of silently discarding the joined content.
-    private func detachFromURL() {
-        let placeholder = FileManager.default.temporaryDirectory.appendingPathComponent("Untitled")
-        url = placeholder
-        identity = FileIdentity(url: placeholder)
+    /// placeholder URL and writable. The undo history is **not** cleared: the
+    /// join is one undo step, and `joinSerial`/`preJoinAttachment` let undo
+    /// re-attach the document to the file it left.
+    private func detachIdentityOnly() {
+        url = Self.placeholderURL
+        identity = FileIdentity(url: Self.placeholderURL)
         readOnly = false
         currentSeriesID = nil
         transactionAwaitingSelection = false
-        undoHistory.clearKeepingDirty()
+    }
+
+    /// Re-attaches the document to the file it had before a join detached it
+    /// (§22.2) — the inverse of `detachIdentityOnly`, called when the join's
+    /// transaction is undone.
+    private func reattach(_ a: (url: URL, identity: FileIdentity, readOnly: Bool)) {
+        url = a.url
+        identity = a.identity
+        readOnly = a.readOnly
     }
 
     // MARK: - Undo / Redo
@@ -231,6 +269,13 @@ public final class BinaryDocument: @unchecked Sendable {
         for op in applied { try applyForward(op) }
         selection = txns.first!.selectionBefore.clamped(to: storage.size)
         transactionAwaitingSelection = false
+        // Undoing the join's transaction re-attaches the document to the file it
+        // left (§22.2). The join state is kept — the transaction now sits on the
+        // redo stack, and a later redo must re-detach.
+        if let joinSerial, txns.contains(where: { $0.serial == joinSerial }),
+           let attachment = preJoinAttachment {
+            reattach(attachment)
+        }
         return DiffEdit.netDiffEdit(ops: applied)
     }
 
@@ -248,6 +293,10 @@ public final class BinaryDocument: @unchecked Sendable {
         for op in applied { try applyForward(op) }
         selection = txns.last!.selectionAfter.clamped(to: storage.size)
         transactionAwaitingSelection = false
+        // Redoing the join's transaction re-detaches the document (§22.2).
+        if let joinSerial, txns.contains(where: { $0.serial == joinSerial }) {
+            detachIdentityOnly()
+        }
         return DiffEdit.netDiffEdit(ops: applied)
     }
 
@@ -393,6 +442,17 @@ public final class BinaryDocument: @unchecked Sendable {
             )
             transactionAwaitingSelection = true
             onTransactionCommitted?()
+            // A divergent edit (recorded while the document is attached, i.e.
+            // after a join was undone) clears the redo stack and drops the
+            // join's transaction. The join state (`joinSerial`/
+            // `preJoinAttachment`) is deliberately NOT cleared here: it is read
+            // only by `undo`/`redo`, guarded by a membership check on the
+            // serial, and serials are never reused — so once the join's
+            // transaction has left the history the check can never match again
+            // and the state is inert. (Clearing it consistently would also have
+            // to cover the group-commit path in `endEditGroup`, which the join's
+            // own commit shares — and that commit runs while the document is
+            // still attached, so it would wipe the state the join just set.)
         }
     }
 

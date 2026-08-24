@@ -414,8 +414,9 @@ final class PaneViewModel: HexViewDataSource {
         rearmWatcher()
         // Revert replaces the storage wholesale; the comparison must re-read.
         onFullInvalidation?()
-        // The partition goes back to the file as it is on disk: one piece.
-        resetSegments(for: doc)
+        // The partition survives the revert, re-based onto the saved size (§21.2)
+        // — the cuts and names the user set up are kept, not reset to one piece.
+        preserveSegments(for: doc)
         notify()
         notifyCompanionContentFullyChanged()
     }
@@ -477,8 +478,9 @@ final class PaneViewModel: HexViewDataSource {
 
     /// Resets the partition to one piece — the whole file — named after it,
     /// clears the snapshot stacks, and wires the document's transaction hook so
-    /// the stacks stay parallel to the undo stack. Called on open, close, and
-    /// revert.
+    /// the stacks stay parallel to the undo stack. Called on open and close,
+    /// where a fresh file genuinely is one piece (revert re-bases instead — see
+    /// `preserveSegments`).
     private func resetSegments(for doc: BinaryDocument) {
         segmentStore.reset(size: doc.size, name: doc.url.lastPathComponent)
         segmentUndoStack.removeAll()
@@ -496,6 +498,20 @@ final class PaneViewModel: HexViewDataSource {
             self?.notify(contentChange: .bytes(in: range))
             self?.onSegmentsChanged?()
         }
+    }
+
+    /// Keeps the partition across a Revert to Saved, re-basing it onto the saved
+    /// size (§21.2): the cuts and names the user set up survive, and any cut past
+    /// the new end is dropped. The snapshot stacks are cleared — `doc.revert()`
+    /// reset the byte-edit history they run parallel to, so keeping them would
+    /// leave stale snapshots that pair with no undo step. The document's
+    /// transaction hook and the store's change hook were wired on open and
+    /// survive the revert, so there is nothing to re-set.
+    private func preserveSegments(for doc: BinaryDocument) {
+        segmentStore.rebase(to: doc.size)
+        segmentUndoStack.removeAll()
+        segmentRedoStack.removeAll()
+        pendingSegmentSnapshot = nil
     }
 
     /// Captures the partition before an edit lands, so the transaction the edit
@@ -1152,28 +1168,25 @@ final class PaneViewModel: HexViewDataSource {
     /// The chunked join, given an already-open source and the name to give the
     /// joined piece (§22). The join is a document-level act, not an edit
     /// (§22.2): it detaches the document from the file it came from (the result
-    /// is untitled and never-saved) and clears the undo history, because the
-    /// joined content has no prior state to return to. The document is left
-    /// dirty so a close still warns. The seam is a cut (§22.3): the content the
-    /// pane already held keeps the name of the file it was opened from, and the
-    /// joined bytes take `sourceName`.
+    /// is untitled and never-saved), but it is undoable — the byte insert is one
+    /// undo step on top of any earlier edits, and undoing it re-attaches the
+    /// document to the file it left. The document is left dirty so a close still
+    /// warns. The seam is a cut (§22.3): the content the pane already held keeps
+    /// the name of the file it was opened from, and the joined bytes take
+    /// `sourceName`.
     func join(contentsOf source: any ByteStorage, named sourceName: String,
               at position: JoinPosition) throws {
         guard let doc = document else { return }
         breakTypingSeries()
         let sizeBefore = doc.size
         let sourceSize = source.size
-        // The join commits its own transaction, but it is not undoable (§22.2),
-        // so no segment snapshot is captured (no `beginSegmentEdit`): the
-        // partition is set up directly below and the snapshot stacks are
-        // cleared, mirroring how open/revert reset the segments.
+        // The join commits one transaction, and it is undoable (§22.2): capture
+        // the pre-join partition so the transaction's commit (fired by
+        // `onTransactionCommitted` inside `doc.join`) pushes it onto the
+        // segment undo stack — undoing the join then restores the partition to
+        // what it was. The seam cut and renames below are the post-join state.
+        beginSegmentEdit()
         try doc.join(contentsOf: source, at: position)
-        // The join cleared the document's undo history; the parallel segment
-        // stacks go with it — the snapshots they hold no longer pair with any
-        // undo step.
-        segmentUndoStack.removeAll()
-        segmentRedoStack.removeAll()
-        pendingSegmentSnapshot = nil
         // The insert moves the partition with the content and grows the content
         // size (§21.2). This must run before the seam cut below: a cut is
         // refused at the content's end, and for an append the seam IS the old
@@ -1334,6 +1347,7 @@ final class PaneViewModel: HexViewDataSource {
         // The step's size in transactions — one normally, more for a fast-undo
         // batch — is the drop in the history's transaction count.
         let depthBefore = doc.undoHistory.undoDepth
+        let attachedBefore = doc.isAttached
         let edit = try doc.undo(batch: fast)   // restores the caret to where the edit began
         if let edit {
             undoSegments(step: depthBefore - doc.undoHistory.undoDepth)
@@ -1342,6 +1356,9 @@ final class PaneViewModel: HexViewDataSource {
             onEdit?(edit)
             notifyCompanionContentChanged(edit)
         }
+        // Undoing the join's transaction re-attaches the document (§22.2); the
+        // pane owns the watcher and `isUntitled`, so it follows.
+        if doc.isAttached != attachedBefore { syncAttachment() }
         notify()
         return edit != nil
     }
@@ -1356,14 +1373,40 @@ final class PaneViewModel: HexViewDataSource {
         // The step's size in transactions — the rise in the history's count, a
         // batch step unfolding back into its individual byte steps.
         let depthBefore = doc.undoHistory.undoDepth
+        let attachedBefore = doc.isAttached
         let edit = try doc.redo()   // restores the caret to where the edit left it
         if let edit {
             redoSegments(step: doc.undoHistory.undoDepth - depthBefore)
             onEdit?(edit)
             notifyCompanionContentChanged(edit)
         }
+        // Redoing the join's transaction re-detaches the document (§22.2); the
+        // pane follows (see `undo`).
+        if doc.isAttached != attachedBefore { syncAttachment() }
         notify()
         return edit != nil
+    }
+
+    /// Re-syncs the pane's file-attachment state after an undo/redo flipped the
+    /// document's attachment (undoing or redoing a join, §22.2). The document
+    /// re-attaches/re-detaches itself; the pane owns `isUntitled`, the watcher,
+    /// and `savedStorage`, so it follows.
+    private func syncAttachment() {
+        guard let doc = document else { return }
+        isUntitled = !doc.isAttached
+        refreshSavedStorage()
+        if doc.isAttached {
+            // Re-attached: re-arm the watcher on the restored file.
+            if changeWatcher == nil {
+                startWatching(doc.url)
+            } else {
+                rearmWatcher()
+            }
+        } else {
+            // Detached again (the join stands): no file to watch.
+            changeWatcher?.stop()
+            changeWatcher = nil
+        }
     }
 
     // MARK: - Internals

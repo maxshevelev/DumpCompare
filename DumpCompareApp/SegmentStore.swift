@@ -301,6 +301,22 @@ struct Segmentation: Equatable {
         return newPieces.map(\.start) == oldStarts ? nil : 0..<newSize
     }
 
+    /// Re-bases the partition onto a new content size: the pieces keep their
+    /// offsets and names, but any piece that opens at or past the new end is
+    /// dropped (a cut at or past the new EOF is invalid, and the last surviving
+    /// piece extends to the new end). Used by Revert to Saved, which changes the
+    /// file's size without throwing away the partition the user set up (§21.2).
+    /// The partition stays non-empty: a revert to an empty file keeps the
+    /// whole-file piece, mirroring the `apply(.delete)` guard.
+    mutating func rebase(to newSize: UInt64) {
+        contentSize = newSize
+        let firstName = pieces.first?.name ?? ""
+        pieces.removeAll { $0.start >= newSize }
+        if pieces.isEmpty {
+            pieces = [Piece(start: 0, name: firstName)]
+        }
+    }
+
     // MARK: - Reset
 
     /// Resets to one piece — the whole file — named `name`.
@@ -412,11 +428,23 @@ final class SegmentStore {
 
     // MARK: - Reset & snapshots
 
-    /// Resets to one piece — the whole file — named `name`. Called on open,
-    /// close, and revert.
+    /// Resets to one piece — the whole file — named `name`. Called on open and
+    /// close, where a fresh file genuinely is one piece. (Revert re-bases
+    /// instead — see `rebase` — so the partition the user set up survives.)
     func reset(size: UInt64, name: String) {
         current.reset(size: size, name: name)
         onChange?(0..<size)
+    }
+
+    /// Re-bases the partition onto `newSize` (Revert to Saved, §21.2): the cuts
+    /// and names survive, and any cut at or past the new end is dropped. Fires
+    /// `onChange` only when a piece was actually dropped — a rebase that leaves
+    /// every cut in place repaints nothing, mirroring `restore`'s rule.
+    func rebase(to newSize: UInt64) {
+        let before = current.pieces
+        current.rebase(to: newSize)
+        guard current.pieces != before else { return }
+        onChange?(0..<newSize)
     }
 
     /// A value copy of the partition, for the undo snapshot stack. O(1): it

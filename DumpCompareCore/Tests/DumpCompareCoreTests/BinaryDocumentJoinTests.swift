@@ -4,9 +4,11 @@ import XCTest
 
 /// §22 the join: a second file's bytes come into the document, at the start or
 /// the end. The source is streamed in bounded chunks into one transaction, and
-/// the result is an untitled, never-saved document that is dirty with an empty
-/// undo history — it cannot be undone (there is no prior state to return to)
-/// but must not be silently discarded on close.
+/// the result is an untitled, never-saved document that is dirty and must not
+/// be silently discarded on close. The join is **undoable** (§22.2): the byte
+/// insert is a normal transaction on the undo stack, and undoing it re-attaches
+/// the document to the file it came from; the join stacks on top of any earlier
+/// edits, which undo as usual.
 final class BinaryDocumentJoinTests: XCTestCase {
     /// An in-memory document over `bytes`, attached to a (placeholder) file URL
     /// so the join has a file to detach from.
@@ -150,23 +152,94 @@ final class BinaryDocumentJoinTests: XCTestCase {
     // MARK: - The joined document is never-saved
 
     /// The join detaches the document from the file it came from: the result is
-    /// untitled and writable, its history cleared (nothing to undo, nothing to
-    /// redo) but still dirty, so a close warns instead of silently discarding
-    /// the joined content.
-    func testTheJoinedDocumentIsNeverSavedDirtyWithAnEmptyHistory() throws {
+    /// untitled and writable and dirty, so a close warns instead of silently
+    /// discarding the joined content. The history is **not** cleared — the join
+    /// is one undoable step on top of any earlier edits (§22.2).
+    func testTheJoinedDocumentIsNeverSavedAndDirty() throws {
         let doc = makeDocument([UInt8](0x10..<0x20))
-        let originalURL = doc.url
         try doc.overwrite(range: 0..<4, with: [0x01, 0x02, 0x03, 0x04])
         XCTAssertTrue(doc.canUndo, "an edit stands before the join")
 
         try doc.join(contentsOf: ArrayStorage([0xA0, 0xA1]), at: .end)
 
-        XCTAssertFalse(doc.canUndo, "the join clears the undo history")
-        XCTAssertFalse(doc.canRedo)
+        XCTAssertTrue(doc.canUndo, "the join is an undoable step, not a history clear")
+        XCTAssertFalse(doc.canRedo, "nothing has been undone yet")
         XCTAssertTrue(doc.isDirty, "the joined content is unsaved and must warn on close")
-        XCTAssertNotEqual(doc.url, originalURL, "the join detaches from the file")
+        XCTAssertFalse(doc.isAttached, "the join detaches from the file")
         XCTAssertEqual(doc.url.lastPathComponent, "Untitled",
                        "the result is untitled, mirroring a New File")
         XCTAssertFalse(doc.readOnly)
+    }
+
+    // MARK: - Undo / redo of the join (§22.2)
+
+    /// Undoing the join removes the inserted bytes **and** re-attaches the
+    /// document to the file it came from — the pane looks exactly as it did
+    /// before the join.
+    func testUndoingAJoinReattachesToTheOriginalFile() throws {
+        let doc = makeDocument([UInt8](0x10..<0x20))
+        let originalURL = doc.url
+        try doc.join(contentsOf: ArrayStorage([0xA0, 0xA1]), at: .end)
+
+        XCTAssertFalse(doc.isAttached)
+        XCTAssertEqual(doc.size, 18)
+
+        try doc.undo()
+
+        XCTAssertTrue(doc.isAttached, "undoing the join re-attaches to the file")
+        XCTAssertEqual(doc.url, originalURL, "the original file is restored")
+        XCTAssertEqual(doc.size, 16, "the joined bytes are removed")
+        XCTAssertEqual(try doc.read(at: 0, length: 16), [UInt8](0x10..<0x20),
+                       "the original content is back")
+    }
+
+    /// Redoing the join re-inserts the bytes and re-detaches the document — the
+    /// inverse of the undo.
+    func testRedoingAJoinRedetaches() throws {
+        let doc = makeDocument([UInt8](0x10..<0x20))
+        try doc.join(contentsOf: ArrayStorage([0xA0, 0xA1]), at: .end)
+        try doc.undo()
+        XCTAssertTrue(doc.isAttached)
+
+        try doc.redo()
+
+        XCTAssertFalse(doc.isAttached, "redoing the join re-detaches")
+        XCTAssertEqual(doc.url.lastPathComponent, "Untitled")
+        XCTAssertEqual(doc.size, 18, "the joined bytes are back")
+        XCTAssertEqual(try doc.read(at: 0, length: 18),
+                       [UInt8](0x10..<0x20) + [0xA0, 0xA1])
+    }
+
+    /// The join stacks on top of earlier edits: undoing the join reverts it
+    /// (and re-attaches), and a further undo reverts the earlier edit, landing
+    /// back at the saved state.
+    func testAJoinStacksOnTopOfEarlierEdits() throws {
+        let doc = makeDocument([UInt8](0x10..<0x20))
+        try doc.overwrite(range: 0..<2, with: [0x01, 0x02])   // an earlier edit
+        try doc.join(contentsOf: ArrayStorage([0xA0]), at: .end)
+
+        // Undo the join: the joined byte is removed and the file is re-attached,
+        // but the earlier edit still stands.
+        try doc.undo()
+        XCTAssertTrue(doc.isAttached)
+        XCTAssertEqual(doc.size, 16)
+        XCTAssertEqual(try doc.read(at: 0, length: 2), [0x01, 0x02],
+                       "the earlier edit still stands after the join is undone")
+
+        // Undo the earlier edit: back to the saved state, clean.
+        try doc.undo()
+        XCTAssertEqual(try doc.read(at: 0, length: 2), [0x10, 0x11],
+                       "the earlier edit is undone after the join")
+        XCTAssertFalse(doc.isDirty, "back at the saved state, the document is clean")
+        XCTAssertTrue(doc.isAttached)
+    }
+
+    /// A join on a clean document makes it dirty — the join's transaction moves
+    /// the state past the saved checkpoint, so a close warns.
+    func testAJoinMakesACleanDocumentDirty() throws {
+        let doc = makeDocument([UInt8](0x10..<0x20))
+        XCTAssertFalse(doc.isDirty, "a freshly opened document is clean")
+        try doc.join(contentsOf: ArrayStorage([0xA0]), at: .end)
+        XCTAssertTrue(doc.isDirty, "the join's transaction makes the document dirty")
     }
 }

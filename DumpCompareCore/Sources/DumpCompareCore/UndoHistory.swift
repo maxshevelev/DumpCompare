@@ -49,16 +49,22 @@ public struct UndoTransaction: Equatable, Sendable {
     /// `noteSelectionAfterOnLast` once the command that made the edit has left
     /// the selection where it wants it.
     public private(set) var selectionAfter: SelectionModel
+    /// The state-name this step was recorded under — the serial `record` handed
+    /// out. A document-level act (a join, §22.2) captures it so undo/redo can
+    /// recognise the transaction and re-attach/detach the file.
+    public let serial: UInt64
 
     /// Where the caret sits in each bracketing state — an empty selection is a
     /// caret, and a non-empty one's caret is its start.
     public var caretBefore: UInt64 { selectionBefore.start }
     public var caretAfter: UInt64 { selectionAfter.start }
 
-    public init(ops: [UndoOperation], selectionBefore: SelectionModel, selectionAfter: SelectionModel) {
+    public init(ops: [UndoOperation], selectionBefore: SelectionModel, selectionAfter: SelectionModel,
+                serial: UInt64 = 0) {
         self.ops = ops
         self.selectionBefore = selectionBefore
         self.selectionAfter = selectionAfter
+        self.serial = serial
     }
 
     /// Caret-only form, for edits recorded without a selection to speak of.
@@ -153,6 +159,13 @@ public final class UndoHistory: @unchecked Sendable {
     /// document is in. Zero with nothing committed: the file as it was opened.
     private var currentSerial: UInt64 { undoSteps.last?.entries.last?.serial ?? 0 }
 
+    /// The serial of the newest committed transaction, or `nil` when nothing has
+    /// been committed. A document-level act (a join, §22.2) captures this right
+    /// after its transaction commits, so undo/redo can recognise that step.
+    public var lastCommittedSerial: UInt64? {
+        undoSteps.last?.entries.last?.serial
+    }
+
     /// Records a transaction of ops applied to storage. Any undone steps
     /// (the redo stack) are discarded, because the state has diverged. The
     /// selection pair records what the edit started from and what it left, so
@@ -168,7 +181,8 @@ public final class UndoHistory: @unchecked Sendable {
         redoSteps.removeAll()
         let entry = Entry(transaction: UndoTransaction(ops: ops,
                                                       selectionBefore: selectionBefore,
-                                                      selectionAfter: selectionAfter),
+                                                      selectionAfter: selectionAfter,
+                                                      serial: nextSerial),
                           serial: nextSerial)
         nextSerial += 1
         undoSteps.append(Step(entries: [entry], seriesID: seriesID))

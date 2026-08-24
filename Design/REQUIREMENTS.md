@@ -2113,9 +2113,13 @@ and every operation that writes is explicit about it.
   undo restores the partition by **snapshot**, not by inverse edit. The pane
   keeps a stack of snapshots parallel to the document's undo stack — one per
   committed transaction, captured before the edit lands, popped and restored on
-  undo — with the same lifecycle the document's own stack has: cleared on open
-  and revert, the redo side dropped on a divergent edit. This mirrors how the
-  caret and the selection are restored (§7.5), one level up.
+  undo — with the same lifecycle the document's own stack has: cleared on open,
+  close, and revert, the redo side dropped on a divergent edit. A revert
+  re-bases the *partition* onto the saved size — the cuts and names the user set
+  up survive, and any cut past the new end is dropped — rather than resetting it
+  to one piece; only the snapshot stacks are cleared, to stay in lockstep with
+  the document's reset undo stack. This mirrors how the caret and the selection
+  are restored (§7.5), one level up.
 - One instance lives on the pane's view model, beside its document. The store
   holds no bytes and is AppKit-free, so its arithmetic is unit-testable in the
   app suite.
@@ -2353,10 +2357,16 @@ feature's Save All as Separate Files (§21.5).
   stay untouched on disk. The joined image has a different internal structure
   from either half, and an accidental ⌘S in an 8 MB dump's window is exactly the
   kind of mistake that costs a re-read of the chip.
-- **The join is not undoable.** ⌘Z would have to re-attach the document to the
-  file it left, which is not a state the model has. A join is a document-level
-  act like Open or New File: the undo stack is empty after it, and edits made
-  afterwards undo as usual.
+- **The join is undoable.** The join's byte insert is one undo step, and ⌘Z
+  reverses the whole join: the inserted bytes are removed *and* the pane
+  re-attaches to the file it was opened from — the same URL, name, watcher, and
+  dirty state it had before the join, so the pane looks exactly as it did. The
+  join stacks on top of any earlier edits: a join made on a pane with unsaved
+  edits is one more step on top of them, and a further ⌘Z reverts those edits
+  (the pane stays attached to its original file throughout). Redo re-joins and
+  re-detaches. The join's segment side — the seam cut and the piece renames —
+  undoes through the same snapshot mechanism that undoes every other edit's
+  effect on the partition (§21.2, §22.3).
 - **The join result is dirty.** The joined content has never been written to
   disk, and it must not be silently discarded: closing the pane or the window
   warns about it (Save / Don't Save / Cancel, §3.6), and the header carries the
@@ -2402,6 +2412,11 @@ feature's Save All as Separate Files (§21.5).
   are drawn, how they are edited and written out — is §21.
 - **A join needs no new chrome.** The tint, the strip and the status-bar readout
   all come from the segments feature; a join just adds a cut.
+- **Undoing a join removes the seam.** The seam cut and the piece renames are
+  part of the join's one transaction, so ⌘Z (which undoes the join, §22.2)
+  removes the cut and restores the partition to its pre-join state — the same
+  snapshot mechanism that undoes every other edit's effect on the partition
+  (§21.2). Redo brings the seam back.
 - **Row alignment stops mattering.** A cut is a byte offset, so a join whose
   boundary is not a multiple of 16 is simply a boundary — the cut line steps
   through the row, per §21. A dump's size need not be a multiple of 16, and any

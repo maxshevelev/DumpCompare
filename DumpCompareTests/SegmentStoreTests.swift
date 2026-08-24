@@ -417,4 +417,87 @@ final class SegmentStoreTests: XCTestCase {
         // Past the end of the file there is no piece.
         XCTAssertNil(store.segment(containing: 16))
     }
+
+    // MARK: - Re-basing (Revert to Saved, §21.2)
+
+    /// A re-base onto a size that still contains every cut keeps the whole
+    /// partition — the cuts and names survive, and the last piece extends to the
+    /// new end.
+    func testRebaseKeepsCutsWithinTheNewSize() {
+        let store = SegmentStore(size: 16, name: "dump.bin")
+        store.addCut(at: 8)
+        store.rename(1, to: "second")
+
+        // Grow the file: the cut at 8 is well within the new end, so it stays.
+        store.rebase(to: 24)
+
+        XCTAssertEqual(store.cuts, [8])
+        XCTAssertEqual(store.segments.map(\.range), [0..<8, 8..<24])
+        XCTAssertEqual(store.segments[0].name, "dump.bin")
+        XCTAssertEqual(store.segments[1].name, "second")
+    }
+
+    /// A re-base onto a smaller size drops any cut at or past the new end — a
+    /// cut there would bound no bytes — and the last surviving piece extends to
+    /// the new end.
+    func testRebaseDropsCutsPastTheNewEnd() {
+        let store = SegmentStore(size: 24, name: "dump.bin")
+        store.addCut(at: 8)
+        store.addCut(at: 20)
+        // Pieces: [0,8) [8,20) [20,24).
+        store.rename(2, to: "tail")
+
+        // Shrink to 16: the cut at 20 is past the new end and is dropped; the
+        // cut at 8 stays.
+        store.rebase(to: 16)
+
+        XCTAssertEqual(store.cuts, [8])
+        XCTAssertEqual(store.segments.map(\.range), [0..<8, 8..<16])
+        XCTAssertEqual(store.segments[1].name, "")
+    }
+
+    /// A re-base that lands exactly on a cut drops it: a cut at the new EOF
+    /// would bound an empty piece.
+    func testRebaseDropsACutAtTheNewEnd() {
+        let store = SegmentStore(size: 16, name: "dump.bin")
+        store.addCut(at: 8)
+
+        // Shrink to 8: the cut at 8 is now at the new EOF and is dropped.
+        store.rebase(to: 8)
+
+        XCTAssertEqual(store.cuts, [])
+        XCTAssertEqual(store.segments.map(\.range), [0..<8])
+    }
+
+    /// A re-base to an empty file keeps the partition non-empty: the whole-file
+    /// piece survives, mirroring the `apply(.delete)` guard.
+    func testRebaseToAnEmptyFileKeepsTheWholeFilePiece() {
+        let store = SegmentStore(size: 16, name: "dump.bin")
+        store.addCut(at: 8)
+
+        store.rebase(to: 0)
+
+        XCTAssertEqual(store.segments.count, 1)
+        XCTAssertEqual(store.segments[0].range, 0..<0)
+        XCTAssertEqual(store.segments[0].name, "dump.bin")
+    }
+
+    /// A re-base fires the invalidation only when a piece is actually dropped —
+    /// a re-base that leaves every cut in place repaints nothing, mirroring
+    /// `restore`'s rule.
+    func testRebaseInvalidatesOnlyWhenAPieceIsDropped() {
+        let store = SegmentStore(size: 16, name: "dump.bin")
+        store.addCut(at: 8)
+
+        var fired: [Range<UInt64>] = []
+        store.onChange = { fired.append($0) }
+
+        // Grow: no cut is dropped, so no repaint.
+        store.rebase(to: 24)
+        XCTAssertEqual(fired, [], "a re-base that drops no piece repaints nothing")
+
+        // Shrink past the cut: the cut is dropped, so the tail repaints.
+        store.rebase(to: 4)
+        XCTAssertEqual(fired, [0..<4], "a re-base that drops a piece repaints from the start")
+    }
 }
