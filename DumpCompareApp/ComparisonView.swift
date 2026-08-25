@@ -25,6 +25,10 @@ final class ComparisonView: NSView {
     let splitView = ProportionalSplitView()
     private var scrollObservers: [NSObjectProtocol] = []
     private var isSynchronizingScroll = false
+    /// Whether scroll sync is live. It stays off until the first layout, so the
+    /// second pane's initial layout can't drag the first pane (the first pane is
+    /// the scroll source of truth on entry — the second adjusts to it, §9).
+    private var isSyncArmed = false
 
     /// The coordinator operation currently presented; moved between panes as
     /// the active pane changes (§14.4).
@@ -155,7 +159,7 @@ final class ComparisonView: NSView {
     }
 
     private func syncScroll(from scroller: NSScrollView, to other: NSScrollView) {
-        guard !isSynchronizingScroll else { return }
+        guard isSyncArmed, !isSynchronizingScroll else { return }
         isSynchronizingScroll = true
         defer { isSynchronizingScroll = false }
 
@@ -168,6 +172,19 @@ final class ComparisonView: NSView {
 
         other.contentView.scroll(to: origin)
         other.reflectScrolledClipView(other.contentView)
+    }
+
+    /// On the first layout, arm scroll sync and align the second pane to the
+    /// first — the first pane is the scroll source of truth on entry, so the
+    /// comparison opens in lock-step from the first pane's position (§9). Until
+    /// this runs, `isSyncArmed` is off and the second pane's own initial layout
+    /// can't drag the first pane. After it, the panes track each other on the
+    /// user's scrolls.
+    override func layout() {
+        super.layout()
+        guard !isSyncArmed else { return }
+        isSyncArmed = true
+        syncScroll(from: paneView1.scrollView, to: paneView2.scrollView)
     }
 
     deinit {

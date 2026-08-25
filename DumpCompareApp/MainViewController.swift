@@ -23,6 +23,15 @@ final class MainViewController: NSViewController {
     private weak var activeFilePane: FilePaneView?
     private weak var comparisonView: ComparisonView?
 
+    /// The pane views, keyed by the model they display. A view is created once
+    /// and reused for its model's whole life — across mode changes, file
+    /// changes (a data change the view already reloads, not a view change), and
+    /// pane re-ordering (swap, close-promotion) (§3.3). Reusing it is what keeps
+    /// a pane's scroll and focus from shifting when the other pane opens or
+    /// closes: the old design rebuilt every pane on each `apply`, and the fresh
+    /// view's init followed the caret to the top.
+    private var paneViews: [ObjectIdentifier: FilePaneView] = [:]
+
     /// The non-modal Find bar shown at the top on Cmd+F (§11). It lives above
     /// the content area and pushes it down while visible; when hidden the
     /// content fills the window again.
@@ -345,7 +354,10 @@ final class MainViewController: NSViewController {
 
         case .singleFile:
             let paneModel = windowModel.pane1
-            let pane = FilePaneView(viewModel: paneModel)
+            // Reuse the pane's view if it exists (closing the second pane
+            // returns here with the same first file): only a first-ever open
+            // builds it. Re-parenting it into the drop view keeps its scroll.
+            let pane = paneView(for: paneModel)
             // Header right-click menu: acts on THIS pane (§4/§5).
             pane.paneMenu = makePaneMenu(for: paneModel)
             // Offset-column right-click menu ("Select Block from Here at «address»", §10.2).
@@ -395,8 +407,12 @@ final class MainViewController: NSViewController {
             wireComparison()
             let pane1 = windowModel.pane1
             let pane2 = windowModel.pane2
-            let pane1View = FilePaneView(viewModel: pane1)
-            let pane2View = FilePaneView(viewModel: pane2)
+            // Reuse each pane's view where it exists: opening the second file
+            // comes here with the first pane already built, so only pane2 is
+            // first-ever. Re-parenting the first view into the splitter keeps
+            // its scroll and focus instead of resetting them (§3.3).
+            let pane1View = paneView(for: pane1)
+            let pane2View = paneView(for: pane2)
             // Header right-click menus act on their own pane (§4/§5).
             pane1View.paneMenu = makePaneMenu(for: pane1)
             pane2View.paneMenu = makePaneMenu(for: pane2)
@@ -517,6 +533,17 @@ final class MainViewController: NSViewController {
         windowModel.pane2.onFullInvalidation = nil
         windowModel.pane1.onSavedStateChanged = nil
         windowModel.pane2.onSavedStateChanged = nil
+    }
+
+    /// The `FilePaneView` for `model`, created on first use and reused
+    /// thereafter — the view follows its model, so a mode change or pane
+    /// re-ordering re-parents the same view instead of rebuilding it (§3.3).
+    private func paneView(for model: PaneViewModel) -> FilePaneView {
+        let key = ObjectIdentifier(model)
+        if let existing = paneViews[key] { return existing }
+        let view = FilePaneView(viewModel: model)
+        paneViews[key] = view
+        return view
     }
 
     private func setContentView(_ newView: NSView) {
