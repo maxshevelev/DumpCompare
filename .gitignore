@@ -8,6 +8,7 @@ build/
 xcuserdata/
 *.xcuserstate
 *.xcscmblueprint
+DumpCompare.xcodeproj/xcshareddata/xcschemes/DumpCompare.xcscheme
 
 # macOS
 .DS_Store
