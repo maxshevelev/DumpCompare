@@ -245,8 +245,12 @@ final class BookmarkTests: XCTestCase {
         }
 
         let layout = hexA.hexLayout
-        let rowFrame = layout.rowFrame(row: 0)
-        let columnFrame = layout.offsetColumnFrame(row: 0)
+        // Row 1, not row 0: the address's leading zeros are muted (§6), so an
+        // all-zero address (row 0) is dimmed in full and reads as no white at
+        // all. Row 1's "00000010" keeps its significant "10" in the full bookmark
+        // text colour, which is what the white-text check below isolates.
+        let rowFrame = layout.rowFrame(row: 1)
+        let columnFrame = layout.offsetColumnFrame(row: 1)
         // The arrow body is the offset's background; sample well inside the column.
         let bodyRect = columnFrame.insetBy(dx: 3, dy: 3)
         // The arrow's tip points right, into the gap before the hex column, at midY.
@@ -260,8 +264,8 @@ final class BookmarkTests: XCTestCase {
         XCTAssertLessThan(try purpleness(hexA, in: tipRect), 0.3, "unmarked row A has no arrow tip")
         XCTAssertLessThan(try purpleness(hexB, in: tipRect), 0.3, "unmarked row B has no arrow tip")
 
-        // Mark row 0 (any offset in it); onChange repaints the row in both panes.
-        store.toggle(rowContaining: 3)
+        // Mark row 1 (any offset in it); onChange repaints the row in both panes.
+        store.toggle(rowContaining: 16)
 
         // After the mark: both panes show the purple arrow body and its
         // right-pointing tip.
@@ -280,7 +284,7 @@ final class BookmarkTests: XCTestCase {
         }
 
         // Unmarking clears the purple in both panes again.
-        store.toggle(rowContaining: 3)
+        store.toggle(rowContaining: 16)
         XCTAssertLessThan(try purpleness(hexA, in: bodyRect), 0.3, "unmarked row A is purple-free again")
         XCTAssertLessThan(try purpleness(hexB, in: bodyRect), 0.3, "unmarked row B is purple-free again")
         XCTAssertLessThan(try purpleness(hexA, in: tipRect), 0.3, "unmarked row A's arrow tip is gone")

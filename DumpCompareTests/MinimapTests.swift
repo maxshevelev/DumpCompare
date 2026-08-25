@@ -770,8 +770,19 @@ final class MinimapTests: XCTestCase {
             eventNumber: 0, clickCount: 1, pressure: 1))
         panel.mouseDown(with: event)
 
-        XCTAssertEqual(controller.windowModel.pane1.caretOffset, target.offset,
-                       "the click moved the caret to the byte it landed on")
+        // The click navigates the view, not the caret (§19.7): the caret stays at
+        // 0, and the pane scrolls to the byte the click landed on — which
+        // repopulates the viewport the band had vacated.
+        XCTAssertEqual(controller.windowModel.pane1.caretOffset, 0,
+                       "the caret stays where it was; the click moved the viewport, not the caret")
+        _ = pumpUntil(2.0) {
+            guard let visible = panel.viewport(forMapAt: 0) else { return false }
+            return visible.contains(target.offset)
+        }
+        let visible = try XCTUnwrap(panel.viewport(forMapAt: 0),
+                                    "the click scrolled the pane, repopulating the viewport")
+        XCTAssertTrue(visible.contains(target.offset),
+                      "the click landed on the byte it pointed at, even with no band")
     }
 
     /// Every byte gets its own cell: a mini row is one hex row, never a group of
@@ -3233,16 +3244,30 @@ final class MinimapTests: XCTestCase {
         pane.segmentStore.addCut(at: 65)
         window.layoutIfNeeded()
         _ = pumpUntil(2.0) { panel.segmentBlocks.first?.count == 4 }
+        // Park the caret off the cut, so a stray move is visible.
+        pane.moveCaret(to: 0)
+        window.layoutIfNeeded()
         let cutY = stripY(65, strip: strip, topRow: panel.topRow)
         // Click 2 pt below the cut — inside the snap distance, off the row start.
         let point = NSPoint(x: strip.midX, y: cutY + 2)
-        panel.mouseDown(with: mouse(.leftMouseDown, at: panel.convert(point, to: nil), window: window))
-        XCTAssertEqual(pane.caretOffset, 65,
-                       "the caret lands on the cut's exact offset, not the row's start")
+        // The snap resolves to the cut's exact offset, not the row's start.
+        let click = try XCTUnwrap(panel.segmentStripClick(at: point))
+        XCTAssertEqual(click.offset, 65,
+                       "the snap lands on the cut's exact offset, not the row's start")
         // The control: the pixel's own row would have given a different answer.
         let rowAnswer = panel.byteOffset(at: point)
         XCTAssertNotEqual(rowAnswer?.offset, 65,
                           "the pixel's row is a different answer — that is the snap's point")
+        panel.mouseDown(with: mouse(.leftMouseDown, at: panel.convert(point, to: nil), window: window))
+        // The click navigates the view, not the caret (§19.7).
+        XCTAssertEqual(pane.caretOffset, 0,
+                       "the caret stays where it was; the click moved the viewport, not the caret")
+        _ = pumpUntil(2.0) {
+            guard let visible = panel.viewport(forMapAt: 0) else { return false }
+            return visible.contains(65)
+        }
+        let visible = try XCTUnwrap(panel.viewport(forMapAt: 0))
+        XCTAssertTrue(visible.contains(65), "the pane scrolled to the cut")
     }
 
     /// Two cuts both within the snap distance: the nearer one wins.
@@ -3282,8 +3307,19 @@ final class MinimapTests: XCTestCase {
         let click = try XCTUnwrap(panel.segmentStripClick(at: point))
         XCTAssertEqual(click.offset, 96,
                        "the target is the byte the click's y stands for")
+        // Park the caret off the target, so a stray move is visible.
+        pane.moveCaret(to: 0)
+        window.layoutIfNeeded()
         panel.mouseDown(with: mouse(.leftMouseDown, at: panel.convert(point, to: nil), window: window))
-        XCTAssertEqual(pane.caretOffset, 96, "the caret lands on the clicked byte")
+        // The click navigates the view, not the caret (§19.7).
+        XCTAssertEqual(pane.caretOffset, 0,
+                       "the caret stays where it was; the click moved the viewport, not the caret")
+        _ = pumpUntil(2.0) {
+            guard let visible = panel.viewport(forMapAt: 0) else { return false }
+            return visible.contains(96)
+        }
+        let visible = try XCTUnwrap(panel.viewport(forMapAt: 0))
+        XCTAssertTrue(visible.contains(96), "the pane scrolled to the clicked byte")
     }
 
     /// A click at the strip's ends positions to the click location: the top is
@@ -3294,19 +3330,37 @@ final class MinimapTests: XCTestCase {
         let (_, panel) = try minimapViews(window)
         let strip = try XCTUnwrap(panel.segmentStripRect(forMapAt: 0))
         let fileSize = pane.fileSize
+        // Park the caret mid-file, so a stray move is visible for either end.
+        pane.moveCaret(to: fileSize / 2)
+        window.layoutIfNeeded()
         // The strip's top is the file start (0).
         let top = NSPoint(x: strip.midX, y: strip.minY + 1)
         let clickTop = try XCTUnwrap(panel.segmentStripClick(at: top))
         XCTAssertEqual(clickTop.offset, 0, "the top of the strip is the file's start")
         panel.mouseDown(with: mouse(.leftMouseDown, at: panel.convert(top, to: nil), window: window))
-        XCTAssertEqual(pane.caretOffset, 0, "a click at the top goes to the file's start")
+        // The click navigates the view, not the caret (§19.7).
+        XCTAssertEqual(pane.caretOffset, fileSize / 2,
+                       "the caret stays where it was; the click moved the viewport, not the caret")
+        _ = pumpUntil(2.0) {
+            guard let visible = panel.viewport(forMapAt: 0) else { return false }
+            return visible.contains(0)
+        }
+        let visibleTop = try XCTUnwrap(panel.viewport(forMapAt: 0))
+        XCTAssertTrue(visibleTop.contains(0), "a click at the top scrolled to the file's start")
         // The strip's bottom is the file end, which clamps to the last byte.
         let bottom = NSPoint(x: strip.midX, y: strip.maxY - 1)
         let clickBottom = try XCTUnwrap(panel.segmentStripClick(at: bottom))
         XCTAssertEqual(clickBottom.offset, fileSize - 1,
                        "the bottom of the strip clamps to the file's last byte")
         panel.mouseDown(with: mouse(.leftMouseDown, at: panel.convert(bottom, to: nil), window: window))
-        XCTAssertEqual(pane.caretOffset, fileSize - 1, "a click at the bottom goes to the last byte")
+        XCTAssertEqual(pane.caretOffset, fileSize / 2,
+                       "the caret still stays where it was")
+        _ = pumpUntil(2.0) {
+            guard let visible = panel.viewport(forMapAt: 0) else { return false }
+            return visible.contains(fileSize - 1)
+        }
+        let visibleBottom = try XCTUnwrap(panel.viewport(forMapAt: 0))
+        XCTAssertTrue(visibleBottom.contains(fileSize - 1), "a click at the bottom scrolled to the last byte")
     }
 
 }
