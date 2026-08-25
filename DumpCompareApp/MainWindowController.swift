@@ -310,10 +310,12 @@ final class MainWindowController: NSWindowController {
                                               keyEquivalent: "i")
         insertModeItem.keyEquivalentModifierMask = [.command, .option]
         editMenu.addItem(.separator())
+        // Select Block leads the selection block: it selects a named block from
+        // the caret, alongside Fill and Select All.
+        editMenu.addItem(withTitle: "Select Block…", action: #selector(MainViewController.selectBlock), keyEquivalent: "")
         editMenu.addItem(withTitle: "Fill Selection with…", action: #selector(MainViewController.fillSelectionWithBytes), keyEquivalent: "")
         editMenu.addItem(withTitle: "Select All", action: #selector(MainViewController.selectAllBytes), keyEquivalent: "a")
         editMenu.addItem(.separator())
-        editMenu.addItem(withTitle: "Select Block…", action: #selector(MainViewController.selectBlock), keyEquivalent: "")
         editMenu.addItem(withTitle: "Find", action: #selector(MainViewController.findPattern), keyEquivalent: "f")
         // ⌘D marks (or unmarks) the caret's row — the gesture that has to cost
         // nothing on a bench (§20). It sits beside Go To: mark where you are,
