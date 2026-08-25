@@ -50,8 +50,11 @@ final class DropTargetView: NSView {
             plate.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 8),
             plate.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
 
-            label.leadingAnchor.constraint(equalTo: plate.leadingAnchor, constant: 10),
-            label.trailingAnchor.constraint(equalTo: plate.trailingAnchor, constant: -10),
+            // The label may truncate (not pin the plate to its full width) so a
+            // zero-width zone — a collapsed drop band — doesn't force a minimum
+            // width up through the band into the split view's fitting size.
+            label.leadingAnchor.constraint(greaterThanOrEqualTo: plate.leadingAnchor, constant: 10),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: plate.trailingAnchor, constant: -10),
             label.topAnchor.constraint(equalTo: plate.topAnchor, constant: 5),
             label.bottomAnchor.constraint(equalTo: plate.bottomAnchor, constant: -5),
         ])
@@ -157,6 +160,14 @@ final class PaneDropBandsView: NSView {
         if let paneView {
             // The wrapped pane fills the view and sits behind the bands.
             paneView.translatesAutoresizingMaskIntoConstraints = false
+            // The pane's content (header, status bar) has a minimum width;
+            // without a low compression resistance the pane refuses to shrink
+            // below it, and a band dragged to zero width balloons the whole
+            // split view (and the window) to honour the pane's minimum. The
+            // bands are flexible (set in ComparisonView); the panes must be
+            // too, so a collapsed band can squeeze its pane to nothing (§3.3).
+            paneView.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            paneView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             addSubview(paneView)
             NSLayoutConstraint.activate([
                 paneView.topAnchor.constraint(equalTo: topAnchor),

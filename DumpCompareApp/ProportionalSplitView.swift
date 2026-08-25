@@ -145,8 +145,6 @@ final class ProportionalSplitView: NSSplitView {
             return
         }
 
-        let available = axisAvailable()
-
         // Capture the divider's current strip before the panes move, so the
         // vacated region can be repainted afterwards. Nothing else invalidates
         // it: the panes' frames are set directly here, bypassing NSSplitView's
@@ -155,19 +153,26 @@ final class ProportionalSplitView: NSSplitView {
         // them after a drag (§3.3).
         let previousDividerRect = dividerRect(forDividerAt: firstPaneThickness())
 
+        // The divider binding and the frames are derived from the capped axis
+        // length, not the raw bounds: when a band is dragged to zero width the
+        // pane's content minimum inflates the bounds (see `dividerAxisAvailable`),
+        // and feeding that back would re-assert the balloon on every pass.
+        let dividerAvailable = dividerAxisAvailable()
+
         // Rebuild the divider binding when the axis flips (View > Toggle Pane
         // Layout) or on the first pass, then point it at the current divider.
         // The binding is only created once the axis has a real size: at the
         // degenerate zero-size first layout (panes added before the split view
         // is in the window) it would pin a pane to zero thickness and fight
         // the pane's content for no purpose.
-        if available >= 1, dividerConstraint == nil || constraintOrientation != currentOrientation {
+
+        if dividerAvailable >= 1, dividerConstraint == nil || constraintOrientation != currentOrientation {
             rebuildDividerConstraint()
         }
-        dividerConstraint?.constant = dividerConstant(available: available)
+        dividerConstraint?.constant = dividerConstant(available: dividerAvailable)
 
-        let first = available * fraction
-        let second = max(0, available - first)
+        let first = dividerAvailable * fraction
+        let second = max(0, dividerAvailable - first)
         let width = bounds.width
         let height = bounds.height
 
@@ -454,6 +459,32 @@ final class ProportionalSplitView: NSSplitView {
         let total = isVertical ? bounds.width : bounds.height
         let dividerTotal = dividerThickness * CGFloat(max(0, arrangedSubviews.count - 1))
         return max(0, total - dividerTotal)
+    }
+
+    /// The axis length used to derive the divider binding's constant.
+    ///
+    /// Normally this is `axisAvailable()` (the split view's own bounds). But
+    /// when a band is dragged to zero width the band's pane keeps a content
+    /// minimum, the Auto Layout engine inflates the split view's fitting size
+    /// to honour it, and the enclosing window's content view follows — so
+    /// `bounds` reports a width far larger than the window the user actually
+    /// sized. Feeding that inflated width back into the divider constant
+    /// (`fraction × available`) pins the first band to the inflated edge and
+    /// re-asserts the balloon on every layout pass, a self-sustaining loop.
+    ///
+    /// Capping at the window's content size breaks the loop: the constant is
+    /// derived from the width the user asked for, the fitting size stops
+    /// growing, and the content view settles back to the window's width.
+    private func dividerAxisAvailable() -> CGFloat {
+        let available = axisAvailable()
+        guard let window else { return available }
+        // The window's frame is the ground truth for the axis length: the
+        // content view (and this view's bounds) can be inflated by the loop
+        // above, but the frame the user sized is not. For a titled window the
+        // content width equals the frame width (the title bar sits above, not
+        // to the side), so the frame width is the content width.
+        let windowAxis = isVertical ? window.frame.width : window.frame.height
+        return min(available, max(0, windowAxis - dividerThickness * CGFloat(max(0, arrangedSubviews.count - 1))))
     }
 
     // MARK: - Divider range
