@@ -2191,8 +2191,17 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// (§19.6). Internal so tests can click just inside and just outside it.
     static let bookmarkSnapDistance: CGFloat = 4
 
+    /// How near the top or bottom edge of a map a click may land and still mean
+    /// the file's start or end (§19.7). The overview is proportional, so the
+    /// exact start and end are single pixels at the very top and bottom — hard to
+    /// hit. A small zone at each edge snaps to the start or end, the way a cut's
+    /// snap distance makes a segment boundary reachable (§19.4.4). Internal so
+    /// tests can click just inside and just outside it.
+    static let fileEdgeSnapDistance: CGFloat = 4
+
     /// What a click on the panel means: the row of a bookmark whose mark it
-    /// landed on or near, else the byte drawn under it (§19.6).
+    /// landed on or near, else the file's start or end when the click is in the
+    /// edge zone, else the byte drawn under it (§19.6, §19.7).
     ///
     /// Snapping is what makes a mark on a full-dump overview reachable at all: a
     /// row there is kilobytes, so the pointer can be dead on the arrow and still
@@ -2201,7 +2210,35 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// dragging the band is a scrollbar gesture and never snaps, since a
     /// continuous scroll that jumped to a bookmark would fight the drag.
     func snappedOffset(at point: NSPoint) -> (mapIndex: Int, offset: UInt64)? {
-        nearestBookmarkMark(to: point) ?? byteOffset(at: point)
+        nearestBookmarkMark(to: point) ?? fileEdgeOffset(at: point) ?? byteOffset(at: point)
+    }
+
+    /// The file's start or end a click in the top or bottom edge zone of a map
+    /// stands for, in overview mode: the top zone means the file's first byte,
+    /// the bottom zone its last. The overview is proportional, so the exact start
+    /// and end are single pixels at the very top and bottom — hard to hit. A
+    /// small zone at each edge snaps to the start or end, the way a cut's snap
+    /// distance makes a segment boundary reachable (§19.4.4). The offset is
+    /// snapped to the file's own bounds, so a shorter file's bottom zone means
+    /// its own last byte, not the longer file's end. Nil when the point is not in
+    /// either zone (or the mode is not overview), so the caller falls through to
+    /// the proportional offset.
+    private func fileEdgeOffset(at point: NSPoint) -> (mapIndex: Int, offset: UInt64)? {
+        guard renderMode == .overview else { return nil }
+        let distance = Self.fileEdgeSnapDistance
+        for index in maps.indices {
+            let area = area(forMapAt: index)
+            guard area.contains(point) else { continue }
+            if point.y - area.minY <= distance {
+                guard maps[index].fileSize > 0 else { return nil }
+                return (index, 0)
+            }
+            if area.maxY - point.y <= distance {
+                guard maps[index].fileSize > 0 else { return nil }
+                return (index, maps[index].fileSize - 1)
+            }
+        }
+        return nil
     }
 
     /// The bookmark whose mark is nearest `point`, within the snap distance of

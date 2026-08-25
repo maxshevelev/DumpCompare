@@ -1077,6 +1077,32 @@ final class MinimapTests: XCTestCase {
                                  "and never past the file's end")
     }
 
+    /// Clicking the overview's start or end edge zone snaps to the file's exact
+    /// start or end: the overview is proportional, so the exact start and end are
+    /// single pixels at the very top and bottom — hard to hit. A small zone at
+    /// each edge snaps to the start or end, the way a cut's snap distance makes a
+    /// segment boundary reachable (§19.7). A click just outside the zone is
+    /// proportional, not the snap.
+    func testClickingTheOverviewEdgeZonesSnapsToTheFilesStartAndEnd() throws {
+        let size = 256 * 1024
+        let (_, _, panel) = try makeOverviewWindow([UInt8](repeating: 0x41, count: size))
+        let x = panel.bounds.midX
+
+        // The top zone: a click within the snap distance of the top means the
+        // file's first byte, exactly.
+        let top = try XCTUnwrap(panel.snappedOffset(at: NSPoint(x: x, y: 1)))
+        XCTAssertEqual(top.offset, 0, "the top zone snaps to the file's start")
+
+        // The bottom zone: a click within the snap distance of the bottom means
+        // the file's last byte, exactly.
+        let bottom = try XCTUnwrap(panel.snappedOffset(at: NSPoint(x: x, y: panel.bounds.height - 1)))
+        XCTAssertEqual(bottom.offset, UInt64(size) - 1, "the bottom zone snaps to the file's end")
+
+        // Just outside the top zone: the proportional offset, not the snap.
+        let justOutside = try XCTUnwrap(panel.snappedOffset(at: NSPoint(x: x, y: MinimapView.fileEdgeSnapDistance + 2)))
+        XCTAssertGreaterThan(justOutside.offset, 0, "just outside the top zone is proportional, not the start")
+    }
+
     /// In a comparison of unequal files, clicking the shorter map's end zone
     /// snaps to the shorter file's last byte: the map is binned over the longer
     /// file's extent, so the click's raw offset is far past the shorter file's
