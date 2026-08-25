@@ -1028,6 +1028,86 @@ final class MinimapTests: XCTestCase {
                        "the other pane's caret is untouched")
     }
 
+    /// A raw offset past a file's end snaps to its last byte: the map is binned
+    /// over the *longest* file's extent, so a shorter map's empty tail must still
+    /// resolve to a real byte — the file's own end — and an empty file has none
+    /// (§19.7).
+    func testSnappedOffsetClampsToTheFilesLastByte() throws {
+        let size = 1_000
+        let (_, _, panel) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: size))
+        XCTAssertEqual(panel.snappedOffset(0, forMapAt: 0), 0, "the start stays the start")
+        XCTAssertEqual(panel.snappedOffset(UInt64(size) / 2, forMapAt: 0), UInt64(size) / 2,
+                       "a byte inside the file is untouched")
+        XCTAssertEqual(panel.snappedOffset(UInt64(size) - 1, forMapAt: 0), UInt64(size) - 1,
+                       "the last byte stays the last byte")
+        XCTAssertEqual(panel.snappedOffset(UInt64(size), forMapAt: 0), UInt64(size) - 1,
+                       "one past the end snaps to the last byte")
+        XCTAssertEqual(panel.snappedOffset(UInt64(size) * 10, forMapAt: 0), UInt64(size) - 1,
+                       "far past the end snaps to the last byte")
+    }
+
+    /// Clicking the overview's start or end zone shows the file's start or end:
+    /// the offset is proportional to the click and bounded by the file, so the
+    /// top of the map is the file's first row and the bottom its last (§19.7).
+    func testClickingTheOverviewStartAndEndSnapsToFileBounds() throws {
+        let size = 256 * 1024
+        let (_, _, panel) = try makeOverviewWindow([UInt8](repeating: 0x41, count: size))
+
+        // The top of the map is the file's first row: the offset is within the
+        // first sliver of the file, not past it.
+        let top = try XCTUnwrap(panel.byteOffset(at: NSPoint(x: MinimapView.contentPadding, y: 0.1)))
+        XCTAssertLessThan(top.offset, UInt64(size) / 100,
+                          "the top of the map is the file's start")
+
+        // The bottom of the map is the file's final row: the offset is within
+        // the last sliver of the file, and never past its end.
+        let bottom = try XCTUnwrap(panel.byteOffset(at: NSPoint(x: panel.bounds.maxX - MinimapView.contentPadding - 1,
+                                                               y: panel.bounds.height - 0.1)))
+        XCTAssertGreaterThan(bottom.offset, UInt64(size) * 99 / 100,
+                             "the bottom of the map is the file's end")
+        XCTAssertLessThanOrEqual(bottom.offset, UInt64(size) - 1,
+                                 "and never past the file's end")
+    }
+
+    /// In a comparison of unequal files, clicking the shorter map's end zone
+    /// snaps to the shorter file's last byte: the map is binned over the longer
+    /// file's extent, so the click's raw offset is far past the shorter file's
+    /// end, and the snap pulls it back to the shorter file's own last byte
+    /// (§19.7). The pane then scrolls to show it.
+    func testClickingTheShorterFilesEndSnapsToItsLastByte() throws {
+        let long = 100_000, short = 10_000
+        let (controller, window) = try makeComparisonWindow(vertical: true, sizes: (long, short))
+        let (split, panel) = try minimapViews(window)
+        split.setPanelVisible(true, animated: false)
+        controller.setMinimapRenderModeForTesting(.overview)
+        window.layoutIfNeeded()
+        _ = pumpUntil(3.0) { (panel.overviewSummaries.first?.rowCount ?? 0) > 0 }
+
+        // The bottom of the shorter (right-hand) map: far past its end, so it
+        // snaps back to the shorter file's own last byte.
+        let point = NSPoint(x: panel.bounds.width * 0.75, y: panel.bounds.height - 1)
+        let target = try XCTUnwrap(panel.byteOffset(at: point))
+        XCTAssertEqual(target.mapIndex, 1, "the point is on the second map")
+        XCTAssertEqual(target.offset, UInt64(short) - 1,
+                       "and snaps to the shorter file's last byte")
+
+        panel.mouseDown(with: try mouseEvent(.leftMouseDown, at: point, in: panel))
+        panel.mouseUp(with: try mouseEvent(.leftMouseUp, at: point, in: panel))
+        window.layoutIfNeeded()
+
+        // The shorter file's end is shown: it is visible in the pane's viewport,
+        // and the click made that pane active.
+        _ = pumpUntil(2.0) {
+            guard let visible = panel.viewport(forMapAt: 1) else { return false }
+            return visible.contains(target.offset)
+        }
+        let visible = try XCTUnwrap(panel.viewport(forMapAt: 1))
+        XCTAssertTrue(visible.contains(target.offset),
+                      "the shorter file's end is visible after the click")
+        XCTAssertEqual(controller.windowModel.activePaneIndex, 1,
+                       "the click activated the shorter file's pane")
+    }
+
     // MARK: - Band height (§19.6)
 
     // MARK: - View menu (§19.1)

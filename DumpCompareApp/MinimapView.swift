@@ -2271,13 +2271,8 @@ final class MinimapView: NSView, NSViewToolTipOwner {
             let offset = row.multipliedReportingOverflow(by: Self.bytesPerRow)
             guard !offset.overflow else { return nil }
             let byte = offset.partialValue + UInt64(column)
-            guard byte < maps[index].fileSize else {
-                // Past this file's end: fall back to its last byte so a click
-                // low on a short map still lands somewhere real.
-                guard maps[index].fileSize > 0 else { return nil }
-                return (index, maps[index].fileSize - 1)
-            }
-            return (index, byte)
+            guard let snapped = snappedOffset(byte, forMapAt: index) else { return nil }
+            return (index, snapped)
         }
         return nil
     }
@@ -2303,11 +2298,24 @@ final class MinimapView: NSView, NSViewToolTipOwner {
             }
             let slice = (rowEnd - rowStart) * UInt64(column) / Self.bytesPerRow
             let offset = rowStart + slice
-            let fileSize = maps[index].fileSize
-            guard fileSize > 0 else { return nil }
-            return (index, min(offset, fileSize - 1))
+            guard let snapped = snappedOffset(offset, forMapAt: index) else { return nil }
+            return (index, snapped)
         }
         return nil
+    }
+
+    /// The byte a raw offset stands for in map `index`, snapped to the file's
+    /// own bounds. The map is binned over the *longest* file's extent, so a
+    /// shorter map's tail is empty paper: a click there would compute an offset
+    /// past the file's end, and this pulls it back onto the file's last byte.
+    /// That is what makes the start and end zones of a map resolve to the start
+    /// and end of the file — and, for the shorter file of a pair, put its end in
+    /// the pane's centre rather than off the bottom of it (§19.7). Nil for an
+    /// empty file, which has no byte to land on.
+    func snappedOffset(_ offset: UInt64, forMapAt index: Int) -> UInt64? {
+        let size = maps.indices.contains(index) ? maps[index].fileSize : 0
+        guard size > 0 else { return nil }
+        return min(offset, size - 1)
     }
 
     override func mouseUp(with event: NSEvent) {
