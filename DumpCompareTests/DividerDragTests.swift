@@ -68,6 +68,11 @@ final class DividerDragTests: XCTestCase {
         sv.mouseDown(with: mouse(.leftMouseDown, at: windowPoint(sv, start), window: window))
         sv.mouseDragged(with: mouse(.leftMouseDragged, at: windowPoint(sv, target), window: window))
         sv.mouseUp(with: mouse(.leftMouseUp, at: windowPoint(sv, target), window: window))
+        // The panes are wrapped in bands; the band's frame is set directly by
+        // the split view's layout(), but the pane's frame (via Auto Layout) is
+        // only updated in a later layout pass. Force it so the test can read
+        // the pane's frame immediately.
+        window.layoutIfNeeded()
     }
 
     func testDividerDragMovesToMousePositionAndPersists() throws {
@@ -95,6 +100,7 @@ final class DividerDragTests: XCTestCase {
         sv.mouseDragged(with: mouse(.leftMouseDragged, at: windowPoint(sv, NSPoint(x: dividerX + 200, y: 300)), window: window))
         sv.mouseDragged(with: mouse(.leftMouseDragged, at: windowPoint(sv, NSPoint(x: dividerX + 300, y: 300)), window: window))
         sv.mouseUp(with: mouse(.leftMouseUp, at: windowPoint(sv, NSPoint(x: dividerX + 300, y: 300)), window: window))
+        window.layoutIfNeeded()
 
         let available = 1200 - cv.splitView.dividerThickness
         XCTAssertEqual(cv.paneView1.frame.width, available / 2 + 300, accuracy: 1)
@@ -154,6 +160,7 @@ final class DividerDragTests: XCTestCase {
         sv.mouseDown(with: mouse(.leftMouseDown, at: windowPoint(sv, NSPoint(x: 400, y: dividerY)), window: window))
         sv.mouseDragged(with: mouse(.leftMouseDragged, at: windowPoint(sv, down), window: window))
         sv.mouseUp(with: mouse(.leftMouseUp, at: windowPoint(sv, down), window: window))
+        window.layoutIfNeeded()
 
         let h1 = cv.paneView1.frame.height
         let h2 = cv.paneView2.frame.height

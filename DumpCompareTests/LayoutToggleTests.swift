@@ -100,6 +100,7 @@ final class LayoutToggleTests: XCTestCase {
         sv.mouseDown(with: mouse(.leftMouseDown, at: windowPoint(sv, NSPoint(x: 400, y: dividerY)), window: window))
         sv.mouseDragged(with: mouse(.leftMouseDragged, at: windowPoint(sv, down), window: window))
         sv.mouseUp(with: mouse(.leftMouseUp, at: windowPoint(sv, down), window: window))
+        settle(window)
         XCTAssertEqual(cv.paneView1.frame.height, stackedHalf - 100, accuracy: 1)
         XCTAssertEqual(cv.paneView2.frame.height, stackedHalf + 100, accuracy: 1)
 
@@ -148,6 +149,7 @@ final class LayoutToggleTests: XCTestCase {
         sv.mouseDown(with: mouse(.leftMouseDown, at: windowPoint(sv, NSPoint(x: dividerX, y: 300)), window: window))
         sv.mouseDragged(with: mouse(.leftMouseDragged, at: windowPoint(sv, target), window: window))
         sv.mouseUp(with: mouse(.leftMouseUp, at: windowPoint(sv, target), window: window))
+        settle(window)
         XCTAssertEqual(cv.paneView1.frame.width / availableW, 0.75, accuracy: 0.01)
 
         // Toggle to stacked: the stacked layout has never had its divider
@@ -163,6 +165,7 @@ final class LayoutToggleTests: XCTestCase {
         sv.mouseDown(with: mouse(.leftMouseDown, at: windowPoint(sv, NSPoint(x: 400, y: dividerY)), window: window))
         sv.mouseDragged(with: mouse(.leftMouseDragged, at: windowPoint(sv, stackedTarget), window: window))
         sv.mouseUp(with: mouse(.leftMouseUp, at: windowPoint(sv, stackedTarget), window: window))
+        settle(window)
         XCTAssertEqual(cv.paneView1.frame.height / availableH, 0.30, accuracy: 0.01)
 
         // Back to side-by-side: the 75/25 proportion is restored, untouched by

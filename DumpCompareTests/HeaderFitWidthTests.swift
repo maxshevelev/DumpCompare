@@ -79,6 +79,11 @@ final class HeaderFitWidthTests: XCTestCase {
         sv.mouseDown(with: mouse(.leftMouseDown, at: sv.convert(start, to: nil), window: window))
         sv.mouseDragged(with: mouse(.leftMouseDragged, at: sv.convert(target, to: nil), window: window))
         sv.mouseUp(with: mouse(.leftMouseUp, at: sv.convert(target, to: nil), window: window))
+        // The panes are wrapped in bands; the band's frame is set directly by
+        // the split view's layout(), but the pane's frame (via Auto Layout) is
+        // only updated in a later layout pass. Force it so the test can read
+        // the pane's frame immediately.
+        window.layoutIfNeeded()
     }
 
     private func doubleClick(header: PaneHeaderView, window: NSWindow) {
