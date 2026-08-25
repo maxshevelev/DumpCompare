@@ -2824,6 +2824,25 @@ final class MinimapTests: XCTestCase {
                        "it runs the map's full height")
     }
 
+    /// Single-file, the strip's right edge sits `contentPadding` from the panel's
+    /// right edge — the same inset the content carries on the left — so the
+    /// panel's margins read as symmetric (§19.4.4).
+    func testSingleFileStripSitsSymmetricInTheRightMargin() throws {
+        let (_, window, _) = try makeSegmentedWindow(cuts: [128])
+        let (_, panel) = try minimapViews(window)
+        guard case .single = panel.mapLayout else {
+            return XCTFail("expected a single minimap, got \(panel.mapLayout)")
+        }
+        let strip = try XCTUnwrap(panel.segmentStripRect(forMapAt: 0),
+                                   "a cut makes a second piece, so the strip is visible")
+        let pad = MinimapView.contentPadding
+        let stripWidth = MinimapView.segmentStripWidth
+        XCTAssertEqual(strip.maxX, panel.bounds.maxX - pad,
+                       "the strip's right edge sits contentPadding from the panel's right edge")
+        XCTAssertEqual(strip.minX, panel.bounds.maxX - pad - stripWidth,
+                       "the strip is stripWidth wide, flush against that inset")
+    }
+
     /// Side by side, each map's strip sits on the outer side of its own map: the
     /// left map's strip is in the gutter against the separator line at the
     /// panel's centre, and the right map's strip is in its own right margin,
@@ -2855,13 +2874,14 @@ final class MinimapTests: XCTestCase {
         // The left strip sits in the gutter against the separator line.
         XCTAssertEqual(left.maxX, midX - gap,
                        "the left strip sits its gap away from the separator line")
-        // The right strip sits in its own right margin: its gap of paper from the
-        // content's right edge, which is the map's right edge minus the padding.
-        let rightContentEdge = panel.bounds.maxX - MinimapView.contentPadding
-        XCTAssertEqual(right.minX, rightContentEdge + gap,
-                       "the right strip sits its gap away from its content's edge")
-        XCTAssertEqual(right.maxX, rightContentEdge + gap + stripWidth,
-                       "the right strip is in the right margin, not the gutter")
+        // The right strip sits in its own right margin, its right edge
+        // contentPadding from the panel's right edge — symmetric with the
+        // content's left inset (§19.4.4).
+        let pad = MinimapView.contentPadding
+        XCTAssertEqual(right.maxX, panel.bounds.maxX - pad,
+                       "the strip's right edge sits contentPadding from the panel's right edge")
+        XCTAssertEqual(right.minX, panel.bounds.maxX - pad - stripWidth,
+                       "the strip is stripWidth wide, in the right margin")
         // Both strips are the same width.
         XCTAssertEqual(left.width, stripWidth, "the left strip is six points wide")
         XCTAssertEqual(right.width, stripWidth, "the right strip is six points wide")

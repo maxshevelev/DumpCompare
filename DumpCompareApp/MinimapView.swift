@@ -642,13 +642,22 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// layout: side by side, the inner edges have no padding at all (the two
     /// dumps meet at the gutter), so map 1's marks go in its right margin and
     /// point left. Nil when the map has no margin to draw in.
+    ///
+    /// The segment strip owns the right margin when it is visible, so the marks
+    /// keep to the left margin there — the strip's column is not paper they can
+    /// share, and a mark past it would point at the strip, not the row it names.
     private func bookmarkMargin(forMapAt index: Int) -> (strip: NSRect, pointsRight: Bool)? {
         guard maps.indices.contains(index) else { return nil }
         let area = area(forMapAt: index)
         let content = contentArea(within: area, forMapAt: index)
         guard area.height > 0 else { return nil }
         let left = content.minX - area.minX
-        let right = area.maxX - content.maxX
+        var right = area.maxX - content.maxX
+        // The strip's claim on the right margin (its gap plus its width) is not
+        // paper the marks can use, so it is deducted before the wider-margin test.
+        if segmentStripVisible(forMapAt: index) {
+            right = max(0, right - (Self.segmentStripGap + Self.segmentStripWidth))
+        }
         // The wider margin wins, so a layout that pads only one side is drawn on
         // that side; ties go left, which is where a reader looks first.
         if left >= right, left > 1 {
@@ -1269,12 +1278,24 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// the gutter (see `segmentStripRect`), so the content is pulled in past it
     /// to leave the strip its `segmentStripGap` of paper on each side — the
     /// layout the user reads as Map – gap – strip – gap – separator (§19.4.4).
+    ///
+    /// The strip's own right edge sits `contentPadding` from the panel's right
+    /// edge — the same inset the content carries on the left — so the margins
+    /// read as symmetric: the content is framed by `contentPadding` on the left,
+    /// and the strip (the rightmost element) by `contentPadding` on the right.
+    /// The content's right edge is pulled in past the strip to make that room,
+    /// leaving the strip its `segmentStripGap` of paper on the content side.
     private func contentArea(within area: NSRect, forMapAt index: Int) -> NSRect {
         let pad = Self.contentPadding
+        // The strip's full claim on the right margin: its gap of paper plus its
+        // own width. Added to the padding, it is how far the content's right
+        // edge retreats so the strip can sit `contentPadding` from the edge.
+        let stripSpan = Self.segmentStripGap + Self.segmentStripWidth
         switch mapLayout {
         case .single, .stacked:
+            let rightInset = pad + (segmentStripVisible(forMapAt: index) ? stripSpan : 0)
             return NSRect(x: area.minX + pad, y: area.minY,
-                          width: max(0, area.width - pad * 2),
+                          width: max(0, area.width - pad - rightInset),
                           height: area.height)
         case .sideBySide:
             // index 0 keeps the left pad (outer edge); its strip sits in the
@@ -1285,14 +1306,15 @@ final class MinimapView: NSView, NSViewToolTipOwner {
             // the gutter and the strip lives in the outer padding.
             if index == 0 {
                 let stripVisible = segmentStripVisible(forMapAt: index)
-                let stripSpan = Self.segmentStripGap * 2 + Self.segmentStripWidth
+                let gutterSpan = Self.segmentStripGap * 2 + Self.segmentStripWidth
                 let x = area.minX + pad
-                let inner = stripVisible ? (bounds.midX - stripSpan) : area.maxX
+                let inner = stripVisible ? (bounds.midX - gutterSpan) : area.maxX
                 return NSRect(x: x, y: area.minY,
                               width: max(0, inner - x), height: area.height)
             }
             let x = area.minX
-            let inner = area.maxX - pad
+            let rightInset = pad + (segmentStripVisible(forMapAt: index) ? stripSpan : 0)
+            let inner = area.maxX - rightInset
             return NSRect(x: x, y: area.minY,
                           width: max(0, inner - x), height: area.height)
         }
@@ -1313,13 +1335,12 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// block's colour band sits at the same y as the rows it tints in the dump.
     ///
     /// Single and stacked maps paint it in the map's right margin, a
-    /// `segmentStripWidth` column exactly `segmentStripGap` of paper away from
-    /// the content's right edge — the same `segmentStripGap` of paper separates
-    /// the strip's right edge from the panel's right edge, so the strip sits
-    /// symmetrically in the margin, equidistant from the content and the panel
-    /// edge (§19.4.4). It is carved out of the margin the bookmark marks already
-    /// live in, so it does not move the content edge and the marks keep their
-    /// geometry.
+    /// `segmentStripWidth` column `segmentStripGap` of paper away from the
+    /// content's right edge, its own right edge sitting `contentPadding` from
+    /// the panel's right edge — the same inset the content carries on the left,
+    /// so the panel's margins read as symmetric (§19.4.4). The content's right
+    /// edge is pulled in past the strip to make that room (see `contentArea`),
+    /// and the bookmark marks keep to the left margin the strip vacates.
     ///
     /// Side by side, the two maps' strips sit on opposite sides of the panel:
     /// the left map's strip is in the gutter against the separator line (the
@@ -1339,9 +1360,10 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         default:
             // Single, stacked, and the right map in side-by-side: the strip is in
             // the map's own right margin, `segmentStripGap` of paper from the
-            // content's right edge — and the same `segmentStripGap` separates its
-            // right edge from the panel's right edge, so the strip sits
-            // symmetrically in the margin (§19.4.4).
+            // content's right edge. Because `contentArea` already pulled the
+            // content in past the strip, its right edge lands `contentPadding`
+            // from the panel's right edge — symmetric with the content's left
+            // inset (§19.4.4).
             let content = contentArea(within: area, forMapAt: index)
             x = content.maxX + Self.segmentStripGap
             guard x + Self.segmentStripWidth <= area.maxX else { return nil }
