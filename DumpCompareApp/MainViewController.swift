@@ -2951,6 +2951,11 @@ final class MainViewController: NSViewController {
     /// mark. The mark is made first, so it is visible while its name is typed —
     /// and `existingName: nil` is what tells the popover it is naming a mark that
     /// was just made, so its Esc removes it rather than keeping a name (§20.3).
+    ///
+    /// The caret and the viewport are not moved here: the popover is about to
+    /// take the focus, so a caret move now would be hidden behind it and lost.
+    /// They land on the new mark only once the naming is committed — see
+    /// `onCommit` below, which acts on the row the popover settled on.
     private func markAndNameBookmark(in pane: PaneViewModel, rowContaining offset: UInt64) {
         let store = windowModel.bookmarkStore
         let row = BookmarkStore.row(containing: offset)
@@ -2959,9 +2964,19 @@ final class MainViewController: NSViewController {
             in: pane, row: row, existingName: nil,
             onCommit: { [weak self] target, name in
                 self?.applyBookmarkEdit(from: row, to: target, name: name)
+                self?.revealBookmark(at: target, in: pane)
             },
             onCancel: { store.remove(rowContaining: row) }
         )
+    }
+
+    /// Lands the caret on a just-created bookmark and reveals it — centred when
+    /// it fell off-screen, left in place when it is already on the user's eye
+    /// (`moveCaret`'s centred reveal). Done on the commit, once the naming
+    /// popover has released the focus: a bookmark is made on a row, and that row
+    /// is where the user's eye should land now that the act is done.
+    private func revealBookmark(at row: UInt64, in pane: PaneViewModel) {
+        pane.moveCaret(to: row)
     }
 
     /// A double click on an address opens the edit popover on that row: it marks
