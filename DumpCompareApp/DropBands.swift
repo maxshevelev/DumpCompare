@@ -172,7 +172,16 @@ final class PaneDropBandsView: NSView {
             addSubview(target)
         }
         hideBands()
-        registerForDraggedTypes([.fileURL, .fileNames])
+        // Only the comparison-mode overlay (which wraps a pane) is a drop
+        // destination. In single-file mode the parent `SingleFileDropView` owns
+        // the drop, so this overlay must NOT register: AppKit resolves the drop
+        // destination by frame among registered views (not via the `hitTest:`
+        // override), and a registered overlay here would be picked as the
+        // deepest destination and steal the drop — whose `onDrop` is nil in
+        // single-file mode, so the file would be silently discarded.
+        if paneView != nil {
+            registerForDraggedTypes([.fileURL, .fileNames])
+        }
     }
 
     @available(*, unavailable)

@@ -281,6 +281,22 @@ final class DropBandsTests: XCTestCase {
         _ = window
     }
 
+    /// The three-band overlay is purely visual in single-file mode and must NOT
+    /// be a registered drop destination: the parent `SingleFileDropView` owns
+    /// the drop. AppKit resolves the destination by frame among registered
+    /// views (not via the `hitTest:` override), so a registered overlay would be
+    /// picked as the deepest destination and steal the drop — whose `onDrop` is
+    /// nil in single-file mode, silently discarding the file (§4.3, §22.4).
+    func testTheSingleFileBandOverlayIsNotADropDestination() throws {
+        let (controller, window, url) = try makeController([UInt8](repeating: 0x11, count: 256))
+        defer { cleanup(controller, url) }
+
+        let bands = try XCTUnwrap(findView(PaneDropBandsView.self, in: controller.view))
+        XCTAssertFalse(bands.registeredDraggedTypes.contains(.fileURL),
+                       "the single-file band overlay must not register for file drags — the parent drop view owns the drop")
+        _ = window
+    }
+
     /// Recursively finds the first view of type `T` in the hierarchy rooted at
     /// `root`.
     private func findView<T: NSView>(_ type: T.Type, in root: NSView) -> T? {
