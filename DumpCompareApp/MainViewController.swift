@@ -1422,9 +1422,11 @@ final class MainViewController: NSViewController {
         for range in ranges { patchOverviewRows(covering: range) }
     }
 
-    /// Moves the caret to the byte clicked on a map and centres the pane on it.
-    /// In comparison mode the click also makes that pane active, so the caret it
-    /// just moved is the one the keyboard and the navigation commands act on.
+    /// Centres the pane on the byte clicked on a map, moving the viewport
+    /// without touching the caret or the selection — a minimap click navigates
+    /// the view, it does not edit the caret's position. In comparison mode the
+    /// click also makes that pane active, so the keyboard and the navigation
+    /// commands act on the pane the user just pointed at.
     private func selectMinimapOffset(mapIndex: Int, offset: UInt64) {
         let pane: PaneViewModel
         switch mode {
@@ -1439,7 +1441,6 @@ final class MainViewController: NSViewController {
             pane = mapIndex == 0 ? windowModel.pane1 : windowModel.pane2
         }
         guard pane.isOpen else { return }
-        pane.moveCaret(to: offset)
         filePaneView(for: pane)?.revealOffsetCentered(offset)
     }
 

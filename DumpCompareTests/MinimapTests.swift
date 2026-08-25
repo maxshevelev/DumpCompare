@@ -941,16 +941,21 @@ final class MinimapTests: XCTestCase {
                                     "the parked width is applied by the first layout")
     }
 
-    // MARK: - Clicking places the caret (§19.7)
+    // MARK: - Clicking moves the viewport, not the caret (§19.7)
 
-    /// A click away from the band means the byte drawn at that point: the caret
-    /// moves there — row from y, column from x — and the pane centres on it.
-    func testClickingTheMapMovesTheCaretToThatByte() throws {
+    /// A click away from the band centres the pane on the byte drawn at that
+    /// point — row from y, column from x — moving the viewport without touching
+    /// the caret or the selection: a minimap click navigates the view, it does
+    /// not edit the caret's position.
+    func testClickingTheMapCentresThePaneWithoutMovingTheCaret() throws {
         let bytes = [UInt8](repeating: 0x41, count: 100_000)
         let (controller, window, panel) = try makeSingleFileWindow(bytes)
         _ = pumpUntil(2.0) { panel.viewport(forMapAt: 0) != nil }
         let pane = controller.windowModel.pane1
-        XCTAssertEqual(pane.hexSelection().start, 0, "the caret starts at the top")
+        // Park the caret somewhere other than the top, so a stray move is visible.
+        pane.moveCaret(to: 500)
+        window.layoutIfNeeded()
+        XCTAssertEqual(pane.hexSelection().start, 500, "the caret is parked at 500")
 
         // A point well below the band, on the third byte column.
         let band = try XCTUnwrap(panel.viewportRects().first)
@@ -963,8 +968,9 @@ final class MinimapTests: XCTestCase {
         panel.mouseUp(with: try mouseEvent(.leftMouseUp, at: point, in: panel))
         window.layoutIfNeeded()
 
-        XCTAssertEqual(pane.hexSelection().start, expected.offset,
-                       "the caret lands on the byte that was drawn under the cursor")
+        // The caret did not move: the click navigated the view, not the caret.
+        XCTAssertEqual(pane.hexSelection().start, 500,
+                       "the caret stays where it was; the click moved the viewport, not the caret")
         // Centred: the byte sits near the middle of the pane's visible range.
         _ = pumpUntil(2.0) {
             guard let visible = panel.viewport(forMapAt: 0) else { return false }
@@ -1001,7 +1007,8 @@ final class MinimapTests: XCTestCase {
     }
 
     /// In comparison mode a click on the second map targets the second pane and
-    /// makes it active, so the caret it moved is the one the keyboard acts on.
+    /// makes it active, so the keyboard and the navigation commands act on the
+    /// pane the user pointed at — without moving either pane's caret.
     func testClickingTheSecondMapActivatesThatPane() throws {
         let (controller, window) = try makeComparisonWindow(vertical: true, sizes: (8_000, 8_000))
         let (split, panel) = try minimapViews(window)
@@ -1022,8 +1029,9 @@ final class MinimapTests: XCTestCase {
 
         XCTAssertEqual(controller.windowModel.activePaneIndex, 1,
                        "clicking the second map activates its pane")
-        XCTAssertEqual(controller.windowModel.pane2.hexSelection().start, target.offset,
-                       "and moves that pane's caret")
+        // The click navigates the view, not the caret: neither pane's caret moves.
+        XCTAssertEqual(controller.windowModel.pane2.hexSelection().start, 0,
+                       "the click does not move that pane's caret")
         XCTAssertEqual(controller.windowModel.pane1.hexSelection().start, 0,
                        "the other pane's caret is untouched")
     }
@@ -1630,8 +1638,17 @@ final class MinimapTests: XCTestCase {
                                                       y: panel.bounds.height * 0.75),
                                           in: panel))
         window.layoutIfNeeded()
-        XCTAssertEqual(controller.windowModel.pane1.hexSelection().start, target.offset,
-                       "and the caret goes there")
+        // The click navigates the view, not the caret: the caret stays at the top.
+        XCTAssertEqual(controller.windowModel.pane1.hexSelection().start, 0,
+                       "the click does not move the caret")
+        // The viewport jumped to the proportional offset.
+        _ = pumpUntil(2.0) {
+            guard let visible = panel.viewport(forMapAt: 0) else { return false }
+            return visible.contains(target.offset)
+        }
+        let visible = try XCTUnwrap(panel.viewport(forMapAt: 0))
+        XCTAssertTrue(visible.contains(target.offset),
+                      "the viewport jumped to the proportional offset")
     }
 
     /// The View menu carries the mode as a checked item — both modes are a
