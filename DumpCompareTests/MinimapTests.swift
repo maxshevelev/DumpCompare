@@ -2997,7 +2997,8 @@ final class MinimapTests: XCTestCase {
         let text = panel.segmentStripTooltipText(at: NSPoint(x: strip.midX, y: y))
         XCTAssertTrue(text.contains("S1"), "the hover names the piece: \(text)")
         XCTAssertTrue(text.contains("0x40"), "it gives the piece's start: \(text)")
-        XCTAssertTrue(text.contains("0x80"), "and its end: \(text)")
+        // The range is first-to-last byte: S1 = [64, 128) → 0x40…0x7F.
+        XCTAssertTrue(text.contains("0x7F"), "and its last byte: \(text)")
         XCTAssertTrue(text.contains("64"), "and its size: \(text)")
         // The name is asked for live at hover time (a rename fires no
         // invalidation, so the strip cannot store a copy). A fresh cut's piece

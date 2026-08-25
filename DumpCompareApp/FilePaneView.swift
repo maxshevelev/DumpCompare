@@ -880,7 +880,7 @@ final class FilePaneView: NSView {
         // the bar's address width. Absent when the pane is one piece — its
         // appearing is the signal the dump is partitioned.
         if let seg = status.segment {
-            parts.append("\(seg.label): \(address(seg.range.lowerBound))-\(address(seg.range.upperBound)) (\(Self.friendlySize(seg.range.upperBound - seg.range.lowerBound)))")
+            parts.append("\(seg.label): \(address(seg.range.lowerBound))-\(address(seg.range.lastByte)) (\(Self.friendlySize(UInt64(seg.range.count))))")
         }
         parts.append(Self.friendlySize(status.fileSize))
         if status.isDirty {

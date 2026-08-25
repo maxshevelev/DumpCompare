@@ -2641,3 +2641,12 @@ extension UInt64 {
         "0x" + bareAddress
     }
 }
+
+extension Range where Bound == UInt64 {
+    /// The range's last byte — the inclusive end of the half-open range, so a
+    /// piece read as "first…last" names the bytes it holds, not the first byte
+    /// past them. The one place the half-open-to-inclusive conversion lives, so
+    /// every site that shows a piece's address range (the status bar, the strip
+    /// tooltip, the cut-edit header) reads the same first-to-last bytes (§21.3).
+    var lastByte: UInt64 { upperBound - 1 }
+}

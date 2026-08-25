@@ -334,9 +334,10 @@ final class SegmentCommandsTests: XCTestCase {
         view.layoutSubtreeIfNeeded()
 
         // The file's largest address is 0x10 (its size), two hex digits, so every
-        // address is padded to two: caret 0xC → "0C", S1 = [8, 16) → "08-10".
+        // address is padded to two: caret 0xC → "0C", S1 = [8, 16) → "08-0F"
+        // (first byte 0x8, last byte 0xF).
         XCTAssertEqual(view.statusLabel.stringValue,
-                       "Offset 0C  ·  S1: 08-10 (8 B)  ·  16 B")
+                       "Offset 0C  ·  S1: 08-0F (8 B)  ·  16 B")
     }
 
     /// §21.3 the padding width follows the file's largest address, and the
@@ -349,7 +350,7 @@ final class SegmentCommandsTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: url) }
         let viewModel = PaneViewModel()
         try viewModel.open(url: url)
-        // A cut at 0x2E6: S1 = [0x2E6, 0x400000), length 0x400000 - 0x2E6.
+        // A cut at 0x2E6: S1 = [0x2E6, 0x400000), last byte 0x3FFFFF.
         viewModel.segmentStore.addCut(at: 0x2E6)
         viewModel.setSelection(SelectionModel.empty(at: 0x2E6, fileSize: size))
 
@@ -358,7 +359,8 @@ final class SegmentCommandsTests: XCTestCase {
         view.layoutSubtreeIfNeeded()
 
         // 0x400000 - 0x2E6 = 4193562 B = 3.999 MB → "4 MB"; the file is "4 MB".
+        // The range is first-to-last byte: 0002E6-3FFFFF.
         XCTAssertEqual(view.statusLabel.stringValue,
-                       "Offset 0002E6  ·  S1: 0002E6-400000 (4 MB)  ·  4 MB")
+                       "Offset 0002E6  ·  S1: 0002E6-3FFFFF (4 MB)  ·  4 MB")
     }
 }

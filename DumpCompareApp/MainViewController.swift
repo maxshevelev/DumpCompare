@@ -1600,7 +1600,7 @@ final class MainViewController: NSViewController {
         let from = segment.range.lowerBound
         // The piece's label and range, above the two fields — "S1: 0001000-0600000"
         // — so the popover says what it is for before the offset is read (§21.4).
-        let header = "\(segment.label): \(segment.range.lowerBound.bareAddress)-\(segment.range.upperBound.bareAddress)"
+        let header = "\(segment.label): \(segment.range.lowerBound.bareAddress)-\(segment.range.lastByte.bareAddress)"
         let controller = CutEditPopoverController(
             prefillOffset: from, validate: validate,
             // The piece's current name, so editing a named piece opens with the

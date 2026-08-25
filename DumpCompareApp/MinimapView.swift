@@ -830,7 +830,7 @@ final class MinimapView: NSView, NSViewToolTipOwner {
             let block = segmentBlocks[index][pieceIndex]
             let label = Segment.label(for: pieceIndex)
             let start = String(block.range.lowerBound, radix: 16).uppercased()
-            let end = String(block.range.upperBound, radix: 16).uppercased()
+            let end = String(block.range.lastByte, radix: 16).uppercased()
             let size = FilePaneView.friendlySize(UInt64(block.range.count))
             var text = "\(label) — 0x\(start)…0x\(end), \(size)"
             if let name = segmentPieceName?(index, pieceIndex), !name.isEmpty {
