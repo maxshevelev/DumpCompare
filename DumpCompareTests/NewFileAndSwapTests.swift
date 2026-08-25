@@ -99,4 +99,33 @@ final class NewFileAndSwapTests: XCTestCase {
                        "the active pane must follow its document to the new side")
     }
 
+    /// The swap must re-point the VIEWS to the swapped models, not just exchange
+    /// the models in the model layer. Swap leaves the mode unchanged, so
+    /// `refreshMode()`'s skip-when-unchanged guard would not re-apply — and the
+    /// panes (which follow their models) would stay put, desyncing visual
+    /// position from model position. A later position-based operation (a drop
+    /// onto the right pane) would then hit the model now in the left (§3.3).
+    func testSwapPanesRepointsTheViewsToTheSwappedModels() throws {
+        let (controller, window) = makeController()
+        let urlA = tempURL("a.bin")
+        let urlB = tempURL("b.bin")
+        try Data([0x01]).write(to: urlA)
+        try Data([0x02]).write(to: urlB)
+        defer { cleanup(controller, urlA, urlB) }
+
+        try openFileIntoPane1(controller, urlA)
+        try controller.windowModel.pane2.open(url: urlB)
+        controller.apply(mode: .comparison)
+        window.layoutIfNeeded()
+
+        controller.swapPanes()
+        window.layoutIfNeeded()
+
+        let comparison = try descendant(ComparisonView.self, of: window.contentView!)
+        XCTAssertTrue(comparison.paneView1.viewModel === controller.windowModel.pane1,
+                      "after swap, the left view must display the model that is now pane 1")
+        XCTAssertTrue(comparison.paneView2.viewModel === controller.windowModel.pane2,
+                      "after swap, the right view must display the model that is now pane 2")
+    }
+
 }

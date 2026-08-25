@@ -2947,12 +2947,19 @@ final class MainViewController: NSViewController {
 
     /// View > Swap Panels: exchanges pane 1 and pane 2 (comparison mode). The
     /// active pane follows its document, so the file the user was working on
-    /// stays active. Re-applying the mode rebuilds both panes and the diff
-    /// index against the swapped storages.
+    /// stays active. Re-applying the mode re-points the panes (which follow
+    /// their models) to the swapped positions and rebuilds the diff index
+    /// against the swapped storages.
     @objc func swapPanes() {
         guard mode == .comparison else { return }
         windowModel.swapPanes()
-        refreshMode()
+        // Swap exchanges the models in position but leaves the mode unchanged,
+        // so `refreshMode()`'s skip-when-unchanged guard would not re-apply —
+        // and the panes would stay put while the model→position mapping
+        // changes, desyncing every position-based operation (a drop onto the
+        // right pane would hit the model now in the left). Re-apply directly
+        // so the views follow the swapped models (§3.3).
+        apply(mode: .comparison)
     }
 
     /// View > Word Size (§6): re-groups the hex dump into words of this size.
