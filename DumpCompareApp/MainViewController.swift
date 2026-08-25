@@ -2404,21 +2404,20 @@ final class MainViewController: NSViewController {
         add("Save", #selector(savePaneDocument(_:)), "s")
         add("Save As…", #selector(savePaneDocumentAs(_:)), "S")
         add("Revert to Saved", #selector(revertPaneDocument(_:)), "")
+        menu.addItem(.separator())
         // The join twins (§22.1): beside the file-scoped commands, acting on
         // THIS pane (the menu's representedObject) rather than the active one.
         // Insert (at the start) is grouped with the edit commands above;
         // Append (at the end) sits in its own block — the menu bar's File
         // submenu's order, mirrored here.
         add("Insert File at Start…", #selector(insertFileAtStartInPane(_:)), "")
+        add("Append File…", #selector(appendFileInPane(_:)), "")
         menu.addItem(.separator())
         // Show in Finder is header-only: it reveals THIS pane's file in the
         // Finder, which is a per-pane act, so the menu bar's File submenu
         // (active-pane) doesn't duplicate it. It keeps its own block between
         // the two join commands.
         add("Show in Finder", #selector(showPaneInFinder(_:)), "")
-        menu.addItem(.separator())
-        add("Append File…", #selector(appendFileInPane(_:)), "")
-        menu.addItem(.separator())
         add("Close", #selector(closePaneDocument(_:)), "w")
         // Swap Panels is a comparison-mode command, not a per-pane File action,
         // so it gets its own block and targets `swapPanes` directly.
