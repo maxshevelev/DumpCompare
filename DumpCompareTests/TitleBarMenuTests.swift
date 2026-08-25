@@ -35,8 +35,8 @@ final class TitleBarMenuTests: XCTestCase {
     ]
 
     /// The pane header menu: every File item (the join twins mirroring the
-    /// menu bar's File submenu — Insert, separator, Append), the header-only
-    /// Show in Finder, then Swap Panels in its own block.
+    /// menu bar's File submenu — Insert, then the header-only Show in Finder
+    /// in its own block, then Append), then Swap Panels in its own block.
     private var paneMenuItems: [ExpectedItem] {
         [
             .title("New File"),
@@ -47,8 +47,9 @@ final class TitleBarMenuTests: XCTestCase {
             .title("Revert to Saved"),
             .title("Insert File at Start…"),
             .separator,
-            .title("Append File…"),
             .title("Show in Finder"),
+            .separator,
+            .title("Append File…"),
             .separator,
             .title("Close"),
             .separator,

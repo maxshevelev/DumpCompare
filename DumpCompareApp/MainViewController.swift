@@ -2411,11 +2411,13 @@ final class MainViewController: NSViewController {
         // submenu's order, mirrored here.
         add("Insert File at Start…", #selector(insertFileAtStartInPane(_:)), "")
         menu.addItem(.separator())
-        add("Append File…", #selector(appendFileInPane(_:)), "")
         // Show in Finder is header-only: it reveals THIS pane's file in the
         // Finder, which is a per-pane act, so the menu bar's File submenu
-        // (active-pane) doesn't duplicate it.
+        // (active-pane) doesn't duplicate it. It keeps its own block between
+        // the two join commands.
         add("Show in Finder", #selector(showPaneInFinder(_:)), "")
+        menu.addItem(.separator())
+        add("Append File…", #selector(appendFileInPane(_:)), "")
         menu.addItem(.separator())
         add("Close", #selector(closePaneDocument(_:)), "w")
         // Swap Panels is a comparison-mode command, not a per-pane File action,
