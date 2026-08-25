@@ -75,14 +75,12 @@ final class DropTargetView: NSView {
     }
 }
 
-/// A self-contained single-target drop region (§4.3): the "second file" half in
-/// single-file mode. Always present and transparent so it receives file drags,
-/// it shows its caption plate only for the drag's lifetime and fires `onDrop`
-/// with the dropped URLs.
+/// The "second file" half's visual in single-file mode (§4.3): a quiet plate
+/// that appears only for the drag's lifetime. Purely visual — it is never
+/// hit-testable, so the hex dump behind it keeps the mouse; the owning
+/// `SingleFileDropView` receives the file drag (it is the drop destination) and
+/// shows/hides this plate for the drag's lifetime.
 final class DropZoneView: NSView {
-    /// Fired with the dropped URLs when the user drops on this region.
-    var onDrop: (([URL]) -> Void)?
-
     private let target: DropTargetView
     private var dragActive = false
 
@@ -98,13 +96,17 @@ final class DropZoneView: NSView {
             target.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
         hide()
-        registerForDraggedTypes([.fileURL, .fileNames])
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
     }
+
+    /// Purely visual: never a hit-test target, so mouse events fall through to
+    /// the hex dump behind this plate (§4.3). The file drag is owned by the
+    /// parent `SingleFileDropView`, which is the registered drop destination.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
     func setDragActive(_ active: Bool) {
         dragActive = active
@@ -125,41 +127,6 @@ final class DropZoneView: NSView {
     private func hide() {
         target.isHidden = true
         target.alphaValue = 0
-    }
-}
-
-extension DropZoneView {
-    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        guard !sender.draggingPasteboard.droppedFileURLs.isEmpty else { return [] }
-        setDragActive(true)
-        setHighlighted(true)
-        return .copy
-    }
-
-    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        guard dragActive else { return [] }
-        setHighlighted(true)
-        return .copy
-    }
-
-    override func draggingExited(_ sender: NSDraggingInfo?) {
-        setDragActive(false)
-    }
-
-    override func draggingEnded(_ sender: NSDraggingInfo) {
-        setDragActive(false)
-    }
-
-    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        true
-    }
-
-    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        setDragActive(false)
-        let urls = sender.draggingPasteboard.droppedFileURLs
-        guard !urls.isEmpty else { return true }
-        onDrop?(urls)
-        return true
     }
 }
 
@@ -211,6 +178,16 @@ final class PaneDropBandsView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) is not supported")
+    }
+
+    /// In single-file mode this overlay sits ON TOP of the pane as a sibling
+    /// (§4.3), so it must pass mouse events through to the hex dump behind it —
+    /// otherwise it swallows every click and drag over the dump. In comparison
+    /// mode it WRAPS the pane, so the normal hit-test (which descends into the
+    /// pane's hex view) applies and the overlay stays the drag destination.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard paneView == nil else { return super.hitTest(point) }
+        return nil
     }
 
     /// Lays the three bands out for the current height: the two join strips at

@@ -76,12 +76,76 @@ final class SingleFileDropView: NSView {
             addTarget.trailingAnchor.constraint(equalTo: trailingAnchor).isActive = true
         }
 
-        // Forward each half's drop to the parent's onDrop, tagging the target.
-        thisFileBands.onDrop = { [weak self] target, urls in
-            self?.onDrop?(target, urls)
+        registerForDraggedTypes([.fileURL, .fileNames])
+    }
+
+    // MARK: - Drag targeting (§4.3)
+
+    /// The drop destination for the whole single-file content area. The two
+    /// overlay halves (`thisFileBands`, `addTarget`) are purely visual and pass
+    /// mouse events through to the hex dump; the file drag is owned here, by the
+    /// always-present container that is the hex view's ancestor, so the drag
+    /// system reaches it by walking up from the hex view (§4.3).
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard !sender.draggingPasteboard.droppedFileURLs.isEmpty else { return [] }
+        updateDragTarget(at: sender.draggingLocation)
+        return .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        updateDragTarget(at: sender.draggingLocation)
+        return .copy
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        clearDragTarget()
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        clearDragTarget()
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        true
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = sender.draggingPasteboard.droppedFileURLs
+        clearDragTarget()
+        guard !urls.isEmpty else { return true }
+        let target = dropTarget(at: sender.draggingLocation) ?? .addSecond
+        onDrop?(target, urls)
+        return true
+    }
+
+    /// The drop target under the window point: one of the three bands when the
+    /// pointer is in the "this file" half, or the Open-as-Second target when it
+    /// is in the "second file" half.
+    private func dropTarget(at windowPoint: NSPoint) -> SingleFileDropTarget? {
+        if let band = thisFileBands.band(at: windowPoint) { return band }
+        // The pointer is in the "second file" half (outside the bands' bounds).
+        return .addSecond
+    }
+
+    /// Shows the overlay for the half under the pointer and highlights the
+    /// specific band or target; the other half is hidden.
+    private func updateDragTarget(at windowPoint: NSPoint) {
+        if thisFileBands.band(at: windowPoint) != nil {
+            thisFileBands.setDragActive(true)
+            thisFileBands.updateHover(at: windowPoint)
+            addTarget.setDragActive(false)
+        } else {
+            thisFileBands.setDragActive(false)
+            thisFileBands.clearHover()
+            addTarget.setDragActive(true)
+            addTarget.setHighlighted(true)
         }
-        addTarget.onDrop = { [weak self] urls in
-            self?.onDrop?(.addSecond, urls)
-        }
+    }
+
+    private func clearDragTarget() {
+        thisFileBands.setDragActive(false)
+        thisFileBands.clearHover()
+        addTarget.setDragActive(false)
+        addTarget.setHighlighted(false)
     }
 }

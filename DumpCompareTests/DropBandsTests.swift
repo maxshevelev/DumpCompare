@@ -231,6 +231,56 @@ final class DropBandsTests: XCTestCase {
         _ = window
     }
 
+    // MARK: - Mouse events pass through the overlays (§4.3)
+
+    /// In single-file mode the two drop overlays (the three-band "this file"
+    /// half and the "second file" half) sit on top of the hex dump. A hit-test
+    /// at a point over the dump must return the hex view (or a descendant of the
+    /// pane), NOT one of the overlays — otherwise the overlays swallow every
+    /// click and drag over the dump, breaking selection and autoscroll. The
+    /// file drag is owned by the always-present `SingleFileDropView` (the hex
+    /// view's ancestor), reached by the drag system walking up from the dump.
+    func testSingleFileOverlaysPassMouseEventsThroughToTheHexDump() throws {
+        let (controller, window, url) = try makeController([UInt8](repeating: 0x11, count: 256))
+        defer { cleanup(controller, url) }
+
+        let dropView = try XCTUnwrap(findView(SingleFileDropView.self, in: controller.view))
+        let hexView = try XCTUnwrap(findView(HexView.self, in: controller.view))
+        let scrollView = try XCTUnwrap(hexView.enclosingScrollView)
+        // Force a full layout pass: the controller's complex hierarchy needs the
+        // window sized before hit-testing is meaningful.
+        window.setContentSize(NSSize(width: 800, height: 600))
+        window.layoutIfNeeded()
+        dropView.layoutSubtreeIfNeeded()
+        // A point at the centre of the visible dump, in the drop view's own
+        // coordinate system (hitTest expects the receiver's coordinates, not
+        // window ones; the hex view's own centre can sit off-screen).
+        let point = scrollView.convert(NSPoint(x: scrollView.bounds.midX, y: scrollView.bounds.midY), to: dropView)
+
+        let hit = dropView.hitTest(point)
+        XCTAssertNotNil(hit, "a hit over the hex dump must find a view")
+        XCTAssertFalse(hit is PaneDropBandsView, "the three-band overlay must not swallow the click")
+        XCTAssertFalse(hit is DropZoneView, "the second-file overlay must not swallow the click")
+        let pane = try XCTUnwrap(findView(FilePaneView.self, in: controller.view))
+        XCTAssertTrue(hit?.isDescendant(of: pane) ?? false,
+                      "the click must land on the hex dump, not an overlay")
+        _ = window
+    }
+
+    /// The `SingleFileDropView` is the registered file-drop destination in
+    /// single-file mode: it is the hex view's ancestor, so the drag system
+    /// reaches it by walking up from the dump (the overlays are not
+    /// hit-testable and cannot steal the drag).
+    func testTheSingleFileDropViewIsTheRegisteredDropDestination() throws {
+        let (controller, window, url) = try makeController([UInt8](repeating: 0x11, count: 256))
+        defer { cleanup(controller, url) }
+
+        let dropView = try XCTUnwrap(findView(SingleFileDropView.self, in: controller.view))
+        XCTAssertTrue(dropView.registeredDraggedTypes.contains(.fileURL),
+                      "the single-file drop view must be the file-drop destination")
+        _ = window
+    }
+
     /// Recursively finds the first view of type `T` in the hierarchy rooted at
     /// `root`.
     private func findView<T: NSView>(_ type: T.Type, in root: NSView) -> T? {
