@@ -193,7 +193,7 @@ final class HexView: NSView, NSViewToolTipOwner {
 
     /// Builds the context menu shown when the user right-clicks an address in
     /// the Offset column or a byte in the hex column. The pane/controller
-    /// supplies it so the "Select block from here" and "Copy offset" actions
+    /// supplies it so the "Select Block from Here at «address»" and "Copy offset" actions
     /// resolve the exact offset and pane (§10.2). When nil (the default) the
     /// right-click falls through to `super` unchanged.
     var offsetMenuProvider: ((UInt64) -> NSMenu)?
@@ -907,6 +907,7 @@ final class HexView: NSView, NSViewToolTipOwner {
         // Offset column, on top of the tint.
         if drawsOffset {
             let offsetText = String(rowStart, radix: 16, uppercase: true).leftPadded(to: layout.offsetColumnChars, with: "0")
+            let offsetFrame = layout.offsetColumnFrame(row: row)
             if isBookmarked {
                 // A bookmarked row's address stands on a purple right-pointing
                 // arrow — the breakpoint-style mark the eye catches when scanning
@@ -919,12 +920,17 @@ final class HexView: NSView, NSViewToolTipOwner {
                 // reaches into the gap past the Offset column — is never buried
                 // under a piece's band (§21.3).
                 drawBookmarkMark(in: layout, row: row, outlined: bookmarkOutlined)
-                draw(text: offsetText, in: layout.offsetColumnFrame(row: row),
-                     baseline: baseline,
-                     color: bookmarkOutlined ? HexTheme.inkBlue : HexTheme.bookmarkTextColor)
+                if bookmarkOutlined {
+                    drawOffset(offsetText, in: offsetFrame, baseline: baseline,
+                               normal: HexTheme.inkBlue, muted: HexTheme.mutedInkBlue)
+                } else {
+                    drawOffset(offsetText, in: offsetFrame, baseline: baseline,
+                               normal: HexTheme.bookmarkTextColor,
+                               muted: HexTheme.mutedBookmarkText)
+                }
             } else {
-                draw(text: offsetText, in: layout.offsetColumnFrame(row: row),
-                     baseline: baseline, color: HexTheme.inkBlue)
+                drawOffset(offsetText, in: offsetFrame, baseline: baseline,
+                           normal: HexTheme.inkBlue, muted: HexTheme.mutedInkBlue)
             }
         }
 
@@ -1694,6 +1700,29 @@ final class HexView: NSView, NSViewToolTipOwner {
                                 withAttributes: attributes(for: color))
     }
 
+    /// The offset column's address as an attributed string: the leading zeros in
+    /// `muted`, the significant part in `normal` (§6). The split is at the first
+    /// non-zero digit, so an all-zero address (row 0) is muted in full. One
+    /// attributed string keeps the monospaced cells aligned.
+    func offsetAddress(_ offsetText: String, normal: NSColor, muted: NSColor) -> NSAttributedString {
+        let leadingZeros = offsetText.prefix(while: { $0 == "0" }).count
+        let attributed = NSMutableAttributedString(string: offsetText,
+                                                   attributes: attributes(for: normal))
+        if leadingZeros > 0 {
+            attributed.setAttributes(attributes(for: muted),
+                                     range: NSRange(location: 0, length: leadingZeros))
+        }
+        return attributed
+    }
+
+    /// Draws the offset column's address with its leading zeros dimmed, so the
+    /// significant part of the address stands out (§6).
+    private func drawOffset(_ offsetText: String, in frame: CGRect, baseline: CGFloat,
+                            normal: NSColor, muted: NSColor) {
+        offsetAddress(offsetText, normal: normal, muted: muted)
+            .draw(at: NSPoint(x: frame.minX, y: frame.minY + baseline))
+    }
+
     /// Attribute dictionary for a text colour: the shared font plus the colour,
     /// with kerning pinned off so a row drawn as one string never shifts a glyph
     /// off its cell (the monospaced fonts already don't kern; this makes it
@@ -1765,27 +1794,41 @@ final class HexView: NSView, NSViewToolTipOwner {
 
     // MARK: - Scrolling
 
-    /// Scrolls the caret into view within the enclosing scroll view.
+    /// Reveals the caret. `center` selects how: a navigation command that jumped
+    /// the caret (`center: true`) centres it when it landed outside the viewport
+    /// — the join's seam, a search hit, a go-to — while incremental navigation
+    /// (arrow keys, mouse, Home/End; `center: false`) takes the minimum scroll
+    /// that keeps the caret on screen, with no jump to the centre (§10.4).
     ///
     /// While a mouse drag is in progress the pane is driven by the pointer, not
     /// the caret: the drag anchor may legitimately scroll out of view, and
     /// yanking it back would fight the drag-selection autoscroll (§6). So the
     /// caret is revealed only outside a drag.
-    func revealCaret() {
+    func revealCaret(center: Bool = false) {
         guard !dragEngaged, let dataSource else { return }
-        let layout = currentLayout
         let selection = dataSource.hexSelection()
-        let (row, column) = layout.rowColumn(of: selection.start)
-        let region = dataSource.hexInputRegion()
-        let rect: CGRect
-        if region == .ascii {
-            rect = CGRect(x: layout.asciiX(column: column),
-                          y: layout.rowFrame(row: row).minY,
-                          width: layout.charWidth, height: layout.rowHeight)
+        let caret = selection.start
+        if center {
+            // A command moved the caret to a new location: if it is outside the
+            // viewport, centre it; if it is already on screen, leave the view put.
+            guard !isRowVisible(containing: caret) else { return }
+            centerRow(containing: caret)
         } else {
-            rect = layout.hexByteFrame(row: row, column: column)
+            // Incremental navigation: the minimum scroll that keeps the caret on
+            // screen — no jump to the centre, which would disorient (§10.4).
+            let layout = currentLayout
+            let (row, column) = layout.rowColumn(of: caret)
+            let region = dataSource.hexInputRegion()
+            let rect: CGRect
+            if region == .ascii {
+                rect = CGRect(x: layout.asciiX(column: column),
+                              y: layout.rowFrame(row: row).minY,
+                              width: layout.charWidth, height: layout.rowHeight)
+            } else {
+                rect = layout.hexByteFrame(row: row, column: column)
+            }
+            scrollToVisible(rect)
         }
-        scrollToVisible(rect)
     }
 
     /// Redraws the row the caret sits on without scrolling. Used when the
@@ -1814,11 +1857,12 @@ final class HexView: NSView, NSViewToolTipOwner {
         setNeedsDisplay(layout.rowFrame(row: row))
     }
 
-    /// Scrolls the row containing `offset` to the vertical centre of the visible
-    /// area (clamped to the document's edges), so the byte is shown mid-pane
-    /// instead of at its top or bottom edge. Used after a search result lands
-    /// (§11).
-    func revealOffsetCentered(_ offset: UInt64) {
+    /// The single "centre an offset" primitive: scrolls so the row containing
+    /// `offset` is at the vertical centre of the visible area (clamped to the
+    /// document's edges), so the byte is shown mid-pane rather than at its top
+    /// or bottom edge. Shared by the centred caret reveal and the "go to"
+    /// actions (§10.4, §11).
+    private func centerRow(containing offset: UInt64) {
         guard let scroll = enclosingScrollView else { return }
         let layout = currentLayout
         let (row, _) = layout.rowColumn(of: offset)
@@ -1829,6 +1873,23 @@ final class HexView: NSView, NSViewToolTipOwner {
         guard abs(originY - clip.bounds.origin.y) > 0.5 else { return }
         clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: originY))
         scroll.reflectScrolledClipView(clip)
+    }
+
+    /// Whether the row containing `offset` is already within the visible
+    /// viewport — the test that decides a centred reveal is needed at all: a
+    /// command that lands the caret on screen leaves the view where it is.
+    private func isRowVisible(containing offset: UInt64) -> Bool {
+        guard let scroll = enclosingScrollView else { return true }
+        let layout = currentLayout
+        let (row, _) = layout.rowColumn(of: offset)
+        return layout.rowFrame(row: row).intersects(scroll.contentView.bounds)
+    }
+
+    /// Always centres the row containing `offset` (a "go to" action: the caller
+    /// asked for this offset, so it is centred whether or not it was in view).
+    /// Used after a search result lands (§11).
+    func revealOffsetCentered(_ offset: UInt64) {
+        centerRow(containing: offset)
     }
 
     /// Scrolls the row containing `offset` to the *top* of the visible area
@@ -2119,7 +2180,7 @@ final class HexView: NSView, NSViewToolTipOwner {
 
     /// Right-click on an address in the Offset column or on a byte in the hex
     /// column: frames the anchor with the standard focus ring and pops the
-    /// offset context menu ("Select block from here", "Copy offset") built by
+    /// offset context menu ("Select Block from Here at «address»", "Copy offset") built by
     /// `offsetMenuProvider`. `NSMenu.popUpContextMenu` runs the menu's tracking
     /// loop synchronously, so the frame stays up for the whole time the menu is
     /// visible and clears once it is dismissed (§10.2).
@@ -2321,7 +2382,7 @@ final class HexView: NSView, NSViewToolTipOwner {
         }
         let flags = event.modifierFlags
         if flags.contains(.command) || flags.contains(.control) {
-            // Cmd+A / Cmd+C / Cmd+V / Cmd+G… are handled by menu key
+            // Cmd+A / Cmd+C / Cmd+V / Cmd+L… are handled by menu key
             // equivalents; leave this keystroke to the menu system.
             super.keyDown(with: event)
             return
@@ -2439,6 +2500,13 @@ enum HexTheme {
     /// than literal so it follows the SDK if that ever changes (§20.4).
     static let bookmarkTextColor = NSColor.alternateSelectedControlTextColor
 
+    /// The address's leading zeros on a filled bookmark mark — the bookmark text
+    /// dimmed so the significant part of the address stands out, as in the plain
+    /// offset column (§6, §20.4).
+    static let mutedBookmarkText = NSColor(name: nil) { _ in
+        NSColor.alternateSelectedControlTextColor.withAlphaComponent(0.40)
+    }
+
     /// Ink blue for the column header and the offset column (§6): a pale,
     /// slightly desaturated blue that reads as a quiet secondary element next
     /// to the dump's byte content, lighter on dark backgrounds so it stays
@@ -2447,6 +2515,15 @@ enum HexTheme {
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             ? NSColor(srgbRed: 0.58, green: 0.73, blue: 0.92, alpha: 1)
             : NSColor(srgbRed: 0.33, green: 0.54, blue: 0.78, alpha: 1)
+    }
+
+    /// The offset column's leading zeros, dimmed so the significant part of the
+    /// address stands out (§6): the same ink blue at reduced opacity, so the
+    /// padding digits read as "not the address" around the part the eye lands on.
+    static let mutedInkBlue = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(srgbRed: 0.58, green: 0.73, blue: 0.92, alpha: 0.40)
+            : NSColor(srgbRed: 0.33, green: 0.54, blue: 0.78, alpha: 0.40)
     }
 
     /// Text colour for a byte. A modified byte keeps its red warning; otherwise
@@ -2545,7 +2622,11 @@ enum HexTheme {
     /// "the same colour, just louder". In dark theme the tints sit at the dark
     /// end of the range, where pushing saturation alone does not lift a thin
     /// strip off the near-black paper — so the hover lifts the brightness as
-    /// well as the saturation there.
+    /// well as the saturation there. In light theme the other tints are bright
+    /// enough to read against the white paper, so only the saturation moves —
+    /// but the green is the exception: a pale green reads as near-white at full
+    /// brightness, so its hover dips the brightness and pushes the saturation a
+    /// little further, so the band reads as a weighty green rather than a wash.
     static func saturatedHighlight(of color: NSColor, in appearance: NSAppearance) -> NSColor {
         // The tint is a dynamic (catalog) colour, and the HSB component
         // accessors are not valid on a catalog colour — it must first be
@@ -2559,10 +2640,24 @@ enum HexTheme {
         let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         // Dark theme: the tint is dark, so the hover lifts brightness as well as
         // saturation — a dark, muddy band does not read as a colour in a 6 pt
-        // strip, and saturation alone does not move it off the paper. Light
-        // theme: the tint is already bright, so only the saturation moves.
-        let saturation = min(1, rgb.saturationComponent + (isDark ? 0.20 : 0.30))
-        let brightness = isDark ? min(1, rgb.brightnessComponent + 0.35) : rgb.brightnessComponent
+        // strip, and saturation alone does not move it off the paper.
+        // Light theme: the tints are bright enough to read against the white
+        // paper, so only the saturation moves — except the green, whose pale hue
+        // reads as near-white at full brightness. Its hover dips the brightness
+        // and pushes the saturation a little further, so the band reads as a
+        // weighty green rather than a wash.
+        let isGreen = !isDark
+            && rgb.hueComponent >= 0.25 && rgb.hueComponent <= 0.45
+        let saturation = min(1, rgb.saturationComponent
+            + (isDark ? 0.20 : (isGreen ? 0.45 : 0.30)))
+        let brightness: CGFloat
+        if isDark {
+            brightness = min(1, rgb.brightnessComponent + 0.35)
+        } else if isGreen {
+            brightness = max(0, rgb.brightnessComponent - 0.12)
+        } else {
+            brightness = rgb.brightnessComponent
+        }
         return NSColor(hue: rgb.hueComponent,
                        saturation: saturation,
                        brightness: brightness,
@@ -2576,4 +2671,27 @@ extension String {
         guard count < length else { return self }
         return String(repeating: pad, count: length - count) + self
     }
+}
+
+extension UInt64 {
+    /// The app's address for this offset: upper-case hex, at least eight digits
+    /// (§10) — the shape the Offset column, the bookmark list, and the context-
+    /// menu titles all share. `hexAddress` adds the `0x` prefix the offset input
+    /// fields carry on their own.
+    var bareAddress: String {
+        String(self, radix: 16, uppercase: true).leftPadded(to: 8, with: "0")
+    }
+
+    var hexAddress: String {
+        "0x" + bareAddress
+    }
+}
+
+extension Range where Bound == UInt64 {
+    /// The range's last byte — the inclusive end of the half-open range, so a
+    /// piece read as "first…last" names the bytes it holds, not the first byte
+    /// past them. The one place the half-open-to-inclusive conversion lives, so
+    /// every site that shows a piece's address range (the status bar, the strip
+    /// tooltip, the cut-edit header) reads the same first-to-last bytes (§21.3).
+    var lastByte: UInt64 { upperBound - 1 }
 }

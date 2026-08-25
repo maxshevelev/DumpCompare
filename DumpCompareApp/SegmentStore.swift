@@ -22,11 +22,22 @@ struct Segment: Equatable {
 
     /// The positional label for the piece at `index` — "S0", "S1", … The one
     /// place the "S" prefix is built, so every site that names a piece (the
-    /// form's label column, the status bar, the Remove Segment menu items, the
+    /// form's label column, the status bar, the Merge menu items, the
     /// saved file names, the Save All preview) reads the same shape. The prefix
     /// is a constant for now; making the label format configurable is a change
     /// to this one line.
     static func label(for index: Int) -> String { "S\(index)" }
+
+    /// The menu title for merging this piece into its neighbour —
+    /// "Merge S1 into S0": the piece that goes, and the neighbour that absorbs
+    /// it (the one above, or the one below for S0). The one place the "into
+    /// which" rule is written, so the Edit menu, the offset context menu, the
+    /// strip menu, and the form's row menu all read the same shape.
+    var mergeTitle: String { Self.mergeTitle(for: index) }
+    static func mergeTitle(for index: Int) -> String {
+        let neighbour = index == 0 ? 1 : index - 1
+        return "Merge \(label(for: index)) into \(label(for: neighbour))"
+    }
 
     /// Built only by the partition that owns it: a `Segment` is a piece of one
     /// specific `Segmentation`, so it cannot be fabricated with boundaries no
@@ -301,6 +312,22 @@ struct Segmentation: Equatable {
         return newPieces.map(\.start) == oldStarts ? nil : 0..<newSize
     }
 
+    /// Re-bases the partition onto a new content size: the pieces keep their
+    /// offsets and names, but any piece that opens at or past the new end is
+    /// dropped (a cut at or past the new EOF is invalid, and the last surviving
+    /// piece extends to the new end). Used by Revert to Saved, which changes the
+    /// file's size without throwing away the partition the user set up (§21.2).
+    /// The partition stays non-empty: a revert to an empty file keeps the
+    /// whole-file piece, mirroring the `apply(.delete)` guard.
+    mutating func rebase(to newSize: UInt64) {
+        contentSize = newSize
+        let firstName = pieces.first?.name ?? ""
+        pieces.removeAll { $0.start >= newSize }
+        if pieces.isEmpty {
+            pieces = [Piece(start: 0, name: firstName)]
+        }
+    }
+
     // MARK: - Reset
 
     /// Resets to one piece — the whole file — named `name`.
@@ -412,11 +439,23 @@ final class SegmentStore {
 
     // MARK: - Reset & snapshots
 
-    /// Resets to one piece — the whole file — named `name`. Called on open,
-    /// close, and revert.
+    /// Resets to one piece — the whole file — named `name`. Called on open and
+    /// close, where a fresh file genuinely is one piece. (Revert re-bases
+    /// instead — see `rebase` — so the partition the user set up survives.)
     func reset(size: UInt64, name: String) {
         current.reset(size: size, name: name)
         onChange?(0..<size)
+    }
+
+    /// Re-bases the partition onto `newSize` (Revert to Saved, §21.2): the cuts
+    /// and names survive, and any cut at or past the new end is dropped. Fires
+    /// `onChange` only when a piece was actually dropped — a rebase that leaves
+    /// every cut in place repaints nothing, mirroring `restore`'s rule.
+    func rebase(to newSize: UInt64) {
+        let before = current.pieces
+        current.rebase(to: newSize)
+        guard current.pieces != before else { return }
+        onChange?(0..<newSize)
     }
 
     /// A value copy of the partition, for the undo snapshot stack. O(1): it

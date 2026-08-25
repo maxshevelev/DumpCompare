@@ -85,7 +85,7 @@ final class BookmarkEditPopoverController: NSViewController, NSTextFieldDelegate
         // The address in the shape the dialogs write one (§10), in the dump's own
         // font: this field is read far more often than it is edited, so it has to
         // read as an address first and behave as a field second.
-        let offset = NSTextField(string: Bookmark.addressLabel(row))
+        let offset = NSTextField(string: row.hexAddress)
         offset.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         offset.delegate = self
         offset.translatesAutoresizingMaskIntoConstraints = false

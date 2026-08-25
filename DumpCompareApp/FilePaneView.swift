@@ -175,7 +175,7 @@ final class FilePaneView: NSView {
     }
 
     /// Builds the context menu shown when the user right-clicks an address in
-    /// the hex dump's Offset column — the "Select block from here" menu — given
+    /// the hex dump's Offset column — the "Select Block from Here at «address»" menu — given
     /// the clicked offset. Built by MainViewController so the item resolves
     /// THIS pane even when it is not the active one (§10.2).
     var offsetMenuProvider: ((UInt64) -> NSMenu)? {
@@ -466,14 +466,14 @@ final class FilePaneView: NSView {
         hexView.onVisibleRangeChanged = { [weak self] range in
             self?.onHexViewportChanged?(range)
         }
-        viewModel.onChange = { [weak self] in
-            self?.refresh()
+        viewModel.onChange = { [weak self] center in
+            self?.refresh(center: center)
         }
         // A pure selection move (drag, click, keyboard): the bytes are
         // unchanged, so redraw only the rows the selection now covers
         // differently instead of the whole pane (§3.3).
-        viewModel.onSelectionChanged = { [weak self] in
-            self?.refreshSelection()
+        viewModel.onSelectionChanged = { [weak self] center in
+            self?.refreshSelection(center: center)
         }
         // A typing-mode flip recolors/reshapes the caret in place (its position
         // did not move): redraw the caret's row without scrolling, and swap the
@@ -485,6 +485,8 @@ final class FilePaneView: NSView {
         // A content change — bytes overwritten in this pane, or its decoder
         // rebuilt: redraw just the affected rows/columns and refresh the chrome
         // that follows the caret, without a full `reloadData` (§3.3 extension).
+        // It never scrolls: a content change does not move the caret, so the
+        // caret reveal is left to the selection and full channels (§10.4).
         viewModel.onContentChanged = { [weak self] change in
             self?.refreshContent(change)
         }
@@ -572,7 +574,7 @@ final class FilePaneView: NSView {
     /// anchor rect is the hex view's to give — the controller says which offset
     /// it starts at, which offsets are already cut, and what the two keys mean.
     ///
-    /// With `anchoredToOffset` (the default, Split Here) the popover hangs off the
+    /// With `anchoredToOffset` (the default, Split Here at «address») the popover hangs off the
     /// byte it is pre-filled with, and that byte is scrolled into view first if it
     /// is not there: a popover has to point at something the user can see. With it
     /// off (Add Cut…) the popover is centred in the pane's visible area instead of
@@ -597,7 +599,7 @@ final class FilePaneView: NSView {
                 scrollView.contentView.layoutSubtreeIfNeeded()
             }
             // The popover hangs off the byte it is pre-filled with — the
-            // right-clicked byte for Split Here (§21.3).
+            // right-clicked byte for Split Here at «address» (§21.3).
             controller.show(relativeTo: hexView.byteCellRect(for: prefillOffset), of: hexView)
         } else {
             // Add Cut…: centred in the pane's visible area, not stuck to the
@@ -722,13 +724,13 @@ final class FilePaneView: NSView {
         super.mouseDown(with: event)
     }
 
-    private func refresh() {
+    private func refresh(center: Bool = false) {
         hexView.textDecoder = viewModel.textDecoder
         hexView.reloadData()
         // The layout may have changed (offset digits, word size) — redraw the
         // header so its labels track the columns.
         columnHeader.needsDisplay = true
-        hexView.revealCaret()
+        hexView.revealCaret(center: center)
         updateHeader()
         updateStatus()
         // Structural changes (open/revert/undo/redo/insert/delete, save) can
@@ -801,24 +803,25 @@ final class FilePaneView: NSView {
     /// so the hex view redraws just the affected rows, and only the status bar
     /// (whose offset/selection readout follows the caret) is updated. The
     /// header, layout, and column header are untouched (§3.3).
-    private func refreshSelection() {
+    private func refreshSelection(center: Bool = false) {
         hexView.reloadSelection()
-        hexView.revealCaret()
+        hexView.revealCaret(center: center)
         updateStatus()
     }
 
     /// The content-change counterpart of `refresh()`: the bytes changed (or the
     /// decoder rebuilt) but the layout did not, so the hex view redraws just the
     /// affected rows/columns and the caret-following chrome is refreshed — no
-    /// `reloadData`, no column-header redraw (§3.3 extension).
+    /// `reloadData`, no column-header redraw (§3.3 extension). It never scrolls:
+    /// a content change does not move the caret, so revealing it is the
+    /// selection and full channels' job (§10.4).
     private func refreshContent(_ change: HexViewChange) {
         switch change {
         case .bytes:
             hexView.reloadContent(change)
-            // The edit moved the caret/selection — redraw the rows the
-            // selection now covers differently, and keep the caret on screen.
+            // The edit may have changed the selection's shape — redraw the rows
+            // it now covers differently.
             hexView.reloadSelection()
-            hexView.revealCaret()
             // The dirty glyph and the offset/selection readout follow the edit.
             updateHeader()
             updateStatus()
@@ -877,7 +880,7 @@ final class FilePaneView: NSView {
         // the bar's address width. Absent when the pane is one piece — its
         // appearing is the signal the dump is partitioned.
         if let seg = status.segment {
-            parts.append("\(seg.label): \(address(seg.range.lowerBound))-\(address(seg.range.upperBound)) (\(Self.friendlySize(seg.range.upperBound - seg.range.lowerBound)))")
+            parts.append("\(seg.label): \(address(seg.range.lowerBound))-\(address(seg.range.lastByte)) (\(Self.friendlySize(UInt64(seg.range.count))))")
         }
         parts.append(Self.friendlySize(status.fileSize))
         if status.isDirty {

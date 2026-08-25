@@ -270,6 +270,13 @@ final class MainWindowController: NSWindowController {
         add("Save As…", #selector(MainViewController.saveDocumentAs), "S")
         add("Revert to Saved", #selector(MainViewController.revertDocument), "")
         fileMenu.addItem(.separator())
+        // The join commands (§22.1): bring a second file's bytes into the active
+        // pane, at one end or the other. They act on the active pane, like the
+        // rest of the File submenu. Insert (at the start) is grouped with the
+        // edit commands above; Append (at the end) sits in its own block.
+        add("Insert File at Start…", #selector(MainViewController.insertFileAtStart), "")
+        add("Append File…", #selector(MainViewController.appendFile), "")
+        fileMenu.addItem(.separator())
         // Close (⌘W) closes the active pane ("close document"); with no panes
         // open it falls back to closing the window (§3.5).
         add("Close", #selector(MainViewController.closeDocument), "w")
@@ -303,10 +310,12 @@ final class MainWindowController: NSWindowController {
                                               keyEquivalent: "i")
         insertModeItem.keyEquivalentModifierMask = [.command, .option]
         editMenu.addItem(.separator())
+        // Select Block leads the selection block: it selects a named block from
+        // the caret, alongside Fill and Select All.
+        editMenu.addItem(withTitle: "Select Block…", action: #selector(MainViewController.selectBlock), keyEquivalent: "")
         editMenu.addItem(withTitle: "Fill Selection with…", action: #selector(MainViewController.fillSelectionWithBytes), keyEquivalent: "")
         editMenu.addItem(withTitle: "Select All", action: #selector(MainViewController.selectAllBytes), keyEquivalent: "a")
         editMenu.addItem(.separator())
-        editMenu.addItem(withTitle: "Select Block…", action: #selector(MainViewController.selectBlock), keyEquivalent: "")
         editMenu.addItem(withTitle: "Find", action: #selector(MainViewController.findPattern), keyEquivalent: "f")
         // ⌘D marks (or unmarks) the caret's row — the gesture that has to cost
         // nothing on a bench (§20). It sits beside Go To: mark where you are,
@@ -317,27 +326,20 @@ final class MainWindowController: NSWindowController {
         // is ⌘D's job, which opens the same popover, so this command only ever
         // edits, and is greyed out on a row that carries no mark (§20.3).
         editMenu.addItem(withTitle: "Edit Bookmark…", action: #selector(MainViewController.editBookmark), keyEquivalent: "D")
-        editMenu.addItem(withTitle: "Go To Position…", action: #selector(MainViewController.goToPosition), keyEquivalent: "g")
-        // ⌥⌘B opens the same form as ⌘G with the bookmark list focused (§10.1):
-        // one window answers "go where?", and the two shortcuts differ only in
-        // which half of it the keyboard starts in. ⌘B is the system's Bold, so
-        // the list takes the Option variant.
-        let bookmarksItem = editMenu.addItem(withTitle: "Bookmarks…",
-                                             action: #selector(MainViewController.showBookmarks),
-                                             keyEquivalent: "b")
-        bookmarksItem.keyEquivalentModifierMask = [.command, .option]
+        editMenu.addItem(withTitle: "Go To Position…", action: #selector(MainViewController.goToPosition), keyEquivalent: "l")
         // The segment pair (§21.3). No key equivalents: both are deliberate acts
-        // reached from a menu, and the fast path is Split Here in the dump's own
+        // reached from a menu, and the fast path is Split Here at «address» in the dump's own
         // context menu. Add Cut… opens the offset-and-description popover;
-        // Remove Segment deletes the piece the caret sits in, merging it with a
-        // neighbour — it acts on the caret's position, not on a cut point.
+        // Merge merges the piece the caret sits in into a neighbour — it acts on
+        // the caret's position, not on a cut point. Its title is renamed by
+        // validation to name the piece and its neighbour ("Merge S1 into S0").
         editMenu.addItem(.separator())
         editMenu.addItem(withTitle: "Add Cut…", action: #selector(MainViewController.addCut), keyEquivalent: "")
-        editMenu.addItem(withTitle: "Remove Segment", action: #selector(MainViewController.removeSegment(_:)), keyEquivalent: "")
+        editMenu.addItem(withTitle: "Merge", action: #selector(MainViewController.removeSegment(_:)), keyEquivalent: "")
         // Segments…: the partition's own form (§21.4) — the list the two
         // commands above edit, with a row editor and the Save All button.
         // ⌥⌘S opens it: ⌘S is Save and ⇧⌘S is Save As, so the form takes the
-        // Option variant, the way Bookmarks… takes ⌥⌘B over the system's ⌘B.
+        // Option variant.
         let segmentsItem = editMenu.addItem(withTitle: "Segments…",
                                             action: #selector(MainViewController.showSegments),
                                             keyEquivalent: "s")

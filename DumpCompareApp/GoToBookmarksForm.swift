@@ -32,7 +32,7 @@ enum GoToHistoryStore {
     /// Records a jump: moves its address to the front, dropping any older entry
     /// for the same address, and caps the list at `limit`.
     static func record(_ offset: UInt64) {
-        let label = Bookmark.addressLabel(offset)
+        let label = offset.hexAddress
         var entries = recent.filter { $0 != label }
         entries.insert(label, at: 0)
         defaults.set(Array(entries.prefix(limit)), forKey: userDefaultsKey)
@@ -54,7 +54,7 @@ enum GoToHistoryStore {
 /// a bookmark lives in two places.
 @MainActor
 final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
-    /// Which half of the form the keyboard starts in: ⌘G is about typing an
+    /// Which half of the form the keyboard starts in: ⌘L is about typing an
     /// address, ⌥⌘B about picking one that is already marked.
     enum Focus {
         case offsetField
@@ -237,7 +237,7 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
         updateValidation(showsError: false)
     }
 
-    /// "Offset: [ 0x… ▾ ] ( Go To )" — the fast path unchanged: ⌘G, type,
+    /// "Offset: [ 0x… ▾ ] ( Go To )" — the fast path unchanged: ⌘L, type,
     /// Return. The button names the action rather than leaving Return to be
     /// guessed at, and the dropdown carries the addresses already visited.
     /// The gap between a row's label and its field — and between the message's
@@ -256,7 +256,7 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
         // Pre-filled with "0x" and the caret behind it (§10): hex is the
         // language of a dump, so the prefix is typed for the user. The last
         // address is deliberately NOT pre-filled — the caret sits at the end of
-        // the text, so a pre-filled address would turn ⌘G, type, Return into
+        // the text, so a pre-filled address would turn ⌘L, type, Return into
         // digits appended to the previous jump.
         combo.stringValue = "0x"
         combo.completes = false
@@ -379,9 +379,9 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
             view.window?.makeFirstResponder(offsetCombo)
         case .bookmarks:
             view.window?.makeFirstResponder(bookmarkTable)
-            // ⌥⌘B is opened to go to a bookmark, so the list offers its first
-            // one — the lowest address, the list being sorted by address. The
-            // jump still takes a Return: a selection is an offer, not an act.
+            // Opened for the list, the list offers its first one — the lowest
+            // address, the list being sorted by address. The jump still takes a
+            // Return: a selection is an offer, not an act.
             if selectedBookmarkRow == nil, let first = bookmarks.first {
                 applySelection(first.row)
             }
@@ -712,7 +712,7 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
             // together (§20.4). Bare digits, no "0x" — a whole column of
             // addresses does not need each one announcing that it is hex.
             cell.restingTextColor = HexTheme.bookmarkColor
-            cell.textField?.stringValue = Bookmark.bareAddressLabel(bookmark.row)
+            cell.textField?.stringValue = bookmark.row.bareAddress
             return cell
         case ColumnID.name:
             let cell = (tableView.makeView(withIdentifier: ColumnID.name, owner: self) as? BookmarkCellView)

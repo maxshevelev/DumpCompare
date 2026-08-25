@@ -177,6 +177,9 @@ Drop in empty mode:
 Drop in comparison mode:
 
 - dropping onto a specific pane targets that pane;
+- each occupied pane offers the three join/replace bands of §22.4 (insert at
+  start, replace, append at end) — there is no second-file target, because both
+  panes are occupied;
 - if multiple files are dropped:
   - first file targets the hovered pane;
   - second file opens in the other pane only if that pane is empty;
@@ -192,15 +195,23 @@ Drop in single-file mode:
 - the split orientation should match the current or default pane layout:
   - left/right layout: replace target on one side, add target on the other;
   - top/bottom layout: replace target on one side, add target on the other.
+- the “this file” half is further divided into the three join/replace bands of
+  §22.4 — Insert at Start (top), Replace Current File (middle), Append at End
+  (bottom) — so a file can be joined to the open pane as well as replaced; the
+  “Open as second file” half is unchanged.
 - if the user drops on “Replace current file”:
   - the first dropped file replaces the current file;
   - if a second dropped file exists, it opens as pane 2.
+- if the user drops on a join band (Insert at Start / Append at End):
+  - the first dropped file is joined to the pane at that end (§22);
+  - additional files are ignored with notification.
 - if the user drops on “Open as second file”:
   - the first dropped file opens as pane 2;
   - additional files are ignored with notification.
 - if the drag leaves the window or is cancelled, no change occurs.
 
-Dirty-state protection applies to drag-replacement too.
+Dirty-state protection applies to drag-replacement too, and the join warning of
+§22.2 applies to a drag-join of a dirty pane.
 
 =====================================================================
 5. FILE MODEL, DIRTY STATE, SAVE, AND SAVE AS
@@ -639,11 +650,11 @@ where?" — and split in two they would be two windows each offering half an
 answer: the addresses worth returning to are exactly the ones a user would
 otherwise be typing again.
 
-- Cmd+G opens the form with the offset field focused; Option+Cmd+B opens the same
-  form with the bookmark list focused. The two shortcuts differ only in which
-  half the keyboard starts in.
-- Either command needs a file open: with nothing open there is nothing to
-  navigate, and both menu items are greyed out.
+- Cmd+L opens the form with the offset field focused; Tab moves the keyboard to
+  the bookmark list, the other half of the same window. There is no separate
+  Bookmarks menu item — the list is reached by Tab, not by a second command.
+- The command needs a file open: with nothing open there is nothing to
+  navigate, and the menu item is greyed out.
 - The field accepts a single absolute offset. A **Go To** button beside it names
   the action rather than leaving it to be guessed from Return.
 - Offset input must support:
@@ -652,7 +663,7 @@ otherwise be typing again.
 - The offset input field should be pre-filled with `0x` by default, with the
   caret behind the prefix so hex digits can be typed straight away. The last
   address is deliberately not pre-filled: the caret sits at the end of the text,
-  so a pre-filled address would turn Cmd+G, type, Return into digits appended to
+  so a pre-filled address would turn Cmd+L, type, Return into digits appended to
   the previous jump.
 - Offsets are zero-based.
 - Input parsing must be case-insensitive for hex.
@@ -719,7 +730,7 @@ Rules:
   - length validity.
 - For start/end mode:
   - if start > end, show error or optionally swap after confirmation; default: error.
-- Opened from the offset context menu ("Select block from here", §10.2) the sheet
+- Opened from the offset context menu ("Select Block from Here at «address»", §10.2) the sheet
   carries no message line: the Start field already shows the address that was
   right-clicked and Length is already the active option, so a sentence saying
   both would be the sheet narrating its own fields.
@@ -768,9 +779,7 @@ Suggested shortcuts:
 - Previous difference: Cmd+Option+Left Arrow.
 - Next same block: Cmd+Option+Shift+Right Arrow.
 - Previous same block: Cmd+Option+Shift+Left Arrow.
-- Go To Position (the form's offset field): Cmd+G.
-- Bookmarks (the same form, its list focused): Cmd+Option+B — Cmd+B is the
-  system's Bold, so the list takes the Option variant.
+- Go To Position (the form's offset field): Cmd+L.
 - Toggle Bookmark: Cmd+D; Edit Bookmark: Shift+Cmd+D (§20.3).
 
 Shortcuts may be adjusted, but must be discoverable in menus.
@@ -814,6 +823,40 @@ difference block.
 - The derivation is a linear pass over the blocks and must not run on the main
   thread: a pair of files whose differing bytes alternate with matching ones
   holds a block per byte.
+
+10.4 Caret reveal
+
+When an action moves the active pane's caret, the pane keeps the caret on
+screen. How far it scrolls is set by what kind of move it was, and the rule is
+enforced in one place — the caret reveal takes a mode the caller chooses — so a
+new command that moves the caret only has to say which kind of move it is:
+
+- A navigation command — a join, an undo, a redo — moves the caret to a place
+  the user did not step to. If the caret landed outside the visible viewport,
+  the pane scrolls so the caret's row is at the vertical centre of the pane,
+  clamped to the document's edges; if it landed on screen, the view is left
+  where it is. A command's destination is where the user is looking, not
+  something they have to hunt for. Redoing a join therefore puts the seam back
+  at the centre of the pane, the same as the join itself (§22.5).
+- Incremental navigation — the arrow and page keys, Home/End, and the mouse —
+  moves the caret a step at a time and takes the minimum scroll that keeps it
+  on screen. It never jumps the caret to the centre: a step across a viewport
+  edge scrolls one row, and a centred jump on every key press would disorient.
+- An edit follows its caret the same way: the caret moves by the length typed
+  or pasted, and the minimum scroll keeps it on screen without yanking the view
+  away from the work.
+- A content change that moves no caret — an in-place overwrite, a change to the
+  segment partition, a text-decoder rebuild — never reveals the caret at all: it
+  repaints the affected rows and leaves the scroll where it is. This is what
+  keeps a single action's own centring intact. A join fires its segment changes
+  and then its own navigation; if the intermediate repaint scrolled with the
+  follow rule, the seam would land at the top of the pane and the join's own
+  centring would see the row already on screen and do nothing. Scrolling the
+  caret is the selection and full channels' job; a content change never does it.
+- An explicit "go to" — Go To, a bookmark jump, a Find match, next/previous
+  block, the minimap, a selected search result — names its destination, so the
+  destination is centred whether or not it was already in view (§10.1, §10.3,
+  §11).
 
 =====================================================================
 11. SEARCH
@@ -1290,6 +1333,10 @@ way to navigate them by pointing.
 - A window resize must not change the panel's width: the hex panes absorb
   the whole delta, and the clamp above holds at any window size.
 - Zoom-to-fit must make room for a visible panel on top of the hex grids.
+- Showing the panel grows the window by the panel's width (plus the divider)
+  and hiding it shrinks the window by the same amount, so the hex content
+  area keeps its width. The window grows or shrinks from the right edge; the
+  left edge stays put.
 
 19.3 Maps
 
@@ -1484,8 +1531,9 @@ its map, so the whole of it is legible at a glance without opening anything.
   Segment…**, **Replace Segment from File…**, **Select Segment** (the piece's
   whole range, not a caret at its start), **Edit…** (the piece's own popover,
   anchored to the block — not the form with the table of all segments), and
-  **Remove Segment** (the piece's bytes merge into a neighbour that keeps its
-  name). Each item carries the piece it acts on.
+  **Merge** (names the piece and the neighbour it merges into — *Merge S1 into
+  S0* — the piece's bytes merge into a neighbour that keeps its name). Each
+  item carries the piece it acts on.
 - A left-click on the strip positions to the click location, the way a click on
   the map does: the caret goes to the byte the click's y stands for, or to the
   nearest cut's exact offset when one is within 4 pt — reusing the snapping the
@@ -1941,11 +1989,9 @@ window, so nothing about a bookmark lives in two places.
   of them can be cleared without reaching for the mouse between presses;
   removing the last row selects the one now at the end. With nothing selected
   neither key does anything.
-- Opened by Option+Cmd+B the list arrives with its first bookmark selected — the
-  command exists to go to a bookmark, and the list is ordered by address, so the
-  lowest one is a real default. The jump still takes a Return: a selection is an
-  offer, not an act. Opened by Cmd+G, which is about typing an address, the list
-  offers nothing.
+- The form opens on the offset field — Cmd+L is about typing an address — so the
+  list offers nothing until the keyboard Tabs to it. Going to a bookmark still
+  takes a Return: a selection is an offer, not an act.
 - **Empty state**: with no bookmarks the list says so and names the gesture that
   makes one (⌘D). It is a message over the table, not a row in it — a pseudo-row
   would answer ⌫ and Return as if it held a bookmark.
@@ -2102,9 +2148,13 @@ and every operation that writes is explicit about it.
   undo restores the partition by **snapshot**, not by inverse edit. The pane
   keeps a stack of snapshots parallel to the document's undo stack — one per
   committed transaction, captured before the edit lands, popped and restored on
-  undo — with the same lifecycle the document's own stack has: cleared on open
-  and revert, the redo side dropped on a divergent edit. This mirrors how the
-  caret and the selection are restored (§7.5), one level up.
+  undo — with the same lifecycle the document's own stack has: cleared on open,
+  close, and revert, the redo side dropped on a divergent edit. A revert
+  re-bases the *partition* onto the saved size — the cuts and names the user set
+  up survive, and any cut past the new end is dropped — rather than resetting it
+  to one piece; only the snapshot stacks are cleared, to stay in lockstep with
+  the document's reset undo stack. This mirrors how the caret and the selection
+  are restored (§7.5), one level up.
 - One instance lives on the pane's view model, beside its document. The store
   holds no bytes and is AppKit-free, so its arithmetic is unit-testable in the
   app suite.
@@ -2223,26 +2273,32 @@ and every operation that writes is explicit about it.
   offset field empty — just the `0x` prefix, as everywhere an offset is typed —
   and the caret on the offset: from the form there is no caret to start from, so
   the offset is the thing to be filled in, and leaving it unfilled makes no
-  segment. **−** removes the selected piece, merging its bytes into a neighbour
-  that keeps its name (§21.2); it is disabled only when the pane is a single
+  segment. **−** merges the selected piece into a neighbour that keeps its
+  name (§21.2); it is disabled only when the pane is a single
   piece — there is no neighbour to merge into — and is enabled on S0 too:
-  removing S0 reopens the piece below at the file start, so what was S1 becomes
-  S0. Icon-only, so both carry a tooltip and an accessibility label.
+  merging S0 reopens the piece below at the file start, so what was S1 becomes
+  S0. Icon-only, so both carry a tooltip and an accessibility label; the
+  **−**'s tooltip and label name the selected piece and the neighbour it
+  merges into — *Merge S1 into S0* — the way the menu items do, and they
+  follow the selection as it changes.
 - **A wider gap separates the footer from the button row** than the table from
   the footer: the footer is the list's own controls, the button row the
   dialog's, and the space says "these are two different groups".
 - **The Add Cut popover anchors to what it acts on** — the form's **+** button,
-  the row it edits, the byte Split Here was invoked on — but the Edit menu's
+  the row it edits, the byte Split Here at «address» was invoked on — but the Edit menu's
   *Add Cut…* centres it in the pane instead: it is a dialog pre-filled with the
   caret's offset, not a pointer at a byte, so it does not hang off the caret.
 - **The row's context menu** carries what acts on one piece: *Save Segment…*,
-  *Replace Segment from File…*, *Edit…*, *Remove Segment* — the same menu the
+  *Replace Segment from File…*, *Edit…*, *Merge* — the same menu the
   strip beside the map offers (§21.3), so one shape in both places. Save
   Segment… is live (§21.5); Replace Segment from File… is live (§21.6).
-  *Remove Segment* names the piece it will remove —
-  *Remove Segment S1*, not a bare *Remove Segment* — the way the Edit menu's and
-  the offset context menu's items do (§21.3).
-- **The button row** holds only what acts on the whole partition: **Remove
+  Every item names the piece under the click, the way the strip's menu does:
+  *Save Segment S1…*, *Replace Segment S1 from File…*, *Edit Segment S1*, and
+  *Merge* names the piece and the neighbour it merges into —
+  *Merge S1 into S0*, not a bare *Merge* — the way the Edit menu's and
+  the offset context menu's items do (§21.3). With no piece under the click
+  the items fall back to their bare titles and are disabled.
+- **The button row** holds only what acts on the whole partition: **Merge
   All** at the left, which removes every cut at once — back to one piece, the
   whole file, named for it — and asks before acting, since it is destructive;
   then **Save All as Separate Files…** (§21.5), and **Close** at the right.
@@ -2250,7 +2306,7 @@ and every operation that writes is explicit about it.
   single piece there is nothing to separate, so it is a plain save and the
   button stays disabled until a cut makes a second piece.
 - **Keys**: ⌥⌘S opens the form (⌘S is Save, ⇧⌘S is Save As, so the form takes
-  the Option variant, the way Bookmarks… takes ⌥⌘B). Return goes to the
+  the Option variant). Return goes to the
   selected piece's start — the form closes and the caret lands there, revealed
   the way the Go To form's jump reveals (§10.1); with nothing selected, nothing
   happens. ⌫ does what − does. Escape is two-level: it closes the row editor
@@ -2309,3 +2365,148 @@ and every operation that writes is explicit about it.
 - **A same-length overwrite moves no cut** (§21.2): the document's size is
   unchanged, so the partition's boundaries do not shift; only the bytes under the
   piece change.
+
+22. JOIN
+=====================================================================
+
+A join brings a second file's bytes into a pane's content, at one end or the
+other. On plenty of boards the BIOS region is physically two SPI flash chips;
+the bench workflow is to read both, join them in the right order, hand the whole
+image to the tools that expect one BIOS, and split it back at the same boundary
+to flash each half. Everything between the join and the split — comparing,
+searching, patching — the app already does. A join is how a *file* becomes a
+piece: the seam it creates is a cut, and "split the file" is the segments
+feature's Save All as Separate Files (§21.5).
+
+22.1 The two commands
+
+- **File ▸ Append File…** — the chosen file's bytes go after the pane's content.
+- **File ▸ Insert File at Start…** — they go before it.
+- Both also sit in the pane's own menu (right-click the pane header), acting on
+  that pane rather than the active one, beside the file-scoped commands already
+  there (Save, Save As, Revert, Show in Finder, Close).
+- Both are enabled only when the pane holds a file — with nothing open, the
+  command is Open.
+- Two commands rather than one with a start/end choice in a dialog: the gesture
+  is common and should not stop to ask which end.
+
+22.2 The joined document is not the file it came from
+
+- **A join detaches the pane from its file.** The pane ends up holding a document
+  with no URL: untitled, never saved, and ⌘S opens a save panel rather than
+  writing the joined image over the dump it was opened from. Both source files
+  stay untouched on disk. The joined image has a different internal structure
+  from either half, and an accidental ⌘S in an 8 MB dump's window is exactly the
+  kind of mistake that costs a re-read of the chip.
+- **The join is undoable.** The join's byte insert is one undo step, and ⌘Z
+  reverses the whole join: the inserted bytes are removed *and* the pane
+  re-attaches to the file it was opened from — the same URL, name, watcher, and
+  dirty state it had before the join, so the pane looks exactly as it did. The
+  join stacks on top of any earlier edits: a join made on a pane with unsaved
+  edits is one more step on top of them, and a further ⌘Z reverts those edits
+  (the pane stays attached to its original file throughout). Redo re-joins and
+  re-detaches. The join's segment side — the seam cut and the piece renames —
+  undoes through the same snapshot mechanism that undoes every other edit's
+  effect on the partition (§21.2, §22.3).
+- **The join result is dirty.** The joined content has never been written to
+  disk, and it must not be silently discarded: closing the pane or the window
+  warns about it (Save / Don't Save / Cancel, §3.6), and the header carries the
+  modified-new-file badge. Saving it (Save As) clears the dirty state and gives
+  the document its name.
+- **A dirty pane is warned about, with two buttons: Cancel and the operation.**
+  Every dialog this feature adds has that shape — *Cancel* and *Append*, *Cancel*
+  and *Insert* — and none of them offers to save on the user's behalf. Deciding
+  what to do with unsaved bytes is the user's business; Cancel puts them back
+  exactly where they were, with ⌘S one keystroke away.
+  - What the alert says is what the action means: the join takes **the content
+    the pane shows, edits included**, and the file on disk keeps its saved bytes.
+    Nothing typed is lost — but a patch that never reached the file still has not
+    reached it, and after the join no document is attached to that file to save it
+    from. So the alert names the file, says the edits travel into the joined image
+    while the file keeps its own, and offers Cancel.
+  - An **untitled** dirty pane gets no alert: there is no saved state to diverge
+    from, and its content is carried like any other.
+- **Naming: the joined document is Untitled, and that is the honest answer.**
+  There is nothing to derive a name from: a dump off a programmer is
+  `W25Q128FV_20260821_1a2b3c4d.bin` — chip model, date, checksum — and neither
+  half's name says anything about the pair. Deriving a joined name would be a
+  long name that is now also wrong. So the joined document is Untitled, like any
+  document the app made rather than opened, and the user names it when they save
+  it — which in this workflow happens immediately. No name is derived from the
+  sources, in any case.
+- **Where "what am I looking at" actually lives.** An Untitled header says
+  nothing about the two dumps behind it. Two places carry it instead: the seam's
+  pieces are named for their sources (below) — the durable record of which half
+  came from which chip — and a transient status-bar line right after the join
+  names both sources and the total size, the way the app already reports "No
+  match found." and then yields the stats back (§14).
+
+22.3 The seam is a cut
+
+- A join creates a **cut** and names the pieces either side of it: the content
+  the pane already held keeps the name of the file it was opened from —
+  remembered even after the document detaches — and the joined bytes take the
+  name of the file they came from. Two joins in a row leave three pieces with the
+  right offsets, which is exactly what a bookmark at the seam could not do:
+  bookmarks are absolute by decision (§20.1) and an insert at the start moves the
+  first seam. Everything else about cuts — that they follow the content, how they
+  are drawn, how they are edited and written out — is §21.
+- **A join needs no new chrome.** The tint, the strip and the status-bar readout
+  all come from the segments feature; a join just adds a cut.
+- **Undoing a join removes the seam.** The seam cut and the piece renames are
+  part of the join's one transaction, so ⌘Z (which undoes the join, §22.2)
+  removes the cut and restores the partition to its pre-join state — the same
+  snapshot mechanism that undoes every other edit's effect on the partition
+  (§21.2). Redo brings the seam back.
+- **Row alignment stops mattering.** A cut is a byte offset, so a join whose
+  boundary is not a multiple of 16 is simply a boundary — the cut line steps
+  through the row, per §21. A dump's size need not be a multiple of 16, and any
+  insert of a length that is not moves every later cut off the grid.
+
+22.4 Dropping a file to join it
+
+- **Single-file mode.** The existing axis split stays: half the window is about
+  *this* file, half is about a second file. The "this file" half is divided into
+  three horizontal bands — **Insert at Start** (top), **Replace Current File**
+  (middle), **Append at End** (bottom) — and the other half stays **Open as
+  Second File** (§4.3).
+  - The two join bands are strips at the top and bottom of the half, each 25 % of
+    the half's height, clamped to 48…120 pt so they stay hittable in a short
+    window and do not swallow the middle in a tall one. The Replace band takes
+    whatever is left between them.
+  - In the stacked arrangement the same three bands divide the top half.
+- **Comparison mode.** Each pane takes the three bands (insert / replace /
+  append) and there is no second-file target — both panes are occupied.
+- Feedback follows the existing drop targets: the band under the pointer
+  highlights and shows its title; the others stay quiet. A drop outside any band,
+  or a drag that leaves the window, changes nothing.
+- Rules that fall out:
+  - With an **empty pane** there is nothing to join to: the whole pane stays the
+    single "Open" target it is today.
+  - **Several files dropped** on a join band: the first is used and the rest are
+    ignored with the standard notification (§4.1 rule 3).
+  - Directories and packages are refused as they are now (§4).
+  - Dropping the file that is **already open in the pane** onto a join band is
+    allowed and doubles the content — two identical chips are a real case.
+  - A drop that joins is the **same operation** as the menu's join (§22.2): the
+    pane handling — the seam cut, the caret at the start of the added part, the
+    seam revealed centred (§22.5) — does not depend on which UI action started
+    it.
+
+22.5 Edge cases
+
+| case | behaviour |
+|---|---|
+| Pane empty | Join commands disabled; the drop area stays a single "Open" target |
+| Pane holds an untitled document | Join allowed — content is content, and the result is untitled either way |
+| Source file is read-only | Join allowed — it never writes to the source |
+| Joining a 0-byte file | Refused with a message; no cut, no dirty state |
+| Joining a file into itself | Allowed, doubles the content |
+| Joining a 1 GB file | Chunked, progress, cancellable; memory bounded by the add-buffer budget (§13) |
+| Pane was dirty before the join | A warning naming the file, with Cancel and the operation's own verb; the action carries the edits into the joined image and leaves the file's saved bytes alone |
+| Pane was dirty and untitled | No warning — nothing on disk to diverge from |
+| Bookmarks made before an insert at start | Left where they are: a mark is an absolute offset (§20.1) and nothing shifts it — the seam is a segment precisely so that it is not subject to this |
+| Two joins in a row (append, then insert at start) | Three segments, all with the right offsets; the split sheet offers three files |
+| Comparison mode | A join changes one pane's length; the comparison re-indexes and the shorter file's tail reads as an EOF difference (§9) — no special case |
+| Caret after a join | At the start of the added part — the old end for an append, 0 for an insert at start. Undo returns the caret to its pre-join spot; redo brings it back to the seam |
+| The seam after a join | Revealed centred in the pane: the caret's row — the start of the added part — scrolls to the vertical centre, clamped to the document's edges, so the join's result is seen mid-pane rather than at its edge. Redoing the join re-centres the seam the same way (§10.4) |

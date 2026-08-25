@@ -125,6 +125,28 @@ final class MinimapTests: XCTestCase {
         XCTAssertLessThan(panel.frame.width, 2, "the panel collapses back to the divider")
     }
 
+    /// Showing the minimap grows the window by the panel's width so the hex
+    /// content area keeps its width; hiding it shrinks the window back (§19).
+    func testToggleResizesWindowByPanelWidth() throws {
+        let (_, window) = try makeController()
+        let (split, _) = try minimapViews(window)
+
+        let initialWidth = window.frame.width
+        let delta = MinimapSplitView.minPanelWidth + split.dividerThickness
+
+        // Showing the panel grows the window by the panel's width.
+        split.setPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+        XCTAssertEqual(window.frame.width, initialWidth + delta, accuracy: 1,
+                       "showing the minimap grows the window by the panel's width")
+
+        // Hiding it shrinks the window back.
+        split.setPanelVisible(false, animated: false)
+        window.layoutIfNeeded()
+        XCTAssertEqual(window.frame.width, initialWidth, accuracy: 1,
+                       "hiding the minimap shrinks the window back")
+    }
+
     // MARK: - Width clamp and persistence
 
     func testPanelWidthIsClampedAndPersisted() throws {
@@ -919,16 +941,21 @@ final class MinimapTests: XCTestCase {
                                     "the parked width is applied by the first layout")
     }
 
-    // MARK: - Clicking places the caret (§19.7)
+    // MARK: - Clicking moves the viewport, not the caret (§19.7)
 
-    /// A click away from the band means the byte drawn at that point: the caret
-    /// moves there — row from y, column from x — and the pane centres on it.
-    func testClickingTheMapMovesTheCaretToThatByte() throws {
+    /// A click away from the band centres the pane on the byte drawn at that
+    /// point — row from y, column from x — moving the viewport without touching
+    /// the caret or the selection: a minimap click navigates the view, it does
+    /// not edit the caret's position.
+    func testClickingTheMapCentresThePaneWithoutMovingTheCaret() throws {
         let bytes = [UInt8](repeating: 0x41, count: 100_000)
         let (controller, window, panel) = try makeSingleFileWindow(bytes)
         _ = pumpUntil(2.0) { panel.viewport(forMapAt: 0) != nil }
         let pane = controller.windowModel.pane1
-        XCTAssertEqual(pane.hexSelection().start, 0, "the caret starts at the top")
+        // Park the caret somewhere other than the top, so a stray move is visible.
+        pane.moveCaret(to: 500)
+        window.layoutIfNeeded()
+        XCTAssertEqual(pane.hexSelection().start, 500, "the caret is parked at 500")
 
         // A point well below the band, on the third byte column.
         let band = try XCTUnwrap(panel.viewportRects().first)
@@ -941,8 +968,9 @@ final class MinimapTests: XCTestCase {
         panel.mouseUp(with: try mouseEvent(.leftMouseUp, at: point, in: panel))
         window.layoutIfNeeded()
 
-        XCTAssertEqual(pane.hexSelection().start, expected.offset,
-                       "the caret lands on the byte that was drawn under the cursor")
+        // The caret did not move: the click navigated the view, not the caret.
+        XCTAssertEqual(pane.hexSelection().start, 500,
+                       "the caret stays where it was; the click moved the viewport, not the caret")
         // Centred: the byte sits near the middle of the pane's visible range.
         _ = pumpUntil(2.0) {
             guard let visible = panel.viewport(forMapAt: 0) else { return false }
@@ -979,7 +1007,8 @@ final class MinimapTests: XCTestCase {
     }
 
     /// In comparison mode a click on the second map targets the second pane and
-    /// makes it active, so the caret it moved is the one the keyboard acts on.
+    /// makes it active, so the keyboard and the navigation commands act on the
+    /// pane the user pointed at — without moving either pane's caret.
     func testClickingTheSecondMapActivatesThatPane() throws {
         let (controller, window) = try makeComparisonWindow(vertical: true, sizes: (8_000, 8_000))
         let (split, panel) = try minimapViews(window)
@@ -1000,10 +1029,117 @@ final class MinimapTests: XCTestCase {
 
         XCTAssertEqual(controller.windowModel.activePaneIndex, 1,
                        "clicking the second map activates its pane")
-        XCTAssertEqual(controller.windowModel.pane2.hexSelection().start, target.offset,
-                       "and moves that pane's caret")
+        // The click navigates the view, not the caret: neither pane's caret moves.
+        XCTAssertEqual(controller.windowModel.pane2.hexSelection().start, 0,
+                       "the click does not move that pane's caret")
         XCTAssertEqual(controller.windowModel.pane1.hexSelection().start, 0,
                        "the other pane's caret is untouched")
+    }
+
+    /// A raw offset past a file's end snaps to its last byte: the map is binned
+    /// over the *longest* file's extent, so a shorter map's empty tail must still
+    /// resolve to a real byte — the file's own end — and an empty file has none
+    /// (§19.7).
+    func testSnappedOffsetClampsToTheFilesLastByte() throws {
+        let size = 1_000
+        let (_, _, panel) = try makeSingleFileWindow([UInt8](repeating: 0x41, count: size))
+        XCTAssertEqual(panel.snappedOffset(0, forMapAt: 0), 0, "the start stays the start")
+        XCTAssertEqual(panel.snappedOffset(UInt64(size) / 2, forMapAt: 0), UInt64(size) / 2,
+                       "a byte inside the file is untouched")
+        XCTAssertEqual(panel.snappedOffset(UInt64(size) - 1, forMapAt: 0), UInt64(size) - 1,
+                       "the last byte stays the last byte")
+        XCTAssertEqual(panel.snappedOffset(UInt64(size), forMapAt: 0), UInt64(size) - 1,
+                       "one past the end snaps to the last byte")
+        XCTAssertEqual(panel.snappedOffset(UInt64(size) * 10, forMapAt: 0), UInt64(size) - 1,
+                       "far past the end snaps to the last byte")
+    }
+
+    /// Clicking the overview's start or end zone shows the file's start or end:
+    /// the offset is proportional to the click and bounded by the file, so the
+    /// top of the map is the file's first row and the bottom its last (§19.7).
+    func testClickingTheOverviewStartAndEndSnapsToFileBounds() throws {
+        let size = 256 * 1024
+        let (_, _, panel) = try makeOverviewWindow([UInt8](repeating: 0x41, count: size))
+
+        // The top of the map is the file's first row: the offset is within the
+        // first sliver of the file, not past it.
+        let top = try XCTUnwrap(panel.byteOffset(at: NSPoint(x: MinimapView.contentPadding, y: 0.1)))
+        XCTAssertLessThan(top.offset, UInt64(size) / 100,
+                          "the top of the map is the file's start")
+
+        // The bottom of the map is the file's final row: the offset is within
+        // the last sliver of the file, and never past its end.
+        let bottom = try XCTUnwrap(panel.byteOffset(at: NSPoint(x: panel.bounds.maxX - MinimapView.contentPadding - 1,
+                                                               y: panel.bounds.height - 0.1)))
+        XCTAssertGreaterThan(bottom.offset, UInt64(size) * 99 / 100,
+                             "the bottom of the map is the file's end")
+        XCTAssertLessThanOrEqual(bottom.offset, UInt64(size) - 1,
+                                 "and never past the file's end")
+    }
+
+    /// Clicking the overview's start or end edge zone snaps to the file's exact
+    /// start or end: the overview is proportional, so the exact start and end are
+    /// single pixels at the very top and bottom — hard to hit. A small zone at
+    /// each edge snaps to the start or end, the way a cut's snap distance makes a
+    /// segment boundary reachable (§19.7). A click just outside the zone is
+    /// proportional, not the snap.
+    func testClickingTheOverviewEdgeZonesSnapsToTheFilesStartAndEnd() throws {
+        let size = 256 * 1024
+        let (_, _, panel) = try makeOverviewWindow([UInt8](repeating: 0x41, count: size))
+        let x = panel.bounds.midX
+
+        // The top zone: a click within the snap distance of the top means the
+        // file's first byte, exactly.
+        let top = try XCTUnwrap(panel.snappedOffset(at: NSPoint(x: x, y: 1)))
+        XCTAssertEqual(top.offset, 0, "the top zone snaps to the file's start")
+
+        // The bottom zone: a click within the snap distance of the bottom means
+        // the file's last byte, exactly.
+        let bottom = try XCTUnwrap(panel.snappedOffset(at: NSPoint(x: x, y: panel.bounds.height - 1)))
+        XCTAssertEqual(bottom.offset, UInt64(size) - 1, "the bottom zone snaps to the file's end")
+
+        // Just outside the top zone: the proportional offset, not the snap.
+        let justOutside = try XCTUnwrap(panel.snappedOffset(at: NSPoint(x: x, y: MinimapView.fileEdgeSnapDistance + 2)))
+        XCTAssertGreaterThan(justOutside.offset, 0, "just outside the top zone is proportional, not the start")
+    }
+
+    /// In a comparison of unequal files, clicking the shorter map's end zone
+    /// snaps to the shorter file's last byte: the map is binned over the longer
+    /// file's extent, so the click's raw offset is far past the shorter file's
+    /// end, and the snap pulls it back to the shorter file's own last byte
+    /// (§19.7). The pane then scrolls to show it.
+    func testClickingTheShorterFilesEndSnapsToItsLastByte() throws {
+        let long = 100_000, short = 10_000
+        let (controller, window) = try makeComparisonWindow(vertical: true, sizes: (long, short))
+        let (split, panel) = try minimapViews(window)
+        split.setPanelVisible(true, animated: false)
+        controller.setMinimapRenderModeForTesting(.overview)
+        window.layoutIfNeeded()
+        _ = pumpUntil(3.0) { (panel.overviewSummaries.first?.rowCount ?? 0) > 0 }
+
+        // The bottom of the shorter (right-hand) map: far past its end, so it
+        // snaps back to the shorter file's own last byte.
+        let point = NSPoint(x: panel.bounds.width * 0.75, y: panel.bounds.height - 1)
+        let target = try XCTUnwrap(panel.byteOffset(at: point))
+        XCTAssertEqual(target.mapIndex, 1, "the point is on the second map")
+        XCTAssertEqual(target.offset, UInt64(short) - 1,
+                       "and snaps to the shorter file's last byte")
+
+        panel.mouseDown(with: try mouseEvent(.leftMouseDown, at: point, in: panel))
+        panel.mouseUp(with: try mouseEvent(.leftMouseUp, at: point, in: panel))
+        window.layoutIfNeeded()
+
+        // The shorter file's end is shown: it is visible in the pane's viewport,
+        // and the click made that pane active.
+        _ = pumpUntil(2.0) {
+            guard let visible = panel.viewport(forMapAt: 1) else { return false }
+            return visible.contains(target.offset)
+        }
+        let visible = try XCTUnwrap(panel.viewport(forMapAt: 1))
+        XCTAssertTrue(visible.contains(target.offset),
+                      "the shorter file's end is visible after the click")
+        XCTAssertEqual(controller.windowModel.activePaneIndex, 1,
+                       "the click activated the shorter file's pane")
     }
 
     // MARK: - Band height (§19.6)
@@ -1528,8 +1664,17 @@ final class MinimapTests: XCTestCase {
                                                       y: panel.bounds.height * 0.75),
                                           in: panel))
         window.layoutIfNeeded()
-        XCTAssertEqual(controller.windowModel.pane1.hexSelection().start, target.offset,
-                       "and the caret goes there")
+        // The click navigates the view, not the caret: the caret stays at the top.
+        XCTAssertEqual(controller.windowModel.pane1.hexSelection().start, 0,
+                       "the click does not move the caret")
+        // The viewport jumped to the proportional offset.
+        _ = pumpUntil(2.0) {
+            guard let visible = panel.viewport(forMapAt: 0) else { return false }
+            return visible.contains(target.offset)
+        }
+        let visible = try XCTUnwrap(panel.viewport(forMapAt: 0))
+        XCTAssertTrue(visible.contains(target.offset),
+                      "the viewport jumped to the proportional offset")
     }
 
     /// The View menu carries the mode as a checked item — both modes are a
@@ -2722,6 +2867,25 @@ final class MinimapTests: XCTestCase {
                        "it runs the map's full height")
     }
 
+    /// Single-file, the strip's right edge sits `contentPadding` from the panel's
+    /// right edge — the same inset the content carries on the left — so the
+    /// panel's margins read as symmetric (§19.4.4).
+    func testSingleFileStripSitsSymmetricInTheRightMargin() throws {
+        let (_, window, _) = try makeSegmentedWindow(cuts: [128])
+        let (_, panel) = try minimapViews(window)
+        guard case .single = panel.mapLayout else {
+            return XCTFail("expected a single minimap, got \(panel.mapLayout)")
+        }
+        let strip = try XCTUnwrap(panel.segmentStripRect(forMapAt: 0),
+                                   "a cut makes a second piece, so the strip is visible")
+        let pad = MinimapView.contentPadding
+        let stripWidth = MinimapView.segmentStripWidth
+        XCTAssertEqual(strip.maxX, panel.bounds.maxX - pad,
+                       "the strip's right edge sits contentPadding from the panel's right edge")
+        XCTAssertEqual(strip.minX, panel.bounds.maxX - pad - stripWidth,
+                       "the strip is stripWidth wide, flush against that inset")
+    }
+
     /// Side by side, each map's strip sits on the outer side of its own map: the
     /// left map's strip is in the gutter against the separator line at the
     /// panel's centre, and the right map's strip is in its own right margin,
@@ -2753,13 +2917,14 @@ final class MinimapTests: XCTestCase {
         // The left strip sits in the gutter against the separator line.
         XCTAssertEqual(left.maxX, midX - gap,
                        "the left strip sits its gap away from the separator line")
-        // The right strip sits in its own right margin: its gap of paper from the
-        // content's right edge, which is the map's right edge minus the padding.
-        let rightContentEdge = panel.bounds.maxX - MinimapView.contentPadding
-        XCTAssertEqual(right.minX, rightContentEdge + gap,
-                       "the right strip sits its gap away from its content's edge")
-        XCTAssertEqual(right.maxX, rightContentEdge + gap + stripWidth,
-                       "the right strip is in the right margin, not the gutter")
+        // The right strip sits in its own right margin, its right edge
+        // contentPadding from the panel's right edge — symmetric with the
+        // content's left inset (§19.4.4).
+        let pad = MinimapView.contentPadding
+        XCTAssertEqual(right.maxX, panel.bounds.maxX - pad,
+                       "the strip's right edge sits contentPadding from the panel's right edge")
+        XCTAssertEqual(right.minX, panel.bounds.maxX - pad - stripWidth,
+                       "the strip is stripWidth wide, in the right margin")
         // Both strips are the same width.
         XCTAssertEqual(left.width, stripWidth, "the left strip is six points wide")
         XCTAssertEqual(right.width, stripWidth, "the right strip is six points wide")
@@ -2895,7 +3060,8 @@ final class MinimapTests: XCTestCase {
         let text = panel.segmentStripTooltipText(at: NSPoint(x: strip.midX, y: y))
         XCTAssertTrue(text.contains("S1"), "the hover names the piece: \(text)")
         XCTAssertTrue(text.contains("0x40"), "it gives the piece's start: \(text)")
-        XCTAssertTrue(text.contains("0x80"), "and its end: \(text)")
+        // The range is first-to-last byte: S1 = [64, 128) → 0x40…0x7F.
+        XCTAssertTrue(text.contains("0x7F"), "and its last byte: \(text)")
         XCTAssertTrue(text.contains("64"), "and its size: \(text)")
         // The name is asked for live at hover time (a rename fires no
         // invalidation, so the strip cannot store a copy). A fresh cut's piece
@@ -2987,8 +3153,8 @@ final class MinimapTests: XCTestCase {
 
     /// The strip's right-click menu carries the piece under the pointer and the
     /// actions that act on it — Save, Replace, Select, Edit (the piece's own
-    /// popover), and Remove Segment — every item carrying the piece's label, so
-    /// the menu says what it will act on (§21.3).
+    /// popover), and Merge — every item naming the piece it acts on, so the
+    /// menu says what it will act on (§21.3).
     func testTheStripMenuCarriesThePieceAndItsActions() throws {
         let (_, window, _) = try makeSegmentedWindow(cuts: [64, 128])
         let (_, panel) = try minimapViews(window)
@@ -3001,7 +3167,7 @@ final class MinimapTests: XCTestCase {
         let titles = menu.items.map(\.title)
         XCTAssertEqual(titles,
                        ["Save Segment S1…", "Replace Segment S1 from File…", "",
-                        "Select Segment S1", "Edit Segment S1", "Remove Segment S1"],
+                        "Select Segment S1", "Edit Segment S1", "Merge S1 into S0"],
                        "the strip's menu is the form's row menu plus the strip's own Select")
         // Replace is present and live — Stage 6 landed the swap.
         let replace = try XCTUnwrap(menu.items.first { $0.title == "Replace Segment S1 from File…" })
@@ -3034,16 +3200,16 @@ final class MinimapTests: XCTestCase {
                        "Select Segment selects the whole piece, not a caret at its start")
     }
 
-    /// Remove Segment from the strip's menu drops the piece, merging its bytes
-    /// into the piece above, which keeps its name (§21.3) — the same act as the
-    /// form's row menu.
+    /// Merge from the strip's menu drops the piece, merging its bytes into the
+    /// piece above, which keeps its name (§21.3) — the same act as the form's
+    /// row menu.
     func testRemoveSegmentMergesThePieceIntoANeighbour() throws {
         let (_, window, pane) = try makeSegmentedWindow(cuts: [64, 128])
         let (_, panel) = try minimapViews(window)
         let strip = try XCTUnwrap(panel.segmentStripRect(forMapAt: 0))
         let y = stripY(96, strip: strip, topRow: panel.topRow)
         let menu = try XCTUnwrap(panel.segmentStripMenu?(0, 1, NSPoint(x: strip.midX, y: y)))
-        let item = try XCTUnwrap(menu.items.first { $0.title == "Remove Segment S1" })
+        let item = try XCTUnwrap(menu.items.first { $0.title == "Merge S1 into S0" })
         let action = try XCTUnwrap(item.action)
         _ = NSApp.sendAction(action, to: item.target, from: item)
         // S1 [64,128) is gone; S0 absorbs it, so the cut at 64 is dropped and

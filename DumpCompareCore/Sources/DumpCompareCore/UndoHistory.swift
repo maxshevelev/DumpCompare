@@ -49,16 +49,22 @@ public struct UndoTransaction: Equatable, Sendable {
     /// `noteSelectionAfterOnLast` once the command that made the edit has left
     /// the selection where it wants it.
     public private(set) var selectionAfter: SelectionModel
+    /// The state-name this step was recorded under — the serial `record` handed
+    /// out. A document-level act (a join, §22.2) captures it so undo/redo can
+    /// recognise the transaction and re-attach/detach the file.
+    public let serial: UInt64
 
     /// Where the caret sits in each bracketing state — an empty selection is a
     /// caret, and a non-empty one's caret is its start.
     public var caretBefore: UInt64 { selectionBefore.start }
     public var caretAfter: UInt64 { selectionAfter.start }
 
-    public init(ops: [UndoOperation], selectionBefore: SelectionModel, selectionAfter: SelectionModel) {
+    public init(ops: [UndoOperation], selectionBefore: SelectionModel, selectionAfter: SelectionModel,
+                serial: UInt64 = 0) {
         self.ops = ops
         self.selectionBefore = selectionBefore
         self.selectionAfter = selectionAfter
+        self.serial = serial
     }
 
     /// Caret-only form, for edits recorded without a selection to speak of.
@@ -129,6 +135,11 @@ public final class UndoHistory: @unchecked Sendable {
     private var nextSerial: UInt64 = 1
     /// The serial `markSaved()` checkpointed; 0 means "the file as opened".
     private var savedSerial: UInt64 = 0
+    /// True after the history was cleared while keeping the document dirty — a
+    /// document-level act (a join) produced never-saved content that cannot be
+    /// undone (there is no prior state to return to) but must not be silently
+    /// discarded on close. Cleared by the next save or reset.
+    private var dirtyAfterClear = false
     private var undoTransactionCount = 0
 
     // Fast-rollback state:
@@ -137,14 +148,23 @@ public final class UndoHistory: @unchecked Sendable {
 
     public var canUndo: Bool { !undoSteps.isEmpty }
     public var canRedo: Bool { !redoSteps.isEmpty }
-    /// True when the current state differs from the last saved state.
-    public var isDirty: Bool { currentSerial != savedSerial }
+    /// True when the current state differs from the last saved state, or when
+    /// the document holds never-saved content a cleared history no longer names
+    /// (a join, §22.2): that content must still warn on close.
+    public var isDirty: Bool { dirtyAfterClear || currentSerial != savedSerial }
     /// Number of committed transactions.
     public var undoDepth: Int { undoTransactionCount }
 
     /// The serial of the newest committed transaction — the name of the state the
     /// document is in. Zero with nothing committed: the file as it was opened.
     private var currentSerial: UInt64 { undoSteps.last?.entries.last?.serial ?? 0 }
+
+    /// The serial of the newest committed transaction, or `nil` when nothing has
+    /// been committed. A document-level act (a join, §22.2) captures this right
+    /// after its transaction commits, so undo/redo can recognise that step.
+    public var lastCommittedSerial: UInt64? {
+        undoSteps.last?.entries.last?.serial
+    }
 
     /// Records a transaction of ops applied to storage. Any undone steps
     /// (the redo stack) are discarded, because the state has diverged. The
@@ -161,7 +181,8 @@ public final class UndoHistory: @unchecked Sendable {
         redoSteps.removeAll()
         let entry = Entry(transaction: UndoTransaction(ops: ops,
                                                       selectionBefore: selectionBefore,
-                                                      selectionAfter: selectionAfter),
+                                                      selectionAfter: selectionAfter,
+                                                      serial: nextSerial),
                           serial: nextSerial)
         nextSerial += 1
         undoSteps.append(Step(entries: [entry], seriesID: seriesID))
@@ -234,6 +255,7 @@ public final class UndoHistory: @unchecked Sendable {
     /// successful save).
     public func markSaved() {
         savedSerial = currentSerial
+        dirtyAfterClear = false
     }
 
     /// Discards all history and the dirty checkpoint.
@@ -244,6 +266,23 @@ public final class UndoHistory: @unchecked Sendable {
         // current state is 0 again, and no future serial can collide with one a
         // caller still remembers.
         savedSerial = 0
+        dirtyAfterClear = false
+        undoTransactionCount = 0
+        lastUndoWasSeriesByte = false
+        lastUndoSeriesID = nil
+    }
+
+    /// Clears the undo/redo history but keeps the document marked as having
+    /// unsaved content. A document-level act (a join, §22.2) produces never-
+    /// saved content that cannot be undone — there is no prior state to return
+    /// to — yet it must not be silently discarded on close, so the dirty flag
+    /// survives the clear. A later save or reset clears it; edits made after the
+    /// clear undo as usual and never reach the cleared work.
+    public func clearKeepingDirty() {
+        undoSteps.removeAll()
+        redoSteps.removeAll()
+        savedSerial = 0
+        dirtyAfterClear = true
         undoTransactionCount = 0
         lastUndoWasSeriesByte = false
         lastUndoSeriesID = nil

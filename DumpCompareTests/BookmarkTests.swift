@@ -912,6 +912,34 @@ final class BookmarkTests: XCTestCase {
                        "the mark landed on the address that was typed, not on the caret's row")
     }
 
+    /// Creating a bookmark lands the caret on the new mark's row — but only
+    /// once the naming is committed, not while the popover is up: the popover
+    /// holds the focus, so a caret move before it would be hidden and lost. The
+    /// double-click-on-an-address path marks a row the caret is not on, so the
+    /// Return that saves the name is what carries the caret (and the view,
+    /// centred if it fell off-screen) to the mark.
+    func testCreatingABookmarkMovesTheCaretToTheMark() throws {
+        let (controller, close) = try makeControllerWithFile(bytes: 256)
+        defer { close() }
+        let pane = controller.windowModel.pane1
+        let requests = captureEditing(controller)
+        // The caret starts on row 0, far from the row that will be marked.
+        pane.moveCaret(to: 0)
+
+        // Double-clicking the address on row 5 (offset 0x50) marks that row and
+        // opens the naming popover. The caret does not move while it is up.
+        controller.handleOffsetDoubleClick(in: pane, rowContaining: 0x50)
+        XCTAssertEqual(controller.windowModel.bookmarkStore.bookmarks.map(\.row), [0x50],
+                       "the mark landed on the double-clicked row")
+        XCTAssertEqual(pane.hexSelection().start, 0,
+                       "the caret stays put while the naming popover holds the focus")
+
+        // The Return that saves the name lands the caret on the mark's row.
+        try XCTUnwrap(requests().first).commit(0x50, "")
+        XCTAssertEqual(pane.hexSelection().start, 0x50,
+                       "the caret moved to the new mark's row on commit")
+    }
+
     /// Esc on a popover that opened by marking a row removes the mark again: the
     /// whole act is cancelled, not just the name.
     func testEscAfterMarkingRemovesTheMark() throws {
@@ -1219,14 +1247,14 @@ final class BookmarkTests: XCTestCase {
 
         // A byte in the middle of row 0x10, so the row address has to be derived.
         let unmarked = controller.makeOffsetMenu(for: pane, offset: 0x1B).items.map(\.title)
-        XCTAssertTrue(unmarked.contains("Toggle Bookmark at 0x00000010"),
+        XCTAssertTrue(unmarked.contains("Toggle Bookmark at 00000010"),
                       "the row's address, not the clicked byte's: \(unmarked)")
         XCTAssertFalse(unmarked.contains("Edit Bookmark…"),
                        "nothing to rename on an unmarked row")
 
         controller.windowModel.bookmarkStore.add(rowContaining: 0x1B, name: "ME region")
         let marked = controller.makeOffsetMenu(for: pane, offset: 0x1B).items.map(\.title)
-        XCTAssertTrue(marked.contains("Toggle Bookmark at 0x00000010"), "\(marked)")
+        XCTAssertTrue(marked.contains("Toggle Bookmark at 00000010"), "\(marked)")
         XCTAssertTrue(marked.contains("Edit Bookmark…"))
     }
 

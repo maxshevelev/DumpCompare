@@ -642,13 +642,22 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// layout: side by side, the inner edges have no padding at all (the two
     /// dumps meet at the gutter), so map 1's marks go in its right margin and
     /// point left. Nil when the map has no margin to draw in.
+    ///
+    /// The segment strip owns the right margin when it is visible, so the marks
+    /// keep to the left margin there — the strip's column is not paper they can
+    /// share, and a mark past it would point at the strip, not the row it names.
     private func bookmarkMargin(forMapAt index: Int) -> (strip: NSRect, pointsRight: Bool)? {
         guard maps.indices.contains(index) else { return nil }
         let area = area(forMapAt: index)
         let content = contentArea(within: area, forMapAt: index)
         guard area.height > 0 else { return nil }
         let left = content.minX - area.minX
-        let right = area.maxX - content.maxX
+        var right = area.maxX - content.maxX
+        // The strip's claim on the right margin (its gap plus its width) is not
+        // paper the marks can use, so it is deducted before the wider-margin test.
+        if segmentStripVisible(forMapAt: index) {
+            right = max(0, right - (Self.segmentStripGap + Self.segmentStripWidth))
+        }
         // The wider margin wins, so a layout that pads only one side is drawn on
         // that side; ties go left, which is where a reader looks first.
         if left >= right, left > 1 {
@@ -830,7 +839,7 @@ final class MinimapView: NSView, NSViewToolTipOwner {
             let block = segmentBlocks[index][pieceIndex]
             let label = Segment.label(for: pieceIndex)
             let start = String(block.range.lowerBound, radix: 16).uppercased()
-            let end = String(block.range.upperBound, radix: 16).uppercased()
+            let end = String(block.range.lastByte, radix: 16).uppercased()
             let size = FilePaneView.friendlySize(UInt64(block.range.count))
             var text = "\(label) — 0x\(start)…0x\(end), \(size)"
             if let name = segmentPieceName?(index, pieceIndex), !name.isEmpty {
@@ -852,7 +861,7 @@ final class MinimapView: NSView, NSViewToolTipOwner {
             return stripText
         }
         guard let bookmark = bookmark(atMarkPoint: point) else { return "" }
-        let address = Bookmark.bareAddressLabel(bookmark.row)
+        let address = bookmark.row.bareAddress
         return bookmark.name.isEmpty ? address : "\(address): \(bookmark.name)"
     }
 
@@ -1269,12 +1278,24 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// the gutter (see `segmentStripRect`), so the content is pulled in past it
     /// to leave the strip its `segmentStripGap` of paper on each side — the
     /// layout the user reads as Map – gap – strip – gap – separator (§19.4.4).
+    ///
+    /// The strip's own right edge sits `contentPadding` from the panel's right
+    /// edge — the same inset the content carries on the left — so the margins
+    /// read as symmetric: the content is framed by `contentPadding` on the left,
+    /// and the strip (the rightmost element) by `contentPadding` on the right.
+    /// The content's right edge is pulled in past the strip to make that room,
+    /// leaving the strip its `segmentStripGap` of paper on the content side.
     private func contentArea(within area: NSRect, forMapAt index: Int) -> NSRect {
         let pad = Self.contentPadding
+        // The strip's full claim on the right margin: its gap of paper plus its
+        // own width. Added to the padding, it is how far the content's right
+        // edge retreats so the strip can sit `contentPadding` from the edge.
+        let stripSpan = Self.segmentStripGap + Self.segmentStripWidth
         switch mapLayout {
         case .single, .stacked:
+            let rightInset = pad + (segmentStripVisible(forMapAt: index) ? stripSpan : 0)
             return NSRect(x: area.minX + pad, y: area.minY,
-                          width: max(0, area.width - pad * 2),
+                          width: max(0, area.width - pad - rightInset),
                           height: area.height)
         case .sideBySide:
             // index 0 keeps the left pad (outer edge); its strip sits in the
@@ -1285,14 +1306,15 @@ final class MinimapView: NSView, NSViewToolTipOwner {
             // the gutter and the strip lives in the outer padding.
             if index == 0 {
                 let stripVisible = segmentStripVisible(forMapAt: index)
-                let stripSpan = Self.segmentStripGap * 2 + Self.segmentStripWidth
+                let gutterSpan = Self.segmentStripGap * 2 + Self.segmentStripWidth
                 let x = area.minX + pad
-                let inner = stripVisible ? (bounds.midX - stripSpan) : area.maxX
+                let inner = stripVisible ? (bounds.midX - gutterSpan) : area.maxX
                 return NSRect(x: x, y: area.minY,
                               width: max(0, inner - x), height: area.height)
             }
             let x = area.minX
-            let inner = area.maxX - pad
+            let rightInset = pad + (segmentStripVisible(forMapAt: index) ? stripSpan : 0)
+            let inner = area.maxX - rightInset
             return NSRect(x: x, y: area.minY,
                           width: max(0, inner - x), height: area.height)
         }
@@ -1313,13 +1335,12 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// block's colour band sits at the same y as the rows it tints in the dump.
     ///
     /// Single and stacked maps paint it in the map's right margin, a
-    /// `segmentStripWidth` column exactly `segmentStripGap` of paper away from
-    /// the content's right edge — the same `segmentStripGap` of paper separates
-    /// the strip's right edge from the panel's right edge, so the strip sits
-    /// symmetrically in the margin, equidistant from the content and the panel
-    /// edge (§19.4.4). It is carved out of the margin the bookmark marks already
-    /// live in, so it does not move the content edge and the marks keep their
-    /// geometry.
+    /// `segmentStripWidth` column `segmentStripGap` of paper away from the
+    /// content's right edge, its own right edge sitting `contentPadding` from
+    /// the panel's right edge — the same inset the content carries on the left,
+    /// so the panel's margins read as symmetric (§19.4.4). The content's right
+    /// edge is pulled in past the strip to make that room (see `contentArea`),
+    /// and the bookmark marks keep to the left margin the strip vacates.
     ///
     /// Side by side, the two maps' strips sit on opposite sides of the panel:
     /// the left map's strip is in the gutter against the separator line (the
@@ -1339,9 +1360,10 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         default:
             // Single, stacked, and the right map in side-by-side: the strip is in
             // the map's own right margin, `segmentStripGap` of paper from the
-            // content's right edge — and the same `segmentStripGap` separates its
-            // right edge from the panel's right edge, so the strip sits
-            // symmetrically in the margin (§19.4.4).
+            // content's right edge. Because `contentArea` already pulled the
+            // content in past the strip, its right edge lands `contentPadding`
+            // from the panel's right edge — symmetric with the content's left
+            // inset (§19.4.4).
             let content = contentArea(within: area, forMapAt: index)
             x = content.maxX + Self.segmentStripGap
             guard x + Self.segmentStripWidth <= area.maxX else { return nil }
@@ -2169,8 +2191,17 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// (§19.6). Internal so tests can click just inside and just outside it.
     static let bookmarkSnapDistance: CGFloat = 4
 
+    /// How near the top or bottom edge of a map a click may land and still mean
+    /// the file's start or end (§19.7). The overview is proportional, so the
+    /// exact start and end are single pixels at the very top and bottom — hard to
+    /// hit. A small zone at each edge snaps to the start or end, the way a cut's
+    /// snap distance makes a segment boundary reachable (§19.4.4). Internal so
+    /// tests can click just inside and just outside it.
+    static let fileEdgeSnapDistance: CGFloat = 4
+
     /// What a click on the panel means: the row of a bookmark whose mark it
-    /// landed on or near, else the byte drawn under it (§19.6).
+    /// landed on or near, else the file's start or end when the click is in the
+    /// edge zone, else the byte drawn under it (§19.6, §19.7).
     ///
     /// Snapping is what makes a mark on a full-dump overview reachable at all: a
     /// row there is kilobytes, so the pointer can be dead on the arrow and still
@@ -2179,7 +2210,35 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// dragging the band is a scrollbar gesture and never snaps, since a
     /// continuous scroll that jumped to a bookmark would fight the drag.
     func snappedOffset(at point: NSPoint) -> (mapIndex: Int, offset: UInt64)? {
-        nearestBookmarkMark(to: point) ?? byteOffset(at: point)
+        nearestBookmarkMark(to: point) ?? fileEdgeOffset(at: point) ?? byteOffset(at: point)
+    }
+
+    /// The file's start or end a click in the top or bottom edge zone of a map
+    /// stands for, in overview mode: the top zone means the file's first byte,
+    /// the bottom zone its last. The overview is proportional, so the exact start
+    /// and end are single pixels at the very top and bottom — hard to hit. A
+    /// small zone at each edge snaps to the start or end, the way a cut's snap
+    /// distance makes a segment boundary reachable (§19.4.4). The offset is
+    /// snapped to the file's own bounds, so a shorter file's bottom zone means
+    /// its own last byte, not the longer file's end. Nil when the point is not in
+    /// either zone (or the mode is not overview), so the caller falls through to
+    /// the proportional offset.
+    private func fileEdgeOffset(at point: NSPoint) -> (mapIndex: Int, offset: UInt64)? {
+        guard renderMode == .overview else { return nil }
+        let distance = Self.fileEdgeSnapDistance
+        for index in maps.indices {
+            let area = area(forMapAt: index)
+            guard area.contains(point) else { continue }
+            if point.y - area.minY <= distance {
+                guard maps[index].fileSize > 0 else { return nil }
+                return (index, 0)
+            }
+            if area.maxY - point.y <= distance {
+                guard maps[index].fileSize > 0 else { return nil }
+                return (index, maps[index].fileSize - 1)
+            }
+        }
+        return nil
     }
 
     /// The bookmark whose mark is nearest `point`, within the snap distance of
@@ -2271,13 +2330,8 @@ final class MinimapView: NSView, NSViewToolTipOwner {
             let offset = row.multipliedReportingOverflow(by: Self.bytesPerRow)
             guard !offset.overflow else { return nil }
             let byte = offset.partialValue + UInt64(column)
-            guard byte < maps[index].fileSize else {
-                // Past this file's end: fall back to its last byte so a click
-                // low on a short map still lands somewhere real.
-                guard maps[index].fileSize > 0 else { return nil }
-                return (index, maps[index].fileSize - 1)
-            }
-            return (index, byte)
+            guard let snapped = snappedOffset(byte, forMapAt: index) else { return nil }
+            return (index, snapped)
         }
         return nil
     }
@@ -2303,11 +2357,24 @@ final class MinimapView: NSView, NSViewToolTipOwner {
             }
             let slice = (rowEnd - rowStart) * UInt64(column) / Self.bytesPerRow
             let offset = rowStart + slice
-            let fileSize = maps[index].fileSize
-            guard fileSize > 0 else { return nil }
-            return (index, min(offset, fileSize - 1))
+            guard let snapped = snappedOffset(offset, forMapAt: index) else { return nil }
+            return (index, snapped)
         }
         return nil
+    }
+
+    /// The byte a raw offset stands for in map `index`, snapped to the file's
+    /// own bounds. The map is binned over the *longest* file's extent, so a
+    /// shorter map's tail is empty paper: a click there would compute an offset
+    /// past the file's end, and this pulls it back onto the file's last byte.
+    /// That is what makes the start and end zones of a map resolve to the start
+    /// and end of the file — and, for the shorter file of a pair, put its end in
+    /// the pane's centre rather than off the bottom of it (§19.7). Nil for an
+    /// empty file, which has no byte to land on.
+    func snappedOffset(_ offset: UInt64, forMapAt index: Int) -> UInt64? {
+        let size = maps.indices.contains(index) ? maps[index].fileSize : 0
+        guard size > 0 else { return nil }
+        return min(offset, size - 1)
     }
 
     override func mouseUp(with event: NSEvent) {

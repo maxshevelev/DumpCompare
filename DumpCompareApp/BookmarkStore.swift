@@ -17,21 +17,7 @@ struct Bookmark: Equatable {
     /// called by where it is, so it shows its address (§20.2). One place decides
     /// this, so every surface agrees.
     var displayName: String {
-        name.isEmpty ? Self.addressLabel(row) : name
-    }
-
-    /// A row address as the dialogs write one: `0x` and at least eight upper-case
-    /// hex digits (§10).
-    static func addressLabel(_ row: UInt64) -> String {
-        "0x" + bareAddressLabel(row)
-    }
-
-    /// The same address without the `0x` — how the bookmark list writes it and how
-    /// hovering a mark reads it out (§20.5). Where every value on show is an
-    /// address, the prefix is two characters saying what the surroundings already
-    /// say.
-    static func bareAddressLabel(_ row: UInt64) -> String {
-        String(row, radix: 16, uppercase: true).leftPadded(to: 8, with: "0")
+        name.isEmpty ? row.hexAddress : name
     }
 
     /// A name with its surrounding whitespace removed — the form every path

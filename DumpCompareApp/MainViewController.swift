@@ -65,6 +65,13 @@ final class MainViewController: NSViewController {
     /// Where the Replace Segment from File… open panel goes; the same shape as
     /// the save panel, for one file (§21.6).
     var segmentOpenPanel: ((NSOpenPanel) -> URL?)?
+    /// Where the join's open panel goes (Append File… / Insert File at Start…,
+    /// §22); the same shape as the replace panel, for one file.
+    var joinOpenPanel: ((NSOpenPanel) -> URL?)?
+    /// Where the join's dirty-pane confirmation goes: the test captures the
+    /// alert (its title and its two buttons — the operation's verb and Cancel)
+    /// and decides. Returns the alert's response (§22.2).
+    var joinConfirm: ((NSAlert) -> NSApplication.ModalResponse)?
     /// Where the Save All confirmation goes: the test captures the alert (its
     /// preview names every part, and it names every file that would be replaced)
     /// and decides. Returns the alert's response.
@@ -270,15 +277,21 @@ final class MainViewController: NSViewController {
         // Showing the panel needs the current picture: while hidden it drew
         // nothing, so its maps and viewport are stale (§19).
         minimapSplit.onPanelVisibilityChanged = { [weak self] visible in
-            guard let self, visible else { return }
-            self.updateMinimapLayout()
-            self.refreshMinimapMaps()
-            // The mode was decided when the file opened, panel or no panel
-            // (§19.4) — showing the panel must not undo a choice made in it, only
-            // settle whether overview is on offer now that it has a height.
-            self.updateOverviewAvailability()
-            self.updateMinimapViewports()
-            self.rebuildOverview()
+            guard let self else { return }
+            if visible {
+                self.updateMinimapLayout()
+                self.refreshMinimapMaps()
+                // The mode was decided when the file opened, panel or no panel
+                // (§19.4) — showing the panel must not undo a choice made in it,
+                // only settle whether overview is on offer now that it has a height.
+                self.updateOverviewAvailability()
+                self.updateMinimapViewports()
+                self.rebuildOverview()
+            }
+            // The window grows or shrinks by the panel's width so the hex
+            // content area keeps its width (§19). The resize is instant; the
+            // panel's own divider animation then settles the content.
+            self.resizeWindowForMinimap(visible: visible)
         }
 
         apply(mode: .empty)
@@ -335,7 +348,7 @@ final class MainViewController: NSViewController {
             let pane = FilePaneView(viewModel: paneModel)
             // Header right-click menu: acts on THIS pane (§4/§5).
             pane.paneMenu = makePaneMenu(for: paneModel)
-            // Offset-column right-click menu ("Select block from here", §10.2).
+            // Offset-column right-click menu ("Select Block from Here at «address»", §10.2).
             pane.offsetMenuProvider = { [weak self] offset in
                 self?.makeOffsetMenu(for: paneModel, offset: offset) ?? NSMenu()
             }
@@ -387,7 +400,7 @@ final class MainViewController: NSViewController {
             // Header right-click menus act on their own pane (§4/§5).
             pane1View.paneMenu = makePaneMenu(for: pane1)
             pane2View.paneMenu = makePaneMenu(for: pane2)
-            // Offset-column right-click menus ("Select block from here", §10.2).
+            // Offset-column right-click menus ("Select Block from Here at «address»", §10.2).
             pane1View.offsetMenuProvider = { [weak self] offset in
                 self?.makeOffsetMenu(for: pane1, offset: offset) ?? NSMenu()
             }
@@ -398,15 +411,6 @@ final class MainViewController: NSViewController {
             // was clicked (§20.3).
             wireBookmarkDoubleClick(pane1View, for: pane1)
             wireBookmarkDoubleClick(pane2View, for: pane2)
-            // Comparison-mode drops target the hovered pane (§4.3).
-            pane1View.enableFileDrop()
-            pane2View.enableFileDrop()
-            pane1View.onDropFiles = { [weak self] urls in
-                self?.handleComparisonDrop(targetPane: 0, urls: urls)
-            }
-            pane2View.onDropFiles = { [weak self] urls in
-                self?.handleComparisonDrop(targetPane: 1, urls: urls)
-            }
             // Each map's viewport rectangle mirrors its pane's visible slice (§19).
             trackMinimapViewport(for: pane1View)
             trackMinimapViewport(for: pane2View)
@@ -417,6 +421,15 @@ final class MainViewController: NSViewController {
             )
             view.onPaneActivated = { [weak self] index in
                 self?.activatePane(at: index)
+            }
+            // Comparison-mode drops target the hovered pane's bands (§22.4):
+            // the three bands (insert / replace / append) are the drop targets,
+            // so the panes themselves are not drop-registered.
+            view.bands1.onDrop = { [weak self] target, urls in
+                self?.handleComparisonBandDrop(targetPane: 0, target: target, urls: urls)
+            }
+            view.bands2.onDrop = { [weak self] target, urls in
+                self?.handleComparisonBandDrop(targetPane: 1, target: target, urls: urls)
             }
             pane1View.onClose = { [weak self] in self?.closePane(at: 0) }
             pane2View.onClose = { [weak self] in self?.closePane(at: 1) }
@@ -525,6 +538,23 @@ final class MainViewController: NSViewController {
     /// user's chosen width between shows.
     @objc func toggleMinimap() {
         minimapSplit.togglePanel(animated: true)
+    }
+
+    /// Grows or shrinks the window by the minimap panel's width so the hex
+    /// content area keeps its width when the panel is shown or hidden (§19).
+    /// The window grows or shrinks from the right edge; the left edge stays put.
+    private func resizeWindowForMinimap(visible: Bool) {
+        guard let window = view.window else { return }
+        let delta = minimapSplit.preferredPanelWidth + minimapSplit.dividerThickness
+        var frame = window.frame
+        frame.size.width = visible ? frame.size.width + delta : max(0, frame.size.width - delta)
+        // Keep the window on the visible screen: when growing, the right edge
+        // must not run off-screen; when shrinking, the left edge stays put.
+        if let visibleFrame = window.screen?.visibleFrame {
+            frame.origin.x = min(max(frame.origin.x, visibleFrame.minX),
+                                 visibleFrame.maxX - frame.size.width)
+        }
+        window.setFrame(frame, display: true, animate: false)
     }
 
     /// Recomputes the minimap's internal map split from the current window mode
@@ -1392,9 +1422,11 @@ final class MainViewController: NSViewController {
         for range in ranges { patchOverviewRows(covering: range) }
     }
 
-    /// Moves the caret to the byte clicked on a map and centres the pane on it.
-    /// In comparison mode the click also makes that pane active, so the caret it
-    /// just moved is the one the keyboard and the navigation commands act on.
+    /// Centres the pane on the byte clicked on a map, moving the viewport
+    /// without touching the caret or the selection — a minimap click navigates
+    /// the view, it does not edit the caret's position. In comparison mode the
+    /// click also makes that pane active, so the keyboard and the navigation
+    /// commands act on the pane the user just pointed at.
     private func selectMinimapOffset(mapIndex: Int, offset: UInt64) {
         let pane: PaneViewModel
         switch mode {
@@ -1409,7 +1441,6 @@ final class MainViewController: NSViewController {
             pane = mapIndex == 0 ? windowModel.pane1 : windowModel.pane2
         }
         guard pane.isOpen else { return }
-        pane.moveCaret(to: offset)
         filePaneView(for: pane)?.revealOffsetCentered(offset)
     }
 
@@ -1499,9 +1530,11 @@ final class MainViewController: NSViewController {
         edit.target = self
         edit.representedObject = target
 
-        // Remove Segment: the piece's bytes merge into a neighbour that keeps
-        // its name (§21.3) — the same act as the form's row menu.
-        let remove = menu.addItem(withTitle: "Remove Segment \(label)",
+        // Merge: the piece's bytes merge into a neighbour that keeps its name
+        // (§21.3) — the same act as the form's row menu. The title names both
+        // the piece and the neighbour it merges into, so the menu says what it
+        // will do without a second look.
+        let remove = menu.addItem(withTitle: Segment.mergeTitle(for: pieceIndex),
                                   action: #selector(minimapMenuRemoveSegment(_:)), keyEquivalent: "")
         remove.target = self
         remove.representedObject = target
@@ -1568,7 +1601,7 @@ final class MainViewController: NSViewController {
         let from = segment.range.lowerBound
         // The piece's label and range, above the two fields — "S1: 0001000-0600000"
         // — so the popover says what it is for before the offset is read (§21.4).
-        let header = "\(segment.label): \(Bookmark.bareAddressLabel(segment.range.lowerBound))-\(Bookmark.bareAddressLabel(segment.range.upperBound))"
+        let header = "\(segment.label): \(segment.range.lowerBound.bareAddress)-\(segment.range.lastByte.bareAddress)"
         let controller = CutEditPopoverController(
             prefillOffset: from, validate: validate,
             // The piece's current name, so editing a named piece opens with the
@@ -1595,9 +1628,9 @@ final class MainViewController: NSViewController {
         controller.show(relativeTo: anchor, of: self.minimapView)
     }
 
-    /// Remove Segment from the strip's menu: the piece's bytes merge into a
-    /// neighbour that keeps its name (§21.3) — the same act as the form's row
-    /// menu, on the piece under the pointer.
+    /// Merge from the strip's menu: the piece's bytes merge into a neighbour
+    /// that keeps its name (§21.3) — the same act as the form's row menu, on
+    /// the piece under the pointer.
     @objc private func minimapMenuRemoveSegment(_ sender: NSMenuItem) {
         guard let target = sender.representedObject as? SegmentMenuTarget,
               let pane = minimapPane(at: target.mapIndex), pane.isOpen,
@@ -1692,7 +1725,16 @@ final class MainViewController: NSViewController {
     }
 
     private func refreshMode() {
-        apply(mode: windowModel.openPaneCount == 0 ? .empty : (windowModel.openPaneCount == 1 ? .singleFile : .comparison))
+        let mode: WindowMode = windowModel.openPaneCount == 0 ? .empty : (windowModel.openPaneCount == 1 ? .singleFile : .comparison)
+        // A drop that joins into the current pane (append / insert at start)
+        // does not change the mode, and the join has already refreshed the pane
+        // and centred the seam (§10.4, §22.5). Re-applying the same mode would
+        // rebuild the pane from scratch, and the new pane's init follows the
+        // caret to the top of the viewport, undoing the centring. Skip the
+        // rebuild when the mode is unchanged: the operation that triggered this
+        // has already updated the pane through its own channels.
+        guard mode != self.mode else { return }
+        apply(mode: mode)
     }
 
     // MARK: - File > Open (§4.1)
@@ -1781,8 +1823,31 @@ final class MainViewController: NSViewController {
         refreshMode()
     }
 
-    /// Single-file-mode drop onto one of the two visual targets (§4.3).
-    private func handleSingleFileDrop(target: SingleFileDropTarget, urls: [URL]) {
+    /// Comparison-mode drop onto one of a pane's three bands (§22.4): the
+    /// replace band uses the existing comparison replace behaviour, and the two
+    /// join bands join the first file into that pane (the rest ignored).
+    /// Internal (not private) so a test can drive the routing directly.
+    func handleComparisonBandDrop(targetPane: Int, target: SingleFileDropTarget, urls: [URL]) {
+        switch target {
+        case .replace, .addSecond:
+            // The replace band (and the defensive addSecond — comparison mode
+            // has no second-file target) use the existing replace behaviour.
+            handleComparisonDrop(targetPane: targetPane, urls: urls)
+        case .insertAtStart, .appendAtEnd:
+            let files = openableFiles(from: urls)
+            guard let first = files.first else { return }
+            let pane = targetPane == 0 ? windowModel.pane1 : windowModel.pane2
+            let position: JoinPosition = (target == .insertAtStart) ? .start : .end
+            join(url: first, at: position, in: pane)
+            let ignored = max(0, files.count - 1)
+            if ignored > 0 { notifyJoinIgnored(count: ignored) }
+            refreshMode()
+        }
+    }
+
+    /// Single-file-mode drop onto one of the targets or bands (§4.3, §22.4).
+    /// Internal (not private) so a test can drive the routing directly.
+    func handleSingleFileDrop(target: SingleFileDropTarget, urls: [URL]) {
         let files = openableFiles(from: urls)
         guard let first = files.first else { return }
         switch target {
@@ -1801,6 +1866,14 @@ final class MainViewController: NSViewController {
             windowModel.setActivePane(1)
             let ignored = max(0, files.count - 1)
             if ignored > 0 { notifyIgnored(count: ignored) }
+        case .insertAtStart, .appendAtEnd:
+            // First joins into the "this file" pane (pane 0 in single-file
+            // mode); the rest are ignored — joining a list in one gesture is
+            // deliberately not this (§22.4).
+            let position: JoinPosition = (target == .insertAtStart) ? .start : .end
+            join(url: first, at: position, in: windowModel.pane1)
+            let ignored = max(0, files.count - 1)
+            if ignored > 0 { notifyJoinIgnored(count: ignored) }
         }
         refreshMode()
     }
@@ -1818,6 +1891,14 @@ final class MainViewController: NSViewController {
         let noun = count == 1 ? "file was" : "files were"
         presentAlert(title: "Additional files ignored",
                      message: "\(count) \(noun) not opened because only two files can be compared at once.")
+    }
+
+    /// The join-band variant of the ignored-files notice (§22.4): a join takes
+    /// one file, so the extras are not joined, not opened.
+    private func notifyJoinIgnored(count: Int) {
+        let noun = count == 1 ? "file was" : "files were"
+        presentAlert(title: "Additional files ignored",
+                     message: "\(count) \(noun) not joined because only one file can be joined at a time.")
     }
 
     /// Opens `url` into the pane at `index`, enforcing §4.1 rules 4–6 (dirty
@@ -1905,6 +1986,112 @@ final class MainViewController: NSViewController {
     private func isOpenableFile(_ url: URL) -> Bool {
         let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey])
         return values?.isDirectory == false && values?.isPackage != true
+    }
+
+    // MARK: - File > Append File… / Insert File at Start… (§22)
+
+    /// File > Append File…: joins the chosen file's bytes after the active
+    /// pane's content (§22.1).
+    @objc func appendFile() {
+        joinFile(at: .end, in: activePane)
+    }
+
+    /// File > Insert File at Start…: joins the chosen file's bytes before the
+    /// active pane's content (§22.1).
+    @objc func insertFileAtStart() {
+        joinFile(at: .start, in: activePane)
+    }
+
+    /// The pane-menu twins: the same join, acting on the pane the menu was built
+    /// for (§22.1) rather than the active one.
+    @objc func appendFileInPane(_ sender: Any?) {
+        guard let pane = pane(from: sender) else { return }
+        joinFile(at: .end, in: pane)
+    }
+
+    @objc func insertFileAtStartInPane(_ sender: Any?) {
+        guard let pane = pane(from: sender) else { return }
+        joinFile(at: .start, in: pane)
+    }
+
+    /// The join command, shared by the File-menu and pane-menu items (§22).
+    /// Opens the one file, then joins it.
+    private func joinFile(at position: JoinPosition, in pane: PaneViewModel) {
+        guard pane.isOpen else { return }
+        let verb = (position == .start) ? "Insert" : "Append"
+
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = verb
+        panel.message = "Choose the file to \(position == .start ? "insert at the start of" : "append to") the pane's content."
+        let url: URL?
+        if let joinOpenPanel {
+            url = joinOpenPanel(panel)
+        } else {
+            url = panel.runModal() == .OK ? panel.url : nil
+        }
+        guard let url else { return }
+        join(url: url, at: position, in: pane)
+    }
+
+    /// Joins the file at `url` into `pane`: the dirty-pane warning (Cancel and
+    /// the operation's verb — §22.2), the join, and the transient status line.
+    /// Shared by the menu commands (after the open panel) and the drop bands
+    /// (§22.4), which already have the URL. An untitled dirty pane is joined
+    /// without a warning: there is no saved state to diverge from.
+    private func join(url: URL, at position: JoinPosition, in pane: PaneViewModel) {
+        guard pane.isOpen else { return }
+        let verb = (position == .start) ? "Insert" : "Append"
+
+        // §22.2: a dirty pane is warned about, with two buttons — Cancel and
+        // the operation's verb. An untitled dirty pane gets no alert: there is
+        // no saved state to diverge from.
+        if pane.status.isDirty && !pane.isUntitled {
+            let alert = NSAlert()
+            alert.messageText = "Join with unsaved changes?"
+            alert.informativeText = "“\(pane.status.fileName)” has unsaved changes. They travel into the joined image; the file on disk keeps its saved bytes."
+            alert.addButton(withTitle: verb)
+            alert.addButton(withTitle: "Cancel")
+            let response: NSApplication.ModalResponse
+            if let joinConfirm {
+                response = joinConfirm(alert)
+            } else {
+                response = Self.presentModal(alert, defaultInTest: .alertSecondButtonReturn)  // Cancel in tests
+            }
+            guard response == .alertFirstButtonReturn else { return }
+        }
+
+        // The name the pane's content carries now, remembered before the join
+        // detaches the document — the status line names both sources (§22.2).
+        let originalName = pane.status.fileName
+
+        do {
+            try pane.join(contentsOf: url, at: position)
+        } catch let error as JoinError {
+            switch error {
+            case .emptySource:
+                presentAlert(title: "File is empty",
+                             message: "“\(url.lastPathComponent)” has no bytes to join.")
+            }
+            return
+        } catch {
+            presentFileError("Could not join file.", error, url: url)
+            return
+        }
+
+        // The seam (the caret, at the start of the added part) is centred in the
+        // pane by the join's own `notify(centerCaret: true)` (§10.4, §22.5).
+
+        // §22.2: the transient status line names both sources and the total
+        // size, the way the app reports a search result, then yields back.
+        let total = pane.fileSize
+        let size = ByteCountFormatter.string(fromByteCount: Int64(total), countStyle: .file)
+        let message = (position == .start)
+            ? "Inserted \(url.lastPathComponent) before \(originalName). Total: \(size)."
+            : "Appended \(url.lastPathComponent) after \(originalName). Total: \(size)."
+        filePaneView(for: pane)?.showTransientMessage(message)
     }
 
     // MARK: - File > New File
@@ -2217,11 +2404,20 @@ final class MainViewController: NSViewController {
         add("Save", #selector(savePaneDocument(_:)), "s")
         add("Save As…", #selector(savePaneDocumentAs(_:)), "S")
         add("Revert to Saved", #selector(revertPaneDocument(_:)), "")
+        menu.addItem(.separator())
+        // The join twins (§22.1): beside the file-scoped commands, acting on
+        // THIS pane (the menu's representedObject) rather than the active one.
+        // Insert (at the start) is grouped with the edit commands above;
+        // Append (at the end) sits in its own block — the menu bar's File
+        // submenu's order, mirrored here.
+        add("Insert File at Start…", #selector(insertFileAtStartInPane(_:)), "")
+        add("Append File…", #selector(appendFileInPane(_:)), "")
+        menu.addItem(.separator())
         // Show in Finder is header-only: it reveals THIS pane's file in the
         // Finder, which is a per-pane act, so the menu bar's File submenu
-        // (active-pane) doesn't duplicate it.
+        // (active-pane) doesn't duplicate it. It keeps its own block between
+        // the two join commands.
         add("Show in Finder", #selector(showPaneInFinder(_:)), "")
-        menu.addItem(.separator())
         add("Close", #selector(closePaneDocument(_:)), "w")
         // Swap Panels is a comparison-mode command, not a per-pane File action,
         // so it gets its own block and targets `swapPanes` directly.
@@ -2234,8 +2430,8 @@ final class MainViewController: NSViewController {
     }
 
     /// Builds the context menu for a right-clicked address in the Offset column:
-    /// "Copy offset" (copies the hex offset to the clipboard), then "Select
-    /// block from here", both resolving THIS pane (the header-menu pattern of
+    /// "Copy offset" (copies the hex offset to the clipboard), then "Select Block
+    /// from Here at «address»", both resolving THIS pane (the header-menu pattern of
     /// §4/§5) and the clicked offset (§10.2). When the clicked byte lies inside
     /// the pane's current selection, the menu instead leads with selection-scoped
     /// actions — Copy, Fill Selection with…, Delete Bytes — that act on the
@@ -2253,7 +2449,7 @@ final class MainViewController: NSViewController {
         copy.target = self
         copy.representedObject = OffsetContextTarget(pane: pane, offset: offset)
         menu.addItem(.separator())
-        let select = menu.addItem(withTitle: "Select block from here",
+        let select = menu.addItem(withTitle: "Select Block from Here at \(offset.bareAddress)",
                                   action: #selector(selectBlockFromHere(_:)),
                                   keyEquivalent: "")
         select.target = self
@@ -2268,10 +2464,12 @@ final class MainViewController: NSViewController {
         return menu
     }
 
-    /// The segment block of the offset context menu (§21.3): *Split Here* opens
+    /// The segment block of the offset context menu (§21.3): *Split Here at «address»* opens
     /// the Add Cut popover pre-filled with the right-clicked byte or address,
-    /// and *Remove Segment* deletes the piece that position sits in. Both act on
-    /// the right-clicked position — the thing the menu was opened on.
+    /// and *Merge* merges the piece that position sits into its neighbour. Both
+    /// act on the right-clicked position — the thing the menu was opened on.
+    /// The Merge item's title is renamed by validation to name the piece and its
+    /// neighbour ("Merge S1 into S0").
     private func addSegmentMenuItems(to menu: NSMenu, for pane: PaneViewModel, offset: UInt64) {
         let target = OffsetContextTarget(pane: pane, offset: offset)
         func add(_ title: String, _ action: Selector) {
@@ -2279,8 +2477,8 @@ final class MainViewController: NSViewController {
             item.target = self
             item.representedObject = target
         }
-        add("Split Here", #selector(splitHere(_:)))
-        add("Remove Segment", #selector(removeSegment(_:)))
+        add("Split Here at \(offset.bareAddress)", #selector(splitHere(_:)))
+        add("Merge", #selector(removeSegment(_:)))
     }
 
     /// The bookmark block of the offset context menu (§20.3). One item marks and
@@ -2290,7 +2488,7 @@ final class MainViewController: NSViewController {
     /// a byte marks its row (§20.1), and the title is what says so.
     private func addBookmarkMenuItems(to menu: NSMenu, for pane: PaneViewModel, offset: UInt64) {
         let target = OffsetContextTarget(pane: pane, offset: offset)
-        let address = Bookmark.addressLabel(BookmarkStore.row(containing: offset))
+        let address = BookmarkStore.row(containing: offset).bareAddress
         func add(_ title: String, _ action: Selector) {
             let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
             item.target = self
@@ -2350,7 +2548,7 @@ final class MainViewController: NSViewController {
         return comparisonView?.paneView2
     }
 
-    /// Offset context menu > Select block from here: opens the Select Block
+    /// Offset context menu > Select Block from Here at «address»: opens the Select Block
     /// sheet for the pane that was right-clicked — Start pre-filled with the
     /// clicked address, the Length option active, and the cursor in the Length
     /// field (§10.2).
@@ -2758,6 +2956,11 @@ final class MainViewController: NSViewController {
     /// mark. The mark is made first, so it is visible while its name is typed —
     /// and `existingName: nil` is what tells the popover it is naming a mark that
     /// was just made, so its Esc removes it rather than keeping a name (§20.3).
+    ///
+    /// The caret and the viewport are not moved here: the popover is about to
+    /// take the focus, so a caret move now would be hidden behind it and lost.
+    /// They land on the new mark only once the naming is committed — see
+    /// `onCommit` below, which acts on the row the popover settled on.
     private func markAndNameBookmark(in pane: PaneViewModel, rowContaining offset: UInt64) {
         let store = windowModel.bookmarkStore
         let row = BookmarkStore.row(containing: offset)
@@ -2766,9 +2969,19 @@ final class MainViewController: NSViewController {
             in: pane, row: row, existingName: nil,
             onCommit: { [weak self] target, name in
                 self?.applyBookmarkEdit(from: row, to: target, name: name)
+                self?.revealBookmark(at: target, in: pane)
             },
             onCancel: { store.remove(rowContaining: row) }
         )
+    }
+
+    /// Lands the caret on a just-created bookmark and reveals it — centred when
+    /// it fell off-screen, left in place when it is already on the user's eye
+    /// (`moveCaret`'s centred reveal). Done on the commit, once the naming
+    /// popover has released the focus: a bookmark is made on a row, and that row
+    /// is where the user's eye should land now that the act is done.
+    private func revealBookmark(at row: UInt64, in pane: PaneViewModel) {
+        pane.moveCaret(to: row)
     }
 
     /// A double click on an address opens the edit popover on that row: it marks
@@ -2961,12 +3174,12 @@ final class MainViewController: NSViewController {
         presentCutEditPopover(in: pane, prefill: pane.caretOffset, anchoredToOffset: false)
     }
 
-    /// Remove Segment: deletes the piece a position sits in, merging it with a
-    /// neighbour (§21.3). It acts on a position *inside* a piece — the caret's,
-    /// from the Edit menu; the right-clicked byte or address, from the context
-    /// menu — not on a cut point, which is why it is named for the segment. The
-    /// bytes are untouched: removing a piece changes how the file is read, not
-    /// the file.
+    /// Merge: merges the piece a position sits in into its neighbour (§21.3). It
+    /// acts on a position *inside* a piece — the caret's, from the Edit menu; the
+    /// right-clicked byte or address, from the context menu — not on a cut point.
+    /// The bytes are untouched: merging a piece changes how the file is read, not
+    /// the file. The menu title names the piece and the neighbour it merges into
+    /// ("Merge S1 into S0"), so it is never confused with deleting data.
     @objc func removeSegment(_ sender: Any?) {
         let (pane, position): (PaneViewModel, UInt64)
         if let target = offsetContextTarget(from: sender) {
@@ -2979,7 +3192,7 @@ final class MainViewController: NSViewController {
         pane.segmentStore.removePiece(at: piece.index)
     }
 
-    /// Offset context menu ▸ Split Here: the Add Cut popover, opened on the
+    /// Offset context menu ▸ Split Here at «address»: the Add Cut popover, opened on the
     /// right-clicked byte or address and pre-filled with it (§21.3) — the same
     /// dialog as Edit ▸ Add Cut…, so a cut made from the menu and one made from
     /// the bar are the same act. This is how a cut normally gets made.
@@ -3020,16 +3233,11 @@ final class MainViewController: NSViewController {
 
     // MARK: - Dialogs (§10)
 
-    /// ⌘G: the Go To / Bookmarks form with the offset field focused — the fast
-    /// path is unchanged, ⌘G, type, Return (§10.1).
+    /// ⌘L: the Go To / Bookmarks form with the offset field focused — the fast
+    /// path is unchanged, ⌘L, type, Return (§10.1). Tab moves the keyboard to
+    /// the bookmark list, the other half of the same window (§20.5).
     @objc func goToPosition() {
         presentGoToForm(focus: .offsetField)
-    }
-
-    /// ⌥⌘B: the same form with the bookmark list focused, because going to a
-    /// bookmark is the other half of the same question (§20.5).
-    @objc func showBookmarks() {
-        presentGoToForm(focus: .bookmarks)
     }
 
     /// Where the form goes, so a test can drive it instead: it is presented in a
@@ -3901,7 +4109,6 @@ extension MainViewController: NSMenuItemValidation {
              #selector(deleteBytes),
              #selector(selectBlock),
              #selector(goToPosition),
-             #selector(showBookmarks),
              #selector(findPattern),
              #selector(selectAllBytes),
              #selector(toggleBookmark):
@@ -3928,13 +4135,22 @@ extension MainViewController: NSMenuItemValidation {
             }
             guard pane.isOpen else { return false }
             let piece = pane.segmentStore.segment(containing: position)
-            // Name the piece the item will remove, so the menu says what it will
-            // do (§21.3) — "Remove Segment S1", not a bare "Remove Segment".
-            menuItem.title = piece.map { "Remove Segment \($0.label)" } ?? "Remove Segment"
+            // Name the piece and the neighbour it merges into, so the menu says
+            // what it will do (§21.3) — "Merge S1 into S0", not a bare "Merge".
+            menuItem.title = piece.map { $0.mergeTitle } ?? "Merge"
             return piece != nil && pane.segmentStore.current.pieces.count > 1
         case #selector(revertDocument):
             // Nothing on disk to revert an untitled document to.
             return activePane.isOpen && !activePane.isUntitled
+        case #selector(appendFile),
+             #selector(insertFileAtStart):
+            // A join needs content to join into: an empty pane has nothing
+            // (§22.1). The File-menu items act on the active pane.
+            return activePane.isOpen
+        case #selector(appendFileInPane(_:)),
+             #selector(insertFileAtStartInPane(_:)):
+            // Context-menu items act on the pane they were built for.
+            return pane(from: menuItem)?.isOpen ?? false
         case #selector(savePaneDocument(_:)),
              #selector(savePaneDocumentAs(_:)):
             // Context-menu items act on the pane they were built for.
@@ -3953,7 +4169,7 @@ extension MainViewController: NSMenuItemValidation {
             // Right-click selection actions act on the pane they were built for.
             return (menuItem.representedObject as? OffsetContextTarget)?.pane.isOpen ?? false
         case #selector(splitHere(_:)):
-            // Split Here opens the Add Cut popover pre-filled with the
+            // Split Here at «address» opens the Add Cut popover pre-filled with the
             // right-clicked offset; the popover validates the offset as it is
             // typed, so a file is all the menu item needs (§21.3).
             guard let target = menuItem.representedObject as? OffsetContextTarget,
@@ -4026,7 +4242,7 @@ private func pasteboardBytes() throws -> [UInt8] {
     throw PasteError.noClipboardData
 }
 
-/// Boxes the pane and clicked offset carried by a "Select block from here"
+/// Boxes the pane and clicked offset carried by a "Select Block from Here at «address»"
 /// menu item — `NSMenuItem.representedObject` can't hold a tuple (§10.2).
 private final class OffsetContextTarget: NSObject {
     let pane: PaneViewModel

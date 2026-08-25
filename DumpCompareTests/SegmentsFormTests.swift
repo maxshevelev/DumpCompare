@@ -359,16 +359,16 @@ final class SegmentsFormTests: XCTestCase {
 
     // MARK: - The button row
 
-    /// Remove All asks first, and once confirmed leaves one piece — the whole
+    /// Merge All asks first, and once confirmed leaves one piece — the whole
     /// file, named for it (§21.4). A "No" leaves the partition as it was, and a
-    /// single piece has nothing to remove.
+    /// single piece has nothing to merge.
     func testRemoveAllAsksAndResetsToOnePiece() throws {
         let (single, _, _, _, _) = try makeForm()
         XCTAssertFalse(single.removeAllButton.isEnabled,
-                       "a single piece has nothing to remove")
+                       "a single piece has nothing to merge")
 
         let (form, pane, url, _, _) = try makeForm(cuts: [8, 16])
-        XCTAssertTrue(form.removeAllButton.isEnabled, "partitioned: Remove All is on")
+        XCTAssertTrue(form.removeAllButton.isEnabled, "partitioned: Merge All is on")
         form.confirmRemoveAll = { true }
 
         form.removeAllPressed()
@@ -379,7 +379,7 @@ final class SegmentsFormTests: XCTestCase {
         XCTAssertEqual(pane.segmentStore.segments[0].name, url.lastPathComponent,
                        "named for the file")
         XCTAssertFalse(form.removeAllButton.isEnabled,
-                       "back to one piece, Remove All is disabled again")
+                       "back to one piece, Merge All is disabled again")
 
         // A "No" leaves the partition as it was.
         let (kept, keptPane, _, _, _) = try makeForm(cuts: [8, 16])
@@ -448,15 +448,17 @@ final class SegmentsFormTests: XCTestCase {
     // MARK: - The row's context menu
 
     /// The row menu carries what acts on one piece — Save Segment…, Replace
-    /// Segment from File…, Edit…, Remove Segment — all aimed at the form. Both
-    /// Save Segment… (Stage 4) and Replace Segment from File… (Stage 6) are live
-    /// once a piece is selected.
+    /// Segment from File…, Edit…, Merge — all aimed at the form. The titles are
+    /// bare placeholders until the menu is about to show; selecting a piece and
+    /// validating renames every item to name it, the way the strip's menu does
+    /// (§21.3). Both Save Segment… (Stage 4) and Replace Segment from File…
+    /// (Stage 6) are live once a piece is selected.
     func testTheRowMenuCarriesThePieceActions() throws {
         let (form, _, _, _, _) = try makeForm(cuts: [8, 16])
         let menu = try XCTUnwrap(form.segmentTable.menu)
         let titles = menu.items.map(\.title)
         XCTAssertEqual(titles, ["Save Segment…", "Replace Segment from File…",
-                                "", "Edit…", "Remove Segment"])
+                                "", "Edit…", "Merge"])
 
         for item in menu.items where !item.isSeparatorItem {
             XCTAssertTrue(item.target === form, "\(item.title) is aimed at the form")
@@ -465,24 +467,34 @@ final class SegmentsFormTests: XCTestCase {
         form.selectSegment(atIndex: 1)
         let save = try XCTUnwrap(menu.items.first { $0.title == "Save Segment…" })
         let replace = try XCTUnwrap(menu.items.first { $0.title == "Replace Segment from File…" })
-        let remove = try XCTUnwrap(menu.items.first { $0.title == "Remove Segment" })
+        let edit = try XCTUnwrap(menu.items.first { $0.title == "Edit…" })
+        let remove = try XCTUnwrap(menu.items.first { $0.title == "Merge" })
         XCTAssertTrue(form.validateMenuItem(save),
                       "Save Segment… is live once a piece is selected")
         XCTAssertTrue(form.validateMenuItem(replace),
                       "Replace Segment from File… is live once a piece is selected")
+        XCTAssertTrue(form.validateMenuItem(edit),
+                      "Edit… is live once a piece is selected")
         XCTAssertTrue(form.validateMenuItem(remove),
-                      "Remove Segment needs a piece with a neighbour, and there is one")
-        XCTAssertEqual(remove.title, "Remove Segment S1",
-                       "the item names the piece it will remove, not a bare 'Remove Segment'")
+                      "Merge needs a piece with a neighbour, and there is one")
+        // Every item names the piece, the same shape the strip's menu reads.
+        XCTAssertEqual(save.title, "Save Segment S1…",
+                       "the item names the piece, like the strip's menu")
+        XCTAssertEqual(replace.title, "Replace Segment S1 from File…",
+                       "the item names the piece, like the strip's menu")
+        XCTAssertEqual(edit.title, "Edit Segment S1",
+                       "the item names the piece, like the strip's menu")
+        XCTAssertEqual(remove.title, "Merge S1 into S0",
+                       "the item names the piece and its neighbour, not a bare 'Merge'")
     }
 
-    /// The row menu's Remove Segment acts on the piece the menu was built for
+    /// The row menu's Merge acts on the piece the menu was built for
     /// (the selection, when no row was right-clicked), and greys out on a pane
     /// that is a single piece.
     func testTheRowMenuRemovesThePiecesPiece() throws {
         let (form, pane, _, _, _) = try makeForm(cuts: [8, 16])
         let menu = try XCTUnwrap(form.segmentTable.menu)
-        let remove = try XCTUnwrap(menu.items.first { $0.title == "Remove Segment" })
+        let remove = try XCTUnwrap(menu.items.first { $0.title == "Merge" })
 
         form.selectSegment(atIndex: 1)
         form.removeClickedSegment()
@@ -523,8 +535,7 @@ final class SegmentsFormTests: XCTestCase {
     // MARK: - Keys
 
     /// ⌥⌘S opens the Segments form: the Edit menu's Segments… item carries the
-    /// Option variant of ⌘S (⌘S is Save, ⇧⌘S is Save As), the way Bookmarks…
-    /// carries ⌥⌘B (§21.4).
+    /// Option variant of ⌘S (⌘S is Save, ⇧⌘S is Save As) (§21.4).
     func testTheSegmentsFormSitsOnOptCmdS() throws {
         let items = MainWindowController().makeEditMenu().items
         let segments = try XCTUnwrap(items.first { $0.title == "Segments…" })

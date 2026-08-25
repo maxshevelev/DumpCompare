@@ -15,7 +15,7 @@ import DumpCompareCore
 /// form needs the dump to move underneath it — a cut is made by typing an offset
 /// in the popover, not by aiming at a row.
 @MainActor
-final class SegmentsFormController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
+final class SegmentsFormController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSMenuItemValidation {
     /// The pane whose partition the form shows. One form, one pane: the segments
     /// of the file the user is looking at (§21.1), not the window's.
     private let pane: PaneViewModel
@@ -54,7 +54,7 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
     /// on screen closes the instant it opens.
     var editPopoverPresenter: ((CutEditPopoverController) -> Void)?
 
-    /// How the form confirms a destructive act (Remove All). Replaced in tests:
+    /// How the form confirms a destructive act (Merge All). Replaced in tests:
     /// a real NSAlert's `runModal` hangs a headless host, and what those tests
     /// are about is what the form does once it is allowed, not the alert it
     /// shows. Returns whether to proceed.
@@ -279,13 +279,16 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
         plus.translatesAutoresizingMaskIntoConstraints = false
         addButton = plus
 
+        // The tooltip and accessibility label are set to the selected piece's
+        // merge title ("Merge S1 into S0") by updateRemoveButton, which runs on
+        // every selection change; the "Merge" here is the unselected fallback.
         let minus = NSButton(title: "", target: self, action: #selector(removeCutPressed))
-        minus.image = footerIcon("minus", "Remove Segment")
+        minus.image = footerIcon("minus", "Merge")
         minus.imagePosition = .imageOnly
         minus.isBordered = false
         minus.contentTintColor = .secondaryLabelColor
-        minus.toolTip = "Remove Segment"
-        minus.setAccessibilityLabel("Remove Segment")
+        minus.toolTip = "Merge"
+        minus.setAccessibilityLabel("Merge")
         minus.translatesAutoresizingMaskIntoConstraints = false
         removeButton = minus
 
@@ -305,13 +308,13 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
     }
 
     /// The dialog's own button row holds only what acts on the whole partition
-    /// (§21.4): Remove All at the left, then Save All as Separate Files… and
+    /// (§21.4): Merge All at the left, then Save All as Separate Files… and
     /// Close at the right.
     private func makeButtonRow() -> NSView {
-        // Remove All, at the left of the row (§21.4): it undoes the whole
+        // Merge All, at the left of the row (§21.4): it undoes the whole
         // partition at once, so it sits apart from the per-piece `−` in the
         // footer and asks before acting.
-        let removeAll = NSButton(title: "Remove All",
+        let removeAll = NSButton(title: "Merge All",
                                  target: self, action: #selector(removeAllPressed))
         removeAllButton = removeAll
 
@@ -465,7 +468,7 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
     /// the selection is cleared would read as broken. It is enabled on S0 too —
     /// removing S0 reopens the piece below at the file start.
     private func updateRemoveButton() {
-        // `−` and Remove All both need a neighbour to merge into: both are
+        // `−` and Merge All both need a neighbour to merge into: both are
         // disabled on a single piece and enabled the moment the dump is
         // partitioned. Save All as Separate Files joins them: with one piece
         // there is nothing to separate, so it is a plain save and stays disabled
@@ -474,6 +477,13 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
         removeButton.isEnabled = partitioned
         removeAllButton.isEnabled = partitioned
         saveAllButton.isEnabled = partitioned
+        // The tooltip and accessibility label name the selected piece and the
+        // neighbour it merges into — "Merge S1 into S0" — so the icon-only
+        // button says what it will do, the way the menu items do. With nothing
+        // selected there is no piece to name, so it falls back to "Merge".
+        let title = selectedSegment?.mergeTitle ?? "Merge"
+        removeButton.toolTip = title
+        removeButton.setAccessibilityLabel(title)
     }
 
     // MARK: - The row editor (§21.4)
@@ -514,7 +524,7 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
     /// The popover for the piece at `row` — its offset (movable within the
     /// interval the cut bounds, or locked to 0 for S0) and its name. One editor
     /// for a piece, wherever it is edited from: a double click, the row's context
-    /// menu, or the dump's own Split Here all reach the same popover (§21.3).
+    /// menu, or the dump's own Split Here at «address» all reach the same popover (§21.3).
     private func editSegment(atRow row: Int) {
         guard row >= 0, row < segments.count else { return }
         editSegment(atIndex: segments[row].index)
@@ -576,7 +586,7 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
     // MARK: - The +/− footer (§21.4)
 
     /// `+`: the Add Cut popover, anchored to the button itself — the same popover
-    /// the dump's Split Here opens (§21.3), so a cut made from the form and one
+    /// the dump's Split Here at «address» opens (§21.3), so a cut made from the form and one
     /// made from the bar are the same act.
     @objc func addCutPressed() {
         let store = pane.segmentStore
@@ -615,9 +625,9 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
         controller.show(relativeTo: addButton.bounds, of: addButton)
     }
 
-    /// `−`: removes the selected piece, merging its bytes into a neighbour that
-    /// keeps its name (§21.3). The selection stays where the row was, so a run of
-    /// them can be cleared without reaching for the mouse between presses.
+    /// `−`: merges the selected piece into a neighbour that keeps its name
+    /// (§21.3). The selection stays where the row was, so a run of them can be
+    /// cleared without reaching for the mouse between presses.
     @objc func removeCutPressed() {
         removeSelectedSegment()
     }
@@ -640,9 +650,10 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
     // MARK: - The row's context menu (§21.4)
 
     /// The menu a right-click on a row offers: what acts on the piece under it.
-    /// The same menu the strip beside the map will offer (§21.3), so one shape in
-    /// both places. Each item carries the piece it acts on in its
-    /// `representedObject`, the way the offset menu carries its target.
+    /// The same shape the strip beside the map offers (§21.3). The titles are bare
+    /// placeholders — "Save Segment…", "Edit…", "Merge" — that `validateMenuItem`
+    /// renames to name the piece ("Save Segment S1…", "Edit Segment S1", "Merge
+    /// S1 into S0") when the menu is about to show, the way the strip's menu does.
     private func makeRowMenu() -> NSMenu {
         let menu = NSMenu()
 
@@ -664,7 +675,7 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
                                 action: #selector(editClickedSegment), keyEquivalent: "")
         edit.target = self
 
-        let remove = menu.addItem(withTitle: "Remove Segment",
+        let remove = menu.addItem(withTitle: "Merge",
                                   action: #selector(removeClickedSegment), keyEquivalent: "")
         remove.target = self
 
@@ -681,9 +692,9 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
         return selectedSegment
     }
 
-    /// The row's context menu > Remove Segment: the piece under the click rather
-    /// than the selected one, the way every context menu in the app acts on what
-    /// was clicked (§10.2).
+    /// The row's context menu > Merge: the piece under the click rather than the
+    /// selected one, the way every context menu in the app acts on what was
+    /// clicked (§10.2).
     @objc func removeClickedSegment() {
         guard let piece = pieceForMenuAction() else { return }
         removeSegment(atIndex: piece.index)
@@ -709,7 +720,7 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
 
     // MARK: - The dialog's button row (§21.4)
 
-    /// Remove All (§21.4): back to one piece — the whole file, named for it —
+    /// Merge All (§21.4): back to one piece — the whole file, named for it —
     /// removing every cut at once. Destructive, so it asks first; a "No" leaves
     /// the partition exactly as it was.
     @objc func removeAllPressed() {
@@ -721,13 +732,13 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
         reloadSegments()
     }
 
-    /// The confirmation for Remove All, as a real alert.
+    /// The confirmation for Merge All, as a real alert.
     private func presentRemoveAllConfirmation() -> Bool {
         let alert = NSAlert()
-        alert.messageText = "Remove All Segments?"
-        alert.informativeText = "This removes every cut and leaves the file as a single segment."
+        alert.messageText = "Merge All?"
+        alert.informativeText = "This merges every piece into a single segment. The bytes are untouched — only the cuts are removed."
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "Remove All")
+        alert.addButton(withTitle: "Merge All")
         alert.addButton(withTitle: "Cancel")
         return alert.runModal() == .alertFirstButtonReturn
     }
@@ -756,19 +767,27 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
     // MARK: - Menu validation (§21.4)
 
     /// The row menu and the button row enable themselves by what they can act on:
-    /// Save Segment… and Replace Segment from File… need a piece under the click,
-    /// Remove Segment needs a piece with a neighbour to merge into.
+    /// Save Segment…, Replace Segment from File… and Edit… need a piece under the
+    /// click, Merge needs a piece with a neighbour to merge into. Every item names
+    /// the piece the way the strip's menu does (§21.3) — "Save Segment S1…",
+    /// "Edit Segment S1", "Merge S1 into S0" — so the two menus read the same.
+    /// The bare titles in `makeRowMenu` are the unselected fallback.
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        let piece = pieceForMenuAction()
         switch menuItem.action {
         case #selector(saveSegment(_:)):
-            return pieceForMenuAction() != nil
+            menuItem.title = piece.map { "Save Segment \($0.label)…" } ?? "Save Segment…"
+            return piece != nil
         case #selector(replaceSegmentFromFile(_:)):
-            return pieceForMenuAction() != nil
+            menuItem.title = piece.map { "Replace Segment \($0.label) from File…" } ?? "Replace Segment from File…"
+            return piece != nil
+        case #selector(editClickedSegment):
+            menuItem.title = piece.map { "Edit Segment \($0.label)" } ?? "Edit…"
+            return piece != nil
         case #selector(removeClickedSegment):
-            let piece = pieceForMenuAction()
-            // Name the piece the item will remove, so the menu says what it will
-            // do (§21.4) — "Remove Segment S1", not a bare "Remove Segment".
-            menuItem.title = piece.map { "Remove Segment \($0.label)" } ?? "Remove Segment"
+            // Name the piece and the neighbour it merges into, so the menu says
+            // what it will do (§21.4) — "Merge S1 into S0", not a bare "Merge".
+            menuItem.title = piece?.mergeTitle ?? "Merge"
             return piece != nil && pane.segmentStore.segments.count > 1
         default:
             return true
@@ -817,7 +836,7 @@ final class SegmentsFormController: NSViewController, NSTableViewDataSource, NST
             cell.textField?.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
             // The dump's own address shape (§6): bare digits, no "0x" — a whole
             // column of addresses does not need each one announcing that it is hex.
-            cell.textField?.stringValue = Bookmark.bareAddressLabel(segment.range.lowerBound)
+            cell.textField?.stringValue = segment.range.lowerBound.bareAddress
             return cell
         case ColumnID.size:
             let cell = makeCell(tableColumn)

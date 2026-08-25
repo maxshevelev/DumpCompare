@@ -56,6 +56,22 @@ final class MainWindowMenuTests: XCTestCase {
                        "and only the insert paste follows it")
     }
 
+    // MARK: - Selection block order
+
+    /// The selection block: Select Block leads, then Fill Selection with…,
+    /// then Select All — one block, so the three selection commands sit
+    /// together and Select Block is the block's first item.
+    func testSelectBlockLeadsTheSelectionBlock() {
+        let titles = makeEditMenu().items.map(\.title)
+        guard let selectBlock = titles.firstIndex(of: "Select Block…") else {
+            return XCTFail("the Edit menu should offer Select Block…")
+        }
+        XCTAssertEqual(titles[selectBlock + 1], "Fill Selection with…",
+                       "Select Block leads the selection block, beside Fill…")
+        XCTAssertEqual(titles[selectBlock + 2], "Select All",
+                       "…and Select All, in one block")
+    }
+
     // MARK: - Insert Mode toggle
 
     /// The Edit menu carries the Insert Mode toggle, wired to the controller's

@@ -203,19 +203,26 @@ final class PaneViewModel: HexViewDataSource {
     var onMirroredSelectionChanged: (() -> Void)?
 
     /// Called after any change so the view can redraw and refresh the status bar.
-    var onChange: (() -> Void)?
+    /// Carries the caret-reveal mode (§10.4): `true` when a navigation command
+    /// jumped the caret (centre it if it landed off-screen), `false` for an
+    /// incremental move (the minimum scroll that keeps it on screen).
+    var onChange: ((Bool) -> Void)?
 
     /// Fired when only the caret/selection moved (no bytes changed), so the
     /// view can redraw just the rows the selection now covers differently — the
     /// hot path for mouse-drag selection, where a full redraw on every event
-    /// lags the cursor (§3.3).
-    var onSelectionChanged: (() -> Void)?
+    /// lags the cursor (§3.3). Carries the same caret-reveal mode as `onChange`
+    /// (§10.4).
+    var onSelectionChanged: ((Bool) -> Void)?
 
     /// Fired after a content change — bytes overwritten in this pane, or its
     /// text decoder rebuilt — carrying the affected region, so the view can
     /// redraw only the affected rows/columns instead of the whole pane (§3.3
-    /// extension). Not fired for length-changing edits (insert/delete, paste
-    /// insert, undo/redo/revert, open/save) — those still use `onChange`.
+    /// extension). It carries no caret-reveal mode: a content change never
+    /// moves the caret, so it must not scroll — revealing the caret is the
+    /// selection and full channels' job (§10.4). Not fired for length-changing
+    /// edits (insert/delete, paste insert, undo/redo/revert, open/save) — those
+    /// still use `onChange`.
     var onContentChanged: ((HexViewChange) -> Void)?
 
     /// Fired when the *companion* pane's bytes changed, so this pane can redraw
@@ -274,7 +281,9 @@ final class PaneViewModel: HexViewDataSource {
                 self.textDecoder = TextDecoderRegistry.make(identifier: settings.identifier, placeholder: settings.placeholder)
                 // A decoding change only affects the decoded-text column; the
                 // view redraws that band instead of the whole pane (§3.3
-                // extension).
+                // extension). The content channel repaints only — it never
+                // reveals the caret, which a decoding change does not move
+                // (§10.4).
                 self.onContentChanged?(.textDecoding)
             }
         }
@@ -414,8 +423,9 @@ final class PaneViewModel: HexViewDataSource {
         rearmWatcher()
         // Revert replaces the storage wholesale; the comparison must re-read.
         onFullInvalidation?()
-        // The partition goes back to the file as it is on disk: one piece.
-        resetSegments(for: doc)
+        // The partition survives the revert, re-based onto the saved size (§21.2)
+        // — the cuts and names the user set up are kept, not reset to one piece.
+        preserveSegments(for: doc)
         notify()
         notifyCompanionContentFullyChanged()
     }
@@ -477,8 +487,9 @@ final class PaneViewModel: HexViewDataSource {
 
     /// Resets the partition to one piece — the whole file — named after it,
     /// clears the snapshot stacks, and wires the document's transaction hook so
-    /// the stacks stay parallel to the undo stack. Called on open, close, and
-    /// revert.
+    /// the stacks stay parallel to the undo stack. Called on open and close,
+    /// where a fresh file genuinely is one piece (revert re-bases instead — see
+    /// `preserveSegments`).
     private func resetSegments(for doc: BinaryDocument) {
         segmentStore.reset(size: doc.size, name: doc.url.lastPathComponent)
         segmentUndoStack.removeAll()
@@ -496,6 +507,20 @@ final class PaneViewModel: HexViewDataSource {
             self?.notify(contentChange: .bytes(in: range))
             self?.onSegmentsChanged?()
         }
+    }
+
+    /// Keeps the partition across a Revert to Saved, re-basing it onto the saved
+    /// size (§21.2): the cuts and names the user set up survive, and any cut past
+    /// the new end is dropped. The snapshot stacks are cleared — `doc.revert()`
+    /// reset the byte-edit history they run parallel to, so keeping them would
+    /// leave stale snapshots that pair with no undo step. The document's
+    /// transaction hook and the store's change hook were wired on open and
+    /// survive the revert, so there is nothing to re-set.
+    private func preserveSegments(for doc: BinaryDocument) {
+        segmentStore.rebase(to: doc.size)
+        segmentUndoStack.removeAll()
+        segmentRedoStack.removeAll()
+        pendingSegmentSnapshot = nil
     }
 
     /// Captures the partition before an edit lands, so the transaction the edit
@@ -1137,6 +1162,97 @@ final class PaneViewModel: HexViewDataSource {
         notifyCompanionContentFullyChanged()
     }
 
+    // MARK: - Join a file (§22)
+
+    /// Joins the file at `url` into this pane's content, at the start or the end
+    /// (§22.1). The file is opened as the chunked reader and streamed in, so it
+    /// is never loaded whole into RAM. The joined piece is named for the file it
+    /// came from (§22.3).
+    func join(contentsOf url: URL, at position: JoinPosition) throws {
+        try join(contentsOf: FileBackedStorage(url: url),
+                 named: url.lastPathComponent,
+                 at: position)
+    }
+
+    /// The chunked join, given an already-open source and the name to give the
+    /// joined piece (§22). The join is a document-level act, not an edit
+    /// (§22.2): it detaches the document from the file it came from (the result
+    /// is untitled and never-saved), but it is undoable — the byte insert is one
+    /// undo step on top of any earlier edits, and undoing it re-attaches the
+    /// document to the file it left. The document is left dirty so a close still
+    /// warns. The seam is a cut (§22.3): the content the pane already held keeps
+    /// the name of the file it was opened from, and the joined bytes take
+    /// `sourceName`.
+    func join(contentsOf source: any ByteStorage, named sourceName: String,
+              at position: JoinPosition) throws {
+        guard let doc = document else { return }
+        breakTypingSeries()
+        let sizeBefore = doc.size
+        let sourceSize = source.size
+        // The join commits one transaction, and it is undoable (§22.2): capture
+        // the pre-join partition so the transaction's commit (fired by
+        // `onTransactionCommitted` inside `doc.join`) pushes it onto the
+        // segment undo stack — undoing the join then restores the partition to
+        // what it was. The seam cut and renames below are the post-join state.
+        beginSegmentEdit()
+        try doc.join(contentsOf: source, at: position)
+        // The insert moves the partition with the content and grows the content
+        // size (§21.2). This must run before the seam cut below: a cut is
+        // refused at the content's end, and for an append the seam IS the old
+        // end. For an insert at the start the new bytes join the piece that
+        // opens at 0, so the cut at the seam then splits them off as their own
+        // piece.
+        let edit: DiffEdit = (position == .start) ? .insert(at: 0, length: sourceSize)
+                                                  : .insert(at: sizeBefore, length: sourceSize)
+        applySegmentEdit(edit)
+        // The seam is a cut (§22.3): the insert left one piece spanning the
+        // joined content, so a cut at the seam splits it, and the renames put
+        // each half under the right name.
+        if sizeBefore == 0 {
+            // The pane was empty: the whole content is the source, so the one
+            // piece takes the source's name (there is no original content to
+            // name, and a cut at 0 or at EOF would be refused).
+            segmentStore.rename(0, to: sourceName)
+        } else {
+            let seam = (position == .start) ? sourceSize : sizeBefore
+            // For an insert at the start the cut splits the piece that opens at
+            // 0: the earlier half (the new bytes) keeps that piece's name and
+            // the later half (the original content) is left unnamed. So the
+            // original name is remembered from the piece before the cut — not
+            // from the document's URL, which is already untitled after a first
+            // join (§22.3: the content keeps the name it was opened with).
+            let originalName = (position == .start) ? segmentStore.segments[0].name : ""
+            segmentStore.addCut(at: seam)
+            if position == .start {
+                // Piece 0 is the joined bytes (take the source's name); piece 1
+                // is the original content (addCut left it unnamed, so name it).
+                segmentStore.rename(0, to: sourceName)
+                segmentStore.rename(1, to: originalName)
+            } else {
+                // Piece 0 is the original content (addCut kept its name); piece
+                // 1 is the joined bytes (take the source's name).
+                segmentStore.rename(1, to: sourceName)
+            }
+        }
+        // The caret sits at the start of the added part (§22.5) — `doc.join`
+        // placed it there and recorded it as the transaction's post-edit
+        // selection, so redo of the join restores the same spot (and undo
+        // returns the pre-join caret). No caret work left for the pane.
+        // The document detached: it is untitled now, with no on-disk reference
+        // (the placeholder URL has no file behind it) and no watcher.
+        isUntitled = true
+        refreshSavedStorage()
+        changeWatcher?.stop()
+        changeWatcher = nil
+        // The join is a length-changing edit: the whole pane repaints, the
+        // comparison index shifts for the insert, and the companion's diff
+        // background re-reads. It is a navigation command: the seam (the caret)
+        // is centred if it landed outside the viewport (§10.4).
+        onEdit?(edit)
+        notify(centerCaret: true)
+        notifyCompanionContentFullyChanged()
+    }
+
     // MARK: - Caret & selection
 
     func moveCaret(by delta: Int64, extendSelection: Bool = false) {
@@ -1160,10 +1276,16 @@ final class PaneViewModel: HexViewDataSource {
             let amount = UInt64(-delta)
             target = amount > current ? 0 : current - amount
         }
-        moveCaret(to: target, extendSelection: extendSelection)
+        // Arrow/page keys are incremental navigation: follow the caret with the
+        // minimum scroll, never a jump to the centre (§10.4).
+        moveCaret(to: target, extendSelection: extendSelection, center: false)
     }
 
-    func moveCaret(to offset: UInt64, extendSelection: Bool = false) {
+    /// Moves the caret to `offset`. `center` (default `true`) marks it a
+    /// navigation command: the view centres the caret if it landed outside the
+    /// viewport (§10.4). Incremental callers — arrow keys, mouse, Home/End —
+    /// pass `false` for the minimum-scroll follow.
+    func moveCaret(to offset: UInt64, extendSelection: Bool = false, center: Bool = true) {
         guard let doc = document else { return }
         // Caret movement ends the byte being typed: it breaks the typing series
         // *and* closes the nibble group, so the half-typed byte left behind is
@@ -1193,7 +1315,7 @@ final class PaneViewModel: HexViewDataSource {
         // closing above — and Backspace no longer rolls it back from the new
         // position. Undo does.
         pendingInsertOffset = nil
-        notify(selectionChangedOnly: true)
+        notify(selectionChangedOnly: true, centerCaret: center)
     }
 
     func selectAll() {
@@ -1236,6 +1358,7 @@ final class PaneViewModel: HexViewDataSource {
         // The step's size in transactions — one normally, more for a fast-undo
         // batch — is the drop in the history's transaction count.
         let depthBefore = doc.undoHistory.undoDepth
+        let attachedBefore = doc.isAttached
         let edit = try doc.undo(batch: fast)   // restores the caret to where the edit began
         if let edit {
             undoSegments(step: depthBefore - doc.undoHistory.undoDepth)
@@ -1244,7 +1367,12 @@ final class PaneViewModel: HexViewDataSource {
             onEdit?(edit)
             notifyCompanionContentChanged(edit)
         }
-        notify()
+        // Undoing the join's transaction re-attaches the document (§22.2); the
+        // pane owns the watcher and `isUntitled`, so it follows.
+        if doc.isAttached != attachedBefore { syncAttachment() }
+        // A navigation command: centre the restored caret if it landed outside
+        // the viewport (§10.4).
+        notify(centerCaret: true)
         return edit != nil
     }
 
@@ -1258,14 +1386,42 @@ final class PaneViewModel: HexViewDataSource {
         // The step's size in transactions — the rise in the history's count, a
         // batch step unfolding back into its individual byte steps.
         let depthBefore = doc.undoHistory.undoDepth
+        let attachedBefore = doc.isAttached
         let edit = try doc.redo()   // restores the caret to where the edit left it
         if let edit {
             redoSegments(step: doc.undoHistory.undoDepth - depthBefore)
             onEdit?(edit)
             notifyCompanionContentChanged(edit)
         }
-        notify()
+        // Redoing the join's transaction re-detaches the document (§22.2); the
+        // pane follows (see `undo`).
+        if doc.isAttached != attachedBefore { syncAttachment() }
+        // A navigation command: centre the restored caret if it landed outside
+        // the viewport (§10.4).
+        notify(centerCaret: true)
         return edit != nil
+    }
+
+    /// Re-syncs the pane's file-attachment state after an undo/redo flipped the
+    /// document's attachment (undoing or redoing a join, §22.2). The document
+    /// re-attaches/re-detaches itself; the pane owns `isUntitled`, the watcher,
+    /// and `savedStorage`, so it follows.
+    private func syncAttachment() {
+        guard let doc = document else { return }
+        isUntitled = !doc.isAttached
+        refreshSavedStorage()
+        if doc.isAttached {
+            // Re-attached: re-arm the watcher on the restored file.
+            if changeWatcher == nil {
+                startWatching(doc.url)
+            } else {
+                rearmWatcher()
+            }
+        } else {
+            // Detached again (the join stands): no file to watch.
+            changeWatcher?.stop()
+            changeWatcher = nil
+        }
     }
 
     // MARK: - Internals
@@ -1398,7 +1554,14 @@ final class PaneViewModel: HexViewDataSource {
     ///   same rows so its live diff background catches up (§3.3 extension).
     /// - neither (plain `notify()`): a layout or lifecycle change (insert /
     ///   delete, undo/redo, open/save/revert) — the whole pane repaints.
-    private func notify(selectionChangedOnly: Bool = false, contentChange: HexViewChange? = nil) {
+    ///
+    /// `centerCaret` is the caret-reveal mode (§10.4) for the two caret-moving
+    /// routes: `true` when a navigation command jumped the caret (centre it if
+    /// it landed off-screen), `false` for an incremental move (the minimum
+    /// scroll that keeps it on screen). The content route ignores it — a
+    /// content change does not move the caret, so it never scrolls.
+    private func notify(selectionChangedOnly: Bool = false, contentChange: HexViewChange? = nil,
+                        centerCaret: Bool = false) {
         // Selections are independent per pane (§3.3): the companion must not
         // adopt this pane's selection — its hex view only redraws the frames
         // mirroring it.
@@ -1406,16 +1569,18 @@ final class PaneViewModel: HexViewDataSource {
         if let contentChange {
             // An edit in this pane changes the comparison difference in the
             // companion: it redraws the affected rows so its diff background
-            // recomputes against the new bytes (§3.3 extension).
+            // recomputes against the new bytes (§3.3 extension). The content
+            // channel repaints only — it never reveals the caret, which a
+            // content change does not move (§10.4).
             companion?.onCompanionContentChanged?(contentChange)
             onContentChanged?(contentChange)
         } else if selectionChangedOnly {
             // A pure selection move (drag, click, keyboard, Find): the bytes
             // are unchanged, so the view redraws only the rows the selection
             // now covers differently instead of the whole pane (§3.3).
-            onSelectionChanged?()
+            onSelectionChanged?(centerCaret)
         } else {
-            onChange?()
+            onChange?(centerCaret)
         }
         onCaretChanged?()
     }
@@ -1494,7 +1659,8 @@ extension PaneViewModel: HexEditorDelegate {
     }
 
     func hexEditor(_ editor: HexView, moveCaretTo offset: UInt64, extendSelection: Bool) {
-        moveCaret(to: offset, extendSelection: extendSelection)
+        // Home/End are keyboard navigation: follow the caret, don't centre (§10.4).
+        moveCaret(to: offset, extendSelection: extendSelection, center: false)
     }
 
     func hexEditorSelectAll(_ editor: HexView) {
@@ -1502,7 +1668,9 @@ extension PaneViewModel: HexEditorDelegate {
     }
 
     func hexEditor(_ editor: HexView, didClickAt offset: UInt64, region: HexInputRegion, extendSelection: Bool, nibble: Int) {
-        moveCaret(to: offset, extendSelection: extendSelection)
+        // A mouse click places the caret where the user pointed: follow, don't
+        // centre (§10.4).
+        moveCaret(to: offset, extendSelection: extendSelection, center: false)
         // A click can place the caret mid-byte (before the low nibble). Arrow
         // movement always lands on a byte's left boundary (`moveCaret` resets
         // the nibble), so only a direct click sets it (§3.3).

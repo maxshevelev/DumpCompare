@@ -320,7 +320,7 @@ final class SelectBlockSheetTests: XCTestCase {
                      "losing focus must not activate the selection")
     }
 
-    // MARK: - Preset start ("Select block from here", §10.2)
+    // MARK: - Preset start ("Select Block from Here at «address»", §10.2)
 
     /// Opened from the offset context menu: Start is pre-filled with the
     /// clicked address, Length is the active option (End disabled), and the

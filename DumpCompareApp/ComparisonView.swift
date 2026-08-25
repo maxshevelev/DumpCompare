@@ -12,6 +12,12 @@ final class ComparisonView: NSView {
     let paneView1: FilePaneView
     let paneView2: FilePaneView
 
+    /// Each pane's three-band drop overlay (§22.4): the split view's arranged
+    /// subviews, wrapping the panes. The bands are the drop targets; the panes
+    /// show through them. Held so the owner can wire each band's `onDrop`.
+    private(set) var bands1: PaneDropBandsView!
+    private(set) var bands2: PaneDropBandsView!
+
     /// Fired when the user clicks a pane so MainViewController can re-point the
     /// active pane (§3.3).
     var onPaneActivated: ((Int) -> Void)?
@@ -47,21 +53,27 @@ final class ComparisonView: NSView {
         splitView.isVertical = LayoutSettings.isVertical
         addSubview(splitView)
 
-        // Let the splitter treat both panes as flexible.
-        paneView1.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        paneView1.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        paneView2.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        paneView2.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // Each pane is wrapped in a three-band drop overlay (§22.4): the bands
+        // are the drop targets, and the pane shows through them. The wrappers
+        // are the splitter's arranged subviews; the panes fill them (the
+        // wrapper's init lays the pane out).
+        bands1 = PaneDropBandsView(paneView: paneView1)
+        bands2 = PaneDropBandsView(paneView: paneView2)
+        // Let the splitter treat both wrappers as flexible.
+        bands1.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        bands1.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        bands2.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        bands2.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        // The panes are Auto Layout subviews of the splitter; Proportional-
+        // The wrappers are Auto Layout subviews of the splitter; Proportional-
         // SplitView's `layout()` override positions them proportionally (§3.3).
         // Keeping `translatesAutoresizingMaskIntoConstraints` off avoids the
         // autoresizing "width == 0" constraint that NSSplitView otherwise adds
         // to zero-frame subviews.
-        paneView1.translatesAutoresizingMaskIntoConstraints = false
-        paneView2.translatesAutoresizingMaskIntoConstraints = false
-        splitView.addArrangedSubview(paneView1)
-        splitView.addArrangedSubview(paneView2)
+        bands1.translatesAutoresizingMaskIntoConstraints = false
+        bands2.translatesAutoresizingMaskIntoConstraints = false
+        splitView.addArrangedSubview(bands1)
+        splitView.addArrangedSubview(bands2)
 
         // §3.3: the split defaults to 50/50 (a fresh ComparisonView — e.g. the
         // one built when the second file opens), the divider can be dragged to

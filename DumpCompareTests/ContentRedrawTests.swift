@@ -131,8 +131,8 @@ final class ContentRedrawTests: XCTestCase {
         try pane.open(url: url)
         var contentChanges: [HexViewChange] = []
         var fullRefreshes = 0
-        pane.onContentChanged = { contentChanges.append($0) }
-        pane.onChange = { fullRefreshes += 1 }
+        pane.onContentChanged = { change in contentChanges.append(change) }
+        pane.onChange = { _ in fullRefreshes += 1 }
 
         pane.moveCaret(to: 5)
         pane.typeASCII(0x41)  // 'A'
@@ -148,8 +148,8 @@ final class ContentRedrawTests: XCTestCase {
         try pane.open(url: url)
         var contentChanges: [HexViewChange] = []
         var fullRefreshes = 0
-        pane.onContentChanged = { contentChanges.append($0) }
-        pane.onChange = { fullRefreshes += 1 }
+        pane.onContentChanged = { change in contentChanges.append(change) }
+        pane.onChange = { _ in fullRefreshes += 1 }
 
         pane.moveCaret(to: 5)
         pane.typeHexNibble(0xA)  // high nibble
@@ -166,8 +166,8 @@ final class ContentRedrawTests: XCTestCase {
         try pane.open(url: url)
         var contentChanges: [HexViewChange] = []
         var fullRefreshes = 0
-        pane.onContentChanged = { contentChanges.append($0) }
-        pane.onChange = { fullRefreshes += 1 }
+        pane.onContentChanged = { change in contentChanges.append(change) }
+        pane.onChange = { _ in fullRefreshes += 1 }
 
         NotificationCenter.default.post(name: TextDecodingSettingsStore.didChangeNotification, object: nil)
 
@@ -192,7 +192,7 @@ final class ContentRedrawTests: XCTestCase {
         var companionContent: [HexViewChange] = []
         var ownContent: [HexViewChange] = []
         paneB.onCompanionContentChanged = { companionContent.append($0) }
-        paneB.onContentChanged = { ownContent.append($0) }
+        paneB.onContentChanged = { change in ownContent.append(change) }
 
         paneA.moveCaret(to: 5)
         paneA.typeASCII(0x41)
@@ -227,7 +227,7 @@ final class ContentRedrawTests: XCTestCase {
         var companionContent: [HexViewChange] = []
         var ownContent: [HexViewChange] = []
         paneB.onCompanionContentChanged = { companionContent.append($0) }
-        paneB.onContentChanged = { ownContent.append($0) }
+        paneB.onContentChanged = { change in ownContent.append(change) }
 
         paneA.moveCaret(to: 5)
         paneA.typeASCII(0x41)
@@ -291,8 +291,8 @@ final class ContentRedrawTests: XCTestCase {
         try pane.open(url: url)
         var contentChanges: [HexViewChange] = []
         var fullRefreshes = 0
-        pane.onContentChanged = { contentChanges.append($0) }
-        pane.onChange = { fullRefreshes += 1 }
+        pane.onContentChanged = { change in contentChanges.append(change) }
+        pane.onChange = { _ in fullRefreshes += 1 }
 
         // Length-changing edits and undo replace the layout wholesale — they
         // must keep using the full-refresh channel.
@@ -321,8 +321,8 @@ final class ContentRedrawTests: XCTestCase {
         try pane.open(url: url)
         var contentChanges: [HexViewChange] = []
         var fullRefreshes = 0
-        pane.onContentChanged = { contentChanges.append($0) }
-        pane.onChange = { fullRefreshes += 1 }
+        pane.onContentChanged = { change in contentChanges.append(change) }
+        pane.onChange = { _ in fullRefreshes += 1 }
 
         pane.moveCaret(to: 16)  // caret at EOF
         pane.typeASCII(0x41)    // appends a 17th byte

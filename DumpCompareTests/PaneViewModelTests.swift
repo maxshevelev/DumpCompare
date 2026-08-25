@@ -750,7 +750,7 @@ final class PaneViewModelTests: XCTestCase {
         var appearanceFired = false
         var selectionFired = false
         pane.onCaretAppearanceChanged = { appearanceFired = true }
-        pane.onSelectionChanged = { selectionFired = true }
+        pane.onSelectionChanged = { _ in selectionFired = true }
 
         pane.isInsertMode = true
 
