@@ -84,6 +84,7 @@
 		BBA569BD55CADEA84C29281E /* NewFileAndSwapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D56C7E4027097952395DD0AF /* NewFileAndSwapTests.swift */; };
 		BF5D32DED859E97ED617A9C0 /* TextDecodingSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 212A4A8B0EA478EDDEB03EA5 /* TextDecodingSettingsViewController.swift */; };
 		C268E54A71DBE773D3595CDF /* ByteSignificanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B0D5CB24B4DFBC1B37F3F42 /* ByteSignificanceTests.swift */; };
+		1D5F4106A1A8AC9C15A7C963 /* OffsetColumnAddressTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4826F58CDD2F6157C591D914 /* OffsetColumnAddressTests.swift */; };
 		C35E1583998132707D8E1749 /* SettingsWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE9F686DC291219019034AF9 /* SettingsWindowController.swift */; };
 		C469DA232E32792EBE3B5607 /* SingleFileDropView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 843BDADF6DC010ED5707D0F2 /* SingleFileDropView.swift */; };
 		C9CFEC93580FDBE47AFCB789 /* BookmarkStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 251597F5967B3590AF121328 /* BookmarkStore.swift */; };
@@ -193,6 +194,7 @@
 		96966FE774DE9A046371E9AC /* PanelAppearanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelAppearanceTests.swift; sourceTree = "<group>"; };
 		98E9F6B84E53934F8BA5EF7D /* SegmentStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentStoreTests.swift; sourceTree = "<group>"; };
 		9B0D5CB24B4DFBC1B37F3F42 /* ByteSignificanceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ByteSignificanceTests.swift; sourceTree = "<group>"; };
+		4826F58CDD2F6157C591D914 /* OffsetColumnAddressTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OffsetColumnAddressTests.swift; sourceTree = "<group>"; };
 		9CFFEE3A09573CD5106182E9 /* FindBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FindBarView.swift; sourceTree = "<group>"; };
 		9FB49BC2E9C7922B6194C285 /* ZoomToFitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZoomToFitTests.swift; sourceTree = "<group>"; };
 		A4166C141DBC4BDC31BAF9BB /* DropBandsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DropBandsTests.swift; sourceTree = "<group>"; };
@@ -340,6 +342,7 @@
 				F189C34D5AB2C07E056E3153 /* BookmarkMinimapTests.swift */,
 				84AA5404B76190BABBD35644 /* BookmarkTests.swift */,
 				9B0D5CB24B4DFBC1B37F3F42 /* ByteSignificanceTests.swift */,
+				4826F58CDD2F6157C591D914 /* OffsetColumnAddressTests.swift */,
 				70B7EBE980B4A83830DD34D6 /* CaretPlacementTests.swift */,
 				35619EB218B8A77217CF90D9 /* CloseFileTests.swift */,
 				7338140948096ABDADE950FE /* ComparisonCoordinatorTests.swift */,
@@ -551,6 +554,7 @@
 				F22E5BE6C522ABA4E1AB95C7 /* BookmarkMinimapTests.swift in Sources */,
 				E781F5B8F2C84F310915EF88 /* BookmarkTests.swift in Sources */,
 				C268E54A71DBE773D3595CDF /* ByteSignificanceTests.swift in Sources */,
+				1D5F4106A1A8AC9C15A7C963 /* OffsetColumnAddressTests.swift in Sources */,
 				FE72BF847B03FAA82DA321EE /* CaretPlacementTests.swift in Sources */,
 				55EFF117DEDC3F5F7AB1D851 /* CloseFileTests.swift in Sources */,
 				FD51EAC14BECCAC66D3AC19F /* ComparisonCoordinatorTests.swift in Sources */,

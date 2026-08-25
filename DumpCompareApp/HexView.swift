@@ -907,6 +907,7 @@ final class HexView: NSView, NSViewToolTipOwner {
         // Offset column, on top of the tint.
         if drawsOffset {
             let offsetText = String(rowStart, radix: 16, uppercase: true).leftPadded(to: layout.offsetColumnChars, with: "0")
+            let offsetFrame = layout.offsetColumnFrame(row: row)
             if isBookmarked {
                 // A bookmarked row's address stands on a purple right-pointing
                 // arrow — the breakpoint-style mark the eye catches when scanning
@@ -919,12 +920,17 @@ final class HexView: NSView, NSViewToolTipOwner {
                 // reaches into the gap past the Offset column — is never buried
                 // under a piece's band (§21.3).
                 drawBookmarkMark(in: layout, row: row, outlined: bookmarkOutlined)
-                draw(text: offsetText, in: layout.offsetColumnFrame(row: row),
-                     baseline: baseline,
-                     color: bookmarkOutlined ? HexTheme.inkBlue : HexTheme.bookmarkTextColor)
+                if bookmarkOutlined {
+                    drawOffset(offsetText, in: offsetFrame, baseline: baseline,
+                               normal: HexTheme.inkBlue, muted: HexTheme.mutedInkBlue)
+                } else {
+                    drawOffset(offsetText, in: offsetFrame, baseline: baseline,
+                               normal: HexTheme.bookmarkTextColor,
+                               muted: HexTheme.mutedBookmarkText)
+                }
             } else {
-                draw(text: offsetText, in: layout.offsetColumnFrame(row: row),
-                     baseline: baseline, color: HexTheme.inkBlue)
+                drawOffset(offsetText, in: offsetFrame, baseline: baseline,
+                           normal: HexTheme.inkBlue, muted: HexTheme.mutedInkBlue)
             }
         }
 
@@ -1692,6 +1698,29 @@ final class HexView: NSView, NSViewToolTipOwner {
     private func draw(text: String, in frame: CGRect, baseline: CGFloat, color: NSColor) {
         (text as NSString).draw(at: NSPoint(x: frame.minX, y: frame.minY + baseline),
                                 withAttributes: attributes(for: color))
+    }
+
+    /// The offset column's address as an attributed string: the leading zeros in
+    /// `muted`, the significant part in `normal` (§6). The split is at the first
+    /// non-zero digit, so an all-zero address (row 0) is muted in full. One
+    /// attributed string keeps the monospaced cells aligned.
+    func offsetAddress(_ offsetText: String, normal: NSColor, muted: NSColor) -> NSAttributedString {
+        let leadingZeros = offsetText.prefix(while: { $0 == "0" }).count
+        let attributed = NSMutableAttributedString(string: offsetText,
+                                                   attributes: attributes(for: normal))
+        if leadingZeros > 0 {
+            attributed.setAttributes(attributes(for: muted),
+                                     range: NSRange(location: 0, length: leadingZeros))
+        }
+        return attributed
+    }
+
+    /// Draws the offset column's address with its leading zeros dimmed, so the
+    /// significant part of the address stands out (§6).
+    private func drawOffset(_ offsetText: String, in frame: CGRect, baseline: CGFloat,
+                            normal: NSColor, muted: NSColor) {
+        offsetAddress(offsetText, normal: normal, muted: muted)
+            .draw(at: NSPoint(x: frame.minX, y: frame.minY + baseline))
     }
 
     /// Attribute dictionary for a text colour: the shared font plus the colour,
@@ -2471,6 +2500,13 @@ enum HexTheme {
     /// than literal so it follows the SDK if that ever changes (§20.4).
     static let bookmarkTextColor = NSColor.alternateSelectedControlTextColor
 
+    /// The address's leading zeros on a filled bookmark mark — the bookmark text
+    /// dimmed so the significant part of the address stands out, as in the plain
+    /// offset column (§6, §20.4).
+    static let mutedBookmarkText = NSColor(name: nil) { _ in
+        NSColor.alternateSelectedControlTextColor.withAlphaComponent(0.40)
+    }
+
     /// Ink blue for the column header and the offset column (§6): a pale,
     /// slightly desaturated blue that reads as a quiet secondary element next
     /// to the dump's byte content, lighter on dark backgrounds so it stays
@@ -2479,6 +2515,15 @@ enum HexTheme {
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             ? NSColor(srgbRed: 0.58, green: 0.73, blue: 0.92, alpha: 1)
             : NSColor(srgbRed: 0.33, green: 0.54, blue: 0.78, alpha: 1)
+    }
+
+    /// The offset column's leading zeros, dimmed so the significant part of the
+    /// address stands out (§6): the same ink blue at reduced opacity, so the
+    /// padding digits read as "not the address" around the part the eye lands on.
+    static let mutedInkBlue = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(srgbRed: 0.58, green: 0.73, blue: 0.92, alpha: 0.40)
+            : NSColor(srgbRed: 0.33, green: 0.54, blue: 0.78, alpha: 0.40)
     }
 
     /// Text colour for a byte. A modified byte keeps its red warning; otherwise
