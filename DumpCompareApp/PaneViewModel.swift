@@ -719,6 +719,15 @@ final class PaneViewModel: HexViewDataSource {
 
     func hexInputRegion() -> HexInputRegion { inputRegion }
 
+    /// Whether the caret should be drawn. Hidden while a block is selected and
+    /// the user is not typing into it — the selection fill already shows the
+    /// active region; visible when the selection is empty or when typing is
+    /// consuming the selection, so the caret marks the next byte to land (§7.4).
+    var hexCaretVisible: Bool {
+        guard let doc = document else { return false }
+        return doc.selection.isEmpty || overwriteSelection != nil
+    }
+
     /// The pane's typing mode — the hex view draws the insert-mode caret (a red
     /// vertical line at the byte boundary) when this is true.
     var hexInsertMode: Bool { isInsertMode }
@@ -1257,6 +1266,15 @@ final class PaneViewModel: HexViewDataSource {
 
     func moveCaret(by delta: Int64, extendSelection: Bool = false) {
         guard let doc = document else { return }
+        // Clearing a selection (no extend) collapses the caret to the selection's
+        // edge in the direction of the arrow key — the standard text-editor
+        // behaviour — and drops the selection. A right/down arrow lands on the
+        // selection's end; a left/up arrow on its start.
+        if !extendSelection, !doc.selection.isEmpty {
+            let target = delta >= 0 ? doc.selection.end : doc.selection.start
+            moveCaret(to: target, extendSelection: false, center: false)
+            return
+        }
         // The caret's live position is the selection's *moving* end, not its
         // normalized `start`: extending right keeps the anchor (the left edge)
         // fixed while the end moves, and extending left keeps the right edge

@@ -246,6 +246,63 @@ final class CaretPlacementTests: XCTestCase {
         XCTAssertEqual(pane.hexCaretNibble(), 0)
     }
 
+    /// A plain arrow key (no shift) with an active selection collapses the
+    /// caret to the selection's edge in the arrow's direction and clears the
+    /// selection — the standard text-editor behaviour. Right lands on the
+    /// selection's end; left on its start.
+    func testPlainArrowFromSelectionLandsAtActiveEnd() throws {
+        let (pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 32))
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        // Select bytes 2..<7.
+        pane.select(range: 2..<7)
+        XCTAssertEqual(pane.hexSelection().start, 2)
+        XCTAssertEqual(pane.hexSelection().end, 7)
+
+        // Right arrow: caret lands on the selection's end (7).
+        arrowKey(hexView, window: window, scalar: 0xF703)
+        XCTAssertEqual(pane.hexSelection().start, 7)
+        XCTAssertTrue(pane.hexSelection().isEmpty)
+
+        // Select bytes 2..<7 again.
+        pane.select(range: 2..<7)
+
+        // Left arrow: caret lands on the selection's start (2).
+        arrowKey(hexView, window: window, scalar: 0xF702)
+        XCTAssertEqual(pane.hexSelection().start, 2)
+        XCTAssertTrue(pane.hexSelection().isEmpty)
+    }
+
+    /// While a block is selected and the user is not typing, the caret is
+    /// hidden — the selection fill already shows the active region.
+    func testCaretHiddenWhileBlockSelected() throws {
+        let (pane, _, _, url) = try makePane([UInt8](repeating: 0x11, count: 32))
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        // No selection: caret visible.
+        XCTAssertTrue(pane.hexCaretVisible)
+
+        // Select bytes 2..<7: caret hidden.
+        pane.select(range: 2..<7)
+        XCTAssertFalse(pane.hexCaretVisible)
+    }
+
+    /// When typing begins to consume a selection, the caret reappears at the
+    /// selection's start — the byte the next typed character lands on.
+    func testTypingIntoSelectionShowsCaretAtStart() throws {
+        let (pane, _, _, url) = try makePane([UInt8](repeating: 0x11, count: 32))
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        // Select bytes 2..<7: caret hidden.
+        pane.select(range: 2..<7)
+        XCTAssertFalse(pane.hexCaretVisible)
+
+        // Type a nibble: caret reappears at the selection's start (2).
+        pane.typeHexNibble(0xA)
+        XCTAssertTrue(pane.hexCaretVisible)
+        XCTAssertEqual(pane.hexSelection().start, 2)
+    }
+
     /// Clicking the ASCII area moves the caret there and resets any mid-byte
     /// nibble.
     func testAsciiClickResetsNibble() throws {

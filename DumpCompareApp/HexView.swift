@@ -50,6 +50,11 @@ protocol HexViewDataSource: AnyObject {
     func hexSelection() -> SelectionModel
     func hexCaretNibble() -> Int
     func hexInputRegion() -> HexInputRegion
+    /// Whether the caret should be drawn. False while a block is selected and
+    /// the user is not typing into it — the selection fill already shows the
+    /// active region; true when the selection is empty or when typing is
+    /// consuming the selection, so the caret marks the next byte to land (§7.4).
+    var hexCaretVisible: Bool { get }
     /// The pane's typing mode: when true the caret is drawn as a red vertical
     /// line at the byte boundary (insert mode) instead of the blue nibble bar.
     var hexInsertMode: Bool { get }
@@ -837,12 +842,12 @@ final class HexView: NSView, NSViewToolTipOwner {
             )
         }
 
-        // Caret: on the active pane always, at the byte the next typed
-        // character lands on. With no selection that is the caret itself; with
-        // a selection it is the selection's leading edge — the spot a Fill or a
-        // typed byte consumes next, so the user can see where input goes (§7.4).
-        // The bar draws over the selection fill, which is exactly the point.
-        if isActive {
+        // Caret: on the active pane, at the byte the next typed character
+        // lands on. With a selection the caret is hidden — the selection fill
+        // already shows the active region — and reappears at the selection's
+        // start the moment typing begins to consume it (text-editor behaviour,
+        // §7.4).
+        if isActive && dataSource.hexCaretVisible {
             drawCaret(offset: selection.start, layout: layout, nibble: nibble, region: region, rowCount: rowCount)
         }
 
