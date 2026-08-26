@@ -120,6 +120,70 @@ final class HexColumnHeaderTests: XCTestCase {
     /// pass for its neighbour.
     private let inkTolerance: CGFloat = 3
 
+    // MARK: - Clipping (§6)
+
+    /// The strip's labels stay inside the pane.
+    ///
+    /// The header draws its labels at the grid's own x positions — and
+    /// "Decoded text" sits at the far end of a full hex row, well past the
+    /// trailing edge of a pane too narrow to show a whole row. `NSView` does
+    /// not clip its drawing to its bounds, so without an explicit clip the
+    /// labels paint straight over whatever sits beside the pane: the
+    /// neighbouring file pane, the minimap.
+    ///
+    /// The pane is put in the LEFT half of a window and the WHOLE window is
+    /// rendered, because rendering the header alone would clip the very spill
+    /// the test is looking for. The assertion is that the empty right half is
+    /// free of the header's ink.
+    func testHeaderLabelsDoNotPaintOutsideThePane() throws {
+        let url = try tempFile([UInt8](repeating: 0x55, count: 64))
+        let viewModel = PaneViewModel()
+        try viewModel.open(url: url)
+        addTeardownBlock { @MainActor in viewModel.close() }
+        let pane = FilePaneView(viewModel: viewModel)
+        let window = makeTestWindow(width: 600, height: 400)
+        windows.append(window)
+        let content = try XCTUnwrap(window.contentView)
+        pane.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(pane)
+        // Half the window wide — narrower than one hex row, so the labels the
+        // header draws run past the pane's trailing edge.
+        NSLayoutConstraint.activate([
+            pane.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            pane.widthAnchor.constraint(equalTo: content.widthAnchor, multiplier: 0.5),
+            pane.topAnchor.constraint(equalTo: content.topAnchor),
+            pane.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+        ])
+        window.layoutIfNeeded()
+        let header = try XCTUnwrap(pane.subviews.compactMap { $0 as? HexColumnHeaderView }.first)
+        let hexView = try XCTUnwrap(pane.scrollView.documentView as? HexView)
+        XCTAssertLessThan(pane.bounds.width, hexView.hexLayout.contentWidth,
+                          "premise: the pane is narrower than a hex row, so a label lands past its edge")
+
+        let rep = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
+        content.cacheDisplay(in: content.bounds, to: rep)
+
+        // The band the header occupies, in the container's coordinates.
+        let strip = header.convert(header.bounds, to: content)
+        let scaleX = CGFloat(rep.pixelsWide) / content.bounds.width
+        let scaleY = CGFloat(rep.pixelsHigh) / content.bounds.height
+        // `content` is unflipped, so the strip's device rows count from the
+        // bitmap's top while the rect's y counts from the bottom.
+        let top = Int(((content.bounds.height - strip.maxY) * scaleY).rounded(.down))
+        let bottom = Int(((content.bounds.height - strip.minY) * scaleY).rounded(.up))
+        let firstOutside = Int((pane.frame.maxX * scaleX).rounded(.up))
+
+        for px in firstOutside..<rep.pixelsWide {
+            for py in max(0, top)..<min(rep.pixelsHigh, bottom) {
+                guard let colour = rep.colorAt(x: px, y: py) else { continue }
+                XCTAssertLessThanOrEqual(
+                    blueness(colour), 0.1,
+                    "the header painted ink at x=\(CGFloat(px) / scaleX), outside a pane ending at \(pane.frame.maxX)"
+                )
+            }
+        }
+    }
+
     // MARK: - Alignment (§6)
 
     /// The labels align with the columns they name: the offset title at the

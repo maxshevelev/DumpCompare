@@ -1095,6 +1095,15 @@ final class HexColumnHeaderView: NSView {
 
         NSGraphicsContext.saveGraphicsState()
         defer { NSGraphicsContext.restoreGraphicsState() }
+        // The labels are drawn at the grid's own x positions, and "Decoded
+        // text" sits at the far end of a full hex row — in a pane too narrow
+        // to show a whole row it lands past the strip's trailing edge, as does
+        // the rule below. `NSView` does not clip its drawing to its bounds, so
+        // without this the strip paints straight over whatever sits beside the
+        // pane: the other file pane, the minimap. The rows themselves need no
+        // such clip — they are inside the scroll view's clip view; this strip
+        // is pinned outside it (§6).
+        NSBezierPath(rect: bounds).setClip()
         NSGraphicsContext.current?.cgContext.translateBy(x: -horizontalOffset, y: 0)
 
         // The row baseline shifted down by the header's vertical padding, so
