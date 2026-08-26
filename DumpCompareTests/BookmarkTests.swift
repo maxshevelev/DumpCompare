@@ -320,7 +320,7 @@ final class BookmarkTests: XCTestCase {
         // short window could land in a gap.
         let leftEdge = NSRect(x: columnFrame.minX - HexView.mirrorContourPadding - 1,
                              y: rowFrame.minY, width: 3, height: rowFrame.height)
-        let anchor = HexView.ContextMenuAnchor(offset: 16, framesByte: false)
+        let anchor = HexView.ContextMenuAnchor(offset: 16, framesByte: false, nibble: 0)
 
         // `render` drives a full `draw(_:)`, so these assertions read the state
         // of the pane rather than what a repaint happened to reach.
@@ -374,7 +374,7 @@ final class BookmarkTests: XCTestCase {
 
         let interior = hex.hexLayout.offsetColumnFrame(row: 1).insetBy(dx: 4, dy: 3)
         store.toggle(rowContaining: 16)
-        hex.beginContextMenu(at: HexView.ContextMenuAnchor(offset: 20, framesByte: true))
+        hex.beginContextMenu(at: HexView.ContextMenuAnchor(offset: 20, framesByte: true, nibble: 0))
         XCTAssertGreaterThan(try purpleness(hex, in: interior), 0.3,
                              "a byte's menu doesn't touch the row's mark")
     }
@@ -561,7 +561,7 @@ final class BookmarkTests: XCTestCase {
         hex.dataSource = pane
         hex.delegate = pane
         hex.reloadData()
-        hex.beginContextMenu(at: HexView.ContextMenuAnchor(offset: 16, framesByte: false))
+        hex.beginContextMenu(at: HexView.ContextMenuAnchor(offset: 16, framesByte: false, nibble: 0))
 
         let layout = hex.hexLayout
         let rowFrame = layout.rowFrame(row: 1)

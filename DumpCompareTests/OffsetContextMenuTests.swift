@@ -121,6 +121,108 @@ final class OffsetContextMenuTests: XCTestCase {
                      "an empty file offers no address to start a block from")
     }
 
+    // MARK: - Caret placement (§10.2)
+
+    /// A right-click on a byte places the caret on that byte — the one the menu
+    /// frames — with the nibble the click falls in, exactly as a left-click
+    /// would place it (§10.2).
+    func testRightClickPlacesCaretOnTheFramedByte() throws {
+        let (_, pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 32))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let layout = hexView.hexLayout
+        // The low-nibble character's centre: nibble 1 in both typing modes.
+        let local = CGPoint(x: layout.hexByteX(column: 5) + layout.charWidth * 1.5,
+                            y: layout.rowHeight / 2)
+        let event = mouse(.rightMouseDown, at: hexView.convert(local, to: nil), window: window)
+        let anchor = try XCTUnwrap(hexView.contextMenuAnchor(for: event))
+        XCTAssertEqual(anchor.offset, 5)
+        XCTAssertEqual(anchor.nibble, 1, "the click is in the low nibble")
+
+        hexView.placeContextMenuCaret(anchor)
+        XCTAssertEqual(pane.caretOffset, 5, "the caret lands on the framed byte")
+        XCTAssertEqual(pane.hexCaretNibble(), 1, "and on the nibble the click fell in")
+    }
+
+    /// The anchor's nibble follows the click within the byte, using the same
+    /// mode-dependent threshold a left-click uses: the byte's centre in
+    /// overwrite mode, the high-nibble character's middle in insert mode.
+    func testRightClickNibbleFollowsTheClick() throws {
+        let (_, pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 32))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let layout = hexView.hexLayout
+        let byteX = layout.hexByteX(column: 5)
+        func anchorNibble(_ fraction: CGFloat) throws -> Int {
+            let local = CGPoint(x: byteX + layout.charWidth * fraction, y: layout.rowHeight / 2)
+            let event = mouse(.rightMouseDown, at: hexView.convert(local, to: nil), window: window)
+            return try XCTUnwrap(hexView.contextMenuAnchor(for: event)).nibble
+        }
+
+        // Overwrite mode (the default): the threshold is the byte's centre.
+        XCTAssertEqual(try anchorNibble(0.25), 0, "the high nibble's second half is still the high nibble")
+        XCTAssertEqual(try anchorNibble(1.25), 1, "past the centre is the low nibble")
+
+        // Insert mode: the threshold stays on the high-nibble character's middle.
+        pane.isInsertMode = true
+        XCTAssertEqual(try anchorNibble(0.25), 0)
+        XCTAssertEqual(try anchorNibble(0.75), 1, "past the high nibble's middle is the low nibble")
+    }
+
+    /// A right-click in the gap before a byte frames the FOLLOWING byte (what
+    /// `hitTest` reports), so the caret lands on that byte's left boundary — not
+    /// on the previous byte, where a left-click's gap rule would send it.
+    func testRightClickInGapLandsOnTheFramedByte() throws {
+        let (_, pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 32))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let layout = hexView.hexLayout
+        // A quarter into the gap after byte 5 — `hitTest` hands it to byte 6.
+        let local = CGPoint(x: layout.hexByteX(column: 5) + layout.hexByteWidth + layout.charWidth * 0.25,
+                            y: layout.rowHeight / 2)
+        let event = mouse(.rightMouseDown, at: hexView.convert(local, to: nil), window: window)
+        let anchor = try XCTUnwrap(hexView.contextMenuAnchor(for: event))
+        XCTAssertEqual(anchor.offset, 6, "the framed byte is the one hitTest reports")
+        XCTAssertEqual(anchor.nibble, 0, "a gap click has no nibble before the byte")
+
+        hexView.placeContextMenuCaret(anchor)
+        XCTAssertEqual(pane.caretOffset, 6, "the caret stays on the framed byte, not the previous one")
+        XCTAssertEqual(pane.hexCaretNibble(), 0)
+    }
+
+    /// A right-click on the Offset column places the caret at the row's start
+    /// address (nibble 0), like the address's left-click.
+    func testRightClickOnOffsetColumnPlacesCaretAtRowStart() throws {
+        let (_, pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 48))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let event = mouse(.rightMouseDown, at: offsetCentre(hexView, row: 2), window: window)
+        let anchor = try XCTUnwrap(hexView.contextMenuAnchor(for: event))
+        XCTAssertEqual(anchor.offset, 0x20)
+        XCTAssertEqual(anchor.nibble, 0)
+
+        hexView.placeContextMenuCaret(anchor)
+        XCTAssertEqual(pane.caretOffset, 0x20)
+        XCTAssertEqual(pane.hexCaretNibble(), 0)
+    }
+
+    /// A right-click INSIDE the current selection leaves the selection alone:
+    /// moving the caret would clear it, and the menu's selection-scoped items
+    /// ("Copy", "Fill Selection…", "Delete Bytes…") operate on it.
+    func testRightClickInsideSelectionKeepsTheSelection() throws {
+        let (_, pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 48))
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.setSelection(SelectionModel(start: 0x10, end: 0x20, fileSize: 48))
+
+        // 0x14 is row 1, column 4 — inside the selection.
+        let layout = hexView.hexLayout
+        let local = CGPoint(x: layout.hexByteX(column: 4) + layout.charWidth * 1.5,
+                            y: CGFloat(1) * layout.rowHeight)
+        let event = mouse(.rightMouseDown, at: hexView.convert(local, to: nil), window: window)
+        let anchor = try XCTUnwrap(hexView.contextMenuAnchor(for: event))
+        XCTAssertEqual(anchor.offset, 0x14)
+
+        hexView.placeContextMenuCaret(anchor)
+        XCTAssertEqual(pane.hexSelection().start, 0x10, "the selection is preserved")
+        XCTAssertEqual(pane.hexSelection().end, 0x20)
+    }
+
     // MARK: - Menu anchor state
 
     // MARK: - Frame invalidation (§10.2)

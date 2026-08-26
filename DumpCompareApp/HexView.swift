@@ -2176,6 +2176,10 @@ final class HexView: NSView, NSViewToolTipOwner {
         /// byte in the hex column); false when it is the Offset column's row
         /// address, whose frame spans the whole column.
         let framesByte: Bool
+        /// The nibble the caret lands on when the menu opens — the click's
+        /// position within the anchored byte for a hex-column click, 0 for the
+        /// Offset column. See `contextMenuAnchor`.
+        let nibble: Int
     }
 
     /// Right-click on an address in the Offset column or on a byte in the hex
@@ -2193,9 +2197,29 @@ final class HexView: NSView, NSViewToolTipOwner {
             super.rightMouseDown(with: event)
             return
         }
+        placeContextMenuCaret(anchor)
         beginContextMenu(at: anchor)
         NSMenu.popUpContextMenu(menu, with: event, for: self)
         endContextMenu(at: anchor)
+    }
+
+    /// Moves the caret to the byte the context menu anchors to (§10.2), so the
+    /// caret tracks the right-clicked byte exactly as a left-click would place
+    /// it. Skipped when the right-click lands inside the current selection:
+    /// placing the caret clears the selection, and the menu's selection-scoped
+    /// items ("Copy", "Fill Selection…", "Delete Bytes…") operate on it.
+    ///
+    /// Split out of `rightMouseDown` because `popUpContextMenu` runs a blocking
+    /// tracking loop no test can enter: this is the caret move the right-click
+    /// performs, drivable on its own (§10.2).
+    func placeContextMenuCaret(_ anchor: ContextMenuAnchor) {
+        let selection = dataSource?.hexSelection()
+        if let selection, !selection.isEmpty,
+           anchor.offset >= selection.start, anchor.offset < selection.end {
+            return
+        }
+        delegate?.hexEditor(self, didClickAt: anchor.offset, region: .hex,
+                            extendSelection: false, nibble: anchor.nibble)
     }
 
     /// Records that `anchor`'s context menu is up and repaints what that
@@ -2243,6 +2267,15 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// row's start address, and the hex column maps to the clicked byte's own
     /// offset. Returns nil for the ASCII column, the gaps, and anywhere past
     /// EOF (the empty caret row, or a placeholder byte in a partial last row).
+    ///
+    /// The anchor also carries the nibble the caret lands on (§10.2): the
+    /// right-clicked byte — the same byte the menu frames — not where a
+    /// left-click's `hexClickPlacement` might send the caret, which for a click
+    /// in the gap before the byte would be the *previous* byte. The nibble is
+    /// the click's position within the anchored byte, using the same
+    /// mode-dependent threshold a left-click uses; a click in the gap before the
+    /// byte (which `hitTest` still hands to it) lands on the byte's left
+    /// boundary, since there is no nibble before it.
     func contextMenuAnchor(for event: NSEvent) -> ContextMenuAnchor? {
         guard let dataSource else { return nil }
         let layout = currentLayout
@@ -2251,18 +2284,37 @@ final class HexView: NSView, NSViewToolTipOwner {
         guard let hit = layout.hitTest(point: point, rowCount: rowCount) else { return nil }
         let offset: UInt64
         let framesByte: Bool
+        let nibble: Int
         switch hit.column {
         case .offset:
             offset = layout.byteOffset(row: hit.row, column: 0)
             framesByte = false
+            nibble = 0
         case .hex(let column):
             offset = layout.byteOffset(row: hit.row, column: column)
             framesByte = true
+            nibble = contextMenuCaretNibble(atX: point.x, column: column, layout: layout)
         case .ascii:
             return nil
         }
         guard offset < dataSource.fileSize else { return nil }
-        return ContextMenuAnchor(offset: offset, framesByte: framesByte)
+        return ContextMenuAnchor(offset: offset, framesByte: framesByte, nibble: nibble)
+    }
+
+    /// The nibble a right-click at `x` places the caret on, within `column`'s
+    /// byte (§10.2). Measured from the byte's own left edge with the same
+    /// mode-dependent threshold a left-click uses — the byte's centre in
+    /// overwrite mode, the high-nibble character's middle in insert mode. A
+    /// click in the gap before the byte (where `hitTest` still reports this
+    /// byte) has no nibble to the left of it, so it lands on the byte's left
+    /// boundary.
+    private func contextMenuCaretNibble(atX x: CGFloat, column: Int, layout: HexLayout) -> Int {
+        let byteX = layout.hexByteX(column: column)
+        guard x >= byteX else { return 0 }
+        if dataSource?.hexInsertMode ?? false {
+            return x - byteX >= layout.charWidth / 2 ? 1 : 0
+        }
+        return x - byteX >= layout.charWidth ? 1 : 0
     }
 
     /// The right-clicked address for a context menu — the row's start offset
