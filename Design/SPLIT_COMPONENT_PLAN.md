@@ -6,7 +6,7 @@
 > from is fixed — see **The bug and its root cause**, which corrects the
 > hypothesis an earlier draft of this document carried. **Also found and
 > fixed** covers the further defects the review and the user's checks turned
-> up, and the one loose end left open.
+> up.
 
 ## Why
 
@@ -295,15 +295,6 @@ refusal the default implementation would have given. It now guards on
   (hypothesis 1). Swept for other references to it; the only remaining
   `NSSplitView` mention in the app is in `ComparisonView`, where it correctly
   names the platform convention the double-click behaviour departs from.
-
-### Still open
-
-Not a split or header defect, and not fixed — recorded so it isn't lost: in a
-pane too narrow for a full row the dump starts out **horizontally scrolled**, so
-the Offset column is cut off on the left (`00`, `10`, `20` instead of
-`0000000`). The caret reveal in `refresh()` nudges the clip view to the caret's
-column on open; with the caret at byte 0 that scroll looks unwarranted. Awaiting
-the user's call on whether to chase it.
 
 ## Reference
 
