@@ -50,6 +50,18 @@ final class MinimapPanelView: NSView {
         // activated below, and a moment spent in autoresizing mode with a zero
         // frame makes them unsatisfiable.
         translatesAutoresizingMaskIntoConstraints = false
+        // A hidden panel is a zero-width pane (§19.1), not a hidden view, and
+        // the chrome's side insets are breakable so that width is reachable
+        // without a logged conflict. Breaking them leaves the mode switch with
+        // no horizontal constraint at all, so it lays out at its intrinsic
+        // width — and an `NSView` does not clip its subviews, so it would paint
+        // over the file pane beside the panel (the blue switch floating in the
+        // pane's top-right corner). Masking the panel's layer keeps every piece
+        // of chrome inside the panel's bounds, whatever the solver does with the
+        // broken insets. The header strip clips itself the same way, but in
+        // `draw(_:)` — it paints its own labels rather than hosting subviews.
+        wantsLayer = true
+        layer?.masksToBounds = true
         modeSwitch.controlSize = .small
         modeSwitch.segmentDistribution = .fillEqually
         modeSwitch.font = .systemFont(ofSize: 10)

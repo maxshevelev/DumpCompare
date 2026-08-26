@@ -59,6 +59,88 @@ final class MinimapTests: XCTestCase {
         tempFiles = []
     }
 
+    /// A view painted one flat, unmistakable colour, so any pixel over it that
+    /// is *not* that colour is something else's ink.
+    private final class FlatColourView: NSView {
+        let colour: NSColor
+        init(colour: NSColor) {
+            self.colour = colour
+            super.init(frame: .zero)
+        }
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+        override func draw(_ dirtyRect: NSRect) {
+            colour.setFill()
+            dirtyRect.fill()
+        }
+    }
+
+    /// A hidden minimap panel paints nothing over the pane beside it (§19.1).
+    ///
+    /// Hiding the panel collapses it to a zero-width pane rather than hiding
+    /// the view, and the chrome's side insets are deliberately breakable so
+    /// that width is reachable without a logged conflict. Breaking them leaves
+    /// the mode switch with no horizontal constraint, so it lays out at its
+    /// intrinsic width — and an `NSView` does not clip its subviews, so without
+    /// the panel's layer mask the switch paints over the file pane next door
+    /// (it showed up as a blue control floating in the pane's top-right
+    /// corner, present even with no file open).
+    ///
+    /// The neighbouring pane is a flat colour and the WHOLE container is
+    /// rendered: rendering the panel alone would clip the very spill the test
+    /// is looking for.
+    func testACollapsedPanelPaintsNothingOverTheNeighbouringPane() throws {
+        let split = ALSplitView()
+        split.isVertical = true
+        split.dividerThickness = 1
+        let backdrop = FlatColourView(colour: .magenta)
+        let panel = MinimapPanelView(mapView: MinimapView())
+        split.addPane(backdrop)
+        split.addPane(panel)
+        split.setPaneLayout(.fill, at: 0)
+        split.setPaneLayout(.fixed(0), at: 1)
+
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        let content = try XCTUnwrap(window.contentView)
+        split.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(split)
+        NSLayoutConstraint.activate([
+            split.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            split.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            split.topAnchor.constraint(equalTo: content.topAnchor),
+            split.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+        ])
+        window.layoutIfNeeded()
+        addTeardownBlock { @MainActor in window.orderOut(nil) }
+        XCTAssertEqual(panel.frame.width, 0, "premise: a hidden panel is a zero-width pane")
+        XCTAssertGreaterThan(backdrop.frame.width, 0, "premise: the neighbouring pane has room")
+
+        let rep = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
+        content.cacheDisplay(in: content.bounds, to: rep)
+        let scaleX = CGFloat(rep.pixelsWide) / content.bounds.width
+        // Stop a pixel short of the divider, which is legitimately not magenta.
+        let last = Int((backdrop.frame.maxX * scaleX).rounded(.down)) - 1
+
+        // How magenta a pixel is: red and blue well above green. The render
+        // goes through a colour-space conversion, so the backdrop does not come
+        // back as an exact (1, 0, 1) — but nothing the panel's chrome is made
+        // of (greys, the accent blue) scores anywhere near the backdrop here.
+        func magentaness(_ colour: NSColor) -> CGFloat {
+            guard let rgb = colour.usingColorSpace(.deviceRGB) else { return 0 }
+            return min(rgb.redComponent, rgb.blueComponent) - rgb.greenComponent
+        }
+
+        for px in 0...max(0, last) {
+            for py in 0..<rep.pixelsHigh {
+                guard let colour = rep.colorAt(x: px, y: py) else { continue }
+                guard magentaness(colour) < 0.3 else { continue }
+                XCTFail("the collapsed panel painted \(colour) over the pane at x=\(CGFloat(px) / scaleX)")
+                return
+            }
+        }
+    }
+
     /// A real controller in a real window, laid out at a known size. The
     /// minimap needs no open file at stage 1, but the window gives the split
     /// real bounds so the divider pin and panel width all have room to work.
