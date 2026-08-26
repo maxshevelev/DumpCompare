@@ -1,4 +1,5 @@
 import DumpCompareCore
+import ALSplitView
 import XCTest
 @testable import DumpCompare
 
@@ -6,14 +7,12 @@ import XCTest
 /// the panes out in the other orientation WITHOUT resizing the window.
 ///
 /// This test goes through the real `MainWindowController` because the bug it
-/// guards against only manifests in the real app setup: NSSplitView re-fits
-/// the window to the content's fitting size when `isVertical` changes, and in
-/// stacked mode that fitting size is one pane wide — so the window collapsed
-/// to half its width on toggle, breaking the layout.
-///
-/// ProportionalSplitView restores the pre-toggle window frame during layout, so
-/// the assertions below check that the window size is unchanged in both
-/// directions and that the divider stays draggable in both orientations.
+/// guards against only manifests in the real app setup: a split view that
+/// re-fits the window to the content's fitting size when `isVertical` changes
+/// would collapse the window to one pane wide in stacked mode, breaking the
+/// layout. `ALSplitView` is a plain frame-managed view and never touches the
+/// window, so the assertions below check that the window size is unchanged in
+/// both directions and that the divider stays draggable in both orientations.
 @MainActor
 final class LayoutToggleTests: XCTestCase {
     override func setUp() {
@@ -37,8 +36,8 @@ final class LayoutToggleTests: XCTestCase {
         tempFiles = []
     }
 
-    /// Runs the window through several display + runloop turns so the re-fit /
-    /// restore cycle NSSplitView triggers on orientation change settles.
+    /// Runs the window through several display + runloop turns so the
+    /// orientation change settles.
     private func settle(_ window: NSWindow, turns: Int = 4) {
         for _ in 0..<turns {
             window.displayIfNeeded()
@@ -47,7 +46,7 @@ final class LayoutToggleTests: XCTestCase {
         }
     }
 
-    private func windowPoint(_ splitView: NSSplitView, _ point: NSPoint) -> NSPoint {
+    private func windowPoint(_ splitView: ALSplitView, _ point: NSPoint) -> NSPoint {
         splitView.convert(point, to: nil)
     }
 

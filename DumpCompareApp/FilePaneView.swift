@@ -1,4 +1,5 @@
 import Cocoa
+import ALSplitView
 
 /// The pane's title bar (file name, dirty/read-only state, close button).
 ///
@@ -136,11 +137,19 @@ final class FilePaneView: NSView {
     /// clicks.
     let searchResultsView = SearchResultsView()
 
-    /// The dump and the results panel share the pane through a native
-    /// NSSplitView: its system divider resizes the panel, and hiding the panel
-    /// collapses it so the dump reclaims the full height (§11). Internal so
-    /// tests can assert the collapse and the resized height.
-    let searchResultsSplit = SearchResultsSplitView()
+    /// The dump and the results panel share the pane through an `ALSplitView`:
+    /// the dump is the `.fill` pane and the panel a `.fixed` one, so the panel
+    /// keeps the height the user chose while the dump absorbs window resizes.
+    /// Hiding the panel fixes it at zero height, so the dump reclaims the full
+    /// height (§11). Internal so tests can assert the collapse and the resized
+    /// height.
+    let searchResultsSplit = ALSplitView()
+
+    /// Whether the Search All results panel is shown. Drives the split's
+    /// divider clamp: while hidden, the clamp pins the divider to the very
+    /// bottom so the panel sits at zero height and the dump reclaims the pane
+    /// (§11).
+    private(set) var searchResultsPanelVisible = false
 
     /// Whether this pane has already shown the results panel once this session.
     /// The one-third-of-the-dump clamp applies only to the height restored
@@ -236,7 +245,7 @@ final class FilePaneView: NSView {
         titleLabel.lineBreakMode = .byTruncatingMiddle
         // The labels truncate; low priorities let them shrink gracefully when
         // the splitter makes a pane narrow (§3.3). The pane's width itself is
-        // owned by ProportionalSplitView, not by this content.
+        // owned by the split view, not by this content.
         titleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
         titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         // A 12 pt outline document in front of the title; the symbol swaps to
@@ -272,18 +281,27 @@ final class FilePaneView: NSView {
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         lockLabel.translatesAutoresizingMaskIntoConstraints = false
         closeButton.translatesAutoresizingMaskIntoConstraints = false
-        NSLayoutConstraint.activate([
+        // The horizontal chain is breakable end to end: a pane dragged to zero
+        // is squeezed below the ~34pt the insets and spacings need, and a
+        // required link in the chain would floor the pane (the least-squares
+        // solver compromises at the chain's minimum instead of letting the
+        // pane reach zero). At any real width every link holds exactly (§3.4).
+        let headerChain: [NSLayoutConstraint] = [
             documentIcon.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 10),
-            documentIcon.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             titleLabel.leadingAnchor.constraint(equalTo: documentIcon.trailingAnchor, constant: 6),
-            titleLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: lockLabel.leadingAnchor, constant: -6),
             lockLabel.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -6),
-            lockLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             closeButton.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -6),
+        ]
+        for constraint in headerChain { constraint.priority = .defaultHigh }
+        NSLayoutConstraint.activate([
+            documentIcon.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            titleLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            lockLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             closeButton.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             header.heightAnchor.constraint(equalToConstant: Self.headerHeight),
         ])
+        NSLayoutConstraint.activate(headerChain)
 
         // Status bar: the regular status text on the left, the background
         // operation strip (name + progress + ×) to its right. An NSStackView
@@ -296,11 +314,13 @@ final class FilePaneView: NSView {
         statusLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         // The mode indicator keeps its width: three monospaced characters, the
         // same in both states, so the bar's layout never shifts when the mode
-        // flips. It holds its size against a narrow pane — the status text
-        // truncates first.
+        // flips. Its resistance beats the status text's, so a narrowing pane
+        // truncates the status text first; it stays below the split's 999
+        // pane-width constraint, so a pane dragged to zero is still zero —
+        // the indicator is the last thing to compress.
         typingModeLabel.font = .monospacedSystemFont(ofSize: 11, weight: .semibold)
         typingModeLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
-        typingModeLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        typingModeLabel.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
         // A pane built while the mode is already on shows INS from the start.
         updateTypingModeIndicator(viewModel.isInsertMode)
         // The strip keeps its size; a narrow pane shrinks the status text.
@@ -323,9 +343,18 @@ final class FilePaneView: NSView {
         statusBar.setContentHuggingPriority(.defaultLow, for: .horizontal)
         statusBar.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         statusBar.addSubview(statusStack)
+        // The side insets are breakable, like the header's: a pane dragged to
+        // zero is squeezed below the 20pt the insets need, and a required inset
+        // would then floor the pane (the least-squares solver compromises at the
+        // insets' minimum instead of letting the pane reach zero). At any real
+        // width the insets hold exactly (§3.4).
+        let statusLeadingInset = statusStack.leadingAnchor.constraint(equalTo: statusBar.leadingAnchor, constant: 10)
+        let statusTrailingInset = statusStack.trailingAnchor.constraint(lessThanOrEqualTo: statusBar.trailingAnchor, constant: -10)
+        statusLeadingInset.priority = .defaultHigh
+        statusTrailingInset.priority = .defaultHigh
         NSLayoutConstraint.activate([
-            statusStack.leadingAnchor.constraint(equalTo: statusBar.leadingAnchor, constant: 10),
-            statusStack.trailingAnchor.constraint(lessThanOrEqualTo: statusBar.trailingAnchor, constant: -10),
+            statusLeadingInset,
+            statusTrailingInset,
             statusStack.centerYAnchor.constraint(equalTo: statusBar.centerYAnchor),
             statusBar.heightAnchor.constraint(equalToConstant: Self.statusBarHeight),
         ])
@@ -374,10 +403,10 @@ final class FilePaneView: NSView {
         scrollView.documentView = hexView
 
         // Search All results panel (§11): the dump and the panel share the
-        // pane vertically through a native NSSplitView. Its system divider
-        // resizes the panel with the standard drag behaviour and cursor; the
-        // panel is hidden (collapsed natively by NSSplitView) while no results
-        // are shown and revealed with the user's stored height on a Search All.
+        // pane vertically through an ALSplitView. Its divider resizes the
+        // panel with the standard drag behaviour and cursor; the panel is
+        // collapsed (fixed at zero height) while no results are shown and
+        // revealed with the user's stored height on a Search All.
         searchResultsView.onClose = { [weak self] in
             guard let self else { return }
             // Stop the owner's in-flight search first, then hide and forget the
@@ -395,24 +424,41 @@ final class FilePaneView: NSView {
         }
 
         searchResultsSplit.isVertical = false
-        searchResultsSplit.dividerStyle = .thin
+        searchResultsSplit.dividerThickness = 1
         searchResultsSplit.translatesAutoresizingMaskIntoConstraints = false
-        // The delegate owns the divider's min/max clamping and persists the
-        // panel height whenever the divider moves (§11).
-        searchResultsSplit.delegate = self
-        searchResultsSplit.addArrangedSubview(scrollView)
-        searchResultsSplit.addArrangedSubview(searchResultsView)
-        // The panel starts collapsed at zero height — the split's first real
-        // layout pins the divider to the bottom — so the dump gets the whole
-        // pane until a Search All shows results (§11).
+        searchResultsSplit.addPane(scrollView)
+        searchResultsSplit.addPane(searchResultsView)
+        // The dump fills whatever the panel doesn't take; the panel starts
+        // collapsed at zero height, so the dump gets the whole pane until a
+        // Search All shows results (§11).
+        searchResultsSplit.setPaneLayout(.fill, at: 0)
+        searchResultsSplit.setPaneLayout(.fixed(0), at: 1)
+        // The clamp owns the divider's legal range (§11): while the panel is
+        // shown, a drag never shrinks the hex dump below its minimum nor the
+        // results panel below its minimum; while hidden, both bounds pin the
+        // divider to the very bottom so the panel collapses to zero height.
+        searchResultsSplit.clampDividerPosition = { [weak self] _, position in
+            guard let self else { return position }
+            let total = self.searchResultsSplit.bounds.height
+            let thickness = self.searchResultsSplit.dividerThickness
+            guard self.searchResultsPanelVisible else {
+                return max(0, total - thickness)
+            }
+            let minDump = FilePaneView.minHexHeightInPane
+            let maxDump = max(minDump, total - FilePaneView.minSearchResultsHeight - thickness)
+            return min(max(position, minDump), maxDump)
+        }
+        // A divider move — a drag or a programmatic sizing — makes the panel's
+        // new height the user's preferred height for the next Search All
+        // (§11).
+        searchResultsSplit.onDividerMoved = { [weak self] _, position in
+            self?.persistSearchResultsPanelHeight(position: position)
+        }
 
         // The header and column header are pinned at the top; the split view and
-        // the status bar fill the rest. A stack arranged subview is sized to its
-        // fitting height, and a split view's fitting height is ambiguous (its
-        // panes' content) — so a stack would collapse the split instead of
-        // letting it share the pane's height. Pinning the header and column
-        // header directly (each has a required height constraint) forces the
-        // split view to take exactly the leftover height.
+        // the status bar fill the rest. Pinning the header and column header
+        // directly (each has a required height constraint) forces the split
+        // view to take exactly the leftover height.
         addSubview(header)
         addSubview(columnHeader)
         addSubview(searchResultsSplit)
@@ -754,35 +800,60 @@ final class FilePaneView: NSView {
             textDecoder: viewModel.textDecoder,
             fileSize: { [weak viewModel] in viewModel?.fileSize ?? 0 },
             matchLength: matchLength)
-        searchResultsSplit.resultsPanelVisible = true
+        searchResultsPanelVisible = true
         applySearchResultsHeight()
     }
 
     /// Hides and clears the Search All results panel (the ×, or a structural
     /// change that invalidates the offsets). The divider moves to the very
-    /// bottom — the delegate (now pinned by `resultsPanelVisible` == false)
-    /// clamps it there, so the panel collapses to zero height and the dump
-    /// reclaims the pane (§11). The panel is never `isHidden`; zero height is
-    /// its native collapsed state.
+    /// bottom — the split's clamp (now pinned by `searchResultsPanelVisible`
+    /// == false) holds it there, so the panel collapses to zero height and the
+    /// dump reclaims the pane (§11). The panel is never `isHidden`; zero
+    /// height is its collapsed state.
     func hideSearchResults() {
-        searchResultsSplit.resultsPanelVisible = false
+        searchResultsPanelVisible = false
         searchResultsView.clear()
-        searchResultsSplit.setPanelHeight(0)
+        setSearchResultsPanelHeight(0)
+    }
+
+    /// Moves the divider so the results panel gets `height` points (clamped to
+    /// the pane's room by the split's divider clamp). The same code path a
+    /// divider drag takes, so programmatic sizing and user dragging behave
+    /// identically.
+    func setSearchResultsPanelHeight(_ height: CGFloat) {
+        let total = searchResultsSplit.bounds.height
+        guard total > 0 else { return }
+        searchResultsSplit.setDividerPosition(
+            total - height - searchResultsSplit.dividerThickness)
+    }
+
+    /// Persists the panel's current height as the user's preferred height for
+    /// the next Search All. Only while the panel is shown and within the legal
+    /// range: a transient layout (e.g. mid-animation) whose panel height is
+    /// absurd would poison the next reveal if persisted.
+    private func persistSearchResultsPanelHeight(position: CGFloat) {
+        guard searchResultsPanelVisible else { return }
+        let split = searchResultsSplit
+        let panelHeight = split.bounds.height - position - split.dividerThickness
+        let legalMax = split.bounds.height - FilePaneView.minHexHeightInPane - split.dividerThickness
+        guard panelHeight >= FilePaneView.minSearchResultsHeight,
+              panelHeight <= legalMax else { return }
+        Self.defaults.set(panelHeight, forKey: Self.searchResultsHeightDefaultsKey)
     }
 
     /// Gives the results panel the height the user last chose (or the built-in
-    /// default), by placing the native divider accordingly. On the pane's first
+    /// default), by placing the divider accordingly. On the pane's first
     /// show of a session the stored height is clamped to the current room —
     /// never below the panel's minimum, never taller than a third of the pane's
     /// shared height, so the hex dump keeps at least two thirds and the panel
     /// never exceeds half the dump (§11) — because the stored value may date
     /// from a taller window or the other pane. Once the pane has shown the
     /// panel, a height the user picked by dragging in this session is applied
-    /// as-is. The split's delegate would clamp the same `setPosition`, but
+    /// as-is. The split's divider clamp would clamp the same move, but
     /// clamping here keeps the restoration correct without depending on that
     /// implicit behavior.
     private func applySearchResultsHeight() {
-        guard searchResultsSplit.resultsPanelVisible else { return }
+        guard searchResultsPanelVisible else { return }
         let total = searchResultsSplit.bounds.height
         guard total > 0 else { return }
         let stored = Self.defaults.object(forKey: Self.searchResultsHeightDefaultsKey) as? NSNumber
@@ -796,7 +867,7 @@ final class FilePaneView: NSView {
                            (total - searchResultsSplit.dividerThickness) / 3)
             height = min(max(preferred, FilePaneView.minSearchResultsHeight), room)
         }
-        searchResultsSplit.setPanelHeight(height)
+        setSearchResultsPanelHeight(height)
     }
 
     /// The selection-only counterpart of `refresh()`: the bytes are unchanged,
@@ -961,47 +1032,6 @@ extension FilePaneView {
     }
 }
 
-// MARK: - Search All results split divider (§11)
-
-extension FilePaneView: NSSplitViewDelegate {
-    /// The divider's legal range. While the panel is shown, a drag (or a pane
-    /// resize) never shrinks the hex dump below its minimum nor the results
-    /// panel below its minimum. While hidden, both bounds pin the divider to
-    /// the very bottom so the panel collapses to zero height (§11).
-    func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
-        searchResultsSplit.resultsPanelVisible
-            ? FilePaneView.minHexHeightInPane
-            : splitView.bounds.height - splitView.dividerThickness
-    }
-
-    func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
-        guard searchResultsSplit.resultsPanelVisible else {
-            return splitView.bounds.height - splitView.dividerThickness
-        }
-        return max(
-            FilePaneView.minHexHeightInPane,
-            splitView.bounds.height - FilePaneView.minSearchResultsHeight - splitView.dividerThickness
-        )
-    }
-
-    /// The divider moved — a drag, a programmatic `setPosition`, or a pane
-    /// resize — so the panel's new height becomes the user's preferred height
-    /// for the next Search All. Only persisted while the panel is shown and
-    /// within the legal range: NSSplitView can report transient layouts (e.g.
-    /// mid-animation) whose panel height is absurd, and persisting those would
-    /// poison the next reveal.
-    func splitViewDidResizeSubviews(_ notification: Notification) {
-        guard let split = notification.object as? NSSplitView, split === searchResultsSplit else { return }
-        guard searchResultsSplit.resultsPanelVisible, split.arrangedSubviews.count == 2 else { return }
-        let dumpHeight = split.arrangedSubviews[0].frame.height
-        let panelHeight = split.bounds.height - dumpHeight - split.dividerThickness
-        let legalMax = split.bounds.height - FilePaneView.minHexHeightInPane - split.dividerThickness
-        guard panelHeight >= FilePaneView.minSearchResultsHeight,
-              panelHeight <= legalMax else { return }
-        Self.defaults.set(panelHeight, forKey: Self.searchResultsHeightDefaultsKey)
-    }
-}
-
 // MARK: - Column header (§6)
 
 /// The pinned column header above the hex dump: the column names — "Offset",
@@ -1151,7 +1181,12 @@ final class OperationStatusView: NSView {
         progressBar.doubleValue = 0
         progressBar.controlSize = .small
         progressBar.translatesAutoresizingMaskIntoConstraints = false
-        progressBar.widthAnchor.constraint(equalToConstant: 120).isActive = true
+        // Breakable: a pane dragged toward zero must be able to compress the
+        // strip — a required 120 pt bar would floor the whole pane at its
+        // width. At any real width the bar keeps its 120 pt.
+        let barWidth = progressBar.widthAnchor.constraint(equalToConstant: 120)
+        barWidth.priority = .defaultHigh
+        barWidth.isActive = true
 
         cancelButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Cancel operation")
         cancelButton.isBordered = false

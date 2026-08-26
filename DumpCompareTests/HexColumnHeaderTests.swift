@@ -1,4 +1,5 @@
 import DumpCompareCore
+import ALSplitView
 import XCTest
 @testable import DumpCompare
 
@@ -202,9 +203,9 @@ final class HexColumnHeaderTests: XCTestCase {
         XCTAssertTrue(subviews.contains { $0 is PaneHeaderView })
         XCTAssertTrue(subviews.contains { $0 is HexColumnHeaderView })
         // The scroll view now shares the pane with the Search All results panel
-        // through a split view (§11), which is the pane's arranged dump pane.
-        let split = try XCTUnwrap(subviews.compactMap { $0 as? NSSplitView }.first)
-        XCTAssertTrue(split.arrangedSubviews[0] === pane.scrollView)
+        // through a split view (§11), which is the pane's dump pane.
+        let split = try XCTUnwrap(subviews.compactMap { $0 as? ALSplitView }.first)
+        XCTAssertTrue(split.panes[0] === pane.scrollView)
 
         XCTAssertEqual(
             pane.contentFitHeight,

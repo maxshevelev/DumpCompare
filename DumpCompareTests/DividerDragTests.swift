@@ -1,11 +1,11 @@
 import DumpCompareCore
+import ALSplitView
 import XCTest
 @testable import DumpCompare
 
-/// §3.3: the divider is draggable by the mouse. NSSplitView's built-in drag
-/// can't be used — it fights the proportional layout and snaps the divider
-/// back on mouse-up — so ProportionalSplitView handles the drag itself.
-/// These tests drive that drag with synthesized mouse events.
+/// §3.3: the divider is draggable by the mouse. `ALSplitView` handles the drag
+/// itself (the way a native split view would, minus the autoresizing fights),
+/// and these tests drive it with synthesized mouse events.
 ///
 /// A real window is used (not just a bare container): the drag reads
 /// `event.locationInWindow`, and without a window AppKit's window-coordinate
@@ -57,14 +57,14 @@ final class DividerDragTests: XCTestCase {
         return (cv, window)
     }
 
-    private func windowPoint(_ splitView: NSSplitView, _ point: NSPoint) -> NSPoint {
+    private func windowPoint(_ splitView: ALSplitView, _ point: NSPoint) -> NSPoint {
         splitView.convert(point, to: nil)
     }
 
     /// Drags the divider from its current spot to `target` (both in the split
     /// view's coordinates).
-    private func drag(splitView sv: NSSplitView, to target: NSPoint, window: NSWindow) {
-        let start = NSPoint(x: sv.arrangedSubviews[0].frame.maxX, y: sv.arrangedSubviews[0].frame.midY)
+    private func drag(splitView sv: ALSplitView, to target: NSPoint, window: NSWindow) {
+        let start = NSPoint(x: sv.panes[0].frame.maxX, y: sv.panes[0].frame.midY)
         sv.mouseDown(with: mouse(.leftMouseDown, at: windowPoint(sv, start), window: window))
         sv.mouseDragged(with: mouse(.leftMouseDragged, at: windowPoint(sv, target), window: window))
         sv.mouseUp(with: mouse(.leftMouseUp, at: windowPoint(sv, target), window: window))
@@ -172,7 +172,7 @@ final class DividerDragTests: XCTestCase {
 
     /// A double-click on the divider resets it to a 50/50 split in both
     /// orientations (§3.3), replacing NSSplitView's collapse behavior.
-    private func doubleClick(splitView sv: NSSplitView, at p: NSPoint, window: NSWindow) {
+    private func doubleClick(splitView sv: ALSplitView, at p: NSPoint, window: NSWindow) {
         sv.mouseDown(with: mouse(.leftMouseDown, at: p, window: window, clickCount: 1))
         sv.mouseUp(with: mouse(.leftMouseUp, at: p, window: window, clickCount: 1))
         sv.mouseDown(with: mouse(.leftMouseDown, at: p, window: window, clickCount: 2))

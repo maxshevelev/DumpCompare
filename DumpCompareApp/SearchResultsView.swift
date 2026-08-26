@@ -89,14 +89,14 @@ final class SearchResultsView: NSView {
     // MARK: - Setup
 
     private func setUp() {
-        // The panel is a frame-managed pane of the native NSSplitView: the split
-        // sizes it by setting its frame (the panel keeps the default
-        // translatesAutoresizingMaskIntoConstraints == true), so the internal
-        // constraints below solve within whatever height the divider gives it.
+        // The panel is a frame-managed pane of the split view: the split sizes
+        // it by setting its frame (ALSplitView.addPane turns off
+        // translatesAutoresizingMaskIntoConstraints), so the internal constraints
+        // below solve within whatever height the divider gives it.
 
         // A background so the panel reads as a distinct strip between the hex
-        // dump and the status bar; the 1px rule above it is drawn by the native
-        // split divider.
+        // dump and the status bar; the 1px rule above it is drawn by the split
+        // divider.
         wantsLayer = true
         layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
         // When the panel is hidden, the split gives it zero height; clipping to

@@ -122,7 +122,7 @@ final class PaneViewModel: HexViewDataSource {
     private var pendingInsertOffset: UInt64?
 
     /// Time injection so tests can drive the series-break and fast-undo
-    /// windows deterministically (the pattern of `MinimapSplitView.defaults`).
+    /// windows deterministically (the pattern of `MainViewController.minimapDefaults`).
     static var clock: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     /// A pause between typed bytes longer than this breaks the typing series.
     static let seriesBreakThreshold: TimeInterval = 0.7

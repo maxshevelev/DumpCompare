@@ -747,7 +747,7 @@ final class FindFlowTests: XCTestCase {
         // `showSearchResults` and `setSearching(true)` run synchronously inside
         // the click handler, before the background scan has produced a result.
         let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
-        XCTAssertTrue(paneView.searchResultsSplit.resultsPanelVisible,
+        XCTAssertTrue(paneView.searchResultsPanelVisible,
                       "the panel must be shown immediately on Search All")
         XCTAssertTrue(paneView.searchResultsView.isSearching,
                       "the scan must still be running right after the click")
@@ -943,9 +943,9 @@ final class FindFlowTests: XCTestCase {
                        "closing the panel stops the search and forgets the results")
     }
 
-    /// The results panel is a native NSSplitView pane: shown after Search All
-    /// as an expanded pane, collapsed when hidden (the ×) so the dump reclaims
-    /// the full height.
+    /// The results panel is a pane of the pane's split view: shown after Search
+    /// All as an expanded pane, collapsed when hidden (the ×) so the dump
+    /// reclaims the full height.
     func testSearchResultsPanelShowsAndCollapses() throws {
         // A tall window on purpose: with nothing persisted the panel opens at
         // its built-in default, and the pane has to be roomy enough that the
@@ -965,8 +965,8 @@ final class FindFlowTests: XCTestCase {
         let split = paneView.searchResultsSplit
 
         window.layoutIfNeeded()
-        XCTAssertFalse(split.isSubviewCollapsed(view),
-                       "the panel must be an expanded pane while results are shown")
+        XCTAssertGreaterThan(view.frame.height, 0,
+                             "the panel must be an expanded pane while results are shown")
         XCTAssertGreaterThan(split.bounds.height, 600,
                              "premise: the pane is several times the default height, so the clamp is idle")
         // The built-in default, written out. Reading `SearchResultsView.panelHeight`
@@ -1065,7 +1065,7 @@ final class FindFlowTests: XCTestCase {
 
         // The user drags the divider taller than the restored clamp would
         // allow; the split persists that height as the user's choice.
-        split.setPanelHeight(400)
+        paneView.setSearchResultsPanelHeight(400)
         window.layoutIfNeeded()
         let draggedHeight = view.frame.height
         XCTAssertGreaterThan(draggedHeight, firstShowHeight,
@@ -1084,12 +1084,13 @@ final class FindFlowTests: XCTestCase {
                        "a height chosen in this session must apply as-is on the next show")
     }
 
-    /// The native divider applies what it is asked for and clamps what it
-    /// cannot: an in-range height takes effect verbatim, while the panel can't
-    /// shrink below its minimum nor grow past the point that would squeeze the
-    /// hex dump away. The clamp is enforced by the split delegate when
-    /// `setPosition` (or a drag) targets an out-of-range divider —
-    /// `setPanelHeight` asks for the raw height and the split clamps it.
+    /// The divider applies what it is asked for and clamps what it cannot: an
+    /// in-range height takes effect verbatim, while the panel can't shrink
+    /// below its minimum nor grow past the point that would squeeze the hex
+    /// dump away. The clamp is the split's `clampDividerPosition` when a
+    /// divider move (or a drag) targets an out-of-range divider —
+    /// `setSearchResultsPanelHeight` asks for the raw height and the split
+    /// clamps it.
     func testSearchResultsPanelDividerClamps() throws {
         let (controller, window, url) = try makeController([0xDE, 0xAD])
         defer { cleanup(controller, url) }
@@ -1106,7 +1107,7 @@ final class FindFlowTests: XCTestCase {
         // literal below pass for whatever the clamp happened to be.
         XCTAssertGreaterThan(split.bounds.height, 400,
                              "premise: the pane has far more than 120 pt to give away")
-        split.setPanelHeight(120)
+        paneView.setSearchResultsPanelHeight(120)
         window.layoutIfNeeded()
         XCTAssertEqual(view.frame.height, 120, accuracy: 0.5,
                        "an in-range panel height must take effect unchanged")
@@ -1114,14 +1115,14 @@ final class FindFlowTests: XCTestCase {
         // Asking for less than the panel's minimum clamps up to the minimum —
         // 80 pt, written out rather than read back from the constant the clamp
         // is made of (a minimum of 0 satisfied that).
-        split.setPanelHeight(10)
+        paneView.setSearchResultsPanelHeight(10)
         window.layoutIfNeeded()
         XCTAssertEqual(view.frame.height, 80, accuracy: 0.5,
                        "the divider must keep the results panel at its 80 pt minimum")
 
         // Asking for more than the pane's room clamps down so the hex dump
         // keeps its own 40 pt minimum.
-        split.setPanelHeight(10_000)
+        paneView.setSearchResultsPanelHeight(10_000)
         window.layoutIfNeeded()
         XCTAssertEqual(paneView.scrollView.frame.height, 40, accuracy: 0.5,
                        "the divider must keep the hex dump at its 40 pt minimum")
@@ -1293,7 +1294,7 @@ final class FindFlowTests: XCTestCase {
         XCTAssertTrue(bar.isHidden, "the bar is dismissed")
 
         let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
-        XCTAssertTrue(paneView.searchResultsSplit.resultsPanelVisible,
+        XCTAssertTrue(paneView.searchResultsPanelVisible,
                       "the results panel stays open")
         XCTAssertEqual(view.tableView.numberOfRows, 2, "with its rows intact")
     }

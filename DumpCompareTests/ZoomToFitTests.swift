@@ -1,3 +1,4 @@
+import ALSplitView
 import XCTest
 @testable import DumpCompare
 
@@ -23,8 +24,15 @@ final class ZoomToFitTests: XCTestCase {
         findPanes(in: view).first
     }
 
-    private func findSplitView(in view: NSView) -> ProportionalSplitView? {
-        if let split = view as? ProportionalSplitView { return split }
+    /// The comparison's split — not the outer minimap split, which is an
+    /// `ALSplitView` too and would be found first by a plain depth-first scan.
+    /// The comparison split is the one whose panes wrap the file panes.
+    private func findSplitView(in view: NSView) -> ALSplitView? {
+        if let split = view as? ALSplitView,
+           split.panes.contains(where: { $0 is FilePaneView
+               || $0.subviews.contains { $0 is FilePaneView } }) {
+            return split
+        }
         for sub in view.subviews {
             if let found = findSplitView(in: sub) { return found }
         }
@@ -198,11 +206,11 @@ final class ZoomToFitTests: XCTestCase {
                        accuracy: 1, "a hidden panel adds nothing")
 
         // Shown at its preferred width, the fit grows by panel + divider.
-        split.setPanelVisible(true, animated: false)
+        mainVC.setMinimapPanelVisible(true, animated: false)
         window.layoutIfNeeded()
         let shown = mainVC.windowWillUseStandardFrame(
             window, defaultFrame: NSRect(x: 0, y: 0, width: 3000, height: 2000))
-        let expected = pane.contentFitWidth + split.preferredPanelWidth + split.dividerThickness
+        let expected = pane.contentFitWidth + mainVC.minimapPreferredPanelWidth + split.dividerThickness
         XCTAssertEqual(shown.width, expectedFrameWidth(for: expected, window: window),
                        accuracy: 1, "the fit makes room for the visible panel")
     }

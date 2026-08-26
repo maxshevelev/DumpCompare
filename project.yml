@@ -9,6 +9,8 @@ options:
 packages:
   DumpCompareCore:
     path: DumpCompareCore
+  ALSplitView:
+    path: ALSplitView
 
 targets:
   DumpCompare:
@@ -18,6 +20,7 @@ targets:
       - path: DumpCompareApp
     dependencies:
       - package: DumpCompareCore
+      - package: ALSplitView
     entitlements:
       path: DumpCompareApp/DumpCompare.entitlements
       properties:
@@ -52,6 +55,7 @@ targets:
     dependencies:
       - target: DumpCompare
       - package: DumpCompareCore
+      - package: ALSplitView
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.maxik.DumpCompareTests

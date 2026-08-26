@@ -8,7 +8,7 @@ import XCTest
 /// The window is deliberately narrow — smaller than the hex grid width — so a
 /// 50/50 pane cannot show its full content. The double-click is driven through
 /// the real `PaneHeaderView` so the wiring (header → ComparisonView →
-/// ProportionalSplitView) is exercised, not just the math.
+/// ALSplitView) is exercised, not just the math.
 @MainActor
 final class HeaderFitWidthTests: XCTestCase {
     override func setUp() {
@@ -74,7 +74,7 @@ final class HeaderFitWidthTests: XCTestCase {
     /// only way a test can move this divider.
     private func dragDivider(of cv: ComparisonView, to x: CGFloat, window: NSWindow) {
         let sv = cv.splitView
-        let start = NSPoint(x: sv.arrangedSubviews[0].frame.maxX, y: sv.bounds.midY)
+        let start = NSPoint(x: sv.panes[0].frame.maxX, y: sv.bounds.midY)
         let target = NSPoint(x: x, y: sv.bounds.midY)
         sv.mouseDown(with: mouse(.leftMouseDown, at: sv.convert(start, to: nil), window: window))
         sv.mouseDragged(with: mouse(.leftMouseDragged, at: sv.convert(target, to: nil), window: window))

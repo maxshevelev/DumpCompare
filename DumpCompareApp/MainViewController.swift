@@ -1,5 +1,6 @@
 import Cocoa
 import DumpCompareCore
+import ALSplitView
 
 /// Whether each diff-navigation action currently has a block to go to (§10.3).
 /// A false value means the command is disabled — wrong mode, index still
@@ -49,8 +50,38 @@ final class MainViewController: NSViewController {
     /// rebuild progress (§19.2).
     private(set) lazy var minimapPanel = MinimapPanelView(mapView: minimapView)
     /// The vertical split sharing the content area between the panes and the
-    /// minimap. Internal so tests can toggle it and drive the divider (§19).
-    let minimapSplit = MinimapSplitView()
+    /// minimap. The panes are the `.fill` pane and the minimap a `.fixed` one,
+    /// so the minimap keeps the width the user chose while the panes absorb
+    /// window resizes; hidden just means the minimap is fixed at zero width.
+    /// Internal so tests can toggle it and drive the divider (§19).
+    let minimapSplit = ALSplitView()
+
+    /// Whether the minimap panel is shown. Drives the split's divider clamp:
+    /// while hidden, the clamp pins the divider to the right edge so the panel
+    /// sits at zero width and the hex panes reclaim the content area (§19).
+    private(set) var minimapPanelVisible = false
+
+    /// Where the minimap panel width is persisted. Swappable so the suite does
+    /// not write the user's real preference.
+    static var minimapDefaults: UserDefaults = .standard
+    /// `UserDefaults` key for the user's chosen minimap width (§19).
+    static let minimapWidthDefaultsKey = "MinimapPanelWidth"
+    /// The minimap keeps at least this width when shown (§19).
+    static let minimapMinPanelWidth: CGFloat = 120
+    /// The minimap never grows beyond this width (§19), so it stays a compact
+    /// overview column beside the hex panes no matter how wide the window gets.
+    static let minimapMaxPanelWidth: CGFloat = 240
+
+    /// The panel width the user last chose (or the built-in minimum), clamped
+    /// to the legal [min, max] band. The caller is responsible for clamping to
+    /// what the split can actually hold (`setMinimapPanelWidth` already does),
+    /// so this also serves zoom-to-fit, which wants the preferred width
+    /// regardless of how small the window is right now.
+    var minimapPreferredPanelWidth: CGFloat {
+        let stored = Self.minimapDefaults.object(forKey: Self.minimapWidthDefaultsKey) as? NSNumber
+        let preferred = stored.map { CGFloat($0.doubleValue) } ?? Self.minimapMinPanelWidth
+        return min(max(preferred, Self.minimapMinPanelWidth), Self.minimapMaxPanelWidth)
+    }
     private var contentTopToView: NSLayoutConstraint!
     private var contentTopToFindBar: NSLayoutConstraint!
     private var findTask: Task<Void, Never>?
@@ -208,20 +239,46 @@ final class MainViewController: NSViewController {
 
         // The minimap split fills the content container: the mode content on
         // the left, the minimap panel on the right. The panel starts collapsed
-        // (the minimap is hidden on launch); the toolbar button toggles it (§
-        // N). The delegate owns the divider's min/max clamping and persists the
-        // panel width whenever the divider moves.
+        // (the minimap is hidden on launch); the toolbar button toggles it
+        // (§19). The clamp owns the divider's legal range, and a divider move
+        // persists the panel width.
         minimapSplit.translatesAutoresizingMaskIntoConstraints = false
         minimapSplit.isVertical = true
-        minimapSplit.dividerStyle = .thin
-        minimapSplit.delegate = self
+        minimapSplit.dividerThickness = 1
         contentHost.translatesAutoresizingMaskIntoConstraints = false
         minimapPanel.translatesAutoresizingMaskIntoConstraints = false
-        minimapSplit.addArrangedSubview(contentHost)
+        minimapSplit.addPane(contentHost)
         // The panel, not the bare map: its header carries the mode switch and
         // its status bar the rebuild's progress, and together they align the map
         // with the dump beside it (§19.2).
-        minimapSplit.addArrangedSubview(minimapPanel)
+        minimapSplit.addPane(minimapPanel)
+        // The panes fill whatever the panel doesn't take; the panel starts
+        // collapsed at zero width, so the hex panes get the whole content area
+        // until the minimap is shown (§19). A show that landed before the view
+        // loaded found no panes to park a policy in (`setPaneLayout` is a
+        // no-op on an empty split), so the initial policy reads the visibility
+        // flag and opens the panel at its width on the first layout.
+        minimapSplit.setPaneLayout(.fill, at: 0)
+        minimapSplit.setPaneLayout(.fixed(minimapPanelVisible ? minimapPreferredPanelWidth : 0), at: 1)
+        // The clamp owns the divider's legal range while the panel is shown
+        // (§19): a drag never shrinks the minimap below its minimum nor grows
+        // it past its maximum. While hidden the clamp is idle — the panel
+        // stays collapsed by its zero-width policy, and the hide animation
+        // needs the full range to glide through.
+        minimapSplit.clampDividerPosition = { [weak self] _, position in
+            guard let self, self.minimapPanelVisible else { return position }
+            let total = self.minimapSplit.bounds.width
+            let thickness = self.minimapSplit.dividerThickness
+            let maxPanel = min(MainViewController.minimapMaxPanelWidth, max(0, total - thickness))
+            let minPosition = max(0, total - maxPanel - thickness)
+            let maxPosition = max(0, total - MainViewController.minimapMinPanelWidth - thickness)
+            return min(max(position, minPosition), maxPosition)
+        }
+        // A divider move — a drag or a programmatic sizing — makes the panel's
+        // new width the user's preferred width for the next show (§19).
+        minimapSplit.onDividerMoved = { [weak self] _, position in
+            self?.persistMinimapPanelWidth(position: position)
+        }
         contentContainer.addSubview(minimapSplit)
         NSLayoutConstraint.activate([
             minimapSplit.topAnchor.constraint(equalTo: contentContainer.topAnchor),
@@ -283,26 +340,6 @@ final class MainViewController: NSViewController {
             // ends halfway down the window.
             return areas.dropFirst().reduce(first) { $0.union($1) }
         }
-        // Showing the panel needs the current picture: while hidden it drew
-        // nothing, so its maps and viewport are stale (§19).
-        minimapSplit.onPanelVisibilityChanged = { [weak self] visible in
-            guard let self else { return }
-            if visible {
-                self.updateMinimapLayout()
-                self.refreshMinimapMaps()
-                // The mode was decided when the file opened, panel or no panel
-                // (§19.4) — showing the panel must not undo a choice made in it,
-                // only settle whether overview is on offer now that it has a height.
-                self.updateOverviewAvailability()
-                self.updateMinimapViewports()
-                self.rebuildOverview()
-            }
-            // The window grows or shrinks by the panel's width so the hex
-            // content area keeps its width (§19). The resize is instant; the
-            // panel's own divider animation then settles the content.
-            self.resizeWindowForMinimap(visible: visible)
-        }
-
         apply(mode: .empty)
     }
 
@@ -463,7 +500,7 @@ final class MainViewController: NSViewController {
             view.setActive(windowModel.activePaneIndex)
             // The minimap's stacked divider mirrors the panes' divider position,
             // so keep it glued whenever the panes' divider moves (§19).
-            view.splitView.onFractionChanged = { [weak self] in
+            view.onFractionChanged = { [weak self] in
                 self?.updateMinimapLayout()
             }
             comparisonCoordinator.start()
@@ -564,7 +601,77 @@ final class MainViewController: NSViewController {
     /// hidden by default and animated in/out; the split's divider keeps the
     /// user's chosen width between shows.
     @objc func toggleMinimap() {
-        minimapSplit.togglePanel(animated: true)
+        toggleMinimapPanel(animated: true)
+    }
+
+    /// Shows or hides the panel, animating the divider unless the user prefers
+    /// reduced motion (then it snaps).
+    func setMinimapPanelVisible(_ visible: Bool, animated: Bool = true) {
+        let changed = minimapPanelVisible != visible
+        minimapPanelVisible = visible
+        setMinimapPanelWidth(visible ? minimapPreferredPanelWidth : 0, animated: animated)
+        if changed { minimapPanelVisibilityChanged(visible) }
+    }
+
+    /// Toggles the panel's visibility (§19).
+    func toggleMinimapPanel(animated: Bool = true) {
+        setMinimapPanelVisible(!minimapPanelVisible, animated: animated)
+    }
+
+    /// Moves the divider so the panel gets `width` points (clamped to the
+    /// split's room and the legal band by the split's divider clamp),
+    /// animating unless reduced motion or the distance is a snap.
+    func setMinimapPanelWidth(_ width: CGFloat, animated: Bool = false) {
+        let total = minimapSplit.bounds.width
+        guard total > 0 else {
+            // No bounds yet: park the width in the panel's policy; the first
+            // layout places the divider from it.
+            minimapSplit.setPaneLayout(.fixed(max(0, width)), at: 1)
+            return
+        }
+        let thickness = minimapSplit.dividerThickness
+        let target = max(0, min(width, total - thickness))
+        if animated {
+            // The window grows or shrinks by the panel's width right after
+            // this (the visibility callback), so the divider is eased by the
+            // panel's WIDTH — the position is re-derived from the live bounds
+            // on every step, the way the divider drag does it.
+            minimapSplit.animateTrailingPaneSize(to: target)
+        } else {
+            minimapSplit.setDividerPosition(total - target - thickness)
+        }
+    }
+
+    /// A panel-visibility change: while hidden the maps and viewport are stale
+    /// (nothing was drawn), so a show refreshes them (§19).
+    private func minimapPanelVisibilityChanged(_ visible: Bool) {
+        if visible {
+            updateMinimapLayout()
+            refreshMinimapMaps()
+            // The mode was decided when the file opened, panel or no panel
+            // (§19.4) — showing the panel must not undo a choice made in it,
+            // only settle whether overview is on offer now that it has a height.
+            updateOverviewAvailability()
+            updateMinimapViewports()
+            rebuildOverview()
+        }
+        // The window grows or shrinks by the panel's width so the hex
+        // content area keeps its width (§19). The resize is instant; the
+        // panel's own divider animation then settles the content.
+        resizeWindowForMinimap(visible: visible)
+    }
+
+    /// Persists the panel's current width as the user's preferred width for the
+    /// next show. Only while the panel is shown and within the legal range: a
+    /// transient layout (e.g. mid-animation) whose panel width is absurd would
+    /// poison the next reveal if persisted.
+    private func persistMinimapPanelWidth(position: CGFloat) {
+        guard minimapPanelVisible else { return }
+        let split = minimapSplit
+        let panelWidth = split.bounds.width - position - split.dividerThickness
+        guard panelWidth >= Self.minimapMinPanelWidth,
+              panelWidth <= Self.minimapMaxPanelWidth else { return }
+        Self.minimapDefaults.set(panelWidth, forKey: Self.minimapWidthDefaultsKey)
     }
 
     /// Grows or shrinks the window by the minimap panel's width so the hex
@@ -572,7 +679,7 @@ final class MainViewController: NSViewController {
     /// The window grows or shrinks from the right edge; the left edge stays put.
     private func resizeWindowForMinimap(visible: Bool) {
         guard let window = view.window else { return }
-        let delta = minimapSplit.preferredPanelWidth + minimapSplit.dividerThickness
+        let delta = minimapPreferredPanelWidth + minimapSplit.dividerThickness
         var frame = window.frame
         frame.size.width = visible ? frame.size.width + delta : max(0, frame.size.width - delta)
         // Keep the window on the visible screen: when growing, the right edge
@@ -593,11 +700,11 @@ final class MainViewController: NSViewController {
         case .empty, .singleFile:
             minimapView.setMapLayout(.single)
         case .comparison:
-            guard let split = comparisonView?.splitView else { return }
-            if split.isVertical {
+            guard let comparisonView else { return }
+            if comparisonView.splitView.isVertical {
                 minimapView.setMapLayout(.sideBySide)
             } else {
-                minimapView.setMapLayout(.stacked(fraction: split.currentFraction))
+                minimapView.setMapLayout(.stacked(fraction: comparisonView.currentFraction))
             }
         }
     }
@@ -744,7 +851,7 @@ final class MainViewController: NSViewController {
     /// it costs the reads that make the typing stick. The request that cancelled
     /// it starts the wait again.
     private func scheduleOverviewRebuild() {
-        guard minimapSplit.panelVisible, minimapView.renderMode == .overview else { return }
+        guard minimapPanelVisible, minimapView.renderMode == .overview else { return }
         overviewPassTask?.cancel()
         overviewPassTask = nil
         reportOverviewProgress(nil)
@@ -767,7 +874,7 @@ final class MainViewController: NSViewController {
     }
 
     private func rebuildOverview() {
-        guard minimapSplit.panelVisible, minimapView.renderMode == .overview else { return }
+        guard minimapPanelVisible, minimapView.renderMode == .overview else { return }
         let rowCount = minimapView.overviewRowCount()
         let sources = overviewSources()
         let extent = sources.map(\.size).max() ?? 0
@@ -1379,7 +1486,7 @@ final class MainViewController: NSViewController {
     /// when the picture on screen was binned differently from what these rows
     /// would be (a resize or a new file landed in between).
     private func patchOverviewRows(covering range: Range<UInt64>) {
-        guard minimapSplit.panelVisible, minimapView.renderMode == .overview else { return }
+        guard minimapPanelVisible, minimapView.renderMode == .overview else { return }
         let summaries = minimapView.overviewSummaries
         let sources = overviewSources()
         guard !summaries.isEmpty, summaries.count == sources.count,
@@ -1429,7 +1536,7 @@ final class MainViewController: NSViewController {
     /// fresh index, a build starting, a cancel — means the derived picture is
     /// stale as a whole and is rebuilt (§19.9).
     private func overviewFollowIndexChange() {
-        guard minimapSplit.panelVisible, minimapView.renderMode == .overview else {
+        guard minimapPanelVisible, minimapView.renderMode == .overview else {
             overviewRowsAwaitingIndex.removeAll()
             return
         }
@@ -4025,8 +4132,8 @@ extension MainViewController: NSWindowDelegate {
         // must make room for it on top of the hex grids: the hex panes keep
         // their fitted width and the panel takes its preferred width (plus the
         // divider) beside them. A hidden panel adds nothing.
-        let minimapWidth = minimapSplit.panelVisible
-            ? minimapSplit.preferredPanelWidth + minimapSplit.dividerThickness
+        let minimapWidth = minimapPanelVisible
+            ? minimapPreferredPanelWidth + minimapSplit.dividerThickness
             : 0
         let fitWidth = contentWidth + minimapWidth
 
@@ -4126,7 +4233,7 @@ extension MainViewController: NSMenuItemValidation {
             // A Show/Hide item names what it will do, so the title flips with
             // the panel's state (§19). Always enabled: the minimap works with
             // no file open too (it just has nothing to draw).
-            menuItem.title = minimapSplit.panelVisible ? "Hide Minimap" : "Show Minimap"
+            menuItem.title = minimapPanelVisible ? "Hide Minimap" : "Show Minimap"
             return true
         case #selector(toggleInsertMode):
             // A checked toggle reading the ACTIVE pane's mode: the mode is per
@@ -4288,42 +4395,3 @@ private final class OffsetContextTarget: NSObject {
     }
 }
 
-// MARK: - Minimap split divider (§19)
-
-extension MainViewController: NSSplitViewDelegate {
-    /// The minimap divider's legal range. While the panel is shown, a drag (or
-    /// a resize) never shrinks the minimap below its minimum nor grows it
-    /// beyond a quarter of the screen; while hidden, both bounds pin the
-    /// divider to the right edge so the panel collapses to zero width.
-    func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
-        guard splitView === minimapSplit else { return proposedMinimumPosition }
-        guard minimapSplit.panelVisible else { return 0 }
-        let total = splitView.bounds.width
-        let maxPanel = min(MinimapSplitView.maxPanelWidth, max(0, total - splitView.dividerThickness))
-        return max(0, total - maxPanel - splitView.dividerThickness)
-    }
-
-    func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
-        guard splitView === minimapSplit else { return proposedMaximumPosition }
-        guard minimapSplit.panelVisible else {
-            return splitView.bounds.width - splitView.dividerThickness
-        }
-        return max(0, splitView.bounds.width - MinimapSplitView.minPanelWidth - splitView.dividerThickness)
-    }
-
-    /// The divider moved — a drag, a programmatic `setPosition`, or a resize —
-    /// so the panel's new width becomes the user's preferred width for the
-    /// next show. Only persisted while the panel is shown and within the legal
-    /// range: NSSplitView can report transient layouts (e.g. mid-animation)
-    /// whose panel width is absurd, and persisting those would poison the next
-    /// reveal.
-    func splitViewDidResizeSubviews(_ notification: Notification) {
-        guard let split = notification.object as? NSSplitView, split === minimapSplit else { return }
-        guard minimapSplit.panelVisible, split.arrangedSubviews.count == 2 else { return }
-        let contentWidth = split.arrangedSubviews[0].frame.width
-        let panelWidth = split.bounds.width - contentWidth - split.dividerThickness
-        guard panelWidth >= MinimapSplitView.minPanelWidth,
-              panelWidth <= MinimapSplitView.maxPanelWidth else { return }
-        MinimapSplitView.defaults.set(panelWidth, forKey: MinimapSplitView.widthDefaultsKey)
-    }
-}

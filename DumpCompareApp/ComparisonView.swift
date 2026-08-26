@@ -1,8 +1,9 @@
 import Cocoa
 import DumpCompareCore
+import ALSplitView
 
 /// The comparison-mode content view (§3.3, §9): two `FilePaneView`s inside a
-/// draggable `NSSplitView`, with:
+/// draggable `ALSplitView`, with:
 /// - a left/right ⇄ top/bottom toggle (View menu) persisted in `UserDefaults`;
 /// - synchronized scrolling by absolute offset (same row layout ⇒ same y);
 /// - the comparison coordinator's diff counts mirrored into the panes' status
@@ -12,9 +13,9 @@ final class ComparisonView: NSView {
     let paneView1: FilePaneView
     let paneView2: FilePaneView
 
-    /// Each pane's three-band drop overlay (§22.4): the split view's arranged
-    /// subviews, wrapping the panes. The bands are the drop targets; the panes
-    /// show through them. Held so the owner can wire each band's `onDrop`.
+    /// Each pane's three-band drop overlay (§22.4): the split view's panes,
+    /// wrapping the panes. The bands are the drop targets; the panes show
+    /// through them. Held so the owner can wire each band's `onDrop`.
     private(set) var bands1: PaneDropBandsView!
     private(set) var bands2: PaneDropBandsView!
 
@@ -22,7 +23,40 @@ final class ComparisonView: NSView {
     /// active pane (§3.3).
     var onPaneActivated: ((Int) -> Void)?
 
-    let splitView = ProportionalSplitView()
+    let splitView = ALSplitView()
+
+    // MARK: - Proportional split (§3.3)
+
+    /// Fraction (0...1) of the split axis given to the first pane, stored per
+    /// pane layout (§3.3): side-by-side (vertical) and stacked (horizontal) each
+    /// keep their own divider proportion, so dragging the divider in one
+    /// arrangement never changes the other's. 0.5 until a divider drag or a
+    /// 50/50 reset changes it; resizes never touch it.
+    private var verticalFraction: CGFloat = 0.5
+    private var horizontalFraction: CGFloat = 0.5
+
+    /// The fraction for the CURRENT layout: `isVertical` picks which slot to
+    /// read or write, so every read/write in the drag and animation paths
+    /// targets the active arrangement.
+    private var fraction: CGFloat {
+        get { splitView.isVertical ? verticalFraction : horizontalFraction }
+        set { if splitView.isVertical { verticalFraction = newValue } else { horizontalFraction = newValue } }
+    }
+
+    /// Called whenever the divider fraction changes — a drag or the 50/50
+    /// reset. The minimap uses it to keep its stacked divider line glued to the
+    /// panes' divider (§19).
+    var onFractionChanged: (() -> Void)?
+
+    /// The current split fraction of the first pane along the split axis
+    /// (0...1), read by the minimap so its stacked divider mirrors the panes'.
+    var currentFraction: CGFloat { fraction }
+
+    /// The divider is drawn as a solid strip at this thickness (§3.3): a 1pt
+    /// hairline is too faint next to a dense hex grid. The value feeds the
+    /// pane layout and is reused by the launch-frame width calculation (§3.1).
+    static let dividerThicknessValue: CGFloat = 6
+
     private var scrollObservers: [NSObjectProtocol] = []
     private var isSynchronizingScroll = false
     /// Whether scroll sync is live. It stays off until the first layout, so the
@@ -53,37 +87,47 @@ final class ComparisonView: NSView {
 
     private func setUp() {
         splitView.translatesAutoresizingMaskIntoConstraints = false
-        splitView.dividerStyle = .thin
+        splitView.dividerThickness = Self.dividerThicknessValue
         splitView.isVertical = LayoutSettings.isVertical
         addSubview(splitView)
 
         // Each pane is wrapped in a three-band drop overlay (§22.4): the bands
         // are the drop targets, and the pane shows through them. The wrappers
-        // are the splitter's arranged subviews; the panes fill them (the
-        // wrapper's init lays the pane out).
+        // are the splitter's panes; the panes fill them (the wrapper's init
+        // lays the pane out).
         bands1 = PaneDropBandsView(paneView: paneView1)
         bands2 = PaneDropBandsView(paneView: paneView2)
-        // Let the splitter treat both wrappers as flexible.
-        bands1.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        bands1.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        bands2.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        bands2.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        // The wrappers are Auto Layout subviews of the splitter; Proportional-
-        // SplitView's `layout()` override positions them proportionally (§3.3).
-        // Keeping `translatesAutoresizingMaskIntoConstraints` off avoids the
-        // autoresizing "width == 0" constraint that NSSplitView otherwise adds
-        // to zero-frame subviews.
-        bands1.translatesAutoresizingMaskIntoConstraints = false
-        bands2.translatesAutoresizingMaskIntoConstraints = false
-        splitView.addArrangedSubview(bands1)
-        splitView.addArrangedSubview(bands2)
+        splitView.addPane(bands1)
+        splitView.addPane(bands2)
 
         // §3.3: the split defaults to 50/50 (a fresh ComparisonView — e.g. the
         // one built when the second file opens), the divider can be dragged to
-        // any ratio, and window resizes keep that ratio proportionally.
-        // No autosaveName: opening a second file always starts at 50/50 rather
-        // than restoring a stale divider position.
+        // any ratio, and window resizes keep that ratio proportionally. The
+        // first pane is proportional and the second fills the remainder, so a
+        // resize redistributes by the stored fraction. No autosave: opening a
+        // second file always starts at 50/50 rather than restoring a stale
+        // divider position.
+        splitView.setPaneLayout(.proportional(fraction), at: 0)
+        splitView.setPaneLayout(.fill, at: 1)
+
+        // A divider drag re-derives the ratio from where the divider lands and
+        // reports it: the minimap's stacked divider line is glued to this one
+        // via onFractionChanged (§19).
+        splitView.onDividerMoved = { [weak self] _, position in
+            guard let self else { return }
+            let available = self.splitView.axisAvailable()
+            guard available > 0 else { return }
+            self.fraction = position / available
+            self.onFractionChanged?()
+        }
+
+        // §3.3: a double-click on the divider resets it to a 50/50 split,
+        // replacing NSSplitView's default double-click behavior (collapsing a
+        // pane, which this app never uses).
+        splitView.onDividerDoubleClicked = { [weak self] _ in
+            guard let self else { return }
+            self.splitView.animateDividerPosition(to: self.splitView.axisAvailable() / 2)
+        }
 
         paneView1.onActivate = { [weak self] in self?.onPaneActivated?(0) }
         paneView2.onActivate = { [weak self] in self?.onPaneActivated?(1) }
@@ -111,6 +155,10 @@ final class ComparisonView: NSView {
     func setLayout(vertical: Bool) {
         guard splitView.isVertical != vertical else { return }
         splitView.isVertical = vertical
+        // The policies are shared across orientations, so re-apply the
+        // proportion stored for the arrangement we just switched TO: pane 0
+        // takes that fraction, pane 1 fills the remainder.
+        splitView.setPaneLayout(.proportional(fraction), at: 0)
         LayoutSettings.set(isVertical: vertical)
     }
 
@@ -125,7 +173,14 @@ final class ComparisonView: NSView {
     func fitContentWidth(of index: Int) {
         let pane = index == 0 ? paneView1 : paneView2
         guard pane.frame.width < pane.contentFitWidth else { return }
-        splitView.fitPane(index, minimumWidth: pane.contentFitWidth)
+        guard splitView.isVertical else { return }
+        let available = splitView.axisAvailable()
+        // The divider position that gives the pane exactly its content width:
+        // pane 0's width IS the position; pane 1's width is the remainder.
+        let target = index == 0
+            ? pane.contentFitWidth
+            : available - pane.contentFitWidth
+        splitView.animateDividerPosition(to: min(max(0, target), available))
     }
 
     /// Highlights `index` as the active pane. The operation indicator follows

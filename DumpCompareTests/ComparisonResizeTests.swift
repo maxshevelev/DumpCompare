@@ -7,8 +7,8 @@ import XCTest
 /// ratio proportionally instead of handing the whole delta to one pane.
 ///
 /// The ratio is set by the same synthesized divider drag `DividerDragTests`
-/// uses, in a real window — `ProportionalSplitView.setPosition` existed only for
-/// these tests, so driving it proved nothing about the gesture the app offers.
+/// uses, in a real window — `ALSplitView.setDividerPosition` is what the app's
+/// own gestures drive, so driving it proves the gesture the app offers.
 /// A window (not a bare container) is required: the drag reads
 /// `event.locationInWindow`, and without a window AppKit's window-coordinate
 /// conversion flips the y-axis, which would silently invert a stacked drag.
@@ -58,7 +58,7 @@ final class ComparisonResizeTests: XCTestCase {
     /// coordinates) with synthesized mouse events.
     private func dragStackedDivider(of cv: ComparisonView, to y: CGFloat, window: NSWindow) {
         let sv = cv.splitView
-        let start = NSPoint(x: sv.bounds.midX, y: sv.arrangedSubviews[0].frame.maxY)
+        let start = NSPoint(x: sv.bounds.midX, y: sv.panes[0].frame.maxY)
         let target = NSPoint(x: sv.bounds.midX, y: y)
         sv.mouseDown(with: mouse(.leftMouseDown, at: sv.convert(start, to: nil), window: window))
         sv.mouseDragged(with: mouse(.leftMouseDragged, at: sv.convert(target, to: nil), window: window))
