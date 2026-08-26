@@ -290,4 +290,61 @@ final class ALSplitViewTests: XCTestCase {
         XCTAssertEqual(split.panes[1].frame.width, target, accuracy: 1,
                        "the pane lands at the target size despite the mid-animation resize")
     }
+
+    /// A pane's constraint-based content stretches to the frame the split
+    /// gives the pane — in the very same layout pass, with no second
+    /// `layoutIfNeeded()`.
+    ///
+    /// This is the regression that made a freshly opened second panel leave a
+    /// blank region where the first panel should be. A pane whose
+    /// `translatesAutoresizingMaskIntoConstraints` is off and which carries no
+    /// constraints has its geometry owned by the layout engine, not by its
+    /// frame: `layout()` sets the frame, the engine never hears about it, and
+    /// a view pinned to the pane's edges keeps whatever stale size the engine
+    /// last solved — a correctly sized pane holding under-sized content.
+    /// Panes are frame-based (`addPane`) precisely so the frame reaches the
+    /// engine and the pins are solved against it.
+    func testPaneContentStretchesToThePaneFrameInOnePass() {
+        let split = ALSplitView()
+        split.isVertical = true
+        // Each pane wraps a child pinned to its four edges — the app's
+        // pane-wrapper shape (a drop-band overlay around a file pane).
+        var children: [NSView] = []
+        for _ in 0..<2 {
+            let pane = NSView()
+            let child = NSView()
+            child.translatesAutoresizingMaskIntoConstraints = false
+            pane.addSubview(child)
+            NSLayoutConstraint.activate([
+                child.leadingAnchor.constraint(equalTo: pane.leadingAnchor),
+                child.trailingAnchor.constraint(equalTo: pane.trailingAnchor),
+                child.topAnchor.constraint(equalTo: pane.topAnchor),
+                child.bottomAnchor.constraint(equalTo: pane.bottomAnchor),
+            ])
+            split.addPane(pane)
+            children.append(child)
+        }
+
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 600),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        split.translatesAutoresizingMaskIntoConstraints = false
+        window.contentView?.addSubview(split)
+        NSLayoutConstraint.activate([
+            split.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor),
+            split.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor),
+            split.topAnchor.constraint(equalTo: window.contentView!.topAnchor),
+            split.bottomAnchor.constraint(equalTo: window.contentView!.bottomAnchor),
+        ])
+        window.layoutIfNeeded()
+
+        for (i, child) in children.enumerated() {
+            XCTAssertEqual(child.frame.width, split.panes[i].frame.width, accuracy: 0.01,
+                           "pane \(i)'s content fills the pane's width, leaving no blank region")
+            XCTAssertEqual(child.frame.height, split.panes[i].frame.height, accuracy: 0.01,
+                           "pane \(i)'s content fills the pane's height")
+        }
+        XCTAssertEqual(children[0].frame.width, children[1].frame.width, accuracy: 0.01,
+                       "the two panes' content is evenly split")
+        XCTAssertGreaterThan(children[0].frame.width, 0)
+    }
 }

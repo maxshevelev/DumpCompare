@@ -3,15 +3,27 @@ import Cocoa
 /// A split view: panes arranged along one axis, separated by draggable
 /// dividers.
 ///
-/// Unlike `NSSplitView`, which sizes its panes from their content and
-/// manages arranged subviews through autoresizing masks (which translate
-/// into required-priority fixed-size constraints that fight Auto Layout
-/// pins), `ALSplitView` is a plain `NSView` that owns each pane's
-/// placement directly: `layout()` computes the pane sizes from the
-/// policies and sets each pane's and divider's frame. The panes carry no
-/// Auto Layout constraints of their own, so the solver never sees their
-/// sizes and a resize can't feed back into the enclosing window's
-/// constraint layout (the "balloon").
+/// Unlike `NSSplitView`, which sizes its panes from their content,
+/// `ALSplitView` is a plain `NSView` that owns each pane's placement
+/// directly: `layout()` computes the pane sizes from the policies and sets
+/// each pane's and divider's frame. Nothing about a pane's size flows back
+/// up: the sizes are derived from this view's own `bounds`, so a resize
+/// can't feed into the enclosing window's constraint layout (the
+/// "balloon" — a pane's minimum width growing the window).
+///
+/// A pane's frame is authoritative, so a pane is a *frame-based* subview
+/// (`translatesAutoresizingMaskIntoConstraints == true`, with an empty
+/// autoresizing mask — `layout()` re-places it on every pass, so there is
+/// nothing for the mask to do). This is what makes a pane's own
+/// constraint-based content lay out against the frame the split gives it:
+/// AppKit turns the frame into the pane's engine variables, and the
+/// constraints inside the pane — a wrapped view pinned to the pane's four
+/// edges, say — are solved against them. A pane left with
+/// `translatesAutoresizingMaskIntoConstraints == false` and no constraints
+/// is the opposite: the engine, not the frame, owns its geometry, a direct
+/// frame set never reaches the engine, and the pane's content stays at
+/// whatever stale size the engine last solved for — the pane looks blank
+/// because its content never stretched to fill it.
 ///
 /// The dividers are real subviews (layer-backed, painted with the divider
 /// colour) positioned by `layout()`, not drawn in `draw(_:)` — so they
@@ -122,12 +134,14 @@ public final class ALSplitView: NSView {
     }
 
     /// Adds `pane` as the next pane. The split view owns the pane's
-    /// position and size (set directly in `layout()`), so the pane must not
-    /// carry an autoresizing mask — one would translate into a fixed-size
-    /// constraint that fights the layout. A divider subview is inserted
-    /// before the pane (except for the first pane).
+    /// position and size, setting its frame directly in `layout()`, so the
+    /// pane is made frame-based (see the type's documentation) with an empty
+    /// autoresizing mask: `layout()` re-places it on every pass, so there is
+    /// nothing for the mask to do. A divider subview is inserted before the
+    /// pane (except for the first pane).
     public func addPane(_ pane: NSView) {
-        pane.translatesAutoresizingMaskIntoConstraints = false
+        pane.translatesAutoresizingMaskIntoConstraints = true
+        pane.autoresizingMask = []
         panes.append(pane)
         paneLayouts.append(.fill)
 
@@ -136,7 +150,8 @@ public final class ALSplitView: NSView {
         // colour; `layout()` positions it between the panes.
         if panes.count > 1 {
             let divider = NSView()
-            divider.translatesAutoresizingMaskIntoConstraints = false
+            divider.translatesAutoresizingMaskIntoConstraints = true
+            divider.autoresizingMask = []
             divider.wantsLayer = true
             divider.layer?.backgroundColor = (dividerColor ?? Self.defaultDividerColor).cgColor
             dividers.append(divider)
@@ -398,23 +413,20 @@ public final class ALSplitView: NSView {
         guard count > 0 else { return }
         // Derive the per-pane sizes from the policies, then place the panes
         // and dividers directly along the axis. Direct frame setting (rather
-        // than Auto Layout constraints) keeps the split self-contained: the
-        // solver never sees the panes' sizes, so a resize can't feed back
-        // into the enclosing window's constraint layout (the "balloon").
+        // than Auto Layout constraints on the panes) keeps the split
+        // self-contained: the sizes come from this view's own bounds and
+        // nothing propagates upward, so a resize can't feed back into the
+        // enclosing window's constraint layout (the "balloon"). The panes are
+        // frame-based, so each frame set here reaches the layout engine and
+        // the pane's own constraint-based content is solved against it.
         let available = axisAvailable()
         let sizes = paneSizes(available: available)
-        NSLog("DBG ALSplitView layout: bounds=\(bounds) isVertical=\(isVertical) available=\(available) sizes=\(sizes)")
         var offset: CGFloat = 0
         for (i, pane) in panes.enumerated() {
             let size = sizes[i]
             pane.frame = isVertical
                 ? NSRect(x: offset, y: 0, width: size, height: bounds.height)
                 : NSRect(x: 0, y: offset, width: bounds.width, height: size)
-            // Force the pane to re-lay out its own subviews against the new
-            // frame: the pane's content is constraint-based, and a direct frame
-            // set from here does not by itself re-run the pane's Auto Layout
-            // pass in the same cycle.
-            pane.needsLayout = true
             offset += size
             if i < count - 1 {
                 let divider = dividers[i]
@@ -424,10 +436,12 @@ public final class ALSplitView: NSView {
                 offset += dividerThickness
             }
         }
-        // Debug: log the panes' frames after setting them.
-        for (i, pane) in panes.enumerated() {
-            NSLog("DBG ALSplitView pane[\(i)] frame=\(pane.frame) class=\(type(of: pane))")
-        }
+        // The divider grab areas moved, so the resize-cursor rects that
+        // `resetCursorRects` derives from them are stale. A layout pass does
+        // not re-run `resetCursorRects` on its own — without this, the resize
+        // cursor keeps appearing over the divider's *old* spot until something
+        // else invalidates the window's cursor rects.
+        window?.invalidateCursorRects(for: self)
     }
 
     /// Computes the per-pane sizes for a free axis of `available` points,
@@ -512,7 +526,9 @@ public final class ALSplitView: NSView {
     /// swallow the click and turn a divider drag into a scroll. Points outside
     /// every grab area pass through to the normal hit test.
     override public func hitTest(_ point: NSPoint) -> NSView? {
-        guard let superview else { return super.hitTest(point) }
+        // A hidden split claims nothing — the default implementation refuses
+        // the hit, and this override must not undo that.
+        guard !isHidden, let superview else { return super.hitTest(point) }
         let local = convert(point, from: superview)
         if bounds.contains(local), dividerIndex(at: local) != nil {
             return self

@@ -315,9 +315,10 @@ final class FilePaneView: NSView {
         // The mode indicator keeps its width: three monospaced characters, the
         // same in both states, so the bar's layout never shifts when the mode
         // flips. Its resistance beats the status text's, so a narrowing pane
-        // truncates the status text first; it stays below the split's 999
-        // pane-width constraint, so a pane dragged to zero is still zero —
-        // the indicator is the last thing to compress.
+        // truncates the status text first; both stay below required, so the
+        // split — which sets a pane's frame outright — can still squeeze a
+        // pane dragged to zero down to zero. The indicator is simply the last
+        // thing to compress.
         typingModeLabel.font = .monospacedSystemFont(ofSize: 11, weight: .semibold)
         typingModeLabel.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         typingModeLabel.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
