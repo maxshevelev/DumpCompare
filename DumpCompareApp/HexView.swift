@@ -2276,13 +2276,13 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// Whether a drag started at `origin` has moved far enough at `point` to
     /// extend the selection. A hex click that lands inside a byte's dead zone —
     /// from the middle of the high-nibble character to the middle of the
-    /// low-nibble one (§3.3) — is a mid-byte caret placement, so it must leave
-    /// the zone before a drag selects: the zone's boundary sits on the byte's
-    /// centre, where a 1 px jitter would otherwise flip the selection end and
-    /// select the byte by accident. Clicks outside the zone (a byte's outer
-    /// quarters, or the offset/ASCII columns) are clear positions and any drag
-    /// engages immediately. The zone spans the click's row, so vertical
-    /// movement engages too.
+    /// low-nibble one (§3.3) — sits close enough to the byte's centre that a
+    /// 1 px jitter would cross the drag-selection boundary there and select
+    /// the byte by accident, so the drag must leave the zone before the
+    /// selection engages. Clicks outside the zone (a byte's outer quarters, or
+    /// the offset/ASCII columns) are clear positions and any drag engages
+    /// immediately. The zone spans the click's row, so vertical movement
+    /// engages too.
     private func dragHasLeftDeadZone(from origin: CGPoint, to point: CGPoint) -> Bool {
         let layout = currentLayout
         guard let dataSource else { return true }
@@ -2338,6 +2338,46 @@ final class HexView: NSView, NSViewToolTipOwner {
         return layout.byteOffset(row: hit.row, column: 0)
     }
 
+    /// The byte and nibble a click at `x` places the caret on (§3.3). The
+    /// column is what `hitTest` reported; the returned column can differ by
+    /// one when the click sits in the gap before it (see below).
+    ///
+    /// Overwrite mode: the caret is the underline under one nibble character,
+    /// so each nibble's zone is the character it underlines plus the nearer
+    /// half of each adjacent inter-byte gap — the left nibble runs from the
+    /// middle of the preceding gap to the byte's centre, the right nibble from
+    /// the centre to the middle of the following gap. The zones meet exactly
+    /// on the nibble boundary, the byte's centre, and a side with no inter-byte
+    /// gap (a byte packed into a multi-byte word, or the row's first/last byte
+    /// against a column gap) ends at the byte's own edge. `hitTest` hands a
+    /// whole gap to the *following* byte, so a click in the gap's first half
+    /// arrives as the following byte but belongs to the previous byte's right
+    /// nibble — the returned column is that previous byte.
+    ///
+    /// Insert mode: the caret is a vertical line, so the byte is always the
+    /// hit one and the threshold stays where it was — the middle of the
+    /// high-nibble character, a large target so the mid-byte caret is easy to
+    /// reach without aiming at the gap.
+    private func hexClickPlacement(atX x: CGFloat, column: Int, layout: HexLayout)
+        -> (column: Int, nibble: Int) {
+        let byteX = layout.hexByteX(column: column)
+        if dataSource?.hexInsertMode ?? false {
+            return (column, x - byteX >= layout.charWidth / 2 ? 1 : 0)
+        }
+        if x >= byteX {
+            // Inside the byte's own cell: the byte's centre splits the nibbles.
+            return (column, x - byteX >= layout.charWidth ? 1 : 0)
+        }
+        // In the gap before the byte — which exists only for column > 0, the
+        // row's first byte starting the hex region. The gap's nearer half
+        // belongs to the previous byte's right nibble; the far half to this
+        // byte's left nibble.
+        guard column > 0 else { return (column, 0) }
+        let previous = column - 1
+        let gapMid = (layout.hexByteX(column: previous) + layout.hexByteWidth + byteX) / 2
+        return x < gapMid ? (previous, 1) : (column, 0)
+    }
+
     private func handleMouse(_ event: NSEvent, extendSelection: Bool) {
         guard let dataSource, let delegate else { return }
         let point = convert(event.locationInWindow, from: nil)
@@ -2361,13 +2401,10 @@ final class HexView: NSView, NSViewToolTipOwner {
             offset = layout.byteOffset(row: hit.row, column: 0)
             region = .hex
         case .hex(let column):
-            offset = layout.byteOffset(row: hit.row, column: column)
+            let placement = hexClickPlacement(atX: point.x, column: column, layout: layout)
+            offset = layout.byteOffset(row: hit.row, column: placement.column)
             region = .hex
-            // A click on the first half of the byte's high-nibble char places
-            // the caret before it; anywhere from the second half of that char
-            // onward places it between the two chars — a large target, so the
-            // mid-byte caret is easy to reach without aiming at the gap (§3.3).
-            nibble = (point.x - layout.hexByteX(column: column)) >= layout.charWidth / 2 ? 1 : 0
+            nibble = placement.nibble
         case .ascii(let column):
             offset = layout.byteOffset(row: hit.row, column: column)
             region = .ascii

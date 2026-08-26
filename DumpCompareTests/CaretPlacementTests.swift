@@ -2,12 +2,14 @@ import DumpCompareCore
 import XCTest
 @testable import DumpCompare
 
-/// §3.3 caret placement: a click in the second half of a byte's high-nibble
-/// character — or anywhere on its low-nibble character — places the caret
-/// between the byte's two hex characters; a click in the first half of the
-/// high-nibble character places it before them. Arrow navigation is byte-wise —
-/// it always lands on a byte's left boundary (nibble 0), even when the caret
-/// was mid-byte.
+/// §3.3 caret placement. The click threshold that separates a byte's two
+/// nibbles depends on the typing mode: in overwrite mode the caret is the
+/// underline under a nibble character, so the threshold is the byte's centre
+/// (the nibble boundary) and each nibble's zone reaches into the adjacent
+/// inter-byte gaps to their middles; in insert mode the caret is a vertical
+/// line and the threshold stays on the high-nibble character's middle. Arrow
+/// navigation is byte-wise — it always lands on a byte's left boundary
+/// (nibble 0), even when the caret was mid-byte.
 ///
 /// Driven through the real `HexView` with synthesized mouse and key events (same
 /// pattern as `MouseSelectionTests`), so the full path — point → `hitTest` →
@@ -40,23 +42,16 @@ final class CaretPlacementTests: XCTestCase {
         return (pane, hexView, window, url)
     }
 
-    /// Click point inside the byte's hex cell. Nibble 0 is the first half of
-    /// the high-nibble character (caret before the byte); nibble 1 is the
-    /// second half of that character (caret between the two chars) — the
-    /// threshold the user asked for: the mid-byte caret is placed from the
-    /// second half of the first character onward.
+    /// Click point inside the byte's hex cell, in the requested nibble's zone
+    /// in either typing mode: nibble 0 is a quarter of a character in (inside
+    /// the high nibble's zone in both modes); nibble 1 is the centre of the
+    /// low-nibble character (inside its zone in both modes — the overwrite
+    /// threshold is the byte's centre and the insert threshold the high
+    /// nibble's middle, and the low nibble's centre is past both).
     private func nibblePoint(_ hexView: HexView, row: Int, column: Int, nibble: Int) -> NSPoint {
         let layout = hexView.hexLayout
-        let fraction = nibble == 0 ? 0.25 : 0.75
+        let fraction = nibble == 0 ? 0.25 : 1.5
         let local = CGPoint(x: layout.hexByteX(column: column) + layout.charWidth * fraction,
-                            y: CGFloat(row) * layout.rowHeight)
-        return hexView.convert(local, to: nil)
-    }
-
-    /// Centre of the byte's low-nibble (second) character.
-    private func secondCharPoint(_ hexView: HexView, row: Int, column: Int) -> NSPoint {
-        let layout = hexView.hexLayout
-        let local = CGPoint(x: layout.hexByteX(column: column) + layout.charWidth * 1.5,
                             y: CGFloat(row) * layout.rowHeight)
         return hexView.convert(local, to: nil)
     }
@@ -83,27 +78,81 @@ final class CaretPlacementTests: XCTestCase {
         hexView.keyDown(with: event)
     }
 
-    /// One click threshold inside a byte's high nibble, from both sides: before
-    /// its midpoint the caret goes to the byte's start, after it to the middle.
-    /// The three points are the two halves of the high nibble and the low
-    /// nibble's own cell — the last is further from the threshold than the
-    /// second, so it adds no branch, only reassurance that the whole right half
-    /// of the byte reads as mid-byte.
+    /// The click threshold that separates a byte's two nibbles depends on the
+    /// typing mode, probed from both sides. Overwrite mode (the default): the
+    /// caret is the underline under a nibble character, so the threshold is
+    /// the byte's centre — the high nibble's second half is still the high
+    /// nibble's zone, and the low nibble's first half is already the low
+    /// nibble's. Insert mode: the caret is a vertical line, so the threshold
+    /// stays on the high-nibble character's middle.
     func testWhereInAByteAClickLandsDecidesTheNibble() throws {
         let (pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 32))
         defer { try? FileManager.default.removeItem(at: url) }
+        let layout = hexView.hexLayout
+        let byteX = layout.hexByteX(column: 5)
+        func point(_ fraction: CGFloat) -> NSPoint {
+            hexView.convert(CGPoint(x: byteX + layout.charWidth * fraction,
+                                    y: layout.rowHeight / 2), to: nil)
+        }
 
-        click(hexView, at: nibblePoint(hexView, row: 0, column: 5, nibble: 0), window: window)
+        // Overwrite mode (the default): the threshold is the byte's centre.
+        click(hexView, at: point(0.25), window: window)
         XCTAssertEqual(pane.hexSelection().start, 5)
         XCTAssertEqual(pane.hexCaretNibble(), 0, "the high nibble's first half places the caret before the byte")
 
-        click(hexView, at: nibblePoint(hexView, row: 0, column: 5, nibble: 1), window: window)
-        XCTAssertEqual(pane.hexSelection().start, 5)
-        XCTAssertEqual(pane.hexCaretNibble(), 1, "its second half places the caret mid-byte")
+        click(hexView, at: point(0.75), window: window)
+        XCTAssertEqual(pane.hexCaretNibble(), 0,
+                       "overwrite mode: the high nibble's second half is still its zone — the threshold is the byte's centre")
 
-        click(hexView, at: secondCharPoint(hexView, row: 0, column: 5), window: window)
+        click(hexView, at: point(1.25), window: window)
+        XCTAssertEqual(pane.hexCaretNibble(), 1, "the low nibble's first half places the caret mid-byte")
+
+        click(hexView, at: point(1.75), window: window)
+        XCTAssertEqual(pane.hexCaretNibble(), 1, "and so does the low nibble's second half")
+
+        // Insert mode: the threshold stays on the high-nibble character's middle.
+        pane.isInsertMode = true
+        click(hexView, at: point(0.25), window: window)
+        XCTAssertEqual(pane.hexCaretNibble(), 0, "insert mode: before the high nibble's midpoint the caret is before the byte")
+
+        click(hexView, at: point(0.75), window: window)
+        XCTAssertEqual(pane.hexCaretNibble(), 1, "insert mode: from the high nibble's midpoint on the caret is mid-byte")
+    }
+
+    /// Overwrite mode: each nibble's zone reaches into the adjacent inter-byte
+    /// gaps to their middles — a click in a gap's first half (nearer the
+    /// previous byte) lands on that byte's low nibble, a click in its second
+    /// half on the following byte's high nibble. The wider gap between the two
+    /// 8-byte groups splits the same way, at its middle.
+    func testOverwriteClickInByteGapLandsOnNeighbouringNibble() throws {
+        let (pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 32))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let layout = hexView.hexLayout
+        func point(x: CGFloat) -> NSPoint {
+            hexView.convert(CGPoint(x: x, y: layout.rowHeight / 2), to: nil)
+        }
+
+        // The one-character gap after byte 5: its first half is byte 5's low
+        // nibble's, its second half byte 6's high nibble's.
+        let gapAfter5 = layout.hexByteX(column: 5) + layout.hexByteWidth
+        click(hexView, at: point(x: gapAfter5 + layout.charWidth * 0.25), window: window)
         XCTAssertEqual(pane.hexSelection().start, 5)
-        XCTAssertEqual(pane.hexCaretNibble(), 1, "and so does the low nibble's own cell")
+        XCTAssertEqual(pane.hexCaretNibble(), 1, "the gap's first half belongs to the previous byte's low nibble")
+
+        click(hexView, at: point(x: gapAfter5 + layout.charWidth * 0.75), window: window)
+        XCTAssertEqual(pane.hexSelection().start, 6)
+        XCTAssertEqual(pane.hexCaretNibble(), 0, "the gap's second half belongs to the following byte's high nibble")
+
+        // The two-character gap between the groups, after byte 7: the same
+        // rule, split at the gap's middle.
+        let groupGap = layout.hexByteX(column: 7) + layout.hexByteWidth
+        click(hexView, at: point(x: groupGap + layout.charWidth * 0.5), window: window)
+        XCTAssertEqual(pane.hexSelection().start, 7)
+        XCTAssertEqual(pane.hexCaretNibble(), 1, "the group gap's first half belongs to byte 7's low nibble")
+
+        click(hexView, at: point(x: groupGap + layout.charWidth * 1.5), window: window)
+        XCTAssertEqual(pane.hexSelection().start, 8)
+        XCTAssertEqual(pane.hexCaretNibble(), 0, "the group gap's second half belongs to byte 8's high nibble")
     }
 
     // MARK: - Hex ⇄ ASCII cross-link (§3.3)
