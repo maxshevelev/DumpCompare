@@ -200,6 +200,10 @@ final class MainViewController: NSViewController {
         // index never feeds it (§19).
         comparisonCoordinator.onStateChanged = { [weak self] in
             self?.refreshDiffNavigation()
+            // The "Files are identical" badge is index-driven, not caret-driven:
+            // it must swap in/out on every index transition, not only on mode
+            // changes. The sync is coalesced and deferred a run-loop turn.
+            self?.syncDiffNavigationToolbarItem()
             // Detail reads difference state per byte from the panes, but the
             // overview takes it from this index — one query per block beats
             // re-reading both files (§19.4).
@@ -2972,24 +2976,37 @@ final class MainViewController: NSViewController {
         // `viewDidAppear`.
         guard let window = viewIfLoaded?.window, window.isVisible,
               let toolbar = window.toolbar else { return }
-        let index = toolbar.items.firstIndex { $0.itemIdentifier == .diffNavigation }
-        switch (mode == .comparison, index) {
-        case (true, nil):
-            // Before the standard space, so the block keeps its place between
-            // the flexible space and the minimap toggle (§19).
-            let insertAt = toolbar.items.firstIndex { $0.itemIdentifier == .space }
-                ?? toolbar.items.count
-            toolbar.insertItem(withItemIdentifier: .diffNavigation, at: insertAt)
-            // A freshly inserted item starts enabled — AppKit's default
-            // validation only asks whether the target responds to the action —
-            // so it would offer a live-looking Prev Diff until the next
-            // validation pass (§10.3).
-            toolbar.validateVisibleItems()
-        case (false, let index?):
-            toolbar.removeItem(at: index)
-        default:
-            break
+        // Exactly one of the two occupies the slot: the Prev/Next Difference
+        // block, or — when the comparison holds no differences at all — the
+        // "Files are identical" badge in its place (§10.3).
+        let wanted: NSToolbarItem.Identifier? =
+            mode == .comparison ? (showsIdenticalBadge ? .filesIdentical : .diffNavigation) : nil
+        for identifier in [NSToolbarItem.Identifier.diffNavigation, .filesIdentical] {
+            if let i = toolbar.items.firstIndex(where: { $0.itemIdentifier == identifier }) {
+                if identifier != wanted { toolbar.removeItem(at: i) }
+            } else if identifier == wanted {
+                // Before the standard space, so the block keeps its place
+                // between the flexible space and the minimap toggle (§19).
+                let insertAt = toolbar.items.firstIndex { $0.itemIdentifier == .space }
+                    ?? toolbar.items.count
+                toolbar.insertItem(withItemIdentifier: identifier, at: insertAt)
+                // A freshly inserted item starts enabled — AppKit's default
+                // validation only asks whether the target responds to the
+                // action — so it would offer a live-looking Prev Diff until
+                // the next validation pass (§10.3).
+                toolbar.validateVisibleItems()
+            }
         }
+    }
+
+    /// Whether the toolbar shows the "Files are identical" badge instead of the
+    /// Prev/Next Difference arrows: comparison mode, index built, no differences.
+    /// `index?.hasDifferences == false` is false while the index is nil, so a
+    /// not-yet-built index never shows the badge — the disabled buttons do.
+    private var showsIdenticalBadge: Bool {
+        mode == .comparison
+            && !comparisonCoordinator.isBuilding
+            && comparisonCoordinator.index?.hasDifferences == false
     }
 
     // MARK: - Comparison navigation (§10.3)

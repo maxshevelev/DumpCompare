@@ -195,6 +195,36 @@ final class DiffEngineTests: XCTestCase {
         XCTAssertNil(index.previousSame(from: 0))
     }
 
+    // MARK: - hasDifferences
+
+    /// `hasDifferences` is the "Files are identical" badge's signal: the
+    /// comparison holds at least one `.different` block. The coalesced blocks
+    /// alternate kinds, so it is O(1) — but the single-block case is the trap:
+    /// identical files coalesce to one `.same` block (no difference) while a
+    /// totally different or one-sided file is one `.different` block (a
+    /// difference).
+    func testHasDifferences() throws {
+        // Two empty files: no blocks at all.
+        let empty = DiffBlockIndex(leftSize: 0, rightSize: 0, blocks: [])
+        XCTAssertFalse(empty.hasDifferences)
+
+        // Identical files coalesce to a single .same block.
+        let identical = try index([0x01, 0x02, 0x03], [0x01, 0x02, 0x03])
+        XCTAssertFalse(identical.hasDifferences, "one .same block is not a difference")
+
+        // Every byte differs: a single .different block.
+        let allDifferent = try index([0x01, 0x02, 0x03], [0xFF, 0xFE, 0xFD])
+        XCTAssertTrue(allDifferent.hasDifferences, "one .different block is a difference")
+
+        // One file empty: the whole extent is one .different block.
+        let oneSided = try index([], [1, 2, 3])
+        XCTAssertTrue(oneSided.hasDifferences)
+
+        // A single differing byte: three blocks, same/different/same.
+        let mixed = try index([0xAA, 0x00, 0xAA], [0xAA, 0x01, 0xAA])
+        XCTAssertTrue(mixed.hasDifferences, "two or more blocks guarantee one")
+    }
+
     // MARK: - Incremental invalidation
 
     /// An overwrite recomputes only its own range and splices it back, so the

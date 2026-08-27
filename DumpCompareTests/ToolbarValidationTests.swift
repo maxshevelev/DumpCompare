@@ -115,6 +115,13 @@ final class ToolbarValidationTests: XCTestCase {
         controller.apply(mode: .comparison)
         window.layoutIfNeeded()
 
+        // The block is inserted a run-loop turn after the mode change (AppKit
+        // will not have the toolbar mutated mid-reconfiguration), so wait for it
+        // before reading the rendered buttons.
+        XCTAssertTrue(pumpUntil(2) {
+            window.toolbar?.items.contains { $0.itemIdentifier == .diffNavigation } ?? false
+        }, "the difference block appears in comparison mode")
+
         let (prev, next) = try arrowButtons(window)
         // The index has to land before navigation is possible at all (§10.3).
         // Both conditions in one wait: the arrows are validated together, and
@@ -127,5 +134,75 @@ final class ToolbarValidationTests: XCTestCase {
         controller.windowModel.pane1.moveCaret(to: UInt64(left.count))
         XCTAssertTrue(pumpUntil(2) { prev.isEnabled && !next.isEnabled },
                       "at EOF the change lies behind the caret, not ahead")
+    }
+
+    // MARK: - The "Files are identical" badge
+
+    private func has(_ window: NSWindow, _ id: NSToolbarItem.Identifier) -> Bool {
+        window.toolbar?.items.contains { $0.itemIdentifier == id } ?? false
+    }
+
+    /// When the two files are identical, the Prev/Next Difference block is
+    /// replaced by the "Files are identical" badge — a green checkmark with the
+    /// text, not a pair of buttons that can never do anything. The badge is
+    /// index-driven: it appears only once the index has landed and reports no
+    /// differences, and it takes the block's slot between the flexible space
+    /// and the minimap toggle (§10.3).
+    func testIdenticalFilesShowTheBadgeInsteadOfTheArrows() throws {
+        let wc = makeWindow()
+        let controller = wc.mainViewController
+        let window = wc.window!
+        let bytes = [UInt8](repeating: 0x11, count: 64)
+        let urlA = try tempFile(bytes)
+        let urlB = try tempFile(bytes)
+        defer {
+            controller.windowModel.pane1.close()
+            controller.windowModel.pane2.close()
+            wc.close()
+            try? FileManager.default.removeItem(at: urlA)
+            try? FileManager.default.removeItem(at: urlB)
+        }
+
+        try controller.windowModel.pane1.open(url: urlA)
+        try controller.windowModel.pane2.open(url: urlB)
+        controller.apply(mode: .comparison)
+        window.layoutIfNeeded()
+
+        // The badge waits for the index to land and report no differences.
+        XCTAssertTrue(pumpUntil(5) { has(window, .filesIdentical) && !has(window, .diffNavigation) },
+                      "identical files: the badge replaces the arrows")
+        // And it takes the block's slot.
+        XCTAssertEqual(window.toolbar?.items.map(\.itemIdentifier),
+                       [.flexibleSpace, .filesIdentical, .space, .toggleMinimap])
+
+        // The badge reads as "Files are identical" to assistive tech.
+        let root = try XCTUnwrap(window.contentView?.superview)
+        XCTAssertNotNil(descendants(of: root).first { $0.accessibilityLabel() == "Files are identical" },
+                        "the badge's accessibility label is 'Files are identical'")
+    }
+
+    /// Two different files keep the Prev/Next Difference block — the badge is
+    /// for the no-differences case only, so it must not appear here.
+    func testDifferentFilesKeepTheArrowsNotTheBadge() throws {
+        let wc = makeWindow()
+        let controller = wc.mainViewController
+        let window = wc.window!
+        let urlA = try tempFile([UInt8](repeating: 0x11, count: 64))
+        let urlB = try tempFile([UInt8](repeating: 0x22, count: 64))
+        defer {
+            controller.windowModel.pane1.close()
+            controller.windowModel.pane2.close()
+            wc.close()
+            try? FileManager.default.removeItem(at: urlA)
+            try? FileManager.default.removeItem(at: urlB)
+        }
+
+        try controller.windowModel.pane1.open(url: urlA)
+        try controller.windowModel.pane2.open(url: urlB)
+        controller.apply(mode: .comparison)
+        window.layoutIfNeeded()
+
+        XCTAssertTrue(pumpUntil(5) { has(window, .diffNavigation) && !has(window, .filesIdentical) },
+                      "different files: the arrows stay, no badge")
     }
 }

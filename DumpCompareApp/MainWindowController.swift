@@ -12,6 +12,13 @@ final class MainWindowController: NSWindowController {
     /// far right, past a standard space). Held so the delegate can hand it out.
     private(set) var minimapToggleItem: NSToolbarItem?
 
+    /// The toolbar's "Files are identical" badge — a green checkmark plus a
+    /// label, shown in place of the Prev/Next Difference block when the
+    /// comparison index has no differences. A custom view: the toolbar is
+    /// icon-only, so a standard item would not render the text. Held so the
+    /// delegate can hand it out.
+    private(set) var filesIdenticalItem: NSToolbarItem?
+
     init() {
         let controller = MainViewController()
         // The launch width fits one pane's hex grid at the saved word size
@@ -137,6 +144,53 @@ final class MainWindowController: NSWindowController {
         ]
         group.controlRepresentation = .expanded
         return group
+    }
+
+    /// The "Files are identical" badge item: a green checkmark and a label in a
+    /// view that sizes to its content. The toolbar is icon-only, so the text
+    /// must live in a custom view — a standard item's label would not render.
+    private func makeFilesIdenticalItem() -> NSToolbarItem {
+        let item = NSToolbarItem(itemIdentifier: .filesIdentical)
+        item.label = "Files are identical"
+        item.paletteLabel = "Files are identical"
+        item.view = makeFilesIdenticalBadgeView()
+        return item
+    }
+
+    /// The badge's view: a green `checkmark.circle.fill` beside a
+    /// "Files are identical" label, laid out horizontally and sized to fit so
+    /// the toolbar lays the item out at its natural width.
+    private func makeFilesIdenticalBadgeView() -> NSView {
+        let container = NSView()
+
+        let icon = NSImageView()
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.image = NSImage(systemSymbolName: "checkmark.circle.fill",
+                             accessibilityDescription: "Files are identical")
+        icon.contentTintColor = .systemGreen
+        icon.imageScaling = .scaleProportionallyUpOrDown
+
+        let label = NSTextField(labelWithString: "Files are identical")
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.font = .systemFont(ofSize: NSFont.systemFontSize)
+        label.textColor = .labelColor
+
+        container.addSubview(icon)
+        container.addSubview(label)
+        NSLayoutConstraint.activate([
+            icon.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            icon.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 16),
+            icon.heightAnchor.constraint(equalToConstant: 16),
+            label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 4),
+            label.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            label.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            // The container is as tall as the label and as wide as icon + gap +
+            // label — fully determined, so the toolbar sizes the item to it.
+            container.heightAnchor.constraint(equalTo: label.heightAnchor),
+        ])
+        container.setAccessibilityLabel("Files are identical")
+        return container
     }
 
     // MARK: - Menu
@@ -358,6 +412,9 @@ extension NSToolbarItem.Identifier {
     static let previousDifference = NSToolbarItem.Identifier("PreviousDifference")
     /// Next Difference — the right subitem of the diff group.
     static let nextDifference = NSToolbarItem.Identifier("NextDifference")
+    /// The "Files are identical" badge, shown in place of the diff group when
+    /// the comparison index has no differences.
+    static let filesIdentical = NSToolbarItem.Identifier("FilesIdentical")
     /// The minimap show/hide toggle button at the toolbar's far right (§19).
     static let toggleMinimap = NSToolbarItem.Identifier("ToggleMinimap")
 }
@@ -366,7 +423,7 @@ extension MainWindowController: NSToolbarDelegate {
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         // The flexible space must be listed as allowed too, or AppKit drops it
         // from the default items and the diff block ends up on the LEFT edge.
-        [.flexibleSpace, .diffNavigation, .toggleMinimap, .space]
+        [.flexibleSpace, .diffNavigation, .filesIdentical, .toggleMinimap, .space]
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -391,6 +448,13 @@ extension MainWindowController: NSToolbarDelegate {
                 diffNavigationGroup = makeDiffNavigationGroup()
             }
             return diffNavigationGroup
+        case .filesIdentical:
+            // Built on first request and cached, like the diff group: the swap
+            // logic re-inserts the same instance each time it is wanted.
+            if filesIdenticalItem == nil {
+                filesIdenticalItem = makeFilesIdenticalItem()
+            }
+            return filesIdenticalItem
         case .toggleMinimap:
             if minimapToggleItem == nil {
                 let item = NSToolbarItem(itemIdentifier: .toggleMinimap)

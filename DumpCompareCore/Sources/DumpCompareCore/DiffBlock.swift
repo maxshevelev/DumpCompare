@@ -52,6 +52,17 @@ public struct DiffBlockIndex: Equatable, Sendable {
     /// True when both files are empty.
     public var isEmpty: Bool { blocks.isEmpty }
 
+    /// True when the comparison contains at least one `.different` block. O(1):
+    /// the coalesced blocks alternate kinds, so two or more blocks guarantee a
+    /// difference, and a single block is a difference only if it is one.
+    public var hasDifferences: Bool {
+        switch blocks.count {
+        case 0: return false
+        case 1: return blocks[0].kind == .different
+        default: return true
+        }
+    }
+
     /// The diff state at `offset`, or `nil` at or past the longer file's EOF.
     public func state(at offset: UInt64) -> DiffBlock.Kind? {
         guard !blocks.isEmpty else { return nil }
