@@ -205,4 +205,46 @@ final class ToolbarValidationTests: XCTestCase {
         XCTAssertTrue(pumpUntil(5) { has(window, .diffNavigation) && !has(window, .filesIdentical) },
                       "different files: the arrows stay, no badge")
     }
+
+    /// Replacing a file in an already-open pane leaves the mode `.comparison`,
+    /// so `refreshMode` skips `apply` and the comparison would never restart —
+    /// the index kept the previous files' differences (phantom blocks in the
+    /// overview and the arrows). Opening a new file replaces the storage
+    /// wholesale, so it must invalidate the comparison the way a revert does.
+    func testReplacingFilesInOpenPanesRebuildsTheComparison() throws {
+        let wc = makeWindow()
+        let controller = wc.mainViewController
+        let window = wc.window!
+        let diffA = try tempFile([UInt8](repeating: 0x11, count: 64))
+        let diffB = try tempFile([UInt8](repeating: 0x22, count: 64))
+        let sameA = try tempFile([UInt8](repeating: 0x33, count: 64))
+        let sameB = try tempFile([UInt8](repeating: 0x33, count: 64))
+        defer {
+            controller.windowModel.pane1.close()
+            controller.windowModel.pane2.close()
+            wc.close()
+            try? FileManager.default.removeItem(at: diffA)
+            try? FileManager.default.removeItem(at: diffB)
+            try? FileManager.default.removeItem(at: sameA)
+            try? FileManager.default.removeItem(at: sameB)
+        }
+
+        // Two different files: the arrows show.
+        try controller.windowModel.pane1.open(url: diffA)
+        try controller.windowModel.pane2.open(url: diffB)
+        controller.apply(mode: .comparison)
+        window.layoutIfNeeded()
+        XCTAssertTrue(pumpUntil(5) { has(window, .diffNavigation) },
+                      "different files: the arrows appear")
+
+        // Replace both with identical files the way File > Open does when both
+        // panes are already open: the mode is unchanged, so no `apply` runs —
+        // only each pane's own open fires. The index must rebuild from the new
+        // files and the badge take the arrows' place.
+        try controller.windowModel.pane1.open(url: sameA)
+        try controller.windowModel.pane2.open(url: sameB)
+        window.layoutIfNeeded()
+        XCTAssertTrue(pumpUntil(5) { has(window, .filesIdentical) && !has(window, .diffNavigation) },
+                      "identical replacements: the badge replaces the stale arrows")
+    }
 }

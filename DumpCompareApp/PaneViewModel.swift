@@ -330,6 +330,10 @@ final class PaneViewModel: HexViewDataSource {
         // A new file is one piece — itself — named after the file (§21).
         resetSegments(for: doc)
         startWatching(url)
+        // Opening a new file replaces the storage wholesale, like a revert —
+        // the comparison must re-read, even when the mode is unchanged (both
+        // panes already open), which is the one path that skips `apply(mode:)`.
+        onFullInvalidation?()
         // Announce the new document so the header glyph/name and the hex view
         // update immediately, not only on the next user action.
         notify()
@@ -358,6 +362,9 @@ final class PaneViewModel: HexViewDataSource {
         resetSegments(for: doc)
         changeWatcher?.stop()
         changeWatcher = nil
+        // A new document replaces the storage wholesale, like a revert — the
+        // comparison must re-read even when the mode is unchanged.
+        onFullInvalidation?()
         notify()
         notifyCompanionContentFullyChanged()
     }

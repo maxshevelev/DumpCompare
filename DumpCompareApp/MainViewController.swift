@@ -2981,22 +2981,29 @@ final class MainViewController: NSViewController {
         // "Files are identical" badge in its place (§10.3).
         let wanted: NSToolbarItem.Identifier? =
             mode == .comparison ? (showsIdenticalBadge ? .filesIdentical : .diffNavigation) : nil
-        for identifier in [NSToolbarItem.Identifier.diffNavigation, .filesIdentical] {
+        // Insert the wanted item first, then drop the other. Inserting before
+        // removing keeps every mutation on a toolbar that still carries its
+        // full item set, which is the order NSToolbar's internal item indexing
+        // tolerates: removing first and then inserting in the same pass leaves
+        // a stale index and raises in -[_itemAtIndex:].
+        if let wanted,
+           !toolbar.items.contains(where: { $0.itemIdentifier == wanted }) {
+            // Before the standard space, so the block keeps its place between
+            // the flexible space and the minimap toggle (§19).
+            let insertAt = toolbar.items.firstIndex { $0.itemIdentifier == .space }
+                ?? toolbar.items.count
+            toolbar.insertItem(withItemIdentifier: wanted, at: insertAt)
+        }
+        for identifier in [NSToolbarItem.Identifier.diffNavigation, .filesIdentical]
+        where identifier != wanted {
             if let i = toolbar.items.firstIndex(where: { $0.itemIdentifier == identifier }) {
-                if identifier != wanted { toolbar.removeItem(at: i) }
-            } else if identifier == wanted {
-                // Before the standard space, so the block keeps its place
-                // between the flexible space and the minimap toggle (§19).
-                let insertAt = toolbar.items.firstIndex { $0.itemIdentifier == .space }
-                    ?? toolbar.items.count
-                toolbar.insertItem(withItemIdentifier: identifier, at: insertAt)
-                // A freshly inserted item starts enabled — AppKit's default
-                // validation only asks whether the target responds to the
-                // action — so it would offer a live-looking Prev Diff until
-                // the next validation pass (§10.3).
-                toolbar.validateVisibleItems()
+                toolbar.removeItem(at: i)
             }
         }
+        // A freshly inserted item starts enabled — AppKit's default validation
+        // only asks whether the target responds to the action — so it would
+        // offer a live-looking Prev Diff until the next validation pass (§10.3).
+        toolbar.validateVisibleItems()
     }
 
     /// Whether the toolbar shows the "Files are identical" badge instead of the
