@@ -1,13 +1,17 @@
 import Cocoa
 
-/// The Appearance tab of the Settings window (§3.2): the monospaced font and
-/// the row-height factor. Every change persists immediately through
-/// `AppearanceSettings.set` and re-lays out every open hex view, so the effect
-/// is visible live behind the settings window.
+/// The Appearance tab of the Settings window (§3.2): the monospaced font
+/// (family and size), the row-height factor, and the app theme. Every change
+/// persists immediately through `AppearanceSettings.set` / `AppTheme.set` and
+/// re-lays out every open hex view (or re-themes the app), so the effect is
+/// visible live behind the settings window.
 final class AppearanceSettingsViewController: NSViewController {
     private let fontPopup = NSPopUpButton()
+    private let fontStepper = NSStepper()
+    private let fontSizeValueLabel = NSTextField(labelWithString: "")
     private let scaleSlider = NSSlider()
     private let scaleValueLabel = NSTextField(labelWithString: "")
+    private let themePopup = NSPopUpButton()
 
     override func loadView() {
         let root = NSView()
@@ -15,12 +19,28 @@ final class AppearanceSettingsViewController: NSViewController {
         let titleLabel = NSTextField(labelWithString: "Appearance")
         titleLabel.font = .boldSystemFont(ofSize: 15)
 
-        // Font row: a popup of "System" + the monospaced families.
+        // Font row: a popup of "System" + the monospaced families, with the
+        // font-size stepper + value sharing the same row (the size has no label
+        // of its own). NSStepper's min/max/increment are Doubles; the size is an
+        // integer number of points, so it steps by 1 and is read back through
+        // `integerValue`.
         let fontLabel = NSTextField(labelWithString: "Font:")
         fontPopup.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         fontPopup.target = self
         fontPopup.action = #selector(fontChanged(_:))
-        fontPopup.widthAnchor.constraint(equalToConstant: 260).isActive = true
+        fontPopup.widthAnchor.constraint(equalToConstant: 200).isActive = true
+        fontStepper.minValue = AppearanceSettings.fontSizeRange.lowerBound
+        fontStepper.maxValue = AppearanceSettings.fontSizeRange.upperBound
+        fontStepper.increment = 1
+        fontStepper.valueWraps = false
+        fontStepper.target = self
+        fontStepper.action = #selector(fontSizeChanged(_:))
+        let fontRow = NSStackView()
+        fontRow.orientation = .horizontal
+        fontRow.spacing = 8
+        fontRow.addArrangedSubview(fontPopup)
+        fontRow.addArrangedSubview(fontStepper)
+        fontRow.addArrangedSubview(fontSizeValueLabel)
 
         // Row-height row: a slider snapping to 0.05 steps + the current value.
         let scaleLabel = NSTextField(labelWithString: "Row Height:")
@@ -38,9 +58,16 @@ final class AppearanceSettingsViewController: NSViewController {
         scaleRow.addArrangedSubview(scaleSlider)
         scaleRow.addArrangedSubview(scaleValueLabel)
 
+        // Theme row: follow the system, or force light / dark.
+        let themeLabel = NSTextField(labelWithString: "Theme:")
+        themePopup.target = self
+        themePopup.action = #selector(themeChanged(_:))
+        themePopup.widthAnchor.constraint(equalToConstant: 200).isActive = true
+
         let grid = NSGridView(views: [
-            [fontLabel, fontPopup],
+            [fontLabel, fontRow],
             [scaleLabel, scaleRow],
+            [themeLabel, themePopup],
         ])
         grid.rowSpacing = 12
         grid.columnSpacing = 12
@@ -48,10 +75,10 @@ final class AppearanceSettingsViewController: NSViewController {
         grid.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         let caption = NSTextField(wrappingLabelWithString:
-            "The hex dump's font and row pitch. A smaller Row Height packs more rows onto the screen.")
+            "The hex dump's font and row pitch. A smaller Row Height packs more rows onto the screen. Theme applies to the whole app.")
         caption.font = .systemFont(ofSize: 11)
         caption.textColor = .secondaryLabelColor
-        caption.maximumNumberOfLines = 2
+        caption.maximumNumberOfLines = 3
 
         for subview in [titleLabel, grid, caption] {
             subview.translatesAutoresizingMaskIntoConstraints = false
@@ -65,13 +92,18 @@ final class AppearanceSettingsViewController: NSViewController {
             grid.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -18),
             caption.topAnchor.constraint(equalTo: grid.bottomAnchor, constant: 14),
             caption.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 18),
-            caption.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -18),
+            // Pin the caption's trailing edge (not just bound it) so the text
+            // wraps at the window's width; with only a `lessThanOrEqualTo` the
+            // label keeps its full one-line width and the view's fitting size —
+            // which the window sizes to — is wrong.
+            caption.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -18),
             caption.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -18),
+            // An exact width (not a floor): the window sizes to this view's
+            // fitting size per tab, and a wrapping label's ideal width is its
+            // full one-line text, so only a fixed width makes it wrap and the
+            // fitting size come out right.
+            root.widthAnchor.constraint(equalToConstant: 480),
         ])
-
-        // The window sizes itself to this frame when the controller becomes the
-        // window's contentViewController.
-        root.frame.size = NSSize(width: 480, height: 190)
         view = root
 
         syncControls()
@@ -99,13 +131,30 @@ final class AppearanceSettingsViewController: NSViewController {
         let index = current.isEmpty ? 0 : fontPopup.indexOfItem(withRepresentedObject: current)
         fontPopup.selectItem(at: index >= 0 ? index : 0)
 
+        fontStepper.integerValue = Int(AppearanceSettings.fontSize)
+        fontSizeValueLabel.stringValue = Self.formatFontSize(AppearanceSettings.fontSize)
+
         scaleSlider.doubleValue = Double(AppearanceSettings.rowHeightScale)
         scaleValueLabel.stringValue = Self.formatScale(AppearanceSettings.rowHeightScale)
+
+        themePopup.removeAllItems()
+        for theme in AppTheme.allCases {
+            themePopup.addItem(withTitle: theme.title)
+        }
+        themePopup.selectItem(at: AppTheme.allCases.firstIndex(of: AppTheme.current) ?? 0)
     }
 
     @objc private func fontChanged(_ sender: NSPopUpButton) {
         let family = sender.selectedItem?.representedObject as? String ?? AppearanceSettings.systemFontSentinel
         AppearanceSettings.set(fontFamily: family, rowHeightScale: AppearanceSettings.rowHeightScale)
+    }
+
+    @objc private func fontSizeChanged(_ sender: NSStepper) {
+        let size = CGFloat(sender.integerValue)
+        fontSizeValueLabel.stringValue = Self.formatFontSize(size)
+        AppearanceSettings.set(fontFamily: AppearanceSettings.fontFamily,
+                               rowHeightScale: AppearanceSettings.rowHeightScale,
+                               fontSize: size)
     }
 
     @objc private func scaleChanged(_ sender: NSSlider) {
@@ -118,8 +167,27 @@ final class AppearanceSettingsViewController: NSViewController {
         AppearanceSettings.set(fontFamily: AppearanceSettings.fontFamily, rowHeightScale: scale)
     }
 
+    @objc private func themeChanged(_ sender: NSPopUpButton) {
+        let theme = AppTheme.allCases[sender.indexOfSelectedItem]
+        AppTheme.set(theme)
+    }
+
     private static func formatScale(_ scale: CGFloat) -> String {
         String(format: "%.2g×", scale)
+    }
+
+    private static func formatFontSize(_ size: CGFloat) -> String {
+        "\(Int(size)) pt"
+    }
+}
+
+/// The Settings window. Closes on Escape, like a sheet: every preference is
+/// applied and persisted live the moment it changes, so there is nothing to
+/// confirm or lose — Esc is simply "I'm done" (the same `cancelOperation`
+/// hook the Find bar uses for its own Esc-to-dismiss).
+final class SettingsWindow: NSWindow {
+    override func cancelOperation(_ sender: Any?) {
+        performClose(sender)
     }
 }
 
@@ -141,15 +209,17 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     private static let textDecodingItemID = NSToolbarItem.Identifier("TextDecoding")
 
     init() {
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 480, height: 190),
+        let window = SettingsWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 480, height: 235),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
         )
         window.title = "DumpCompare Settings"
         window.isReleasedWhenClosed = false
-        window.setFrameAutosaveName("SettingsWindow")
+        // Autosave the position only. The size must track the active tab's
+        // content (see `selectTab`), so it is deliberately not autosaved — a
+        // saved size would pin the window at whatever tab was last shown.
         super.init(window: window)
 
         window.toolbarStyle = .preference
@@ -168,6 +238,9 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     }
 
     override func showWindow(_ sender: Any?) {
+        // Size to the initial tab's content before showing, so the window
+        // appears at the right height (and the centre is computed from it).
+        fitWindowToContent()
         // Center on first show; keep a position the user already moved to.
         if window?.isVisible != true {
             window?.center()
@@ -230,23 +303,46 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         return item
     }
 
+    /// Resizes the window to fit its current tab's content, keeping the top
+    /// edge fixed so the window grows or shrinks in place. Setting
+    /// `contentViewController` alone resizes only on the first assignment —
+    /// afterwards the window keeps its size and the tab's view is stretched to
+    /// it — so the size is driven explicitly from the view's fitting size. Each
+    /// tab's view sizes itself via constraints (a min-width the text wraps to,
+    /// and a height pinned from the top), so the fitting size is the right size.
+    private func fitWindowToContent() {
+        guard let window, let controller = window.contentViewController else { return }
+        let top = window.frame.maxY
+        let fitting = controller.view.fittingSize
+        let windowSize = window.frameRect(forContentRect: NSRect(origin: .zero, size: fitting)).size
+        var frame = window.frame
+        frame.size = windowSize
+        frame.origin.y = top - windowSize.height
+        window.setFrame(frame, display: true, animate: false)
+    }
+
+    private func selectTab(_ controller: NSViewController) {
+        window?.contentViewController = controller
+        fitWindowToContent()
+    }
+
     @objc private func appearanceTabTapped() {
-        window?.contentViewController = appearanceController
+        selectTab(appearanceController)
     }
 
     @objc private func layoutTabTapped() {
-        window?.contentViewController = layoutController
+        selectTab(layoutController)
     }
 
     @objc private func comparisonTabTapped() {
-        window?.contentViewController = comparisonController
+        selectTab(comparisonController)
     }
 
     @objc private func editingTabTapped() {
-        window?.contentViewController = editingController
+        selectTab(editingController)
     }
 
     @objc private func textDecodingTabTapped() {
-        window?.contentViewController = textDecodingController
+        selectTab(textDecodingController)
     }
 }

@@ -38,13 +38,49 @@ final class AppearanceSettingsTests: XCTestCase {
     }
 
     func testResetRestoresDefaults() {
-        AppearanceSettings.set(fontFamily: "Menlo", rowHeightScale: 0.7)
+        AppearanceSettings.set(fontFamily: "Menlo", rowHeightScale: 0.7, fontSize: 20)
         AppearanceSettings.resetToDefaults()
         // Written out rather than read back from the constants under test: with
         // `defaultRowHeightScale` on both sides of the assertion, a default of
         // 3.0 would pass here and triple every row in the dump.
         XCTAssertEqual(AppearanceSettings.fontFamily, "")
         XCTAssertEqual(AppearanceSettings.rowHeightScale, 0.8, accuracy: 0.0001)
+        XCTAssertEqual(AppearanceSettings.fontSize, 13, accuracy: 0.0001)
+    }
+
+    /// The font size defaults to the built-in 13 pt and persists like the other
+    /// appearance values (§3.2).
+    func testFontSizeDefaultsTo13() {
+        // resetToDefaults in setUp cleared the stored size.
+        XCTAssertEqual(AppearanceSettings.fontSize, 13, accuracy: 0.0001)
+    }
+
+    func testSetFontSizePersistsAndNotifies() {
+        var notified = 0
+        let token = NotificationCenter.default.addObserver(
+            forName: AppearanceSettings.didChangeNotification, object: nil, queue: nil
+        ) { _ in notified += 1 }
+
+        AppearanceSettings.set(fontFamily: AppearanceSettings.fontFamily,
+                               rowHeightScale: AppearanceSettings.rowHeightScale,
+                               fontSize: 18)
+
+        XCTAssertEqual(AppearanceSettings.fontSize, 18, accuracy: 0.0001)
+        XCTAssertEqual(UserDefaults.standard.double(forKey: AppearanceSettings.fontSizeKey), 18)
+        XCTAssertEqual(notified, 1)
+
+        NotificationCenter.default.removeObserver(token)
+    }
+
+    /// `font()` with no explicit size uses the configured font size, so the dump
+    /// follows the setting (§3.2).
+    func testFontFollowsConfiguredSize() {
+        AppearanceSettings.set(fontFamily: AppearanceSettings.fontFamily,
+                               rowHeightScale: AppearanceSettings.rowHeightScale,
+                               fontSize: 20)
+        XCTAssertEqual(AppearanceSettings.font().pointSize, 20, accuracy: 0.001)
+        // An explicit size still wins over the setting.
+        XCTAssertEqual(AppearanceSettings.font(size: 12).pointSize, 12, accuracy: 0.001)
     }
 
     func testMonospacedFamiliesAreSortedAndFixedPitch() throws {

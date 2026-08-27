@@ -73,10 +73,14 @@ final class EditingSettingsViewController: NSViewController {
             caption.topAnchor.constraint(equalTo: warnCheckbox.bottomAnchor, constant: 12),
             caption.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20),
             caption.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -20),
-            caption.bottomAnchor.constraint(lessThanOrEqualTo: root.bottomAnchor, constant: -20),
+            // Pin the caption's bottom edge so the fitting height is the content's
+            // height, not a floor — a floor leaves an empty band below the text.
+            caption.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -20),
 
-            root.widthAnchor.constraint(greaterThanOrEqualToConstant: 480),
-            root.heightAnchor.constraint(greaterThanOrEqualToConstant: 190),
+            // Exact width: the window sizes to this view's fitting size, and a
+            // wrapping label's ideal width is its full one-line text, so only a
+            // fixed width makes it wrap and the fitting size come out right.
+            root.widthAnchor.constraint(equalToConstant: 480),
         ])
         view = root
         refresh()

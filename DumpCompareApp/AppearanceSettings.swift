@@ -1,7 +1,8 @@
 import Cocoa
 
-/// User-configurable hex-view appearance (§3.2): the monospaced font and the
-/// row-height compaction factor. Persisted app-wide; both panes share them.
+/// User-configurable hex-view appearance (§3.2): the monospaced font (family
+/// and size) and the row-height compaction factor. Persisted app-wide; both
+/// panes share them.
 ///
 /// Mirrors the `WordSize` pattern: values are read live from `UserDefaults`,
 /// and `set(_:...)` posts `didChangeNotification` so open hex views (and pane
@@ -10,6 +11,7 @@ import Cocoa
 enum AppearanceSettings {
     static let fontFamilyKey = "HexFontFamily"
     static let rowHeightScaleKey = "HexRowHeightScale"
+    static let fontSizeKey = "HexFontSize"
 
     /// Posted after a change so open hex views re-lay out (§3.2).
     static let didChangeNotification = Notification.Name("AppearanceSettingsDidChange")
@@ -24,6 +26,11 @@ enum AppearanceSettings {
     /// taller than the glyph ink, so rows never visibly collide.
     static let rowHeightScaleRange: ClosedRange<CGFloat> = 0.65...1.0
 
+    /// The built-in hex font size, in points.
+    static let defaultFontSize: CGFloat = 13
+    /// The range the Settings stepper offers.
+    static let fontSizeRange: ClosedRange<CGFloat> = 9...24
+
     /// The configured font family; empty means the system monospaced font.
     static var fontFamily: String {
         UserDefaults.standard.string(forKey: fontFamilyKey) ?? systemFontSentinel
@@ -36,10 +43,21 @@ enum AppearanceSettings {
         return CGFloat(stored)
     }
 
-    /// Persists both settings and notifies observers to re-lay out (§3.2).
-    static func set(fontFamily: String, rowHeightScale: CGFloat) {
+    /// The configured hex font size in points, falling back to the built-in
+    /// default.
+    static var fontSize: CGFloat {
+        let stored = UserDefaults.standard.double(forKey: fontSizeKey)
+        guard stored > 0 else { return defaultFontSize }
+        return CGFloat(stored)
+    }
+
+    /// Persists the three appearance settings and notifies observers to re-lay
+    /// out (§3.2). `fontSize` defaults to the current value, so a caller that
+    /// changes only the family or the row height leaves the size untouched.
+    static func set(fontFamily: String, rowHeightScale: CGFloat, fontSize: CGFloat = fontSize) {
         UserDefaults.standard.set(fontFamily, forKey: fontFamilyKey)
         UserDefaults.standard.set(rowHeightScale, forKey: rowHeightScaleKey)
+        UserDefaults.standard.set(fontSize, forKey: fontSizeKey)
         NotificationCenter.default.post(name: didChangeNotification, object: nil)
     }
 
@@ -48,13 +66,16 @@ enum AppearanceSettings {
     static func resetToDefaults() {
         UserDefaults.standard.removeObject(forKey: fontFamilyKey)
         UserDefaults.standard.removeObject(forKey: rowHeightScaleKey)
+        UserDefaults.standard.removeObject(forKey: fontSizeKey)
         NotificationCenter.default.post(name: didChangeNotification, object: nil)
     }
 
     /// The hex font for the current settings. A named family is resolved to its
     /// regular-weight member; unknown or empty families fall back to the
-    /// system monospaced font.
-    static func font(size: CGFloat) -> NSFont {
+    /// system monospaced font. `size` defaults to the configured font size, so
+    /// the dump and its mirrors ask for `font()` and follow the setting; the
+    /// fixed-size call sites (form fields, the decoding preview) pass their own.
+    static func font(size: CGFloat = fontSize) -> NSFont {
         let family = fontFamily
         guard !family.isEmpty else {
             return .monospacedSystemFont(ofSize: size, weight: .regular)
@@ -68,7 +89,7 @@ enum AppearanceSettings {
     /// The bold member of the same family — used where emphasis must match the
     /// hex font exactly (the Search All results excerpts). A monospaced family
     /// shares one advance width across weights, so bolding never shifts bytes.
-    static func boldFont(size: CGFloat) -> NSFont {
+    static func boldFont(size: CGFloat = fontSize) -> NSFont {
         let family = fontFamily
         guard !family.isEmpty else {
             return .monospacedSystemFont(ofSize: size, weight: .bold)

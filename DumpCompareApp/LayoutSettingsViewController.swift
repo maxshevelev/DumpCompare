@@ -72,13 +72,15 @@ final class LayoutSettingsViewController: NSViewController {
             grid.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -18),
             caption.topAnchor.constraint(equalTo: grid.bottomAnchor, constant: 14),
             caption.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 18),
-            caption.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -18),
+            // Pin the caption's trailing edge so the text wraps at the window's
+            // width; the window resizes to this view's fitting size per tab.
+            caption.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -18),
             caption.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -18),
+            // Exact width: the window sizes to this view's fitting size, and a
+            // wrapping label's ideal width is its full one-line text, so only a
+            // fixed width makes it wrap and the fitting size come out right.
+            root.widthAnchor.constraint(equalToConstant: 480),
         ])
-
-        // The window sizes itself to this frame when the controller becomes the
-        // window's contentViewController.
-        root.frame.size = NSSize(width: 480, height: 190)
         view = root
 
         syncControls()

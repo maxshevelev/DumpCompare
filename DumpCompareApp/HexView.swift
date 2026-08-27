@@ -260,7 +260,7 @@ final class HexView: NSView, NSViewToolTipOwner {
     // MARK: - Init
 
     init() {
-        font = AppearanceSettings.font(size: 13)
+        font = AppearanceSettings.font()
         charWidth = AppearanceSettings.charWidth(for: font)
         rowHeight = Self.rowHeight(for: font)
         baseline = AppearanceSettings.centeredBaseline(font: font, rowHeight: rowHeight)
@@ -334,9 +334,14 @@ final class HexView: NSView, NSViewToolTipOwner {
 
     /// Re-derives the font metrics and re-lays out after an Appearance change
     /// (§3.2). The frame grows or shrinks with the new row height, so the
-    /// enclosing scroll view picks up the new content size.
+    /// enclosing scroll view picks up the new content size. The row that sat at
+    /// the vertical centre of the viewport before the change is re-centred
+    /// after it, so the middle of what was visible stays mid-pane instead of
+    /// drifting with the rescaled document.
     private func applyAppearance() {
-        font = AppearanceSettings.font(size: 13)
+        // Capture the anchor in the *old* layout, before the metrics change.
+        let anchor = visibleCenterOffset()
+        font = AppearanceSettings.font()
         charWidth = AppearanceSettings.charWidth(for: font)
         rowHeight = Self.rowHeight(for: font)
         baseline = AppearanceSettings.centeredBaseline(font: font, rowHeight: rowHeight)
@@ -345,6 +350,24 @@ final class HexView: NSView, NSViewToolTipOwner {
         textAttributesCache.removeAll()
         asciiColumnMonospacedCheck = nil
         reloadData()
+        if let anchor {
+            centerRow(containing: anchor)
+        }
+    }
+
+    /// The byte offset at the vertical centre of the current viewport, measured
+    /// in the *current* (pre-change) layout — the anchor `applyAppearance`
+    /// re-centres after a row-height or font change, so the middle of what was
+    /// visible stays mid-pane (§3.2). Nil when there is nothing to anchor: no
+    /// scroll view, an empty file, or a zero-height viewport.
+    private func visibleCenterOffset() -> UInt64? {
+        guard let dataSource, let clip = enclosingScrollView?.contentView else { return nil }
+        let extent = dataSource.scrollExtent
+        guard extent > 0, clip.bounds.height > 0 else { return nil }
+        let layout = currentLayout
+        let centreY = clip.bounds.minY + clip.bounds.height / 2
+        let row = max(0, Int(floor(centreY / layout.rowHeight)))
+        return min(UInt64(row) * UInt64(HexLayout.bytesPerRow), extent - 1)
     }
 
     /// Rebuilds the active text decoder from the current settings.

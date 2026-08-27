@@ -71,6 +71,98 @@ final class HexViewAppearanceTests: XCTestCase {
         XCTAssertEqual(hexView.hexLayout.charWidth, expectedCharWidth, accuracy: 0.01)
     }
 
+    // MARK: - Visible-centre stability across an appearance change (§3.2)
+
+    /// A real `HexView` in a real `NSScrollView` in a real window, backed by a
+    /// `PaneViewModel` with a tall enough file to be scrollable. The scroll view
+    /// gives the view a viewport, which is what `visibleCenterOffset` anchors on
+    /// — the metrics-only `makeHexView` above has none.
+    private func makeScrolledHexView(_ bytes: [UInt8]) throws
+        -> (HexView, PaneViewModel, URL, NSScrollView, NSWindow) {
+        let url = try tempFile(bytes)
+        let pane = PaneViewModel()
+        try pane.open(url: url)
+        let hexView = HexView()
+        hexView.dataSource = pane
+        hexView.delegate = pane
+
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 400, height: 300))
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.documentView = hexView
+
+        let window = makeTestWindow(width: 400, height: 300)
+        window.contentView = scrollView
+        window.makeKeyAndOrderFront(nil)
+
+        hexView.reloadData()
+        window.layoutIfNeeded()
+        return (hexView, pane, url, scrollView, window)
+    }
+
+    /// The row at the vertical centre of the clip view's viewport, in `layout`'s
+    /// pitch — the same row `visibleCenterOffset` anchors on, recomputed
+    /// independently so the test does not trust the production math it is
+    /// checking.
+    private func centreRow(of clip: NSClipView, in layout: HexLayout) -> Int {
+        let centreY = clip.bounds.minY + clip.bounds.height / 2
+        return max(0, Int(floor(centreY / layout.rowHeight)))
+    }
+
+    /// Scrolls the pane down away from the top so the viewport's centre is a
+    /// real, non-zero row (a change at the top would be masked by clamping).
+    private func scrollDown(_ scrollView: NSScrollView, _ window: NSWindow) {
+        let clip = scrollView.contentView
+        clip.scroll(to: NSPoint(x: 0, y: 1000))
+        scrollView.reflectScrolledClipView(clip)
+        window.layoutIfNeeded()
+    }
+
+    /// Raising the row-height factor re-lays the dump out taller; the row that
+    /// sat at the viewport's centre must still be there afterwards, not drift
+    /// with the rescaled document (§3.2).
+    func testRowHeightChangeKeepsVisibleCenterStable() throws {
+        let (hexView, pane, url, scrollView, window) =
+            try makeScrolledHexView([UInt8](repeating: 0xAB, count: 16384))
+        defer { try? FileManager.default.removeItem(at: url) }
+        _ = pane
+
+        scrollDown(scrollView, window)
+        let centreBefore = centreRow(of: scrollView.contentView, in: hexView.hexLayout)
+        XCTAssertGreaterThan(centreBefore, 0, "precondition: the pane is scrolled down")
+
+        AppearanceSettings.set(fontFamily: AppearanceSettings.fontFamily, rowHeightScale: 1.0)
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
+        window.layoutIfNeeded()
+
+        let centreAfter = centreRow(of: scrollView.contentView, in: hexView.hexLayout)
+        XCTAssertEqual(centreAfter, centreBefore,
+                       "the row at the viewport centre must stay centred across a row-height change")
+    }
+
+    /// The same guarantee for the font-size setting: a bigger font changes the
+    /// row pitch, and the middle of what was visible must stay mid-pane.
+    func testFontSizeChangeKeepsVisibleCenterStable() throws {
+        let (hexView, pane, url, scrollView, window) =
+            try makeScrolledHexView([UInt8](repeating: 0xAB, count: 16384))
+        defer { try? FileManager.default.removeItem(at: url) }
+        _ = pane
+
+        scrollDown(scrollView, window)
+        let centreBefore = centreRow(of: scrollView.contentView, in: hexView.hexLayout)
+        XCTAssertGreaterThan(centreBefore, 0, "precondition: the pane is scrolled down")
+
+        AppearanceSettings.set(fontFamily: AppearanceSettings.fontFamily,
+                               rowHeightScale: AppearanceSettings.rowHeightScale,
+                               fontSize: 20)
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
+        window.layoutIfNeeded()
+
+        let centreAfter = centreRow(of: scrollView.contentView, in: hexView.hexLayout)
+        XCTAssertEqual(centreAfter, centreBefore,
+                       "the row at the viewport centre must stay centred across a font-size change")
+    }
+
     // MARK: - Hex-column string shape (§ Option B)
 
     private func state(_ byte: UInt8, modified: Bool = false) -> HexByteState {

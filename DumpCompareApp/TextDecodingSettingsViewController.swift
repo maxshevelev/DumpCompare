@@ -92,11 +92,9 @@ final class TextDecodingSettingsViewController: NSViewController {
             container.bottomAnchor.constraint(lessThanOrEqualTo: root.bottomAnchor, constant: -18),
             // Let the caption wrap at the controls' width, not the preview's.
             previewCaption.widthAnchor.constraint(lessThanOrEqualTo: grid.widthAnchor),
+            // Exact width: the window sizes to this view's fitting size per tab.
+            root.widthAnchor.constraint(equalToConstant: 620),
         ])
-
-        // The window sizes itself to this frame when the controller becomes the
-        // window's contentViewController.
-        root.frame.size = NSSize(width: 620, height: 330)
         view = root
 
         syncControls()

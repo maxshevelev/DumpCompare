@@ -67,8 +67,8 @@ final class SearchResultsView: NSView {
     /// (§3.2). Regular and bold share the advance width, so bolding the match
     /// never shifts its neighbours — the bold reads as emphasis, not a layout
     /// change.
-    private var regularFont: NSFont { AppearanceSettings.font(size: 13) }
-    private var boldFont: NSFont { AppearanceSettings.boldFont(size: 13) }
+    private var regularFont: NSFont { AppearanceSettings.font() }
+    private var boldFont: NSFont { AppearanceSettings.boldFont() }
 
     private enum ColumnID {
         static let offset = NSUserInterfaceItemIdentifier("offset")
@@ -443,7 +443,7 @@ final class SearchResultCellView: NSTableCellView {
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
         self.identifier = identifier
-        label.font = AppearanceSettings.font(size: 13)
+        label.font = AppearanceSettings.font()
         // A result value must never wrap onto a second line. Single-line mode
         // is the standard SDK guarantee: an attributed string without an
         // explicit paragraph style would otherwise render with the default
