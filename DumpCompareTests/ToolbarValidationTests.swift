@@ -247,4 +247,73 @@ final class ToolbarValidationTests: XCTestCase {
         XCTAssertTrue(pumpUntil(5) { has(window, .filesIdentical) && !has(window, .diffNavigation) },
                       "identical replacements: the badge replaces the stale arrows")
     }
+
+    /// While a rebuild is in flight the comparison outcome is undetermined, and
+    /// the plaque must keep its last DETERMINED state — not fall back to the
+    /// arrows, which is what made the buttons flicker while typing, each edit
+    /// re-running the comparison and dropping the plaque to the arrows for the
+    /// build's whole duration. Here the last determined state is the badge
+    /// (identical files); replacing both panes with different files starts a
+    /// rebuild, and the badge must stay up until the new index lands and reports
+    /// differences.
+    ///
+    /// The replacement files are large so the rebuild outlives a frame: the
+    /// plaque is sampled only after the toolbar has had a run-loop turn to apply
+    /// its decision, while the build is still running. A small file would finish
+    /// before the first sample, and the test could not tell "kept the badge
+    /// through the build" from "the build already landed the arrows".
+    func testRebuildInFlightKeepsTheLastDeterminedPlaque() throws {
+        let wc = makeWindow()
+        let controller = wc.mainViewController
+        let window = wc.window!
+        // Identical, so the first build lands the badge.
+        let sameA = try tempFile([UInt8](repeating: 0x11, count: 64))
+        let sameB = try tempFile([UInt8](repeating: 0x11, count: 64))
+        // Different and large, so the rebuild they trigger is in flight for more
+        // than a frame (the scan is chunked at 1 MB; 64 MB is tens of chunks).
+        let big = 64 * 1024 * 1024
+        let diffA = try tempFile([UInt8](repeating: 0x22, count: big))
+        let diffB = try tempFile([UInt8](repeating: 0x33, count: big))
+        defer {
+            controller.windowModel.pane1.close()
+            controller.windowModel.pane2.close()
+            wc.close()
+            try? FileManager.default.removeItem(at: sameA)
+            try? FileManager.default.removeItem(at: sameB)
+            try? FileManager.default.removeItem(at: diffA)
+            try? FileManager.default.removeItem(at: diffB)
+        }
+
+        try controller.windowModel.pane1.open(url: sameA)
+        try controller.windowModel.pane2.open(url: sameB)
+        controller.apply(mode: .comparison)
+        window.layoutIfNeeded()
+        XCTAssertTrue(pumpUntil(5) { has(window, .filesIdentical) && !has(window, .diffNavigation) },
+                      "identical files: the badge shows")
+
+        // Replace both with different files: a rebuild starts and the outcome is
+        // undetermined until it lands.
+        try controller.windowModel.pane1.open(url: diffA)
+        try controller.windowModel.pane2.open(url: diffB)
+
+        // Sample the plaque as the rebuild runs. Each turn spins a frame first,
+        // so the toolbar has applied its decision for the in-flight build before
+        // we read it; the badge must still be up while the build is running.
+        var keptBadgeDuringBuild = false
+        let deadline = Date().addingTimeInterval(15)
+        while Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(1.0 / 120.0))
+            if has(window, .filesIdentical) && !has(window, .diffNavigation) {
+                keptBadgeDuringBuild = true
+            }
+            if has(window, .diffNavigation) && !has(window, .filesIdentical) {
+                break  // the new index landed: differences, the arrows take over
+            }
+        }
+        XCTAssertTrue(keptBadgeDuringBuild,
+                      "while the rebuild is in flight the plaque keeps the badge; "
+                      + "it must not flicker back to the arrows")
+        XCTAssertTrue(has(window, .diffNavigation) && !has(window, .filesIdentical),
+                      "and once the rebuild lands the differences, the arrows take the badge's place")
+    }
 }

@@ -200,6 +200,11 @@ final class MainViewController: NSViewController {
         // index never feeds it (§19).
         comparisonCoordinator.onStateChanged = { [weak self] in
             self?.refreshDiffNavigation()
+            // Latch the badge decision to the latest DETERMINED outcome before
+            // the toolbar sync reads it: while a build is in flight the outcome
+            // is undetermined and the plaque must keep what it last showed, not
+            // fall back to the arrows (§10.3).
+            self?.updateIdenticalBadgeState()
             // The "Files are identical" badge is index-driven, not caret-driven:
             // it must swap in/out on every index transition, not only on mode
             // changes. The sync is coalesced and deferred a run-loop turn.
@@ -355,7 +360,17 @@ final class MainViewController: NSViewController {
 
     /// Swaps the content area for the given window mode (§3 of REQUIREMENTS.md).
     func apply(mode: WindowMode) {
+        let wasComparison = self.mode == .comparison
         self.mode = mode
+        if mode == .comparison && !wasComparison {
+            // A fresh comparison, not a rebuild of the running one: no index
+            // for this file pair exists yet, so the plaque starts on the
+            // (disabled) arrows rather than a badge a previous comparison left
+            // latched — "Files are identical" must never show before its own
+            // index confirms it. A rebuild (revert, a replaced file) keeps the
+            // latch and shows its last determined state while it runs.
+            showsIdenticalBadge = false
+        }
         syncDiffNavigationToolbarItem()
         unwireComparison()
         // The strip beside each map mirrors the pane's partition (§19.4.4): a
@@ -3033,13 +3048,27 @@ final class MainViewController: NSViewController {
     }
 
     /// Whether the toolbar shows the "Files are identical" badge instead of the
-    /// Prev/Next Difference arrows: comparison mode, index built, no differences.
-    /// `index?.hasDifferences == false` is false while the index is nil, so a
-    /// not-yet-built index never shows the badge — the disabled buttons do.
-    private var showsIdenticalBadge: Bool {
-        mode == .comparison
-            && !comparisonCoordinator.isBuilding
-            && comparisonCoordinator.index?.hasDifferences == false
+    /// Prev/Next Difference arrows — the last DETERMINED comparison outcome:
+    /// the index built and reported no differences.
+    ///
+    /// Stored, not computed: while the index is building the outcome is
+    /// undetermined, and a computed `!isBuilding && …` would drop the plaque
+    /// back to the arrows on every rebuild — which is what made the buttons
+    /// flicker while typing, each edit re-running the comparison. The plaque
+    /// therefore keeps its last determined state through a build and changes
+    /// only when a new one lands: differences (arrows), no differences (badge),
+    /// or the mode leaving comparison (no block at all).
+    private var showsIdenticalBadge = false
+
+    /// Moves `showsIdenticalBadge` to the current outcome, but only when that
+    /// outcome is determined — comparison mode, index built, build finished.
+    /// Fired from the coordinator's state hook, which also covers the
+    /// incremental applies that land an edited index without a full build.
+    private func updateIdenticalBadgeState() {
+        guard mode == .comparison,
+              !comparisonCoordinator.isBuilding,
+              let index = comparisonCoordinator.index else { return }
+        showsIdenticalBadge = !index.hasDifferences
     }
 
     // MARK: - Comparison navigation (§10.3)
