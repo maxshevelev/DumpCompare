@@ -1,193 +1,160 @@
-# Handoff — stale comparison index on file replacement, and the toolbar swap crash it exposes
+# Stale comparison index on file replacement, and the toolbar swap crash it exposed
 
-> Status: **the user's bug is fixed; a separate, pre-existing AppKit crash is
-> blocked.** This document is a handoff for the next session. Read
-> `REQUIREMENTS.md` §10.3 (diff navigation) and the badge work already committed
-> as `92923b8` for background.
+> Status: **both fixed.** The user's bug shipped in `d9446ff`. The toolbar swap
+> crash that its regression test exposed is fixed by giving each window's
+> toolbar its own identifier — see **The swap crash**, which corrects the
+> diagnosis an earlier draft of this document carried. Full suite: 754 tests,
+> green, no crash.
 
-## The task
+## The user's bug (fixed, `d9446ff`)
 
-The user reported (in Russian): after loading two **identical** files into panes
-that previously held **different** files, the panes and the local minimap show no
-differences, but the Prev/Next Difference **buttons still reflect the old files**
-and jump the caret across **phantom diff blocks**, and the minimap **overview**
-still shows the old orange blocks.
+The user reported: after loading two **identical** files into panes that
+previously held **different** files, the panes and the local minimap show no
+differences, but the Prev/Next Difference **buttons still reflect the old
+files** and jump the caret across **phantom diff blocks**, and the minimap
+**overview** still shows the old orange blocks.
 
-Root cause (confirmed): replacing a file in an already-open pane leaves the mode
-at `.comparison`, so `MainViewController.refreshMode()` early-returns and never
+Root cause: replacing a file in an already-open pane leaves the mode at
+`.comparison`, so `MainViewController.refreshMode()` early-returns and never
 calls `apply(mode:)` — the one path that restarts the comparison. And
 `PaneViewModel.open(url:)` / `openUntitled()` did **not** fire
 `onFullInvalidation` (only `revert()` did). So the pre-built `DiffBlockIndex`
 was never rebuilt and kept the previous files' differences.
 
 Two independent diff readers disagree when the index is stale:
+
 - **Panes + local minimap** read difference state per byte from the **live**
   comparison → correctly show "no differences".
 - **Minimap overview + diff navigation** read the **pre-built** `DiffBlockIndex`
   → show the old (phantom) blocks.
 
-## What was done (uncommitted)
+The fix fires `onFullInvalidation?()` on wholesale storage replacement, the way
+`revert()` already does — in comparison mode that is wired to
+`comparisonCoordinator.rebuild()`. `ToolbarValidationTests.testReplacingFilesInOpenPanesRebuildsTheComparison`
+is the regression test, and it is what exposed the crash below.
 
-Three files changed. **Do not commit until the user says "push".**
+## The swap crash (fixed)
 
-### 1. `DumpCompareApp/PaneViewModel.swift` — the actual bug fix
-
-Fire `onFullInvalidation?()` on wholesale storage replacement, the same way
-`revert()` already does. In comparison mode this callback is wired to
-`comparisonCoordinator.rebuild()`; in single-file mode to minimap invalidation;
-nil otherwise.
-
-- `open(url:)` — added after `startWatching(url)`, before `notify()`:
-  ```swift
-  // Opening a new file replaces the storage wholesale, like a revert —
-  // the comparison must re-read, even when the mode is unchanged (both
-  // panes already open), which is the one path that skips `apply(mode:)`.
-  onFullInvalidation?()
-  ```
-- `openUntitled()` — added after `changeWatcher = nil`, before `notify()`:
-  ```swift
-  // A new document replaces the storage wholesale, like a revert — the
-  // comparison must re-read even when the mode is unchanged.
-  onFullInvalidation?()
-  ```
-
-This is correct and addresses the user's bug. `ComparisonCoordinator`'s
-`provider` closure reads the two current `byteStorage`s fresh, so the rebuild
-picks up the new files. `unwireComparison()` nils out the callback, so it is
-safe in all modes.
-
-### 2. `DumpCompareTests/ToolbarValidationTests.swift` — regression test
-
-`testReplacingFilesInOpenPanesRebuildsTheComparison`: open two different files →
-arrows appear → replace both with identical files (the way File > Open does when
-both panes are open, mode unchanged) → the badge must replace the stale arrows.
-This is the test that **exposed the swap crash** (see below).
-
-### 3. `DumpCompareApp/MainViewController.swift` — swap fix (NOT working yet)
-
-`applyDiffNavigationToolbarItem()` was rewritten several times trying to stop the
-crash. **Current state on disk is the "insert-first, then remove" variant** (see
-"Fix attempts" below). It does **not** fix the full-suite crash. This file's
-change is the part that is still unresolved.
-
-## The blocked problem: the toolbar swap crash
-
-When the comparison transitions from "has differences" (arrows shown) to "no
-differences" (badge shown) — i.e. the **swap** — the test process crashes with:
+When the comparison went from "has differences" (arrows shown) to "no
+differences" (badge shown) — the **swap** — the test process died with:
 
 ```
-*** Assertion failure in -[NSToolbar _itemAtIndex:], NSToolbar.m:1432
-💣 Program crashed: Signal 11
+*** Assertion failure in -[NSToolbar _itemAtIndex:], NSToolbar.m:1475
+Invalid parameter not satisfying: index>=0 && index<[_currentItems count]
 ```
 
-`xcodebuild` then restarts the run (which is why the final summary shows only the
-remaining ~24 tests, all passing, yet the overall result is `** TEST FAILED **`).
+`xcodebuild` then restarted the run, which is why the summary reported only the
+tests from the final launch while the overall result was `** TEST FAILED **`.
 
-### What is known
+### Root cause
 
-- **Deterministic in the full suite** (crashed 4/4 full runs), but **never** in
-  isolation: running `ToolbarValidationTests` alone (or just the crashing test)
-  passes 5/5, repeatedly.
-- The crash is in `testReplacingFilesInOpenPanesRebuildsTheComparison` — the
-  **only** test that performs the arrows→badge **swap**. The other toolbar tests
-  either insert the badge directly (badge test) or keep/remove the arrows without
-  the other present, so they never exercise remove+insert of the two items.
-- `testTheDifferenceBlockIsOnlyInTheToolbarInComparisonMode` (removes the arrows
-  group, **no** insert) **passes** in the full run. So removing the group alone
-  is safe.
-- The badge test (inserts the badge, **no** prior arrows) **passes**. So
-  inserting the badge alone is safe.
-- The crash lands **right after an Auto Layout pass** (the log is flooded with
-  `DropTargetView.width == 0` constraint warnings from `layoutIfNeeded`); the
-  assertion fires immediately after such a pass.
-- The swap code is new in `92923b8` (the badge commit, currently HEAD). Before
-  that the toolbar only ever inserted/removed the single arrows group on mode
-  change — no swap existed. So this is a **pre-existing latent bug** in the badge
-  feature, now exposed by the new regression test. It is **not** caused by the
-  `onFullInvalidation` change per se — that change merely triggers the (correct)
-  rebuild, whose index transition drives the swap.
+Every window built its toolbar with the **same** identifier:
 
-### Fix attempts (all failed to stop the full-suite crash)
+```swift
+let toolbar = NSToolbar(identifier: "MainToolbar")
+```
 
-All were tested: class run passes, full suite still crashes the same way.
+**AppKit implicitly synchronises toolbars that share an identifier**: inserting
+or removing an item in one propagates the same mutation, at the same index, to
+every other live toolbar carrying that identifier. Those sibling toolbars hold
+a different item list — a window still at `.empty` never had the arrows
+inserted — so the index that travels with the mutation is out of bounds for
+`_currentItems`, and `-[NSToolbar _itemAtIndex:]` asserts.
 
-1. **Original (committed `92923b8`):** single `for` loop — `removeItem(at:)` the
-   non-wanted item, then `insertItem(at:)` the wanted one, in the same pass.
-2. **Deferral:** remove in one run-loop turn, defer the insert to the next turn
-   via `DispatchQueue.main.async { self?.applyDiffNavigationToolbarItem() }`.
-3. **Insert-first:** `insertItem` the wanted item first, then `removeItem` the
-   other, in the same pass (current state on disk).
+This is why the failure was **state-dependent**: it needs several live windows
+with the shared identifier. It is not a race, not a mid-layout mutation, and
+not about the order of the remove and the insert.
 
-Conclusion so far: **the order/timing of the remove and insert does not matter.**
-The crash is not about the mutation order. It is something about the swap
-happening in the full-suite state (accumulated over ~700 preceding test cases).
+The app itself is **single-window** (`AppDelegate` builds one
+`MainWindowController`, and `allowsAutomaticWindowTabbing` is off), so a user
+could never hit this. Only the test suite, where every test builds its own
+window, accumulates the siblings.
 
-### Leading hypotheses (unconfirmed)
+### The fix
 
-- A **pending deferred block from a previous test** (each test calls
-  `syncDiffNavigationToolbarItem()`, which queues a `DispatchQueue.main.async`)
-  runs during this test's `pumpUntil`, mutating a previous window's toolbar while
-  it is being torn down. Each test's `MainViewController` is created fresh by
-  `makeWindow()` and closed in `defer`, but if it (or its window) is not
-  deallocated before the next test, a stale block could fire on a half-closed
-  toolbar. This would explain the state-dependence (only after many tests).
-- `toolbar.items` (public) and NSToolbar's internal item list **diverge** after a
-  mutation, so an index computed from `toolbar.items` is out of bounds for the
-  internal `_itemAtIndex:`. Would explain why the index is always "valid" from our
-  side yet the assertion still fires.
-- The swap mutation lands while AppKit is mid-layout-pass; the deferral
-  (`DispatchQueue.main.async`) does not guarantee a safe window.
+A per-window identifier, in `MainWindowController.buildToolbar()`:
 
-### Most promising next step (recommended)
+```swift
+let toolbar = NSToolbar(identifier: "MainToolbar-\(UUID().uuidString)")
+```
 
-**Stop swapping toolbar items. Use ONE item whose content changes.** Replace the
-separate `.diffNavigation` group and `.filesIdentical` badge with a single
-custom-view toolbar item (e.g. `.diffStatus`) that is inserted once on entering
-comparison mode and removed once on leaving; its **view** toggles between the two
-nav buttons and the green badge. The toolbar's item list then never mutates
-during the swap, which sidesteps `-[NSToolbar _itemAtIndex:]` entirely.
+Nothing is lost by making it unique: the item layout is fixed in code,
+`allowsUserCustomization` is off and `autosavesConfiguration` is off, so there
+is no configuration worth sharing between windows — only the implicit
+synchronisation that caused this.
 
-Cost: the arrows currently rely on `NSToolbarItemGroup` + `validateToolbarItem`
-for enable/disable. A custom-view item means managing the two buttons'
-`isEnabled` manually (drive it from the existing `diffNavigationState` in
-`refreshDiffNavigation()`). Files: `MainWindowController.swift` (item builders,
-delegate, allowed/default identifiers) and `MainViewController.swift`
-(`applyDiffNavigationToolbarItem`, `showsIdenticalBadge`, `refreshDiffNavigation`,
-and the `validateToolbarItem`/action routing). The two committed badge tests and
-the new regression test should keep passing with the same observable toolbar
-identifiers if the single item reuses `.diffNavigation`/`.filesIdentical`
-semantics — or the tests need updating to the new identifier.
+### Evidence
 
-Alternative (smaller, unverified): confirm the "stale deferred block" hypothesis
-by making `syncDiffNavigationToolbarItem()`'s deferred block capture the window
-and bail if it is no longer the key/visible window, or by invalidating pending
-blocks when a window closes. Cheaper, but only worth it if the single-item
-refactor is deemed too invasive.
+A reduced repro is the ten test classes that build a `MainWindowController`
+(`GoToBookmarksTests`, `ZoomToFitTests`, `LayoutToggleTests`,
+`TypingModeIndicatorTests`, `TitleBarMenuTests`, `BookmarkTests`,
+`MinimapTests`, `SegmentsFormTests`, `MainWindowMenuTests`,
+`ToolbarValidationTests`) — about half the wall-clock of the full suite:
+
+| Same reduced set | `_itemAtIndex` assertions | Result |
+| --- | --- | --- |
+| Shared `"MainToolbar"` identifier | 4 | crash + restart, `** TEST FAILED **` |
+| Per-window identifier | 0 | 257/257 in one launch, `** TEST SUCCEEDED **` |
+
+Two classes alone do **not** reproduce it — the sibling toolbars have to
+accumulate, which is the mechanism's own signature.
+
+Full suite with the fix: green (754 tests) on two of three runs; the third had
+one unrelated failure that did not recur and was not the crash (no
+`_itemAtIndex`, no restart). The crash itself did not appear in any of the
+three.
+
+### Diagnoses that were wrong
+
+Recorded because each is plausible and cost time:
+
+1. **The order of the remove and the insert.** Three variants were tried —
+   remove-then-insert, deferring the insert by a run-loop turn, and
+   insert-then-remove (which shipped in `d9446ff`). None changed anything,
+   because the mutation that crashes is not the local one: it is the copy AppKit
+   forwards to a sibling toolbar.
+2. **The delegate returning a cached `NSToolbarItem`.** The delegate did hand
+   back the same instance on every request, which does violate the documented
+   contract (`toolbar(_:itemForItemIdentifier:willBeInsertedIntoToolbar:)` is
+   meant to return a fresh item). Making both swapped items fresh per request
+   was tried and measured: **the full suite still crashed identically.** The
+   caching is therefore not the cause, and the code was left as it was rather
+   than carrying a change that fixes nothing.
+3. **A stale deferred block from a previous test, or a mutation landing
+   mid-layout-pass.** Both were suggested by the crash appearing right after an
+   Auto Layout pass. Neither is needed to explain it: the reduced repro is
+   deterministic and the guard on `window.isVisible` already covers closed
+   windows.
+
+The earlier draft's recommended fix — collapsing the arrows and the badge into
+a **single custom-view toolbar item** so the item list never mutates — was not
+needed. It would have worked by sidestepping the mutation entirely, but at the
+cost of managing the two buttons' `isEnabled` by hand instead of through
+`validateToolbarItem`.
 
 ## Verification commands (dedicated DerivedData, scheme `DumpCompare`)
 
 ```bash
-# Class (fast; catches compile errors + swap logic)
-xcodebuild -project /Users/maxik/Projects/DumpCompare/DumpCompare.xcodeproj \
-  -scheme DumpCompare -derivedDataPath /Users/maxik/.claude/derived-data/dumpcompare \
-  -destination 'platform=macOS' \
-  test -only-testing:DumpCompareTests/ToolbarValidationTests
+# The reduced repro: the window-building classes, ~50 s
+xcodebuild test -project DumpCompare.xcodeproj -scheme DumpCompare \
+  -derivedDataPath "$DUMPCOMPARE_DD" -destination 'platform=macOS' \
+  -only-testing:DumpCompareTests/GoToBookmarksTests \
+  -only-testing:DumpCompareTests/ZoomToFitTests \
+  -only-testing:DumpCompareTests/LayoutToggleTests \
+  -only-testing:DumpCompareTests/TypingModeIndicatorTests \
+  -only-testing:DumpCompareTests/TitleBarMenuTests \
+  -only-testing:DumpCompareTests/BookmarkTests \
+  -only-testing:DumpCompareTests/MinimapTests \
+  -only-testing:DumpCompareTests/SegmentsFormTests \
+  -only-testing:DumpCompareTests/MainWindowMenuTests \
+  -only-testing:DumpCompareTests/ToolbarValidationTests
 
-# Full suite (the crash only reproduces here)
-xcodebuild -project /Users/maxik/Projects/DumpCompare/DumpCompare.xcodeproj \
-  -scheme DumpCompare -derivedDataPath /Users/maxik/.claude/derived-data/dumpcompare \
-  -destination 'platform=macOS' test
+# Full suite
+xcodebuild test -project DumpCompare.xcodeproj -scheme DumpCompare \
+  -derivedDataPath "$DUMPCOMPARE_DD" -destination 'platform=macOS'
 ```
 
 The wrapper exit code is unreliable — grep the log for `** TEST SUCCEEDED **` /
-`** TEST FAILED **` and `Program crashed`. Core tests are a **separate** Swift
-package: `cd DumpCompareCore && swift test --filter <Class>` (not in the app
-scheme).
-
-## Decision needed from the user
-
-The user's bug is fixed and its regression test is written. The remaining
-blocker is the **pre-existing** swap crash, which needs either the single-item
-refactor (robust, larger) or a cheaper targeted fix (unverified). Confirm which
-direction before continuing, and note the full suite must be green before any
-commit (the user runs it before "push").
+`** TEST FAILED **`, and for `_itemAtIndex` and `Restarting after` to tell a
+crash from an ordinary failure. Core tests are a **separate** Swift package:
+`cd DumpCompareCore && swift test --filter <Class>` (not in the app scheme).

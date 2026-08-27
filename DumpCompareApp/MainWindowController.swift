@@ -108,7 +108,16 @@ final class MainWindowController: NSWindowController {
     /// block sits pinned to the right edge — a flexible space fills everything
     /// to its left (§10.3).
     private func buildToolbar() {
-        let toolbar = NSToolbar(identifier: "MainToolbar")
+        // A per-window identifier, not a shared "MainToolbar": AppKit
+        // implicitly synchronises toolbars that share an identifier, so
+        // inserting or removing an item in one window propagates to every other
+        // window's toolbar. Those siblings hold a different item list, and the
+        // index that travels with the mutation is out of bounds for it —
+        //   Invalid parameter not satisfying: index>=0 && index<[_currentItems count]
+        // raised from -[NSToolbar _itemAtIndex:] (§10.3, the arrows/badge swap).
+        // Nothing is lost by making it unique: the layout is fixed in code and
+        // `autosavesConfiguration` is off, so there is no configuration to share.
+        let toolbar = NSToolbar(identifier: "MainToolbar-\(UUID().uuidString)")
         toolbar.delegate = self
         toolbar.displayMode = .iconOnly
         toolbar.allowsUserCustomization = false
