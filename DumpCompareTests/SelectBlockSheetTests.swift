@@ -398,4 +398,44 @@ final class SelectBlockSheetTests: XCTestCase {
                       "a valid length must clear the live error")
     }
 
+    // MARK: - To Beginning / To End
+
+    /// "To Beginning" selects from the file's start up to the position the Start
+    /// field names — [0, start) — ignoring the End/Length option entirely.
+    /// (`submitToBeginning` is the selection the button action produces; it is
+    /// driven directly so the test need not present the sheet, whose action
+    /// would otherwise `dismiss` a never-presented controller.)
+    func testToBeginningSelectsFromFileStartToTheStartPosition() {
+        let (sheet, selection) = makeSheet(fileSize: 0x100)
+        sheet.startField.stringValue = "0x40"
+        sheet.endField.stringValue = "0x99"   // ignored by the boundary buttons
+        sheet.submitToBeginning()
+        XCTAssertEqual(selection(), SelectionModel(start: 0, end: 0x40, fileSize: 0x100))
+    }
+
+    /// "To End" selects from the position the Start field names to the file's
+    /// end — [start, fileSize) — ignoring the End/Length option entirely.
+    func testToEndSelectsFromTheStartPositionToFileEnd() {
+        let (sheet, selection) = makeSheet(fileSize: 0x100)
+        sheet.startField.stringValue = "0x40"
+        sheet.lengthRadio.performClick(nil)
+        sheet.lengthField.stringValue = "0x99"   // ignored by the boundary buttons
+        sheet.submitToEnd()
+        XCTAssertEqual(selection(), SelectionModel(start: 0x40, end: 0x100, fileSize: 0x100))
+    }
+
+    /// The boundary buttons validate the Start field the way OK does: a start
+    /// beyond the file shows the error and selects nothing.
+    func testTheBoundaryButtonsRefuseAStartBeyondTheFile() {
+        let (sheet, selection) = makeSheet(fileSize: 0x80)
+        sheet.startField.stringValue = "0x100"
+        sheet.toBeginningButton.performClick(nil)
+        XCTAssertNil(selection(), "an out-of-bounds start must not select")
+        XCTAssertEqual(sheet.errorLabel.stringValue, "Start is beyond the end of the file.")
+
+        sheet.toEndButton.performClick(nil)
+        XCTAssertNil(selection(), "and neither does the other boundary button")
+        XCTAssertEqual(sheet.errorLabel.stringValue, "Start is beyond the end of the file.")
+    }
+
 }

@@ -284,6 +284,10 @@ final class SelectBlockSheetController: SheetViewController {
     private(set) var lengthField: NSTextField!
     private(set) var endRadio: NSButton!
     private(set) var lengthRadio: NSButton!
+    /// The bottom-left shortcuts: select from the Start field's position to the
+    /// beginning of the file, or to its end.
+    private(set) var toBeginningButton: NSButton!
+    private(set) var toEndButton: NSButton!
 
     init(fileSize: UInt64, presetStart: UInt64? = nil, onSelect: @escaping (SelectionModel) -> Void) {
         self.fileSize = fileSize
@@ -305,6 +309,16 @@ final class SelectBlockSheetController: SheetViewController {
 
     override func loadView() {
         super.loadView()
+
+        // Two shortcuts in the bottom-left corner (before the spacer that pins
+        // Cancel/OK to the right): select from the Start field's position to the
+        // beginning of the file, or to its end. They only read the Start field —
+        // the End/Length option is irrelevant to a selection that runs to a file
+        // boundary.
+        toBeginningButton = NSButton(title: "To Beginning", target: self, action: #selector(toBeginningPressed))
+        toEndButton = NSButton(title: "To End", target: self, action: #selector(toEndPressed))
+        buttonRow.insertArrangedSubview(toBeginningButton, at: 0)
+        buttonRow.insertArrangedSubview(toEndButton, at: 1)
 
         startField = addFieldRow(label: "Start:",
                                  initial: presetStart.map { String(format: "0x%X", $0) } ?? "0x")
@@ -420,6 +434,57 @@ final class SelectBlockSheetController: SheetViewController {
             guard let length = parse(lengthField.stringValue) else { return }
             onSelect(SelectionModel(start: start, length: length, fileSize: fileSize))
         }
+    }
+
+    // MARK: - To Beginning / To End
+
+    /// The error for the Start field alone, or nil when it names a valid
+    /// position. The two boundary buttons ignore the End/Length option, so they
+    /// validate only what they actually use.
+    private func startError() -> String? {
+        guard let start = parse(startField.stringValue) else {
+            return "Invalid start offset."
+        }
+        guard start <= fileSize else {
+            return "Start is beyond the end of the file."
+        }
+        return nil
+    }
+
+    /// "To Beginning": select `[0, start)` — from the file's start to the
+    /// position the Start field names.
+    @objc private func toBeginningPressed() {
+        if let error = startError() {
+            showError(error)
+            return
+        }
+        dismiss(self)
+        submitToBeginning()
+    }
+
+    /// "To End": select `[start, fileSize)` — from the position the Start field
+    /// names to the file's end.
+    @objc private func toEndPressed() {
+        if let error = startError() {
+            showError(error)
+            return
+        }
+        dismiss(self)
+        submitToEnd()
+    }
+
+    /// The selection "To Beginning" produces: `[0, start)`. Reads and parses the
+    /// Start field itself, so a test drives it without presenting the sheet —
+    /// the button action only adds the dismiss.
+    func submitToBeginning() {
+        guard let start = parse(startField.stringValue), start <= fileSize else { return }
+        onSelect(SelectionModel(start: 0, end: start, fileSize: fileSize))
+    }
+
+    /// The selection "To End" produces: `[start, fileSize)`.
+    func submitToEnd() {
+        guard let start = parse(startField.stringValue), start <= fileSize else { return }
+        onSelect(SelectionModel(start: start, end: fileSize, fileSize: fileSize))
     }
 
     private func parse(_ text: String) -> UInt64? {
