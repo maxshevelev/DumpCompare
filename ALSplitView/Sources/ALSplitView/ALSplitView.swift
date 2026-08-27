@@ -284,6 +284,18 @@ public final class ALSplitView: NSView {
     private var animationTarget: CGFloat = 0
     /// Wall-clock time the animation started.
     private var animationStartTime: TimeInterval = 0
+    /// Called with the animation's eased progress on every frame, before the
+    /// frame is applied — see `animateTrailingPaneSize(to:duration:onTick:)`.
+    private var animationTick: ((CGFloat) -> Void)?
+
+    /// Tears a running animation down: stops the timer, clears the flag, and
+    /// drops the tick hook so a stale one cannot outlive its animation.
+    private func stopAnimation() {
+        animationTimer?.invalidate()
+        animationTimer = nil
+        isAnimatingDivider = false
+        animationTick = nil
+    }
 
     /// Animates the divider at `index` to `position` with a cubic ease-out
     /// over `duration`, unless the user prefers reduced motion (then it
@@ -292,9 +304,7 @@ public final class ALSplitView: NSView {
     public func animateDividerPosition(to position: CGFloat, at index: Int = 0,
                                        duration: TimeInterval = 0.2) {
         guard index >= 0, index < panes.count - 1 else { return }
-        animationTimer?.invalidate()
-        animationTimer = nil
-        isAnimatingDivider = false
+        stopAnimation()
         let available = axisAvailable()
         guard available > 0 else { return }
         let target = min(max(0, position), available)
@@ -333,9 +343,7 @@ public final class ALSplitView: NSView {
         setDividerPosition(animationStart + (animationTarget - animationStart) * eased, at: animationIndex)
         if t >= 1 {
             setDividerPosition(target, at: animationIndex)
-            animationTimer?.invalidate()
-            animationTimer = nil
-            isAnimatingDivider = false
+            stopAnimation()
         }
     }
 
@@ -354,23 +362,38 @@ public final class ALSplitView: NSView {
     }
 
     /// Animates the LAST pane's thickness along the split axis to `size`.
-    public func animateTrailingPaneSize(to size: CGFloat, duration: TimeInterval = 0.2) {
+    ///
+    /// `onTick` is handed the animation's eased progress (0…1) on every frame,
+    /// **before** that frame's size is applied — so a consumer can move
+    /// something of its own on exactly this animation's clock and curve rather
+    /// than starting a second animation beside it, which would drift. Because
+    /// the hook runs first and each frame re-derives the pane's size from the
+    /// live bounds, a hook that resizes the split's own window is coherent:
+    /// the frame is applied against the size the window has just taken.
+    ///
+    /// It is always called with `1` before the pane lands on `size`, including
+    /// on the paths that skip the animation (a distance too small to be worth
+    /// easing, or reduced motion), so a consumer never has to finish the move
+    /// itself. It is not called at all when there is no room to animate in.
+    public func animateTrailingPaneSize(to size: CGFloat, duration: TimeInterval = 0.2,
+                                        onTick: ((CGFloat) -> Void)? = nil) {
         guard !panes.isEmpty else { return }
-        animationTimer?.invalidate()
-        animationTimer = nil
-        isAnimatingDivider = false
+        stopAnimation()
         let available = axisAvailable()
         guard available > 0 else { return }
         let target = min(max(0, size), available)
         let start = trailingPaneSize()
         guard abs(start - target) > 0.5 else {
+            onTick?(1)
             setTrailingPaneSize(target)
             return
         }
         if NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            onTick?(1)
             setTrailingPaneSize(target)
             return
         }
+        animationTick = onTick
         animationStart = start
         animationTarget = target
         animationStartTime = ProcessInfo.processInfo.systemUptime
@@ -387,18 +410,19 @@ public final class ALSplitView: NSView {
         tickTrailingPaneSizeAnimation(after: duration)
     }
 
-    /// One tick of the trailing-pane size animation.
+    /// One tick of the trailing-pane size animation. The tick hook runs before
+    /// the size is applied: a hook that resizes the window must have done so by
+    /// the time this frame's size is derived from the live bounds.
     private func tickTrailingPaneSizeAnimation(after duration: TimeInterval) {
         let elapsed = ProcessInfo.processInfo.systemUptime - animationStartTime
         let t = min(1, elapsed / max(duration, 0.001))
         let u = 1 - t
         let eased = 1 - u * u * u
+        animationTick?(eased)
         setTrailingPaneSize(animationStart + (animationTarget - animationStart) * eased)
         if t >= 1 {
             setTrailingPaneSize(animationTarget)
-            animationTimer?.invalidate()
-            animationTimer = nil
-            isAnimatingDivider = false
+            stopAnimation()
         }
     }
 
@@ -547,9 +571,7 @@ public final class ALSplitView: NSView {
             return
         }
         guard event.clickCount == 1 else { return }
-        animationTimer?.invalidate()
-        animationTimer = nil
-        isAnimatingDivider = false
+        stopAnimation()
         isDraggingDivider = true
         draggedDividerIndex = index
         dragStartMouseAxis = isVertical ? point.x : point.y

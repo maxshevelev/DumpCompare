@@ -291,6 +291,43 @@ final class ALSplitViewTests: XCTestCase {
                        "the pane lands at the target size despite the mid-animation resize")
     }
 
+    /// The animation's tick hook reports eased progress, ending at 1 — so a
+    /// consumer can move something of its own (the enclosing window, say) on
+    /// this animation's clock instead of starting a second one beside it.
+    func testTrailingPaneSizeAnimationReportsProgressEndingAtOne() throws {
+        try XCTSkipIf(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+                      "reduced motion skips the animation; the skip path is covered below")
+        let (split, _) = makeSplit(isVertical: true)
+        split.setPaneLayout(.fill, at: 0)
+        split.setPaneLayout(.fixed(0), at: 1)
+
+        var progress: [CGFloat] = []
+        split.animateTrailingPaneSize(to: 200, duration: 0.1) { progress.append($0) }
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.3))
+
+        XCTAssertGreaterThan(progress.count, 2, "the hook runs per frame, not once")
+        XCTAssertEqual(progress.first ?? -1, 0, accuracy: 0.05, "it starts where the pane is")
+        XCTAssertEqual(progress.last ?? -1, 1, accuracy: 0.001, "and ends exactly at the target")
+        XCTAssertEqual(progress, progress.sorted(), "progress only moves forward")
+    }
+
+    /// The hook is still called with 1 when the animation is skipped — a
+    /// distance too small to be worth easing. A consumer that moves with the
+    /// animation must not be left half-way just because the split decided it
+    /// had nothing to animate.
+    func testTrailingPaneSizeAnimationReportsCompletionWhenItSkips() {
+        let (split, _) = makeSplit(isVertical: true)
+        split.setPaneLayout(.fill, at: 0)
+        split.setPaneLayout(.fixed(200), at: 1)
+
+        var progress: [CGFloat] = []
+        // Already there, so there is nothing to ease.
+        split.animateTrailingPaneSize(to: 200, duration: 0.1) { progress.append($0) }
+
+        XCTAssertFalse(split.isAnimatingDivider)
+        XCTAssertEqual(progress, [1], "the skip path still reports completion")
+    }
+
     /// A pane's constraint-based content stretches to the frame the split
     /// gives the pane — in the very same layout pass, with no second
     /// `layoutIfNeeded()`.
