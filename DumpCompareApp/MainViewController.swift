@@ -619,7 +619,13 @@ final class MainViewController: NSViewController {
     func setMinimapPanelVisible(_ visible: Bool, animated: Bool = true) {
         let changed = minimapPanelVisible != visible
         minimapPanelVisible = visible
-        setMinimapPanelWidth(visible ? minimapPreferredPanelWidth : 0, animated: animated)
+        // The window grows or shrinks by the panel's width so the hex content
+        // area keeps its width (§19). It is handed to the panel's animation
+        // rather than run beside it: one clock and one curve, so the window
+        // edge and the panel edge move as a single thing. Evaluated here,
+        // before the width changes, because it captures the window's start.
+        setMinimapPanelWidth(visible ? minimapPreferredPanelWidth : 0, animated: animated,
+                             windowResize: changed ? minimapWindowResize(visible: visible) : nil)
         if changed { minimapPanelVisibilityChanged(visible) }
     }
 
@@ -631,24 +637,31 @@ final class MainViewController: NSViewController {
     /// Moves the divider so the panel gets `width` points (clamped to the
     /// split's room and the legal band by the split's divider clamp),
     /// animating unless reduced motion or the distance is a snap.
-    func setMinimapPanelWidth(_ width: CGFloat, animated: Bool = false) {
+    /// `windowResize`, when given, is the window move that belongs to this width
+    /// change — the growth or shrink that keeps the hex content area's width
+    /// (§19). It takes a progress in 0…1 and is driven by the panel animation's
+    /// own tick, so the two never drift apart; unanimated, it is called with 1.
+    func setMinimapPanelWidth(_ width: CGFloat, animated: Bool = false,
+                              windowResize: ((CGFloat) -> Void)? = nil) {
         let total = minimapSplit.bounds.width
         guard total > 0 else {
             // No bounds yet: park the width in the panel's policy; the first
             // layout places the divider from it.
             minimapSplit.setPaneLayout(.fixed(max(0, width)), at: 1)
+            windowResize?(1)
             return
         }
         let thickness = minimapSplit.dividerThickness
         let target = max(0, min(width, total - thickness))
         if animated {
-            // The window grows or shrinks by the panel's width right after
-            // this (the visibility callback), so the divider is eased by the
-            // panel's WIDTH — the position is re-derived from the live bounds
-            // on every step, the way the divider drag does it.
-            minimapSplit.animateTrailingPaneSize(to: target)
+            // The divider is eased by the panel's WIDTH — the position is
+            // re-derived from the live bounds on every step, the way the
+            // divider drag does it — which is what lets the window grow
+            // underneath the animation without the panel losing its place.
+            minimapSplit.animateTrailingPaneSize(to: target, onTick: windowResize)
         } else {
             minimapSplit.setDividerPosition(total - target - thickness)
+            windowResize?(1)
         }
     }
 
@@ -665,10 +678,6 @@ final class MainViewController: NSViewController {
             updateMinimapViewports()
             rebuildOverview()
         }
-        // The window grows or shrinks by the panel's width so the hex
-        // content area keeps its width (§19). The resize is instant; the
-        // panel's own divider animation then settles the content.
-        resizeWindowForMinimap(visible: visible)
     }
 
     /// Persists the panel's current width as the user's preferred width for the
@@ -684,21 +693,38 @@ final class MainViewController: NSViewController {
         Self.minimapDefaults.set(panelWidth, forKey: Self.minimapWidthDefaultsKey)
     }
 
-    /// Grows or shrinks the window by the minimap panel's width so the hex
-    /// content area keeps its width when the panel is shown or hidden (§19).
-    /// The window grows or shrinks from the right edge; the left edge stays put.
-    private func resizeWindowForMinimap(visible: Bool) {
-        guard let window = view.window else { return }
+    /// The window move that goes with showing or hiding the minimap: growing or
+    /// shrinking by the panel's width so the hex content area keeps its width
+    /// (§19). The window grows or shrinks from the right edge; the left edge
+    /// stays put.
+    ///
+    /// Returns a function of progress rather than doing the move, so the panel's
+    /// animation can drive it frame by frame on its own eased clock — a window
+    /// that jumped to its new width while the panel glided in is what this
+    /// replaces. Called with 1 it lands the window exactly where the instant
+    /// version put it. Nil when there is no window to move.
+    ///
+    /// Every step is computed from the frame captured here rather than from the
+    /// window's current one, so the on-screen clamp cannot accumulate across
+    /// the steps.
+    private func minimapWindowResize(visible: Bool) -> ((CGFloat) -> Void)? {
+        guard let window = view.window else { return nil }
         let delta = minimapPreferredPanelWidth + minimapSplit.dividerThickness
-        var frame = window.frame
-        frame.size.width = visible ? frame.size.width + delta : max(0, frame.size.width - delta)
-        // Keep the window on the visible screen: when growing, the right edge
-        // must not run off-screen; when shrinking, the left edge stays put.
-        if let visibleFrame = window.screen?.visibleFrame {
-            frame.origin.x = min(max(frame.origin.x, visibleFrame.minX),
-                                 visibleFrame.maxX - frame.size.width)
+        let start = window.frame
+        let targetWidth = visible ? start.width + delta : max(0, start.width - delta)
+        return { [weak window] progress in
+            guard let window else { return }
+            var frame = start
+            frame.size.width = start.width + (targetWidth - start.width) * progress
+            // Keep the window on the visible screen: when growing, the right
+            // edge must not run off-screen; when shrinking, the left edge stays
+            // put.
+            if let visibleFrame = window.screen?.visibleFrame {
+                frame.origin.x = min(max(frame.origin.x, visibleFrame.minX),
+                                     visibleFrame.maxX - frame.size.width)
+            }
+            window.setFrame(frame, display: true, animate: false)
         }
-        window.setFrame(frame, display: true, animate: false)
     }
 
     /// Recomputes the minimap's internal map split from the current window mode

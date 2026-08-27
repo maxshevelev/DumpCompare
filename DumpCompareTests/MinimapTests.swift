@@ -260,6 +260,52 @@ final class MinimapTests: XCTestCase {
                        "hiding the minimap shrinks the window back")
     }
 
+    /// Showing the minimap moves the window's edge and the panel's edge as ONE
+    /// animation (§19): the window used to jump to its new width in a single
+    /// step while the panel glided in over 0.2 s, so the growth arrived well
+    /// before the thing it was making room for — and the hex content stretched
+    /// into the gap and was squeezed back out of it.
+    ///
+    /// What is asserted is the relation, not the frame count: at every moment
+    /// the window has grown by as much as the panel has taken (to within the
+    /// divider). That holds however few frames the animation gets — the
+    /// animation runs on wall-clock time, so under load it can legitimately
+    /// finish in a frame or two — while an instant resize breaks it on the very
+    /// first sample, where the window is already fully grown and the panel is
+    /// still shut.
+    func testShowingTheMinimapMovesTheWindowInStepWithThePanel() throws {
+        try XCTSkipIf(NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+                      "reduced motion snaps the panel, so there is no animation to sample")
+        let (_, window) = try makeController()
+        let (controller, _) = try minimapViews(window)
+        let split = controller.minimapSplit
+        let startWidth = window.frame.width
+
+        controller.setMinimapPanelVisible(true, animated: true)
+
+        // The first sample is taken before the run loop turns again, so it
+        // cannot be missed: the animation's opening frame has run, and nothing
+        // else has.
+        func sample() -> (grown: CGFloat, panel: CGFloat) {
+            (window.frame.width - startWidth, split.panes[1].frame.width)
+        }
+        var samples = [sample()]
+        let deadline = Date().addingTimeInterval(2)
+        while Date() < deadline, split.isAnimatingDivider {
+            RunLoop.main.run(until: Date().addingTimeInterval(1.0 / 120.0))
+            samples.append(sample())
+        }
+        _ = pumpUntil(2) { !split.isAnimatingDivider }
+
+        for (grown, panel) in samples {
+            XCTAssertEqual(grown, panel, accuracy: 2,
+                           "the window gained \(grown) while the panel took \(panel)")
+        }
+        let delta = MainViewController.minimapMinPanelWidth + split.dividerThickness
+        XCTAssertEqual(window.frame.width, startWidth + delta, accuracy: 1,
+                       "and it lands exactly where an unanimated show would put it")
+    }
+
     // MARK: - Width clamp and persistence
 
     func testPanelWidthIsClampedAndPersisted() throws {
