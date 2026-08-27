@@ -209,6 +209,35 @@ final class MinimapTests: XCTestCase {
         XCTAssertLessThan(panel.frame.width, 2, "the panel collapses back to the divider")
     }
 
+    /// A divider drag cannot open the minimap while it is hidden — only the
+    /// toolbar/menu toggle can (§19). The clamp pins the divider to the
+    /// trailing edge while the panel is collapsed, so grabbing the divider and
+    /// dragging it is a no-op: the flag stays false and the panel stays at zero
+    /// width. (Before the fix the clamp was idle while hidden, so this drag
+    /// opened the panel and the min/max width band never engaged.)
+    func testDividerDragCannotOpenAHiddenMinimap() throws {
+        let (_, window) = try makeController()
+        let (split, panel) = try minimapViews(window)
+        let sv = split.minimapSplit
+
+        XCTAssertFalse(split.minimapPanelVisible, "the minimap starts hidden")
+        window.layoutIfNeeded()
+
+        // Grab the divider at the trailing edge and drag it well to the left —
+        // the gesture that used to open the panel.
+        let dividerX = sv.dividerPosition(at: 0)
+        let start = NSPoint(x: dividerX + sv.dividerThickness / 2, y: sv.bounds.midY)
+        let target = NSPoint(x: dividerX - 150, y: sv.bounds.midY)
+        sv.mouseDown(with: mouse(.leftMouseDown, at: sv.convert(start, to: nil), window: window))
+        sv.mouseDragged(with: mouse(.leftMouseDragged, at: sv.convert(target, to: nil), window: window))
+        sv.mouseUp(with: mouse(.leftMouseUp, at: sv.convert(target, to: nil), window: window))
+        window.layoutIfNeeded()
+
+        XCTAssertFalse(split.minimapPanelVisible, "a divider drag does not flip the visible flag")
+        XCTAssertLessThan(panel.frame.width, 2,
+                          "a divider drag cannot open a hidden minimap")
+    }
+
     /// Showing the minimap grows the window by the panel's width so the hex
     /// content area keeps its width; hiding it shrinks the window back (§19).
     func testToggleResizesWindowByPanelWidth() throws {

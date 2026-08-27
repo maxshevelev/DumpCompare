@@ -260,13 +260,19 @@ final class MainViewController: NSViewController {
         // flag and opens the panel at its width on the first layout.
         minimapSplit.setPaneLayout(.fill, at: 0)
         minimapSplit.setPaneLayout(.fixed(minimapPanelVisible ? minimapPreferredPanelWidth : 0), at: 1)
-        // The clamp owns the divider's legal range while the panel is shown
-        // (§19): a drag never shrinks the minimap below its minimum nor grows
-        // it past its maximum. While hidden the clamp is idle — the panel
-        // stays collapsed by its zero-width policy, and the hide animation
-        // needs the full range to glide through.
+        // The clamp owns the divider's legal range (§19). While the panel is
+        // shown, a drag never shrinks the minimap below its minimum nor grows
+        // it past its maximum. While it is hidden and no show/hide animation is
+        // gliding, the clamp pins the divider to the trailing edge: the panel
+        // stays collapsed at zero width, and a drag on the divider cannot open
+        // it (only the toolbar/menu toggle can). The animation is exempt — it
+        // needs the full range to glide the divider to the edge on a hide.
         minimapSplit.clampDividerPosition = { [weak self] _, position in
-            guard let self, self.minimapPanelVisible else { return position }
+            guard let self else { return position }
+            guard !self.minimapSplit.isAnimatingDivider else { return position }
+            guard self.minimapPanelVisible else {
+                return self.minimapSplit.axisAvailable()
+            }
             let total = self.minimapSplit.bounds.width
             let thickness = self.minimapSplit.dividerThickness
             let maxPanel = min(MainViewController.minimapMaxPanelWidth, max(0, total - thickness))
@@ -4068,7 +4074,7 @@ final class MainViewController: NSViewController {
     /// offset column uses its default width. The window controller uses this for
     /// the launch frame.
     static func launchContentWidth() -> CGFloat {
-        let font = AppearanceSettings.font(size: 13)
+        let font = AppearanceSettings.font()
         let charWidth = AppearanceSettings.charWidth(for: font)
         let layout = HexLayout(charWidth: charWidth, rowHeight: 0, wordSize: WordSize.current.rawValue)
         return layout.contentWidth + FilePaneView.contentFitSlack
