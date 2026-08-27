@@ -363,4 +363,27 @@ final class SegmentCommandsTests: XCTestCase {
         XCTAssertEqual(view.statusLabel.stringValue,
                        "Offset 0002E6  ·  S1: 0002E6-3FFFFF (4 MB)  ·  4 MB")
     }
+
+    /// §3.4 the status bar's selection readout abbreviates the length and
+    /// rounds it to a whole value of its unit, like the file size beside it: a
+    /// 2000-byte selection reads "2 KB selected", not "2000 selected", and a
+    /// small one stays in bytes.
+    func testTheStatusBarAbbreviatesTheSelectionLength() throws {
+        let (pane, url) = try makePane([UInt8](repeating: 0x11, count: 2048))
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        // 2000 B = 1.953 KB → rounds to "2 KB".
+        pane.setSelection(SelectionModel(start: 0, end: 2000, fileSize: 2048))
+        let view = FilePaneView(viewModel: pane)
+        view.frame = NSRect(x: 0, y: 0, width: 800, height: 400)
+        view.layoutSubtreeIfNeeded()
+        XCTAssertTrue(view.statusLabel.stringValue.contains("2 KB selected"),
+                      "a 2000-byte selection reads as 2 KB: \(view.statusLabel.stringValue)")
+
+        // A small selection stays in bytes: 16 bytes → "16 B selected".
+        pane.setSelection(SelectionModel(start: 0, end: 16, fileSize: 2048))
+        view.layoutSubtreeIfNeeded()
+        XCTAssertTrue(view.statusLabel.stringValue.contains("16 B selected"),
+                      "a 16-byte selection reads as 16 B: \(view.statusLabel.stringValue)")
+    }
 }

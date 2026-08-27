@@ -945,7 +945,10 @@ final class FilePaneView: NSView {
         var parts: [String] = []
         parts.append("Offset \(address(status.cursorOffset))")
         if status.selectionLength > 0 {
-            parts.append("\(status.selectionLength) selected")
+            // The selection's length, abbreviated and rounded to a whole value
+            // of its unit, like the file size beside it (§3.4): "255 KB
+            // selected", not "262144 selected".
+            parts.append("\(Self.friendlySize(status.selectionLength)) selected")
         }
         // The caret's piece, beside the offset (§21.3): one block,
         // "S1: <start>-<end> (length)" — bare hex, no 0x prefix, zero-padded to
