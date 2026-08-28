@@ -1,6 +1,44 @@
 import Foundation
 
 /// The byte encoding of a search pattern (§11).
+/// How a scan compares letters (§11).
+///
+/// Folding is what makes a case-insensitive search possible without a second
+/// pass over the file: fold both the pattern and the data and the fast
+/// `Data.range(of:)` search does the rest. What may be folded depends on the
+/// encoding, which is why this is a type rather than a `Bool`.
+public enum CaseFolding: Sendable, Equatable {
+    /// Byte-exact: no letter is folded. Hex is always this, and so is any
+    /// encoding when the user asks for a case-sensitive search.
+    case exact
+    /// Fold ASCII letter *bytes*, wherever they sit — exact for a single-byte
+    /// ASCII-compatible encoding (ASCII, UTF-8).
+    case asciiBytes
+    /// Compare UTF-16 *code units*, folding one only when it encodes an ASCII
+    /// letter — that is, when its other byte is zero. A byte-wise fold cannot do
+    /// this: it would fold the high byte of `U+6100` (`00 61` LE) as if it were
+    /// the letter `a` and match `U+4100`, a different character (§11).
+    ///
+    /// Units are counted from each candidate's own start, so a string is found
+    /// wherever it sits in the file. That rules out folding a whole window ahead
+    /// of the search — see `firstMatch` — which costs speed and buys the truth:
+    /// ~230 ms over a 16 MB dump against 3 ms for an exact scan.
+    case utf16(littleEndian: Bool)
+
+    /// The rule for an encoding and the user's choice.
+    public init(encoding: SearchEncoding, caseSensitive: Bool) {
+        guard !caseSensitive else { self = .exact; return }
+        switch encoding {
+        // Hex input is bytes; bytes have no case to fold. (The *parser* accepts
+        // `de ad` and `DE AD` alike — that is the input, not the comparison.)
+        case .hex: self = .exact
+        case .ascii, .utf8: self = .asciiBytes
+        case .utf16LE: self = .utf16(littleEndian: true)
+        case .utf16BE: self = .utf16(littleEndian: false)
+        }
+    }
+}
+
 public enum SearchEncoding: String, CaseIterable, Sendable {
     /// Input is a hexadecimal byte sequence: `DEADBEEF`, `DE AD BE EF`, or
     /// `0xDE 0xAD`, case-insensitive.
@@ -67,24 +105,19 @@ public enum SearchEngine {
     /// - Forward: the first match whose start is `>= from`.
     /// - Backward: the last match whose end is `<= from`.
     ///
-    /// When `caseSensitive` is false, ASCII letter *bytes* compare equal
-    /// regardless of case (a file "Hi" matches a pattern "HI"). The folding is
-    /// byte-level and encoding-blind — this function only ever sees bytes — so
-    /// it is correct only for single-byte ASCII-compatible patterns (ASCII,
-    /// UTF-8). Callers must pass `caseSensitive: true` for anything else:
-    /// - hex, where folding would make the pattern 41 match the byte 61;
-    /// - UTF-16, where folding hits the high byte of a code unit, so a pattern
-    ///   for U+6100 (61 00) would match U+4100 (41 00).
-    /// Non-ASCII letters (é, ж, …) are always matched exactly.
-    ///
-    /// Returns `nil` when there is no match (or the pattern cannot fit). Throws
-    /// `CancellationError` when `shouldCancel` returns true between chunks.
-    public static func find(
+    /// `folding` decides how letters compare (§11): `.exact` is byte-for-byte,
+    /// `.asciiBytes` folds ASCII letter bytes (right for ASCII and UTF-8), and
+    /// `.utf16` folds a code unit only when it encodes an ASCII letter. Build it
+    /// from the encoding and the user's choice with
+    /// `CaseFolding(encoding:caseSensitive:)` rather than deciding here — hex is
+    /// always exact, and a byte-wise fold on UTF-16 matches the wrong
+    /// characters.
+        public static func find(
         pattern: [UInt8],
         in storage: ByteStorage,
         from offset: UInt64 = 0,
         direction: SearchDirection = .forward,
-        caseSensitive: Bool = true,
+        folding: CaseFolding = .exact,
         chunkSize: Int = defaultChunkSize,
         shouldCancel: () -> Bool = { false },
         progress: (Double) -> Void = { _ in }
@@ -96,20 +129,20 @@ public enum SearchEngine {
 
         // Folding is idempotent per byte, so pattern and data can both be
         // folded and compared with the fast Data.range(of:) path (§11).
-        let patternData = caseSensitive ? Data(pattern) : Data(pattern.map(Self.foldByte))
+        let patternData = Self.fold(pattern, at: 0, using: folding)
         switch direction {
         case .forward:
             return try findForward(
                 pattern: patternData, patternLength: patternLength,
                 storage: storage, from: offset, size: size,
-                chunkSize: chunkSize, caseSensitive: caseSensitive,
+                chunkSize: chunkSize, folding: folding,
                 shouldCancel: shouldCancel, progress: progress
             )
         case .backward:
             return try findBackward(
                 pattern: patternData, patternLength: patternLength,
                 storage: storage, from: offset, size: size,
-                chunkSize: chunkSize, caseSensitive: caseSensitive,
+                chunkSize: chunkSize, folding: folding,
                 shouldCancel: shouldCancel, progress: progress
             )
         }
@@ -135,7 +168,7 @@ public enum SearchEngine {
     public static func findAll(
         pattern: [UInt8],
         in storage: ByteStorage,
-        caseSensitive: Bool = true,
+        folding: CaseFolding = .exact,
         chunkSize: Int = defaultChunkSize,
         shouldCancel: () -> Bool = { false },
         progress: (Double) -> Void = { _ in }
@@ -145,11 +178,11 @@ public enum SearchEngine {
         let size = storage.size
         guard patternLength <= size else { return [] }
 
-        let patternData = caseSensitive ? Data(pattern) : Data(pattern.map(Self.foldByte))
+        let patternData = Self.fold(pattern, at: 0, using: folding)
         var matches: [Range<UInt64>] = []
         try scanAll(
             pattern: patternData, patternLength: patternLength, storage: storage, size: size,
-            caseSensitive: caseSensitive, chunkSize: chunkSize,
+            folding: folding, chunkSize: chunkSize,
             shouldCancel: shouldCancel, progress: progress
         ) { matches.append($0) }
         return matches
@@ -177,7 +210,7 @@ public enum SearchEngine {
     public static func findAllStream(
         pattern: [UInt8],
         in storage: ByteStorage,
-        caseSensitive: Bool = true,
+        folding: CaseFolding = .exact,
         chunkSize: Int = defaultChunkSize,
         maxResults: Int = defaultMaxResults,
         // By default the scan observes the detached task's own cancellation, so
@@ -195,12 +228,12 @@ public enum SearchEngine {
                         continuation.finish()
                         return
                     }
-                    let patternData = caseSensitive ? Data(pattern) : Data(pattern.map(Self.foldByte))
+                    let patternData = Self.fold(pattern, at: 0, using: folding)
                     var found = 0
                     var capped = false
                     try scanAll(
                         pattern: patternData, patternLength: patternLength, storage: storage, size: size,
-                        caseSensitive: caseSensitive, chunkSize: chunkSize,
+                        folding: folding, chunkSize: chunkSize,
                         shouldCancel: shouldCancel, progress: progress, shouldStop: { capped }
                     ) { match in
                         // Past the cap, report nothing more; `shouldStop` then
@@ -269,6 +302,177 @@ public enum SearchEngine {
         return (lower >= 0x61 && lower <= 0x7A) ? lower : b
     }
 
+    /// Folds `bytes` for the fast path, under `folding`.
+    ///
+    /// `.exact` and `.asciiBytes` are position-independent maps, so a window can
+    /// be folded once and handed to `Data.range(of:)`. `.utf16` is not: a code
+    /// unit is two bytes measured from the *string's* start, and a string can
+    /// begin at any offset in a dump — so nothing is pre-folded there and the
+    /// window is returned as it was read. `firstMatch`/`lastMatch` do the work
+    /// for it, one candidate at a time.
+    static func fold(_ bytes: [UInt8], at absoluteStart: UInt64, using folding: CaseFolding) -> Data {
+        switch folding {
+        case .exact:
+            return Data(bytes)
+        case .asciiBytes:
+            return Data(bytes.map(Self.foldByte))
+        case .utf16:
+            return Data(bytes)
+        }
+    }
+
+    /// Whether the UTF-16 code unit at `a` equals the one at `b`, ignoring case.
+    ///
+    /// A code unit is folded only when it encodes an ASCII letter — when the byte
+    /// that is not the letter is zero. So `A` (`41 00` LE) equals `a` (`61 00`),
+    /// while `U+6100` (`00 61`) equals nothing but itself: the byte that would be
+    /// the letter is the zero one, and its own high byte is `0x61`, which is data
+    /// and not a letter (§11).
+    private static func codeUnitsEqualIgnoringCase(
+        _ a: (UInt8, UInt8), _ b: (UInt8, UInt8), littleEndian: Bool
+    ) -> Bool {
+        let (aLetter, aOther) = littleEndian ? (a.0, a.1) : (a.1, a.0)
+        let (bLetter, bOther) = littleEndian ? (b.0, b.1) : (b.1, b.0)
+        guard aOther == bOther else { return false }
+        // Only a unit whose other byte is zero can be an ASCII letter.
+        return aOther == 0 ? Self.foldByte(aLetter) == Self.foldByte(bLetter) : aLetter == bLetter
+    }
+
+    /// Whether `pattern` matches `data` at `index`, comparing UTF-16 code units
+    /// taken from `index` itself — which is what makes the match independent of
+    /// where the string sits in the file (no 2-byte grid, no parity).
+    private static func utf16Matches(
+        _ pattern: Data, in data: Data, at index: Int, littleEndian: Bool
+    ) -> Bool {
+        var patternIndex = pattern.startIndex
+        var dataIndex = data.startIndex + index
+        while patternIndex < pattern.endIndex {
+            // A trailing odd byte cannot be half a code unit: compare it exactly.
+            guard pattern.index(after: patternIndex) < pattern.endIndex,
+                  data.index(after: dataIndex) < data.endIndex else {
+                return pattern[patternIndex] == data[dataIndex]
+            }
+            let unitPattern = (pattern[patternIndex], pattern[pattern.index(after: patternIndex)])
+            let unitData = (data[dataIndex], data[data.index(after: dataIndex)])
+            guard Self.codeUnitsEqualIgnoringCase(unitPattern, unitData,
+                                                  littleEndian: littleEndian) else { return false }
+            patternIndex = pattern.index(patternIndex, offsetBy: 2)
+            dataIndex = data.index(dataIndex, offsetBy: 2)
+        }
+        return true
+    }
+
+    /// The first match of `pattern` in `data` at or after `start`, as an index
+    /// into `data`'s own indices.
+    ///
+    /// The folded encodings take `Data.range(of:)`. `.utf16` walks candidates and
+    /// verifies each with `utf16Matches`, prefiltered on the pattern's first code
+    /// unit so the walk costs one or two byte comparisons per offset instead of a
+    /// full compare.
+    static func firstMatch(of pattern: Data, in data: Data, from start: Int,
+                           folding: CaseFolding) -> Int? {
+        guard case .utf16(let littleEndian) = folding else {
+            return data[(data.startIndex + start)...].range(of: pattern)?.lowerBound
+        }
+        guard !pattern.isEmpty, data.count >= pattern.count else { return nil }
+        let filter = Self.firstUnitFilter(of: pattern, littleEndian: littleEndian)
+        var index = max(0, start)
+        let last = data.count - pattern.count
+        while index <= last {
+            if filter.admits(data, at: index),
+               Self.utf16Matches(pattern, in: data, at: index, littleEndian: littleEndian) {
+                return data.startIndex + index
+            }
+            index += 1
+        }
+        return nil
+    }
+
+    /// The last match of `pattern` in `data`, for the backward scan.
+    static func lastMatch(of pattern: Data, in data: Data, folding: CaseFolding) -> Int? {
+        guard case .utf16(let littleEndian) = folding else {
+            return data.range(of: pattern, options: [.backwards])?.lowerBound
+        }
+        guard !pattern.isEmpty, data.count >= pattern.count else { return nil }
+        let filter = Self.firstUnitFilter(of: pattern, littleEndian: littleEndian)
+        var index = data.count - pattern.count
+        while index >= 0 {
+            if filter.admits(data, at: index),
+               Self.utf16Matches(pattern, in: data, at: index, littleEndian: littleEndian) {
+                return data.startIndex + index
+            }
+            index -= 1
+        }
+        return nil
+    }
+
+    /// The byte values a candidate's first code unit may take — the cheap gate in
+    /// front of the full comparison. When that unit encodes an ASCII letter, the
+    /// letter byte has two admissible values (the two cases) and the other byte
+    /// must be zero; otherwise both bytes are fixed.
+    private struct FirstUnitFilter {
+        let byte0: (UInt8, UInt8)
+        /// Nil for a one-byte pattern, where there is no second byte to gate on.
+        let byte1: (UInt8, UInt8)?
+
+        func admits(_ data: Data, at index: Int) -> Bool {
+            let first = data[data.startIndex + index]
+            guard first == byte0.0 || first == byte0.1 else { return false }
+            guard let byte1, data.startIndex + index + 1 < data.endIndex else { return true }
+            let second = data[data.startIndex + index + 1]
+            return second == byte1.0 || second == byte1.1
+        }
+    }
+
+    private static func firstUnitFilter(of pattern: Data, littleEndian: Bool) -> FirstUnitFilter {
+        let b0 = pattern[pattern.startIndex]
+        guard pattern.count >= 2 else { return FirstUnitFilter(byte0: (b0, b0), byte1: nil) }
+        let b1 = pattern[pattern.index(after: pattern.startIndex)]
+        let (letter, other) = littleEndian ? (b0, b1) : (b1, b0)
+        let lower = letter | 0x20
+        let isASCIILetter = other == 0 && lower >= 0x61 && lower <= 0x7A
+        guard isASCIILetter else {
+            return FirstUnitFilter(byte0: (b0, b0), byte1: (b1, b1))
+        }
+        let cases = (lower, lower & ~0x20)   // "a", "A"
+        return littleEndian
+            ? FirstUnitFilter(byte0: cases, byte1: (0, 0))
+            : FirstUnitFilter(byte0: (0, 0), byte1: cases)
+    }
+
+    // MARK: - Bool-shaped compatibility    // MARK: - Bool-shaped compatibility
+
+    /// The `Bool` form of `find`, kept for the callers that work in a
+    /// single-byte encoding: `false` means the old byte-wise ASCII fold.
+    public static func find(
+        pattern: [UInt8],
+        in storage: ByteStorage,
+        from offset: UInt64 = 0,
+        direction: SearchDirection = .forward,
+        caseSensitive: Bool,
+        chunkSize: Int = defaultChunkSize,
+        shouldCancel: () -> Bool = { false },
+        progress: (Double) -> Void = { _ in }
+    ) throws -> Range<UInt64>? {
+        try find(pattern: pattern, in: storage, from: offset, direction: direction,
+                 folding: caseSensitive ? .exact : .asciiBytes, chunkSize: chunkSize,
+                 shouldCancel: shouldCancel, progress: progress)
+    }
+
+    /// The `Bool` form of `findAll`.
+    public static func findAll(
+        pattern: [UInt8],
+        in storage: ByteStorage,
+        caseSensitive: Bool,
+        chunkSize: Int = defaultChunkSize,
+        shouldCancel: () -> Bool = { false },
+        progress: (Double) -> Void = { _ in }
+    ) throws -> [Range<UInt64>] {
+        try findAll(pattern: pattern, in: storage,
+                    folding: caseSensitive ? .exact : .asciiBytes, chunkSize: chunkSize,
+                    shouldCancel: shouldCancel, progress: progress)
+    }
+
     // MARK: - Scanning
 
     /// The shared Search All scan: walks `storage` in `chunkSize`-sized windows
@@ -282,7 +486,7 @@ public enum SearchEngine {
     /// result count (§11).
     private static func scanAll(
         pattern: Data, patternLength: UInt64, storage: ByteStorage, size: UInt64,
-        caseSensitive: Bool, chunkSize: Int,
+        folding: CaseFolding, chunkSize: Int,
         shouldCancel: () -> Bool, progress: (Double) -> Void,
         shouldStop: () -> Bool = { false },
         matchFound: (Range<UInt64>) -> Void
@@ -302,7 +506,7 @@ public enum SearchEngine {
             let length = Int(min(windowLength, size - cursor))
             let bytes = try storage.read(at: cursor, length: length)
             guard !bytes.isEmpty else { break }
-            let data = caseSensitive ? Data(bytes) : Data(bytes.map(Self.foldByte))
+            let data = Self.fold(bytes, at: cursor, using: folding)
 
             // Record a match only while it starts in the fresh portion
             // `[cursor, cursor + chunkSize)`; one starting in the overlap is
@@ -316,8 +520,9 @@ public enum SearchEngine {
                 // `Data` slices keep their parent's indices, so a match's
                 // `lowerBound` is already a global index — no offset by
                 // `searchStart` (the search starts at `searchStart`).
-                guard let match = data[searchStart..<length].range(of: pattern) else { break }
-                let windowIndex = match.lowerBound
+                guard let windowIndex = Self.firstMatch(of: pattern, in: data,
+                                                        from: searchStart, folding: folding)
+                else { break }
                 let start = cursor + UInt64(windowIndex)
                 guard start < cursor + UInt64(chunkSize) else { break }  // starts in the overlap
                 matchFound(start..<(start + patternLength))
@@ -339,7 +544,7 @@ public enum SearchEngine {
     /// advances `chunkSize` (overlap keeps the window gap-free).
     private static func findForward(
         pattern: Data, patternLength: UInt64, storage: ByteStorage,
-        from: UInt64, size: UInt64, chunkSize: Int, caseSensitive: Bool,
+        from: UInt64, size: UInt64, chunkSize: Int, folding: CaseFolding,
         shouldCancel: () -> Bool, progress: (Double) -> Void
     ) throws -> Range<UInt64>? {
         // Last valid match start satisfies `m + patternLength <= size`.
@@ -353,9 +558,9 @@ public enum SearchEngine {
             let bytes = try storage.read(at: cursor, length: length)
             guard !bytes.isEmpty else { break }
 
-            let data = caseSensitive ? Data(bytes) : Data(bytes.map(Self.foldByte))
-            if let match = data.range(of: pattern) {
-                let start = cursor + UInt64(match.lowerBound)
+            let data = Self.fold(bytes, at: cursor, using: folding)
+            if let index = Self.firstMatch(of: pattern, in: data, from: 0, folding: folding) {
+                let start = cursor + UInt64(index)
                 return start..<(start + patternLength)
             }
 
@@ -378,7 +583,7 @@ public enum SearchEngine {
     /// window boundary is still found (mirror of `findForward`).
     private static func findBackward(
         pattern: Data, patternLength: UInt64, storage: ByteStorage,
-        from: UInt64, size: UInt64, chunkSize: Int, caseSensitive: Bool,
+        from: UInt64, size: UInt64, chunkSize: Int, folding: CaseFolding,
         shouldCancel: () -> Bool, progress: (Double) -> Void
     ) throws -> Range<UInt64>? {
         // Window end: the offset one past the last allowed match end. A match
@@ -400,9 +605,9 @@ public enum SearchEngine {
             let bytes = try storage.read(at: windowStart, length: length)
             guard !bytes.isEmpty else { break }
 
-            let data = caseSensitive ? Data(bytes) : Data(bytes.map(Self.foldByte))
-            if let match = data.range(of: pattern, options: [.backwards]) {
-                let start = windowStart + UInt64(match.lowerBound)
+            let data = Self.fold(bytes, at: windowStart, using: folding)
+            if let index = Self.lastMatch(of: pattern, in: data, folding: folding) {
+                let start = windowStart + UInt64(index)
                 return start..<(start + patternLength)
             }
 

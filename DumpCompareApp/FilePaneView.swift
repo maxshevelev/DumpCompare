@@ -257,10 +257,21 @@ final class FilePaneView: NSView {
         lockLabel.font = .systemFont(ofSize: 12)
         lockLabel.textColor = .secondaryLabelColor
 
-        let closeButton = NSButton(title: "✕", target: self, action: #selector(closeTapped))
+        // An `xmark` symbol rather than a "✕" character: the glyph is the
+        // system's, so it lines up with the rest of the chrome and scales with
+        // the interface instead of being a 10 pt letter. The default button type
+        // dims it while it is held; `.momentaryChange` swapped in an
+        // `alternateTitle` that was never set, so a press showed nothing.
+        let closeButton = NSButton(
+            image: NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close pane")
+                ?? NSImage(),
+            target: self,
+            action: #selector(closeTapped)
+        )
         closeButton.isBordered = false
-        closeButton.font = .systemFont(ofSize: 10)
-        closeButton.setButtonType(.momentaryChange)
+        closeButton.imagePosition = .imageOnly
+        closeButton.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 10, weight: .semibold)
+        closeButton.setAccessibilityLabel("Close pane")
         closeButton.toolTip = "Close pane"
         closeButton.contentTintColor = .secondaryLabelColor
 

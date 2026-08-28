@@ -3940,8 +3940,11 @@ final class MainViewController: NSViewController {
             : direction == .forward ? selection.end : selection.start
         let background = Task.detached(priority: .userInitiated) {
             do {
+                // The rule, not a flag: hex is always exact, and UTF-16 folds by
+                // code unit rather than by byte (§11).
                 return try SearchEngine.find(pattern: pattern.bytes, in: storage, from: from, direction: direction,
-                                             caseSensitive: caseSensitive,
+                                             folding: CaseFolding(encoding: pattern.encoding,
+                                                                  caseSensitive: caseSensitive),
                                              chunkSize: Self.searchChunkSize,
                                              shouldCancel: { Task.isCancelled },
                                              progress: { operation.report($0) })
@@ -4089,7 +4092,8 @@ final class MainViewController: NSViewController {
         // inferred from hitting the cap.
         let displayCap = SearchEngine.defaultMaxResults
         let stream = SearchEngine.findAllStream(
-            pattern: pattern.bytes, in: storage, caseSensitive: caseSensitive,
+            pattern: pattern.bytes, in: storage,
+            folding: CaseFolding(encoding: pattern.encoding, caseSensitive: caseSensitive),
             chunkSize: Self.searchChunkSize,
             maxResults: displayCap + 1,
             shouldCancel: { Task.isCancelled },

@@ -24,6 +24,10 @@ final class FindBarView: NSView {
     /// and validated; the second argument is the case toggle.
     var onSearchAll: ((SearchPattern, Bool) -> Void)?
 
+    /// The point size every icon control on the bar draws its symbol at, so the
+    /// chevrons, the list glyph and the "Aa" line up (§11).
+    static let iconPointSize: CGFloat = 13
+
     /// UserDefaults key for the persisted case-sensitive toggle.
     static let caseSensitiveKey = "FindCaseSensitive"
 
@@ -34,15 +38,20 @@ final class FindBarView: NSView {
 
     private let patternCombo = NSComboBox()
     private let encodingPopup = NSPopUpButton()
-    private let caseButton = NSButton()
+    /// The "Aa" case toggle. Internal so a test can read the control itself: the
+    /// bug this guards against was in its appearance, not in the flag it feeds.
+    private(set) var caseButton = NSButton()
     /// The joined `<` `>` navigation: two chevron buttons inside one rounded,
     /// bordered block split by a hairline (§11). Each button centres its own
     /// icon (AppKit does this for `NSButton`), and there is no selected-segment
     /// highlight — the pair reads as two commands, not one 2-state control.
-    private let navGroup = NSView()
-    private let prevButton = NSButton()
-    private let nextButton = NSButton()
-    private let divider = NSView()
+    /// The ‹ › pair: a real two-segment `NSSegmentedControl` in momentary
+    /// tracking, which is what Xcode's find bar uses and what makes the block
+    /// look native — it was a pair of borderless buttons inside a hand-drawn
+    /// bordered container, and the container had to imitate a bezel, a corner
+    /// radius and a divider that the control draws itself (§11). Internal so a
+    /// test can press a segment: there is no button to click any more.
+    private(set) var navControl = NSSegmentedControl()
     /// The 1px rule between the bar and the pane below. A property (not a local)
     /// so `viewDidChangeEffectiveAppearance` can re-resolve its dynamic colour
     /// on a theme switch — a layer background baked in `setUp` would otherwise
@@ -65,17 +74,16 @@ final class FindBarView: NSView {
 
     /// Whether case-insensitive matching is meaningful for `encoding`.
     ///
-    /// The scan folds ASCII letter bytes, which models case exactly for a
-    /// single-byte ASCII-compatible encoding and nothing else:
-    /// - hex is a byte sequence, so folding would make "41" match the byte 0x61
-    ///   ("4545" = EE would match "Ee");
-    /// - UTF-16 stores two bytes per code unit and the fold cannot tell them
-    ///   apart, so a search for U+6100 (61 00) would also match U+4100 (41 00).
-    /// Internal so the tests can pin the rule per encoding.
-    static func supportsCaseFolding(_ encoding: SearchEncoding) -> Bool {
+    /// Everywhere text is text — ASCII, UTF-8 and UTF-16 in both byte orders —
+    /// and the engine picks the fold that fits: letter bytes for the single-byte
+    /// encodings, whole code units for UTF-16 (`CaseFolding`). Only **hex** is
+    /// left out, and not as a simplification: hex input is bytes, and bytes have
+    /// no case. (The parser reads `de ad` and `DE AD` as the same input — that is
+    /// the input, not the comparison.)
+        static func supportsCaseFolding(_ encoding: SearchEncoding) -> Bool {
         switch encoding {
-        case .ascii, .utf8: return true
-        case .hex, .utf16LE, .utf16BE: return false
+        case .ascii, .utf8, .utf16LE, .utf16BE: return true
+        case .hex: return false
         }
     }
 
@@ -107,7 +115,7 @@ final class FindBarView: NSView {
         setUpPatternCombo()
         setUpEncodingPopup()
         setUpCaseButton()
-        setUpNavGroup()
+        setUpNavControl()
         setUpFindAllButton()
         setUpDoneButton()
 
@@ -123,7 +131,7 @@ final class FindBarView: NSView {
         stack.addArrangedSubview(patternCombo)
         stack.addArrangedSubview(encodingPopup)
         stack.addArrangedSubview(caseButton)
-        stack.addArrangedSubview(navGroup)
+        stack.addArrangedSubview(navControl)
         stack.addArrangedSubview(findAllButton)
         stack.addArrangedSubview(doneButton)
         addSubview(stack)
@@ -149,11 +157,13 @@ final class FindBarView: NSView {
         // icon-only control — so the block reads the same size as its neighbours
         // (§11). Set here (not in setUpNavGroup) because the constraint needs
         // both views in the stack's hierarchy.
-        navGroup.heightAnchor.constraint(equalTo: caseButton.heightAnchor).isActive = true
+        // No height constraint: a segmented control knows its own metrics, and
+        // pinning it to the toggle's height was only ever needed because the
+        // hand-drawn container had none.
 
         // Give everything except the pattern a high hugging priority so only it
         // expands when the window is resized (§11).
-        for view in [findLabel, encodingPopup, caseButton, navGroup, findAllButton, doneButton] {
+        for view in [findLabel, encodingPopup, caseButton, navControl, findAllButton, doneButton] {
             view.setContentHuggingPriority(.defaultHigh, for: .horizontal)
             view.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
         }
@@ -171,9 +181,8 @@ final class FindBarView: NSView {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
             separator.layer?.backgroundColor = NSColor.separatorColor.cgColor
-            navGroup.layer?.borderColor = NSColor.separatorColor.cgColor
-            navGroup.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
-            divider.layer?.backgroundColor = NSColor.separatorColor.cgColor
+            // The case toggle's fill is a CGColor too (§11).
+            syncCaseButtonAppearance()
         }
     }
 
@@ -206,92 +215,103 @@ final class FindBarView: NSView {
     }
 
     private func setUpCaseButton() {
-        caseButton.setButtonType(.toggle)
-        caseButton.bezelStyle = .texturedRounded
+        // Order matters, and it is the whole of the bug this shape fixes: a
+        // button's type is stored as its cell's highlight/state masks, and
+        // assigning `bezelStyle` re-derives those masks for the new bezel. Set
+        // the type first — as this did — and the cell reverts to momentary as
+        // soon as it is laid out in a real window: the click stopped sticking,
+        // the toggle never looked on, and every search stayed case-insensitive.
+        // A view with no window never displays, so the old order looked correct
+        // in isolation, which is why the tests for it must go through a window.
+        // Borderless, and nothing is drawn behind it: the state is the glyph's
+        // own colour and weight, which is the platform's language for an inline
+        // text-attribute toggle (Xcode's find bar says case-sensitivity exactly
+        // this way). A bezel would fight it — `contentTintColor` is ignored for
+        // a template image on a bordered button, which is how both states came
+        // out accent-blue and the toggle looked stuck on.
+        caseButton.isBordered = false
         caseButton.imagePosition = .imageOnly
         caseButton.image = NSImage(systemSymbolName: "textformat",
                                    accessibilityDescription: "Case Sensitive")
+        // Push-on/push-off rather than `.toggle`: the same button type the
+        // toolbar's insert-mode toggle uses (§24.2), which draws a lit platter
+        // in the on state. `.toggle` swaps `image` for `alternateImage`, and
+        // with no alternate image there was nothing to see either way.
+        caseButton.setButtonType(.pushOnPushOff)
         caseButton.setAccessibilityLabel("Case Sensitive")
         caseButton.toolTip = "Case Sensitive"
         caseButton.target = self
         caseButton.action = #selector(caseToggled)
+        syncCaseButtonAppearance()
     }
 
-    private func setUpNavGroup() {
-        // The block: a rounded, bordered container drawn like a two-segment
-        // control's bezel, with a hairline where the segments would meet. The
-        // buttons themselves are borderless, so the block has no selected-segment
-        // fill and no per-button bezel — the chevrons just sit in it (§11).
-        navGroup.wantsLayer = true
-        navGroup.layer?.cornerRadius = 5
-        navGroup.layer?.borderWidth = 1
-        navGroup.layer?.borderColor = NSColor.separatorColor.cgColor
-        navGroup.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
-        // Clip the buttons to the rounded corners; otherwise their square
-        // corners would poke past the container's radius.
-        navGroup.layer?.masksToBounds = true
-        navGroup.translatesAutoresizingMaskIntoConstraints = false
+    /// Paints the toggle to match its state (§11).
+    ///
+    /// The bezel is what carries it: **accent-filled means on**, plain means off.
+    /// A push-on button's own on-state fill is a pale grey that reads as "hovered"
+    /// rather than "selected", and `contentTintColor` cannot help — AppKit tints a
+    /// template image on a bordered button with the accent colour itself and
+    /// ignores the property, so the glyph is blue in both states. Colouring the
+    /// bezel is the one cue that survives that, and it is the platform's own
+    /// convention for a selected toggle.
+    /// Paints the toggle to match its state (§11): **accent-blue and semibold
+    /// means on**, quiet grey and regular means off. Two cues, colour and
+    /// weight, so the state survives a colour-blind reader and a glance — the
+    /// §3.2 rule, and the same pair Xcode's own "Aa" uses. The tooltip says it
+    /// in words as well.
+    private func syncCaseButtonAppearance() {
+        let on = caseButton.state == .on
+        caseButton.contentTintColor = on ? .controlAccentColor : .secondaryLabelColor
+        caseButton.symbolConfiguration = NSImage.SymbolConfiguration(
+            pointSize: Self.iconPointSize, weight: on ? .semibold : .regular)
+        // Only ever seen while the toggle is on the bar, so it names the two
+        // states and nothing else (§11).
+        caseButton.toolTip = on
+            ? "Case Sensitive — matching exactly"
+            : "Case Sensitive — off, upper and lower case match"
+    }
 
-        // `NSButton` centres an image-only icon in its frame by itself, so the
-        // chevrons line up dead-centre with no custom drawing (§11). The buttons
-        // are borderless: a bezel (`.inline` especially) paints a circular fill
-        // behind each icon, which reads as two separate buttons.
-        prevButton.isBordered = false
-        prevButton.imagePosition = .imageOnly
-        prevButton.image = NSImage(systemSymbolName: "chevron.left",
-                                   accessibilityDescription: "Find Previous")
-        prevButton.setAccessibilityLabel("Find Previous")
-        prevButton.toolTip = "Find Previous"
-        prevButton.target = self
-        prevButton.action = #selector(prevPressed)
-
-        nextButton.isBordered = false
-        nextButton.imagePosition = .imageOnly
-        nextButton.image = NSImage(systemSymbolName: "chevron.right",
-                                   accessibilityDescription: "Find Next")
-        nextButton.setAccessibilityLabel("Find Next")
-        nextButton.toolTip = "Find Next"
-        nextButton.target = self
-        nextButton.action = #selector(nextPressed)
-
-        divider.wantsLayer = true
-        divider.layer?.backgroundColor = NSColor.separatorColor.cgColor
-
-        for view in [prevButton, nextButton, divider] {
-            view.translatesAutoresizingMaskIntoConstraints = false
-            navGroup.addSubview(view)
+    private func setUpNavControl() {
+        // Two momentary segments: pressing one runs a search, neither stays
+        // selected. `.separated` would split them into two pills; the default
+        // style is the joined block the platform draws everywhere else.
+        let chevron: (String, String) -> NSImage = { name, description in
+            NSImage(systemSymbolName: name, accessibilityDescription: description)?
+                .withSymbolConfiguration(NSImage.SymbolConfiguration(
+                    pointSize: Self.iconPointSize, weight: .regular))
+                ?? NSImage()
         }
-
-        // Height: match the Aa case toggle, the bar's other icon-only control,
-        // so the block reads the same size as its neighbours (§11). The buttons
-        // are pinned only by their centre — AppKit gives a borderless image-only
-        // NSButton a minimum height of its own (25-27pt) that would break
-        // top/bottom pins, so centring keeps the chevron dead-centre instead.
-        NSLayoutConstraint.activate([
-            navGroup.widthAnchor.constraint(equalToConstant: 55),
-
-            prevButton.leadingAnchor.constraint(equalTo: navGroup.leadingAnchor, constant: 1),
-            prevButton.centerYAnchor.constraint(equalTo: navGroup.centerYAnchor),
-            prevButton.widthAnchor.constraint(equalToConstant: 26),
-
-            divider.leadingAnchor.constraint(equalTo: prevButton.trailingAnchor),
-            divider.centerYAnchor.constraint(equalTo: navGroup.centerYAnchor),
-            divider.heightAnchor.constraint(equalToConstant: 16),
-            divider.widthAnchor.constraint(equalToConstant: 1),
-
-            nextButton.leadingAnchor.constraint(equalTo: divider.trailingAnchor),
-            nextButton.centerYAnchor.constraint(equalTo: navGroup.centerYAnchor),
-            nextButton.trailingAnchor.constraint(equalTo: navGroup.trailingAnchor, constant: -1),
-            nextButton.widthAnchor.constraint(equalTo: prevButton.widthAnchor),
-        ])
+        navControl = NSSegmentedControl(
+            images: [chevron("chevron.left", "Find Previous"),
+                     chevron("chevron.right", "Find Next")],
+            trackingMode: .momentary,
+            target: self,
+            action: #selector(navPressed(_:))
+        )
+        navControl.segmentStyle = .automatic
+        navControl.setToolTip("Find Previous", forSegment: Self.previousSegment)
+        navControl.setToolTip("Find Next", forSegment: Self.nextSegment)
+        // The segments' own accessibility comes from the images' descriptions;
+        // the control needs a name of its own for the group (§15).
+        navControl.setAccessibilityLabel("Find Previous / Find Next")
+        navControl.translatesAutoresizingMaskIntoConstraints = false
     }
+
+    static let previousSegment = 0
+    static let nextSegment = 1
 
     private func setUpFindAllButton() {
-        findAllButton.setButtonType(.momentaryChange)
-        findAllButton.bezelStyle = .texturedRounded
+        // Borderless and quiet grey, like every other icon control on the bar:
+        // one style, so nothing here reads as "selected" except the case
+        // toggle when it is on. No `setButtonType`: the default momentary
+        // push-in dims the icon while it is held.
+        findAllButton.isBordered = false
         findAllButton.imagePosition = .imageOnly
+        findAllButton.contentTintColor = .secondaryLabelColor
         findAllButton.image = NSImage(systemSymbolName: "list.bullet",
                                       accessibilityDescription: "Find All")
+        findAllButton.symbolConfiguration = NSImage.SymbolConfiguration(
+            pointSize: Self.iconPointSize, weight: .regular)
         findAllButton.setAccessibilityLabel("Find All")
         findAllButton.toolTip = "Find All"
         findAllButton.target = self
@@ -306,6 +326,24 @@ final class FindBarView: NSView {
         // Esc closes the bar (§11): wiring Esc as the button's key equivalent
         // makes AppKit route it here from anywhere in the window.
         doneButton.keyEquivalent = "\u{1B}"
+    }
+
+    // MARK: - Test seams
+
+    /// Selects `encoding` the way a click on the popup would, action included —
+    /// the case toggle's enabled state follows the encoding (§11).
+    func selectEncodingForTests(_ encoding: SearchEncoding) {
+        guard let index = SearchEncoding.allCases.firstIndex(of: encoding) else { return }
+        encodingPopup.selectItem(at: index)
+        encodingChanged()
+    }
+
+    /// Sets the case toggle the way a click on it would, action included. A
+    /// click cannot be synthesized reliably in a headless host, and what the
+    /// tests are about is what the button then shows and reports.
+    func setCaseSensitiveForTests(_ on: Bool) {
+        caseButton.state = on ? .on : .off
+        caseToggled()
     }
 
     // MARK: - Show
@@ -323,7 +361,8 @@ final class FindBarView: NSView {
             encodingPopup.selectItem(at: 0)
         }
         caseButton.state = (Self.defaults.object(forKey: Self.caseSensitiveKey) as? Bool ?? false) ? .on : .off
-        updateCaseButtonEnabled()
+        syncCaseButtonAppearance()
+        updateCaseButtonVisibility()
         refreshHistoryItems()
         // Focus the field and select the prefilled text so typing replaces it.
         if window != nil {
@@ -385,19 +424,27 @@ final class FindBarView: NSView {
     }
 
     @objc private func encodingChanged() {
-        updateCaseButtonEnabled()
+        updateCaseButtonVisibility()
     }
 
     @objc private func caseToggled() {
         Self.defaults.set(caseButton.state == .on, forKey: Self.caseSensitiveKey)
+        syncCaseButtonAppearance()
     }
 
-    @objc private func prevPressed() {
-        runSearch(.backward)
+    @objc private func navPressed(_ sender: NSSegmentedControl) {
+        press(segment: sender.selectedSegment)
     }
 
-    @objc private func nextPressed() {
-        runSearch(.forward)
+    private func press(segment: Int) {
+        runSearch(segment == Self.previousSegment ? .backward : .forward)
+    }
+
+    /// Presses one of the ‹ › segments the way a click would, mapping included.
+    /// A momentary segmented control reports `selectedSegment` only for the
+    /// duration of a real click, so a test cannot set it and send the action.
+    func pressFindForTests(_ direction: SearchDirection) {
+        press(segment: direction == .backward ? Self.previousSegment : Self.nextSegment)
     }
 
     @objc private func donePressed() {
@@ -473,7 +520,7 @@ final class FindBarView: NSView {
 
         if let encodingIndex = SearchEncoding.allCases.firstIndex(of: entry.encoding) {
             encodingPopup.selectItem(at: encodingIndex)
-            updateCaseButtonEnabled()
+            updateCaseButtonVisibility()
         }
 
         // Restore the search's case-sensitivity (text encodings only): the
@@ -486,12 +533,21 @@ final class FindBarView: NSView {
         }
     }
 
-    private func updateCaseButtonEnabled() {
-        // Only offered where a byte fold models the encoding's case rules
-        // (see `supportsCaseFolding`): hex digits are already parsed
-        // case-insensitively, and UTF-16 would fold the high byte of a code
-        // unit, matching unrelated characters.
-        caseButton.isEnabled = Self.supportsCaseFolding(currentEncoding())
+    /// Shows or hides the case toggle for the current encoding (§11).
+    ///
+    /// Where a byte fold cannot model the encoding's case rules the toggle has
+    /// nothing to mean — hex digits are bytes, and folding a UTF-16 code unit's
+    /// high byte would match unrelated characters — so matching is always exact
+    /// there and the control leaves the bar entirely. It used to stay, greyed
+    /// out and showing "off", which read as "case is ignored" while the search
+    /// was in fact exact: the one state the bar must never be in. The stack view
+    /// collapses the gap, and the user's own preference is untouched — it comes
+    /// back with the next foldable encoding.
+    private func updateCaseButtonVisibility() {
+        let foldable = Self.supportsCaseFolding(currentEncoding())
+        caseButton.isHidden = !foldable
+        caseButton.isEnabled = foldable
+        syncCaseButtonAppearance()
     }
 
     // MARK: - Display

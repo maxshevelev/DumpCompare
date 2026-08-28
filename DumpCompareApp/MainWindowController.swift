@@ -245,8 +245,13 @@ final class MainWindowController: NSWindowController {
             target: mainViewController,
             action: #selector(MainViewController.toggleInsertMode(_:))
         )
-        button.setButtonType(.pushOnPushOff)
+        // The bezel first, then the type: a button's type is its cell's
+        // highlight/state masks, and assigning `bezelStyle` re-derives them for
+        // the new bezel — set the type first and a display pass can turn the
+        // toggle back into a momentary button (the Find bar's case toggle had
+        // exactly that, §11).
         button.bezelStyle = .toolbar
+        button.setButtonType(.pushOnPushOff)
         button.imagePosition = .imageOnly
         button.sizeToFit()
         button.setAccessibilityLabel("Insert Mode")

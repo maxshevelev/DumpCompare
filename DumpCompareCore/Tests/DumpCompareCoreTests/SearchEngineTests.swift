@@ -497,24 +497,142 @@ extension SearchEngineTests {
         XCTAssertEqual(reported.last, 1.0, "and it still ends at 100 %")
     }
 
-    // MARK: - Byte folding is byte-level (§11)
+    // MARK: - Folding is chosen by the encoding (§11)
 
-    /// `find` is encoding-blind, so a caller that asks for case-insensitive
-    /// matching gets ASCII letter *bytes* folded wherever they sit. This pins the
-    /// hazard the callers must avoid: the Find bar only offers case-insensitive
-    /// matching for ASCII and UTF-8 for exactly this reason.
-    func testCaseInsensitiveFoldingIsByteLevel() throws {
+    /// The byte-wise fold is exactly that — bytes, wherever they sit. It models
+    /// case for a single-byte ASCII-compatible encoding and for nothing else,
+    /// which is why `CaseFolding` exists: a caller asks for the rule that fits
+    /// its encoding instead of a bare Bool.
+    func testTheByteWiseFoldIsByteLevel() throws {
         let data = MemoryBackedStorage(bytes: [0x41, 0x00])   // UTF-16BE U+4100
-
         // A UTF-16BE pattern for U+6100 is 61 00 — a different character.
         let pattern = try SearchEngine.parsePattern("\u{6100}", encoding: .utf16BE)
         XCTAssertEqual(pattern.bytes, [0x61, 0x00])
 
-        XCTAssertNil(try SearchEngine.find(pattern: pattern.bytes, in: data, caseSensitive: true),
+        XCTAssertNil(try SearchEngine.find(pattern: pattern.bytes, in: data, folding: .exact),
                      "exact matching keeps the two characters apart")
-        XCTAssertNotNil(try SearchEngine.find(pattern: pattern.bytes, in: data, caseSensitive: false),
-                        "folding cannot tell a code unit's high byte from a letter — "
-                        + "which is why UTF-16 is never searched case-insensitively")
+        XCTAssertNotNil(try SearchEngine.find(pattern: pattern.bytes, in: data, folding: .asciiBytes),
+                        "the byte-wise fold cannot tell a code unit's high byte from a letter")
     }
 
+    /// Hex is bytes, and bytes have no case: the rule for hex is exact whatever
+    /// the user asked for.
+    func testTheRuleForHexIsAlwaysExact() {
+        XCTAssertEqual(CaseFolding(encoding: .hex, caseSensitive: false), .exact)
+        XCTAssertEqual(CaseFolding(encoding: .hex, caseSensitive: true), .exact)
+        XCTAssertEqual(CaseFolding(encoding: .ascii, caseSensitive: false), .asciiBytes)
+        XCTAssertEqual(CaseFolding(encoding: .utf8, caseSensitive: false), .asciiBytes)
+        XCTAssertEqual(CaseFolding(encoding: .utf16LE, caseSensitive: false), .utf16(littleEndian: true))
+        XCTAssertEqual(CaseFolding(encoding: .utf16BE, caseSensitive: false), .utf16(littleEndian: false))
+        XCTAssertEqual(CaseFolding(encoding: .utf16LE, caseSensitive: true), .exact)
+    }
+
+    /// UTF-16 IS text, so a case-insensitive search has to work there — it just
+    /// cannot be done a byte at a time. Folding a *code unit*, and only when its
+    /// other byte is zero (i.e. when it encodes an ASCII letter), finds `a` for a
+    /// pattern of `A` and leaves `U+6100` alone.
+    func testUTF16FoldingMatchesLettersAndNothingElse() throws {
+        // "Setup" in UTF-16LE, upper-case S.
+        let text = MemoryBackedStorage(bytes: try SearchEngine.parsePattern("Setup", encoding: .utf16LE).bytes)
+        let lower = try SearchEngine.parsePattern("setup", encoding: .utf16LE).bytes
+
+        XCTAssertNil(try SearchEngine.find(pattern: lower, in: text, folding: .exact),
+                     "exact matching is case-sensitive, as ever")
+        XCTAssertEqual(try SearchEngine.find(pattern: lower, in: text,
+                                             folding: .utf16(littleEndian: true)),
+                       0..<UInt64(lower.count),
+                       "and the code-unit fold finds it")
+
+        // The hazard the byte-wise fold walked into: U+6100 (00 61 LE) must not
+        // match U+4100 (00 41 LE) — neither code unit encodes an ASCII letter,
+        // since the byte that would be the letter is the zero one.
+        let u6100 = try SearchEngine.parsePattern("\u{6100}", encoding: .utf16LE)
+        let u4100 = MemoryBackedStorage(bytes: try SearchEngine.parsePattern("\u{4100}", encoding: .utf16LE).bytes)
+        XCTAssertNil(try SearchEngine.find(pattern: u6100.bytes, in: u4100,
+                                           folding: .utf16(littleEndian: true)),
+                     "two different characters stay different")
+    }
+
+    /// The same, big-endian: the letter is the second byte of the pair.
+    func testUTF16BigEndianFoldingMatchesLetters() throws {
+        let text = MemoryBackedStorage(bytes: try SearchEngine.parsePattern("BIOS", encoding: .utf16BE).bytes)
+        let lower = try SearchEngine.parsePattern("bios", encoding: .utf16BE).bytes
+
+        XCTAssertEqual(try SearchEngine.find(pattern: lower, in: text,
+                                             folding: .utf16(littleEndian: false)),
+                       0..<UInt64(lower.count))
+        XCTAssertNil(try SearchEngine.find(pattern: lower, in: text,
+                                           folding: .utf16(littleEndian: true)),
+                     "the wrong byte order folds the wrong byte, so nothing matches")
+    }
+
+    /// A code unit is two bytes counted from the *string's* own start, not from
+    /// any grid in the file — so a UTF-16 string is found wherever it sits, at an
+    /// even offset or an odd one. The first version of this folded whole windows
+    /// on the file's 2-byte grid, which was faster and missed every upper-case
+    /// string at an odd offset.
+    func testUTF16FoldingFindsStringsAtAnyOffsetEvenOrOdd() throws {
+        let word = try SearchEngine.parsePattern("Setup", encoding: .utf16LE).bytes
+        let pattern = try SearchEngine.parsePattern("setup", encoding: .utf16LE).bytes
+
+        for padding in 0...3 {
+            let data = MemoryBackedStorage(bytes: [UInt8](repeating: 0xFF, count: padding) + word)
+            let expected = UInt64(padding)..<UInt64(padding + word.count)
+
+            XCTAssertEqual(try SearchEngine.find(pattern: pattern, in: data,
+                                                 folding: .utf16(littleEndian: true)),
+                           expected, "forward, at offset \(padding)")
+            XCTAssertEqual(try SearchEngine.find(pattern: pattern, in: data,
+                                                 from: UInt64(padding + word.count),
+                                                 direction: .backward,
+                                                 folding: .utf16(littleEndian: true)),
+                           expected, "backward, at offset \(padding)")
+            XCTAssertEqual(try SearchEngine.findAll(pattern: pattern, in: data,
+                                                    folding: .utf16(littleEndian: true)),
+                           [expected], "Search All, at offset \(padding)")
+        }
+    }
+
+    /// The same for big-endian, where the letter is the second byte of the pair.
+    func testUTF16BigEndianFoldingFindsStringsAtAnyOffset() throws {
+        let word = try SearchEngine.parsePattern("BIOS", encoding: .utf16BE).bytes
+        let pattern = try SearchEngine.parsePattern("bios", encoding: .utf16BE).bytes
+
+        for padding in 0...3 {
+            let data = MemoryBackedStorage(bytes: [UInt8](repeating: 0xFF, count: padding) + word)
+            XCTAssertEqual(try SearchEngine.find(pattern: pattern, in: data,
+                                                 folding: .utf16(littleEndian: false)),
+                           UInt64(padding)..<UInt64(padding + word.count),
+                           "at offset \(padding)")
+        }
+    }
+
+    /// A match crossing a window boundary is still found: the candidate walk uses
+    /// the same overlapped windows as the folded path.
+    func testUTF16FoldingFindsAMatchAcrossAWindowBoundary() throws {
+        let word = try SearchEngine.parsePattern("Setup", encoding: .utf16LE).bytes
+        let pattern = try SearchEngine.parsePattern("setup", encoding: .utf16LE).bytes
+        // The string straddles the boundary of a 16-byte chunk.
+        let padding = 13
+        let data = MemoryBackedStorage(bytes: [UInt8](repeating: 0xFF, count: padding) + word)
+
+        XCTAssertEqual(try SearchEngine.find(pattern: pattern, in: data,
+                                             folding: .utf16(littleEndian: true), chunkSize: 16),
+                       UInt64(padding)..<UInt64(padding + word.count))
+        XCTAssertEqual(try SearchEngine.findAll(pattern: pattern, in: data,
+                                                folding: .utf16(littleEndian: true), chunkSize: 16),
+                       [UInt64(padding)..<UInt64(padding + word.count)])
+    }
+
+    /// Search All folds the same way, so a case-insensitive UTF-16 sweep reports
+    /// every occurrence whatever its case.
+    func testUTF16FoldingInSearchAll() throws {
+        let mixed = try SearchEngine.parsePattern("EfiEFIefi", encoding: .utf16LE).bytes
+        let data = MemoryBackedStorage(bytes: mixed)
+        let pattern = try SearchEngine.parsePattern("efi", encoding: .utf16LE).bytes
+
+        let hits = try SearchEngine.findAll(pattern: pattern, in: data,
+                                            folding: .utf16(littleEndian: true))
+        XCTAssertEqual(hits, [0..<6, 6..<12, 12..<18], "all three, one per spelling")
+    }
 }

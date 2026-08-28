@@ -976,8 +976,25 @@ Text search semantics:
 
 Case-insensitive matching:
 
-- Offered for ASCII and UTF-8 only, and withheld (the control disabled, the
-  search forced exact) for hex and for UTF-16.
+- Offered wherever the input is **text** — ASCII, UTF-8 and UTF-16 in both byte
+  orders — each with the fold that models its case rules (see below). Withheld
+  for **hex**, where the search is forced exact: hex input is bytes, and bytes
+  have no case. (The parser reads `de ad` and `DE AD` as one input; that is the
+  input, not the comparison.)
+- In hex the control is **taken off the bar** rather than disabled: a greyed
+  toggle showing "off" reads as "case is ignored" while the match is in fact
+  exact, which is the one thing the bar must never say. The user's own preference
+  is remembered and returns with the next text encoding.
+- The toggle's state is carried by the glyph's **colour and weight** — quiet
+  grey and regular when off, accent and semibold when on — and by a tooltip that
+  says it in words. Not by a bezel: `contentTintColor` is ignored for a template
+  image on a bordered button, so both states drew the same accent-blue glyph and
+  the toggle looked stuck on. Colour *and* form, per §3.2.
+- The ‹ › pair is a two-segment `NSSegmentedControl` in momentary tracking, so
+  the bezel, the corner radius, the divider and the metrics are the platform's
+  rather than drawn by hand. Every other control on the bar that is an icon is
+  borderless, one quiet tint, one symbol size: nothing on the bar reads as
+  "selected" except the case toggle when it is on.
 - The scan folds ASCII letter bytes, which models case exactly for a
   single-byte ASCII-compatible encoding and nothing else: for hex it would
   make the pattern 41 match the byte 61, and for UTF-16 it would fold the
@@ -985,6 +1002,19 @@ Case-insensitive matching:
   U+4100 (41 00).
 - A remembered "case insensitive" state must never leak into an encoding that
   cannot support it.
+- **UTF-16 folds by code unit, not by byte.** A code unit is two bytes; it is
+  folded only when it encodes an ASCII letter —
+  that is, when its other byte is zero. So `A` finds `a` in UTF-16LE and BE,
+  while `U+6100` (`00 61` LE) is left alone and never matches `U+4100`: the byte
+  that would be the letter is the zero one. A byte-wise fold could not tell those
+  apart, which is why case-insensitive UTF-16 used to be withheld altogether.
+- A code unit is counted from the **string's own start**, not from any grid in
+  the file, so a UTF-16 string is found wherever it sits — at an even offset or an
+  odd one. This costs the fast whole-window search: the scan walks candidate
+  offsets and compares code units at each, gated by a one-byte prefilter on the
+  pattern's first unit. Measured on a 16 MB dump: ~230 ms, against 3 ms for an
+  exact search and ~1.5 s for the existing byte-fold path. Correctness first —
+  a search must find what is there.
 
 Search navigation:
 

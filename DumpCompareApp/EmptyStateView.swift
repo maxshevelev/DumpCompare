@@ -46,7 +46,9 @@ final class EmptyStateView: NSView {
         openButton.action = #selector(MainViewController.presentOpenPanel)
         openButton.isBordered = false
         openButton.imagePosition = .imageOnly
-        openButton.setButtonType(.momentaryChange)
+        // No `setButtonType`: the default momentary push-in dims the icon while
+        // it is held. `.momentaryChange` would swap in `alternateImage`, which
+        // this button does not have, so a press showed nothing.
         openButton.contentTintColor = Self.iconColor
         openButton.setAccessibilityLabel("Open File")  // §15
 

@@ -53,7 +53,9 @@ final class TextDecodingSettingsViewController: NSViewController {
         previewCaption.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
         let resetButton = NSButton(title: "Reset to Defaults", target: self, action: #selector(resetTapped))
-        resetButton.bezelStyle = .rounded
+        // `.push` is the current name of the standard rounded bezel (was
+        // `.rounded`).
+        resetButton.bezelStyle = .push
         resetButton.controlSize = .regular
 
         let grid = NSGridView(views: [

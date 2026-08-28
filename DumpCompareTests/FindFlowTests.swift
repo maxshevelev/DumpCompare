@@ -117,21 +117,14 @@ final class FindFlowTests: XCTestCase {
         return pumpUntil(2) { combo.indexOfSelectedItem < 0 && combo.stringValue == pattern }
     }
 
-    /// Clicks the Find Next (`>`) button.
+    /// Presses the Find Next (`>`) segment.
     private func clickFindNext(_ window: NSWindow) throws {
-        try navButton(window, label: "Find Next").performClick(nil)
+        try findBar(window).pressFindForTests(.forward)
     }
 
-    /// Clicks the Find Previous (`<`) button.
+    /// Presses the Find Previous (`<`) segment.
     private func clickFindPrevious(_ window: NSWindow) throws {
-        try navButton(window, label: "Find Previous").performClick(nil)
-    }
-
-    /// A `<` `>` navigation button inside the find bar's joined block.
-    private func navButton(_ window: NSWindow, label: String) throws -> NSButton {
-        let bar = try findBar(window)
-        return try XCTUnwrap(descendants(of: bar, NSButton.self).first { $0.accessibilityLabel() == label },
-                             "nav button \(label)")
+        try findBar(window).pressFindForTests(.backward)
     }
 
     /// Whether any text field in the window shows `text` (e.g. a transient
@@ -1185,18 +1178,20 @@ final class FindFlowTests: XCTestCase {
     }
 
 
-    // MARK: - Case folding is offered only where it is correct (§11)
+    // MARK: - Case folding is offered wherever text has case (§11)
 
-    /// The scan folds ASCII letter *bytes*, which models case only for a
-    /// single-byte ASCII-compatible encoding. The toggle must therefore be
-    /// offered for ASCII and UTF-8 and withheld for hex and both UTF-16s — and
-    /// where it is offered it starts off, case-insensitive like TextEdit.
-    func testCaseToggleDefaultsOffAndIsOfferedOnlyForASCIIAndUTF8() throws {
+    /// Text is text: the toggle is offered for ASCII, UTF-8 and both UTF-16s,
+    /// each with the fold that fits (`CaseFolding`). Only hex is left out, and
+    /// there the control leaves the bar rather than sitting greyed out saying
+    /// "off" while the search matches exactly — the reading that made the toggle
+    /// look as if it worked backwards. Where it is offered it starts off,
+    /// case-insensitive like TextEdit.
+    func testCaseToggleIsOfferedForEveryTextEncodingAndNotForHex() throws {
         XCTAssertTrue(FindBarView.supportsCaseFolding(.ascii))
         XCTAssertTrue(FindBarView.supportsCaseFolding(.utf8))
+        XCTAssertTrue(FindBarView.supportsCaseFolding(.utf16LE))
+        XCTAssertTrue(FindBarView.supportsCaseFolding(.utf16BE))
         XCTAssertFalse(FindBarView.supportsCaseFolding(.hex))
-        XCTAssertFalse(FindBarView.supportsCaseFolding(.utf16LE))
-        XCTAssertFalse(FindBarView.supportsCaseFolding(.utf16BE))
 
         let bytes: [UInt8] = [0x41, 0x42]
         let (controller, window, url) = try makeController(bytes)
@@ -1205,35 +1200,66 @@ final class FindFlowTests: XCTestCase {
         let (_, encoding, _, caseToggle) = try barControls(window)
         XCTAssertEqual(caseToggle.state, .off, "case-insensitive must be the default")
 
-        for (mode, expected) in [(SearchEncoding.utf8, true), (.utf16LE, false),
-                                 (.utf16BE, false), (.hex, false)] {
+        for (mode, expected) in [(SearchEncoding.utf8, true), (.utf16LE, true),
+                                 (.utf16BE, true), (.hex, false), (.ascii, true)] {
             encoding.selectItem(at: SearchEncoding.allCases.firstIndex(of: mode)!)
             encoding.sendAction(encoding.action, to: encoding.target)
-            XCTAssertEqual(caseToggle.isEnabled, expected,
-                           "the toggle's availability for \(mode)")
+            XCTAssertEqual(!caseToggle.isHidden, expected,
+                           "the toggle's presence for \(mode)")
         }
     }
 
-    /// A UTF-16 search stays byte-exact whatever the toggle remembers. Folding a
-    /// code unit's high byte made a search for U+6100 (61 00) also match
-    /// U+4100 (41 00) — a different character entirely.
-    func testUTF16SearchIsExactDespiteTheRememberedCaseState() throws {
-        // The file holds only U+4100 in UTF-16BE.
-        let (controller, window, url) = try makeController([0x41, 0x00])
+    /// A case-insensitive UTF-16 search finds the other case — the whole point —
+    /// and still keeps two different characters apart. The fold that made this
+    /// impossible worked a byte at a time, so it folded the high byte of
+    /// U+6100 (`00 61` LE) as if it were the letter `a` and matched U+4100.
+    func testUTF16SearchFoldsLettersAndKeepsOtherCharactersApart() throws {
+        // "Setup" in UTF-16LE, upper-case S, followed by U+4100.
+        let text = try SearchEngine.parsePattern("Setup", encoding: .utf16LE).bytes
+        let u4100 = try SearchEngine.parsePattern("\u{4100}", encoding: .utf16LE).bytes
+        let (controller, window, url) = try makeController(text + u4100)
         defer { cleanup(controller, url) }
 
         controller.findPattern()
         let (combo, encoding, _, caseToggle) = try barControls(window)
-        encoding.selectItem(at: SearchEncoding.allCases.firstIndex(of: .utf16BE)!)
+        encoding.selectItem(at: SearchEncoding.allCases.firstIndex(of: .utf16LE)!)
         encoding.sendAction(encoding.action, to: encoding.target)
-        XCTAssertFalse(caseToggle.isEnabled, "no case folding is offered for UTF-16")
+        XCTAssertFalse(caseToggle.isHidden, "UTF-16 is text, so the toggle is there")
+        XCTAssertEqual(caseToggle.state, .off, "and it starts case-insensitive")
 
+        // Lower case finds the upper-case string.
+        combo.stringValue = "setup"
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(3) {
+            controller.windowModel.pane1.hexSelection().start == 0
+                && controller.windowModel.pane1.hexSelection().count == UInt64(text.count)
+        }, "a case-insensitive UTF-16 search finds \"Setup\" for \"setup\"")
+
+        // And a different character is still a different character.
+        controller.windowModel.pane1.moveCaret(to: 0)
         combo.stringValue = "\u{6100}"
         try clickFindNext(window)
-        XCTAssertTrue(pumpUntil(2) { self.hasStatus("No matches after the cursor.", in: window) },
+        XCTAssertTrue(pumpUntil(3) { self.hasStatus("No matches after the cursor.", in: window) },
                       "U+6100 must not match U+4100")
-        XCTAssertTrue(controller.windowModel.pane1.hexSelection().isEmpty,
-                      "and nothing is selected")
+    }
+
+    /// Turning the toggle on makes a UTF-16 search exact again, so the two cases
+    /// stop matching each other.
+    func testUTF16SearchIsExactWhenTheToggleIsOn() throws {
+        let text = try SearchEngine.parsePattern("Setup", encoding: .utf16LE).bytes
+        let (controller, window, url) = try makeController(text)
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let (combo, encoding, _, _) = try barControls(window)
+        encoding.selectItem(at: SearchEncoding.allCases.firstIndex(of: .utf16LE)!)
+        encoding.sendAction(encoding.action, to: encoding.target)
+        try findBar(window).setCaseSensitiveForTests(true)
+
+        combo.stringValue = "setup"
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(3) { self.hasStatus("No matches after the cursor.", in: window) },
+                      "case-sensitive means the lower-case spelling is not there")
     }
 
     // MARK: - "Too many results" is exact (§11)
@@ -1342,4 +1368,80 @@ final class FindFlowTests: XCTestCase {
         }
     }
 
+
+    // MARK: - The case toggle carries its state (§11)
+
+    /// The "Aa" toggle has to LOOK different when it is on. It did not: the
+    /// button was `.toggle`, which shows its state by swapping `image` for
+    /// `alternateImage`, and no alternate image was ever set — so both states
+    /// drew the same glyph on the same bezel and the only way to know whether
+    /// the next search would fold case was to run it twice.
+    ///
+    /// The check is a render, because that is where the bug lived: the flag
+    /// behind the button was correct all along.
+    func testTheCaseToggleLooksDifferentWhenItIsOn() throws {
+        let suite = "FindFlowTests.caseToggle"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        FindBarView.defaults = defaults
+        defer {
+            FindBarView.defaults = .standard
+            defaults.removePersistentDomain(forName: suite)
+        }
+
+        // In a window, and displayed: a view with no window never draws, and
+        // this is about drawing.
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 60),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        let bar = FindBarView()
+        window.contentView = bar
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+        bar.prepareForShow()
+        // ASCII: the case toggle only means anything where a byte fold models
+        // the encoding's case rules, and the bar opens on Hex bytes, where it is
+        // disabled and every match is exact (§11).
+        bar.selectEncodingForTests(.ascii)
+
+        func render() -> Data? {
+            bar.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            let rect = bar.caseButton.convert(bar.caseButton.bounds.insetBy(dx: -4, dy: -4), to: bar)
+            guard let rep = bar.bitmapImageRepForCachingDisplay(in: rect) else { return nil }
+            bar.cacheDisplay(in: rect, to: rep)
+            return rep.representation(using: .png, properties: [:])
+        }
+
+        bar.caseButton.state = .off
+        let off = try XCTUnwrap(render())
+        XCTAssertFalse(bar.isCaseSensitive, "off means fold case (§11)")
+
+        bar.setCaseSensitiveForTests(true)
+        let on = try XCTUnwrap(render())
+
+        XCTAssertNotEqual(off, on, "the toggle's two states must not draw the same")
+        XCTAssertTrue(bar.isCaseSensitive, "and on means match exactly")
+    }
+
+    /// The state must survive a layout pass. A button's type is stored as its
+    /// cell's highlight/state masks, and assigning `bezelStyle` re-derives them —
+    /// so setting the type first (as this did) let a real display cycle turn the
+    /// toggle back into a momentary button.
+    func testTheCaseToggleKeepsItsStateThroughALayoutPass() throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 60),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        let bar = FindBarView()
+        window.contentView = bar
+        window.makeKeyAndOrderFront(nil)
+        defer { window.orderOut(nil) }
+
+        bar.selectEncodingForTests(.ascii)
+        bar.setCaseSensitiveForTests(true)
+        bar.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+        XCTAssertEqual(bar.caseButton.state, .on, "a display cycle must not clear the toggle")
+        XCTAssertTrue(bar.isCaseSensitive)
+    }
 }
