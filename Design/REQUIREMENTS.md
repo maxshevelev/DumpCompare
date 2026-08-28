@@ -1012,9 +1012,12 @@ Case-insensitive matching:
   the file, so a UTF-16 string is found wherever it sits — at an even offset or an
   odd one. This costs the fast whole-window search: the scan walks candidate
   offsets and compares code units at each, gated by a one-byte prefilter on the
-  pattern's first unit. Measured on a 16 MB dump: ~230 ms, against 3 ms for an
-  exact search and ~1.5 s for the existing byte-fold path. Correctness first —
-  a search must find what is there.
+  pattern's first unit. Correctness first — a search must find what is there.
+- Measured over a 16 MB dump, release build: an exact search and a case-insensitive
+  ASCII/UTF-8 one both take ~3 ms (the byte fold runs in place over the window the
+  scan already holds, so it costs nothing measurable), and a case-insensitive
+  UTF-16 one ~50 ms for the candidate walk. A debug build is an order of magnitude
+  slower on all of them and says nothing about what the app ships.
 
 Search navigation:
 
