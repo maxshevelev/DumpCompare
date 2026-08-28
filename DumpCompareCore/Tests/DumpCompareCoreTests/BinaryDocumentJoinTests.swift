@@ -287,4 +287,40 @@ final class BinaryDocumentJoinTests: XCTestCase {
 
         XCTAssertEqual(doc.selection.start, 16, "redo puts the caret back at the seam")
     }
+
+    /// Two joins in a row, then undo both: the document is byte-identical to the
+    /// file it came from, so it must be attached to that file again. One slot for
+    /// the pre-join attachment held only the SECOND join's — which by then was
+    /// the placeholder the first join left — so undoing everything gave back the
+    /// bytes and kept the document detached, with Save asking for a location for
+    /// content that already had one.
+    func testUndoingTwoJoinsReattachesTheOriginalFile() throws {
+        let doc = makeDocument([0x11, 0x22])
+        let original = doc.url
+
+        try doc.join(contentsOf: ArrayStorage([0xAA]), at: .end)
+        try doc.join(contentsOf: ArrayStorage([0xBB]), at: .end)
+        XCTAssertFalse(doc.isAttached, "each join detaches")
+
+        _ = try doc.undo()
+        XCTAssertFalse(doc.isAttached, "the first join is still in force")
+        XCTAssertEqual(try doc.read(at: 0, length: 3), [0x11, 0x22, 0xAA])
+
+        _ = try doc.undo()
+        XCTAssertEqual(try doc.read(at: 0, length: 2), [0x11, 0x22])
+        XCTAssertEqual(doc.url, original, "the file it came from is back")
+        XCTAssertTrue(doc.isAttached)
+
+        // And redoing walks the attachment back out again, join by join.
+        _ = try doc.redo()
+        XCTAssertFalse(doc.isAttached)
+        XCTAssertEqual(try doc.read(at: 0, length: 3), [0x11, 0x22, 0xAA])
+        _ = try doc.redo()
+        XCTAssertFalse(doc.isAttached)
+        XCTAssertEqual(try doc.read(at: 0, length: 4), [0x11, 0x22, 0xAA, 0xBB])
+
+        _ = try doc.undo()
+        _ = try doc.undo()
+        XCTAssertEqual(doc.url, original, "and undoing again gives it back once more")
+    }
 }

@@ -277,6 +277,15 @@ If an opened file changes on disk while open:
   - keep local changes;
   - save as.
 
+A change that **shrinks** the file is the dangerous one, and it is refused rather
+than reported. The edits are a piece list over the file as opened, so the bytes
+the document never touched are read from that file on demand; once it is shorter,
+those bytes are gone. The read pads the missing ones with zeros so the offsets
+after them stay where they are — which is right for the view, and catastrophic
+for a save: it would write the padding into the user's file and report success.
+A save is therefore refused while the base file is smaller than it was when
+opened, and the prompt above is what resolves it.
+
 =====================================================================
 6. HEX VIEW AND VISUAL REPRESENTATION
 =====================================================================
@@ -2390,7 +2399,13 @@ and every operation that writes is explicit about it.
   failure or a cancel removes every temporary and publishes nothing, so the
   directory is left exactly as it was (§5.2, the multi-file generalization of
   the single-file atomic write). The read is chunked, so a large piece is
-  streamed rather than loaded whole into RAM.
+  streamed rather than loaded whole into RAM. A read that comes back short means
+  the content shrank under the write, and the write fails rather than publishing
+  a truncated piece as a complete one.
+- **Cancellation belongs to the staging phase**, which publishes nothing. Once
+  every piece is a complete temporary file the renames run to the end: a rename
+  already made cannot be taken back, so stopping between them would publish a
+  *prefix* of the set while reporting a cancelled write.
 - **Save All as Separate Files…** writes the whole partition. The folder is
   chosen with an open panel in directory mode — a save panel grants access to
   one file and this writes N, so the sandbox would refuse the rest. Each piece

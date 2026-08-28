@@ -183,4 +183,28 @@ final class StorageSaverTests: XCTestCase {
         let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: url.deletingLastPathComponent().path)) ?? []
         XCTAssertTrue(leftovers.allSatisfy { !$0.hasSuffix(".tmp") })
     }
+
+    // MARK: - The base file shrinking under the document (§5.5)
+
+    /// Another process truncates the file the document was opened from. The
+    /// overlay cannot read the missing bytes any more, and it pads them with
+    /// ZEROS so the offsets after them stay where they are — right for the hex
+    /// view, catastrophic for a save: the save would write those zeros into the
+    /// user's file and report success. It must refuse, and leave the file as the
+    /// truncation left it, for the reload the change watcher offers (§5.5).
+    func testASaveIsRefusedWhenTheBaseFileHasShrunk() throws {
+        let url = try TestSupport.makeTempFile(contents: Data([UInt8](repeating: 0xAB, count: 4096)))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let overlay = EditOverlayStorage(base: try FileBackedStorage(url: url))
+        try overlay.overwrite(range: 0..<1, with: [0x01])   // an edit to save
+
+        // The file loses everything but its first byte.
+        try Data([0xAB]).write(to: url)
+
+        XCTAssertThrowsError(try StorageSaver.save(overlay, to: url)) { error in
+            XCTAssertEqual(error as? StorageError, .readFailed)
+        }
+        XCTAssertEqual(try TestSupport.readAll(url), Data([0xAB]),
+                       "the file is left as the truncation left it, not padded with zeros")
+    }
 }

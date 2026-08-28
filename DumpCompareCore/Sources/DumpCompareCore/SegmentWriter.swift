@@ -118,8 +118,14 @@ public enum SegmentWriter {
             // Every part is a complete, fsynced temp. Rename them all into place;
             // a rename is atomic per file, so each part appears whole or not at
             // all.
+            // No cancellation check in this loop, deliberately: a rename
+            // already made cannot be taken back, so a cancel here published a
+            // PREFIX of the set and reported a cancelled write (measured: with
+            // three parts, cancelling on the second rename left the first one
+            // on disk). Cancellation belongs to the staging phase above, which
+            // publishes nothing; once every part is a complete temp, the commit
+            // runs to the end.
             for pair in staged {
-                if shouldCancel() { throw CancellationError() }
                 if fileManager.fileExists(atPath: pair.final.path) {
                     _ = try fileManager.replaceItemAt(pair.final, withItemAt: pair.temporary)
                 } else {
@@ -144,7 +150,8 @@ public enum SegmentWriter {
     /// leave a partial file — but it is the only option the sandbox permits.
     ///
     /// The part's bytes are materialized into the app's OWN temporary directory
-    /// first, and only then is the target opened for writing. That order is the
+    /// first (which costs the part's size in free space there while the write
+    /// runs), and only then is the target opened for writing. That order is the
     /// whole point: the target may be the very file the source reads its base
     /// from, and opening it for writing empties it — so every byte is read out
     /// before the target is touched (the lesson behind `StorageSaver`'s direct
@@ -170,7 +177,9 @@ public enum SegmentWriter {
                 if shouldCancel() { throw CancellationError() }
                 let step = min(UInt64(chunkSize), end - offset)
                 let bytes = try source.read(at: offset, length: Int(step))
-                guard !bytes.isEmpty else { break }
+                // As in `writePart`: a short read is a failure, not the end of
+                // the part.
+                guard bytes.count == Int(step) else { throw StorageError.readFailed }
                 try staged.write(contentsOf: Data(bytes))
                 offset += UInt64(bytes.count)
                 progress(Double(offset - part.range.lowerBound) / Double(count))
@@ -190,7 +199,7 @@ public enum SegmentWriter {
         defer { try? reader.close() }
         var copied: UInt64 = 0
         while let chunk = try reader.read(upToCount: chunkSize), !chunk.isEmpty {
-            try writeAll(fd, bytes: [UInt8](chunk), at: off_t(copied))
+            try pwriteAll(fd, bytes: [UInt8](chunk), at: off_t(copied))
             copied += UInt64(chunk.count)
         }
         if Darwin.fsync(fd) != 0 { throw SegmentWriteError.writeFailed }
@@ -211,7 +220,11 @@ public enum SegmentWriter {
             if shouldCancel() { throw CancellationError() }
             let step = min(UInt64(chunkSize), end - offset)
             let bytes = try source.read(at: offset, length: Int(step))
-            guard !bytes.isEmpty else { break }
+            // A short read means the content shrank under us. Stopping here
+            // would fsync the temp and rename it into place, publishing a
+            // truncated piece as a complete one (measured: a 3 MiB part came out
+            // 1 MiB with no error at all).
+            guard bytes.count == Int(step) else { throw StorageError.readFailed }
             try handle.write(contentsOf: Data(bytes))
             offset += UInt64(bytes.count)
             written += UInt64(bytes.count)
@@ -220,12 +233,16 @@ public enum SegmentWriter {
         try handle.synchronize()
     }
 
-    /// Loops `write(2)` until all bytes are written, retrying on EINTR.
-    private static func writeAll(_ fd: Int32, bytes: [UInt8], at offset: off_t) throws {
+    /// Loops `pwrite(2)` until all bytes are written, retrying on EINTR — the
+    /// same shape as `StorageSaver.pwriteAll`. Positioned writes, not `write(2)`:
+    /// the offset is a parameter here, and a plain `write` would ignore it and
+    /// go to wherever the descriptor happens to sit.
+    private static func pwriteAll(_ fd: Int32, bytes: [UInt8], at offset: off_t) throws {
         try bytes.withUnsafeBytes { raw -> Void in
             var total = 0
             while total < raw.count {
-                let n = Darwin.write(fd, raw.baseAddress!.advanced(by: total), raw.count - total)
+                let n = Darwin.pwrite(fd, raw.baseAddress!.advanced(by: total), raw.count - total,
+                                      offset + off_t(total))
                 if n < 0 {
                     if errno == EINTR { continue }
                     throw SegmentWriteError.writeFailed

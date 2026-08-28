@@ -82,6 +82,33 @@ struct ArrayStorage: ByteStorage {
 /// between happens provably mid-scan: the reader is suspended inside a read, so
 /// it cannot cover another chunk, report more progress or yield another match.
 /// This is the seam the diff and search tests use in place of a sleep.
+/// A storage whose content shrinks under the reader: the read at
+/// `shrinksOnRead` (1-based) and every read after it answers with fewer bytes
+/// than asked for, the way a file truncated by another process does (§5.5).
+/// `size` keeps its original promise, which is exactly the condition every
+/// streaming writer has to survive.
+final class ShrinkingStorage: ByteStorage, @unchecked Sendable {
+    let size: UInt64
+    private let shrinksOnRead: Int
+    private var reads = 0
+
+    init(size: UInt64, shrinksOnRead: Int) {
+        self.size = size
+        self.shrinksOnRead = shrinksOnRead
+    }
+
+    /// How many reads the storage has served, so a test can say where it stopped.
+    var readCount: Int { reads }
+
+    func read(at offset: UInt64, length: Int) throws -> [UInt8] {
+        reads += 1
+        guard length > 0, offset < size else { return [] }
+        let available = min(UInt64(length), size - offset)
+        let count = reads >= shrinksOnRead ? available / 2 : available
+        return [UInt8](repeating: 0xAB, count: Int(count))
+    }
+}
+
 final class GatedStorage: ByteStorage, @unchecked Sendable {
     let size: UInt64
     private let byte: UInt8

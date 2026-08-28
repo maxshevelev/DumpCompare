@@ -53,7 +53,11 @@ public enum SegmentReplacer {
             while target < end {
                 let step = min(UInt64(chunkSize), end - target)
                 let bytes = try donor.read(at: source, length: Int(step))
-                guard !bytes.isEmpty else { break }
+                // A short read means the donor shrank under us. Breaking out
+                // here would commit HALF a swap as one transaction and call it a
+                // success: the piece would hold the donor's first chunks and the
+                // document's own bytes after them.
+                guard bytes.count == Int(step) else { throw StorageError.readFailed }
                 try document.overwrite(range: target..<(target + UInt64(bytes.count)), with: bytes)
                 target += UInt64(bytes.count)
                 source += UInt64(bytes.count)

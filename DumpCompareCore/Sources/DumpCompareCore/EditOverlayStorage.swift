@@ -167,6 +167,17 @@ public final class EditOverlayStorage: EditableByteStorage, @unchecked Sendable 
 
     /// True when the storage holds only overwrites (no offset-shifting edit),
     /// so saving can patch the original file in place.
+    /// The size of the base the table's offsets are written against. `StorageSaver`
+    /// compares it with the base file's size on disk before a save: a base that
+    /// has shrunk since it was opened cannot be read any more, and `read` pads
+    /// the missing bytes with zeros to keep the offsets after them in place — so
+    /// a save would write those zeros into the user's file and report success.
+    public var baseSize: UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return base.size
+    }
+
     public var canPatchInPlace: Bool {
         lock.lock()
         defer { lock.unlock() }

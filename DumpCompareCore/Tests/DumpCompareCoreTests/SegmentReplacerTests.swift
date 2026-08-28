@@ -77,4 +77,34 @@ final class SegmentReplacerTests: XCTestCase {
                        "a refused swap changes nothing")
         XCTAssertEqual(doc.size, 16)
     }
+
+    // MARK: - The donor shrinking under the swap (§21.6)
+
+    /// A donor read that comes back short means the donor shrank under the swap.
+    /// Breaking out of the loop there committed HALF a replacement as one
+    /// transaction and called it a success: the piece held the donor's first
+    /// chunks and the document's own bytes after them. The swap must fail and
+    /// leave the document exactly as it was.
+    func testAShortDonorReadLeavesTheDocumentUnchanged() throws {
+        let size = UInt64(3 * SegmentReplacer.chunkSize)
+        let original = [UInt8](repeating: 0x11, count: Int(size))
+        let document = BinaryDocument(
+            storage: EditOverlayStorage(base: MemoryBackedStorage(bytes: original)),
+            url: FileManager.default.temporaryDirectory
+                .appendingPathComponent("replace-\(UUID().uuidString).bin"),
+            readOnly: false
+        )
+        let donor = ShrinkingStorage(size: size, shrinksOnRead: 2)
+
+        XCTAssertThrowsError(
+            try SegmentReplacer.replace(range: 0..<size, in: document, withContentsOf: donor)
+        ) { error in
+            XCTAssertEqual(error as? StorageError, .readFailed)
+        }
+
+        XCTAssertEqual(try document.read(at: 0, length: Int(size)), original,
+                       "not one byte of a failed swap survives")
+        XCTAssertFalse(document.undoHistory.canUndo,
+                       "and it records no transaction to undo")
+    }
 }

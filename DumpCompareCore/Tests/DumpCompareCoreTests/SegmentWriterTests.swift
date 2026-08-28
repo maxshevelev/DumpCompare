@@ -262,4 +262,70 @@ final class SegmentWriterTests: XCTestCase {
             XCTAssertLessThanOrEqual(a, b, "progress is monotone")
         }
     }
+
+    // MARK: - The content shrinking under the write (§21.5)
+
+    /// A read that comes back short means the content shrank under the write —
+    /// a base file truncated by another process. Stopping there would fsync the
+    /// temp and rename it into place, publishing a TRUNCATED piece and reporting
+    /// the write as done; a 3 MiB part came out 1 MiB with no error at all. The
+    /// write must fail instead, and publish nothing.
+    func testAShortReadFailsTheWriteInsteadOfPublishingATruncatedPart() throws {
+        let size = UInt64(3 * SegmentWriter.chunkSize)
+        let source = ShrinkingStorage(size: size, shrinksOnRead: 2)
+        let directory = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        XCTAssertThrowsError(
+            try SegmentWriter.write([SegmentWriter.Part(range: 0..<size, name: "S0.bin")],
+                                    from: source, to: directory)
+        ) { error in
+            XCTAssertEqual(error as? StorageError, .readFailed)
+        }
+
+        let published = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+            .filter { !$0.hasPrefix(".") }
+        XCTAssertEqual(published, [], "a failed write publishes nothing")
+    }
+
+    // MARK: - Cancellation stops at the commit (§21.5)
+
+    /// Cancellation belongs to the staging phase: it publishes nothing, so
+    /// stopping there is free. Once every part is a complete temp the renames
+    /// run to the end — a rename already made cannot be taken back, and polling
+    /// cancel between them published a PREFIX of the set while reporting a
+    /// cancelled write (with three parts, cancelling on the second rename left
+    /// the first one on disk).
+    func testCancellingCannotPublishAPrefixOfTheParts() throws {
+        let source = ArrayStorage([UInt8](repeating: 0x11, count: 32))
+        let parts = [
+            SegmentWriter.Part(range: 0..<8, name: "S0.bin"),
+            SegmentWriter.Part(range: 8..<16, name: "S1.bin"),
+            SegmentWriter.Part(range: 16..<32, name: "S2.bin"),
+        ]
+
+        // How many times does an uncancelled write poll? The last polls belong
+        // to the staging phase; anything after it is the commit.
+        let counting = try makeTempDirectory()
+        defer { try? FileManager.default.removeItem(at: counting) }
+        var polls = 0
+        try SegmentWriter.write(parts, from: source, to: counting,
+                                shouldCancel: { polls += 1; return false })
+        XCTAssertGreaterThan(polls, 0, "the write does poll for cancellation")
+
+        // Say "cancel" from every poll onwards, starting one before the end and
+        // walking back: whatever the phase, the directory is all or nothing.
+        for threshold in stride(from: polls, through: 1, by: -1) {
+            let directory = try makeTempDirectory()
+            defer { try? FileManager.default.removeItem(at: directory) }
+            var seen = 0
+            try? SegmentWriter.write(parts, from: source, to: directory,
+                                     shouldCancel: { seen += 1; return seen >= threshold })
+            let published = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+                .filter { !$0.hasPrefix(".") }
+                .sorted()
+            XCTAssertTrue(published.isEmpty || published == ["S0.bin", "S1.bin", "S2.bin"],
+                          "cancelling at poll \(threshold) left \(published)")
+        }
+    }
 }

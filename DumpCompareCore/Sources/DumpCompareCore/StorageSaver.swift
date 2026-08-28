@@ -13,6 +13,14 @@ import Foundation
 ///   the content is written straight into the user-selected file instead.
 public enum StorageSaver {
     public static func save(_ storage: EditOverlayStorage, to url: URL) throws {
+        // The base file must still hold what the table's offsets were written
+        // against. When it has shrunk since it was opened — truncated by another
+        // process (§5.5) — the overlay can no longer read the missing bytes, and
+        // `read` pads them with ZEROS so the offsets after them stay put. That is
+        // right for the view and catastrophic for a save: those zeros would go
+        // into the user's file, and the save would report success. Refuse
+        // instead; the change watcher offers the reload that fixes it.
+        try verifyBaseIsIntact(storage)
         // Patching in place is safe only when the target is the very file the
         // storage's base reads from: untouched offsets on disk must still match
         // the base. A Save As to a new location must always rewrite fully.
@@ -95,6 +103,16 @@ public enum StorageSaver {
         }
     }
 
+    /// Throws `readFailed` when the storage's base file is smaller than the size
+    /// the overlay's offsets assume. A base that grew is harmless — the extra
+    /// bytes are past everything the table names — so only shrinking is refused.
+    private static func verifyBaseIsIntact(_ storage: EditOverlayStorage) throws {
+        guard let base = storage.originalURL else { return }
+        guard let values = try? base.resourceValues(forKeys: [.fileSizeKey]),
+              let onDisk = values.fileSize else { return }
+        if UInt64(onDisk) < storage.baseSize { throw StorageError.readFailed }
+    }
+
     /// Writes the full content into `url` itself, for when the atomic swap is
     /// impossible because the target's directory is not writable (the sandbox:
     /// the app owns the user-selected file but not the folder around it, so
@@ -103,7 +121,9 @@ public enum StorageSaver {
     /// sandbox permits.
     ///
     /// The content is materialized into the app's OWN temporary directory first,
-    /// and only then does the target get opened for writing. That order is the
+    /// and only then does the target get opened for writing. That staging copy
+    /// costs the document's size in free space inside the container while the
+    /// save runs — a 1 GB image needs 1 GB there. That order is the
     /// whole point: on a plain Save the target *is* the file the overlay still
     /// reads its base from, and opening it for writing empties it — so reading
     /// the content afterwards read a truncated base and wrote its zero padding
@@ -154,7 +174,13 @@ public enum StorageSaver {
         while offset < size {
             let step = min(UInt64(1024 * 1024), size - offset)
             let bytes = try storage.read(at: offset, length: Int(step))
-            guard !bytes.isEmpty else { break }
+            // Fewer bytes than the storage's own size promised: the content
+            // shrank under the read (a base file truncated by another process,
+            // §5.5). Stopping here would fsync and publish a SHORT file and
+            // report the save as done — silent data loss, the same class as the
+            // sandbox-temp bug (5bbef2a). A save that cannot read what it is
+            // saving must fail.
+            guard bytes.count == Int(step) else { throw StorageError.readFailed }
             try handle.write(contentsOf: Data(bytes))
             offset += UInt64(bytes.count)
         }
