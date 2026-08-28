@@ -722,6 +722,22 @@ final class PaneViewModel: HexViewDataSource {
         document?.selection ?? SelectionModel.empty(at: 0, fileSize: 0)
     }
 
+    /// The byte the caret logically occupies for reveal purposes: the *moving*
+    /// edge of the selection — the last byte when it was extended forward
+    /// (anchor at the start), the first byte when extended backward (anchor at
+    /// the end). A bare caret is its own edge. The view keeps this byte on
+    /// screen, so extending a selection follows the edge being dragged, not the
+    /// fixed anchor (§10.4).
+    func hexCaretRevealOffset() -> UInt64 {
+        guard let doc = document else { return 0 }
+        let sel = doc.selection
+        if sel.isEmpty { return sel.start }
+        if let anchor = selectionAnchor, anchor == sel.end {
+            return sel.start          // extended backward: the first byte is active
+        }
+        return sel.end - 1            // extended forward (or no anchor): the last byte
+    }
+
     func hexCaretNibble() -> Int { nibble }
 
     func hexInputRegion() -> HexInputRegion { inputRegion }
@@ -1271,15 +1287,17 @@ final class PaneViewModel: HexViewDataSource {
 
     // MARK: - Caret & selection
 
-    func moveCaret(by delta: Int64, extendSelection: Bool = false) {
+    func moveCaret(by delta: Int64, extendSelection: Bool = false, center: Bool = false) {
         guard let doc = document else { return }
         // Clearing a selection (no extend) collapses the caret to the selection's
-        // edge in the direction of the arrow key — the standard text-editor
-        // behaviour — and drops the selection. A right/down arrow lands on the
-        // selection's end; a left/up arrow on its start.
+        // *active edge* — the byte the caret logically sits on while the
+        // selection is up (its last byte when extended forward, its first byte
+        // when extended backward) — and drops the selection. The caret then
+        // moves from there, so the first arrow after a selection continues from
+        // where the selection ended, not from the edge the arrow points to
+        // (§10.4).
         if !extendSelection, !doc.selection.isEmpty {
-            let target = delta >= 0 ? doc.selection.end : doc.selection.start
-            moveCaret(to: target, extendSelection: false, center: false)
+            moveCaret(to: hexCaretRevealOffset(), extendSelection: false, center: center)
             return
         }
         // The caret's live position is the selection's *moving* end, not its
@@ -1301,9 +1319,10 @@ final class PaneViewModel: HexViewDataSource {
             let amount = UInt64(-delta)
             target = amount > current ? 0 : current - amount
         }
-        // Arrow/page keys are incremental navigation: follow the caret with the
-        // minimum scroll, never a jump to the centre (§10.4).
-        moveCaret(to: target, extendSelection: extendSelection, center: false)
+        // Arrow/page keys are incremental navigation: the minimum scroll that
+        // keeps the caret on screen — except when it was already out of view, in
+        // which case the move centres it back (§10.4).
+        moveCaret(to: target, extendSelection: extendSelection, center: center)
     }
 
     /// Moves the caret to `offset`. `center` (default `true`) marks it a
@@ -1679,13 +1698,12 @@ extension PaneViewModel: HexEditorDelegate {
         deleteBackward()
     }
 
-    func hexEditor(_ editor: HexView, moveCaretBy delta: Int64, extendSelection: Bool) {
-        moveCaret(by: delta, extendSelection: extendSelection)
+    func hexEditor(_ editor: HexView, moveCaretBy delta: Int64, extendSelection: Bool, center: Bool) {
+        moveCaret(by: delta, extendSelection: extendSelection, center: center)
     }
 
-    func hexEditor(_ editor: HexView, moveCaretTo offset: UInt64, extendSelection: Bool) {
-        // Home/End are keyboard navigation: follow the caret, don't centre (§10.4).
-        moveCaret(to: offset, extendSelection: extendSelection, center: false)
+    func hexEditor(_ editor: HexView, moveCaretTo offset: UInt64, extendSelection: Bool, center: Bool) {
+        moveCaret(to: offset, extendSelection: extendSelection, center: center)
     }
 
     func hexEditorSelectAll(_ editor: HexView) {

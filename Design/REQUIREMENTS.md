@@ -840,8 +840,12 @@ new command that moves the caret only has to say which kind of move it is:
   at the centre of the pane, the same as the join itself (§22.5).
 - Incremental navigation — the arrow and page keys, Home/End, and the mouse —
   moves the caret a step at a time and takes the minimum scroll that keeps it
-  on screen. It never jumps the caret to the centre: a step across a viewport
-  edge scrolls one row, and a centred jump on every key press would disorient.
+  on screen. A step that pushes an on-screen caret past a viewport edge scrolls
+  just far enough to keep it visible — it does not jump to the centre, which
+  would disorient on every key press. The one exception: if the caret is
+  *already* out of view when the step is taken (the user scrolled the viewport
+  away from it), the step brings the view back and centres the caret, so it is
+  found mid-pane rather than hunted for at the edge.
 - An edit follows its caret the same way: the caret moves by the length typed
   or pasted, and the minimum scroll keeps it on screen without yanking the view
   away from the work.
@@ -857,6 +861,52 @@ new command that moves the caret only has to say which kind of move it is:
   block, the minimap, a selected search result — names its destination, so the
   destination is centred whether or not it was already in view (§10.1, §10.3,
   §11).
+- While a block is selected the caret is hidden, but it keeps a logical
+  position for these rules: the selection's *active edge* — the end that was
+  moving as the selection grew (its last byte when extended forward, its first
+  byte when extended backward). The reveal follows that edge, so the viewport
+  tracks the end being dragged rather than the fixed anchor. A plain arrow (no
+  shift) collapses the caret to that same edge and clears the selection, so the
+  next step continues from where the selection ended, not from the edge the
+  arrow points to. Typing over a selection is the one exception: it still
+  targets the selection's first byte (§7.3).
+
+10.5 Keyboard navigation
+
+Text-editor arrow-key navigation, on top of the plain arrows and
+PageUp/Down/Home/End that already move the caret a step at a time:
+
+- Cmd+Left / Cmd+Right move the caret to the start / end of the current row
+  (a row is 16 bytes). Cmd+Right lands *on* the row's last byte — the byte the
+  caret covers — clamped to the file's final byte, so a short final row still
+  reaches the end. (A Shift+Cmd+Right selection instead runs through that last
+  byte, its half-open end sitting one past it.)
+- Cmd+Up / Cmd+Down move the caret to the start / end of the file.
+- Fn+Up / Fn+Down scroll the viewport by one viewport height, without moving
+  the caret.
+- Fn+Left / Fn+Right scroll the viewport to the start / end of the file,
+  without moving the caret.
+
+The caret moves (Cmd+arrow) are incremental navigation in the §10.4 sense:
+the minimum scroll that keeps the caret on screen, centring it only when it was
+already out of view. The viewport scrolls (Fn+arrow) move no caret at all —
+they are a pure
+scroll of the clip view, so the caret's reveal is never triggered and the caret
+stays where it is. In comparison mode both panes scroll together, the shorter
+one clamped to its own end of file, by the same scroll-sync that follows any
+clip-view scroll (§9).
+
+On macOS, Fn plus an arrow key generates the same key values as the physical
+Home/End/PageUp/PageDown keys, with the `.function` modifier flag set; the
+physical keys generate the same values without it. The flag is therefore what
+tells the two apart: with `.function` the key scrolls the viewport, without it
+the key moves the caret (PageUp/Down by one viewport height, Home/End to the
+file's ends). Fn is not a representable key-equivalent modifier, so the
+bindings cannot live in the menu — they are handled in the hex view's
+`keyDown`, where the active pane is already in hand. The Cmd+arrow branch is
+scoped to Cmd without Option or Control: the View menu owns
+Cmd+Option(+Shift)+arrow for difference navigation (§10.3), and any other
+Cmd+/Ctrl+ combination defers to the menu.
 
 =====================================================================
 11. SEARCH

@@ -246,29 +246,42 @@ final class CaretPlacementTests: XCTestCase {
         XCTAssertEqual(pane.hexCaretNibble(), 0)
     }
 
-    /// A plain arrow key (no shift) with an active selection collapses the
-    /// caret to the selection's edge in the arrow's direction and clears the
-    /// selection — the standard text-editor behaviour. Right lands on the
-    /// selection's end; left on its start.
+    /// A plain arrow key (no shift) with an active selection collapses the caret
+    /// to the selection's *active edge* — the byte the caret logically sits on
+    /// while the selection is up — and clears the selection. The caret then
+    /// moves from there, so the first arrow continues from where the selection
+    /// ended, not from the edge the arrow points to (§10.4). Extending forward
+    /// puts the active edge on the last byte; extending backward on the first.
     func testPlainArrowFromSelectionLandsAtActiveEnd() throws {
         let (pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 32))
         defer { try? FileManager.default.removeItem(at: url) }
 
-        // Select bytes 2..<7.
-        pane.select(range: 2..<7)
+        // Forward selection: caret at 2, extend right 4 → 2..<6 (active edge 5).
+        pane.moveCaret(to: 2, center: false)
+        pane.moveCaret(by: 4, extendSelection: true, center: false)
         XCTAssertEqual(pane.hexSelection().start, 2)
-        XCTAssertEqual(pane.hexSelection().end, 7)
+        XCTAssertEqual(pane.hexSelection().end, 6)
 
-        // Right arrow: caret lands on the selection's end (7).
-        arrowKey(hexView, window: window, scalar: 0xF703)
-        XCTAssertEqual(pane.hexSelection().start, 7)
+        // Down arrow: collapses to the active edge (last byte, 5) — not the
+        // selection's end (6), the byte past the selection — and clears it.
+        arrowKey(hexView, window: window, scalar: 0xF701)
+        XCTAssertEqual(pane.hexSelection().start, 5)
         XCTAssertTrue(pane.hexSelection().isEmpty)
 
-        // Select bytes 2..<7 again.
-        pane.select(range: 2..<7)
+        // The next Down continues *from* the active edge: 5 + 16 = 21, not
+        // 6 + 16 = 22 (the old byte-past-the-selection behaviour).
+        arrowKey(hexView, window: window, scalar: 0xF701)
+        XCTAssertEqual(pane.hexSelection().start, 21)
 
-        // Left arrow: caret lands on the selection's start (2).
-        arrowKey(hexView, window: window, scalar: 0xF702)
+        // Backward selection: caret at 6, extend left 4 → 2..<6 (active edge 2).
+        pane.moveCaret(to: 6, center: false)
+        pane.moveCaret(by: -4, extendSelection: true, center: false)
+        XCTAssertEqual(pane.hexSelection().start, 2)
+        XCTAssertEqual(pane.hexSelection().end, 6)
+
+        // Up arrow: collapses to the active edge (first byte, 2) — not the
+        // selection's end (6).
+        arrowKey(hexView, window: window, scalar: 0xF700)
         XCTAssertEqual(pane.hexSelection().start, 2)
         XCTAssertTrue(pane.hexSelection().isEmpty)
     }

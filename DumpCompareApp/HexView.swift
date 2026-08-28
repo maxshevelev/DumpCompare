@@ -48,6 +48,10 @@ protocol HexViewDataSource: AnyObject {
     /// carries a mark — where the per-range set above serves the drawing.
     func hexBookmark(atRowContaining offset: UInt64) -> Bookmark?
     func hexSelection() -> SelectionModel
+    /// The byte the caret logically occupies for reveal purposes: the moving
+    /// edge of the selection (last byte when extended forward, first byte when
+    /// extended backward), or the caret itself when the selection is empty.
+    func hexCaretRevealOffset() -> UInt64
     func hexCaretNibble() -> Int
     func hexInputRegion() -> HexInputRegion
     /// Whether the caret should be drawn. False while a block is selected and
@@ -77,8 +81,13 @@ protocol HexEditorDelegate: AnyObject {
     func hexEditor(_ editor: HexView, typeASCIIByte byte: UInt8)
     func hexEditorDeleteForward(_ editor: HexView)
     func hexEditorDeleteBackward(_ editor: HexView)
-    func hexEditor(_ editor: HexView, moveCaretBy delta: Int64, extendSelection: Bool)
-    func hexEditor(_ editor: HexView, moveCaretTo offset: UInt64, extendSelection: Bool)
+    /// `center` says whether the move should centre the caret if it landed off
+    /// screen. The view sets it from whether the caret was *already* off screen
+    /// before the move: an arrow pressed while the caret is out of view brings
+    /// the view back to it (centred), whereas an arrow that merely pushes the
+    /// caret past an edge keeps the minimum-scroll follow (§10.4).
+    func hexEditor(_ editor: HexView, moveCaretBy delta: Int64, extendSelection: Bool, center: Bool)
+    func hexEditor(_ editor: HexView, moveCaretTo offset: UInt64, extendSelection: Bool, center: Bool)
     func hexEditorSelectAll(_ editor: HexView)
     func hexEditor(_ editor: HexView, didClickAt offset: UInt64, region: HexInputRegion, extendSelection: Bool, nibble: Int)
 }
@@ -1834,8 +1843,10 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// caret is revealed only outside a drag.
     func revealCaret(center: Bool = false) {
         guard !dragEngaged, let dataSource else { return }
-        let selection = dataSource.hexSelection()
-        let caret = selection.start
+        // The caret's reveal position is the selection's *moving* edge, not its
+        // anchor: extending a selection follows the edge being dragged, so the
+        // viewport tracks the newest byte, not the fixed start (§10.4).
+        let caret = dataSource.hexCaretRevealOffset()
         if center {
             // A command moved the caret to a new location: if it is outside the
             // viewport, centre it; if it is already on screen, leave the view put.
@@ -1932,6 +1943,52 @@ final class HexView: NSView, NSViewToolTipOwner {
         let clip = scroll.contentView
         let maxOriginY = max(0, bounds.height - clip.bounds.height)
         let originY = min(max(0, layout.rowFrame(row: row).minY), maxOriginY)
+        guard abs(originY - clip.bounds.origin.y) > 0.5 else { return }
+        clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: originY))
+        scroll.reflectScrolledClipView(clip)
+    }
+
+    /// The visible viewport's height in points — the clip view's height, not the
+    /// document's (the document's `bounds.height` is the whole file, which is why
+    /// `pageStep` must not read it).
+    private var viewportHeight: CGFloat {
+        enclosingScrollView?.contentView.bounds.height ?? 0
+    }
+
+    /// One page in whole rows: the full rows that fit the viewport, times the row
+    /// height — the Fn+Up/Down step (a full viewport, no overlap).
+    private var pageScrollPoints: CGFloat {
+        let rowHeight = currentLayout.rowHeight
+        guard rowHeight > 0 else { return 0 }
+        return CGFloat(max(1, Int(viewportHeight / rowHeight))) * rowHeight
+    }
+
+    /// Scrolls the viewport by one page without moving the caret (§10.5). Clamped
+    /// to [0, maxVerticalScroll]; a no-op while a drag owns the pointer (§6).
+    func scrollViewportByPage(down: Bool) {
+        guard !dragEngaged, let scroll = enclosingScrollView else { return }
+        let clip = scroll.contentView
+        let target = clip.bounds.origin.y + (down ? pageScrollPoints : -pageScrollPoints)
+        let originY = min(max(0, target), maxVerticalScroll)
+        guard abs(originY - clip.bounds.origin.y) > 0.5 else { return }
+        clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: originY))
+        scroll.reflectScrolledClipView(clip)
+    }
+
+    /// Scrolls the viewport to the document's top without moving the caret (§10.5).
+    func scrollViewportToTop() {
+        guard !dragEngaged, let scroll = enclosingScrollView else { return }
+        let clip = scroll.contentView
+        guard clip.bounds.origin.y > 0.5 else { return }
+        clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: 0))
+        scroll.reflectScrolledClipView(clip)
+    }
+
+    /// Scrolls the viewport to the document's bottom without moving the caret (§10.5).
+    func scrollViewportToBottom() {
+        guard !dragEngaged, let scroll = enclosingScrollView else { return }
+        let clip = scroll.contentView
+        let originY = maxVerticalScroll
         guard abs(originY - clip.bounds.origin.y) > 0.5 else { return }
         clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: originY))
         scroll.reflectScrolledClipView(clip)
@@ -2498,6 +2555,50 @@ final class HexView: NSView, NSViewToolTipOwner {
             return
         }
         let flags = event.modifierFlags
+        let chars = event.charactersIgnoringModifiers ?? ""
+        guard let value = chars.unicodeScalars.first?.value else {
+            super.keyDown(with: event)
+            return
+        }
+        let extend = flags.contains(.shift)
+
+        // Whether this move should centre the caret: only when the caret is
+        // *already* out of view. An arrow pressed while the caret is off screen
+        // brings the view back to it (centred); an arrow that merely pushes it
+        // past an edge keeps the minimum-scroll follow (§10.4). Checked before
+        // the move, since a step that lands on the edge must still autoscroll.
+        let center = !isRowVisible(containing: dataSource.hexCaretRevealOffset())
+
+        // Cmd+arrow: text-editor row/file caret jumps (§10.5). Handled here, not
+        // as menu key equivalents — the active pane is already in hand, and the
+        // plain navigation keys are keyDown-only. Scoped to Cmd WITHOUT Option or
+        // Control: the View menu owns Cmd+Option(+Shift)+arrow for difference
+        // navigation (§10.3), and any other Cmd+/Ctrl+ key defers to the menu.
+        if flags.contains(.command), !flags.contains(.option), !flags.contains(.control) {
+            let caret = dataSource.hexSelection().start
+            switch value {
+            case 0xF702:  // Cmd+Left → row start
+                delegate.hexEditor(self, moveCaretTo: caret - (caret % UInt64(HexLayout.bytesPerRow)),
+                                   extendSelection: extend, center: center)
+            case 0xF703:  // Cmd+Right → the row's last byte (caret) / through it (selection)
+                let rowStart = caret - (caret % UInt64(HexLayout.bytesPerRow))
+                let rowEnd = min(rowStart + UInt64(HexLayout.bytesPerRow), dataSource.fileSize)
+                // A bare caret lands *on* the last byte; a selection's half-open
+                // end sits one past it, so both reveal the same byte (§10.5).
+                // (An empty file has no last byte — `max` keeps `rowEnd - 1`
+                // from underflowing when `rowEnd` is 0.)
+                delegate.hexEditor(self, moveCaretTo: extend ? rowEnd : max(0, rowEnd - 1),
+                                   extendSelection: extend, center: center)
+            case 0xF700:  // Cmd+Up → file start
+                delegate.hexEditor(self, moveCaretTo: 0, extendSelection: extend, center: center)
+            case 0xF701:  // Cmd+Down → file end
+                delegate.hexEditor(self, moveCaretTo: dataSource.fileSize, extendSelection: extend, center: center)
+            default:
+                super.keyDown(with: event)   // any other Cmd+ key → the menu
+            }
+            return
+        }
+
         if flags.contains(.command) || flags.contains(.control) {
             // Cmd+A / Cmd+C / Cmd+V / Cmd+L… are handled by menu key
             // equivalents; leave this keystroke to the menu system.
@@ -2505,35 +2606,33 @@ final class HexView: NSView, NSViewToolTipOwner {
             return
         }
 
-        let chars = event.charactersIgnoringModifiers ?? ""
-        let extend = flags.contains(.shift)
-        guard let first = chars.unicodeScalars.first else {
-            super.keyDown(with: event)
-            return
-        }
-        let value = first.value
-
         switch value {
         case 0x7F:  // Backspace — fills the previous byte with 0x00 (§7.3)
             delegate.hexEditorDeleteBackward(self)
         case 0xF728:  // Forward Delete — fills the current byte with 0x00
             delegate.hexEditorDeleteForward(self)
         case 0xF700:  // Up
-            delegate.hexEditor(self, moveCaretBy: -Int64(HexLayout.bytesPerRow), extendSelection: extend)
+            delegate.hexEditor(self, moveCaretBy: -Int64(HexLayout.bytesPerRow), extendSelection: extend, center: center)
         case 0xF701:  // Down
-            delegate.hexEditor(self, moveCaretBy: Int64(HexLayout.bytesPerRow), extendSelection: extend)
+            delegate.hexEditor(self, moveCaretBy: Int64(HexLayout.bytesPerRow), extendSelection: extend, center: center)
         case 0xF702:  // Left
-            delegate.hexEditor(self, moveCaretBy: -1, extendSelection: extend)
+            delegate.hexEditor(self, moveCaretBy: -1, extendSelection: extend, center: center)
         case 0xF703:  // Right
-            delegate.hexEditor(self, moveCaretBy: 1, extendSelection: extend)
+            delegate.hexEditor(self, moveCaretBy: 1, extendSelection: extend, center: center)
+        // Fn+arrow carries .function; a physical Home/End/PageUp/PageDown does
+        // not. .function → scroll the viewport, caret untouched (§10.5).
+        case 0xF72C where flags.contains(.function): scrollViewportByPage(down: false)  // Fn+Up
+        case 0xF72D where flags.contains(.function): scrollViewportByPage(down: true)   // Fn+Down
+        case 0xF729 where flags.contains(.function): scrollViewportToTop()              // Fn+Left
+        case 0xF72B where flags.contains(.function): scrollViewportToBottom()           // Fn+Right
         case 0xF72C:  // Page Up
-            delegate.hexEditor(self, moveCaretBy: -Int64(pageStep()), extendSelection: extend)
+            delegate.hexEditor(self, moveCaretBy: -Int64(pageStep()), extendSelection: extend, center: center)
         case 0xF72D:  // Page Down
-            delegate.hexEditor(self, moveCaretBy: Int64(pageStep()), extendSelection: extend)
+            delegate.hexEditor(self, moveCaretBy: Int64(pageStep()), extendSelection: extend, center: center)
         case 0xF729:  // Home
-            delegate.hexEditor(self, moveCaretTo: 0, extendSelection: extend)
+            delegate.hexEditor(self, moveCaretTo: 0, extendSelection: extend, center: center)
         case 0xF72B:  // End
-            delegate.hexEditor(self, moveCaretTo: dataSource.fileSize, extendSelection: extend)
+            delegate.hexEditor(self, moveCaretTo: dataSource.fileSize, extendSelection: extend, center: center)
         case 0x1B:  // Escape
             super.keyDown(with: event)
         default:
@@ -2566,8 +2665,12 @@ final class HexView: NSView, NSViewToolTipOwner {
         }
     }
 
+    /// One page in bytes: the full rows that fit the *viewport* (the clip view's
+    /// height), times the bytes per row. Not `bounds.height` — that is the whole
+    /// document, which would make PageUp/Down jump the entire file (§10.5).
     private func pageStep() -> Int {
-        max(1, Int(bounds.height / currentLayout.rowHeight)) * HexLayout.bytesPerRow
+        let viewport = enclosingScrollView?.contentView.bounds.height ?? 0
+        return max(1, Int(viewport / currentLayout.rowHeight)) * HexLayout.bytesPerRow
     }
 
     private static func hexDigitValue(_ scalar: UInt32) -> Int? {
