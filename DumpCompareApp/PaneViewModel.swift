@@ -213,7 +213,23 @@ final class PaneViewModel: HexViewDataSource {
     /// hot path for mouse-drag selection, where a full redraw on every event
     /// lags the cursor (§3.3). Carries the same caret-reveal mode as `onChange`
     /// (§10.4).
-    var onSelectionChanged: ((Bool) -> Void)?
+    /// What a selection change asks the view to do about scrolling (§10.4).
+    enum SelectionReveal {
+        /// Follow the active edge with the minimum scroll that keeps it on
+        /// screen — an arrow, a drag, a click.
+        case follow
+        /// Centre the active edge: a navigation command jumped the caret, and
+        /// it landed off screen.
+        case center
+        /// Do not scroll at all. A selection installed wholesale is not a
+        /// navigation command: Select All must leave the viewport where the
+        /// user was reading, and Find and Select Block scroll themselves, to
+        /// the block's START mid-pane (§10.2, §11) — a reveal from here would
+        /// first drag the view to the block's far end and be scrolled back.
+        case stay
+    }
+
+    var onSelectionChanged: ((SelectionReveal) -> Void)?
 
     /// Fired after a content change — bytes overwritten in this pane, or its
     /// text decoder rebuilt — carrying the affected region, so the view can
@@ -735,7 +751,12 @@ final class PaneViewModel: HexViewDataSource {
         if let anchor = selectionAnchor, anchor == sel.end {
             return sel.start          // extended backward: the first byte is active
         }
-        return sel.end - 1            // extended forward (or no anchor): the last byte
+        guard selectionAnchor != nil else {
+            // Installed wholesale rather than dragged out: there is no moving
+            // edge, so the block's start is the byte worth showing.
+            return sel.start
+        }
+        return sel.end - 1            // extended forward: the last byte
     }
 
     func hexCaretNibble() -> Int { nibble }
@@ -1281,7 +1302,7 @@ final class PaneViewModel: HexViewDataSource {
         // background re-reads. It is a navigation command: the seam (the caret)
         // is centred if it landed outside the viewport (§10.4).
         onEdit?(edit)
-        notify(centerCaret: true)
+        notify(reveal: .center)
         notifyCompanionContentFullyChanged()
     }
 
@@ -1359,29 +1380,40 @@ final class PaneViewModel: HexViewDataSource {
         // closing above — and Backspace no longer rolls it back from the new
         // position. Undo does.
         pendingInsertOffset = nil
-        notify(selectionChangedOnly: true, centerCaret: center)
+        notify(selectionChangedOnly: true, reveal: center ? .center : .follow)
     }
 
     func selectAll() {
         guard let doc = document else { return }
         doc.setSelection(SelectionModel(start: 0, end: doc.size, fileSize: doc.size))
         resetEditingState()
-        notify(selectionChangedOnly: true)
+        // Anchored at the start, so the selection reads as extended forward and
+        // its active edge is the file's last byte — a following Shift+Left
+        // shortens it from the end, the way a text editor's Select All behaves.
+        // Set after `resetEditingState`, which clears the anchor.
+        selectionAnchor = 0
+        // No scroll: everything is selected, so there is nothing to go and look
+        // at, and dragging a 64 MB dump's viewport to its end would only cost
+        // the user their place.
+        notify(selectionChangedOnly: true, reveal: .stay)
     }
 
+    /// Installs `selection` wholesale. Does not scroll: every caller follows
+    /// with its own centred reveal on the block's start (§10.2).
     func setSelection(_ selection: SelectionModel) {
         guard let doc = document else { return }
         doc.setSelection(selection)
         resetEditingState()
-        notify(selectionChangedOnly: true)
+        notify(selectionChangedOnly: true, reveal: .stay)
     }
 
-    /// Selects `range`, clamped to the file size (used by Find and Select Block).
+    /// Selects `range`, clamped to the file size (used by Find and Select
+    /// Block). Does not scroll, for the same reason as `setSelection`.
     func select(range: Range<UInt64>) {
         guard let doc = document else { return }
         doc.setSelection(SelectionModel(start: range.lowerBound, end: range.upperBound, fileSize: doc.size))
         resetEditingState()
-        notify(selectionChangedOnly: true)
+        notify(selectionChangedOnly: true, reveal: .stay)
     }
 
     // MARK: - Undo / Redo
@@ -1416,7 +1448,7 @@ final class PaneViewModel: HexViewDataSource {
         if doc.isAttached != attachedBefore { syncAttachment() }
         // A navigation command: centre the restored caret if it landed outside
         // the viewport (§10.4).
-        notify(centerCaret: true)
+        notify(reveal: .center)
         return edit != nil
     }
 
@@ -1442,7 +1474,7 @@ final class PaneViewModel: HexViewDataSource {
         if doc.isAttached != attachedBefore { syncAttachment() }
         // A navigation command: centre the restored caret if it landed outside
         // the viewport (§10.4).
-        notify(centerCaret: true)
+        notify(reveal: .center)
         return edit != nil
     }
 
@@ -1599,13 +1631,11 @@ final class PaneViewModel: HexViewDataSource {
     /// - neither (plain `notify()`): a layout or lifecycle change (insert /
     ///   delete, undo/redo, open/save/revert) — the whole pane repaints.
     ///
-    /// `centerCaret` is the caret-reveal mode (§10.4) for the two caret-moving
-    /// routes: `true` when a navigation command jumped the caret (centre it if
-    /// it landed off-screen), `false` for an incremental move (the minimum
-    /// scroll that keeps it on screen). The content route ignores it — a
-    /// content change does not move the caret, so it never scrolls.
+    /// `reveal` is the caret-reveal mode (§10.4) for the two caret-moving
+    /// routes. The content route ignores it — a content change does not move
+    /// the caret, so it never scrolls.
     private func notify(selectionChangedOnly: Bool = false, contentChange: HexViewChange? = nil,
-                        centerCaret: Bool = false) {
+                        reveal: SelectionReveal = .follow) {
         // Selections are independent per pane (§3.3): the companion must not
         // adopt this pane's selection — its hex view only redraws the frames
         // mirroring it.
@@ -1622,9 +1652,9 @@ final class PaneViewModel: HexViewDataSource {
             // A pure selection move (drag, click, keyboard, Find): the bytes
             // are unchanged, so the view redraws only the rows the selection
             // now covers differently instead of the whole pane (§3.3).
-            onSelectionChanged?(centerCaret)
+            onSelectionChanged?(reveal)
         } else {
-            onChange?(centerCaret)
+            onChange?(reveal == .center)
         }
         onCaretChanged?()
     }

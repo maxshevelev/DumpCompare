@@ -56,6 +56,55 @@ final class KeyboardNavigationTests: XCTestCase {
         hexView.keyDown(with: event)
     }
 
+    // MARK: - Select All (§10.2)
+
+    /// Select All leaves the viewport where the user was reading.
+    ///
+    /// It used to scroll to the end of the file: the selection change carried
+    /// an implicit caret reveal, and with no anchor set the "active edge" fell
+    /// through to the selection's last byte. Nothing about selecting everything
+    /// is a request to go somewhere — and on a large dump it cost the reader
+    /// their place.
+    func testSelectAllDoesNotMoveTheViewport() throws {
+        let (pane, hexView, window, url) = try makePane(tallFile)
+        defer { pane.close(); try? FileManager.default.removeItem(at: url) }
+        let clip = try XCTUnwrap(hexView.enclosingScrollView).contentView
+        // Park the view somewhere that is neither end, so a scroll to either
+        // would show up.
+        key(hexView, window: window, scalar: 0xF72D, [])   // Page Down
+        let parked = clip.bounds.origin.y
+        XCTAssertGreaterThan(parked, 0, "premise: the view is off the top")
+        XCTAssertLessThan(parked, max(0, hexView.bounds.height - clip.bounds.height),
+                          "premise: and not at the bottom either")
+
+        pane.selectAll()
+        window.layoutIfNeeded()
+
+        XCTAssertEqual(clip.bounds.origin.y, parked, accuracy: 0.5,
+                       "Select All does not scroll")
+        XCTAssertEqual(pane.hexSelection().start, 0)
+        XCTAssertEqual(pane.hexSelection().end, pane.fileSize, "and it selected everything")
+    }
+
+    /// After Select All the active edge is the file's LAST byte, so extending
+    /// from there shortens the selection from the end — a text editor's
+    /// behaviour. The anchor is set explicitly for this; leaving it nil used to
+    /// give the same answer only by falling through a default.
+    func testSelectAllLeavesTheActiveEdgeAtTheLastByte() throws {
+        let (pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 64))
+        defer { pane.close(); try? FileManager.default.removeItem(at: url) }
+        _ = hexView
+
+        pane.selectAll()
+        XCTAssertEqual(pane.hexCaretRevealOffset(), pane.fileSize - 1,
+                       "the moving edge is the last byte")
+
+        key(hexView, window: window, scalar: 0xF702, [.shift])   // Shift+Left
+        XCTAssertEqual(pane.hexSelection().start, 0, "the anchor holds at the start")
+        XCTAssertEqual(pane.hexSelection().end, pane.fileSize - 1,
+                       "and the selection shortens from the end")
+    }
+
     // MARK: - Cmd+arrow (caret to row/file bounds)
 
     /// Cmd+arrow on an empty document does not trap (§10.5).

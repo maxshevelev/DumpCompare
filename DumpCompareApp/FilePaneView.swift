@@ -519,8 +519,8 @@ final class FilePaneView: NSView {
         // A pure selection move (drag, click, keyboard): the bytes are
         // unchanged, so redraw only the rows the selection now covers
         // differently instead of the whole pane (§3.3).
-        viewModel.onSelectionChanged = { [weak self] center in
-            self?.refreshSelection(center: center)
+        viewModel.onSelectionChanged = { [weak self] reveal in
+            self?.refreshSelection(reveal: reveal)
         }
         // A typing-mode flip recolors/reshapes the caret in place (its position
         // did not move): redraw the caret's row without scrolling, and swap the
@@ -875,9 +875,13 @@ final class FilePaneView: NSView {
     /// so the hex view redraws just the affected rows, and only the status bar
     /// (whose offset/selection readout follows the caret) is updated. The
     /// header, layout, and column header are untouched (§3.3).
-    private func refreshSelection(center: Bool = false) {
+    private func refreshSelection(reveal: PaneViewModel.SelectionReveal = .follow) {
         hexView.reloadSelection()
-        hexView.revealCaret(center: center)
+        switch reveal {
+        case .follow: hexView.revealCaret(center: false)
+        case .center: hexView.revealCaret(center: true)
+        case .stay: break
+        }
         updateStatus()
     }
 

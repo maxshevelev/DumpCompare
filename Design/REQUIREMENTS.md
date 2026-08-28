@@ -838,10 +838,11 @@ new command that moves the caret only has to say which kind of move it is:
   where it is. A command's destination is where the user is looking, not
   something they have to hunt for. Redoing a join therefore puts the seam back
   at the centre of the pane, the same as the join itself (§22.5).
-- Incremental navigation — the arrow and page keys, Home/End, and the mouse —
-  moves the caret a step at a time and takes the minimum scroll that keeps it
-  on screen. A step that pushes an on-screen caret past a viewport edge scrolls
-  just far enough to keep it visible — it does not jump to the centre, which
+- Incremental navigation — the arrow keys and the mouse — moves the caret a
+  step at a time and takes the minimum scroll that keeps it on screen. (Page
+  Up/Down and Home/End are not in this list: they scroll the viewport and leave
+  the caret alone, §10.5.) A step that pushes an on-screen caret past a viewport
+  edge scrolls just far enough to keep it visible — it does not jump to the centre, which
   would disorient on every key press. The one exception: if the caret is
   *already* out of view when the step is taken (the user scrolled the viewport
   away from it), the step brings the view back and centres the caret, so it is
@@ -870,6 +871,18 @@ new command that moves the caret only has to say which kind of move it is:
   next step continues from where the selection ended, not from the edge the
   arrow points to. Typing over a selection is the one exception: it still
   targets the selection's first byte (§7.3).
+- A selection installed *wholesale* rather than dragged out — Select All, a Find
+  match, a Select Block range, a selection restored by undo — has no moving
+  edge, so its active edge is its FIRST byte. Select All is the exception that
+  proves the rule: it anchors at the start, which makes the file's last byte its
+  active edge, so a following Shift+Left shortens the selection from the end the
+  way a text editor does.
+- Installing a selection wholesale does not scroll at all. It is not a
+  navigation command: Select All leaves the viewport exactly where the reader
+  was, and the commands that DO want their result shown — Find, Select Block,
+  a segment jump — centre the block's start themselves (§10.2, §11). Were the
+  install to reveal as well, each of those would scroll twice: once to the
+  block's far end and then back to its start.
 
 10.5 Keyboard navigation
 
