@@ -54,6 +54,26 @@ final class KeyboardNavigationTests: XCTestCase {
 
     // MARK: - Cmd+arrow (caret to row/file bounds)
 
+    /// Cmd+arrow on an empty document does not trap (§10.5).
+    ///
+    /// Cmd+Right wants the row's last byte, one before the row's half-open end
+    /// — and a zero-length file has no last byte, so that subtraction runs on
+    /// an unsigned zero. `max(0, rowEnd - 1)` does not save it: Swift evaluates
+    /// the subtraction before `max` ever runs. File > New File opens exactly
+    /// such a document, so this was one keystroke from a crash.
+    func testCmdArrowOnAnEmptyDocumentDoesNotTrap() throws {
+        let (pane, hexView, window, url) = try makePane([])
+        defer { pane.close(); try? FileManager.default.removeItem(at: url) }
+        XCTAssertEqual(pane.fileSize, 0, "premise: the document is empty")
+
+        key(hexView, window: window, scalar: 0xF703, [.command])              // Cmd+Right
+        XCTAssertEqual(pane.caretOffset, 0, "there is nowhere to go")
+        key(hexView, window: window, scalar: 0xF703, [.command, .shift])      // Shift+Cmd+Right
+        XCTAssertEqual(pane.caretOffset, 0)
+        key(hexView, window: window, scalar: 0xF702, [.command])              // Cmd+Left
+        XCTAssertEqual(pane.caretOffset, 0)
+    }
+
     func testCmdLeftMovesCaretToRowStart() throws {
         let (pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 32))
         defer { pane.close(); try? FileManager.default.removeItem(at: url) }

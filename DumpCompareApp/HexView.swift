@@ -2585,9 +2585,11 @@ final class HexView: NSView, NSViewToolTipOwner {
                 let rowEnd = min(rowStart + UInt64(HexLayout.bytesPerRow), dataSource.fileSize)
                 // A bare caret lands *on* the last byte; a selection's half-open
                 // end sits one past it, so both reveal the same byte (§10.5).
-                // (An empty file has no last byte — `max` keeps `rowEnd - 1`
-                // from underflowing when `rowEnd` is 0.)
-                delegate.hexEditor(self, moveCaretTo: extend ? rowEnd : max(0, rowEnd - 1),
+                // An empty file has no last byte, and the guard has to be a
+                // branch: `max(0, rowEnd - 1)` would not clamp anything, since
+                // `rowEnd - 1` is evaluated first and traps on an unsigned zero.
+                let last = rowEnd == 0 ? 0 : rowEnd - 1
+                delegate.hexEditor(self, moveCaretTo: extend ? rowEnd : last,
                                    extendSelection: extend, center: center)
             case 0xF700:  // Cmd+Up → file start
                 delegate.hexEditor(self, moveCaretTo: 0, extendSelection: extend, center: center)
