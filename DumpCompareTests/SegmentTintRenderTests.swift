@@ -263,7 +263,7 @@ final class SegmentTintRenderTests: XCTestCase {
         // Only byte 3 differs: the rest of the row is the same, so the difference
         // fill is a single cell and the gaps around it are tint, not paper.
         var a = [UInt8](repeating: 0x11, count: 32)
-        var b = [UInt8](repeating: 0x11, count: 32)
+        let b = [UInt8](repeating: 0x11, count: 32)
         a[3] = 0x22
         let urlA = try tempFile(a)
         let urlB = try tempFile(b)

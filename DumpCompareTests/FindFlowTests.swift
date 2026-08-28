@@ -1049,7 +1049,6 @@ final class FindFlowTests: XCTestCase {
         controller.findPattern()
         let view = try runSearchAll("DE AD", in: window)
         let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
-        let split = paneView.searchResultsSplit
         window.layoutIfNeeded()
         // The first show clamps the stale persisted height to the pane's room.
         let firstShowHeight = view.frame.height

@@ -235,7 +235,7 @@ final class KeyboardNavigationTests: XCTestCase {
 
     /// With no selection the reveal offset is the caret itself.
     func testRevealOffsetIsCaretWhenBare() throws {
-        let (pane, hexView, window, url) = try makePane([UInt8](repeating: 0x11, count: 32))
+        let (pane, _, _, url) = try makePane([UInt8](repeating: 0x11, count: 32))
         defer { pane.close(); try? FileManager.default.removeItem(at: url) }
         pane.moveCaret(to: 5, center: false)
         XCTAssertEqual(pane.hexCaretRevealOffset(), 5)

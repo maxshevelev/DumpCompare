@@ -1752,7 +1752,10 @@ final class MainViewController: NSViewController {
         guard let target = sender.representedObject as? SegmentMenuTarget,
               let pane = minimapPane(at: target.mapIndex), pane.isOpen,
               target.pieceIndex < pane.segmentStore.segments.count else { return }
-        savePiece(pane.segmentStore.segments[target.pieceIndex], of: pane)
+        // The Bool says whether the write actually started — the Segments form
+        // reads it to decide whether to close itself (§21.5). A strip menu has
+        // nothing to close, so it is deliberately dropped.
+        _ = savePiece(pane.segmentStore.segments[target.pieceIndex], of: pane)
     }
 
     /// Replace Segment from File… from the strip's menu (§21.6): the piece under
@@ -1762,7 +1765,8 @@ final class MainViewController: NSViewController {
         guard let target = sender.representedObject as? SegmentMenuTarget,
               let pane = minimapPane(at: target.mapIndex), pane.isOpen,
               target.pieceIndex < pane.segmentStore.segments.count else { return }
-        replacePiece(pane.segmentStore.segments[target.pieceIndex], of: pane)
+        // Dropped for the same reason as in `minimapMenuSaveSegment`.
+        _ = replacePiece(pane.segmentStore.segments[target.pieceIndex], of: pane)
     }
 
     /// Select Segment from the strip's menu: the whole piece is selected — its
@@ -3938,6 +3942,10 @@ final class MainViewController: NSViewController {
         let selection = pane.hexSelection()
         let from = selection.isEmpty ? pane.caretOffset
             : direction == .forward ? selection.end : selection.start
+        // Read here, on the main actor that owns it, and passed in: reaching for
+        // `Self.searchChunkSize` from inside the detached task is an actor
+        // crossing (a hard error under the Swift 6 language mode).
+        let chunkSize = Self.searchChunkSize
         let background = Task.detached(priority: .userInitiated) {
             do {
                 // The rule, not a flag: hex is always exact, and UTF-16 folds by
@@ -3945,7 +3953,7 @@ final class MainViewController: NSViewController {
                 return try SearchEngine.find(pattern: pattern.bytes, in: storage, from: from, direction: direction,
                                              folding: CaseFolding(encoding: pattern.encoding,
                                                                   caseSensitive: caseSensitive),
-                                             chunkSize: Self.searchChunkSize,
+                                             chunkSize: chunkSize,
                                              shouldCancel: { Task.isCancelled },
                                              progress: { operation.report($0) })
             } catch is CancellationError {
