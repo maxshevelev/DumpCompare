@@ -45,12 +45,44 @@ targets:
         LSApplicationCategoryType: public.app-category.developer-tools
         NSHumanReadableCopyright: "Copyright © 2026"
         CFBundleDocumentTypes:
+          # The dump extensions the app is about (§25.2). The icon is generated
+          # by the system from the app icon, so a dump on the desktop is
+          # recognisable as ours — and an icon comes from DECLARING a type, not
+          # from being its default handler (measured), which is why the named
+          # extensions are listed here at all.
+          # One entry per extension: the system generates a document icon per
+          # declared TYPE, and a second extension listed in the same entry does
+          # not get one (measured).
+          - CFBundleTypeName: ROM Dump
+            CFBundleTypeRole: Viewer
+            CFBundleTypeExtensions: [rom]
+            CFBundleTypeIconSystemGenerated: true
+            # Owner: nothing else claims these, and the app is what opens them.
+            LSHandlerRank: Owner
+          - CFBundleTypeName: Binary Dump
+            CFBundleTypeRole: Viewer
+            CFBundleTypeExtensions: [dump]
+            CFBundleTypeIconSystemGenerated: true
+            LSHandlerRank: Owner
+          # .bin resolves to com.apple.macbinary-archive, a system type owned by
+          # Archive Utility, so the honest rank is Alternate: the default moves
+          # here only when the user asks in Settings > File Types (§25.3).
           - CFBundleTypeName: Binary File
             CFBundleTypeRole: Viewer
-            # .bin/.rom have no stable standard UTI, and claiming public.data
-            # would offer to open every data file; the extension list scopes the
-            # association to exactly these two.
-            CFBundleTypeExtensions: [bin, rom]
+            CFBundleTypeExtensions: [bin]
+            CFBundleTypeIconSystemGenerated: true
+            LSHandlerRank: Alternate
+          # Any file at all (§25.2). A hex editor can open every byte sequence
+          # there is — and this is what makes a user-added extension work:
+          # Launch Services binds a default only to an app that is a legal
+          # handler for the type, and an unheard-of extension resolves to a
+          # dynamic type conforming to public.data. Alternate, so declaring it
+          # never makes the app anyone's default by itself; only the user's own
+          # choice does (measured: an undeclared extension still has no handler).
+          - CFBundleTypeName: Any File
+            CFBundleTypeRole: Viewer
+            LSItemContentTypes: [public.data]
+            LSHandlerRank: Alternate
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.maxik.DumpCompare

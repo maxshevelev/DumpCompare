@@ -11,13 +11,56 @@
 		<dict>
 			<key>CFBundleTypeExtensions</key>
 			<array>
-				<string>bin</string>
 				<string>rom</string>
 			</array>
+			<key>CFBundleTypeIconSystemGenerated</key>
+			<true/>
+			<key>CFBundleTypeName</key>
+			<string>ROM Dump</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+		</dict>
+		<dict>
+			<key>CFBundleTypeExtensions</key>
+			<array>
+				<string>dump</string>
+			</array>
+			<key>CFBundleTypeIconSystemGenerated</key>
+			<true/>
+			<key>CFBundleTypeName</key>
+			<string>Binary Dump</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+		</dict>
+		<dict>
+			<key>CFBundleTypeExtensions</key>
+			<array>
+				<string>bin</string>
+			</array>
+			<key>CFBundleTypeIconSystemGenerated</key>
+			<true/>
 			<key>CFBundleTypeName</key>
 			<string>Binary File</string>
 			<key>CFBundleTypeRole</key>
 			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Any File</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.data</string>
+			</array>
 		</dict>
 	</array>
 	<key>CFBundleExecutable</key>

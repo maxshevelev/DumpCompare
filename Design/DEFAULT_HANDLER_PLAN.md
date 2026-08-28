@@ -1,6 +1,9 @@
 # Default-handler Settings tab — state & decision log
 
-Status: **BLOCKED on a sandbox decision.** Session paused 2026-08-28; resume here.
+Status: **DONE.** Built 2026-08-28, sandboxed, on `NSWorkspace`. The feature and
+every measurement behind it are documented in `Design/REQUIREMENTS.md` §25, which
+is the reference from here on; this file is kept as the decision log that got
+there.
 
 ## Feature
 
@@ -30,68 +33,60 @@ The approved plan is at
    asserts noErr, restores.
 3. `xcodegen generate` ran; project builds.
 
-## The decisive finding — the sandbox blocks the write
+## What the probes actually establish
 
-The probe **failed** and the cause is isolated:
+All rows below are measured on this machine (macOS 26), the sandboxed ones from a
+hosted test inside the app — the same sandbox the app itself runs in (proved
+independently: the host's `temporaryDirectory` is redirected into the container
+and a write to `/private/tmp` is refused).
 
 | context | call | result |
 |---|---|---|
-| inside the app sandbox (hosted test) | `LSSetDefaultRoleHandlerForContentType("bin", .viewer, dev.maxik.DumpCompare)` | **-54 (`permErr`)** |
-| unsandboxed CLI (`swift /Users/maxik/.claude/jobs/654a7325/tmp/ls-probe.swift`) | same call, same bundle id | **0 (`noErr`)** — took `.bin`, then restored it |
+| sandboxed app | `LSSetDefaultRoleHandlerForContentType` (deprecated in 12) | **-54 `permErr`** |
+| sandboxed app | `NSWorkspace.setDefaultApplication(at: ownBundle, toOpen: UTType("bin"))` | **succeeded, silently** — the handler for `.bin` actually changed |
+| sandboxed app | reading the current handler (`LSCopyDefaultRoleHandlerForContentType`, `NSWorkspace.urlForApplication(toOpen:)`) | works |
+| sandboxed app | `setDefaultApplication` pointing at **another** app (the restore) | macOS asks the user; unanswered in a headless run it returns `userCanceledErr` (-128) |
+| unsandboxed CLI | `LSSetDefaultRoleHandlerForContentType` pointing at another app | returns `noErr`, but macOS still asks the user, and the user's answer is what lands |
 
-`-54` is a generic permission error, consistent with the sandbox refusing the
-write to the per-user Launch Services database
-(`~/Library/Preferences/com.apple.LaunchServices/com.apple.launchservices.secure.plist`),
-which lies outside the app's container. There is no entitlement or sanctioned
-API that lets a sandboxed app write it. The unsandboxed CLI probe proves the API
-itself is fine; the sandbox is the blocker. The probe left the machine as found
-(`.bin` → `com.apple.archiveutility`, restored).
+Three conclusions, and they replace the previous diagnosis:
 
-Probe build/test log: `/Users/maxik/.claude/jobs/654a7325/tmp/probe.log`
-(test fails on the sandboxed probe by design).
+1. **The sandbox does not block the feature.** What is blocked is the API the
+   service was built on — deprecated since macOS 12. `NSWorkspace`'s replacement
+   (macOS 12+, so available at the 14.0 target) writes the same binding from
+   inside the sandbox with no entitlement and no helper. **Option A (drop the
+   sandbox) and Option B (unsandboxed helper) are both off the table** — nothing
+   to decide, and neither cost has to be paid.
+2. **Claiming a type for yourself is silent; handing one to another app needs the
+   user's consent.** So "uncheck → restore the previous handler" cannot be
+   silent, and the user can decline it. The tab must therefore never trust its
+   own checkbox: after every attempt it re-reads the real handler (which the
+   sandbox permits) and shows that.
+3. **Not every extension needs a write at all.** `.bin` resolves to
+   `com.apple.macbinary-archive` — a real system type whose default is Archive
+   Utility, so "make `.bin` ours" means taking MacBinary away from it. `.rom`
+   resolves to a dynamic `dyn.…` type that nobody else claims, and DumpCompare
+   already opens it on a double-click from the Info.plist declaration alone. The
+   checkbox for an uncontested extension has nothing to do; naming the current
+   handler is the useful thing on screen.
 
-## Decision needed (user, next session)
+## Design decisions this changes
 
-Two viable ways forward — the user's call, they were about to choose when the
-session paused:
-
-**Option A — drop the app sandbox** (one line in `project.yml`: remove
-`com.apple.security.app-sandbox`).
-- Simplest. No new code.
-- Costs:
-  1. The app loses its file-access restriction (it could read/write anything it
-     can reach — fine for a personal dev tool, but a real security-model change).
-  2. **Settings reset once**: sandboxed `UserDefaults.standard` lives in
-     `~/Library/Containers/dev.maxik.DumpCompare/Data/Library/Preferences/…`,
-     unsandboxed it reads `~/Library/Preferences/dev.maxik.DumpCompare.plist`.
-     Old keys (Appearance, WordSize, AppTheme, EditingSettings, FindHistory,
-     LayoutSettings, FilePaneView height, bookmarks) become invisible → app
-     starts at defaults once.
-  3. **Bookmark-based reopen breaks**: the app-scope security-scoped bookmarks
-     stop resolving; the last-open files must be re-added by hand.
-- The `com.apple.security.files.user-selected.read-write` and
-  `com.apple.security.files.bookmarks.app-scope` entitlements can then also be
-  dropped, and the `application(_:open:)` pipeline keeps working (a file
-  launched by Finder still arrives via Launch Services).
-
-**Option B — keep the sandbox, add a tiny unsandboxed helper.**
-- Add a second target `DefaultHandlerHelper` (`type: tool`, no entitlements,
-  ad-hoc signed, like the app) that reads (extension, bundle id) from argv and
-  performs the LS write; embed it in the app bundle; the sandboxed app invokes
-  it via `NSTask` and reads its exit code. A sandboxed app may spawn an
-  unsandboxed child process — the child runs under its own code signature.
-- This is the standard macOS pattern for "sandboxed app + system-wide change".
-- Keeps every existing feature (settings, bookmarks, file-access restriction).
-- Costs: a second target, an XcodeGen copy/embed step (verify `embed: true`
-  works for a `tool` product, else a post-build script that `cp`s it into
-  `Contents/MacOS`), an NSTask bridge, and re-aiming the probe test at the
-  helper's exit code.
-- The File Types tab's service calls become closures that spawn the helper, so
-  VC tests still stub them.
-
-(There is no third way: every default-handler API — classic LS, `NSWorkspace`
-on macOS 15+ — writes the same per-user database the sandbox blocks, and the
-user explicitly asked for in-app registration, so "informational tab" is out.)
+- **The service moves to `NSWorkspace`**: `setDefaultApplication(at:toOpen:completionHandler:)`
+  plus `urlForApplication(toOpen:)` for the read. It is asynchronous and can come
+  back with an error the user caused (declined the consent alert), which is a
+  normal outcome, not a failure to report as one.
+- **Nothing is applied at launch.** The plan had the checked list re-asserted
+  every launch. Now that claiming is silent, that would silently take a type back
+  from the user each time they handed it elsewhere in Finder. Assert only on the
+  user's click; at launch merely read, so the checkboxes reflect the system.
+- **Nothing is pre-applied.** Ship `.bin` and `.rom` in the list *unchecked*:
+  the first launch must not quietly take MacBinary from Archive Utility.
+- The sandbox probe test is no longer a gate. Re-aim it at the `NSWorkspace`
+  path, or drop it — but note it changes real system state, so a test that takes
+  a type must hand it back, and handing back needs a human at the alert. That
+  makes it a poor automated test: prefer testing the model and the view
+  controller against stubbed service closures, and leave the real write to
+  manual verification.
 
 ## Not yet done (all pending — the plan's Steps 2–5 and tests)
 
@@ -101,8 +96,8 @@ user explicitly asked for in-app registration, so "informational tab" is out.)
   `Entry { ext, enabled, previousHandler }`; defaults `[("bin", true), ("rom", true)]`;
   `entries`/`add`/`remove`/`toggle`/`resetToDefaults`/`applyEnabledDefaults`;
   normalization (trim, strip leading dot, lowercase, dedup, reject non-alphanumeric).
-- `AppDelegate` — call `DefaultHandlerSettings.applyEnabledDefaults()` in
-  `applicationDidFinishLaunching` (re-assert the checked list each launch).
+- `AppDelegate` — nothing. (The plan's launch-time `applyEnabledDefaults()` is
+  dropped; see "Design decisions this changes".)
 - `DumpCompareApp/FileTypesSettingsViewController.swift` — table (checkbox +
   extension columns), `+`/`−` footer copied from `SegmentsForm.makeFooter()`
   (SegmentsForm.swift:242), add via NSAlert + text field behind a replaceable
@@ -121,6 +116,9 @@ user explicitly asked for in-app registration, so "informational tab" is out.)
 
 ## Files touched so far (uncommitted)
 
-- `DumpCompareApp/DefaultHandlerService.swift` (new)
-- `DumpCompareTests/DefaultHandlerSandboxProbeTests.swift` (new)
-- `DumpCompare.xcodeproj` (regenerated by xcodegen)
+- `DumpCompareApp/DefaultHandlerService.swift` (committed; **to be rewritten on
+  `NSWorkspace`** — its Launch Services write is the call the sandbox refuses)
+- `DumpCompareTests/DefaultHandlerSandboxProbeTests.swift` — deleted: its premise
+  (the sandbox blocks the write) is false for the API the app now uses, and the
+  real write cannot be automated cleanly, since handing a type back needs a human
+  at the system's confirmation. The measurements it stood for are in §25.1.

@@ -192,8 +192,8 @@ final class SettingsWindow: NSWindow {
 }
 
 /// The app's Settings window — a standard toolbar-tabbed preference dialog,
-/// with an Appearance tab (§3.2), a Layout tab (§6), a Comparison tab (§10.3.1)
-/// and a Text Decoding tab (§3.4). Owned by `MainWindowController`; the App
+/// with an Appearance tab (§3.2), a Layout tab (§6), a Comparison tab (§10.3.1),
+/// a Text Decoding tab (§3.4) and a File Types tab (§25). Owned by `MainWindowController`; the App
 /// menu's "Settings…" item shows it.
 final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     private let appearanceController = AppearanceSettingsViewController()
@@ -201,12 +201,14 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     private let comparisonController = ComparisonSettingsViewController()
     private let editingController = EditingSettingsViewController()
     private let textDecodingController = TextDecodingSettingsViewController()
+    private let fileTypesController = FileTypesSettingsViewController()
 
     private static let appearanceItemID = NSToolbarItem.Identifier("Appearance")
     private static let layoutItemID = NSToolbarItem.Identifier("Layout")
     private static let comparisonItemID = NSToolbarItem.Identifier("Comparison")
     private static let editingItemID = NSToolbarItem.Identifier("Editing")
     private static let textDecodingItemID = NSToolbarItem.Identifier("TextDecoding")
+    private static let fileTypesItemID = NSToolbarItem.Identifier("FileTypes")
 
     init() {
         let window = SettingsWindow(
@@ -253,12 +255,12 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [Self.appearanceItemID, Self.layoutItemID, Self.comparisonItemID, Self.editingItemID,
-         Self.textDecodingItemID]
+         Self.textDecodingItemID, Self.fileTypesItemID]
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [Self.appearanceItemID, Self.layoutItemID, Self.comparisonItemID, Self.editingItemID,
-         Self.textDecodingItemID]
+         Self.textDecodingItemID, Self.fileTypesItemID]
     }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
@@ -291,6 +293,13 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
                                  accessibilityDescription: "Editing")
             item.target = self
             item.action = #selector(editingTabTapped)
+        case Self.fileTypesItemID:
+            item.label = "File Types"
+            item.paletteLabel = "File Types"
+            item.image = NSImage(systemSymbolName: "doc.badge.gearshape",
+                                 accessibilityDescription: "File Types")
+            item.target = self
+            item.action = #selector(fileTypesTabTapped)
         case Self.textDecodingItemID:
             item.label = "Text Decoding"
             item.paletteLabel = "Text Decoding"
@@ -344,5 +353,9 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
 
     @objc private func textDecodingTabTapped() {
         selectTab(textDecodingController)
+    }
+
+    @objc private func fileTypesTabTapped() {
+        selectTab(fileTypesController)
     }
 }

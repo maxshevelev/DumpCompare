@@ -2793,3 +2793,99 @@ toolbar needs with the difference block carried — measured, not computed, sinc
 the item widths are the framework's and differ between releases. A large word
 size makes the hex grid narrow enough for this to matter, so the floor is not
 theoretical.
+
+---
+
+25. FILE TYPES
+
+The app opens a dump when one is double-clicked in the Finder, and Settings ▸
+File Types is where the user says which extensions that should be true for. The
+list is the user's, not a fixed one: dumps are kept under whatever suffix the
+tool that produced them chose.
+
+25.1 How the registration is made
+
+The binding lives in the per-user Launch Services database, and only two things
+about writing it are settled by measurement rather than by documentation:
+
+- `LSSetDefaultRoleHandlerForContentType` — deprecated since macOS 12 — is
+  refused inside the app sandbox with `permErr` (-54).
+- `NSWorkspace.setDefaultApplication(at:toOpen:)` performs the same change from
+  the same sandbox, with no entitlement, no helper process and no relaxation of
+  the sandbox.
+
+So the app stays sandboxed and asks through `NSWorkspace`. Two asymmetries of the
+system's own follow, and both shape the tab:
+
+- Claiming a type for **this** app is granted silently. Pointing one at
+  **another** app is the user's decision, so macOS raises its own confirmation
+  and the call comes back with `userCanceledErr` if the user declines. A refusal
+  is a normal outcome, not an error to report.
+- The system answers by bundle identifier, not by bundle path: asked with the
+  running build's URL it may name the installed copy of the app. Every comparison
+  is therefore on the identifier — and an association only ever takes effect for
+  the copy Launch Services has registered, which is the one in /Applications, not
+  a build tree.
+
+25.2 What the app declares, and what the icon depends on
+
+The bundle declares three document types (all of role Viewer):
+
+| declared | rank | why |
+|---|---|---|
+| `.rom`, `.dump` | Owner | Nothing else claims them and the app is what opens them. |
+| `.bin` | Alternate | `.bin` resolves to `com.apple.macbinary-archive`, a system type owned by Archive Utility; the default moves here only when the user asks. |
+| `public.data` | Alternate | A hex editor can open any byte sequence. Necessary as well as true: Launch Services binds a default only to an app that is a legal handler for the type, and an extension nobody has heard of resolves to a dynamic type conforming to `public.data`. Alternate, so declaring it makes the app nobody's default by itself — measured: an undeclared extension still has no handler at all.
+
+A **document icon comes from declaring a type, not from handling it** (measured:
+`.rom`, which the app declares, shows a document icon generated from the app
+icon; `.dump` bound to the app but undeclared shows the generic page). Info.plist
+is static and signed, so an extension the user adds at runtime cannot be
+declared: it opens in DumpCompare, and keeps the generic page icon. The
+extensions listed in the table above are declared for exactly this reason.
+
+25.3 The tab
+
+A table of extensions, each row: a checkbox for "open with DumpCompare", the
+extension, and the name of the app that opens it **now**.
+
+- The checkbox is a **reading of the system**, not a stored preference. Nothing
+  is assumed after a click: the request goes out, and the row is re-read.
+  A refused confirmation therefore simply leaves the row as it was, with no
+  complaint of its own. The tab re-reads on every appearance too, so a default
+  changed in Finder shows up here.
+- **Nothing is applied at launch**, and nothing is pre-ticked. Re-asserting a
+  list at every launch would silently take a type back from the user each time
+  they handed it elsewhere; a pre-ticked list would take MacBinary from Archive
+  Utility on first run. One tick, confirmed once, is remembered by the system —
+  which is the whole point of registering with it.
+- Unticking hands the type back to the app this one displaced, which is why that
+  app's identifier is recorded at the moment of the change (afterwards the answer
+  is this app). macOS has no API to *clear* a default, only to point it
+  somewhere, so with nobody recorded the tab says what it cannot do and where in
+  Finder the user can do it.
+- `+` asks for an extension and normalizes it — no leading dot, no case, letters
+  and digits only, since anything else is a path or a pattern rather than a
+  suffix. An extension already in the list selects the row it is already in. `−`
+  removes the selected row **from the list only**: the association belongs to the
+  system, so when the removed type is still this app's, the tab says so rather
+  than letting the row's disappearance imply otherwise.
+
+25.4 Opening the file
+
+A double-click reaches `application(_:open:)` and flows into the same pipeline as
+the Open panel (§4.1): the file lands in a pane of the single window. A launch
+delivers the URLs before the window exists, so they queue and drain once it is
+up; a click while the app is running opens into the window already on screen.
+
+25.5 Edge cases
+
+| case | behaviour |
+|---|---|
+| The type has no handler at all | The row says "—"; ticking it is granted silently, there being nobody to displace |
+| The user declines macOS's confirmation | The row goes back to what the system says; no message |
+| The displaced app is no longer installed | Handing back fails; the record is kept and the row still shows this app |
+| The user removed a row whose type is still this app's | Said plainly, with what to do about it |
+| The same extension added twice | The existing row is selected, not duplicated |
+| A build tree copy of the app | Associations resolve to the registered (installed) copy, so a new declaration takes effect only once that copy is replaced (§25.1) |
+| A user-added extension | Opens in DumpCompare; keeps the generic document icon (§25.2) |

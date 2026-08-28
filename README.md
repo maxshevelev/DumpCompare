@@ -84,6 +84,10 @@ The workflows the app is shaped around:
 - Right-click an address for **Copy offset** (no `0x`, so a prefixed field doesn't double it), **Select block from here** (prefilled), and the bookmark commands for *that* row. Right-click inside a selection for **Copy**, **Fill Selection with…**, **Delete Bytes** — applied to the clicked pane's selection, not the active pane's.
 - Every offset field accepts `0x`-hex or decimal, puts the caret behind the prefix instead of selecting the whole text, and validates on each keystroke, with the message under the field it belongs to.
 
+### File types
+
+- **Settings ▸ File Types** registers DumpCompare as the app that opens a dump on a double-click. `.bin` and `.rom` are listed to start with — ticked by you, not by the app — and any extension you keep dumps under can be added: macOS confirms the change once and remembers it. Each row names the app that opens that type *now*, read from the system rather than from anything the app stored, so a default changed in Finder shows here too. `.rom`, `.dump` and `.bin` files get a DumpCompare document icon; the app stays sandboxed throughout.
+
 ### Large files, and the rest
 
 - Files are read through a bounded chunk cache and never loaded whole; edits are a piece list over the file as opened, so an inserted byte costs nothing measurable on a 32 MB dump. Diff and search index incrementally in the background, with progress and a cancel button in the status bar.
