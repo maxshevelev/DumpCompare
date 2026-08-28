@@ -870,7 +870,11 @@ new command that moves the caret only has to say which kind of move it is:
   shift) collapses the caret to that same edge and clears the selection, so the
   next step continues from where the selection ended, not from the edge the
   arrow points to. Typing over a selection is the one exception: it still
-  targets the selection's first byte (§7.3).
+  targets the selection's first byte (§7.3) — and while a selection is being
+  consumed that byte, not the selection's far edge, is what the reveal keeps on
+  screen. The first keystroke into a selection centres it if it is out of view:
+  the bytes land at the selection's start, which after a Select All is nowhere
+  near where the reader is looking, and typing must never be blind.
 - A selection installed *wholesale* rather than dragged out — Select All, a Find
   match, a Select Block range, a selection restored by undo — has no moving
   edge, so its active edge is its FIRST byte. Select All is the exception that

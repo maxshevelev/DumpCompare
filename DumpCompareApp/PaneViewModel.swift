@@ -746,6 +746,11 @@ final class PaneViewModel: HexViewDataSource {
     /// fixed anchor (§10.4).
     func hexCaretRevealOffset() -> UInt64 {
         guard let doc = document else { return 0 }
+        // Typing over a selection consumes it from the start, one byte at a
+        // time (§7.4), so while that is running the byte worth keeping on
+        // screen is the one about to be written — not the selection's far edge.
+        // This is §10.4's stated exception for typing over a selection.
+        if let overwrite = overwriteSelection { return overwrite.start }
         let sel = doc.selection
         if sel.isEmpty { return sel.start }
         if let anchor = selectionAnchor, anchor == sel.end {
@@ -1511,6 +1516,14 @@ final class PaneViewModel: HexViewDataSource {
             nibble = 0
             // Show the still-unconsumed part of the selection shrinking as we type.
             doc.setSelection(SelectionModel(start: doc.selection.start, end: doc.selection.end, fileSize: doc.size))
+            // The bytes land at the selection's START, which can be nowhere
+            // near what the view is showing — after Select All, or any
+            // selection made and then scrolled away from. Bring that byte into
+            // view before the first one is written, or the user types blind.
+            // Centred when it is off screen, left alone when it is already
+            // visible (§10.4); the edits that follow go through the content
+            // channel, which deliberately never scrolls.
+            notify(selectionChangedOnly: true, reveal: .center)
         }
     }
 

@@ -105,6 +105,36 @@ final class KeyboardNavigationTests: XCTestCase {
                        "and the selection shortens from the end")
     }
 
+    /// Typing into a selection brings the byte being written into view.
+    ///
+    /// Typing consumes a selection from its START (§7.4), which after a Select
+    /// All — or any selection the reader has since scrolled away from — can be
+    /// off screen. Nothing else scrolls there: the edits go through the content
+    /// channel, which deliberately never reveals. Without this the first
+    /// keystroke landed somewhere the user could not see.
+    func testTypingIntoASelectionRevealsWhereTheBytesLand() throws {
+        let (pane, hexView, window, url) = try makePane(tallFile)
+        defer { pane.close(); try? FileManager.default.removeItem(at: url) }
+        let clip = try XCTUnwrap(hexView.enclosingScrollView).contentView
+
+        pane.selectAll()
+        // Scroll far away from the selection's start, where the bytes will land.
+        key(hexView, window: window, scalar: 0xF72B, [])   // End — to the bottom
+        window.layoutIfNeeded()
+        XCTAssertGreaterThan(clip.bounds.origin.y, 0, "premise: byte 0's row is off screen")
+
+        pane.typeHexNibble(0xA)
+        window.layoutIfNeeded()
+
+        XCTAssertEqual(pane.hexCaretRevealOffset(), 0,
+                       "the byte being written is the one to keep on screen")
+        let rowTop = hexView.hexLayout.rowFrame(row: 0).minY
+        XCTAssertLessThanOrEqual(clip.bounds.origin.y, rowTop,
+                                 "the view scrolled back to where the bytes land")
+        XCTAssertLessThanOrEqual(rowTop, clip.bounds.origin.y + clip.bounds.height,
+                                 "and that row is inside the viewport")
+    }
+
     // MARK: - Cmd+arrow (caret to row/file bounds)
 
     /// Cmd+arrow on an empty document does not trap (§10.5).
