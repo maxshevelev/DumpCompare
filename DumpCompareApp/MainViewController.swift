@@ -1936,7 +1936,10 @@ final class MainViewController: NSViewController {
         }
     }
 
-    private func openFiles(_ urls: [URL]) {
+    /// Opens the given URLs into panes. Internal so the app's open entry points
+    /// share one pipeline: the Open panel, drops, and Launch Services
+    /// "Open with" (AppDelegate.application(_:open:)) all land here.
+    func openFiles(_ urls: [URL]) {
         let files = openableFiles(from: urls)
         guard let first = files.first else { return }
 
