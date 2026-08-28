@@ -873,8 +873,8 @@ new command that moves the caret only has to say which kind of move it is:
 
 10.5 Keyboard navigation
 
-Text-editor arrow-key navigation, on top of the plain arrows and
-PageUp/Down/Home/End that already move the caret a step at a time:
+Text-editor arrow-key navigation, on top of the plain arrows that move the
+caret a step at a time:
 
 - Cmd+Left / Cmd+Right move the caret to the start / end of the current row
   (a row is 16 bytes). Cmd+Right lands *on* the row's last byte — the byte the
@@ -882,28 +882,30 @@ PageUp/Down/Home/End that already move the caret a step at a time:
   reaches the end. (A Shift+Cmd+Right selection instead runs through that last
   byte, its half-open end sitting one past it.)
 - Cmd+Up / Cmd+Down move the caret to the start / end of the file.
-- Fn+Up / Fn+Down scroll the viewport by one viewport height, without moving
+- Page Up / Page Down scroll the viewport by one viewport height, without
+  moving the caret.
+- Home / End scroll the viewport to the start / end of the file, without moving
   the caret.
-- Fn+Left / Fn+Right scroll the viewport to the start / end of the file,
-  without moving the caret.
 
 The caret moves (Cmd+arrow) are incremental navigation in the §10.4 sense:
 the minimum scroll that keeps the caret on screen, centring it only when it was
-already out of view. The viewport scrolls (Fn+arrow) move no caret at all —
-they are a pure
+already out of view. The viewport scrolls move no caret at all — they are a pure
 scroll of the clip view, so the caret's reveal is never triggered and the caret
-stays where it is. In comparison mode both panes scroll together, the shorter
-one clamped to its own end of file, by the same scroll-sync that follows any
-clip-view scroll (§9).
+stays where it is. This is the platform's own behaviour for these four keys, the
+one Xcode and TextEdit have. In comparison mode both panes scroll together, the
+shorter one clamped to its own end of file, by the same scroll-sync that follows
+any clip-view scroll (§9).
 
-On macOS, Fn plus an arrow key generates the same key values as the physical
-Home/End/PageUp/PageDown keys, with the `.function` modifier flag set; the
-physical keys generate the same values without it. The flag is therefore what
-tells the two apart: with `.function` the key scrolls the viewport, without it
-the key moves the caret (PageUp/Down by one viewport height, Home/End to the
-file's ends). Fn is not a representable key-equivalent modifier, so the
-bindings cannot live in the menu — they are handled in the hex view's
-`keyDown`, where the active pane is already in hand. The Cmd+arrow branch is
+A Mac keyboard has no dedicated Page Up/Down/Home/End keys, so these are reached
+as Fn+Up / Fn+Down / Fn+Left / Fn+Right. That chord is translated in firmware:
+what the app receives is the ordinary key, indistinguishable from the same key
+on a full-size keyboard. Nothing can separate them — the `.function` modifier
+flag in particular cannot, since AppKit sets it for every key in the
+0xF700–0xF8FF range, these four and the plain arrows included. So the four keys
+carry one behaviour, not one per keyboard.
+
+The bindings are handled in the hex view's `keyDown`, where the active pane is
+already in hand, rather than as menu key equivalents. The Cmd+arrow branch is
 scoped to Cmd without Option or Control: the View menu owns
 Cmd+Option(+Shift)+arrow for difference navigation (§10.3), and any other
 Cmd+/Ctrl+ combination defers to the menu.

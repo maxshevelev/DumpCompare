@@ -3,10 +3,14 @@ import XCTest
 @testable import DumpCompare
 
 /// §10.5 keyboard navigation. Cmd+arrow jumps the caret to row/file bounds
-/// (row = 16 bytes); Fn+arrow scrolls the viewport without moving the caret.
-/// Driven through the real `HexView.keyDown` with synthesized key events — the
-/// modifier flags are set explicitly, since a test can't inject a real Fn press
-/// (real-hardware Fn+arrow is a manual sanity check).
+/// (row = 16 bytes); Page Up/Down and Home/End scroll the viewport without
+/// moving the caret. Driven through the real `HexView.keyDown` with synthesized
+/// key events.
+///
+/// The tests below name those four keys "Fn+arrow" because that is how a Mac
+/// keyboard reaches them, but the chord is translated in firmware: what arrives
+/// is the ordinary Page Up/Down/Home/End key, and no flag distinguishes the two
+/// ways of pressing it.
 @MainActor
 final class KeyboardNavigationTests: XCTestCase {
     override func setUp() {
@@ -267,17 +271,32 @@ final class KeyboardNavigationTests: XCTestCase {
         XCTAssertEqual(clip.bounds.origin.y, 0, accuracy: 0.5, "Fn+Left scrolls to the top")
     }
 
-    /// A physical PageDown (no `.function`) still moves the caret — by one
-    /// viewport height now that `pageStep` reads the clip view, not the document.
-    /// Guards that the `.function` branch didn't steal the physical key.
-    func testPhysicalPageDownStillMovesCaret() throws {
+    /// Page Down behaves the same however it was pressed (§10.5).
+    ///
+    /// The `.function` flag cannot separate Fn+Down from a full-size keyboard's
+    /// Page Down — AppKit sets it for every key in the 0xF700–0xF8FF range, and
+    /// on a Mac keyboard the chord is translated in firmware anyway, so the two
+    /// are one event. Branching on the flag left the key scrolling on some
+    /// keyboards and moving the caret on others; it now scrolls on both.
+    func testPageDownScrollsWhicheverWayItWasPressed() throws {
         let (pane, hexView, window, url) = try makePane(tallFile)
         defer { pane.close(); try? FileManager.default.removeItem(at: url) }
         let clip = try XCTUnwrap(hexView.enclosingScrollView).contentView
         let layout = hexView.hexLayout
-        let page = max(1, Int(clip.bounds.height / layout.rowHeight)) * HexLayout.bytesPerRow
-        pane.moveCaret(to: 0, center: false)
-        key(hexView, window: window, scalar: 0xF72D, [])   // physical PageDown
-        XCTAssertEqual(pane.caretOffset, UInt64(page), "physical PageDown moves the caret by one page")
+        let page = CGFloat(max(1, Int(clip.bounds.height / layout.rowHeight))) * layout.rowHeight
+        let maxScroll = max(0, hexView.bounds.height - clip.bounds.height)
+        XCTAssertGreaterThan(maxScroll, page, "the file must be taller than a page for this to mean anything")
+
+        for flags in [NSEvent.ModifierFlags(), .function] {
+            clip.scroll(to: .zero)
+            hexView.enclosingScrollView?.reflectScrolledClipView(clip)
+            pane.moveCaret(to: 0, center: false)
+
+            key(hexView, window: window, scalar: 0xF72D, flags)
+
+            XCTAssertEqual(clip.bounds.origin.y, min(page, maxScroll), accuracy: 0.5,
+                           "Page Down scrolls one page (flags: \(flags))")
+            XCTAssertEqual(pane.caretOffset, 0, "and leaves the caret alone (flags: \(flags))")
+        }
     }
 }

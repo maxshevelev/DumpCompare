@@ -1949,8 +1949,8 @@ final class HexView: NSView, NSViewToolTipOwner {
     }
 
     /// The visible viewport's height in points — the clip view's height, not the
-    /// document's (the document's `bounds.height` is the whole file, which is why
-    /// `pageStep` must not read it).
+    /// document's, whose `bounds.height` is the whole file: a page must be what
+    /// fits on screen, not the entire dump.
     private var viewportHeight: CGFloat {
         enclosingScrollView?.contentView.bounds.height ?? 0
     }
@@ -2621,20 +2621,17 @@ final class HexView: NSView, NSViewToolTipOwner {
             delegate.hexEditor(self, moveCaretBy: -1, extendSelection: extend, center: center)
         case 0xF703:  // Right
             delegate.hexEditor(self, moveCaretBy: 1, extendSelection: extend, center: center)
-        // Fn+arrow carries .function; a physical Home/End/PageUp/PageDown does
-        // not. .function → scroll the viewport, caret untouched (§10.5).
-        case 0xF72C where flags.contains(.function): scrollViewportByPage(down: false)  // Fn+Up
-        case 0xF72D where flags.contains(.function): scrollViewportByPage(down: true)   // Fn+Down
-        case 0xF729 where flags.contains(.function): scrollViewportToTop()              // Fn+Left
-        case 0xF72B where flags.contains(.function): scrollViewportToBottom()           // Fn+Right
-        case 0xF72C:  // Page Up
-            delegate.hexEditor(self, moveCaretBy: -Int64(pageStep()), extendSelection: extend, center: center)
-        case 0xF72D:  // Page Down
-            delegate.hexEditor(self, moveCaretBy: Int64(pageStep()), extendSelection: extend, center: center)
-        case 0xF729:  // Home
-            delegate.hexEditor(self, moveCaretTo: 0, extendSelection: extend, center: center)
-        case 0xF72B:  // End
-            delegate.hexEditor(self, moveCaretTo: dataSource.fileSize, extendSelection: extend, center: center)
+        // Page Up/Down and Home/End scroll the viewport and leave the caret
+        // where it is — the platform's own behaviour for these keys, the one
+        // Xcode and TextEdit have (§10.5). On a Mac keyboard they ARE Fn+arrow:
+        // the firmware translates the chord, so the event is the same key and
+        // there is nothing here to tell apart. `.function` in particular cannot:
+        // AppKit sets it for every key in the 0xF700–0xF8FF range, these four
+        // and the plain arrows included.
+        case 0xF72C: scrollViewportByPage(down: false)  // Page Up   (Fn+Up)
+        case 0xF72D: scrollViewportByPage(down: true)   // Page Down (Fn+Down)
+        case 0xF729: scrollViewportToTop()              // Home      (Fn+Left)
+        case 0xF72B: scrollViewportToBottom()           // End       (Fn+Right)
         case 0x1B:  // Escape
             super.keyDown(with: event)
         default:
@@ -2665,14 +2662,6 @@ final class HexView: NSView, NSViewToolTipOwner {
                 }
             }
         }
-    }
-
-    /// One page in bytes: the full rows that fit the *viewport* (the clip view's
-    /// height), times the bytes per row. Not `bounds.height` — that is the whole
-    /// document, which would make PageUp/Down jump the entire file (§10.5).
-    private func pageStep() -> Int {
-        let viewport = enclosingScrollView?.contentView.bounds.height ?? 0
-        return max(1, Int(viewport / currentLayout.rowHeight)) * HexLayout.bytesPerRow
     }
 
     private static func hexDigitValue(_ scalar: UInt32) -> Int? {
