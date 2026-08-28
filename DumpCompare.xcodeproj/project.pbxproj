@@ -44,6 +44,7 @@
 		59F525D82A21BA453FA1001C /* TitleBarMenuTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6B628E64567341A9AB617D6 /* TitleBarMenuTests.swift */; };
 		5B3F5E75CD647B8FBC63F2B0 /* FileChangeWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 443E56A308DC1D5D8E806F72 /* FileChangeWatcher.swift */; };
 		5C277503D272939847E4FF3A /* DividerDragTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A61B0AA7755933DD1B3D4F8 /* DividerDragTests.swift */; };
+		5FD01A8B0946ECC06EBA95E3 /* DefaultHandlerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F986D3F8700ECBD5E7AE3CFD /* DefaultHandlerService.swift */; };
 		60337FD7B95B8887CE53DBBE /* DumpCompareCore in Frameworks */ = {isa = PBXBuildFile; productRef = DD998B4928A6EFDFADE20701 /* DumpCompareCore */; };
 		6347640F90EE6FCB2E6FF01A /* ZoomToFitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FB49BC2E9C7922B6194C285 /* ZoomToFitTests.swift */; };
 		636183CDE24C1ACAE7515A87 /* UntitledFileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16A8C6524AA2950540398C91 /* UntitledFileTests.swift */; };
@@ -117,6 +118,7 @@
 		F15C5ED7FA34C862CA037C14 /* MinimapPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2BA69069AEF377E47CBEDDC /* MinimapPanelView.swift */; };
 		F22E5BE6C522ABA4E1AB95C7 /* BookmarkMinimapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F189C34D5AB2C07E056E3153 /* BookmarkMinimapTests.swift */; };
 		F2EA05CD73EFD077B98A8C99 /* ToolbarItemsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5642C6A5E8AFA36773D021E6 /* ToolbarItemsTests.swift */; };
+		F79521611EA8D0A1F4323967 /* DefaultHandlerSandboxProbeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82611AC66F47353E65168F66 /* DefaultHandlerSandboxProbeTests.swift */; };
 		FC15B3B76A3DB244F7A1BBEE /* ActivePaneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0947EB3C44A8B0879C9B66A /* ActivePaneTests.swift */; };
 		FC89C9381F04CF1A1E46F3DC /* TestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C493FB0DA34423850B00F051 /* TestSupport.swift */; };
 		FD51EAC14BECCAC66D3AC19F /* ComparisonCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7338140948096ABDADE950FE /* ComparisonCoordinatorTests.swift */; };
@@ -192,6 +194,7 @@
 		7CC40FA3295CB53000898E26 /* OpenPlacementTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenPlacementTests.swift; sourceTree = "<group>"; };
 		7EE089502718BD19C06E4207 /* AppearanceSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppearanceSettingsTests.swift; sourceTree = "<group>"; };
 		7FC713959D9654C564AB34E0 /* PaneViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneViewModelTests.swift; sourceTree = "<group>"; };
+		82611AC66F47353E65168F66 /* DefaultHandlerSandboxProbeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DefaultHandlerSandboxProbeTests.swift; sourceTree = "<group>"; };
 		82A34E0B2AAD3A720DCD4E59 /* DumpCompare.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DumpCompare.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		843BDADF6DC010ED5707D0F2 /* SingleFileDropView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SingleFileDropView.swift; sourceTree = "<group>"; };
 		84A9B0CABCCCF70E6F7F40CB /* MainViewControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainViewControllerTests.swift; sourceTree = "<group>"; };
@@ -247,6 +250,7 @@
 		F4060AF0A96DD6E896717F3A /* DumpCompareTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DumpCompareTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		F89CB4F9C9E2803C941A2288 /* WordSize.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WordSize.swift; sourceTree = "<group>"; };
 		F984C7BD6FD6F4E6EFA4D783 /* SegmentStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentStore.swift; sourceTree = "<group>"; };
+		F986D3F8700ECBD5E7AE3CFD /* DefaultHandlerService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DefaultHandlerService.swift; sourceTree = "<group>"; };
 		FB33DB1270B0F3AD9A668F5C /* AppMain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppMain.swift; sourceTree = "<group>"; };
 		FBEF0C558873BA9AEAF948A6 /* ScrollPreservationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrollPreservationTests.swift; sourceTree = "<group>"; };
 		FCD886DB1AFE9BF9F1C08F95 /* MouseSelectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MouseSelectionTests.swift; sourceTree = "<group>"; };
@@ -308,6 +312,7 @@
 				F3338114B2A4BE89BB8E5487 /* ComparisonSettings.swift */,
 				0F74A1CF742DE4185F34E53D /* ComparisonView.swift */,
 				3EAF3044B457DFB2C4EC889D /* CutEditPopover.swift */,
+				F986D3F8700ECBD5E7AE3CFD /* DefaultHandlerService.swift */,
 				0B8427CB107B2BDD59342ACC /* DragDrop.swift */,
 				956D924E94797AA8575FE2D6 /* DropBands.swift */,
 				1D73B46350757B2E6D907D7F /* DumpCompare.entitlements */,
@@ -372,6 +377,7 @@
 				F1AC4C330DFC599D446E0783 /* ComparisonSettingsTests.swift */,
 				B1F22F7F4ED50E7123227B23 /* ContentRedrawTests.swift */,
 				B632B1264528D37639903F19 /* CutEditPopoverTests.swift */,
+				82611AC66F47353E65168F66 /* DefaultHandlerSandboxProbeTests.swift */,
 				67E844808C0246D0B622523D /* DiffNavigationTests.swift */,
 				5A61B0AA7755933DD1B3D4F8 /* DividerDragTests.swift */,
 				C69836FF0C4CE8AC846BC7CB /* DropBandLayoutTests.swift */,
@@ -541,6 +547,7 @@
 				01A34F727C9199720C472250 /* ComparisonSettings.swift in Sources */,
 				B850A1E58666F6DAA621C071 /* ComparisonView.swift in Sources */,
 				4B396A136EB71F08DFD6BDB4 /* CutEditPopover.swift in Sources */,
+				5FD01A8B0946ECC06EBA95E3 /* DefaultHandlerService.swift in Sources */,
 				AF59EBD1B601A04F936643D0 /* DragDrop.swift in Sources */,
 				CC8D2C00070382ACCCEFBD6B /* DropBands.swift in Sources */,
 				839AFC91D590341F759B10D2 /* EditingSettings.swift in Sources */,
@@ -594,6 +601,7 @@
 				3CCD0EEC03B8649BED7B2BFE /* ComparisonSettingsTests.swift in Sources */,
 				CC3AA1A373B7914E86D8C6F4 /* ContentRedrawTests.swift in Sources */,
 				9211DD272B1097DC4D564F63 /* CutEditPopoverTests.swift in Sources */,
+				F79521611EA8D0A1F4323967 /* DefaultHandlerSandboxProbeTests.swift in Sources */,
 				8DE3CD0120C0DC484E9BCD01 /* DiffNavigationTests.swift in Sources */,
 				5C277503D272939847E4FF3A /* DividerDragTests.swift in Sources */,
 				DFD60EF4AA86EE3BFB8CDA69 /* DropBandLayoutTests.swift in Sources */,
