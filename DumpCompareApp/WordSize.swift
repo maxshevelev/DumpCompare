@@ -19,6 +19,12 @@ enum WordSize: Int, CaseIterable {
         WordSize(rawValue: UserDefaults.standard.integer(forKey: userDefaultsKey)) ?? .one
     }
 
+    /// How the size is named in the View menu and on the toolbar's menu button
+    /// (§24.2): "1 Byte", "2 Bytes".
+    var title: String {
+        "\(rawValue) \(rawValue == 1 ? "Byte" : "Bytes")"
+    }
+
     /// Persists `size` and notifies observers to re-lay out (§6).
     static func set(_ size: WordSize) {
         UserDefaults.standard.set(size.rawValue, forKey: userDefaultsKey)

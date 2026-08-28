@@ -19,6 +19,18 @@ final class MainWindowController: NSWindowController {
     /// delegate can hand it out.
     private(set) var filesIdenticalItem: NSToolbarItem?
 
+    /// The toolbar's document commands (§24.1) and its two stateful controls
+    /// (§24.2), plus the pane-layout toggle. Built on first request and cached
+    /// the way the difference block is: the delegate must hand out one fixed
+    /// instance per identifier, and a test reads the live control back through
+    /// these handles.
+    private(set) var goToItem: NSToolbarItem?
+    private(set) var findItem: NSToolbarItem?
+    private(set) var segmentsItem: NSToolbarItem?
+    private(set) var insertModeItem: NSToolbarItem?
+    private(set) var wordSizeItem: NSToolbarItem?
+    private(set) var paneLayoutItem: NSToolbarItem?
+
     init() {
         let controller = MainViewController()
         // The launch width fits one pane's hex grid at the saved word size
@@ -202,6 +214,95 @@ final class MainWindowController: NSWindowController {
         return container
     }
 
+    /// A plain icon button in the toolbar: an image, a tooltip, and the routing
+    /// the menu items use — straight at `mainViewController`, which resolves the
+    /// active pane and answers validation (§24.1).
+    private func makeCommandItem(_ identifier: NSToolbarItem.Identifier,
+                                 symbol: String,
+                                 label: String,
+                                 toolTip: String,
+                                 action: Selector) -> NSToolbarItem {
+        let item = NSToolbarItem(itemIdentifier: identifier)
+        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+        item.label = label
+        item.paletteLabel = label
+        item.toolTip = toolTip
+        item.target = mainViewController
+        item.action = action
+        return item
+    }
+
+    /// The insert-mode toggle: a push-on/push-off button, so the mode the keys
+    /// are in is readable from the window chrome and not only as OVR/INS in the
+    /// pane's status bar (§24.2). The state is pushed in `validateToolbarItem` —
+    /// the mode is per pane, and validation is where the menu item's checkmark
+    /// is set too.
+    private func makeInsertModeItem() -> NSToolbarItem {
+        let item = ControlToolbarItem(itemIdentifier: .insertMode)
+        let button = NSButton(
+            image: NSImage(systemSymbolName: "character.cursor.ibeam",
+                           accessibilityDescription: "Insert Mode") ?? NSImage(),
+            target: mainViewController,
+            action: #selector(MainViewController.toggleInsertMode(_:))
+        )
+        button.setButtonType(.pushOnPushOff)
+        button.bezelStyle = .toolbar
+        button.imagePosition = .imageOnly
+        button.sizeToFit()
+        button.setAccessibilityLabel("Insert Mode")
+        item.view = button
+        item.label = "Insert Mode"
+        item.paletteLabel = "Insert Mode"
+        item.toolTip = "Insert mode: typing shifts the rest of the file"
+        // The click is the button's own; the item's target and action are what
+        // validation is routed through (see `ControlToolbarItem`).
+        item.target = mainViewController
+        item.action = #selector(MainViewController.toggleInsertMode(_:))
+        return item
+    }
+
+    /// The word-size control: a menu button naming the size in force — "2
+    /// Bytes", not a bare digit, so the number is readable as a word size
+    /// without a label the icon-only toolbar would not draw (§24.2). A menu
+    /// rather than four visible segments because four segments were the widest
+    /// thing in the toolbar for a setting that is chosen and then left alone.
+    private func makeWordSizeItem() -> NSToolbarItem {
+        let item = ControlToolbarItem(itemIdentifier: .wordSize)
+        let button = NSPopUpButton(frame: .zero, pullsDown: false)
+        button.bezelStyle = .toolbar
+        for size in WordSize.allCases {
+            button.addItem(withTitle: size.title)
+            // The tag carries the size, so the action reads it from the button
+            // the same way it reads it from a menu item (§6).
+            button.lastItem?.tag = size.rawValue
+        }
+        button.selectItem(withTag: WordSize.current.rawValue)
+        button.target = mainViewController
+        button.action = #selector(MainViewController.setWordSize(_:))
+        button.sizeToFit()
+        button.setAccessibilityLabel("Word Size")
+        item.view = button
+        item.label = "Word Size"
+        item.paletteLabel = "Word Size"
+        item.toolTip = "Bytes per word in the hex grid"
+        item.target = mainViewController
+        item.action = #selector(MainViewController.setWordSize(_:))
+        return item
+    }
+
+    /// The pane-layout toggle (§24.3). The icon and the tooltip name the
+    /// arrangement the click will produce, and both are refreshed on every
+    /// validation pass — the values here are only the ones it starts with.
+    private func makePaneLayoutItem() -> NSToolbarItem {
+        makeCommandItem(
+            .paneLayout,
+            symbol: LayoutSettings.isVertical ? "square.split.1x2" : "square.split.2x1",
+            label: "Pane Layout",
+            toolTip: LayoutSettings.isVertical ? "Stack the panes" : "Place the panes side by side",
+            action: #selector(MainViewController.togglePaneLayout)
+        )
+    }
+
     // MARK: - Menu
 
     /// Builds the main menu programmatically (no nib). Menu commands target
@@ -284,7 +385,7 @@ final class MainWindowController: NSWindowController {
         let wordSizeMenu = NSMenu(title: "Word Size")
         for size in WordSize.allCases {
             let item = wordSizeMenu.addItem(
-                withTitle: "\(size.rawValue) \(size.rawValue == 1 ? "Byte" : "Bytes")",
+                withTitle: size.title,
                 action: #selector(MainViewController.setWordSize(_:)),
                 keyEquivalent: ""
             )
@@ -432,24 +533,53 @@ extension NSToolbarItem.Identifier {
     static let filesIdentical = NSToolbarItem.Identifier("FilesIdentical")
     /// The minimap show/hide toggle button at the toolbar's far right (§19).
     static let toggleMinimap = NSToolbarItem.Identifier("ToggleMinimap")
+    /// Go To: the offset-and-bookmarks form (§10.1, §20.5).
+    static let goTo = NSToolbarItem.Identifier("GoTo")
+    /// Find: the byte-pattern search bar (§8).
+    static let find = NSToolbarItem.Identifier("Find")
+    /// Segments: the partition's form (§21.4).
+    static let segments = NSToolbarItem.Identifier("Segments")
+    /// The insert/overwrite typing-mode toggle (§7.6).
+    static let insertMode = NSToolbarItem.Identifier("InsertMode")
+    /// The 1 / 2 / 4 / 8 word-size radio (§6).
+    static let wordSize = NSToolbarItem.Identifier("WordSize")
+    /// The side-by-side ⇄ stacked pane-arrangement toggle (§3.3).
+    static let paneLayout = NSToolbarItem.Identifier("PaneLayout")
+}
+
+/// A toolbar item whose content is a control of our own. AppKit's own
+/// `validate()` does nothing for a view-backed item — validation is left to the
+/// subclass — so this one asks the target the way a plain item would, and passes
+/// the answer on to the control (§24.2).
+final class ControlToolbarItem: NSToolbarItem {
+    override func validate() {
+        guard let validator = target as? NSToolbarItemValidation else { return }
+        let enabled = validator.validateToolbarItem(self)
+        isEnabled = enabled
+        (view as? NSControl)?.isEnabled = enabled
+    }
 }
 
 extension MainWindowController: NSToolbarDelegate {
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         // The flexible space must be listed as allowed too, or AppKit drops it
         // from the default items and the diff block ends up on the LEFT edge.
-        [.flexibleSpace, .diffNavigation, .filesIdentical, .toggleMinimap, .space]
+        [.flexibleSpace, .space,
+         .goTo, .find, .segments, .insertMode, .wordSize,
+         .diffNavigation, .filesIdentical, .paneLayout, .toggleMinimap]
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        // The flexible space before the block pins it to the toolbar's right
-        // edge; the minimap button sits past a standard space, so the diff
-        // navigation and the panel toggle never crowd each other (§19). The
-        // space must be a system one, not a custom empty view: AppKit draws a
-        // single background platter around adjacent items, and a view-backed
-        // spacer joins the toggle's platter — a wide capsule with the icon
-        // shoved against its right edge.
-        [.flexibleSpace, .diffNavigation, .space, .toggleMinimap]
+        // Two groups, and the flexible space between them pins the right-hand
+        // one to the toolbar's edge (§24). Left: what acts on the dump in the
+        // active pane, then — past a space — the two controls that carry a
+        // state. Right: the difference plaque, the pane arrangement, the
+        // minimap. Every gap is a system space item, not a custom empty view:
+        // AppKit draws a single background platter around adjacent items, and a
+        // view-backed spacer joins its neighbour's platter — a wide capsule
+        // with the icon shoved against its edge.
+        [.goTo, .find, .segments, .space, .insertMode, .wordSize,
+         .flexibleSpace, .diffNavigation, .space, .paneLayout, .space, .toggleMinimap]
     }
 
     func toolbar(_ toolbar: NSToolbar,
@@ -470,6 +600,44 @@ extension MainWindowController: NSToolbarDelegate {
                 filesIdenticalItem = makeFilesIdenticalItem()
             }
             return filesIdenticalItem
+        case .goTo:
+            if goToItem == nil {
+                goToItem = makeCommandItem(.goTo, symbol: "dot.scope", label: "Go To",
+                                           toolTip: "Go to an offset or a bookmark",
+                                           action: #selector(MainViewController.goToPosition))
+            }
+            return goToItem
+        case .find:
+            if findItem == nil {
+                findItem = makeCommandItem(.find, symbol: "magnifyingglass", label: "Find",
+                                           toolTip: "Find a byte pattern",
+                                           action: #selector(MainViewController.findPattern))
+            }
+            return findItem
+        case .segments:
+            if segmentsItem == nil {
+                segmentsItem = makeCommandItem(.segments,
+                                               symbol: "arrow.up.and.line.horizontal.and.arrow.down",
+                                               label: "Segments",
+                                               toolTip: "The file's cuts and pieces",
+                                               action: #selector(MainViewController.showSegments))
+            }
+            return segmentsItem
+        case .insertMode:
+            if insertModeItem == nil {
+                insertModeItem = makeInsertModeItem()
+            }
+            return insertModeItem
+        case .wordSize:
+            if wordSizeItem == nil {
+                wordSizeItem = makeWordSizeItem()
+            }
+            return wordSizeItem
+        case .paneLayout:
+            if paneLayoutItem == nil {
+                paneLayoutItem = makePaneLayoutItem()
+            }
+            return paneLayoutItem
         case .toggleMinimap:
             if minimapToggleItem == nil {
                 let item = NSToolbarItem(itemIdentifier: .toggleMinimap)

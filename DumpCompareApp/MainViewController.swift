@@ -135,6 +135,10 @@ final class MainViewController: NSViewController {
     /// comparison re-lays out live, like the Word Size/Appearance settings (§6).
     private var layoutSettingsObserver: NSObjectProtocol?
     private var comparisonSettingsObserver: NSObjectProtocol?
+    /// Keeps the toolbar's word-size radio on the value in force when it is
+    /// changed from somewhere else — the View menu, or the Layout settings tab
+    /// (§24.2). The hex views have their own observers for the re-layout.
+    private var wordSizeObserver: NSObjectProtocol?
 
     /// Builds the background block index for comparison mode. The provider
     /// returns the current storages on every start/rebuild, so a revert that
@@ -173,11 +177,24 @@ final class MainViewController: NSViewController {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            guard let self, self.mode == .comparison else { return }
+            guard let self else { return }
+            // The toolbar's layout icon names the arrangement the click will
+            // produce, so it follows the direction wherever it was changed
+            // (§24.3) — including outside comparison mode, where the value is
+            // only stored.
+            self.revalidateToolbar()
+            guard self.mode == .comparison else { return }
             self.comparisonView?.setLayout(vertical: LayoutSettings.isVertical)
             // The pane arrangement changed (View menu or the Settings tab), so
             // the minimap's internal split flips with it (§19).
             self.updateMinimapLayout()
+        }
+        wordSizeObserver = NotificationCenter.default.addObserver(
+            forName: WordSize.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.revalidateToolbar() }
         }
         // The Comparison settings tab's grouping distance decides what counts as
         // one change for diff navigation (§10.3.1). Applied live: the coordinator
@@ -774,6 +791,9 @@ final class MainViewController: NSViewController {
         // Navigation anchors on the active pane's caret — a pane switch can
         // change whether a next/previous block exists (§10.3).
         refreshDiffNavigation()
+        // The typing mode is per pane (§7.6), so the toolbar's toggle follows
+        // the pane the keys now go to (§24.2).
+        revalidateToolbar()
     }
 
     // MARK: - Minimap overview (§19.4)
@@ -3042,6 +3062,9 @@ final class MainViewController: NSViewController {
     @objc func toggleInsertMode(_ sender: Any?) {
         let pane = activePane
         pane.isInsertMode.toggle()
+        // The toolbar's toggle carries the mode, and the keyboard path (⌥⌘I) has
+        // to light it without waiting for AppKit's idle pass (§24.2).
+        revalidateToolbar()
         pane.confirmInsertModeWarning = { [weak self, weak pane] in
             guard let self, let pane else { return true }
             let offset = pane.caretOffset
@@ -3095,10 +3118,11 @@ final class MainViewController: NSViewController {
         // a stale index and raises in -[_itemAtIndex:].
         if let wanted,
            !toolbar.items.contains(where: { $0.itemIdentifier == wanted }) {
-            // Before the standard space, so the block keeps its place between
-            // the flexible space and the minimap toggle (§19).
-            let insertAt = toolbar.items.firstIndex { $0.itemIdentifier == .space }
-                ?? toolbar.items.count
+            // Right after the flexible space, which is where the plaque's slot
+            // is (§24): the left-hand group has a standard space of its own, so
+            // anchoring on the first `.space` would drop the block in there.
+            let insertAt = toolbar.items.firstIndex { $0.itemIdentifier == .flexibleSpace }
+                .map { $0 + 1 } ?? toolbar.items.count
             toolbar.insertItem(withItemIdentifier: wanted, at: insertAt)
         }
         for identifier in [NSToolbarItem.Identifier.diffNavigation, .filesIdentical]
@@ -3201,6 +3225,10 @@ final class MainViewController: NSViewController {
     @objc func togglePaneLayout() {
         guard mode == .comparison else { return }
         comparisonView?.toggleLayout()
+        // `setLayout` persists the direction, which the layout observer picks up
+        // and revalidates on — but only for a change that actually landed. Ask
+        // here too, so the toolbar's icon flips with the click (§24.3).
+        revalidateToolbar()
     }
 
     /// View > Swap Panels: exchanges pane 1 and pane 2 (comparison mode). The
@@ -3221,8 +3249,16 @@ final class MainViewController: NSViewController {
     }
 
     /// View > Word Size (§6): re-groups the hex dump into words of this size.
+    /// The size travels as the sender's tag, from the menu item or from the
+    /// toolbar's menu button (§24.2) — one action for both.
     @objc func setWordSize(_ sender: Any?) {
-        guard let size = (sender as? NSMenuItem).flatMap({ WordSize(rawValue: $0.tag) }) else { return }
+        let tag: Int?
+        switch sender {
+        case let menuItem as NSMenuItem: tag = menuItem.tag
+        case let button as NSPopUpButton: tag = button.selectedTag()
+        default: tag = nil
+        }
+        guard let size = tag.flatMap({ WordSize(rawValue: $0) }) else { return }
         WordSize.set(size)
     }
 
@@ -4218,12 +4254,25 @@ final class MainViewController: NSViewController {
     /// gives it from the real content. No file is open yet at launch, so the
     /// offset column uses its default width. The window controller uses this for
     /// the launch frame.
+    ///
+    /// Never narrower than the toolbar, though: see `toolbarFitWidth`.
     static func launchContentWidth() -> CGFloat {
         let font = AppearanceSettings.font()
         let charWidth = AppearanceSettings.charWidth(for: font)
         let layout = HexLayout(charWidth: charWidth, rowHeight: 0, wordSize: WordSize.current.rawValue)
-        return layout.contentWidth + FilePaneView.contentFitSlack
+        return max(layout.contentWidth + FilePaneView.contentFitSlack, toolbarFitWidth)
     }
+
+    /// The width the toolbar needs before AppKit starts moving its trailing
+    /// items into the overflow menu: both groups, the difference block included
+    /// (§24.4). A floor under the launch width — a window that opens with its
+    /// own minimap toggle already hidden behind a chevron reads as a bug, and a
+    /// large word size makes the hex grid narrow enough for that to happen.
+    ///
+    /// Measured, not computed: the items' widths are AppKit's, and they differ
+    /// between releases. 600 pt clears the measured threshold (570 pt on macOS
+    /// 26, less on 14, where the toolbar metrics are tighter) with a margin.
+    static let toolbarFitWidth: CGFloat = 600
 
     /// Ideal content width the window should be when zoomed (double-click on the
     /// title bar / Window > Zoom): the hex grid width for a single pane, or
@@ -4349,20 +4398,58 @@ extension MainViewController: NSWindowDelegate {
 // MARK: - Toolbar validation
 
 extension MainViewController: NSToolbarItemValidation {
-    /// The toolbar's Prev/Next Difference arrows follow the menu items they
-    /// mirror (§10.3).
+    /// Asks AppKit to revalidate the toolbar now instead of on its own idle
+    /// schedule. Called wherever something a toolbar item reports has changed:
+    /// enablement, and the state the stateful items show (§24).
+    func revalidateToolbar() {
+        viewIfLoaded?.window?.toolbar?.validateVisibleItems()
+    }
+
+    /// The toolbar's items follow the menu items they mirror (§10.3, §24), and
+    /// the two that carry a state — the insert-mode toggle and the word-size
+    /// radio — are pushed to it here.
     ///
     /// Pushing `isEnabled` onto the items from our own state does not work:
     /// AppKit revalidates every visible item on each run-loop pass, and the
     /// default validation sets the state back to "the target responds to the
     /// action" — always true here. The state has to be answered where validation
-    /// asks for it.
+    /// asks for it. That makes this the natural place for the state a control
+    /// displays as well, the way `validateMenuItem` sets the checkmarks.
     func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
         switch item.action {
         case #selector(nextDifference):
             return diffNavigationState.nextDifference
         case #selector(previousDifference):
             return diffNavigationState.previousDifference
+        case #selector(goToPosition),
+             #selector(findPattern),
+             #selector(showSegments):
+            // The document commands need a dump to act on, exactly like the menu
+            // items they mirror (§24.1).
+            return activePane.isOpen
+        case #selector(toggleInsertMode(_:)):
+            // The button holds the ACTIVE pane's mode: it is per pane (§7.6), so
+            // the toggle follows the pane the keys go to. Always enabled — a
+            // typing mode is meaningful with no file open, and the pane's status
+            // bar says OVR/INS either way (§24.2).
+            (item.view as? NSButton)?.state = activePane.isInsertMode ? .on : .off
+            return true
+        case #selector(setWordSize(_:)):
+            // The button names the size in force, the way the View > Word Size
+            // items carry the radio check (§6). Always enabled: a view setting,
+            // not something done to a file (§24.2).
+            (item.view as? NSPopUpButton)?.selectItem(withTag: WordSize.current.rawValue)
+            return true
+        case #selector(togglePaneLayout):
+            // The icon names the arrangement the click will produce, the way the
+            // Show/Hide Minimap item's title names its act (§24.3): stacked
+            // panes while they are side by side, side by side while stacked. The
+            // tooltip says it in words.
+            let offersStacked = LayoutSettings.isVertical
+            item.image = NSImage(systemSymbolName: offersStacked ? "square.split.1x2" : "square.split.2x1",
+                                 accessibilityDescription: offersStacked ? "Stack Panes" : "Side-by-Side Panes")
+            item.toolTip = offersStacked ? "Stack the panes" : "Place the panes side by side"
+            return mode == .comparison
         default:
             return true
         }

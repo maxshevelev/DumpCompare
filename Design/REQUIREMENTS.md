@@ -1366,9 +1366,10 @@ way to navigate them by pointing.
   item at the far right) and from the View menu, whose item names the
   action it will perform ("Show Minimap" / "Hide Minimap").
 - The toolbar toggle is a plain icon button, sized to its icon and set apart
-  from the difference navigation by a system space item — not by an empty
-  custom view, which the toolbar would draw inside the toggle's own
-  background, stretching it into an oblong capsule with the icon off-centre.
+  from its neighbour (the pane-layout toggle, §24.3) by a system space item —
+  not by an empty custom view, which the toolbar would draw inside the toggle's
+  own background, stretching it into an oblong capsule with the icon
+  off-centre.
 - A second View item switches the render mode (§19.4). It is a checked item,
   not a flipping title: both modes are a minimap, so the check reads as which
   one is in use. It mirrors the header's switch, which is the primary control:
@@ -2081,9 +2082,9 @@ window, so nothing about a bookmark lives in two places.
   the form is open appears in or disappears from it, and removing the last one
   brings the empty state back.
 
-A toolbar button belongs here too, but the toolbar's composition — and this
-item's icon — is a separate question, left for when the toolbar is filled out as
-a whole.
+The form is reached from the toolbar as well — it is the same form Go To opens,
+so the toolbar's Go To item (§24.1) is the bookmarks button too, and there is no
+second item for the list.
 
 20.6 Moving a mark
 
@@ -2708,3 +2709,87 @@ later edits land in its own overlay.
 | Closing the copy without saving | The standard Save / Don't Save / Cancel prompt (§3.6); discarding it loses only the copy |
 | Closing the source while the copy is open | Allowed and cheap; the copy keeps its bytes with no copying (§23.4), and pane 2 is promoted to pane 1 (§3.5) |
 | Copy saved over the source's own file | Allowed — it is a Save As to a file the user chose; the source pane then reports the external change (§5.5) |
+
+---
+
+24. TOOLBAR
+
+The window's toolbar is icon-only, fixed in code, and not user-customizable: the
+composition is a decision, not a preference. It holds what is worth a permanent
+control — a command used constantly, or a state worth seeing without opening a
+menu — and nothing else. File operations are deliberately absent: files arrive
+by drop (§10.4) and are saved by ⌘S; a Save button would be the most prominent
+thing in the window and among the least used.
+
+The layout is two groups with the flexible space between them, which pins the
+right-hand one to the window's edge:
+
+| slot | item | icon |
+|---|---|---|
+| left | Go To | `dot.scope` |
+| left | Find | `magnifyingglass` |
+| left | Segments | `arrow.up.and.line.horizontal.and.arrow.down` |
+| left, past a space | Insert mode | `character.cursor.ibeam` |
+| left | Word size | a menu button, "2 Bytes" |
+| right | Difference plaque (§10.3) | `backward` / `forward`, or the badge |
+| right, past a space | Pane layout | `square.split.2x1` / `square.split.1x2` |
+| right, past a space | Minimap (§19.1) | `sidebar.right` |
+
+Every item routes at the window's controller, which resolves the active pane —
+the same routing the menu items use — and every item says what it does in a
+tooltip, since an icon-only toolbar shows no labels.
+
+24.1 The document commands
+
+Go To (§10.1), Find (§8) and Segments (§21.4) each open something that acts on
+the dump in the active pane, and each is disabled when no file is open: a
+live-looking button that does nothing when clicked is worse than a grey one. Go
+To opens the offset-and-bookmarks form, so it is the bookmark list's toolbar
+button as well (§20.5).
+
+24.2 The two stateful items
+
+Two items are in the toolbar because of what they SHOW, not what they do:
+
+- **Insert mode** (§7.6) is the one mode where a wrong state quietly damages a
+  dump: typing inserts and shifts the tail instead of overwriting. It is a
+  push-on/push-off button, lit while the mode is on. The mode is per pane, so the
+  button reads the ACTIVE pane and follows a pane switch. It is never disabled —
+  a typing mode is meaningful with no file open, exactly as the menu item is, and
+  the pane's status bar says OVR/INS either way.
+- **Word size** (§6) is a menu button, the only item carrying text: it names the
+  size in force — "2 Bytes", not a bare digit, since an icon-only toolbar draws
+  no labels and a number alone would not read as a word size. The size has to be
+  legible at a glance, which is the whole reason it is in the toolbar rather than
+  only in the View menu; a menu rather than four visible segments because the
+  segments were the widest thing in the toolbar for a setting that is chosen and
+  then left alone. The menu's wording is the View menu's, from one place. Always
+  enabled — a view setting, not something done to a file.
+
+Both are view-backed items, and the framework's own validation does nothing for
+those: the item has to ask the target itself. It asks for the enabled state the
+way a plain item would, and the state the control DISPLAYS is pushed from the
+same answer — the place the menu items' checkmarks are set (§10.3). Nothing can
+then drift: one pass sets both. A change made from the keyboard, the menu or the
+Settings window asks for that pass at once, instead of waiting for the
+framework's idle schedule.
+
+24.3 The pane-layout toggle
+
+Side-by-side ⇄ stacked (§3.3). The icon names the arrangement the click will
+produce, the way the Show/Hide Minimap item's title names its act, and the
+tooltip says it in words; both are refreshed on every validation pass, so a
+layout change from the View menu or the Settings tab moves them too. Disabled
+outside comparison mode: with one pane there is nothing to arrange. Unlike the difference block, it is not removed
+there — a single grey icon reads as a control that is unavailable, while a pair
+of arrows reads as a feature that is missing.
+
+24.4 The toolbar's own width
+
+A window too narrow for its toolbar does not shrink the items: the framework
+moves the trailing ones into an overflow menu, which is where the minimap toggle
+would end up. The launch width (§3.1) is therefore floored at the width the
+toolbar needs with the difference block carried — measured, not computed, since
+the item widths are the framework's and differ between releases. A large word
+size makes the hex grid narrow enough for this to matter, so the floor is not
+theoretical.

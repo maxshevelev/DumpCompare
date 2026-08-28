@@ -74,6 +74,10 @@ The workflows the app is shaped around:
 - **Find** (⌘F): query history, an encoding popup (**Hex bytes**, **Text — ASCII**, **UTF-8**, **UTF-16 LE/BE**), a case toggle, and paired ‹ › buttons. Searches run in the background and centre their result.
 - **Search All** lists every occurrence in a panel beside the dump, filling as the scan streams matches in; offsets and excerpts follow later edits.
 
+### Toolbar
+
+- Icon-only and fixed: **Go To**, **Find** and **Segments** on the left, then the two controls worth seeing rather than clicking — the **insert-mode** toggle, lit while typing shifts the file, and the **word size**, a menu button that says "2 Bytes". On the right: the difference arrows (or the *Files are identical* badge), the **pane layout** toggle, whose icon shows the arrangement the click will produce, and the **minimap** toggle. File operations are not there on purpose — dumps arrive by drop, and ⌘S saves them.
+
 ### Selection, clipboard, menus
 
 - Mouse selection, ⌘A, **Select Block…** (start + end, or start + length). **Copy** puts both raw bytes and hex text on the clipboard; ⌘V overwrites bytes from it.

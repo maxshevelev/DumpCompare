@@ -93,8 +93,12 @@ final class ZoomToFitTests: XCTestCase {
         mainVC.apply(mode: .singleFile)
         let pane = try XCTUnwrap(findPane(in: mainVC.view))
 
-        XCTAssertEqual(MainViewController.launchContentWidth(), pane.contentFitWidth, accuracy: 1,
-                       "the launch width must be one pane's hex grid")
+        // One pane's grid, or the toolbar's own width where that is wider — the
+        // window must not open with its trailing toolbar items already in the
+        // overflow menu (§24.4).
+        XCTAssertEqual(MainViewController.launchContentWidth(),
+                       max(pane.contentFitWidth, MainViewController.toolbarFitWidth), accuracy: 1,
+                       "the launch width must be one pane's hex grid, floored at the toolbar's")
         XCTAssertLessThan(MainViewController.launchContentWidth(),
                           pane.contentFitWidth * 2,
                           "a side-by-side arrangement must not double the launch width")

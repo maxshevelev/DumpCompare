@@ -36,9 +36,9 @@ final class ToolbarValidationTests: XCTestCase {
         wc.showWindow(nil)
         let window = wc.window!
         window.setFrame(NSRect(x: 100, y: 100, width: 1080, height: 720), display: true)
-        // Three items with no file open — the difference block is not among
+        // Eleven items with no file open — the difference block is not among
         // them outside comparison mode (§10.3).
-        _ = pumpUntil(2) { (window.toolbar?.items.count ?? 0) >= 3 }
+        _ = pumpUntil(2) { (window.toolbar?.items.count ?? 0) >= 11 }
         window.layoutIfNeeded()
         window.toolbar?.validateVisibleItems()
         return wc
@@ -80,9 +80,11 @@ final class ToolbarValidationTests: XCTestCase {
         controller.apply(mode: .comparison)
         window.layoutIfNeeded()
         XCTAssertTrue(pumpUntil(2) { hasBlock() }, "two files: the block appears")
-        // And in its place: between the flexible space and the minimap toggle.
+        // And in its place: the plaque's slot, right after the flexible space
+        // (§24).
         XCTAssertEqual(window.toolbar?.items.map(\.itemIdentifier),
-                       [.flexibleSpace, .diffNavigation, .space, .toggleMinimap])
+                       [.goTo, .find, .segments, .space, .insertMode, .wordSize,
+                        .flexibleSpace, .diffNavigation, .space, .paneLayout, .space, .toggleMinimap])
 
         controller.windowModel.pane2.close()
         controller.apply(mode: .singleFile)
@@ -173,12 +175,16 @@ final class ToolbarValidationTests: XCTestCase {
                       "identical files: the badge replaces the arrows")
         // And it takes the block's slot.
         XCTAssertEqual(window.toolbar?.items.map(\.itemIdentifier),
-                       [.flexibleSpace, .filesIdentical, .space, .toggleMinimap])
+                       [.goTo, .find, .segments, .space, .insertMode, .wordSize,
+                        .flexibleSpace, .filesIdentical, .space, .paneLayout, .space, .toggleMinimap])
 
-        // The badge reads as "Files are identical" to assistive tech.
+        // The badge reads as "Files are identical" to assistive tech. The item is
+        // in the toolbar by now; its view reaches the hierarchy a turn or two
+        // later, so wait for it rather than sampling the first frame.
         let root = try XCTUnwrap(window.contentView?.superview)
-        XCTAssertNotNil(descendants(of: root).first { $0.accessibilityLabel() == "Files are identical" },
-                        "the badge's accessibility label is 'Files are identical'")
+        XCTAssertTrue(pumpUntil(2) {
+            descendants(of: root).contains { $0.accessibilityLabel() == "Files are identical" }
+        }, "the badge's accessibility label is 'Files are identical'")
     }
 
     /// Two different files keep the Prev/Next Difference block — the badge is

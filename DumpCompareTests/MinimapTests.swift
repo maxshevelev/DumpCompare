@@ -377,8 +377,10 @@ final class MinimapTests: XCTestCase {
         // The configuration, not the live items: the difference block is only
         // carried in comparison mode (§10.3), and this window has no files.
         XCTAssertEqual(wc.toolbarDefaultItemIdentifiers(toolbar),
-                       [.flexibleSpace, .diffNavigation, .space, .toggleMinimap],
-                       "flexible space pins the diff block right; a system space keeps the toggle past it")
+                       [.goTo, .find, .segments, .space, .insertMode, .wordSize,
+                        .flexibleSpace, .diffNavigation, .space, .paneLayout, .space, .toggleMinimap],
+                       "flexible space pins the right-hand group to the edge; a system space keeps "
+                       + "the toggle past the pane-layout item, which is past the diff block (§24)")
         _ = pumpUntil(1.0) { toolbar.items.contains { $0.itemIdentifier == .toggleMinimap } }
 
         let toggle = toolbar.items.first { $0.itemIdentifier == .toggleMinimap }
@@ -387,9 +389,19 @@ final class MinimapTests: XCTestCase {
         XCTAssertEqual(toggle?.action, #selector(MainViewController.toggleMinimap),
                        "the toggle drives the controller's minimap show/hide")
 
-        XCTAssertNil(toolbar.items.first { $0.view != nil },
-                     "no item carries a custom view: a view-backed spacer would be drawn "
-                     + "inside the toggle's own background platter")
+        // The gap before the toggle is a system space item, not a custom empty
+        // view: AppKit draws one background platter around adjacent items, and a
+        // view-backed spacer joins the toggle's platter — a wide capsule with
+        // the icon shoved against its right edge (§19.1). The stateful items in
+        // the left-hand group do carry views (§24.2), which is why this looks at
+        // the toggle's own neighbour rather than the whole toolbar.
+        let toggleIndex = toolbar.items.firstIndex { $0.itemIdentifier == .toggleMinimap }
+        XCTAssertNotNil(toggleIndex)
+        if let toggleIndex, toggleIndex > 0 {
+            let before = toolbar.items[toggleIndex - 1]
+            XCTAssertEqual(before.itemIdentifier, .space)
+            XCTAssertNil(before.view, "the spacer is a system item, with no view of its own")
+        }
     }
 
     /// The toggle's button and the background capsule behind it must be the
@@ -400,7 +412,13 @@ final class MinimapTests: XCTestCase {
         defer { wc.close() }
         guard let window = wc.window else { return XCTFail("the controller has a window") }
         window.makeKeyAndOrderFront(nil)
-        _ = pumpUntil(1.5) { window.toolbar?.items.count == 4 }
+        // Wide enough for the whole toolbar: on a narrow window the trailing
+        // items go into the overflow menu and are not in the view hierarchy at
+        // all, which is not what this test is about (§24).
+        window.setFrame(NSRect(x: 100, y: 100, width: 1200, height: 720), display: true)
+        // Eleven items with no file open: the twelve configured ones minus the
+        // difference block, which is carried only in comparison mode (§10.3).
+        _ = pumpUntil(1.5) { window.toolbar?.items.count == 11 }
         window.layoutIfNeeded()
         guard let root = window.contentView?.superview else { return XCTFail("no theme frame") }
 
