@@ -68,6 +68,12 @@ public final class EditOverlayStorage: EditableByteStorage, @unchecked Sendable 
     private let cache: ChunkCache
     private let tempStore: TemporaryFileStore
     private let budgets: Budgets
+    /// True when the base is one nothing outside this storage can write: a temp
+    /// file `materialize()` wrote, or a buffer handed in that only this storage
+    /// holds. False for the user's own file, which the app's own save patches.
+    /// What `contentSnapshot(scratch:)` reads to decide whether the base can be
+    /// shared as it is (§23).
+    private var baseIsPrivate: Bool
 
     /// The file this storage was opened from, when the base is file-backed.
     /// Used by `StorageSaver` to decide whether patching in place is safe: the
@@ -87,6 +93,10 @@ public final class EditOverlayStorage: EditableByteStorage, @unchecked Sendable 
         self.budgets = budgets
         self.table = PieceTable(baseSize: base.size)
         self.originalURL = (base as? FileBackedStorage)?.url
+        // A file-backed base is the file the document was opened from, which
+        // saving writes to; anything else is a buffer the caller built for this
+        // storage alone.
+        self.baseIsPrivate = !(base is FileBackedStorage)
     }
 
     deinit {
@@ -196,6 +206,62 @@ public final class EditOverlayStorage: EditableByteStorage, @unchecked Sendable 
         return table.pieceCount
     }
 
+    // MARK: - Snapshots (Duplicate, §23)
+
+    /// An immutable view of the content as it is right now, for a second
+    /// document to build its own overlay on (§23).
+    ///
+    /// No bytes are copied. An overlay only ever writes to its own piece table
+    /// and add buffer, never to its base, so the whole common content can simply
+    /// be shared: the snapshot freezes the piece list and the add buffer (Swift
+    /// arrays — a value copy that diverges only when one side is written) and
+    /// holds the base as it is. Nothing needs copying later either, on an edit or
+    /// on a close: both documents keep their edits in their own overlay, and a
+    /// `FileBackedStorage` holds its descriptor open, so a temp file unlinked
+    /// under it (the next materialization, this storage's deinit) stays readable.
+    ///
+    /// The one thing that *can* change under a reader is the base when it is the
+    /// user's own file, because the app's own save patches that file in place
+    /// (§5.2) — the copy would then quietly stop being the bytes it was taken
+    /// from. So a file-backed base is cloned first, into `scratch`:
+    /// `clonefile(2)` on APFS is O(1) and occupies no disk until one side is
+    /// written, which is exactly the copy-on-write wanted here — a later save to
+    /// the file copies the blocks it touches and the clone keeps the originals.
+    /// Where a clone is impossible (another filesystem, the file has gone) the
+    /// content is folded into a private temp file instead — the same valve the
+    /// budgets use — and that is shared.
+    ///
+    /// - Parameter scratch: the temporary store a clone is put in. It belongs to
+    ///   the copy, not to this storage, so closing this document does not take
+    ///   the copy's bytes with it.
+    public func contentSnapshot(scratch: TemporaryFileStore) throws -> any ByteStorage {
+        lock.lock()
+        defer { lock.unlock() }
+        if !baseIsPrivate {
+            if let file = base as? FileBackedStorage,
+               let clone = try? cloneBase(file, into: scratch) {
+                // The clone holds the same bytes at the same offsets, so the
+                // piece list needs no adjusting — only the base it points at
+                // changes, and this storage keeps reading the user's file.
+                return ContentSnapshot(base: clone, added: added, table: table)
+            }
+            try materialize()
+        }
+        return ContentSnapshot(base: base, added: added, table: table)
+    }
+
+    /// Clones the base's file into `scratch` and opens a storage over the clone.
+    /// The clone gets a cache of its own: a `ChunkCache` is keyed by chunk index
+    /// only, so one shared with the base would serve the wrong file's chunks.
+    private func cloneBase(_ file: FileBackedStorage,
+                           into scratch: TemporaryFileStore) throws -> FileBackedStorage {
+        let url = try scratch.reserveTempURL()
+        guard clonefile(file.url.path, url.path, 0) == 0 else {
+            throw StorageError.writeFailed
+        }
+        return try FileBackedStorage(url: url, cache: ChunkCache(config: cache.config))
+    }
+
     // MARK: - Internals
 
     /// Copies `bytes` into the add buffer and returns the range they occupy.
@@ -221,6 +287,16 @@ public final class EditOverlayStorage: EditableByteStorage, @unchecked Sendable 
     }
 
     private func readLocked(at offset: UInt64, length: Int) throws -> [UInt8] {
+        try Self.read(at: offset, length: length, table: table, base: base, added: added)
+    }
+
+    /// Reads a window of the content a piece table describes over `base` and
+    /// `added`. Static and stateless because the live storage is not its only
+    /// reader: the immutable snapshots it hands out (§23) resolve their pieces
+    /// through the very same code, so a copy can never read its bytes
+    /// differently from the storage it was taken from.
+    static func read(at offset: UInt64, length: Int,
+                     table: PieceTable, base: any ByteStorage, added: [UInt8]) throws -> [UInt8] {
         guard length > 0, offset < table.size else { return [] }
         let count = min(UInt64(length), table.size - offset)
         var result = [UInt8]()
@@ -286,6 +362,9 @@ public final class EditOverlayStorage: EditableByteStorage, @unchecked Sendable 
         // bases would serve stale chunks after the swap. Each materialized base
         // gets a fresh cache with the same budget; the old base is released.
         base = try FileBackedStorage(url: url, cache: ChunkCache(config: cache.config))
+        // The new base is this storage's own file: nothing else writes it, so it
+        // can be shared with a copy as it is (§23).
+        baseIsPrivate = true
         added = []
         table = PieceTable(baseSize: base.size)
         // The previous materialization is dead weight now.

@@ -385,6 +385,46 @@ final class PaneViewModel: HexViewDataSource {
         notifyCompanionContentFullyChanged()
     }
 
+    /// Adopts a copy of `source`'s content as this pane's document (§23
+    /// Duplicate). The result is an untitled, never-saved document, exactly as
+    /// `openUntitled` leaves the pane — no watcher, no on-disk reference, Save
+    /// routed through Save As — but holding the source's bytes, unsaved edits
+    /// included, and dirty, because that content has never been written anywhere
+    /// (a close must warn about it).
+    ///
+    /// No bytes are copied: the two documents share an immutable snapshot of the
+    /// content and keep their own edits in their own overlays
+    /// (`BinaryDocument.duplicate`). The source pane is left untouched.
+    ///
+    /// Throws when the snapshot cannot be taken; the pane is unchanged in that
+    /// case (the document is only swapped in after the copy exists).
+    func openDuplicate(of source: PaneViewModel) throws {
+        guard let sourceDoc = source.document else { return }
+        let doc = try sourceDoc.duplicate()
+        document = doc
+        // Nothing on disk to compare against: like an untitled document, the copy
+        // has no saved bytes, so no byte of it reads as modified (§6) until it is
+        // saved and edited.
+        savedStorage = nil
+        isUntitled = true
+        // A new file re-arms the one-time insert-mode warning.
+        hasWarnedInsertShift = false
+        resetEditingState()
+        resetSegments(for: doc)
+        // The copy is the source's bytes, so it is the source's pieces too: the
+        // partition and the names come across (§23). Restoring over the reset
+        // above keeps the reset's hooks — it only replaces the partition, which
+        // is valid unchanged because the two contents have the same size.
+        segmentStore.restore(source.segmentStore.snapshot())
+        changeWatcher?.stop()
+        changeWatcher = nil
+        // A new document replaces the storage wholesale, like a revert — the
+        // comparison must re-read even when the mode is unchanged.
+        onFullInvalidation?()
+        notify()
+        notifyCompanionContentFullyChanged()
+    }
+
     func close() {
         document = nil
         savedStorage = nil

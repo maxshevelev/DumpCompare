@@ -6,7 +6,10 @@ import Foundation
 /// removed when the store is deallocated.
 public final class TemporaryFileStore: @unchecked Sendable {
     private let lock = NSLock()
-    private let directory: URL
+    /// The private directory this store's files live in. Internal rather than
+    /// private so a test can look at what a storage actually put there — whether
+    /// a snapshot cloned the file or copied it (§23.4).
+    let directory: URL
     private var created: [URL] = []
 
     public init() {
@@ -18,11 +21,28 @@ public final class TemporaryFileStore: @unchecked Sendable {
     public func createTempURL() throws -> URL {
         lock.lock()
         defer { lock.unlock() }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let url = directory.appendingPathComponent(UUID().uuidString)
+        let url = try reserveLocked()
         guard FileManager.default.createFile(atPath: url.path, contents: nil) else {
             throw StorageError.writeFailed
         }
+        return url
+    }
+
+    /// Reserves a temporary file URL **without** creating the file, for the
+    /// callers that need the path to be free: `clonefile(2)` refuses a
+    /// destination that already exists (§23). The URL is tracked like a created
+    /// one, so the store still removes it.
+    public func reserveTempURL() throws -> URL {
+        lock.lock()
+        defer { lock.unlock() }
+        return try reserveLocked()
+    }
+
+    /// Picks a free URL in the store's directory and records it. The caller
+    /// holds the lock.
+    private func reserveLocked() throws -> URL {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent(UUID().uuidString)
         created.append(url)
         return url
     }

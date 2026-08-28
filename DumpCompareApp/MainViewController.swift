@@ -2279,6 +2279,63 @@ final class MainViewController: NSViewController {
         filePaneView(for: pane)?.showTransientMessage(message)
     }
 
+    // MARK: - File > Duplicate (§23)
+
+    /// File ▸ Duplicate: the active pane's content is copied into the free pane
+    /// as an untitled, never-saved document (§23). Single-file mode only — the
+    /// copy needs a pane to land in.
+    @objc func duplicateDocument() {
+        duplicate(from: activePane)
+    }
+
+    /// The pane-menu twin: duplicates the pane the menu was built for rather
+    /// than the active one (§23). In single-file mode they are the same pane;
+    /// the item exists so the header carries every file-scoped command.
+    @objc func duplicatePaneDocument(_ sender: Any?) {
+        guard let pane = pane(from: sender) else { return }
+        duplicate(from: pane)
+    }
+
+    /// The duplicate command (§23), shared by the File-menu and pane-menu items.
+    ///
+    /// The copy lands in the other pane and becomes active — it is what the user
+    /// just made, and it is the side they are about to edit — so the window
+    /// switches to comparison mode with the copy on the right. No confirmation:
+    /// nothing is replaced (the target pane is empty by the time this runs) and
+    /// the source is not touched.
+    func duplicate(from source: PaneViewModel) {
+        guard canDuplicate(source) else { return }
+        let targetIndex = paneIndex(source) == 0 ? 1 : 0
+        let target = targetIndex == 0 ? windowModel.pane1 : windowModel.pane2
+        // The name the source carries now — the copy's own header only ever says
+        // "Untitled", so the status line below is where the pair is named (§23).
+        let sourceName = source.status.fileName
+
+        do {
+            try target.openDuplicate(of: source)
+        } catch {
+            presentFileError("Could not duplicate the file.", error, url: nil)
+            return
+        }
+
+        windowModel.setActivePane(targetIndex)
+        refreshMode()
+
+        // §23: the transient line names the source and the size, the way a join
+        // reports its result (§22.2), then yields the stats back. Set after the
+        // mode apply, which rebuilds the pane views.
+        let size = ByteCountFormatter.string(fromByteCount: Int64(target.fileSize), countStyle: .file)
+        filePaneView(for: target)?.showTransientMessage(
+            "Duplicated \(sourceName) as Untitled. Size: \(size).")
+    }
+
+    /// Whether Duplicate can act on `pane` (§23): the copy needs a free pane to
+    /// land in, so exactly one pane may be open, and an empty pane has nothing to
+    /// copy.
+    private func canDuplicate(_ pane: PaneViewModel) -> Bool {
+        windowModel.openPaneCount == 1 && pane.isOpen && pane.fileSize > 0
+    }
+
     // MARK: - File > New File
 
     /// File > New File (Cmd+N): opens a brand-new, empty document in memory into
@@ -2597,6 +2654,12 @@ final class MainViewController: NSViewController {
         // submenu's order, mirrored here.
         add("Insert File at Start…", #selector(insertFileAtStartInPane(_:)), "")
         add("Append File…", #selector(appendFileInPane(_:)), "")
+        menu.addItem(.separator())
+        // Duplicate (§23): the other direction from the joins — this pane's
+        // content goes out into the free pane, rather than a file coming in. Its
+        // own block, because it is the only item here that is about the window's
+        // second pane.
+        add("Duplicate", #selector(duplicatePaneDocument(_:)), "")
         menu.addItem(.separator())
         // Show in Finder is header-only: it reveals THIS pane's file in the
         // Finder, which is a per-pane act, so the menu bar's File submenu
@@ -4377,6 +4440,12 @@ extension MainViewController: NSMenuItemValidation {
              #selector(insertFileAtStartInPane(_:)):
             // Context-menu items act on the pane they were built for.
             return pane(from: menuItem)?.isOpen ?? false
+        case #selector(duplicateDocument):
+            // The copy needs a free pane and bytes to copy (§23).
+            return canDuplicate(activePane)
+        case #selector(duplicatePaneDocument(_:)):
+            guard let pane = pane(from: menuItem) else { return false }
+            return canDuplicate(pane)
         case #selector(savePaneDocument(_:)),
              #selector(savePaneDocumentAs(_:)):
             // Context-menu items act on the pane they were built for.

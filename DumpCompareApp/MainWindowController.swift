@@ -340,6 +340,12 @@ final class MainWindowController: NSWindowController {
         add("Insert File at Start…", #selector(MainViewController.insertFileAtStart), "")
         add("Append File…", #selector(MainViewController.appendFile), "")
         fileMenu.addItem(.separator())
+        // Duplicate (§23): the active pane's content, copied into the free pane
+        // as an untitled document — how the dump as opened is kept beside a copy
+        // being patched. Single-file mode only, and no key equivalent: ⌘D is
+        // Toggle Bookmark (§20).
+        add("Duplicate", #selector(MainViewController.duplicateDocument), "")
+        fileMenu.addItem(.separator())
         // Close (⌘W) closes the active pane ("close document"); with no panes
         // open it falls back to closing the window (§3.5).
         add("Close", #selector(MainViewController.closeDocument), "w")

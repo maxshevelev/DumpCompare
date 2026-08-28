@@ -255,6 +255,46 @@ public final class BinaryDocument: @unchecked Sendable {
         readOnly = a.readOnly
     }
 
+    // MARK: - Duplicate (document-level, §23)
+
+    /// A second document holding a copy of this one's current content — edits
+    /// included — as an untitled, never-saved file (§23).
+    ///
+    /// Like a join, this is a document-level act rather than an edit: the copy is
+    /// its own document, attached to nothing (the placeholder URL, writable), and
+    /// **dirty with an empty history** — its bytes have never been on disk, so
+    /// closing it must warn (§3.6), and there is no earlier state to undo to. The
+    /// source is left completely untouched: its file, its edits, its undo history
+    /// and its dirty state are all exactly as they were.
+    ///
+    /// The bytes are not copied. The copy's overlay is built on an immutable
+    /// snapshot of this document's content (`EditOverlayStorage.contentSnapshot`)
+    /// that the two share for as long as they both live, and each side's later
+    /// edits go into its own overlay — so neither can disturb the other, and no
+    /// copy is needed when either is modified or closed.
+    ///
+    /// Throws `unsupportedStorage` when this document's storage is not an
+    /// `EditOverlayStorage` (nothing else can be snapshotted), or a
+    /// `StorageError` when the snapshot needs a file it cannot write.
+    public func duplicate() throws -> BinaryDocument {
+        guard let overlay = storage as? EditOverlayStorage else {
+            throw DocumentError.unsupportedStorage
+        }
+        // The scratch store belongs to the copy: whatever file the snapshot needs
+        // lives as long as the copy does, and goes when it does.
+        let scratch = TemporaryFileStore()
+        let snapshot = try overlay.contentSnapshot(scratch: scratch)
+        let copy = BinaryDocument(
+            storage: EditOverlayStorage(base: snapshot, tempStore: scratch),
+            url: Self.placeholderURL,
+            readOnly: false
+        )
+        // Never-saved content that cannot be undone — the same state a join's
+        // history is left in (§22.2), and what makes a close warn.
+        copy.undoHistory.clearKeepingDirty()
+        return copy
+    }
+
     // MARK: - Undo / Redo
 
     /// Reverts the most recent undo step: applies the inverse ops of every

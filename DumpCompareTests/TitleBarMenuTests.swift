@@ -19,7 +19,9 @@ final class TitleBarMenuTests: XCTestCase {
 
     /// The menu bar's File submenu. The join commands sit between the save
     /// block and Close in one block: Insert (at the start) and Append (at the
-    /// end) grouped together after a separator that closes the save block.
+    /// end) grouped together after a separator that closes the save block, then
+    /// Duplicate (§23) in a block of its own — the other direction from the
+    /// joins, and the one item that is about the window's second pane.
     private let fileMenuItems: [ExpectedItem] = [
         .title("New File"),
         .title("Open…"),
@@ -31,13 +33,15 @@ final class TitleBarMenuTests: XCTestCase {
         .title("Insert File at Start…"),
         .title("Append File…"),
         .separator,
+        .title("Duplicate"),
+        .separator,
         .title("Close"),
     ]
 
     /// The pane header menu: every File item (the join twins mirroring the
-    /// menu bar's File submenu — Insert and Append in one block), then the
-    /// header-only Show in Finder grouped with Close, then Swap Panels in its
-    /// own block.
+    /// menu bar's File submenu — Insert and Append in one block, then
+    /// Duplicate), then the header-only Show in Finder grouped with Close, then
+    /// Swap Panels in its own block.
     private var paneMenuItems: [ExpectedItem] {
         [
             .title("New File"),
@@ -49,6 +53,8 @@ final class TitleBarMenuTests: XCTestCase {
             .separator,
             .title("Insert File at Start…"),
             .title("Append File…"),
+            .separator,
+            .title("Duplicate"),
             .separator,
             .title("Show in Finder"),
             .title("Close"),
@@ -84,7 +90,8 @@ final class TitleBarMenuTests: XCTestCase {
                           "\(item.title) must target mainViewController")
         }
 
-        let expectedKeys = ["n", "o", nil, "s", "S", "", nil, "", "", nil, "w"]
+        // Duplicate carries no key equivalent: ⌘D is Toggle Bookmark (§20).
+        let expectedKeys = ["n", "o", nil, "s", "S", "", nil, "", "", nil, "", nil, "w"]
         let keys = menu.items.map { $0.isSeparatorItem ? nil : $0.keyEquivalent }
         XCTAssertEqual(keys, expectedKeys, "the File menu's key equivalents")
     }

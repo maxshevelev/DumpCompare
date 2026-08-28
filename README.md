@@ -67,6 +67,7 @@ The workflows the app is shaped around:
 - Undo is segmented for typed input: the first ⌘Z takes back the last byte, a quick second takes back the rest of the run, and after a pause it is one byte per press again.
 - **Paste Insert…**, **Delete Bytes…** and **Fill Selection with…** — the fast way to blank a region to `0xFF`. The confirmations for edits that shift the file can be turned off in **Settings ▸ Editing**.
 - **File > New File** (⌘N) opens an empty in-memory document — somewhere to paste a block out of a dump; **Revert to Saved** throws away the session's edits.
+- **File > Duplicate** copies the open dump — unsaved edits and all — into the second pane as an untitled document, so the file as it stands can be patched beside the original and every difference that appears is one you made. No bytes are copied: the two documents share the content until one of them is written, and on APFS the file behind them is cloned rather than duplicated, so duplicating a 32 MB dump costs neither the pass nor the disk.
 
 ### Search
 

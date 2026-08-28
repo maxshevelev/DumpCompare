@@ -2579,3 +2579,132 @@ feature's Save All as Separate Files (§21.5).
 | Comparison mode | A join changes one pane's length; the comparison re-indexes and the shorter file's tail reads as an EOF difference (§9) — no special case |
 | Caret after a join | At the start of the added part — the old end for an append, 0 for an insert at start. Undo returns the caret to its pre-join spot; redo brings it back to the seam |
 | The seam after a join | Revealed centred in the pane: the caret's row — the start of the added part — scrolls to the vertical centre, clamped to the document's edges, so the join's result is seen mid-pane rather than at its edge. Redoing the join re-centres the seam the same way (§10.4) |
+
+=====================================================================
+23. DUPLICATE
+=====================================================================
+
+Duplicate copies the pane's content into the free pane as a new, unsaved
+document. On the bench it answers one question: what did this dump look like
+before I touched it? The tool already compares two files by absolute offset, and
+the most useful second file is often the first one, as it was — patch the copy,
+watch the differences appear beside the original, and flash whichever half is
+right. Getting there today means saving a second file to disk first and opening
+it, which is a detour through the filesystem for something the app is already
+holding.
+
+23.1 The command
+
+- **File ▸ Duplicate** — the active pane's content is copied into the other pane.
+- It also sits in the pane's own menu (right-click the pane header), acting on
+  that pane, beside the file-scoped commands already there (§22.1). In
+  single-file mode the two are the same pane; the item is there because the
+  header carries every file-scoped command.
+- **Single-file mode only.** The copy needs a pane to land in, so the command is
+  enabled when exactly one pane is open and it holds bytes. With two files open
+  there is no free pane; with nothing open there is nothing to copy; with an
+  empty untitled document there are no bytes to copy.
+- No key equivalent: ⌘D is Toggle Bookmark (§20), and this is not a gesture
+  repeated often enough to take another letter.
+- No dialog, and no confirmation: nothing is replaced (the target pane is empty)
+  and the source is not touched, so there is nothing to ask about.
+
+23.2 The copy is a new unsaved document
+
+- **The copy is Untitled and never-saved**, exactly like the result of a join
+  (§22.2) or of File ▸ New File: placeholder URL, no watcher, ⌘S opens a save
+  panel rather than writing anywhere. The header shows "Untitled" with the
+  new-file badge.
+- **The copy is dirty.** Its bytes have never been written anywhere, so closing
+  the pane or the window warns about it (Save / Don't Save / Cancel, §3.6).
+- **The copy cannot be undone into existence backwards.** Its undo history is
+  empty — there is no earlier state of the copy to return to. ⌘Z in the copy's
+  pane undoes the copy's own later edits, and nothing before them. (Undo is
+  per-pane, so ⌘Z in the source's pane still undoes the source's edits, exactly
+  as it did before the duplicate.)
+- **What is copied is what the pane shows, edits included** — not the file on
+  disk. A dump opened, patched and not yet saved duplicates with the patch in it.
+  This needs no warning, unlike a join (§22.2): the source keeps its file and its
+  unsaved edits, so nothing is at risk of being lost.
+- **Naming.** No name is derived from the source, for the reason a join derives
+  none (§22.2): `W25Q128FV_20260821_1a2b3c4d.bin (copy)` is a long name that says
+  nothing true. The copy is Untitled, and a transient status-bar line right after
+  the duplicate names the source and the size — the way the app reports a search
+  result and then yields the stats back (§14).
+- **The partition comes across** (§21): the copy is the same bytes, so it is the
+  same pieces, with the same cuts and the same names. The names are the record of
+  which chip each region came from, and dropping them would lose it.
+- **The copy becomes the active pane** and the window switches to comparison
+  mode. It is what the user just made and the side they are about to edit; the
+  original stays on the left, where it was.
+- **The comparison starts identical.** Two identical files is the honest result —
+  "Files are identical" (§9) — and every difference that appears from then on is
+  one the user made.
+
+23.3 The two documents are independent
+
+Once the copy exists, the two panes are separate documents in every way that can
+be observed:
+
+- An edit, a save, a revert or a close on either side leaves the other exactly as
+  it was.
+- Each has its own undo history, its own dirty state, its own selection and
+  caret, its own segments.
+- The source keeps its file: its URL, its name, its change watcher (§5.5), its
+  modified-byte reference. Duplicating records no undo step on it and does not
+  make it dirty.
+- Saving the copy (Save As) writes the copy's full content to the file the user
+  chooses and leaves the source's file untouched.
+
+23.4 Copy-on-write: no bytes are copied
+
+The copy shares the source's bytes rather than duplicating them, so Duplicate on
+a 32 MB dump costs no 32 MB pass and no second 32 MB in memory or in the temp
+directory. What makes that safe is the shape editing already has (§13, the piece
+table): an overlay writes only to its own piece list and its own append-only
+buffer, never to the base underneath. So the base and the piece list are frozen
+into an immutable snapshot, the copy's overlay is built on it, and each side's
+later edits land in its own overlay.
+
+- **Nothing needs copying later either** — not when either side is modified, and
+  not when either is closed. A temporary file unlinked under a reader (the next
+  materialization, the source's own close) stays readable through the descriptor
+  already open on it.
+- **The one exception is the user's own file**, which the app itself rewrites: a
+  plain Save patches it in place (§5.2), and an external tool can rewrite it at
+  any time. A copy reading its unedited bytes straight from that file would
+  quietly stop being the bytes it was taken from. So the file is **cloned** into
+  the app's temporary directory first: on APFS `clonefile(2)` is O(1) and
+  occupies no disk until one side is written, which is precisely the
+  copy-on-write wanted here — a later save to the file copies the blocks it
+  touches, and the clone keeps the originals. Where a clone is impossible
+  (another filesystem, the file has gone) the content is folded into a temporary
+  file the same way an over-budget edit already folds it (§13), and that is
+  shared.
+  - Measured, in the sandboxed app, on a 16 MB dump outside the container: the
+    clone shares the dump's physical blocks at every offset checked, and the app
+    writes exactly one file — the clone — into its container's temp directory. A
+    dump on a *mounted second volume* fails the clone with `EXDEV` and takes the
+    fallback, which produces one 16 MB temp file with blocks of its own. Both
+    read the right bytes.
+- **The guarantee, stated as behaviour:** the copy holds the bytes the source
+  showed at the moment of the duplicate, and nothing that happens to the source
+  afterwards — an edit, a save over its own file, a revert, an external rewrite,
+  a close, a materialization — can change them.
+
+23.5 Edge cases
+
+| case | behaviour |
+|---|---|
+| Nothing open | Command disabled — there is nothing to copy |
+| Comparison mode | Command disabled — no free pane for the copy to land in |
+| Pane holds an empty untitled document | Command disabled — no bytes to copy |
+| Pane holds an untitled document with content | Allowed; the copy is another untitled document, and the source stays as it was |
+| Pane holds a read-only file | Allowed; the copy is writable — the file's permissions were never the copy's |
+| Source has unsaved edits | Copied with them, and no warning: the source keeps both its file and its edits |
+| Source is a joined image (§22) | Copied as it is, seam cut and piece names included |
+| Duplicating twice | Only from single-file mode, so the second time means closing a pane first; each copy is independent of the other |
+| Bookmarks | Untouched: a mark is an absolute offset and one list serves both panes (§20.1), so the marks show at the same rows in the copy |
+| Closing the copy without saving | The standard Save / Don't Save / Cancel prompt (§3.6); discarding it loses only the copy |
+| Closing the source while the copy is open | Allowed and cheap; the copy keeps its bytes with no copying (§23.4), and pane 2 is promoted to pane 1 (§3.5) |
+| Copy saved over the source's own file | Allowed — it is a Save As to a file the user chose; the source pane then reports the external change (§5.5) |
