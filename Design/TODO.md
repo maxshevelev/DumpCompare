@@ -218,7 +218,40 @@ clears the forward stack.
 
 ## Later
 
-*(nothing yet)*
+### Split the minimap into layers
+
+**What.** `MinimapView.swift` is ~2500 lines and grows with every feature that
+wants a mark on the panel. Break it into layers — dump, bookmarks, segments,
+viewport — each a module owning its own drawing, damage geometry, hit-testing and
+data intake behind one protocol, over a shared index guide that keeps them on a
+single offset axis. `draw()` collects from the layers in order, and that order is
+both the z-order and the hit-test priority.
+
+**Why.** Working on one minimap feature today means navigating the whole file:
+its drawing, its dirty rectangles, its click handling and its setter sit hundreds
+of lines apart, and each re-derives the same byte↔pixel geometry. The goal is to
+make a change to one feature a change in one file.
+
+**How.** Taken apart in **`Design/MINIMAP_LAYERS_IDEA.md`** — not a plan. The
+short version: the valuable half is *not* `draw()`, which is already the tidiest
+part of the file. It is (a) extracting `MinimapGeometry` as a pure, AppKit-free
+value type — the minimap's missing equivalent of `HexLayout`, and the reason its
+byte↔pixel mapping can only be tested through a window today — and (b) giving
+each layer all four of its obligations, not just the drawing. Four things leak:
+the viewport band spans both maps rather than belonging to one, the divider
+yields to the band, `renderMode` is an axis perpendicular to the layers, and
+overview is a stateful subsystem (a model the controller owns) rather than a
+layer. The same move does **not** belong in `HexView` — its painting order is
+nested inside a single row traversal, and it already has its index guide.
+
+**Order.** Geometry first (behaviour-preserving, tests untouched), then a pilot on
+bookmarks alone, then a decision. The render tests assert against the view's
+internal surface, so everything past step 1 rewrites them layer by layer — which
+is the argument for piloting on one feature.
+
+**Cost.** 6–10 hours for the geometry, 4–6 for the pilot, 15–20 for the rest if
+the pilot earns them. The geometry step stands alone and is worth doing whatever
+is decided about the rest.
 
 ---
 
