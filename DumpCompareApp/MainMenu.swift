@@ -168,6 +168,10 @@ enum MainMenu {
         // Close (⌘W) closes the active pane ("close document"); with no panes
         // open it falls back to closing the window (§3.5).
         add("Close", #selector(MainViewController.closeDocument), "w")
+        // ⌘W works down one step at a time — the active pane, then the tab once
+        // no pane is left, then the window once no tab is. ⇧⌘W is the whole
+        // window at once, every tab in it (`Design/TABS_PLAN.md`).
+        add("Close Window", #selector(MainViewController.closeWindow(_:)), "W")
         return fileMenu
     }
 

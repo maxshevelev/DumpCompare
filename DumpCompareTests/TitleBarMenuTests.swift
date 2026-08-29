@@ -37,6 +37,7 @@ final class TitleBarMenuTests: XCTestCase {
         .title("Duplicate"),
         .separator,
         .title("Close"),
+        .title("Close Window"),
     ]
 
     /// The pane header menu: every File item (the join twins mirroring the
@@ -56,6 +57,7 @@ final class TitleBarMenuTests: XCTestCase {
             .title("Append File…"),
             .separator,
             .title("Duplicate"),
+            .title("Open in New Tab"),
             .separator,
             .title("Show in Finder"),
             .title("Close"),
@@ -94,7 +96,7 @@ final class TitleBarMenuTests: XCTestCase {
 
         // Duplicate carries no key equivalent: ⌘D is Toggle Bookmark (§20).
         // "N" is ⇧⌘N — the capital carries the shift.
-        let expectedKeys = ["n", "N", "o", nil, "s", "S", "", nil, "", "", nil, "", nil, "w"]
+        let expectedKeys = ["n", "N", "o", nil, "s", "S", "", nil, "", "", nil, "", nil, "w", "W"]
         let keys = menu.items.map { $0.isSeparatorItem ? nil : $0.keyEquivalent }
         XCTAssertEqual(keys, expectedKeys, "the File menu's key equivalents")
     }

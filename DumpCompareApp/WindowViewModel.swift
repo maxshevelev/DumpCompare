@@ -63,6 +63,39 @@ final class WindowViewModel {
         activePaneIndex = activePaneIndex == 0 ? 1 : 0
     }
 
+    /// Takes the pane at `index` out of this window and hands it back, leaving
+    /// the window with one pane fewer — the model half of tearing a pane off
+    /// into its own tab (`Design/TABS_PLAN.md`).
+    ///
+    /// Unlike `closePane`, nothing is closed: the document, its unsaved edits,
+    /// its undo history, its segments and its change watcher travel with the
+    /// object, which is the point — the file stays open exactly once, so §4.1
+    /// rule 6 is never in question. The same §3.5 promotion applies, so pane 2
+    /// becomes pane 1 when pane 1 is the one leaving.
+    ///
+    /// The pane leaves with no bookmark store: it is about to be given the
+    /// receiving window's.
+    func detachPane(_ index: Int) -> PaneViewModel {
+        let detached = index == 0 ? pane1 : pane2
+        if index == 0 {
+            pane1 = pane2
+        }
+        pane2 = PaneViewModel()
+        pane2.bookmarkStore = bookmarkStore
+        activePaneIndex = 0
+        detached.bookmarkStore = nil
+        return detached
+    }
+
+    /// Takes `pane` as this window's first pane — the other half of the move.
+    /// The pane joins this window's bookmark list, which is a copy of the list
+    /// it came from and diverges from it from here on.
+    func adopt(_ pane: PaneViewModel) {
+        pane.bookmarkStore = bookmarkStore
+        pane1 = pane
+        activePaneIndex = 0
+    }
+
     /// Closes the pane at `index`, handling the §3.5 promotion rule: when pane 1
     /// is closed and pane 2 is open, pane 2 becomes pane 1. The caller is
     /// responsible for the dirty save/discard/cancel prompt before calling.

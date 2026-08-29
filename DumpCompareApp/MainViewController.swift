@@ -32,6 +32,51 @@ final class MainViewController: NSViewController {
     /// reference to something the app owns.
     weak var openDocuments: OpenDocumentRegistry?
 
+    /// Makes a tab beside this window and hands back the controller that runs
+    /// it. Set by the app delegate, which owns the windows; nil in a controller
+    /// built on its own, where there is no window to put a tab beside and the
+    /// command that needs one is disabled.
+    var makeSiblingTab: (() -> MainViewController?)?
+
+    /// Pane menu ▸ Open in New Tab: this pane's document leaves for a tab of its
+    /// own, and the window it left keeps the other file on its own.
+    ///
+    /// The document is **moved**, not opened again: re-opening the URL would put
+    /// two live documents over one file, which is exactly what §4.1 rule 6
+    /// exists to prevent, and the unsaved edits, the undo history, the segments
+    /// and the change watcher would all be left behind. Moving the pane object
+    /// takes every one of them along by construction.
+    @objc func openPaneInNewTab(_ sender: Any?) {
+        guard let pane = (sender as? NSMenuItem)?.representedObject as? PaneViewModel else { return }
+        movePaneToNewTab(at: paneIndex(pane))
+    }
+
+    private func movePaneToNewTab(at index: Int) {
+        guard mode == .comparison, let tab = makeSiblingTab?() else { return }
+        let marks = windowModel.bookmarkStore.bookmarks
+        // The comparison ends here, so the two panes must stop holding each
+        // other as companions before one of them leaves the window.
+        unwireComparison()
+        let pane = windowModel.detachPane(index)
+        // The view bound to it belongs to this window; the receiving tab builds
+        // its own from the model.
+        paneViews.removeValue(forKey: ObjectIdentifier(pane))
+        tab.adoptPane(pane, bookmarks: marks)
+        refreshMode()
+    }
+
+    /// Takes a pane torn off another window, with a copy of that window's marks.
+    ///
+    /// The marks are copied rather than shared or dropped: they were made
+    /// against absolute offsets, and those offsets mean the same thing in the
+    /// file that just arrived. From here the two lists are independent — a mark
+    /// added in one window does not appear in the other.
+    func adoptPane(_ pane: PaneViewModel, bookmarks: [Bookmark]) {
+        windowModel.bookmarkStore.seed(bookmarks)
+        windowModel.adopt(pane)
+        apply(mode: .singleFile)
+    }
+
     /// Brings this window to the front and makes `paneIndex` its active pane —
     /// what happens instead of a refusal when the file someone asked to open is
     /// already open in another window or tab (§4.1 rule 6).
@@ -2704,6 +2749,23 @@ final class MainViewController: NSViewController {
         closePane(at: windowModel.activePaneIndex)
     }
 
+    /// File ▸ Close Window (⇧⌘W): this window and every tab in it.
+    ///
+    /// ⌘W is the step-at-a-time version — the active pane, then the tab once no
+    /// pane is left, then the window once no tab is — which needed no change for
+    /// tabs: closing a window that is a tab closes that tab, and closing the last
+    /// tab closes the window. This is the one gesture that skips to the end.
+    ///
+    /// Each tab is asked to close in the ordinary way, so each still puts up its
+    /// own unsaved-changes prompt; a tab whose prompt is cancelled stays, and the
+    /// window stays with it.
+    @objc func closeWindow(_ sender: Any?) {
+        guard let window = view.window else { return }
+        for tab in window.tabGroup?.windows ?? [window] {
+            tab.performClose(nil)
+        }
+    }
+
     /// Closes the pane at `index` after the standard dirty prompt. An untitled
     /// pane's "Save" picks a location first (Save As sheet); the pane closes
     /// once that completes.
@@ -2771,6 +2833,11 @@ final class MainViewController: NSViewController {
         // own block, because it is the only item here that is about the window's
         // second pane.
         add("Duplicate", #selector(duplicatePaneDocument(_:)), "")
+        // Open in New Tab: the same subject as Duplicate — where this document
+        // lives — pointing the other way. Duplicate sends a copy into the free
+        // pane; this sends the document itself out to a tab of its own, leaving
+        // the comparison behind as a single file (`Design/TABS_PLAN.md`).
+        add("Open in New Tab", #selector(openPaneInNewTab(_:)), "")
         menu.addItem(.separator())
         // Show in Finder is header-only: it reveals THIS pane's file in the
         // Finder, which is a per-pane act, so the menu bar's File submenu
@@ -4632,6 +4699,14 @@ extension MainViewController: NSMenuItemValidation {
         case #selector(duplicatePaneDocument(_:)):
             guard let pane = pane(from: menuItem) else { return false }
             return canDuplicate(pane)
+        case #selector(openPaneInNewTab(_:)):
+            // Only a comparison has a pane to spare. In single-file mode the
+            // command would move the window's only document into a new tab and
+            // leave an empty window behind — a move that separates nothing.
+            // `makeSiblingTab` is nil in a controller with no window to put a
+            // tab beside.
+            guard let pane = pane(from: menuItem), makeSiblingTab != nil else { return false }
+            return mode == .comparison && pane.isOpen
         case #selector(savePaneDocument(_:)),
              #selector(savePaneDocumentAs(_:)):
             // Context-menu items act on the pane they were built for.

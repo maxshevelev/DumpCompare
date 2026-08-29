@@ -107,6 +107,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             frameAutosaveName: isFirst ? "MainWindow" : nil)
         controller.mainViewController.openDocuments = openDocuments
         openDocuments.register(controller.mainViewController)
+        // Tearing a pane off needs a tab to put it in, and only the app can make
+        // one. The new tab joins the window the pane is leaving, so the two sit
+        // side by side in the same tab bar.
+        controller.mainViewController.makeSiblingTab = { [weak self, weak controller] in
+            self?.makeWindow(tabbedWith: controller?.window).mainViewController
+        }
         windowControllers.append(controller)
         // A tab takes its place from the window it joins, so it is added before
         // being shown; a window on its own is placed by `NSWindowController`,
