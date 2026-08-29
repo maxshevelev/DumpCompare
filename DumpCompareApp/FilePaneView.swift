@@ -11,6 +11,23 @@ final class PaneHeaderView: NSView {
     /// Fired on a double-click in the header (not on the close button).
     var onDoubleClick: (() -> Void)?
 
+    /// Fired once the pointer has moved far enough from the mouse-down for the
+    /// gesture to mean a drag rather than a click, carrying the event the drag
+    /// should begin from.
+    var onDragThresholdPassed: ((NSEvent) -> Void)?
+
+    /// How far the pointer travels before a press on the header becomes a drag
+    /// (`Design/PANE_DRAG_PLAN.md`).
+    ///
+    /// The header is not free: it already answers a double-click (fit the pane
+    /// to its content width, §3.3) and a right-click (the pane's File menu). A
+    /// drag that began on the first stray pixel would steal the clicks meant for
+    /// those. Same shape as `HexView.bookmarkDragHysteresis`, same reason.
+    static let dragThreshold: CGFloat = 4
+
+    /// Where the press started, while it could still turn into a drag.
+    private var pressOrigin: NSPoint?
+
     /// Routes every click in the bar to the bar itself — the title/lock labels
     /// are plain text and must not swallow the gesture. The close button keeps
     /// its clicks. Points outside the bar pass through untouched.
@@ -25,7 +42,26 @@ final class PaneHeaderView: NSView {
             onDoubleClick?()
             return
         }
+        pressOrigin = event.locationInWindow
         super.mouseDown(with: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let origin = pressOrigin, onDragThresholdPassed != nil else {
+            super.mouseDragged(with: event)
+            return
+        }
+        let moved = hypot(event.locationInWindow.x - origin.x,
+                          event.locationInWindow.y - origin.y)
+        guard moved >= Self.dragThreshold else { return }
+        // One drag per press: the session takes the mouse from here.
+        pressOrigin = nil
+        onDragThresholdPassed?(event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        pressOrigin = nil
+        super.mouseUp(with: event)
     }
 
     /// Right-click pops the pane's File menu (assigned via `menu`), acting on
@@ -278,6 +314,9 @@ final class FilePaneView: NSView {
         header.translatesAutoresizingMaskIntoConstraints = false
         header.onDoubleClick = { [weak self] in
             self?.onHeaderDoubleClick?()
+        }
+        header.onDragThresholdPassed = { [weak self] event in
+            self?.beginPaneDrag(with: event)
         }
         // Low priorities keep this container flexible so a narrow pane
         // (§3.3) can shrink it and truncate the title instead of forcing a
@@ -926,6 +965,142 @@ final class FilePaneView: NSView {
     /// second list of places to remember to update.
     var onHeaderChanged: (() -> Void)?
 
+    // MARK: - Dragging the pane by its header
+
+    /// The pill is carried at its drawn size. It is a plate with a file name on
+    /// it, and a name that has to be squinted at says nothing worth carrying —
+    /// leaving its pane is already visible from the pill leaving the pane.
+    static let paneDragMinWidth: CGFloat = 200
+
+    /// The widest the pill gets. Past this the name truncates rather than the
+    /// pill stretching across the screen.
+    static let paneDragMaxWidth: CGFloat = 260
+
+    /// The pill's size, given the width of what goes on it — the document glyph,
+    /// the gap after it, and the name.
+    ///
+    /// Height is the header's: the pill is not scaled at all, so the shape stays
+    /// the shape the pane wears, which is what makes it recognisable in flight.
+    /// Width fits the content between its paddings, floored so a two-letter name
+    /// still gets a plate rather than a lozenge, and capped so a long one
+    /// truncates. Pure, so the arithmetic is checked without drawing anything.
+    static func paneDragPillSize(contentWidth: CGFloat, height: CGFloat) -> NSSize {
+        let padded = contentWidth + paneDragTextInset * 2
+        let width = min(paneDragMaxWidth, max(paneDragMinWidth, padded))
+        return NSSize(width: width, height: height)
+    }
+
+    /// The gap between the content and the pill's rounded ends.
+    static let paneDragTextInset: CGFloat = 16
+
+    /// The gap between the document glyph and the name.
+    static let paneDragIconGap: CGFloat = 6
+
+    /// Picks the pane up: a dragging session carrying nothing but this pane's
+    /// identity (`Design/PANE_DRAG_PLAN.md`).
+    private func beginPaneDrag(with event: NSEvent) {
+        let item = NSPasteboardItem()
+        item.setString(viewModel.dragID.uuidString, forType: .pane)
+        let dragItem = NSDraggingItem(pasteboardWriter: item)
+
+        let image = paneDragPill()
+        let size = image.size
+        // Centred on the pointer, so the pill goes where the hand goes rather
+        // than trailing from wherever in the header the press landed.
+        let point = convert(event.locationInWindow, from: nil)
+        dragItem.setDraggingFrame(
+            NSRect(x: point.x - size.width / 2, y: point.y - size.height / 2,
+                   width: size.width, height: size.height),
+            contents: image)
+
+        let session = beginDraggingSession(with: [dragItem], event: event, source: self)
+        // One item, and it is already where it should be: without this AppKit
+        // is free to re-arrange the drag's contents into a formation of its own.
+        session.draggingFormation = .none
+    }
+
+    /// The pill the hand carries: the pane's document glyph and file name on an
+    /// opaque rounded plate with a hairline edge.
+    ///
+    /// Drawn rather than snapshotted. The header's own picture is text on
+    /// nothing — over a dump it reads as a smear of letters with no object
+    /// behind them, and there is nothing to see the edge of when it crosses into
+    /// another pane. The glyph is the header's own, so a modified or untitled
+    /// pane is still recognisable as itself while it is in flight.
+    private func paneDragPill() -> NSImage {
+        let name = viewModel.status.fileName
+        let paragraph = NSMutableParagraphStyle()
+        // Middle truncation: the tail of a dump's name is what tells two apart
+        // (`…_donor.bin` against `…_board.bin`), so it is the middle that goes.
+        paragraph.lineBreakMode = .byTruncatingMiddle
+        paragraph.alignment = .left
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
+            .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: paragraph,
+        ]
+        let height = max(24, header.bounds.height)
+        let icon = paneDragGlyph()
+        let iconWidth = icon?.size.width ?? 0
+        let gap = icon == nil ? 0 : Self.paneDragIconGap
+        let nameSize = (name as NSString).size(withAttributes: attributes)
+        let size = Self.paneDragPillSize(contentWidth: iconWidth + gap + nameSize.width,
+                                         height: height)
+
+        let image = NSImage(size: size)
+        image.lockFocus()
+        // The window's appearance, not whatever is current: the pill is drawn
+        // once and carried, so its colours have to be resolved against the theme
+        // it was picked up in (§3.2).
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            let rect = NSRect(origin: .zero, size: size).insetBy(dx: 0.5, dy: 0.5)
+            let pill = NSBezierPath(roundedRect: rect,
+                                    xRadius: rect.height / 2, yRadius: rect.height / 2)
+            // Near-opaque: enough of the dump shows through to say the pill is
+            // over it, not enough for the two to be read together.
+            NSColor.windowBackgroundColor.withAlphaComponent(0.95).setFill()
+            pill.fill()
+            NSColor.separatorColor.setStroke()
+            pill.lineWidth = 1
+            pill.stroke()
+
+            // Glyph and name are centred together, so a short name sits in the
+            // middle of the minimum-width plate rather than clinging to its left
+            // end. A name too long for the plate takes what is left and
+            // truncates inside it.
+            let budget = size.width - Self.paneDragTextInset * 2 - iconWidth - gap
+            let textWidth = min(nameSize.width, budget)
+            let contentWidth = iconWidth + gap + textWidth
+            var x = (size.width - contentWidth) / 2
+            if let icon {
+                icon.draw(in: NSRect(x: x, y: (size.height - icon.size.height) / 2,
+                                     width: icon.size.width, height: icon.size.height))
+                x += iconWidth + gap
+            }
+            (name as NSString).draw(
+                with: NSRect(x: x, y: (size.height - nameSize.height) / 2,
+                             width: textWidth, height: nameSize.height),
+                options: [.usesLineFragmentOrigin], attributes: attributes)
+        }
+        image.unlockFocus()
+        return image
+    }
+
+    /// The header's document glyph, tinted for the pill. A template image draws
+    /// as a mask, so it is filled rather than simply drawn.
+    private func paneDragGlyph() -> NSImage? {
+        let configuration = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
+        guard let symbol = NSImage(systemSymbolName: documentSymbolName,
+                                   accessibilityDescription: nil)?
+            .withSymbolConfiguration(configuration) else { return nil }
+        return NSImage(size: symbol.size, flipped: false) { rect in
+            symbol.draw(in: rect)
+            NSColor.labelColor.set()
+            rect.fill(using: .sourceAtop)
+            return true
+        }
+    }
+
     private func updateHeader() {
         let status = viewModel.status
         titleLabel.stringValue = status.fileName
@@ -1254,3 +1429,13 @@ final class OperationStatusView: NSView {
         onCancel?()
     }
 }
+
+extension FilePaneView: NSDraggingSource {
+    /// A pane can be moved, and only inside this app: outside it the drag means
+    /// nothing, so it is offered nothing to mean.
+    func draggingSession(_ session: NSDraggingSession,
+                         sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        context == .withinApplication ? .move : []
+    }
+}
+

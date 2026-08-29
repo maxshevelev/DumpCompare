@@ -65,6 +65,12 @@ final class DropTargetView: NSView {
         fatalError("init(coder:) is not supported")
     }
 
+    /// Renames the zone. A pane drop means different things in different places
+    /// (`Design/PANE_DRAG_PLAN.md`), and one plate says whichever it is.
+    func setTitle(_ title: String) {
+        label.stringValue = title
+    }
+
     func setHighlighted(_ highlighted: Bool) {
         // Hover floods the zone with a translucent accent-blue fill; idle keeps
         // the quiet milky plate. Hover is also signalled by the accent border
@@ -144,6 +150,14 @@ final class PaneDropBandsView: NSView {
     /// Fired when the user drops on one of the three bands.
     var onDrop: ((SingleFileDropTarget, [URL]) -> Void)?
 
+    /// Asks what dropping the dragged pane on *this* pane would do. The overlay
+    /// accepts the drag only when the answer is something, so a landing with no
+    /// meaning is refused by the cursor rather than swallowed and ignored.
+    var paneDropOutcome: ((_ draggedPaneID: UUID) -> PaneDrop.Outcome)?
+
+    /// Fired when a dragged pane is let go on this one.
+    var onPaneDropped: ((_ draggedPaneID: UUID) -> Void)?
+
     /// The pane this overlay covers, when the view owns it (comparison mode
     /// wraps each pane). Nil in single-file mode, where the pane sits behind
     /// the overlay in the parent `SingleFileDropView`.
@@ -152,7 +166,15 @@ final class PaneDropBandsView: NSView {
     private let insertTarget = DropTargetView(title: SingleFileDropTarget.insertAtStart.title)
     private let replaceTarget = DropTargetView(title: SingleFileDropTarget.replace.title)
     private let appendTarget = DropTargetView(title: SingleFileDropTarget.appendAtEnd.title)
+    /// The single plate a *pane* drag gets, covering the whole pane: a pane is
+    /// not joined at one end or the other, so the three file bands say nothing
+    /// about it. Its caption names the outcome, which differs by where the pane
+    /// came from.
+    private let paneTarget = DropTargetView(title: "")
     private var dragActive = false
+    /// What the pane drag in flight would do here, or nil when the drag in
+    /// flight is not a pane.
+    private var paneOutcome: PaneDrop.Outcome?
 
     init(paneView: FilePaneView? = nil) {
         self.paneView = paneView
@@ -176,7 +198,7 @@ final class PaneDropBandsView: NSView {
                 paneView.trailingAnchor.constraint(equalTo: trailingAnchor),
             ])
         }
-        for target in [insertTarget, replaceTarget, appendTarget] {
+        for target in [insertTarget, replaceTarget, appendTarget, paneTarget] {
             // Laid out manually in `layout()`: the strip heights depend on the
             // view's height, which changes on resize.
             target.translatesAutoresizingMaskIntoConstraints = true
@@ -191,7 +213,7 @@ final class PaneDropBandsView: NSView {
         // deepest destination and steal the drop — whose `onDrop` is nil in
         // single-file mode, so the file would be silently discarded.
         if paneView != nil {
-            registerForDraggedTypes([.fileURL, .fileNames])
+            registerForDraggedTypes([.fileURL, .fileNames, .pane])
         }
     }
 
@@ -224,6 +246,8 @@ final class PaneDropBandsView: NSView {
         // strip's top edge; it collapses to zero in a very short view.
         replaceTarget.frame = NSRect(x: 0, y: strip, width: bounds.width,
                                      height: max(0, h - 2 * strip))
+        // A pane drop is about the whole pane, so its plate is the whole pane.
+        paneTarget.frame = bounds
     }
 
     // MARK: - Drag targeting
@@ -248,10 +272,31 @@ final class PaneDropBandsView: NSView {
     }
 
     private func hideBands() {
-        for target in [insertTarget, replaceTarget, appendTarget] {
+        for target in [insertTarget, replaceTarget, appendTarget, paneTarget] {
             target.setHighlighted(false)
             target.isHidden = true
             target.alphaValue = 0
+        }
+        paneOutcome = nil
+    }
+
+    /// Shows the pane plate, captioned with what letting go here would do.
+    private func showPanePlate(_ outcome: PaneDrop.Outcome) {
+        paneOutcome = outcome
+        paneTarget.setTitle(Self.paneDropTitle(for: outcome))
+        paneTarget.isHidden = false
+        paneTarget.alphaValue = 1
+        // A single plate has nothing to choose between, so it is lit as soon as
+        // it appears: the drag is already on it.
+        paneTarget.setHighlighted(true)
+    }
+
+    /// What a plate says for each outcome that can land on a pane.
+    static func paneDropTitle(for outcome: PaneDrop.Outcome) -> String {
+        switch outcome {
+        case .swap: return "Swap Panes"
+        case .move: return "Move Here"
+        case .tearOff, .none: return ""
         }
     }
 
@@ -283,6 +328,16 @@ final class PaneDropBandsView: NSView {
 
 extension PaneDropBandsView {
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        // A pane first: its own type is unambiguous, and a pane drag carries no
+        // file URLs for the bands to misread.
+        if let paneID = sender.draggingPasteboard.draggedPaneID {
+            let outcome = paneDropOutcome?(paneID) ?? .none
+            // Refused rather than accepted-and-ignored, so the cursor says no
+            // before the mouse comes up.
+            guard outcome != .none else { return [] }
+            showPanePlate(outcome)
+            return .move
+        }
         guard !sender.draggingPasteboard.droppedFileURLs.isEmpty else { return [] }
         setDragActive(true)
         updateHover(at: sender.draggingLocation)
@@ -290,6 +345,7 @@ extension PaneDropBandsView {
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if paneOutcome != nil { return .move }
         guard dragActive else { return [] }
         updateHover(at: sender.draggingLocation)
         return .copy
@@ -308,6 +364,11 @@ extension PaneDropBandsView {
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if let paneID = sender.draggingPasteboard.draggedPaneID {
+            setDragActive(false)
+            onPaneDropped?(paneID)
+            return true
+        }
         setDragActive(false)
         let urls = sender.draggingPasteboard.droppedFileURLs
         guard !urls.isEmpty else { return true }

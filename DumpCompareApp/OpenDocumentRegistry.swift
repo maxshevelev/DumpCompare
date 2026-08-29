@@ -53,6 +53,25 @@ final class OpenDocumentRegistry {
         return nil
     }
 
+    /// The window and pane index of the pane carrying `dragID`, or nil when no
+    /// window has it any more — which is the answer when the pane was closed, or
+    /// its window shut, while a drag of it was in flight.
+    ///
+    /// Nothing is stored here either: the panes are asked at the moment of the
+    /// question, so a stale drag resolves to nothing by construction rather than
+    /// by a check somebody has to remember to write.
+    func location(ofPaneWith dragID: UUID)
+    -> (controller: MainViewController, paneIndex: Int)? {
+        compact()
+        for entry in entries {
+            guard let controller = entry.controller else { continue }
+            if let paneIndex = controller.paneIndex(withDragID: dragID) {
+                return (controller, paneIndex)
+            }
+        }
+        return nil
+    }
+
     private func compact() {
         entries.removeAll { $0.controller == nil }
     }

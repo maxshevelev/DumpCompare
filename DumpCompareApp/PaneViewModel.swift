@@ -153,6 +153,15 @@ final class PaneViewModel: HexViewDataSource {
     /// same height in both panes of a comparison. Strong — the store holds no
     /// pane, so there is no cycle — and nil on a bare pane (unit tests) that
     /// has no window behind it.
+    /// A stable identity for this pane, for as long as it exists.
+    ///
+    /// The pane's own, not its document's: a pane keeps it when it moves into
+    /// another window, for the same reason it keeps its undo history — what
+    /// moves is the pane. It exists so a drag can name a pane on the pasteboard
+    /// without putting anything about the file there
+    /// (`Design/PANE_DRAG_PLAN.md`).
+    let dragID = UUID()
+
     var bookmarkStore: BookmarkStore?
 
     /// The pane's segment partition (§21): one per pane, beside `document` —

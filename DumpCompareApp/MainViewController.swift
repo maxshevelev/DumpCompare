@@ -161,6 +161,53 @@ final class MainViewController: NSViewController {
         viewIfLoaded?.window?.makeKeyAndOrderFront(nil)
     }
 
+    /// What letting the dragged pane go on this window's pane `index` would do
+    /// (`Design/PANE_DRAG_PLAN.md`).
+    ///
+    /// The decision itself is `PaneDrop`'s and is pure; all this adds is finding
+    /// where the dragged pane currently lives. A pane whose window has gone
+    /// resolves to nothing, and the drop is refused.
+    func paneDropOutcome(draggedPaneID: UUID, onPaneAt index: Int) -> PaneDrop.Outcome {
+        guard let origin = paneLocation(ofPaneWith: draggedPaneID) else { return .none }
+        let outcome = PaneDrop.outcome(
+            draggingPaneAt: origin.paneIndex,
+            onto: .pane(index: index, inOriginWindow: origin.controller === self))
+        // Only the swap is built so far (step 2 of the plan). The rest are
+        // refused at the cursor rather than accepted and ignored; step 4 turns
+        // them on by widening this one line.
+        return outcome == .swap ? outcome : .none
+    }
+
+    /// Performs whatever the drop means. Nothing here is a new operation —
+    /// each case is a command that already exists.
+    func performPaneDrop(draggedPaneID: UUID, onPaneAt index: Int) {
+        switch paneDropOutcome(draggedPaneID: draggedPaneID, onPaneAt: index) {
+        case .swap:
+            swapPanes()
+        case .none, .move, .tearOff:
+            break
+        }
+    }
+
+    /// Where the pane with `dragID` is, asked of the whole app when there is a
+    /// registry and of this window alone when there is not — the same fallback
+    /// the already-open rule uses, and for the same reason: a controller built
+    /// on its own must still answer for itself.
+    private func paneLocation(ofPaneWith dragID: UUID)
+    -> (controller: MainViewController, paneIndex: Int)? {
+        if let openDocuments {
+            return openDocuments.location(ofPaneWith: dragID)
+        }
+        return paneIndex(withDragID: dragID).map { (self, $0) }
+    }
+
+    /// The index of this window's pane with `dragID`, if either has it — the
+    /// pane half of the registry's question, beside the file half below.
+    /// Internal so the registry can ask it of every window.
+    func paneIndex(withDragID dragID: UUID) -> Int? {
+        [windowModel.pane1, windowModel.pane2].firstIndex { $0.dragID == dragID }
+    }
+
     /// The index of this window's pane holding `identity`, if either does.
     /// `excluding` skips one pane — the target of an open, which is never its
     /// own obstacle. Internal so the registry can ask it of every window.
@@ -687,6 +734,17 @@ final class MainViewController: NSViewController {
             }
             view.bands2.onDrop = { [weak self] target, urls in
                 self?.handleComparisonBandDrop(targetPane: 1, target: target, urls: urls)
+            }
+            // The same overlays take a dragged pane, which means something else
+            // entirely — one plate over the whole pane rather than three bands
+            // (`Design/PANE_DRAG_PLAN.md`).
+            for (index, bands) in [(0, view.bands1!), (1, view.bands2!)] {
+                bands.paneDropOutcome = { [weak self] paneID in
+                    self?.paneDropOutcome(draggedPaneID: paneID, onPaneAt: index) ?? .none
+                }
+                bands.onPaneDropped = { [weak self] paneID in
+                    self?.performPaneDrop(draggedPaneID: paneID, onPaneAt: index)
+                }
             }
             pane1View.onClose = { [weak self] in self?.closePane(at: 0) }
             pane2View.onClose = { [weak self] in self?.closePane(at: 1) }
