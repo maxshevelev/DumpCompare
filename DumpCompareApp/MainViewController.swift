@@ -32,11 +32,93 @@ final class MainViewController: NSViewController {
     /// reference to something the app owns.
     weak var openDocuments: OpenDocumentRegistry?
 
+    /// What to do about a file that is already open in another window or tab.
+    private enum AlreadyOpenChoice {
+        /// Bring that window forward with the file's pane active.
+        case show
+        /// Move that pane into this window, where the user asked for it.
+        case move
+        case cancel
+    }
+
+    private func askAboutFileOpenElsewhere(named name: String) -> AlreadyOpenChoice {
+        let alert = NSAlert()
+        alert.messageText = "“\(name)” is already open"
+        alert.informativeText = "A file is open in one place at a time, so it cannot be opened "
+            + "here as well. Show it where it is, or move that pane into this tab."
+        alert.addButton(withTitle: "Show in Its Tab")
+        alert.addButton(withTitle: "Move to This Tab")
+        // AppKit gives a button titled "Cancel" the Escape key.
+        alert.addButton(withTitle: "Cancel")
+        switch Self.presentModal(alert, defaultInTest: .alertFirstButtonReturn) {
+        case .alertFirstButtonReturn: return .show
+        case .alertSecondButtonReturn: return .move
+        default: return .cancel
+        }
+    }
+
+    /// Moves the pane holding a file out of `holder` and into this window's pane
+    /// `index` — the answer to "open it here" that actually opens it here.
+    ///
+    /// The document is moved rather than re-opened, for the same reason the
+    /// tear-off moves it: the file stays open exactly once, and the unsaved
+    /// edits, undo history and segments travel with it.
+    ///
+    /// The marks do not. Bookmarks belong to a window (§20), and this window has
+    /// its own list already — merging two would be merging two windows' notes on
+    /// one row. A pane joins the list of the window it lands in. (The tear-off
+    /// copies its list instead, because the tab it makes starts with none.)
+    private func movePaneHere(from holder: MainViewController, at holdingPane: Int,
+                              into index: Int, url: URL) -> Bool {
+        let target = index == 0 ? windowModel.pane1 : windowModel.pane2
+        // The pane being displaced gets the ordinary prompt; a dirty untitled one
+        // saves first and the whole open runs again from the top.
+        guard confirmReplaceDirtyPane(target, onSaved: { [weak self] in
+            _ = self?.openIntoPane(index: index, url: url)
+        }) else { return false }
+        let moved = holder.releasePane(at: holdingPane)
+        if target !== moved {
+            paneViews.removeValue(forKey: ObjectIdentifier(target))
+            target.close()
+        }
+        windowModel.adopt(moved, at: index)
+        // Applied rather than refreshed: replacing one pane with another leaves
+        // the open-pane count alone, and `refreshMode` skips a mode that has not
+        // changed — which would leave the old pane's view on screen.
+        apply(mode: windowModel.openPaneCount >= 2 ? .comparison : .singleFile)
+        return true
+    }
+
+    /// Takes the pane at `index` out of this window and hands it over, leaving
+    /// the window to re-render with one pane fewer. The shared half of both
+    /// moves: tearing a pane off into a new tab, and giving it up to a window
+    /// that asked to open its file.
+    func releasePane(at index: Int) -> PaneViewModel {
+        // The comparison ends here, so the two panes must stop holding each
+        // other as companions before one of them leaves.
+        if mode == .comparison { unwireComparison() }
+        let pane = windowModel.detachPane(index)
+        // The view bound to it belongs to this window; wherever it lands builds
+        // its own from the model.
+        paneViews.removeValue(forKey: ObjectIdentifier(pane))
+        refreshMode()
+        return pane
+    }
+
     /// Makes a tab beside this window and hands back the controller that runs
     /// it. Set by the app delegate, which owns the windows; nil in a controller
     /// built on its own, where there is no window to put a tab beside and the
     /// command that needs one is disabled.
     var makeSiblingTab: (() -> MainViewController?)?
+
+    /// File ▸ New Tab (⌘T): an empty tab beside this window.
+    ///
+    /// It lands on the key window's controller, which is the window the tab
+    /// should join — the reason this is a controller command rather than the app
+    /// delegate's, which has no window in mind.
+    @objc func newTab(_ sender: Any?) {
+        _ = makeSiblingTab?()
+    }
 
     /// Pane menu ▸ Open in New Tab: this pane's document leaves for a tab of its
     /// own, and the window it left keeps the other file on its own.
@@ -54,15 +136,7 @@ final class MainViewController: NSViewController {
     private func movePaneToNewTab(at index: Int) {
         guard mode == .comparison, let tab = makeSiblingTab?() else { return }
         let marks = windowModel.bookmarkStore.bookmarks
-        // The comparison ends here, so the two panes must stop holding each
-        // other as companions before one of them leaves the window.
-        unwireComparison()
-        let pane = windowModel.detachPane(index)
-        // The view bound to it belongs to this window; the receiving tab builds
-        // its own from the model.
-        paneViews.removeValue(forKey: ObjectIdentifier(pane))
-        tab.adoptPane(pane, bookmarks: marks)
-        refreshMode()
+        tab.adoptPane(releasePane(at: index), bookmarks: marks)
     }
 
     /// Takes a pane torn off another window, with a copy of that window's marks.
@@ -2249,9 +2323,18 @@ final class MainViewController: NSViewController {
                              message: "“\(url.lastPathComponent)” is already open in the other pane and cannot be opened twice.")
             } else {
                 // Another window or tab has it. "Cannot be opened twice" is true
-                // but useless there: the file the user asked for exists on
-                // screen, so take them to it rather than making them find it.
-                holder.revealOpenFile(inPane: holdingPane)
+                // but useless there — the file is on screen — and so is silently
+                // jumping to it: the user asked to work on it *here*, and being
+                // moved somewhere else without a word is its own surprise. Both
+                // useful answers are offered instead.
+                switch askAboutFileOpenElsewhere(named: url.lastPathComponent) {
+                case .show:
+                    holder.revealOpenFile(inPane: holdingPane)
+                case .move:
+                    return movePaneHere(from: holder, at: holdingPane, into: index, url: url)
+                case .cancel:
+                    break
+                }
             }
             return false
         }
@@ -4293,6 +4376,13 @@ final class MainViewController: NSViewController {
             || environment["XCTestBundlePath"] != nil
     }
 
+    /// Answers alerts in place of the user, so a test can choose a specific
+    /// button rather than living with the call site's default — needed wherever
+    /// the buttons do three different things and each has to be covered.
+    ///
+    /// Consulted only under test, so it can never intercept a real alert.
+    static var modalResponder: ((NSAlert) -> NSApplication.ModalResponse)?
+
     /// Presents `alert` modally, or returns `defaultInTest` immediately when
     /// running under XCTest. Callers pick a response that leaves the document
     /// untouched (Cancel / Keep Current Contents) so a stray alert can never
@@ -4300,7 +4390,7 @@ final class MainViewController: NSViewController {
     /// can pin the suppression contract.
     @discardableResult
     static func presentModal(_ alert: NSAlert, defaultInTest: NSApplication.ModalResponse) -> NSApplication.ModalResponse {
-        guard !isRunningTests else { return defaultInTest }
+        guard !isRunningTests else { return modalResponder?(alert) ?? defaultInTest }
         return alert.runModal()
     }
 

@@ -146,6 +146,12 @@ enum MainMenu {
         // the responder chain carries past every view controller to the app
         // delegate, which owns the windows.
         add("New Window", #selector(AppDelegate.newWindow(_:)), "N")
+        // New Tab (⌘T) is the app's own item. Automatic tabbing supplies the tab
+        // bar, Merge All Windows and Move Tab to New Window, and it calls
+        // `newWindowForTab(_:)` for the bar's + button — but the command in the
+        // menu, and the key that opens a tab without the bar showing, are ours
+        // to put here.
+        add("New Tab", #selector(MainViewController.newTab(_:)), "t")
         add("Open…", #selector(MainViewController.presentOpenPanel), "o")
         fileMenu.addItem(.separator())
         add("Save", #selector(MainViewController.saveDocument), "s")

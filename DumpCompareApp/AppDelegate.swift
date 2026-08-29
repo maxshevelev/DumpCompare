@@ -80,14 +80,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         makeWindow()
     }
 
-    /// ⌘T, and the tab bar's + button. AppKit offers both only because
-    /// something in the responder chain answers this — the app delegate, since
-    /// it is the app that owns the windows.
-    ///
-    /// The new tab joins the window it was asked from, which is the key one.
-    /// With no window to join it is simply a new window, which is what the tab
-    /// bar's + cannot ask for but ⌘T can.
+    /// The last resort for the tab bar's + button and ⌘T: with no window open
+    /// there is no window controller to answer them, and the responder chain
+    /// reaches the app delegate instead. A tab with nothing to join is a window.
     @objc func newWindowForTab(_ sender: Any?) {
+        makeWindow(tabbedWith: NSApp.keyWindow)
+    }
+
+    /// ⌘T with no window open, for the same reason.
+    @objc func newTab(_ sender: Any?) {
         makeWindow(tabbedWith: NSApp.keyWindow)
     }
 

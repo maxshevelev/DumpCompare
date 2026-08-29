@@ -98,6 +98,15 @@ final class MainWindowController: NSWindowController {
         fatalError("init(coder:) is not supported")
     }
 
+    /// The tab bar's + button.
+    ///
+    /// AppKit looks for this along the *window's* responder chain, which ends at
+    /// the window controller — the app delegate is past the end of it, so
+    /// implementing it there alone left the + button with nothing to call.
+    override func newWindowForTab(_ sender: Any?) {
+        _ = mainViewController.makeSiblingTab?()
+    }
+
     /// The launch width: the fit for one pane's hex grid at the saved word size
     /// (§3.1), capped at the screen's visible width so the window never opens
     /// wider than its screen.

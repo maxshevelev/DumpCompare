@@ -87,13 +87,22 @@ final class WindowViewModel {
         return detached
     }
 
-    /// Takes `pane` as this window's first pane — the other half of the move.
-    /// The pane joins this window's bookmark list, which is a copy of the list
-    /// it came from and diverges from it from here on.
-    func adopt(_ pane: PaneViewModel) {
+    /// Takes `pane` as the pane at `index` — the other half of the move.
+    ///
+    /// The pane joins this window's bookmark list, because a list belongs to a
+    /// window (§20) and a pane reads whichever window it is in. For a tab torn
+    /// off another that list is a copy of the one it came from; for a pane moved
+    /// into a window that already exists it is that window's own.
+    ///
+    /// The caller is responsible for whatever was in `index` before.
+    func adopt(_ pane: PaneViewModel, at index: Int = 0) {
         pane.bookmarkStore = bookmarkStore
-        pane1 = pane
-        activePaneIndex = 0
+        if index == 0 {
+            pane1 = pane
+        } else {
+            pane2 = pane
+        }
+        activePaneIndex = index
     }
 
     /// Closes the pane at `index`, handling the §3.5 promotion rule: when pane 1

@@ -108,9 +108,8 @@ final class MultiWindowTests: XCTestCase {
     /// states, two watchers, and a piece table whose base moves under it when
     /// the other one saves.
     ///
-    /// And the refusal is not the answer — the file the user asked for is on
-    /// screen already, so they are taken to it. No alert: "cannot be opened
-    /// twice" would be true and useless.
+    /// Choosing "Show in Its Tab" brings that window forward with the file's
+    /// pane active — the default answer, and what the test seam picks.
     func testOpeningAFileOpenInAnotherWindowGoesToThatWindow() throws {
         let registry = OpenDocumentRegistry()
         let first = MainViewController()
@@ -132,7 +131,7 @@ final class MultiWindowTests: XCTestCase {
         XCTAssertFalse(second.windowModel.pane1.isOpen,
                        "the same file must not be open in two windows at once")
         XCTAssertNil(second.lastAlertTitle,
-                     "no dead-end alert: the user is taken to the file instead")
+                     "the three-way question is not the dead-end alert")
         XCTAssertEqual(first.windowModel.activePaneIndex, 1,
                        "the window holding it activates the pane that does")
     }
@@ -278,5 +277,174 @@ final class MultiWindowTests: XCTestCase {
         XCTAssertEqual(joined.tab.title, url.lastPathComponent,
                        "the tab reads the window's title regardless")
         XCTAssertEqual(hostWindow.tabGroup?.windows.count, 2)
+    }
+
+    // MARK: - New Tab
+
+    /// ⌘T is the app's own command, not one AppKit contributes. Automatic
+    /// tabbing supplies the bar, Merge All Windows and Move Tab to New Window;
+    /// the New Tab item and its key are ours to add, the way Terminal and Safari
+    /// add theirs. Leaving it to the system left ⌘T doing nothing at all.
+    func testNewTabSitsInTheFileMenuUnderCommandT() throws {
+        let item = try XCTUnwrap(MainMenu.makeFileMenu().items.first { $0.title == "New Tab" },
+                                 "a File item making a tab")
+
+        XCTAssertEqual(item.keyEquivalent, "t")
+        XCTAssertEqual(item.keyEquivalentModifierMask, [.command])
+        XCTAssertEqual(item.action, #selector(MainViewController.newTab(_:)))
+        XCTAssertNil(item.target, "it lands on the key window's controller")
+    }
+
+    /// New Tab asks the window it was invoked from for a sibling, so the tab
+    /// joins that window rather than an arbitrary one.
+    func testNewTabAsksTheWindowItCameFrom() {
+        let controller = MainViewController()
+        var asked = 0
+        controller.makeSiblingTab = {
+            asked += 1
+            return MainViewController()
+        }
+
+        controller.newTab(nil)
+
+        XCTAssertEqual(asked, 1)
+    }
+
+    /// The tab bar's + button calls `newWindowForTab(_:)`, and AppKit looks for
+    /// it along the *window's* responder chain — which ends at the window
+    /// controller. Implementing it on the app delegate alone, past the end of
+    /// that chain, left the button with nothing to call.
+    func testTheTabBarsPlusButtonReachesTheWindowController() {
+        let wc = MainWindowController()
+        defer { wc.close() }
+        var asked = 0
+        wc.mainViewController.makeSiblingTab = {
+            asked += 1
+            return MainViewController()
+        }
+
+        XCTAssertTrue(wc.responds(to: #selector(NSWindowController.newWindowForTab(_:))),
+                      "the window controller must answer, or AppKit hides the + button")
+        wc.newWindowForTab(nil)
+
+        XCTAssertEqual(asked, 1)
+    }
+
+    // MARK: - The choice when a file is open elsewhere
+
+    /// Keeps the registry alive for the length of a test. `openDocuments` is a
+    /// weak back-reference to something the app owns, so a registry made and
+    /// left inside a helper is deallocated on the way out — and every controller
+    /// quietly falls back to answering rule 6 from its own two panes.
+    private var registry: OpenDocumentRegistry?
+
+    /// Two windows sharing a registry, the first holding `wanted` in its second
+    /// pane, the second empty and about to ask for it.
+    private func twoWindowsOneFile() throws -> (holder: MainViewController,
+                                                asker: MainViewController,
+                                                wanted: URL) {
+        let registry = OpenDocumentRegistry()
+        self.registry = registry
+        addTeardownBlock { self.registry = nil }
+        let holder = MainViewController()
+        let asker = MainViewController()
+        for controller in [holder, asker] {
+            controller.openDocuments = registry
+            registry.register(controller)
+        }
+        let other = try tempFile([UInt8](repeating: 0x11, count: 48))
+        let wanted = try tempFile([UInt8](repeating: 0x7E, count: 48))
+        holder.openFiles([other, wanted])
+        return (holder, asker, wanted)
+    }
+
+    /// Answers the next alert with `button`, and stops afterwards.
+    private func answerAlerts(with button: NSApplication.ModalResponse) {
+        MainViewController.modalResponder = { _ in button }
+        addTeardownBlock { MainViewController.modalResponder = nil }
+    }
+
+    /// The question names the file and offers all three answers, with Cancel
+    /// last so AppKit gives it the Escape key.
+    func testTheQuestionOffersShowMoveAndCancel() throws {
+        // `holder` is bound rather than discarded: the registry holds its
+        // windows weakly, so a controller nothing keeps drops out of it and
+        // there is no clash left to ask about.
+        let (holder, asker, wanted) = try twoWindowsOneFile()
+        XCTAssertTrue(holder.windowModel.pane2.isOpen, "the premise")
+        var seen: NSAlert?
+        MainViewController.modalResponder = { alert in
+            seen = alert
+            return .alertThirdButtonReturn
+        }
+        addTeardownBlock { MainViewController.modalResponder = nil }
+
+        asker.openFiles([wanted])
+
+        let alert = try XCTUnwrap(seen, "opening a file open elsewhere must ask")
+        XCTAssertTrue(alert.messageText.contains(wanted.lastPathComponent),
+                      "the question names the file")
+        XCTAssertEqual(alert.buttons.map(\.title),
+                       ["Show in Its Tab", "Move to This Tab", "Cancel"])
+    }
+
+    /// Cancel leaves both windows exactly as they were.
+    func testCancellingLeavesEverythingWhereItWas() throws {
+        let (holder, asker, wanted) = try twoWindowsOneFile()
+        answerAlerts(with: .alertThirdButtonReturn)
+
+        asker.openFiles([wanted])
+
+        XCTAssertFalse(asker.windowModel.pane1.isOpen, "nothing opened here")
+        XCTAssertEqual(holder.windowModel.pane2.status.fileName, wanted.lastPathComponent,
+                       "and nothing moved out of there")
+        XCTAssertEqual(holder.mode, .comparison)
+    }
+
+    /// "Move to This Tab" is the answer that actually opens it here: the pane
+    /// itself moves, so the file is still open exactly once, and the window it
+    /// came from keeps its other file on its own.
+    func testMovingBringsThePaneItselfAcrossWindows() throws {
+        let (holder, asker, wanted) = try twoWindowsOneFile()
+        let moved = holder.windowModel.pane2
+        answerAlerts(with: .alertSecondButtonReturn)
+
+        asker.openFiles([wanted])
+
+        XCTAssertIdentical(asker.windowModel.pane1, moved,
+                           "the same pane object, not a second document over one file")
+        XCTAssertEqual(asker.mode, .singleFile)
+        XCTAssertEqual(holder.mode, .singleFile, "the comparison it left is over")
+        XCTAssertFalse(holder.windowModel.pane2.isOpen)
+    }
+
+    /// The moved pane brings its unsaved edits — it is moved, never re-read.
+    func testMovingCarriesUnsavedEdits() throws {
+        let (holder, asker, wanted) = try twoWindowsOneFile()
+        try holder.windowModel.pane2.pasteWrite([0xFF, 0xFE])
+        XCTAssertTrue(holder.windowModel.pane2.status.isDirty, "the premise")
+        answerAlerts(with: .alertSecondButtonReturn)
+
+        asker.openFiles([wanted])
+
+        XCTAssertTrue(asker.windowModel.pane1.status.isDirty,
+                      "the edits came along; the file was not re-read from disk")
+    }
+
+    /// A pane reads the bookmark list of the window it is in, so a moved pane
+    /// adopts the receiving window's marks. The lists are not merged: two
+    /// windows' notes on one row cannot both survive, and one row holds one
+    /// bookmark.
+    func testAMovedPaneAdoptsTheReceivingWindowsBookmarks() throws {
+        let (holder, asker, wanted) = try twoWindowsOneFile()
+        _ = holder.windowModel.bookmarkStore.add(rowContaining: 0, name: "theirs")
+        _ = asker.windowModel.bookmarkStore.add(rowContaining: 16, name: "ours")
+        answerAlerts(with: .alertSecondButtonReturn)
+
+        asker.openFiles([wanted])
+
+        XCTAssertIdentical(asker.windowModel.pane1.bookmarkStore, asker.windowModel.bookmarkStore)
+        XCTAssertEqual(asker.windowModel.bookmarkStore.bookmarks.map(\.name), ["ours"],
+                       "the receiving window's list, unmerged")
     }
 }

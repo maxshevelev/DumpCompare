@@ -36,9 +36,14 @@ Each tab is a real `NSWindow` joined with `addTabbedWindow(_:ordered:)`, with
 every window the app makes.
 
 What that buys, none of which then has to be built or maintained: the tab bar
-itself, ⌘T through `newWindowForTab(_:)`, ⌃Tab and ⌘1…⌘9, dragging a tab out
-into its own window and dragging one back in, and the Window menu's Show Tab
-Bar / Show All Tabs / Move Tab to New Window / Merge All Windows. The comment in
+itself, ⌃Tab and ⌘1…⌘9, dragging a tab out into its own window and dragging one
+back in, and the Window menu's Show Tab Bar / Show All Tabs / Move Tab to New
+Window / Merge All Windows.
+
+**New Tab is not among them.** `newWindowForTab(_:)` is what the tab bar's +
+button calls, and AppKit looks for it along the *window's* responder chain — the
+app delegate is past the end of that. The ⌘T command in the File menu is the
+app's own to add, the way Terminal and Safari add theirs. The comment in
 `AppDelegate` that today calls those items "dead UI" and switches tabbing off is
 about to become wrong in the other direction.
 
