@@ -9,7 +9,7 @@ DumpCompare grew out of bench work on BIOS and EC dumps, so the comparison model
 
 ## Download
 
-[**DumpCompare 0.4**](https://github.com/maxshevelev/DumpCompare/releases/latest) — a universal `.dmg` (Apple silicon and Intel), macOS 14 or later.
+[**DumpCompare 0.5**](https://github.com/maxshevelev/DumpCompare/releases/latest) — a universal `.dmg` (Apple silicon and Intel), macOS 14 or later.
 
 The build is ad-hoc signed and not notarized, so Gatekeeper stops the first launch: right-click the app and choose **Open**, or clear the quarantine flag once.
 
@@ -25,7 +25,8 @@ The workflows the app is shaped around:
 - **A dump against a known-good donor.** Differing bytes are filled orange; ⌘⌥→ / ⌘⌥← walk the differing regions and centre each one, so scrolling 16 MB by hand is not part of the job.
 - **Finding the region that matters.** The overview minimap draws the whole chip in one column, shaded by how much real content each slice holds: erased `0xFF` blocks stay pale, code and tables read dense. A blanked, truncated or corrupted region shows up as the wrong texture at the wrong place — before you know its offset.
 - **Keeping your place in it.** ⌘D marks the caret's row and offers it a name; the mark is a purple arrow in the Offset column and in the minimap's margin, so the header, the table and the region under investigation stay findable while you work between them.
-- **Patching by hand.** ⌘G to the offset, type the hex digits, the changed bytes turn red until saved. Confirmations guard the operations that shift data.
+- **Patching by hand.** ⌘L to the offset, type the hex digits, the changed bytes turn red until saved. Confirmations guard the operations that shift data.
+- **Two chips, one image.** Plenty of boards split the BIOS region across two SPI flashes. Read both, **File ▸ Append File…** to join them in order, work on the whole image as one dump — compare, search, patch — then **Save All as Separate Files…** to split it back at the same seam and flash each half.
 - **Verifying a write-back.** Re-read the chip and compare the new dump against the file you flashed; the difference count is the pass/fail.
 - **Chip-sized files, not toy files.** Files are read in chunks and never loaded whole, so a 16 MB SPI dump — or a 1 GB image — opens immediately and stays within a low double-digit megabyte working set.
 
@@ -40,7 +41,7 @@ The workflows the app is shaped around:
 
 ### Going somewhere, and coming back
 
-- **Go To Position…** (⌘G) and **Bookmarks…** (⌥⌘B) are one window, because they answer one question: the addresses worth returning to are exactly the ones you would otherwise be typing again. ⌘G starts in the offset field, ⌥⌘B in the list; Return follows the focus. The field takes `0x`-hex or decimal, validates as you type, and keeps the last ten addresses it was sent to.
+- **Go To Position…** (⌘L) is also the bookmark list, because the two answer one question: the addresses worth returning to are exactly the ones you would otherwise be typing again. It opens with the offset field focused — ⌘L, type, Return — and Tab moves the keyboard to the list, with Return following the focus. The field takes `0x`-hex or decimal, validates as you type, and keeps the last ten addresses it was sent to.
 - **⌘D marks the caret's row** and opens a popover on the mark: type a name and Return, or just Return for an unnamed one. ⇧⌘D reopens it — the popover holds the bookmark's *address* as well as its name, so a mark put a row off is corrected by typing the right one, and a **Delete** button for the act Esc cannot mean.
 - A marked row's address stands on a **purple arrow** in the Offset column, and a smaller one appears in the minimap's margin in both of its modes — a marked region is findable without opening anything. Hovering a mark on the map says `ADDRESS: name`; a click near one lands exactly on the bookmark.
 - **Drag a mark to another row.** A dump gets read before it is understood, and a mark often belongs a few rows from where it was put; dragging beats remaking it, which would lose the name. One row holds one bookmark, so a mark dragged onto an occupied row jumps past it or stops before it.
@@ -69,6 +70,15 @@ The workflows the app is shaped around:
 - **File > New File** (⌘N) opens an empty in-memory document — somewhere to paste a block out of a dump; **Revert to Saved** throws away the session's edits.
 - **File > Duplicate** copies the open dump — unsaved edits and all — into the second pane as an untitled document, so the file as it stands can be patched beside the original and every difference that appears is one you made. No bytes are copied: the two documents share the content until one of them is written, and on APFS the file behind them is cloned rather than duplicated, so duplicating a 32 MB dump costs neither the pass nor the disk.
 
+### Segments and joining
+
+- A dump is rarely one thing: a flash image is a descriptor, an ME region, a BIOS region. **Segments** name those stretches. A partition is a list of contiguous pieces covering the file — labelled `S0`, `S1`, `S2` in file order, each with an optional name — so a gap or an overlap cannot be expressed at all.
+- **Split Here at «address»** in the dump's context menu is the fast path; **Edit ▸ Add Cut…** takes a typed offset, and **Merge** folds a piece into its neighbour. Every piece gets a tint: a faint wash on the dump's rows, and a colour strip beside the minimap that reads the file's make-up at a glance.
+- **A cut travels with the content** — the opposite rule to a bookmark, which is an address you chose and must stay put. Insert bytes before a seam and the seam moves with the bytes it belongs to. Cuts are undoable along with the edits that move them.
+- **Segments…** (⌥⌘S) opens the partition's own form: the pieces in a table, a row editor for the name and the boundary, and the operations that write. **Save Segment…** writes one piece to a file, **Save All as Separate Files…** writes the whole partition into a folder, and **Replace Segment from File…** swaps a piece's bytes for a file's contents in a single undo step.
+- **File ▸ Append File…** and **Insert File at Start…** are the other half of the round trip: a second file's bytes join the pane's content at one end or the other, and the seam they create is a cut — so a joined image splits back at exactly the boundary it was joined at. A join detaches the pane from its file: the result is untitled, so ⌘S cannot write a joined image over the dump it was opened from. ⌘Z reverses the whole join, re-attaching the pane to its original file.
+- Both commands also sit in the pane header's own menu, and both accept a drop: drag a file onto the band at the top or the bottom of a pane to insert or append it.
+
 ### Search
 
 - **Find** (⌘F): query history, an encoding popup (**Hex bytes**, **Text — ASCII**, **UTF-8**, **UTF-16 LE/BE**), a case toggle, and paired ‹ › buttons. Searches run in the background and centre their result.
@@ -80,7 +90,7 @@ The workflows the app is shaped around:
 
 ### Selection, clipboard, menus
 
-- Mouse selection, ⌘A, **Select Block…** (start + end, or start + length). **Copy** puts both raw bytes and hex text on the clipboard; ⌘V overwrites bytes from it.
+- Mouse selection, ⌘A, **Select Block…** (start + end, or start + length, with **To Beginning** and **To End** for the two bounds you would otherwise look up). **Copy** puts both raw bytes and hex text on the clipboard; ⌘V overwrites bytes from it.
 - Right-click an address for **Copy offset** (no `0x`, so a prefixed field doesn't double it), **Select block from here** (prefilled), and the bookmark commands for *that* row. Right-click inside a selection for **Copy**, **Fill Selection with…**, **Delete Bytes** — applied to the clicked pane's selection, not the active pane's.
 - Every offset field accepts `0x`-hex or decimal, puts the caret behind the prefix instead of selecting the whole text, and validates on each keystroke, with the message under the field it belongs to.
 
@@ -91,7 +101,7 @@ The workflows the app is shaped around:
 ### Large files, and the rest
 
 - Files are read through a bounded chunk cache and never loaded whole; edits are a piece list over the file as opened, so an inserted byte costs nothing measurable on a 32 MB dump. Diff and search index incrementally in the background, with progress and a cancel button in the status bar.
-- **⌘,** opens a standard settings window: the monospaced font and row density, the grouping distance for diff navigation, and the text decoding table (Windows-1252 by default) with a live grid of all 256 byte values.
+- **⌘,** opens a standard settings window: the monospaced font, its size and the row density, the theme (follow the system, or force light or dark), the grouping distance for diff navigation, and the text decoding table (Windows-1252 by default) with a live grid of all 256 byte values.
 - External changes on disk are detected and offer a reload, keeping local edits; closing a dirty file prompts the standard Save / Don't Save / Cancel. Security-scoped bookmarks keep file access across launches.
 - Light and dark themes, all colours dynamic; state is carried by colour *and* form (EOF hatching, outline contours), so it survives a theme switch and colour blindness. Accessibility labels on the grid and document state, frame autosave, **Window > Zoom** to fit the content exactly.
 
