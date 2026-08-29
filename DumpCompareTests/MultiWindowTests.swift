@@ -103,11 +103,15 @@ final class MultiWindowTests: XCTestCase {
         XCTAssertNotNil(registry.location(of: url, excluding: nil))
     }
 
-    /// The whole point of the registry: opening a file that another window
-    /// already holds is refused, with the pane left as it was. Two live
-    /// documents over one file are two dirty states, two watchers, and a piece
-    /// table whose base moves under it when the other one saves.
-    func testOpeningAFileAlreadyOpenInAnotherWindowIsRefused() throws {
+    /// The whole point of the registry: a file another window already holds is
+    /// not opened a second time. Two live documents over one file are two dirty
+    /// states, two watchers, and a piece table whose base moves under it when
+    /// the other one saves.
+    ///
+    /// And the refusal is not the answer — the file the user asked for is on
+    /// screen already, so they are taken to it. No alert: "cannot be opened
+    /// twice" would be true and useless.
+    func testOpeningAFileOpenInAnotherWindowGoesToThatWindow() throws {
         let registry = OpenDocumentRegistry()
         let first = MainViewController()
         let second = MainViewController()
@@ -116,15 +120,37 @@ final class MultiWindowTests: XCTestCase {
             registry.register(controller)
         }
 
-        let url = try tempFile([UInt8](repeating: 0x7E, count: 48))
-        first.openFiles([url])
-        XCTAssertTrue(first.windowModel.pane1.isOpen, "the first window took the file")
+        let other = try tempFile([UInt8](repeating: 0x11, count: 48))
+        let wanted = try tempFile([UInt8](repeating: 0x7E, count: 48))
+        first.openFiles([other, wanted])
+        XCTAssertEqual(first.windowModel.pane2.status.fileName, wanted.lastPathComponent,
+                       "the first window holds the wanted file in its second pane")
+        first.windowModel.setActivePane(0)
 
-        second.openFiles([url])
+        second.openFiles([wanted])
 
         XCTAssertFalse(second.windowModel.pane1.isOpen,
                        "the same file must not be open in two windows at once")
-        XCTAssertEqual(second.lastAlertTitle, "File already open")
+        XCTAssertNil(second.lastAlertTitle,
+                     "no dead-end alert: the user is taken to the file instead")
+        XCTAssertEqual(first.windowModel.activePaneIndex, 1,
+                       "the window holding it activates the pane that does")
+    }
+
+    /// Within one window the refusal stands: both panes are already in front of
+    /// the user, so there is nowhere to take them.
+    func testOpeningAFileOpenInThisWindowsOtherPaneIsRefused() throws {
+        let controller = MainViewController()
+        let first = try tempFile([UInt8](repeating: 0x22, count: 32))
+        let second = try tempFile([UInt8](repeating: 0x33, count: 32))
+        controller.openFiles([first, second])
+        // Aim the open at the pane that does NOT hold it: opening a file into
+        // the pane already showing it is a reload (rule 5), not a clash.
+        controller.windowModel.setActivePane(1)
+
+        controller.openFiles([first])
+
+        XCTAssertEqual(controller.lastAlertTitle, "File already open")
     }
 
     /// Without a registry a controller answers the rule from its own two panes,
@@ -167,5 +193,90 @@ final class MultiWindowTests: XCTestCase {
                        "the name must survive super.init(window:)")
         XCTAssertEqual(second.window?.frameAutosaveName, "",
                        "no name: AppKit reports the empty string for a window that saves nothing")
+    }
+
+    /// A second window opens at a usable size.
+    ///
+    /// A window arrives with a degenerate frame — 1×84 when measured — and it is
+    /// `showWindow`'s repair that has always given it its height. Skipping that
+    /// repair for a window with no autosaved frame, on the grounds that it had
+    /// nothing to restore, left the second window 84 points tall: the frame was
+    /// never about the autosave.
+    func testASecondWindowOpensAtAUsableSize() {
+        let first = MainWindowController()
+        defer { first.close() }
+        first.showWindow(nil)
+
+        let second = MainWindowController(frameAutosaveName: nil)
+        defer { second.close() }
+        second.showWindow(nil)
+
+        let frame = second.window?.frame ?? .zero
+        XCTAssertGreaterThan(frame.height, 200, "a new window must not open as a sliver")
+        XCTAssertGreaterThan(frame.width, 200)
+    }
+
+    // MARK: - The window's name
+
+    /// A window is named after the files it holds, because that name is what the
+    /// tab bar and the Window menu show. An empty window keeps the app's name:
+    /// it holds no document, and "Untitled" already means a New File that has
+    /// never been saved.
+    func testTheWindowIsNamedAfterItsFiles() throws {
+        let controller = MainViewController()
+        XCTAssertEqual(controller.windowTitle, "Empty", "nothing open says so")
+
+        let a = try tempFile([UInt8](repeating: 0xA1, count: 32))
+        controller.openFiles([a])
+        XCTAssertEqual(controller.windowTitle, a.lastPathComponent)
+
+        let b = try tempFile([UInt8](repeating: 0xB2, count: 32))
+        controller.openFiles([b])
+        XCTAssertEqual(controller.windowTitle,
+                       "\(a.lastPathComponent) ↔ \(b.lastPathComponent)",
+                       "a comparison is named after both of its files")
+    }
+
+    /// The name reaches the window, not just the computed property — it rides
+    /// the signal the pane headers ride, so opening a file moves both at once.
+    func testOpeningAFileRenamesTheWindow() throws {
+        let wc = MainWindowController()
+        defer { wc.close() }
+        wc.showWindow(nil)
+        XCTAssertEqual(wc.window?.title, "Empty")
+
+        let url = try tempFile([UInt8](repeating: 0xC3, count: 32))
+        wc.mainViewController.openFiles([url])
+
+        XCTAssertEqual(wc.window?.title, url.lastPathComponent)
+    }
+
+    /// A tab is labelled by its window's title even though the title bar itself
+    /// is hidden (the toolbar occupies it, §10.3). The two are separate: hiding
+    /// the title hides the text drawn in the title bar, not the name the window
+    /// answers to.
+    func testATabIsLabelledByItsWindowsTitle() throws {
+        let host = MainWindowController()
+        defer { host.close() }
+        let joiner = MainWindowController(frameAutosaveName: nil)
+        defer { joiner.close() }
+        // Tabbing is disallowed under test so a dozen suites do not merge their
+        // windows; this one is about tabs, so it opts back in.
+        for controller in [host, joiner] {
+            controller.window?.tabbingMode = .automatic
+        }
+        host.showWindow(nil)
+
+        let url = try tempFile([UInt8](repeating: 0xD4, count: 32))
+        joiner.mainViewController.openFiles([url])
+        guard let hostWindow = host.window, let joined = joiner.window else {
+            return XCTFail("both windows exist")
+        }
+        hostWindow.addTabbedWindow(joined, ordered: .above)
+
+        XCTAssertEqual(hostWindow.titleVisibility, .hidden, "the premise: the title bar shows no text")
+        XCTAssertEqual(joined.tab.title, url.lastPathComponent,
+                       "the tab reads the window's title regardless")
+        XCTAssertEqual(hostWindow.tabGroup?.windows.count, 2)
     }
 }

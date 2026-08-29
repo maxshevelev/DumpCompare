@@ -919,6 +919,13 @@ final class FilePaneView: NSView {
         }
     }
 
+    /// Fired whenever the header's picture of its file changed — the name, the
+    /// untitled badge, the dirty glyph. The window's title says the same thing
+    /// about the same files, so it rides this rather than a signal of its own:
+    /// whatever keeps the header honest keeps the title honest, and there is no
+    /// second list of places to remember to update.
+    var onHeaderChanged: (() -> Void)?
+
     private func updateHeader() {
         let status = viewModel.status
         titleLabel.stringValue = status.fileName
@@ -945,6 +952,7 @@ final class FilePaneView: NSView {
         lockLabel.stringValue = status.isReadOnly ? "🔒 Read-Only" : ""
         // VoiceOver names the grid after its file (§15).
         hexView.accessibilityTitle = "Hex dump — \(status.fileName)"
+        onHeaderChanged?()
     }
 
     private func updateStatus() {

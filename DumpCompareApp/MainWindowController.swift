@@ -1,6 +1,10 @@
 import Cocoa
 
 final class MainWindowController: NSWindowController {
+    /// Shared by every window the app makes, so any two of them can be tabs of
+    /// each other. AppKit refuses to tab windows whose identifiers differ.
+    static let tabbingIdentifier = "dev.maxik.DumpCompare.main"
+
     let mainViewController: MainViewController
 
     /// The window toolbar's Prev/Next Difference group (two default items in
@@ -53,12 +57,25 @@ final class MainWindowController: NSWindowController {
             backing: .buffered,
             defer: false
         )
-        window.title = "DumpCompare"
+        // The window is named after what it holds, and it opens holding
+        // nothing; from here on the view controller keeps the name current.
+        window.title = controller.windowTitle
         // The app name in the title bar is redundant — the toolbar occupies the
         // whole title bar — so hide the title text. The title stays set for the
         // Window menu, Mission Control, etc. (§10.3).
         window.titleVisibility = .hidden
         window.center()
+        // Every window the app makes carries the same tabbing identifier, which
+        // is what lets one be added to another as a tab, and what makes ⌘T and
+        // the tab bar's + button offer to do it.
+        window.tabbingIdentifier = Self.tabbingIdentifier
+        // Except under test: a dozen classes build a window, and with automatic
+        // tabbing on they would silently merge into one window's tab group,
+        // changing what `frame`, key-window and close mean for every one of
+        // them. A test that wants two windows tabbed joins them itself.
+        if MainViewController.isRunningTests {
+            window.tabbingMode = .disallowed
+        }
         window.contentViewController = controller
         window.delegate = controller
         mainViewController = controller
@@ -89,45 +106,43 @@ final class MainWindowController: NSWindowController {
             (window?.screen ?? NSScreen.main)?.visibleFrame.width ?? MainViewController.launchContentWidth())
     }
 
-    /// The autosaved frame is restored when the window is first displayed, which
-    /// can yield a degenerate size (1×28) or an off-screen position (e.g. saved
-    /// during a headless launch, or a monitor disconnected since last run). Fall
-    /// back to the default centered frame so the empty-state window is always
-    /// visible at launch (§3.1). The corrected frame is then saved on close,
-    /// replacing the bad default.
+    /// Sizes the window once it is on screen.
     ///
-    /// On top of that, the launch width always re-fits one pane's hex grid at
-    /// the saved word size, so a new word size is reflected on the next launch
-    /// even when the autosaved frame kept an older width (§3.1). The pane
-    /// arrangement does not enter into it — the window opens empty. The height
-    /// and the vertical position are left untouched.
+    /// A window comes up with a degenerate frame — measured at 1×84 — whether or
+    /// not it has an autosaved one, so the repair below is not about the saved
+    /// frame at all: it is the branch that has been giving every window its
+    /// height all along. An autosaved frame adds two more ways to arrive
+    /// unusable (saved during a headless launch, or on a monitor disconnected
+    /// since), and the same repair covers them. The corrected frame is then
+    /// saved on close, replacing the bad one.
+    ///
+    /// A frame that *is* usable keeps its size and position, except that the
+    /// width always re-fits one pane's hex grid at the saved word size, so a new
+    /// word size shows up on the next launch even when the restored frame kept
+    /// an older width (§3.1). The pane arrangement does not enter into it — the
+    /// window opens empty.
     override func showWindow(_ sender: Any?) {
         super.showWindow(sender)
         guard let window else { return }
-        // A window with no autosaved frame has nothing to restore and nothing to
-        // repair: it was placed by the caller (cascaded off the window it was
-        // opened from) and only wants the fitted width.
-        guard frameAutosaveName != nil else {
-            var frame = window.frame
-            frame.size.width = launchWidth
-            window.setFrame(frame, display: true)
-            return
-        }
+        // A window that has joined another as a tab wears that window's frame.
+        // Sizing or centring it here would resize the whole tab group, and the
+        // tab has no size of its own to want.
+        if let group = window.tabGroup, group.windows.count > 1 { return }
         if window.frame.width < 200 || window.frame.height < 200
             || !NSScreen.screens.contains(where: { $0.visibleFrame.intersects(window.frame) }) {
             window.setFrame(NSRect(x: 0, y: 0, width: launchWidth, height: 720), display: true)
             window.center()
-        } else {
-            var frame = window.frame
-            frame.size.width = launchWidth
-            // Keep the window on the visible screen when the fitted width is
-            // wider than the restored one (the left edge would stay put and the
-            // right edge could run off-screen).
-            if let visible = window.screen?.visibleFrame {
-                frame.origin.x = min(max(frame.origin.x, visible.minX), visible.maxX - frame.width)
-            }
-            window.setFrame(frame, display: true)
+            return
         }
+        var frame = window.frame
+        frame.size.width = launchWidth
+        // Keep the window on the visible screen when the fitted width is wider
+        // than the restored one (the left edge would stay put and the right edge
+        // could run off-screen).
+        if let visible = window.screen?.visibleFrame {
+            frame.origin.x = min(max(frame.origin.x, visible.minX), visible.maxX - frame.width)
+        }
+        window.setFrame(frame, display: true)
     }
 
     // MARK: - Toolbar

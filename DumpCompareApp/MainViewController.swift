@@ -32,6 +32,16 @@ final class MainViewController: NSViewController {
     /// reference to something the app owns.
     weak var openDocuments: OpenDocumentRegistry?
 
+    /// Brings this window to the front and makes `paneIndex` its active pane —
+    /// what happens instead of a refusal when the file someone asked to open is
+    /// already open in another window or tab (§4.1 rule 6).
+    func revealOpenFile(inPane paneIndex: Int) {
+        if mode == .comparison, paneIndex != windowModel.activePaneIndex {
+            activatePane(at: paneIndex)
+        }
+        viewIfLoaded?.window?.makeKeyAndOrderFront(nil)
+    }
+
     /// The index of this window's pane holding `identity`, if either does.
     /// `excluding` skips one pane — the target of an open, which is never its
     /// own obstacle. Internal so the registry can ask it of every window.
@@ -587,6 +597,10 @@ final class MainViewController: NSViewController {
         // the detail window opens in overview (§19.4).
         applyPreferredMinimapMode()
         refreshDiffNavigation()
+        // The empty state has no pane view to report a header, so the title is
+        // set here too; with panes open this is the first of many, and the pane
+        // views keep it current from then on.
+        updateWindowTitle()
     }
 
     /// Wires companion panes and coordinator callbacks for comparison mode.
@@ -654,8 +668,36 @@ final class MainViewController: NSViewController {
         let key = ObjectIdentifier(model)
         if let existing = paneViews[key] { return existing }
         let view = FilePaneView(viewModel: model)
+        // The window is named after the files its panes hold, so the title
+        // follows the very signal the pane headers follow — a file opened,
+        // saved under a new name, reverted or detached by a join moves both at
+        // once, and there is no second list of places to remember.
+        view.onHeaderChanged = { [weak self] in self?.updateWindowTitle() }
         paneViews[key] = view
         return view
+    }
+
+    /// What the window (and so its tab) is called: the files it holds.
+    ///
+    /// A tab bar with nothing to read on it is not worth having, and the Window
+    /// menu listing the app's name three times is no better. A window holding
+    /// nothing says so — "Empty", which is what it is. Not the app's name, which
+    /// says nothing about this window in particular, and not "Untitled", which
+    /// already means a New File that has never been saved and would make an
+    /// empty tab and a fresh document read alike.
+    var windowTitle: String {
+        switch mode {
+        case .empty:
+            return "Empty"
+        case .singleFile:
+            return windowModel.pane1.status.fileName
+        case .comparison:
+            return "\(windowModel.pane1.status.fileName) ↔ \(windowModel.pane2.status.fileName)"
+        }
+    }
+
+    private func updateWindowTitle() {
+        viewIfLoaded?.window?.title = windowTitle
     }
 
     private func setContentView(_ newView: NSView) {
@@ -2153,9 +2195,19 @@ final class MainViewController: NSViewController {
         let pane = index == 0 ? windowModel.pane1 : windowModel.pane2
 
         // Rule 6: the same file is already open somewhere else.
-        if documentLocation(of: url, excluding: index) != nil {
-            presentAlert(title: "File already open",
-                         message: "“\(url.lastPathComponent)” is already open in the other pane and cannot be opened twice.")
+        if let (holder, holdingPane) = documentLocation(of: url, excluding: index) {
+            if holder === self {
+                // The other pane of this window. There is nowhere to send the
+                // user that they are not already looking at, so the refusal is
+                // the whole answer.
+                presentAlert(title: "File already open",
+                             message: "“\(url.lastPathComponent)” is already open in the other pane and cannot be opened twice.")
+            } else {
+                // Another window or tab has it. "Cannot be opened twice" is true
+                // but useless there: the file the user asked for exists on
+                // screen, so take them to it rather than making them find it.
+                holder.revealOpenFile(inPane: holdingPane)
+            }
             return false
         }
 

@@ -166,8 +166,12 @@ Three commands are competing for two familiar keys.
 ## The tab's name
 
 The tab is named by its files: the file's name in single-file mode,
-`A.bin ↔ B.bin` in comparison, `Untitled` for an empty tab. A tab bar with
+`A.bin ↔ B.bin` in comparison, `Empty` for a tab holding nothing. A tab bar with
 nothing to read is not worth having, so this is not an optional refinement.
+
+Not the app's name, which says nothing about one window in particular, and not
+`Untitled`, which already means a New File that has never been saved — an empty
+tab and a fresh document must not read alike.
 
 The name is `window.title`, which is currently the constant `"DumpCompare"` with
 `titleVisibility = .hidden` because the toolbar occupies the whole title bar.

@@ -32,17 +32,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var openDocuments = OpenDocumentRegistry()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // The app is single-window, so the system's automatic window tabbing
-        // (which would otherwise inject "Show Tab Bar"/"Show All Tabs" into the
-        // View menu) has nothing to merge and is dead UI. Disable it.
-        NSWindow.allowsAutomaticWindowTabbing = false
+        // Tabs are windows. Turning this on is what gives the app the system's
+        // tab bar, ⌘T through `newWindowForTab(_:)`, ⌃Tab and ⌘1…⌘9, dragging a
+        // tab out into its own window and dragging one back in, and the Window
+        // menu's Show Tab Bar / Move Tab to New Window / Merge All Windows —
+        // none of which then has to be built or maintained here.
+        NSWindow.allowsAutomaticWindowTabbing = true
         // Apply the stored theme before any window appears, so the first frame
         // is already in the right appearance (§3.2).
         applyTheme()
         // The menu bar belongs to the application, not to a window: it is built
         // once, here, and its commands travel the responder chain to whichever
         // window is key.
-        NSApp.mainMenu = MainMenu.build(settingsTarget: self)
+        let mainMenu = MainMenu.build(settingsTarget: self)
+        NSApp.mainMenu = mainMenu
+        // Handing AppKit the Window submenu is what puts the open windows in it,
+        // with Bring All to Front above them — worth having the moment there is
+        // more than one window, and the place the system also hangs its own tab
+        // commands.
+        NSApp.windowsMenu = mainMenu.items.compactMap(\.submenu).first { $0.title == "Window" }
         themeObserver = NotificationCenter.default.addObserver(
             forName: AppTheme.didChangeNotification, object: nil, queue: .main
         ) { [weak self] _ in
@@ -72,6 +80,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         makeWindow()
     }
 
+    /// ⌘T, and the tab bar's + button. AppKit offers both only because
+    /// something in the responder chain answers this — the app delegate, since
+    /// it is the app that owns the windows.
+    ///
+    /// The new tab joins the window it was asked from, which is the key one.
+    /// With no window to join it is simply a new window, which is what the tab
+    /// bar's + cannot ask for but ⌘T can.
+    @objc func newWindowForTab(_ sender: Any?) {
+        makeWindow(tabbedWith: NSApp.keyWindow)
+    }
+
     /// Builds a window, wires it to the application's open-file registry, and
     /// shows it.
     ///
@@ -79,7 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// window, so every later one is cascaded off the window in front of it
     /// instead — which is also where a new window belongs on screen.
     @discardableResult
-    private func makeWindow() -> MainWindowController {
+    private func makeWindow(tabbedWith anchor: NSWindow? = nil) -> MainWindowController {
         // Only the launch window saves a frame: one autosave name can serve one
         // window, and a second window writing to the same key would fight the
         // first over one saved size.
@@ -89,10 +108,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.mainViewController.openDocuments = openDocuments
         openDocuments.register(controller.mainViewController)
         windowControllers.append(controller)
-        // Nothing places the window by hand: `NSWindowController` cascades a
-        // window it shows unless that window autosaves its frame, so the launch
-        // window lands where it was left and every later one steps down and
-        // right of the one in front.
+        // A tab takes its place from the window it joins, so it is added before
+        // being shown; a window on its own is placed by `NSWindowController`,
+        // which cascades a window it shows unless that window autosaves its
+        // frame — so the launch window lands where it was left and every later
+        // one steps down and right of the one in front.
+        if let anchor, let window = controller.window, anchor !== window {
+            anchor.addTabbedWindow(window, ordered: .above)
+        }
         controller.showWindow(nil)
         return controller
     }
