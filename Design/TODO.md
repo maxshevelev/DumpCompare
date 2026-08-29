@@ -218,6 +218,34 @@ clears the forward stack.
 
 ## Later
 
+### Dragging panes, and a drop zone for a new tab
+
+**What.** Three gestures over machinery tabs already built: drop a file on a
+strip at the top of the window to open it in a new tab, drag a pane by its
+header onto the other pane to swap them, and drag it onto another tab (the tab
+bar spring-loads, so hovering one switches to it mid-drag) to move it there.
+
+**Why.** Each of the three exists as a command and none of them is what the hand
+reaches for: opening a dump in a new tab is two steps, moving a pane is a menu
+item or a dialog answer, and swapping two panes that are side by side is
+`View ▸ Swap Panels`.
+
+**How.** Taken apart in **`Design/PANE_DRAG_PLAN.md`**. The short version: the
+drag adds no model operations — swap, move and tear-off are all implemented and
+tested already — so it is a second way to reach four verbs, not a second
+implementation of them. What is genuinely new is that the app has never begun an
+`NSDraggingSession`: every drag it handles today is a Finder file drop or a mouse
+track inside one view. The system tab bar cannot host a drop zone, so the New Tab
+strip lives at the top of our own content and takes its height off the pane
+bands, with `DropBandLayout` gaining a top inset so the two never disagree about
+who owns a point — AppKit picks a drop destination by frame among registered
+views, which has silently eaten a dropped file here once before.
+
+**Cost.** Four steps: identity and the pure drop-meaning function; swap by drag
+(which builds the whole session mechanism on the case that never leaves the
+window); the strip for files, shippable alone; then the strip and other tabs for
+panes.
+
 ### Split the minimap into layers
 
 **What.** `MinimapView.swift` is ~2500 lines and grows with every feature that
