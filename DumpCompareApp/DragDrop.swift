@@ -1,4 +1,5 @@
 import Cocoa
+import DumpCompareCore
 
 /// The targeted drop destinations in single-file mode (§4.3, amended by §22.4).
 /// The "this file" half is divided into three horizontal bands — the two join
@@ -95,10 +96,16 @@ enum PaneDrop {
         case outside
         /// The strip along the top of a window's content.
         case newTabStrip
-        /// A pane slot, and whether it belongs to the window the drag started
-        /// in. Which window it is does not matter beyond that: the outcome
-        /// turns on same-or-other, never on identity.
-        case pane(index: Int, inOriginWindow: Bool)
+        /// A pane slot: which one, whether it belongs to the window the drag
+        /// started in, and which of that pane's three bands the pointer is over.
+        ///
+        /// Which window it is does not matter beyond same-or-other — the
+        /// outcome never turns on identity. The band is the same one a dropped
+        /// *file* lands in, and it means the same thing: the ends join, the
+        /// middle replaces. A pane holds a dump, so joining one into another at
+        /// the front or the back is the two-chip round trip (§22) with the
+        /// second chip already open.
+        case pane(index: Int, inOriginWindow: Bool, band: SingleFileDropTarget)
     }
 
     /// What the drop does.
@@ -109,6 +116,10 @@ enum PaneDrop {
         case swap
         /// The pane moves into the destination window's pane `index`.
         case move(intoPane: Int)
+        /// The pane's bytes join the destination pane's, at one end or the
+        /// other. A join copies — the pane it came from is left as it was, the
+        /// way a joined file is left on disk.
+        case join(intoPane: Int, at: JoinPosition)
         /// The pane leaves for a tab of its own.
         case tearOff
     }
@@ -124,10 +135,22 @@ enum PaneDrop {
             return .none
         case .newTabStrip:
             return .tearOff
-        case .pane(let index, let inOriginWindow):
-            guard inOriginWindow else { return .move(intoPane: index) }
+        case .pane(let index, let inOriginWindow, let band):
             // Dropped back on itself: the gesture was abandoned, not performed.
-            return index == originIndex ? .none : .swap
+            // A pane cannot join or replace itself either, so this comes first.
+            if inOriginWindow, index == originIndex { return .none }
+            switch band {
+            case .insertAtStart:
+                return .join(intoPane: index, at: .start)
+            case .appendAtEnd:
+                return .join(intoPane: index, at: .end)
+            case .replace:
+                // Two panes of one window trade places; a pane from elsewhere
+                // takes the slot, since there is nothing to trade with.
+                return inOriginWindow ? .swap : .move(intoPane: index)
+            case .addSecond:
+                return .move(intoPane: index)
+            }
         }
     }
 }

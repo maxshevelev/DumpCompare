@@ -14,10 +14,10 @@ final class PaneDragTests: XCTestCase {
     /// Panels` has always performed and never looked like.
     func testDroppingOnTheOtherPaneOfTheSameWindowSwaps() {
         XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 0,
-                                        onto: .pane(index: 1, inOriginWindow: true)),
+                                        onto: .pane(index: 1, inOriginWindow: true, band: .replace)),
                        .swap)
         XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 1,
-                                        onto: .pane(index: 0, inOriginWindow: true)),
+                                        onto: .pane(index: 0, inOriginWindow: true, band: .replace)),
                        .swap)
     }
 
@@ -25,7 +25,7 @@ final class PaneDragTests: XCTestCase {
     /// than performed.
     func testDroppingAPaneOnItselfDoesNothing() {
         XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 0,
-                                        onto: .pane(index: 0, inOriginWindow: true)),
+                                        onto: .pane(index: 0, inOriginWindow: true, band: .replace)),
                        .none)
     }
 
@@ -33,11 +33,11 @@ final class PaneDragTests: XCTestCase {
     /// into that slot, displacing whatever is there.
     func testDroppingOnAnotherWindowsPaneMovesIntoThatSlot() {
         XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 0,
-                                        onto: .pane(index: 1, inOriginWindow: false)),
+                                        onto: .pane(index: 1, inOriginWindow: false, band: .replace)),
                        .move(intoPane: 1))
         // Even the same index, which within one window would have been a no-op.
         XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 0,
-                                        onto: .pane(index: 0, inOriginWindow: false)),
+                                        onto: .pane(index: 0, inOriginWindow: false, band: .replace)),
                        .move(intoPane: 0))
     }
 
@@ -504,5 +504,185 @@ final class PaneDragTests: XCTestCase {
         XCTAssertEqual(empty.mode, .singleFile)
         XCTAssertEqual(empty.windowModel.pane1.status.fileName, b.lastPathComponent)
         XCTAssertEqual(source.windowModel.pane1.status.fileName, a.lastPathComponent)
+    }
+
+    // MARK: - Joining one pane into another
+
+    /// The ends of a pane's bands mean for a pane what they mean for a file:
+    /// join this at the front, join it at the back. A pane holds a dump, so
+    /// joining one into another is the two-chip round trip (§22) with the second
+    /// chip already open.
+    func testTheEndBandsJoinAPaneIntoAnother() {
+        XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 0,
+                                        onto: .pane(index: 1, inOriginWindow: true,
+                                                    band: .insertAtStart)),
+                       .join(intoPane: 1, at: .start))
+        XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 0,
+                                        onto: .pane(index: 1, inOriginWindow: true,
+                                                    band: .appendAtEnd)),
+                       .join(intoPane: 1, at: .end))
+    }
+
+    /// The middle band keeps its old meanings, which differ by where the pane
+    /// came from.
+    func testTheMiddleBandSwapsOrMoves() {
+        XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 0,
+                                        onto: .pane(index: 1, inOriginWindow: true,
+                                                    band: .replace)),
+                       .swap)
+        XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 0,
+                                        onto: .pane(index: 1, inOriginWindow: false,
+                                                    band: .replace)),
+                       .move(intoPane: 1))
+    }
+
+    /// A pane cannot be joined into itself, whichever band the pointer is over.
+    func testAPaneCannotJoinItself() {
+        for band: SingleFileDropTarget in [.insertAtStart, .replace, .appendAtEnd] {
+            XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 1,
+                                            onto: .pane(index: 1, inOriginWindow: true,
+                                                        band: band)),
+                           .none, "band \(band)")
+        }
+    }
+
+    /// The join runs, and the pane it came from is left exactly as it was: a
+    /// join copies. Dropping a file to append it does not consume the file, and
+    /// dropping a pane does not consume the pane.
+    func testJoiningLeavesTheSourcePaneAlone() throws {
+        let (controller, a, b) = try comparison()
+        let sizeBefore = controller.windowModel.pane1.fileSize
+        let sourceSize = controller.windowModel.pane2.fileSize
+        controller.joinConfirm = { _ in .alertFirstButtonReturn }
+
+        controller.performPaneDrop(draggedPaneID: controller.windowModel.pane2.dragID,
+                                   onPaneAt: 0, band: .appendAtEnd)
+
+        XCTAssertEqual(controller.windowModel.pane1.fileSize, sizeBefore + sourceSize,
+                       "the bytes arrived")
+        XCTAssertEqual(controller.windowModel.pane2.fileSize, sourceSize,
+                       "the pane they came from is untouched")
+        XCTAssertEqual(controller.windowModel.pane2.status.fileName, b.lastPathComponent)
+        XCTAssertTrue(controller.windowModel.pane1.isUntitled,
+                      "a join detaches the joined pane from its file (§22.2)")
+        XCTAssertNotEqual(controller.windowModel.pane1.status.fileName, a.lastPathComponent)
+    }
+
+    /// Joining at the start puts the source's bytes first.
+    func testJoiningAtTheStartPutsTheSourceFirst() throws {
+        let controller = MainViewController()
+        let a = try tempFile([UInt8](repeating: 0xAA, count: 16))
+        let b = try tempFile([UInt8](repeating: 0xBB, count: 16))
+        controller.openFiles([a, b])
+        controller.joinConfirm = { _ in .alertFirstButtonReturn }
+
+        controller.performPaneDrop(draggedPaneID: controller.windowModel.pane2.dragID,
+                                   onPaneAt: 0, band: .insertAtStart)
+
+        let joined = controller.windowModel.pane1
+        XCTAssertEqual(joined.fileSize, 32)
+        XCTAssertEqual(joined.hexByteStates(in: 0..<1).first?.byte, 0xBB, "the source leads")
+        XCTAssertEqual(joined.hexByteStates(in: 16..<17).first?.byte, 0xAA)
+    }
+
+    /// A join needs bytes on both sides; an empty target has nothing to join to,
+    /// which is the one thing the pure rule cannot see.
+    func testJoiningIntoAnEmptyPaneIsRefused() throws {
+        let controller = MainViewController()
+        let a = try tempFile([UInt8](repeating: 0xAA, count: 16))
+        controller.openFiles([a])
+
+        XCTAssertEqual(controller.paneDropOutcome(draggedPaneID: controller.windowModel.pane1.dragID,
+                                                  onPaneAt: 1, band: .appendAtEnd),
+                       .none)
+    }
+
+    // MARK: - Everything that takes a pane says so
+
+    /// Every view that handles a dropped pane must also be registered for the
+    /// type, or AppKit never delivers the drag and the zone simply never
+    /// appears. Handling without registering is silent — no error, no warning,
+    /// nothing on screen — and it has now happened twice: once in comparison
+    /// mode, once in single-file. This is the check that makes the third time
+    /// a test failure.
+    func testEveryPaneDestinationIsRegisteredForThePaneType() throws {
+        let pane = FilePaneView(viewModel: PaneViewModel())
+
+        let destinations: [(String, NSView)] = [
+            ("the single-file container", SingleFileDropView(paneView: pane)),
+            ("the empty window", EmptyStateView()),
+            ("a comparison pane's overlay", PaneDropBandsView(paneView: pane)),
+            ("the New Tab strip", NewTabDropStrip()),
+        ]
+
+        for (name, view) in destinations {
+            XCTAssertTrue(view.registeredDraggedTypes.contains(.pane),
+                          "\(name) handles a dropped pane but is not registered for one")
+        }
+    }
+
+    // MARK: - A single-file window's four zones
+
+    /// A dragged pane gets the same four zones a file gets, and they map onto
+    /// the same four meanings: the far half is the free second pane, the three
+    /// bands are the pane already open.
+    func testTheSingleFileZonesMapToPanesTheSameWayTheyDoToFiles() {
+        XCTAssertEqual(MainViewController.singleFilePaneDrop(.addSecond).index, 1)
+        XCTAssertEqual(MainViewController.singleFilePaneDrop(.addSecond).band, .addSecond)
+
+        for band: SingleFileDropTarget in [.insertAtStart, .replace, .appendAtEnd] {
+            let mapped = MainViewController.singleFilePaneDrop(band)
+            XCTAssertEqual(mapped.index, 0, "\(band) acts on the pane that is open")
+            XCTAssertEqual(mapped.band, band)
+        }
+    }
+
+    /// Dropped on the far half, the pane opens as the second one — the
+    /// comparison the gesture was for.
+    func testTheSecondHalfOpensADraggedPaneBesideTheFirst() throws {
+        let registry = OpenDocumentRegistry()
+        let (source, _, b) = try comparison()
+        let lone = MainViewController()
+        let c = try tempFile([UInt8](repeating: 0xC0, count: 64))
+        lone.openFiles([c])
+        for controller in [source, lone] {
+            controller.openDocuments = registry
+            registry.register(controller)
+        }
+        liveRegistry = registry
+
+        let (index, band) = MainViewController.singleFilePaneDrop(.addSecond)
+        lone.performPaneDrop(draggedPaneID: source.windowModel.pane2.dragID,
+                             onPaneAt: index, band: band)
+
+        XCTAssertEqual(lone.mode, .comparison)
+        XCTAssertEqual(lone.windowModel.pane1.status.fileName, c.lastPathComponent)
+        XCTAssertEqual(lone.windowModel.pane2.status.fileName, b.lastPathComponent)
+    }
+
+    /// Dropped on the end band over the open file, the pane joins it — the same
+    /// operation the same band performs for a file.
+    func testAnEndBandJoinsADraggedPaneIntoTheOpenFile() throws {
+        let registry = OpenDocumentRegistry()
+        let (source, _, _) = try comparison()
+        let lone = MainViewController()
+        let c = try tempFile([UInt8](repeating: 0xC0, count: 16))
+        lone.openFiles([c])
+        for controller in [source, lone] {
+            controller.openDocuments = registry
+            registry.register(controller)
+        }
+        liveRegistry = registry
+        lone.joinConfirm = { _ in .alertFirstButtonReturn }
+        let sourceSize = source.windowModel.pane2.fileSize
+
+        let (index, band) = MainViewController.singleFilePaneDrop(.appendAtEnd)
+        lone.performPaneDrop(draggedPaneID: source.windowModel.pane2.dragID,
+                             onPaneAt: index, band: band)
+
+        XCTAssertEqual(lone.windowModel.pane1.fileSize, 16 + sourceSize)
+        XCTAssertEqual(lone.mode, .singleFile, "a join does not make a second pane")
+        XCTAssertEqual(source.windowModel.pane2.fileSize, sourceSize,
+                       "the pane it came from is untouched")
     }
 }

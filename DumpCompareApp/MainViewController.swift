@@ -186,19 +186,44 @@ final class MainViewController: NSViewController {
     /// The decision itself is `PaneDrop`'s and is pure; all this adds is finding
     /// where the dragged pane currently lives. A pane whose window has gone
     /// resolves to nothing, and the drop is refused.
-    func paneDropOutcome(draggedPaneID: UUID, onPaneAt index: Int) -> PaneDrop.Outcome {
+    /// Which pane a single-file window's drop zone stands for, and in which
+    /// band. The far half is the free second pane; the three bands are the one
+    /// that is already open.
+    static func singleFilePaneDrop(_ target: SingleFileDropTarget)
+    -> (index: Int, band: SingleFileDropTarget) {
+        target == .addSecond ? (1, .addSecond) : (0, target)
+    }
+
+    func paneDropOutcome(draggedPaneID: UUID, onPaneAt index: Int,
+                         band: SingleFileDropTarget = .replace) -> PaneDrop.Outcome {
         guard let origin = paneLocation(ofPaneWith: draggedPaneID) else { return .none }
-        return PaneDrop.outcome(
+        let outcome = PaneDrop.outcome(
             draggingPaneAt: origin.paneIndex,
-            onto: .pane(index: index, inOriginWindow: origin.controller === self))
+            onto: .pane(index: index, inOriginWindow: origin.controller === self, band: band))
+        // A join needs both panes to hold something; the target's own emptiness
+        // is the only case the pure rule cannot see.
+        if case .join = outcome {
+            let target = index == 0 ? windowModel.pane1 : windowModel.pane2
+            guard target.isOpen else { return .none }
+        }
+        return outcome
     }
 
     /// Performs whatever the drop means. Nothing here is a new operation —
     /// each case is a command that already exists.
-    func performPaneDrop(draggedPaneID: UUID, onPaneAt index: Int) {
-        switch paneDropOutcome(draggedPaneID: draggedPaneID, onPaneAt: index) {
+    func performPaneDrop(draggedPaneID: UUID, onPaneAt index: Int,
+                         band: SingleFileDropTarget = .replace) {
+        switch paneDropOutcome(draggedPaneID: draggedPaneID, onPaneAt: index, band: band) {
         case .swap:
             swapPanes()
+        case .join(let intoPane, let position):
+            guard let origin = paneLocation(ofPaneWith: draggedPaneID) else { return }
+            let source = origin.paneIndex == 0
+                ? origin.controller.windowModel.pane1
+                : origin.controller.windowModel.pane2
+            join(pane: source, at: position,
+                 into: intoPane == 0 ? windowModel.pane1 : windowModel.pane2)
+            refreshMode()
         case .move(let intoPane):
             guard let origin = paneLocation(ofPaneWith: draggedPaneID) else { return }
             movePaneHere(from: origin.controller, at: origin.paneIndex, into: intoPane,
@@ -768,18 +793,21 @@ final class MainViewController: NSViewController {
             dropView.onDragSessionChanged = { [weak self] active in
                 self?.setNewTabStripVisible(active)
             }
-            // A single-file window has one free pane, and that is where a
-            // dragged pane goes — the comparison it makes is the point of
-            // dragging it here. A pane from this very window is refused: there
-            // is only one, and it is already here.
-            dropView.paneDropOutcome = { [weak self] paneID in
+            // A dragged pane gets the same four zones a file gets, and they
+            // mean the same four things: the far half opens it as the second
+            // pane, and the three bands over this file join it at either end or
+            // put it in this pane's place. A pane from this very window is
+            // refused — there is only one, and it is already here.
+            dropView.paneDropOutcome = { [weak self] paneID, target in
                 guard let self,
                       self.paneLocation(ofPaneWith: paneID)?.controller !== self
                 else { return .none }
-                return self.paneDropOutcome(draggedPaneID: paneID, onPaneAt: 1)
+                let (index, band) = Self.singleFilePaneDrop(target)
+                return self.paneDropOutcome(draggedPaneID: paneID, onPaneAt: index, band: band)
             }
-            dropView.onPaneDropped = { [weak self] paneID in
-                self?.performPaneDrop(draggedPaneID: paneID, onPaneAt: 1)
+            dropView.onPaneDropped = { [weak self] paneID, target in
+                let (index, band) = Self.singleFilePaneDrop(target)
+                self?.performPaneDrop(draggedPaneID: paneID, onPaneAt: index, band: band)
             }
             dropView.onDrop = { [weak self] target, urls in
                 self?.handleSingleFileDrop(target: target, urls: urls)
@@ -834,15 +862,17 @@ final class MainViewController: NSViewController {
             view.bands2.onDrop = { [weak self] target, urls in
                 self?.handleComparisonBandDrop(targetPane: 1, target: target, urls: urls)
             }
-            // The same overlays take a dragged pane, which means something else
-            // entirely — one plate over the whole pane rather than three bands
-            // (`Design/PANE_DRAG_PLAN.md`).
+            // The same overlays take a dragged pane, in the same three bands: a
+            // pane holds a dump, so the ends mean what they mean for a file —
+            // join this at the front, join it at the back — and only the middle
+            // differs (`Design/PANE_DRAG_PLAN.md`).
             for (index, bands) in [(0, view.bands1!), (1, view.bands2!)] {
-                bands.paneDropOutcome = { [weak self] paneID in
-                    self?.paneDropOutcome(draggedPaneID: paneID, onPaneAt: index) ?? .none
+                bands.paneDropOutcome = { [weak self] paneID, band in
+                    self?.paneDropOutcome(draggedPaneID: paneID, onPaneAt: index,
+                                          band: band) ?? .none
                 }
-                bands.onPaneDropped = { [weak self] paneID in
-                    self?.performPaneDrop(draggedPaneID: paneID, onPaneAt: index)
+                bands.onPaneDropped = { [weak self] paneID, band in
+                    self?.performPaneDrop(draggedPaneID: paneID, onPaneAt: index, band: band)
                 }
                 // A drag entering either pane raises the strip, so it is on
                 // screen before the pointer could reach it.
@@ -2705,27 +2735,59 @@ final class MainViewController: NSViewController {
     /// Shared by the menu commands (after the open panel) and the drop bands
     /// (§22.4), which already have the URL. An untitled dirty pane is joined
     /// without a warning: there is no saved state to diverge from.
+    /// A file joined into the pane that already holds it doubles its content.
+    ///
+    /// Not refused: a join copies bytes, so none of the hazards §4.1 rule 6
+    /// guards against apply — there is no second live document, no second
+    /// watcher, and no piece table whose base moves underneath it. The result is
+    /// one document that happens to be the dump twice, which is a thing someone
+    /// could mean.
+    ///
+    /// But on a bench it is far more often a slip: the file was dragged onto the
+    /// pane it is already open in. So it asks, and the default is to do nothing.
+    private func confirmSelfJoin(url: URL, into pane: PaneViewModel, verb: String) -> Bool {
+        guard let identity = pane.document?.identity, identity == FileIdentity(url: url) else {
+            return true
+        }
+        let name = url.lastPathComponent
+        let alert = NSAlert()
+        alert.messageText = "Join “\(name)” to itself?"
+        alert.informativeText = "This pane already holds “\(name)”. Joining it here doubles "
+            + "the content: the same bytes twice, one copy after the other."
+        alert.addButton(withTitle: verb)
+        alert.addButton(withTitle: "Cancel")
+        // Cancel in tests, and Cancel is where the Escape key lands.
+        return Self.presentModal(alert, defaultInTest: .alertSecondButtonReturn)
+            == .alertFirstButtonReturn
+    }
+
+    /// §22.2: a dirty pane is warned about before a join, with two buttons —
+    /// Cancel and the operation's verb. An untitled dirty pane gets no alert:
+    /// there is no saved state for the join to diverge from.
+    private func confirmJoinWithUnsavedChanges(_ pane: PaneViewModel, verb: String) -> Bool {
+        guard pane.status.isDirty, !pane.isUntitled else { return true }
+        let alert = NSAlert()
+        alert.messageText = "Join with unsaved changes?"
+        alert.informativeText = "“\(pane.status.fileName)” has unsaved changes. They travel into the joined image; the file on disk keeps its saved bytes."
+        alert.addButton(withTitle: verb)
+        alert.addButton(withTitle: "Cancel")
+        if let joinConfirm {
+            return joinConfirm(alert) == .alertFirstButtonReturn
+        }
+        // Cancel in tests.
+        return Self.presentModal(alert, defaultInTest: .alertSecondButtonReturn)
+            == .alertFirstButtonReturn
+    }
+
     private func join(url: URL, at position: JoinPosition, in pane: PaneViewModel) {
         guard pane.isOpen else { return }
         let verb = (position == .start) ? "Insert" : "Append"
 
-        // §22.2: a dirty pane is warned about, with two buttons — Cancel and
-        // the operation's verb. An untitled dirty pane gets no alert: there is
-        // no saved state to diverge from.
-        if pane.status.isDirty && !pane.isUntitled {
-            let alert = NSAlert()
-            alert.messageText = "Join with unsaved changes?"
-            alert.informativeText = "“\(pane.status.fileName)” has unsaved changes. They travel into the joined image; the file on disk keeps its saved bytes."
-            alert.addButton(withTitle: verb)
-            alert.addButton(withTitle: "Cancel")
-            let response: NSApplication.ModalResponse
-            if let joinConfirm {
-                response = joinConfirm(alert)
-            } else {
-                response = Self.presentModal(alert, defaultInTest: .alertSecondButtonReturn)  // Cancel in tests
-            }
-            guard response == .alertFirstButtonReturn else { return }
-        }
+        // Asked before anything else, because it is the question of whether the
+        // join was meant at all; the unsaved-changes prompt below is about the
+        // consequences of one already decided on.
+        guard confirmSelfJoin(url: url, into: pane, verb: verb) else { return }
+        guard confirmJoinWithUnsavedChanges(pane, verb: verb) else { return }
 
         // The name the pane's content carries now, remembered before the join
         // detaches the document — the status line names both sources (§22.2).
@@ -2755,6 +2817,44 @@ final class MainViewController: NSViewController {
         let message = (position == .start)
             ? "Inserted \(url.lastPathComponent) before \(originalName). Total: \(size)."
             : "Appended \(url.lastPathComponent) after \(originalName). Total: \(size)."
+        filePaneView(for: pane)?.showTransientMessage(message)
+    }
+
+    /// Joins one open pane's bytes into another, at one end or the other — the
+    /// same operation `join(url:at:in:)` performs, sourced from a pane instead
+    /// of a file (`Design/PANE_DRAG_PLAN.md`).
+    ///
+    /// The source pane is left exactly as it was. A join **copies**: dropping a
+    /// file to append it does not consume the file, and dropping a pane does not
+    /// consume the pane. Its unsaved edits travel, because the bytes are read
+    /// from the pane's live storage rather than from the disk underneath it.
+    private func join(pane source: PaneViewModel, at position: JoinPosition,
+                      into pane: PaneViewModel) {
+        guard pane.isOpen, source.isOpen, source !== pane,
+              let sourceStorage = source.byteStorage else { return }
+        let verb = (position == .start) ? "Insert" : "Append"
+        guard confirmJoinWithUnsavedChanges(pane, verb: verb) else { return }
+
+        let originalName = pane.status.fileName
+        let sourceName = source.status.fileName
+        do {
+            try pane.join(contentsOf: sourceStorage, named: sourceName, at: position)
+        } catch let error as JoinError {
+            switch error {
+            case .emptySource:
+                presentAlert(title: "Pane is empty",
+                             message: "“\(sourceName)” has no bytes to join.")
+            }
+            return
+        } catch {
+            presentError("Could not join the pane.", error)
+            return
+        }
+
+        let size = ByteCountFormatter.string(fromByteCount: Int64(pane.fileSize), countStyle: .file)
+        let message = (position == .start)
+            ? "Inserted \(sourceName) before \(originalName). Total: \(size)."
+            : "Appended \(sourceName) after \(originalName). Total: \(size)."
         filePaneView(for: pane)?.showTransientMessage(message)
     }
 

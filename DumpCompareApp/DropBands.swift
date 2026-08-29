@@ -133,6 +133,12 @@ final class DropZoneView: NSView {
         target.setHighlighted(highlighted)
     }
 
+    /// Renames the zone. What lands here can be a file or a pane, and the two
+    /// are worth different words.
+    func setTitle(_ title: String) {
+        target.setTitle(title)
+    }
+
     private func hide() {
         target.isHidden = true
         target.alphaValue = 0
@@ -153,10 +159,11 @@ final class PaneDropBandsView: NSView {
     /// Asks what dropping the dragged pane on *this* pane would do. The overlay
     /// accepts the drag only when the answer is something, so a landing with no
     /// meaning is refused by the cursor rather than swallowed and ignored.
-    var paneDropOutcome: ((_ draggedPaneID: UUID) -> PaneDrop.Outcome)?
+    var paneDropOutcome: ((_ draggedPaneID: UUID, _ band: SingleFileDropTarget)
+                          -> PaneDrop.Outcome)?
 
-    /// Fired when a dragged pane is let go on this one.
-    var onPaneDropped: ((_ draggedPaneID: UUID) -> Void)?
+    /// Fired when a dragged pane is let go on this one, in the band it landed in.
+    var onPaneDropped: ((_ draggedPaneID: UUID, _ band: SingleFileDropTarget) -> Void)?
 
     /// Fired when a drag *session* starts over this overlay and when it ends —
     /// not when it merely leaves, which is a different thing entirely.
@@ -188,15 +195,12 @@ final class PaneDropBandsView: NSView {
     private let insertTarget = DropTargetView(title: SingleFileDropTarget.insertAtStart.title)
     private let replaceTarget = DropTargetView(title: SingleFileDropTarget.replace.title)
     private let appendTarget = DropTargetView(title: SingleFileDropTarget.appendAtEnd.title)
-    /// The single plate a *pane* drag gets, covering the whole pane: a pane is
-    /// not joined at one end or the other, so the three file bands say nothing
-    /// about it. Its caption names the outcome, which differs by where the pane
-    /// came from.
-    private let paneTarget = DropTargetView(title: "")
     private var dragActive = false
-    /// What the pane drag in flight would do here, or nil when the drag in
-    /// flight is not a pane.
-    private var paneOutcome: PaneDrop.Outcome?
+    /// The pane being dragged over this overlay, or nil when what is in flight
+    /// is not a pane. A pane gets the same three bands a file does: a pane holds
+    /// a dump, so the ends mean what they always meant — join this at the front,
+    /// join it at the back — and only the middle differs.
+    private var draggedPaneID: UUID?
 
     init(paneView: FilePaneView? = nil) {
         self.paneView = paneView
@@ -220,7 +224,7 @@ final class PaneDropBandsView: NSView {
                 paneView.trailingAnchor.constraint(equalTo: trailingAnchor),
             ])
         }
-        for target in [insertTarget, replaceTarget, appendTarget, paneTarget] {
+        for target in [insertTarget, replaceTarget, appendTarget] {
             // Laid out manually in `layout()`: the strip heights depend on the
             // view's height, which changes on resize.
             target.translatesAutoresizingMaskIntoConstraints = true
@@ -272,8 +276,6 @@ final class PaneDropBandsView: NSView {
         // strip's top edge; it collapses to zero in a very short view.
         replaceTarget.frame = NSRect(x: 0, y: strip, width: bounds.width,
                                      height: max(0, bandsTop - 2 * strip))
-        // A pane drop is about the whole pane, so its plate is the whole pane.
-        paneTarget.frame = bounds
     }
 
     // MARK: - Drag targeting
@@ -298,31 +300,30 @@ final class PaneDropBandsView: NSView {
     }
 
     private func hideBands() {
-        for target in [insertTarget, replaceTarget, appendTarget, paneTarget] {
+        for target in [insertTarget, replaceTarget, appendTarget] {
             target.setHighlighted(false)
             target.isHidden = true
             target.alphaValue = 0
         }
-        paneOutcome = nil
+        draggedPaneID = nil
+        retitleBands(forPane: false)
     }
 
-    /// Shows the pane plate, captioned with what letting go here would do.
-    private func showPanePlate(_ outcome: PaneDrop.Outcome) {
-        paneOutcome = outcome
-        paneTarget.setTitle(Self.paneDropTitle(for: outcome))
-        paneTarget.isHidden = false
-        paneTarget.alphaValue = 1
-        // A single plate has nothing to choose between, so it is lit as soon as
-        // it appears: the drag is already on it.
-        paneTarget.setHighlighted(true)
+    /// Names the bands for what is being carried. The ends read the same for
+    /// both — a join is a join — and only the middle changes, because replacing
+    /// a pane with a file and trading two panes are different acts.
+    func retitleBands(forPane isPane: Bool, middle: String = "") {
+        insertTarget.setTitle(isPane ? "Join at Start" : SingleFileDropTarget.insertAtStart.title)
+        appendTarget.setTitle(isPane ? "Join at End" : SingleFileDropTarget.appendAtEnd.title)
+        replaceTarget.setTitle(isPane ? middle : SingleFileDropTarget.replace.title)
     }
 
-    /// What a plate says for each outcome that can land on a pane.
-    static func paneDropTitle(for outcome: PaneDrop.Outcome) -> String {
+    /// What the middle band says for the pane in flight.
+    static func paneMiddleTitle(for outcome: PaneDrop.Outcome) -> String {
         switch outcome {
         case .swap: return "Swap Panes"
         case .move: return "Move Here"
-        case .tearOff, .none: return ""
+        case .join, .tearOff, .none: return ""
         }
     }
 
@@ -359,12 +360,8 @@ extension PaneDropBandsView {
         // A pane first: its own type is unambiguous, and a pane drag carries no
         // file URLs for the bands to misread.
         if let paneID = sender.draggingPasteboard.draggedPaneID {
-            let outcome = paneDropOutcome?(paneID) ?? .none
-            // Refused rather than accepted-and-ignored, so the cursor says no
-            // before the mouse comes up.
-            guard outcome != .none else { return [] }
-            showPanePlate(outcome)
-            return .move
+            draggedPaneID = paneID
+            return paneOperation(at: sender.draggingLocation)
         }
         guard !sender.draggingPasteboard.droppedFileURLs.isEmpty else { return [] }
         onDragSessionChanged?(true)
@@ -374,10 +371,34 @@ extension PaneDropBandsView {
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        if paneOutcome != nil { return .move }
+        if draggedPaneID != nil { return paneOperation(at: sender.draggingLocation) }
         guard dragActive else { return [] }
         updateHover(at: sender.draggingLocation)
         return .copy
+    }
+
+    /// Lights the band under the pointer and reports what letting go there would
+    /// mean. A join is a **copy** — the pane it came from is left as it was, so
+    /// the cursor carries the + that says so — while the middle band moves.
+    private func paneOperation(at windowPoint: NSPoint) -> NSDragOperation {
+        guard let paneID = draggedPaneID else { return [] }
+        let band = band(at: windowPoint) ?? .replace
+        let outcome = paneDropOutcome?(paneID, band) ?? .none
+        // Nothing to offer, so nothing is shown. The zones are the offer: a
+        // pane dropped back on itself is refused by the cursor, and lighting
+        // the bands anyway would put a choice on screen that does not exist.
+        guard outcome != .none else {
+            setDragActive(false)
+            return []
+        }
+        setDragActive(true)
+        retitleBands(forPane: true, middle: Self.paneMiddleTitle(for: outcome))
+        updateHover(at: windowPoint)
+        switch outcome {
+        case .join: return .copy
+        case .swap, .move: return .move
+        case .none, .tearOff: return []
+        }
     }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
@@ -398,8 +419,9 @@ extension PaneDropBandsView {
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         onDragSessionChanged?(false)
         if let paneID = sender.draggingPasteboard.draggedPaneID {
+            let band = band(at: sender.draggingLocation) ?? .replace
             setDragActive(false)
-            onPaneDropped?(paneID)
+            onPaneDropped?(paneID, band)
             return true
         }
         setDragActive(false)

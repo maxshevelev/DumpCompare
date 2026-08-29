@@ -16,32 +16,25 @@ final class SingleFileDropView: NSView {
     /// Fired when the user drops on one of the targets or bands.
     var onDrop: ((SingleFileDropTarget, [URL]) -> Void)?
 
-    /// The single plate a dragged pane gets, over the whole view.
-    private let paneTarget = DropTargetView(title: "Open as Second Pane")
-    private var paneDragActive = false
-
-    private func showPanePlate() {
-        paneTarget.frame = bounds
-        paneTarget.isHidden = false
-        paneTarget.alphaValue = 1
-        paneTarget.setHighlighted(true)
-    }
-
-    private func hidePanePlate() {
-        paneDragActive = false
-        paneTarget.setHighlighted(false)
-        paneTarget.isHidden = true
-        paneTarget.alphaValue = 0
-    }
+    /// The pane being dragged over this view, or nil when what is in flight is
+    /// not a pane.
+    ///
+    /// A pane gets the **same four zones a file gets** — the three bands over
+    /// this file and the second-pane half beside them — because they mean the
+    /// same four things. A pane holds a dump: joining it at either end is the
+    /// two-chip round trip (§22), replacing puts it in this pane's place, and
+    /// the far half opens it as the second pane, which is the comparison.
+    private var draggedPaneID: UUID?
 
     /// Asks what letting the dragged pane go here would do. A single-file window
     /// has a free second pane, so the answer is normally "move it in beside this
     /// one" — but it is the controller's to give, and it says no to a pane from
     /// this very window, which has nowhere else to be.
-    var paneDropOutcome: ((_ draggedPaneID: UUID) -> PaneDrop.Outcome)?
+    var paneDropOutcome: ((_ draggedPaneID: UUID, _ target: SingleFileDropTarget)
+                          -> PaneDrop.Outcome)?
 
-    /// Fired when a dragged pane is let go here.
-    var onPaneDropped: ((_ draggedPaneID: UUID) -> Void)?
+    /// Fired when a dragged pane is let go here, in the zone it landed in.
+    var onPaneDropped: ((_ draggedPaneID: UUID, _ target: SingleFileDropTarget) -> Void)?
 
     /// Fired when a drag session starts here and when it ends — never when it
     /// merely leaves. See `PaneDropBandsView.onDragSessionChanged`: leaving is
@@ -90,11 +83,6 @@ final class SingleFileDropView: NSView {
         addTarget.translatesAutoresizingMaskIntoConstraints = false
         addSubview(thisFileBands)
         addSubview(addTarget)
-        // In front of both halves, and laid out by frame: a pane drop is about
-        // the whole window, so its plate covers the whole of it.
-        paneTarget.translatesAutoresizingMaskIntoConstraints = true
-        addSubview(paneTarget)
-        hidePanePlate()
 
         if isVertical {
             thisFileBands.leadingAnchor.constraint(equalTo: leadingAnchor).isActive = true
@@ -116,7 +104,11 @@ final class SingleFileDropView: NSView {
             addTarget.trailingAnchor.constraint(equalTo: trailingAnchor).isActive = true
         }
 
-        registerForDraggedTypes([.fileURL, .fileNames])
+        // `.pane` as well as the file types: a pane dragged here goes into the
+        // free second pane, which is the comparison the gesture was for. Handling
+        // it without registering for it is silent — AppKit simply never delivers
+        // the drag, and the zone never appears (`Design/PANE_DRAG_PLAN.md`).
+        registerForDraggedTypes([.fileURL, .fileNames, .pane])
     }
 
     // MARK: - Drag targeting (§4.3)
@@ -131,10 +123,8 @@ final class SingleFileDropView: NSView {
         // one free pane in a single-file window and that is where it goes, so
         // the whole view is one target rather than the file bands.
         if let paneID = sender.draggingPasteboard.draggedPaneID {
-            guard paneDropOutcome?(paneID) ?? .none != .none else { return [] }
-            paneDragActive = true
-            showPanePlate()
-            return .move
+            draggedPaneID = paneID
+            return paneOperation(at: sender.draggingLocation)
         }
         guard !sender.draggingPasteboard.droppedFileURLs.isEmpty else { return [] }
         onDragSessionChanged?(true)
@@ -143,20 +133,53 @@ final class SingleFileDropView: NSView {
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        if paneDragActive { return .move }
+        if draggedPaneID != nil { return paneOperation(at: sender.draggingLocation) }
         updateDragTarget(at: sender.draggingLocation)
         return .copy
     }
 
+    /// Lights the zone under the pointer and reports what letting go there would
+    /// mean. A join is a copy — the pane it came from is left as it was — while
+    /// replacing and opening as the second pane move it.
+    private func paneOperation(at windowPoint: NSPoint) -> NSDragOperation {
+        guard let paneID = draggedPaneID else { return [] }
+        let target = dropTarget(at: windowPoint) ?? .addSecond
+        let outcome = paneDropOutcome?(paneID, target) ?? .none
+        // Nothing to offer, so nothing is shown — a window's own pane has
+        // nowhere to go here, and lighting the zones for it would offer a
+        // choice that does not exist.
+        guard outcome != .none else {
+            clearDragTarget()
+            return []
+        }
+        thisFileBands.retitleBands(forPane: true,
+                                  middle: PaneDropBandsView.paneMiddleTitle(for: outcome))
+        addTarget.setTitle("Open as Second Pane")
+        updateDragTarget(at: windowPoint)
+        switch outcome {
+        case .join: return .copy
+        case .swap, .move: return .move
+        case .none, .tearOff: return []
+        }
+    }
+
     override func draggingExited(_ sender: NSDraggingInfo?) {
-        hidePanePlate()
+        endPaneDrag()
         clearDragTarget()
     }
 
     override func draggingEnded(_ sender: NSDraggingInfo) {
         onDragSessionChanged?(false)
-        hidePanePlate()
+        endPaneDrag()
         clearDragTarget()
+    }
+
+    /// Forgets the pane in flight and puts the zones' captions back to the ones
+    /// a file gets, so the next file drag does not read as a join of panes.
+    private func endPaneDrag() {
+        draggedPaneID = nil
+        thisFileBands.retitleBands(forPane: false)
+        addTarget.setTitle(SingleFileDropTarget.addSecond.title)
     }
 
     override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
@@ -165,8 +188,10 @@ final class SingleFileDropView: NSView {
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         if let paneID = sender.draggingPasteboard.draggedPaneID {
-            hidePanePlate()
-            onPaneDropped?(paneID)
+            let target = dropTarget(at: sender.draggingLocation) ?? .addSecond
+            endPaneDrag()
+            clearDragTarget()
+            onPaneDropped?(paneID, target)
             return true
         }
         let urls = sender.draggingPasteboard.droppedFileURLs
