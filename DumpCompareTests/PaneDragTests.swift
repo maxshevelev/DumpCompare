@@ -317,4 +317,61 @@ final class PaneDragTests: XCTestCase {
         XCTAssertEqual(size.height, 28, "no shrink between drawing and carrying")
         XCTAssertGreaterThanOrEqual(size.width, FilePaneView.paneDragMinWidth)
     }
+
+    // MARK: - The New Tab strip
+
+    /// A file let go on the strip opens in a tab of its own, leaving the window
+    /// it was dropped on as it was.
+    func testAFileDroppedOnTheStripOpensInANewTab() throws {
+        let (controller, a, b) = try comparison()
+        let destination = MainViewController()
+        controller.makeSiblingTab = { destination }
+        let third = try tempFile([UInt8](repeating: 0xC0, count: 64))
+
+        controller.openFilesInNewTab([third])
+
+        XCTAssertEqual(destination.windowModel.pane1.status.fileName, third.lastPathComponent)
+        XCTAssertEqual(destination.mode, .singleFile)
+        XCTAssertEqual(controller.windowModel.pane1.status.fileName, a.lastPathComponent,
+                       "the window it was dropped on is untouched")
+        XCTAssertEqual(controller.windowModel.pane2.status.fileName, b.lastPathComponent)
+    }
+
+    /// With nowhere to put a tab the strip does nothing rather than opening the
+    /// file where it would have been refused.
+    func testTheStripDoesNothingWithNoTabToMake() throws {
+        let (controller, a, b) = try comparison()
+
+        controller.openFilesInNewTab([try tempFile([UInt8](repeating: 0xC0, count: 64))])
+
+        XCTAssertEqual(controller.windowModel.pane1.status.fileName, a.lastPathComponent)
+        XCTAssertEqual(controller.windowModel.pane2.status.fileName, b.lastPathComponent)
+    }
+
+    /// The strip's points belong to the strip. An overlay asked about one of
+    /// them answers with no band — and, crucially, the drop then does nothing
+    /// rather than falling back to Replace, which would answer a question the
+    /// overlay was never asked.
+    func testAnOverlayClaimsNoBandInTheStripsShare() {
+        let bands = PaneDropBandsView(paneView: nil)
+        bands.frame = NSRect(x: 0, y: 0, width: 300, height: 400)
+        bands.topInset = NewTabDropStrip.height
+        bands.layout()
+
+        // Top-down 10 pt is inside the strip's 44; the band layout must not
+        // claim it.
+        let layout = DropBandLayout(halfHeight: 400, topInset: NewTabDropStrip.height)
+        XCTAssertNil(layout.band(atTopDownY: 10))
+        XCTAssertEqual(layout.band(atTopDownY: NewTabDropStrip.height + 1), .insertAtStart)
+    }
+
+    /// The strip is deep enough to aim at without care, and still leaves the
+    /// pane's own three bands room to be told apart.
+    func testTheStripLeavesTheBandsRoom() {
+        let layout = DropBandLayout(halfHeight: 400, topInset: NewTabDropStrip.height)
+
+        XCTAssertEqual(NewTabDropStrip.height, 44)
+        XCTAssertGreaterThan(layout.replaceRange.upperBound, layout.replaceRange.lowerBound,
+                             "the middle band survives the strip's share")
+    }
 }

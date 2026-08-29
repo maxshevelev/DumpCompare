@@ -16,10 +16,18 @@ final class SingleFileDropView: NSView {
     /// Fired when the user drops on one of the targets or bands.
     var onDrop: ((SingleFileDropTarget, [URL]) -> Void)?
 
+    /// Fired when a drag session starts here and when it ends — never when it
+    /// merely leaves. See `PaneDropBandsView.onDragSessionChanged`: leaving is
+    /// what aiming at the New Tab strip looks like from here.
+    var onDragSessionChanged: ((Bool) -> Void)?
+
     let paneView: FilePaneView
 
     /// The three bands of the "this file" half — a self-contained drop region.
-    private let thisFileBands = PaneDropBandsView()
+    /// The three-band overlay over the pane's own half. Internal so the window
+    /// can inset its bands by the New Tab strip's share, the way it does for the
+    /// comparison's two overlays (`Design/PANE_DRAG_PLAN.md`).
+    let thisFileBands = PaneDropBandsView()
     /// The "second file" half — a self-contained single-target drop region.
     private let addTarget = DropZoneView(title: SingleFileDropTarget.addSecond.title)
 
@@ -88,6 +96,7 @@ final class SingleFileDropView: NSView {
     /// system reaches it by walking up from the hex view (§4.3).
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         guard !sender.draggingPasteboard.droppedFileURLs.isEmpty else { return [] }
+        onDragSessionChanged?(true)
         updateDragTarget(at: sender.draggingLocation)
         return .copy
     }
@@ -102,6 +111,7 @@ final class SingleFileDropView: NSView {
     }
 
     override func draggingEnded(_ sender: NSDraggingInfo) {
+        onDragSessionChanged?(false)
         clearDragTarget()
     }
 
@@ -111,6 +121,7 @@ final class SingleFileDropView: NSView {
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         let urls = sender.draggingPasteboard.droppedFileURLs
+        onDragSessionChanged?(false)
         clearDragTarget()
         guard !urls.isEmpty else { return true }
         let target = dropTarget(at: sender.draggingLocation) ?? .addSecond

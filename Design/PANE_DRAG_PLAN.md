@@ -70,30 +70,51 @@ the same reason it keeps its undo history.
 ## The New Tab strip
 
 **The system tab bar cannot be a drop target.** It is AppKit's own view inside
-the title bar; nothing can be registered on it. `NSWindowTab` offers `title`,
-`toolTip` and `accessoryView`, none of which is a drop zone.
+the title bar, and nothing public exposes its empty area, the gaps between tabs,
+or the + button. `NSWindowTabGroup` is `windows`, `selectedWindow` and
+`isTabBarVisible`; there is no view and no frame to aim at.
 
-So the strip lives at the top of *our* content, pressed against the underside of
-the bar, which is where it reads as "up there, into a tab". Full width across
-both panes, because it is a window-level target and should not look like a
-per-pane one. It accepts **both** payloads: a file URL (open it in a new tab) and
-a pane (tear it off into one).
+**A titlebar accessory was tried, and does not work.** A
+`NSTitlebarAccessoryViewController` with the default `.bottom` attribute is a
+full-width view of ours, and the documentation places it "under the titlebar",
+which sounded like under the tab bar. It is not: AppKit puts it **above** the tab
+bar, between the bar and the toolbar, where the pointer cannot reach it without
+crossing the bar.
 
-It costs the top band something. `Insert at Start` is already the top of every
-pane's three-band overlay, and the strip lands exactly where the hand aims for
-it. The strip takes a fixed height off the top and the bands are laid out below
-it — so `Insert at Start` starts lower and is shorter, and the four targets read
-as one column.
+It failed a second time on its own merits, and that failure is the more useful
+one to record. Showing a `.bottom` accessory moves the content down, which made
+a loop out of aiming at it: leaving the panes hid the strip, the content rose,
+the pointer was over a pane again, the strip came back, the content dropped, the
+pointer was out again. **Anything that changes the layout in response to where
+the pointer is will do this.**
 
-**The trap to avoid** is written down in `PaneDropBandsView` already: AppKit
-resolves a drop destination **by frame among registered views**, not through
-`hitTest:`, so a registered overlay in front of another steals its drops — and
-the comment records that this once caused a dropped file to be silently
-discarded. The strip overlaps the pane overlays' top edge, so it must be the
-frontmost registered view there, and the overlays' band layout must be inset by
-its height so the two never disagree about who owns a point. `DropBandLayout`
-gaining a top inset is the honest way to say that, and it stays testable without
-a view.
+So the strip lies across the top of the content, under the tab bar, overlaying
+it rather than displacing it. It costs the top band something — `Insert at Start`
+starts lower and is shorter — and that is the price of the only position
+available.
+
+**Its visibility follows the drag session, not one overlay.** It is raised when a
+drag enters any destination in the window and taken down only when the drag
+*ends* — never when the pointer merely leaves an overlay, because leaving is
+exactly what aiming at the strip looks like from below. Hiding it then takes the
+target away at the moment it is being reached for, which is the quieter half of
+the same loop and is a bug with or without an accessory.
+
+**The trap the position brings** is recorded in `PaneDropBandsView` already:
+**AppKit resolves a drop destination by frame among registered views**, not
+through `hitTest:`, and the comment notes this once caused a dropped file to be
+silently discarded. The strip must be the frontmost registered view over the
+points it covers, and the overlays underneath must inset their bands by its
+height so the two never disagree about who owns a point. `DropBandLayout` gains a
+top inset for that, and the controller *measures* it rather than assuming it: the
+strip spans the content's width, but in a stacked comparison only the upper pane
+is under it.
+
+**Not taken, and worth its own turn later:** `NSWindowTab.accessoryView` is a
+view of ours *inside a tab*, so a tab can itself be a drop target — "drop this
+file on that tab and open it there". That is a different feature from the strip
+and carries its own cost (the accessory takes room in every tab, always), so it
+is recorded rather than folded in.
 
 ## Picking a pane up
 

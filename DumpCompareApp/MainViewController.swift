@@ -251,6 +251,36 @@ final class MainViewController: NSViewController {
     /// The left pane of the minimap split — the mode's content lives here, so
     /// the minimap panel can share the content area to its right (§19).
     private let contentHost = NSView()
+
+    /// The window-level drop target under the tab bar: a file let go there opens
+    /// in a tab of its own (`Design/PANE_DRAG_PLAN.md`).
+    ///
+    /// It sits above everything the window shows — both panes and the minimap —
+    /// and takes its own height while a drag is in flight rather than lying over
+    /// the content. Overlaying was tried and looked wrong: the strip covered the
+    /// pane headers and the top of the column headers, and the bands below it no
+    /// longer lined up with the dump they were describing.
+    ///
+    /// Moving the content is safe *because* the strip's visibility follows the
+    /// drag session rather than which view the pointer is over. Tied to the
+    /// pointer it would be a loop, and was: leaving the panes hid the strip, the
+    /// content rose, the pointer was over a pane again, the strip came back.
+    ///
+    /// A `.bottom` titlebar accessory was tried first, to keep the strip out of
+    /// the content entirely. AppKit places one **above** the tab bar, between it
+    /// and the toolbar, where the pointer cannot reach it without crossing the
+    /// bar. Nothing public places a view below the bar, and nothing public makes
+    /// the bar itself a target.
+    private let newTabDropStrip = NewTabDropStrip()
+
+    /// The strip's height: zero between drags, `NewTabDropStrip.height` while
+    /// one is in flight. Animated, so the content glides down rather than being
+    /// snatched.
+    private var newTabDropStripHeight: NSLayoutConstraint?
+
+    /// The single-file mode's drop container, held so its bands can be inset by
+    /// the strip's share the way the comparison's are. Nil in the other modes.
+    private weak var singleFileDropView: SingleFileDropView?
     /// The right-hand minimap panel (hidden by default, toggled by the toolbar
     /// button). Internal so tests can assert its visibility (§19).
     let minimapView = MinimapView()
@@ -520,9 +550,22 @@ final class MainViewController: NSViewController {
         minimapSplit.onDividerMoved = { [weak self] _, position in
             self?.persistMinimapPanelWidth(position: position)
         }
+        newTabDropStrip.translatesAutoresizingMaskIntoConstraints = false
+        newTabDropStrip.onDropFiles = { [weak self] urls in
+            self?.openFilesInNewTab(urls)
+        }
+        contentContainer.addSubview(newTabDropStrip)
+        let stripHeight = newTabDropStrip.heightAnchor.constraint(equalToConstant: 0)
+        newTabDropStripHeight = stripHeight
         contentContainer.addSubview(minimapSplit)
         NSLayoutConstraint.activate([
-            minimapSplit.topAnchor.constraint(equalTo: contentContainer.topAnchor),
+            // Above everything, across the whole window: the strip is about the
+            // window's tabs, so it spans the minimap as well as the panes.
+            newTabDropStrip.topAnchor.constraint(equalTo: contentContainer.topAnchor),
+            newTabDropStrip.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor),
+            newTabDropStrip.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
+            stripHeight,
+            minimapSplit.topAnchor.constraint(equalTo: newTabDropStrip.bottomAnchor),
             minimapSplit.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor),
             minimapSplit.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor),
             minimapSplit.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
@@ -682,6 +725,10 @@ final class MainViewController: NSViewController {
             // Wrap in the drop-target split view (§4.3 single-file mode). The
             // pane itself is NOT drop-registered here so the outer view wins.
             let dropView = SingleFileDropView(paneView: pane)
+            singleFileDropView = dropView
+            dropView.onDragSessionChanged = { [weak self] active in
+                self?.setNewTabStripVisible(active)
+            }
             dropView.onDrop = { [weak self] target, urls in
                 self?.handleSingleFileDrop(target: target, urls: urls)
             }
@@ -744,6 +791,11 @@ final class MainViewController: NSViewController {
                 }
                 bands.onPaneDropped = { [weak self] paneID in
                     self?.performPaneDrop(draggedPaneID: paneID, onPaneAt: index)
+                }
+                // A drag entering either pane raises the strip, so it is on
+                // screen before the pointer could reach it.
+                bands.onDragSessionChanged = { [weak self] active in
+                    self?.setNewTabStripVisible(active)
                 }
             }
             pane1View.onClose = { [weak self] in self?.closePane(at: 0) }
@@ -887,6 +939,63 @@ final class MainViewController: NSViewController {
             newView.leadingAnchor.constraint(equalTo: contentHost.leadingAnchor),
             newView.trailingAnchor.constraint(equalTo: contentHost.trailingAnchor),
         ])
+    }
+
+    /// Opens the strip for a drag's lifetime, or closes it when the drag is over.
+    ///
+    /// Never in the empty mode: a window holding nothing has no reason to send a
+    /// file somewhere else.
+    ///
+    /// The panes move down to make room rather than being covered, so the bands
+    /// keep describing the dump they are drawn over — an overlay left them
+    /// offset from the content by the strip's height, and hid the pane headers
+    /// besides.
+    private func setNewTabStripVisible(_ visible: Bool) {
+        let wanted = visible && mode != .empty
+        guard let stripHeight = newTabDropStripHeight else { return }
+        let target: CGFloat = wanted ? NewTabDropStrip.height : 0
+        guard stripHeight.constant != target else { return }
+        newTabDropStrip.setDragActive(wanted)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.12
+            context.allowsImplicitAnimation = true
+            stripHeight.animator().constant = target
+            contentContainer.layoutSubtreeIfNeeded()
+        }
+    }
+
+    /// Opens files in a tab of their own — the strip's whole purpose.
+    func openFilesInNewTab(_ urls: [URL]) {
+        guard let tab = makeSiblingTab?() else { return }
+        tab.openFiles(urls)
+    }
+
+    /// How much of a pane overlay's top the strip covers, so its bands can start
+    /// below it.
+    ///
+    /// **Zero in the arrangement that shipped**, where the strip takes its own
+    /// height above everything and covers nothing. Kept, and kept measured, for
+    /// the reason it was written: where the strip goes has already moved three
+    /// times, and AppKit resolves a drop destination by frame among registered
+    /// views rather than by hit-testing (`PaneDropBandsView` records a file
+    /// silently discarded to that once). A geometric answer cannot disagree with
+    /// where the strip actually is; a constant would, quietly, the next time it
+    /// moves.
+    private func dropStripInset(for overlay: NSView) -> CGFloat {
+        guard newTabDropStrip.superview != nil, overlay.window != nil else { return 0 }
+        let stripBottom = newTabDropStrip.convert(NSPoint(x: 0, y: newTabDropStrip.bounds.minY),
+                                                  to: nil).y
+        let overlayTop = overlay.convert(NSPoint(x: 0, y: overlay.bounds.maxY), to: nil).y
+        return max(0, min(overlay.bounds.height, overlayTop - stripBottom))
+    }
+
+    /// Re-measures the strip's share of each pane overlay after a layout pass.
+    private func updateDropStripInsets() {
+        let overlays = [comparisonView?.bands1, comparisonView?.bands2,
+                        singleFileDropView?.thisFileBands].compactMap { $0 }
+        for bands in overlays {
+            bands.topInset = dropStripInset(for: bands)
+        }
     }
 
     // MARK: - Minimap (§19)
@@ -1358,6 +1467,7 @@ final class MainViewController: NSViewController {
     override func viewDidLayout() {
         super.viewDidLayout()
         updateMinimapChrome()
+        updateDropStripInsets()
     }
 
     override func viewDidAppear() {

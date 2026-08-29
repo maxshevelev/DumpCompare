@@ -158,6 +158,28 @@ final class PaneDropBandsView: NSView {
     /// Fired when a dragged pane is let go on this one.
     var onPaneDropped: ((_ draggedPaneID: UUID) -> Void)?
 
+    /// Fired when a drag *session* starts over this overlay and when it ends —
+    /// not when it merely leaves, which is a different thing entirely.
+    ///
+    /// The window raises its New Tab strip on this, and the distinction is the
+    /// whole point. Leaving this overlay is exactly what moving towards the
+    /// strip looks like, so hiding the strip then takes the target away at the
+    /// moment it is being aimed at. Worse, while the strip changed the layout it
+    /// made a loop: hide the strip, the panes move up, the pointer is back over
+    /// an overlay, show the strip, the panes move down, and the pointer is out
+    /// again.
+    var onDragSessionChanged: ((Bool) -> Void)?
+
+    /// How much of this overlay's top the window's New Tab strip covers. The
+    /// bands divide what is left, so the two never claim the same points
+    /// (`Design/PANE_DRAG_PLAN.md`).
+    var topInset: CGFloat = 0 {
+        didSet {
+            guard topInset != oldValue else { return }
+            needsLayout = true
+        }
+    }
+
     /// The pane this overlay covers, when the view owns it (comparison mode
     /// wraps each pane). Nil in single-file mode, where the pane sits behind
     /// the overlay in the parent `SingleFileDropView`.
@@ -239,13 +261,17 @@ final class PaneDropBandsView: NSView {
     override func layout() {
         super.layout()
         let h = bounds.height
-        let strip = DropBandLayout(halfHeight: h).stripHeight
-        insertTarget.frame = NSRect(x: 0, y: h - strip, width: bounds.width, height: strip)
+        let layout = DropBandLayout(halfHeight: h, topInset: topInset)
+        let strip = layout.stripHeight
+        // Top-down in the layout, bottom-up on screen: the bands start below the
+        // New Tab strip's share, which is measured from the top.
+        let bandsTop = h - topInset
+        insertTarget.frame = NSRect(x: 0, y: bandsTop - strip, width: bounds.width, height: strip)
         appendTarget.frame = NSRect(x: 0, y: 0, width: bounds.width, height: strip)
         // The replace band runs from the top strip's bottom edge to the bottom
         // strip's top edge; it collapses to zero in a very short view.
         replaceTarget.frame = NSRect(x: 0, y: strip, width: bounds.width,
-                                     height: max(0, h - 2 * strip))
+                                     height: max(0, bandsTop - 2 * strip))
         // A pane drop is about the whole pane, so its plate is the whole pane.
         paneTarget.frame = bounds
     }
@@ -304,7 +330,8 @@ final class PaneDropBandsView: NSView {
     func updateHover(at windowPoint: NSPoint) {
         let point = convert(windowPoint, from: nil)
         let topDownY = bounds.height - point.y
-        let band = DropBandLayout(halfHeight: bounds.height).band(atTopDownY: topDownY)
+        let band = DropBandLayout(halfHeight: bounds.height, topInset: topInset)
+            .band(atTopDownY: topDownY)
         insertTarget.setHighlighted(band == .insertAtStart)
         replaceTarget.setHighlighted(band == .replace)
         appendTarget.setHighlighted(band == .appendAtEnd)
@@ -322,7 +349,8 @@ final class PaneDropBandsView: NSView {
     func band(at windowPoint: NSPoint) -> SingleFileDropTarget? {
         let point = convert(windowPoint, from: nil)
         guard bounds.contains(point) else { return nil }
-        return DropBandLayout(halfHeight: bounds.height).band(atTopDownY: bounds.height - point.y)
+        return DropBandLayout(halfHeight: bounds.height, topInset: topInset)
+            .band(atTopDownY: bounds.height - point.y)
     }
 }
 
@@ -339,6 +367,7 @@ extension PaneDropBandsView {
             return .move
         }
         guard !sender.draggingPasteboard.droppedFileURLs.isEmpty else { return [] }
+        onDragSessionChanged?(true)
         setDragActive(true)
         updateHover(at: sender.draggingLocation)
         return .copy
@@ -352,7 +381,118 @@ extension PaneDropBandsView {
     }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
+        // This overlay's own bands go — the pointer is no longer choosing among
+        // them — but the session is not over, so the strip stays up.
         setDragActive(false)
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        setDragActive(false)
+        onDragSessionChanged?(false)
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        true
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        onDragSessionChanged?(false)
+        if let paneID = sender.draggingPasteboard.draggedPaneID {
+            setDragActive(false)
+            onPaneDropped?(paneID)
+            return true
+        }
+        setDragActive(false)
+        let urls = sender.draggingPasteboard.droppedFileURLs
+        guard !urls.isEmpty else { return true }
+        // No band, no act. The points above the bands belong to the New Tab
+        // strip, and falling back to Replace there would answer a question this
+        // overlay was not asked — the worst shape a drop can take (§4.3).
+        guard let band = band(at: sender.draggingLocation) else { return true }
+        onDrop?(band, urls)
+        return true
+    }
+}
+
+/// The strip along the top of the window's content: drop a file here to open it
+/// in a tab of its own (`Design/PANE_DRAG_PLAN.md`).
+///
+/// It sits where it does because the system tab bar cannot be a drop target —
+/// that is AppKit's own view inside the title bar, and `NSWindowTab` offers a
+/// title, a tooltip and an accessory view, none of them a destination. Pressed
+/// against the underside of the bar is as close as a target of ours can get, and
+/// close enough to read as "up there, into a tab".
+///
+/// It spans the whole content rather than one pane because it is a window-level
+/// target: which pane the pointer happens to be over says nothing about a file
+/// that is going somewhere else entirely.
+///
+/// Like the bands, it shows only for a drag's lifetime, and it is never a
+/// hit-test target — the dump behind it keeps the mouse. Being registered is
+/// what makes it a drop destination; AppKit resolves those by frame rather than
+/// through `hitTest:`, which is also why the pane overlays below inset their
+/// bands by this height instead of both claiming the same points.
+final class NewTabDropStrip: NSView {
+    /// How much of the content's top the strip takes. Deep enough to be aimed
+    /// at without care, shallow enough to leave the pane's own bands room.
+    static let height: CGFloat = 44
+
+    /// Fired when files are dropped on the strip.
+    var onDropFiles: (([URL]) -> Void)?
+
+    private let target = DropTargetView(title: "Open in New Tab")
+    private var dragActive = false
+
+    init() {
+        super.init(frame: .zero)
+        target.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(target)
+        NSLayoutConstraint.activate([
+            target.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            target.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            target.topAnchor.constraint(equalTo: topAnchor, constant: 4),
+            target.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
+        ])
+        registerForDraggedTypes([.fileURL, .fileNames])
+        setDragActive(false)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    /// Never takes the mouse: the strip lies over the dump, and a click there is
+    /// the dump's (§4.3).
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    /// Shown for the drag's lifetime. The window's overlays raise this as soon
+    /// as a drag enters any of them, so the strip is on screen before the
+    /// pointer reaches it — a target nobody can see is a target nobody uses.
+    func setDragActive(_ active: Bool) {
+        dragActive = active
+        target.isHidden = !active
+        target.alphaValue = active ? 1 : 0
+        if !active { target.setHighlighted(false) }
+    }
+}
+
+extension NewTabDropStrip {
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard !sender.draggingPasteboard.droppedFileURLs.isEmpty else { return [] }
+        setDragActive(true)
+        target.setHighlighted(true)
+        return .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        dragActive ? .copy : []
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        // Left the strip, not the window: the plate stays up, unlit, because the
+        // drag may well come back to it.
+        target.setHighlighted(false)
     }
 
     override func draggingEnded(_ sender: NSDraggingInfo) {
@@ -364,15 +504,10 @@ extension PaneDropBandsView {
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        if let paneID = sender.draggingPasteboard.draggedPaneID {
-            setDragActive(false)
-            onPaneDropped?(paneID)
-            return true
-        }
         setDragActive(false)
         let urls = sender.draggingPasteboard.droppedFileURLs
         guard !urls.isEmpty else { return true }
-        onDrop?(band(at: sender.draggingLocation) ?? .replace, urls)
+        onDropFiles?(urls)
         return true
     }
 }
