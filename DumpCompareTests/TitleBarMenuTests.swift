@@ -24,6 +24,7 @@ final class TitleBarMenuTests: XCTestCase {
     /// joins, and the one item that is about the window's second pane.
     private let fileMenuItems: [ExpectedItem] = [
         .title("New File"),
+        .title("New Window"),
         .title("Open…"),
         .separator,
         .title("Save"),
@@ -92,7 +93,8 @@ final class TitleBarMenuTests: XCTestCase {
         }
 
         // Duplicate carries no key equivalent: ⌘D is Toggle Bookmark (§20).
-        let expectedKeys = ["n", "o", nil, "s", "S", "", nil, "", "", nil, "", nil, "w"]
+        // "N" is ⇧⌘N — the capital carries the shift.
+        let expectedKeys = ["n", "N", "o", nil, "s", "S", "", nil, "", "", nil, "", nil, "w"]
         let keys = menu.items.map { $0.isSeparatorItem ? nil : $0.keyEquivalent }
         XCTAssertEqual(keys, expectedKeys, "the File menu's key equivalents")
     }

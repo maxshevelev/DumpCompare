@@ -2,7 +2,15 @@ import Cocoa
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var mainWindowController: MainWindowController?
+    /// Every open comparison window, in the order they were made. The app owns
+    /// its windows rather than being one window's owner: ⇧⌘N adds one, closing
+    /// one drops it, and a file handed to the app has to be routed to one of
+    /// them rather than to "the" window.
+    private var windowControllers: [MainWindowController] = []
+
+    /// Drops a window from `windowControllers` when it closes, so a closed
+    /// window is neither kept alive nor offered a file to open.
+    private var closeObserver: NSObjectProtocol?
     /// URLs handed to us by Launch Services before the window existed. An
     /// "Open with" / double-click launch can deliver `application(_:open:)`
     /// before `applicationDidFinishLaunching` finishes building the window, so
@@ -40,27 +48,78 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             self?.applyTheme()
         }
-        let windowController = MainWindowController()
-        windowController.mainViewController.openDocuments = openDocuments
-        openDocuments.register(windowController.mainViewController)
-        windowController.showWindow(nil)
-        mainWindowController = windowController
+        closeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: nil, queue: .main
+        ) { [weak self] notification in
+            MainActor.assumeIsolated {
+                guard let window = notification.object as? NSWindow else { return }
+                self?.windowControllers.removeAll { $0.window === window }
+            }
+        }
+        makeWindow()
         NSApp.activate(ignoringOtherApps: true)
         // The window is up; drain any files Launch Services handed us first.
         isReady = true
         if !pendingOpenURLs.isEmpty {
             let urls = pendingOpenURLs
             pendingOpenURLs.removeAll()
-            mainWindowController?.mainViewController.openFiles(urls)
+            openFiles(urls)
         }
     }
 
-    /// Finder double-click / "Open with" hands the file here. The app is
-    /// single-window, so the files flow into the same open pipeline as the Open
-    /// panel (§4.1); a file launched with the app opens directly into a pane.
+    /// File ▸ New Window (⇧⌘N).
+    @objc func newWindow(_ sender: Any?) {
+        makeWindow()
+    }
+
+    /// Builds a window, wires it to the application's open-file registry, and
+    /// shows it.
+    ///
+    /// Only the first window saves its frame: one autosave name can serve one
+    /// window, so every later one is cascaded off the window in front of it
+    /// instead — which is also where a new window belongs on screen.
+    @discardableResult
+    private func makeWindow() -> MainWindowController {
+        // Only the launch window saves a frame: one autosave name can serve one
+        // window, and a second window writing to the same key would fight the
+        // first over one saved size.
+        let isFirst = windowControllers.isEmpty
+        let controller = MainWindowController(
+            frameAutosaveName: isFirst ? "MainWindow" : nil)
+        controller.mainViewController.openDocuments = openDocuments
+        openDocuments.register(controller.mainViewController)
+        windowControllers.append(controller)
+        // Nothing places the window by hand: `NSWindowController` cascades a
+        // window it shows unless that window autosaves its frame, so the launch
+        // window lands where it was left and every later one steps down and
+        // right of the one in front.
+        controller.showWindow(nil)
+        return controller
+    }
+
+    /// The window a file handed to the app should open into: the one in front,
+    /// or a fresh one when every window has been closed (the app stays running
+    /// with no window only while something else keeps it alive).
+    private func openFiles(_ urls: [URL]) {
+        let controller = frontmostWindowController() ?? makeWindow()
+        controller.mainViewController.openFiles(urls)
+    }
+
+    /// The key window's controller, else the most recently made one.
+    private func frontmostWindowController() -> MainWindowController? {
+        if let key = NSApp.keyWindow,
+           let controller = windowControllers.first(where: { $0.window === key }) {
+            return controller
+        }
+        return windowControllers.last
+    }
+
+    /// Finder double-click / "Open with" hands the file here. The files flow
+    /// into the same open pipeline as the Open panel (§4.1), in the window in
+    /// front — a file launched with the app opens directly into a pane.
     func application(_ application: NSApplication, open urls: [URL]) {
         if isReady {
-            mainWindowController?.mainViewController.openFiles(urls)
+            openFiles(urls)
         } else {
             pendingOpenURLs.append(contentsOf: urls)
         }
@@ -79,6 +138,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         if let themeObserver {
             NotificationCenter.default.removeObserver(themeObserver)
+        }
+        if let closeObserver {
+            NotificationCenter.default.removeObserver(closeObserver)
         }
     }
 

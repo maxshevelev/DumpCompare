@@ -141,6 +141,11 @@ enum MainMenu {
         // New File: no dialog — a brand-new untitled in-memory document opens
         // into a pane; it is written to disk on the first Save / Save As.
         add("New File", #selector(MainViewController.newDocument), "n")
+        // New Window (⇧⌘N) is the app's, not a pane's: it is the one File
+        // command that does not act on a document, so it is the one item here
+        // the responder chain carries past every view controller to the app
+        // delegate, which owns the windows.
+        add("New Window", #selector(AppDelegate.newWindow(_:)), "N")
         add("Open…", #selector(MainViewController.presentOpenPanel), "o")
         fileMenu.addItem(.separator())
         add("Save", #selector(MainViewController.saveDocument), "s")

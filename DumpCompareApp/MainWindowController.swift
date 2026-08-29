@@ -31,7 +31,17 @@ final class MainWindowController: NSWindowController {
     private(set) var wordSizeItem: NSToolbarItem?
     private(set) var paneLayoutItem: NSToolbarItem?
 
-    init() {
+    /// The name this window's frame is saved under, or nil for a window that
+    /// does not save one.
+    ///
+    /// Only one window can own a given autosave name — a second window writing
+    /// to the same key would fight the first over one saved frame — so the
+    /// window the app opens at launch keeps `"MainWindow"` and every later
+    /// window is cascaded off its predecessor instead (§3.1).
+    private let frameAutosaveName: String?
+
+    init(frameAutosaveName: String? = "MainWindow") {
+        self.frameAutosaveName = frameAutosaveName
         let controller = MainViewController()
         // The launch width fits one pane's hex grid at the saved word size
         // (§3.1); the height is the standard default. The frame
@@ -49,11 +59,16 @@ final class MainWindowController: NSWindowController {
         // Window menu, Mission Control, etc. (§10.3).
         window.titleVisibility = .hidden
         window.center()
-        window.setFrameAutosaveName("MainWindow")
         window.contentViewController = controller
         window.delegate = controller
         mainViewController = controller
         super.init(window: window)
+        // After `super.init(window:)`, never before it: taking ownership of a
+        // window clears the name it was carrying, so a name set in the lines
+        // above is silently dropped and nothing is ever autosaved.
+        if let frameAutosaveName {
+            window.setFrameAutosaveName(frameAutosaveName)
+        }
         buildToolbar()
         // The toolbar exists only now, so the mode's effect on it has to be
         // applied once here: the difference block is in the default items and
@@ -89,6 +104,15 @@ final class MainWindowController: NSWindowController {
     override func showWindow(_ sender: Any?) {
         super.showWindow(sender)
         guard let window else { return }
+        // A window with no autosaved frame has nothing to restore and nothing to
+        // repair: it was placed by the caller (cascaded off the window it was
+        // opened from) and only wants the fitted width.
+        guard frameAutosaveName != nil else {
+            var frame = window.frame
+            frame.size.width = launchWidth
+            window.setFrame(frame, display: true)
+            return
+        }
         if window.frame.width < 200 || window.frame.height < 200
             || !NSScreen.screens.contains(where: { $0.visibleFrame.intersects(window.frame) }) {
             window.setFrame(NSRect(x: 0, y: 0, width: launchWidth, height: 720), display: true)
