@@ -21,6 +21,39 @@ final class MainViewController: NSViewController {
     /// and caret change; the menu items read it via `validateMenuItem` (§10.3).
     private(set) var diffNavigationState = DiffNavigationState()
     let windowModel = WindowViewModel()
+
+    /// Every window's controller, so "is this file already open?" can be asked
+    /// of the whole application rather than of this window's two panes (§4.1
+    /// rule 6).
+    ///
+    /// Nil in a controller built on its own — which every test does — and the
+    /// rule then falls back to this window's own panes, exactly as it has always
+    /// worked. Weak: the registry outlives no window, and this is a back
+    /// reference to something the app owns.
+    weak var openDocuments: OpenDocumentRegistry?
+
+    /// The index of this window's pane holding `identity`, if either does.
+    /// `excluding` skips one pane — the target of an open, which is never its
+    /// own obstacle. Internal so the registry can ask it of every window.
+    func paneIndex(holding identity: FileIdentity, excluding: Int?) -> Int? {
+        for (index, pane) in [windowModel.pane1, windowModel.pane2].enumerated()
+        where index != excluding {
+            if pane.isOpen, pane.document?.identity == identity { return index }
+        }
+        return nil
+    }
+
+    /// Where the file at `url` is already open, skipping the pane an open is
+    /// aimed at. Answered by the registry when the app has installed one, and by
+    /// this window alone otherwise.
+    private func documentLocation(of url: URL, excluding paneIndex: Int)
+    -> (controller: MainViewController, paneIndex: Int)? {
+        if let openDocuments {
+            return openDocuments.location(of: url, excluding: (self, paneIndex))
+        }
+        return self.paneIndex(holding: FileIdentity(url: url), excluding: paneIndex)
+            .map { (self, $0) }
+    }
     private weak var activeFilePane: FilePaneView?
     private weak var comparisonView: ComparisonView?
 
@@ -2118,10 +2151,9 @@ final class MainViewController: NSViewController {
     /// Returns false when the open was refused or failed.
     private func openIntoPane(index: Int, url: URL) -> Bool {
         let pane = index == 0 ? windowModel.pane1 : windowModel.pane2
-        let other = index == 0 ? windowModel.pane2 : windowModel.pane1
 
-        // Rule 6: same file already open in the other pane.
-        if other.isOpen, FileIdentity(url: url) == other.document?.identity {
+        // Rule 6: the same file is already open somewhere else.
+        if documentLocation(of: url, excluding: index) != nil {
             presentAlert(title: "File already open",
                          message: "“\(url.lastPathComponent)” is already open in the other pane and cannot be opened twice.")
             return false

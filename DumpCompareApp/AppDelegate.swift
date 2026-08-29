@@ -1,5 +1,6 @@
 import Cocoa
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var mainWindowController: MainWindowController?
     /// URLs handed to us by Launch Services before the window existed. An
@@ -12,6 +13,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// without a relaunch (§3.2).
     private var themeObserver: NSObjectProtocol?
 
+    /// The Settings window, owned by the app rather than by a window: there is
+    /// one of it however many windows are open. Lazy, so it is not built until
+    /// ⌘, is pressed.
+    private lazy var settingsWindowController = SettingsWindowController()
+
+    /// Which window has which file open (§4.1 rule 6). The application's, not a
+    /// window's: the rule is that a file is open once in the app, and only
+    /// something above the windows can answer that.
+    private lazy var openDocuments = OpenDocumentRegistry()
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // The app is single-window, so the system's automatic window tabbing
         // (which would otherwise inject "Show Tab Bar"/"Show All Tabs" into the
@@ -20,12 +31,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Apply the stored theme before any window appears, so the first frame
         // is already in the right appearance (§3.2).
         applyTheme()
+        // The menu bar belongs to the application, not to a window: it is built
+        // once, here, and its commands travel the responder chain to whichever
+        // window is key.
+        NSApp.mainMenu = MainMenu.build(settingsTarget: self)
         themeObserver = NotificationCenter.default.addObserver(
             forName: AppTheme.didChangeNotification, object: nil, queue: .main
         ) { [weak self] _ in
             self?.applyTheme()
         }
         let windowController = MainWindowController()
+        windowController.mainViewController.openDocuments = openDocuments
+        openDocuments.register(windowController.mainViewController)
         windowController.showWindow(nil)
         mainWindowController = windowController
         NSApp.activate(ignoringOtherApps: true)
@@ -47,6 +64,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             pendingOpenURLs.append(contentsOf: urls)
         }
+    }
+
+    @objc func showSettings(_ sender: Any?) {
+        settingsWindowController.showWindow(sender)
     }
 
     /// Maps the stored theme onto `NSApp.appearance`: nil for system (follow the

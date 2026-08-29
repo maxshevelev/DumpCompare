@@ -932,7 +932,7 @@ final class GoToBookmarksTests: XCTestCase {
     // MARK: - The menu (§10.3)
 
     func testTheEditMenuOffersGoToWithNoSeparateBookmarksItem() {
-        let menu = MainWindowController().makeEditMenu()
+        let menu = MainMenu.makeEditMenu()
 
         let goTo = menu.items.first { $0.action == #selector(MainViewController.goToPosition) }
         XCTAssertEqual(goTo?.title, "Go To Position…")

@@ -537,7 +537,7 @@ final class SegmentsFormTests: XCTestCase {
     /// ⌥⌘S opens the Segments form: the Edit menu's Segments… item carries the
     /// Option variant of ⌘S (⌘S is Save, ⇧⌘S is Save As) (§21.4).
     func testTheSegmentsFormSitsOnOptCmdS() throws {
-        let items = MainWindowController().makeEditMenu().items
+        let items = MainMenu.makeEditMenu().items
         let segments = try XCTUnwrap(items.first { $0.title == "Segments…" })
         XCTAssertEqual(segments.keyEquivalent, "s")
         XCTAssertEqual(segments.keyEquivalentModifierMask, [.command, .option])

@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		0090A7327FD59E37D6B3A3EA /* DuplicateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2FFB4C256441E0544EDCAE6 /* DuplicateTests.swift */; };
 		01A34F727C9199720C472250 /* ComparisonSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3338114B2A4BE89BB8E5487 /* ComparisonSettings.swift */; };
+		03A3B44F7AC17D3CD02FD560 /* MainMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB56D752157E8B55CA4A3477 /* MainMenu.swift */; };
 		046DB0B0F51FAD7F7428CFEB /* OpenPlacement.swift in Sources */ = {isa = PBXBuildFile; fileRef = 569D15C9837FF35B5622867D /* OpenPlacement.swift */; };
 		09B3261690D10020E29732D6 /* ComparisonCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 378C3560FF1F826E450CB91D /* ComparisonCoordinator.swift */; };
 		0DA70D73C388C2AB0A1EF933 /* BookmarkDragTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6024791311F62D1D8A32128B /* BookmarkDragTests.swift */; };
@@ -44,6 +45,7 @@
 		55EFF117DEDC3F5F7AB1D851 /* CloseFileTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35619EB218B8A77217CF90D9 /* CloseFileTests.swift */; };
 		5651D0DFE5F40E4C643045EA /* SettingsWindowSizeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D038B7BDAAD40F4D12E5A913 /* SettingsWindowSizeTests.swift */; };
 		59F525D82A21BA453FA1001C /* TitleBarMenuTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6B628E64567341A9AB617D6 /* TitleBarMenuTests.swift */; };
+		5B2738A27713B3FDBC55BFFE /* OpenDocumentRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1C134C72BE111F8A0F5F4B7 /* OpenDocumentRegistry.swift */; };
 		5B3F5E75CD647B8FBC63F2B0 /* FileChangeWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 443E56A308DC1D5D8E806F72 /* FileChangeWatcher.swift */; };
 		5C277503D272939847E4FF3A /* DividerDragTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A61B0AA7755933DD1B3D4F8 /* DividerDragTests.swift */; };
 		5FD01A8B0946ECC06EBA95E3 /* DefaultHandlerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F986D3F8700ECBD5E7AE3CFD /* DefaultHandlerService.swift */; };
@@ -228,6 +230,7 @@
 		B8E2C4E8BCD5826CF561D492 /* ReparentPaneReproTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReparentPaneReproTests.swift; sourceTree = "<group>"; };
 		B9A7DE8E7791AA34BDA2EAB1 /* WordSizeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WordSizeTests.swift; sourceTree = "<group>"; };
 		BE9F686DC291219019034AF9 /* SettingsWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowController.swift; sourceTree = "<group>"; };
+		C1C134C72BE111F8A0F5F4B7 /* OpenDocumentRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenDocumentRegistry.swift; sourceTree = "<group>"; };
 		C493FB0DA34423850B00F051 /* TestSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestSupport.swift; sourceTree = "<group>"; };
 		C54BC1F8811C13DFC8B650CD /* AppTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppTheme.swift; sourceTree = "<group>"; };
 		C69836FF0C4CE8AC846BC7CB /* DropBandLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DropBandLayoutTests.swift; sourceTree = "<group>"; };
@@ -258,6 +261,7 @@
 		F984C7BD6FD6F4E6EFA4D783 /* SegmentStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentStore.swift; sourceTree = "<group>"; };
 		F986D3F8700ECBD5E7AE3CFD /* DefaultHandlerService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DefaultHandlerService.swift; sourceTree = "<group>"; };
 		FB33DB1270B0F3AD9A668F5C /* AppMain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppMain.swift; sourceTree = "<group>"; };
+		FB56D752157E8B55CA4A3477 /* MainMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainMenu.swift; sourceTree = "<group>"; };
 		FBEF0C558873BA9AEAF948A6 /* ScrollPreservationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScrollPreservationTests.swift; sourceTree = "<group>"; };
 		FCD886DB1AFE9BF9F1C08F95 /* MouseSelectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MouseSelectionTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -334,10 +338,12 @@
 				95D1B66993C6EA8CDEE1ADD7 /* HexView.swift */,
 				34217B4053D144F4DE01F1D5 /* Info.plist */,
 				315536AE9984B28A54B6B013 /* LayoutSettingsViewController.swift */,
+				FB56D752157E8B55CA4A3477 /* MainMenu.swift */,
 				2751D9902BBBD4771AFB0FD5 /* MainViewController.swift */,
 				956C3B15B666232F79A544C1 /* MainWindowController.swift */,
 				D2BA69069AEF377E47CBEDDC /* MinimapPanelView.swift */,
 				0BD77B47E583DB31515ECB21 /* MinimapView.swift */,
+				C1C134C72BE111F8A0F5F4B7 /* OpenDocumentRegistry.swift */,
 				569D15C9837FF35B5622867D /* OpenPlacement.swift */,
 				6818FEF833F78019596D65BB /* PaneViewModel.swift */,
 				4EF3302417C4C7338004CE67 /* SandboxBookmarkStore.swift */,
@@ -570,10 +576,12 @@
 				34FC31F15593574D21ECD0D6 /* HexLayout.swift in Sources */,
 				1F891EE0D25A946BB63C2AEC /* HexView.swift in Sources */,
 				8B0D7C29A06E13E05EE8094D /* LayoutSettingsViewController.swift in Sources */,
+				03A3B44F7AC17D3CD02FD560 /* MainMenu.swift in Sources */,
 				A50B556671000ED5800F6FC0 /* MainViewController.swift in Sources */,
 				84F0705E874653F3E5EE8B15 /* MainWindowController.swift in Sources */,
 				F15C5ED7FA34C862CA037C14 /* MinimapPanelView.swift in Sources */,
 				D01ED9E3023BFE9253AA0703 /* MinimapView.swift in Sources */,
+				5B2738A27713B3FDBC55BFFE /* OpenDocumentRegistry.swift in Sources */,
 				046DB0B0F51FAD7F7428CFEB /* OpenPlacement.swift in Sources */,
 				7868ABBF947C029B69867CA0 /* PaneViewModel.swift in Sources */,
 				6C4A2D07C512800E3647C334 /* SandboxBookmarkStore.swift in Sources */,
