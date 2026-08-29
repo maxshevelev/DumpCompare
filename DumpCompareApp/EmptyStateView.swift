@@ -7,6 +7,14 @@ final class EmptyStateView: NSView {
     /// Fired with the dropped file URLs; the view controller applies §4.3 rules.
     var onOpenFiles: (([URL]) -> Void)?
 
+    /// Asks what letting the dragged pane go on an empty window would do; the
+    /// controller answers, and the view accepts only when there is an answer.
+    var paneDropOutcome: ((_ draggedPaneID: UUID) -> PaneDrop.Outcome)?
+
+    /// Fired when a dragged pane is let go on the empty window: it moves in, and
+    /// the window stops being empty.
+    var onPaneDropped: ((_ draggedPaneID: UUID) -> Void)?
+
     /// The muted grey shared by the icon and the headline — softer than the
     /// regular secondary text, so the landing screen reads as a hint, not a
     /// primary control.
@@ -84,7 +92,9 @@ final class EmptyStateView: NSView {
         // symbol's built-in padding).
         updateIconSize()
 
-        registerForDraggedTypes([.fileURL, .fileNames])
+        // A pane can be dropped here too: an empty window is the most obvious
+        // place to put one (`Design/PANE_DRAG_PLAN.md`).
+        registerForDraggedTypes([.fileURL, .fileNames, .pane])
     }
 
     override func viewDidMoveToWindow() {
@@ -164,6 +174,11 @@ final class EmptyStateView: NSView {
 // the members. Only registered destination views receive drag callbacks.
 extension EmptyStateView {
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if let paneID = sender.draggingPasteboard.draggedPaneID {
+            guard paneDropOutcome?(paneID) ?? .none != .none else { return [] }
+            setDropHighlighted(true)
+            return .move
+        }
         guard !sender.draggingPasteboard.droppedFileURLs.isEmpty else { return [] }
         setDropHighlighted(true)
         return .copy
@@ -183,6 +198,10 @@ extension EmptyStateView {
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         setDropHighlighted(false)
+        if let paneID = sender.draggingPasteboard.draggedPaneID {
+            onPaneDropped?(paneID)
+            return true
+        }
         let urls = sender.draggingPasteboard.droppedFileURLs
         if !urls.isEmpty {
             onOpenFiles?(urls)

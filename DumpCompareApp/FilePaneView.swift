@@ -239,6 +239,15 @@ final class FilePaneView: NSView {
     var onActivate: (() -> Void)?
     /// Fired when the user double-clicks the header: expand this pane so its
     /// hex content fits by width (§3.3).
+    /// Fired when this pane's own drag session begins and ends.
+    ///
+    /// A pane drag is the application's business, not one window's: any window
+    /// can receive it, so every window's New Tab strip goes up for its duration.
+    /// The source is the only participant guaranteed to see both ends of the
+    /// session — a destination that declined the drag may never be told it is
+    /// over.
+    var onDragSessionChanged: ((Bool) -> Void)?
+
     var onHeaderDoubleClick: (() -> Void)?
     /// Fired when the comparison-mode close button is clicked.
     var onClose: (() -> Void)?
@@ -1436,6 +1445,15 @@ extension FilePaneView: NSDraggingSource {
     func draggingSession(_ session: NSDraggingSession,
                          sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
         context == .withinApplication ? .move : []
+    }
+
+    func draggingSession(_ session: NSDraggingSession, willBeginAt screenPoint: NSPoint) {
+        onDragSessionChanged?(true)
+    }
+
+    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint,
+                         operation: NSDragOperation) {
+        onDragSessionChanged?(false)
     }
 }
 

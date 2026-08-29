@@ -72,6 +72,14 @@ final class OpenDocumentRegistry {
         return nil
     }
 
+    /// Every window still open. Used where something is the whole app's
+    /// business rather than one window's — a pane drag, which any window can
+    /// receive.
+    var controllers: [MainViewController] {
+        compact()
+        return entries.compactMap(\.controller)
+    }
+
     private func compact() {
         entries.removeAll { $0.controller == nil }
     }

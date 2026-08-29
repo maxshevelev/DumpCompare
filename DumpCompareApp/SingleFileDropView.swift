@@ -16,6 +16,33 @@ final class SingleFileDropView: NSView {
     /// Fired when the user drops on one of the targets or bands.
     var onDrop: ((SingleFileDropTarget, [URL]) -> Void)?
 
+    /// The single plate a dragged pane gets, over the whole view.
+    private let paneTarget = DropTargetView(title: "Open as Second Pane")
+    private var paneDragActive = false
+
+    private func showPanePlate() {
+        paneTarget.frame = bounds
+        paneTarget.isHidden = false
+        paneTarget.alphaValue = 1
+        paneTarget.setHighlighted(true)
+    }
+
+    private func hidePanePlate() {
+        paneDragActive = false
+        paneTarget.setHighlighted(false)
+        paneTarget.isHidden = true
+        paneTarget.alphaValue = 0
+    }
+
+    /// Asks what letting the dragged pane go here would do. A single-file window
+    /// has a free second pane, so the answer is normally "move it in beside this
+    /// one" — but it is the controller's to give, and it says no to a pane from
+    /// this very window, which has nowhere else to be.
+    var paneDropOutcome: ((_ draggedPaneID: UUID) -> PaneDrop.Outcome)?
+
+    /// Fired when a dragged pane is let go here.
+    var onPaneDropped: ((_ draggedPaneID: UUID) -> Void)?
+
     /// Fired when a drag session starts here and when it ends — never when it
     /// merely leaves. See `PaneDropBandsView.onDragSessionChanged`: leaving is
     /// what aiming at the New Tab strip looks like from here.
@@ -63,6 +90,11 @@ final class SingleFileDropView: NSView {
         addTarget.translatesAutoresizingMaskIntoConstraints = false
         addSubview(thisFileBands)
         addSubview(addTarget)
+        // In front of both halves, and laid out by frame: a pane drop is about
+        // the whole window, so its plate covers the whole of it.
+        paneTarget.translatesAutoresizingMaskIntoConstraints = true
+        addSubview(paneTarget)
+        hidePanePlate()
 
         if isVertical {
             thisFileBands.leadingAnchor.constraint(equalTo: leadingAnchor).isActive = true
@@ -95,6 +127,15 @@ final class SingleFileDropView: NSView {
     /// always-present container that is the hex view's ancestor, so the drag
     /// system reaches it by walking up from the hex view (§4.3).
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        // A pane, unlike a file, is not joined at one end or the other: there is
+        // one free pane in a single-file window and that is where it goes, so
+        // the whole view is one target rather than the file bands.
+        if let paneID = sender.draggingPasteboard.draggedPaneID {
+            guard paneDropOutcome?(paneID) ?? .none != .none else { return [] }
+            paneDragActive = true
+            showPanePlate()
+            return .move
+        }
         guard !sender.draggingPasteboard.droppedFileURLs.isEmpty else { return [] }
         onDragSessionChanged?(true)
         updateDragTarget(at: sender.draggingLocation)
@@ -102,16 +143,19 @@ final class SingleFileDropView: NSView {
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if paneDragActive { return .move }
         updateDragTarget(at: sender.draggingLocation)
         return .copy
     }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
+        hidePanePlate()
         clearDragTarget()
     }
 
     override func draggingEnded(_ sender: NSDraggingInfo) {
         onDragSessionChanged?(false)
+        hidePanePlate()
         clearDragTarget()
     }
 
@@ -120,6 +164,11 @@ final class SingleFileDropView: NSView {
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if let paneID = sender.draggingPasteboard.draggedPaneID {
+            hidePanePlate()
+            onPaneDropped?(paneID)
+            return true
+        }
         let urls = sender.draggingPasteboard.droppedFileURLs
         onDragSessionChanged?(false)
         clearDragTarget()

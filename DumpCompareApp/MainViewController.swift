@@ -68,14 +68,14 @@ final class MainViewController: NSViewController {
     /// its own list already — merging two would be merging two windows' notes on
     /// one row. A pane joins the list of the window it lands in. (The tear-off
     /// copies its list instead, because the tab it makes starts with none.)
+    @discardableResult
     private func movePaneHere(from holder: MainViewController, at holdingPane: Int,
-                              into index: Int, url: URL) -> Bool {
+                              into index: Int,
+                              onSaved: @escaping () -> Void) -> Bool {
         let target = index == 0 ? windowModel.pane1 : windowModel.pane2
         // The pane being displaced gets the ordinary prompt; a dirty untitled one
-        // saves first and the whole open runs again from the top.
-        guard confirmReplaceDirtyPane(target, onSaved: { [weak self] in
-            _ = self?.openIntoPane(index: index, url: url)
-        }) else { return false }
+        // saves first and whatever asked for the move runs again from the top.
+        guard confirmReplaceDirtyPane(target, onSaved: onSaved) else { return false }
         let moved = holder.releasePane(at: holdingPane)
         if target !== moved {
             paneViews.removeValue(forKey: ObjectIdentifier(target))
@@ -134,9 +134,28 @@ final class MainViewController: NSViewController {
     }
 
     private func movePaneToNewTab(at index: Int) {
-        guard mode == .comparison, let tab = makeSiblingTab?() else { return }
+        guard mode == .comparison else { return }
+        tearOff(paneAt: index, into: self)
+    }
+
+    /// Moves `index`'s pane out of this window and into a tab `host` makes
+    /// beside itself.
+    ///
+    /// `host` is the window the gesture was aimed at, which is not always this
+    /// one: a pane dragged onto another window's New Tab strip belongs in a tab
+    /// beside *that* window. The marks are this window's, because they are the
+    /// ones the pane was read under.
+    private func tearOff(paneAt index: Int, into host: MainViewController) {
+        guard let tab = host.makeSiblingTab?() else { return }
         let marks = windowModel.bookmarkStore.bookmarks
         tab.adoptPane(releasePane(at: index), bookmarks: marks)
+    }
+
+    /// A pane let go on this window's New Tab strip: it leaves for a tab of its
+    /// own beside this window, wherever it came from.
+    func tearOffPaneToNewTab(draggedPaneID: UUID) {
+        guard let origin = paneLocation(ofPaneWith: draggedPaneID) else { return }
+        origin.controller.tearOff(paneAt: origin.paneIndex, into: self)
     }
 
     /// Takes a pane torn off another window, with a copy of that window's marks.
@@ -169,13 +188,9 @@ final class MainViewController: NSViewController {
     /// resolves to nothing, and the drop is refused.
     func paneDropOutcome(draggedPaneID: UUID, onPaneAt index: Int) -> PaneDrop.Outcome {
         guard let origin = paneLocation(ofPaneWith: draggedPaneID) else { return .none }
-        let outcome = PaneDrop.outcome(
+        return PaneDrop.outcome(
             draggingPaneAt: origin.paneIndex,
             onto: .pane(index: index, inOriginWindow: origin.controller === self))
-        // Only the swap is built so far (step 2 of the plan). The rest are
-        // refused at the cursor rather than accepted and ignored; step 4 turns
-        // them on by widening this one line.
-        return outcome == .swap ? outcome : .none
     }
 
     /// Performs whatever the drop means. Nothing here is a new operation —
@@ -184,7 +199,17 @@ final class MainViewController: NSViewController {
         switch paneDropOutcome(draggedPaneID: draggedPaneID, onPaneAt: index) {
         case .swap:
             swapPanes()
-        case .none, .move, .tearOff:
+        case .move(let intoPane):
+            guard let origin = paneLocation(ofPaneWith: draggedPaneID) else { return }
+            movePaneHere(from: origin.controller, at: origin.paneIndex, into: intoPane,
+                         onSaved: { [weak self] in
+                             // Re-resolved rather than captured: the pane may
+                             // have moved again while the save panel was up.
+                             self?.performPaneDrop(draggedPaneID: draggedPaneID,
+                                                   onPaneAt: intoPane)
+                         })
+        case .none, .tearOff:
+            // A tear-off never lands on a pane; the strip owns that one.
             break
         }
     }
@@ -554,6 +579,9 @@ final class MainViewController: NSViewController {
         newTabDropStrip.onDropFiles = { [weak self] urls in
             self?.openFilesInNewTab(urls)
         }
+        newTabDropStrip.onPaneDropped = { [weak self] paneID in
+            self?.tearOffPaneToNewTab(draggedPaneID: paneID)
+        }
         contentContainer.addSubview(newTabDropStrip)
         let stripHeight = newTabDropStrip.heightAnchor.constraint(equalToConstant: 0)
         newTabDropStripHeight = stripHeight
@@ -681,6 +709,17 @@ final class MainViewController: NSViewController {
             emptyView.onOpenFiles = { [weak self] urls in
                 self?.handleEmptyDrop(urls)
             }
+            // An empty window is the most obvious place to put a pane, and it
+            // has only the first one to put it in.
+            emptyView.paneDropOutcome = { [weak self] paneID in
+                guard let self,
+                      self.paneLocation(ofPaneWith: paneID)?.controller !== self
+                else { return .none }
+                return self.paneDropOutcome(draggedPaneID: paneID, onPaneAt: 0)
+            }
+            emptyView.onPaneDropped = { [weak self] paneID in
+                self?.performPaneDrop(draggedPaneID: paneID, onPaneAt: 0)
+            }
             setContentView(emptyView)
 
         case .singleFile:
@@ -728,6 +767,19 @@ final class MainViewController: NSViewController {
             singleFileDropView = dropView
             dropView.onDragSessionChanged = { [weak self] active in
                 self?.setNewTabStripVisible(active)
+            }
+            // A single-file window has one free pane, and that is where a
+            // dragged pane goes — the comparison it makes is the point of
+            // dragging it here. A pane from this very window is refused: there
+            // is only one, and it is already here.
+            dropView.paneDropOutcome = { [weak self] paneID in
+                guard let self,
+                      self.paneLocation(ofPaneWith: paneID)?.controller !== self
+                else { return .none }
+                return self.paneDropOutcome(draggedPaneID: paneID, onPaneAt: 1)
+            }
+            dropView.onPaneDropped = { [weak self] paneID in
+                self?.performPaneDrop(draggedPaneID: paneID, onPaneAt: 1)
             }
             dropView.onDrop = { [weak self] target, urls in
                 self?.handleSingleFileDrop(target: target, urls: urls)
@@ -897,6 +949,11 @@ final class MainViewController: NSViewController {
         let key = ObjectIdentifier(model)
         if let existing = paneViews[key] { return existing }
         let view = FilePaneView(viewModel: model)
+        // A pane drag raises every window's strip, since any of them could take
+        // the pane, and lowers them all when the session ends.
+        view.onDragSessionChanged = { [weak self] active in
+            self?.setNewTabStripVisibleEverywhere(active)
+        }
         // The window is named after the files its panes hold, so the title
         // follows the very signal the pane headers follow — a file opened,
         // saved under a new name, reverted or detached by a join moves both at
@@ -950,6 +1007,18 @@ final class MainViewController: NSViewController {
     /// keep describing the dump they are drawn over — an overlay left them
     /// offset from the content by the strip's height, and hid the pane headers
     /// besides.
+    /// Raises or lowers the strip in every open window.
+    ///
+    /// A file drag belongs to the window it is over, but a pane drag belongs to
+    /// the app: the pane can land in any window, so every window has to offer
+    /// somewhere to put it. With no registry — a controller built on its own —
+    /// this window is the whole app.
+    private func setNewTabStripVisibleEverywhere(_ visible: Bool) {
+        for controller in openDocuments?.controllers ?? [self] {
+            controller.setNewTabStripVisible(visible)
+        }
+    }
+
     private func setNewTabStripVisible(_ visible: Bool) {
         let wanted = visible && mode != .empty
         guard let stripHeight = newTabDropStripHeight else { return }
@@ -2499,7 +2568,10 @@ final class MainViewController: NSViewController {
                 case .show:
                     holder.revealOpenFile(inPane: holdingPane)
                 case .move:
-                    return movePaneHere(from: holder, at: holdingPane, into: index, url: url)
+                    return movePaneHere(from: holder, at: holdingPane, into: index,
+                                        onSaved: { [weak self] in
+                                            _ = self?.openIntoPane(index: index, url: url)
+                                        })
                 case .cancel:
                     break
                 }

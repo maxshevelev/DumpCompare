@@ -208,27 +208,108 @@ final class PaneDragTests: XCTestCase {
         XCTAssertEqual(controller.paneDropOutcome(draggedPaneID: UUID(), onPaneAt: 1), .none)
     }
 
-    /// Landing on another window's pane is a *move*, which step 4 builds; until
-    /// then it is refused at the cursor rather than accepted and ignored.
-    func testACrossWindowLandingIsRefusedForNow() throws {
+    /// Two windows sharing a registry, the first a comparison and the second
+    /// empty.
+    private func twoWindows() throws -> (source: MainViewController,
+                                         other: MainViewController,
+                                         a: URL, b: URL) {
         let registry = OpenDocumentRegistry()
-        let (source, _, _) = try comparison()
+        let (source, a, b) = try comparison()
         let other = MainViewController()
         for controller in [source, other] {
             controller.openDocuments = registry
             registry.register(controller)
         }
-        self.liveRegistry = registry
+        liveRegistry = registry
+        return (source, other, a, b)
+    }
 
-        let outcome = other.paneDropOutcome(draggedPaneID: source.windowModel.pane1.dragID,
-                                            onPaneAt: 0)
+    /// Landing on another window's pane moves the pane into that slot — the
+    /// operation the plan's decision named all along, now wired.
+    func testDroppingOnAnotherWindowsPaneMovesThePaneThere() throws {
+        let (source, other, a, b) = try twoWindows()
+        let moved = source.windowModel.pane1
 
-        XCTAssertEqual(outcome, .none, "refused, not silently dropped")
-        // The decision itself already knows the right answer; only the wiring
-        // is waiting.
-        XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 0,
-                                        onto: .pane(index: 0, inOriginWindow: false)),
+        XCTAssertEqual(other.paneDropOutcome(draggedPaneID: moved.dragID, onPaneAt: 0),
                        .move(intoPane: 0))
+        other.performPaneDrop(draggedPaneID: moved.dragID, onPaneAt: 0)
+
+        XCTAssertIdentical(other.windowModel.pane1, moved,
+                           "the pane itself crossed, not a second document over one file")
+        XCTAssertEqual(other.windowModel.pane1.status.fileName, a.lastPathComponent)
+        XCTAssertEqual(source.windowModel.pane1.status.fileName, b.lastPathComponent,
+                       "the pane that stayed is now the first one")
+        XCTAssertEqual(source.mode, .singleFile)
+    }
+
+    /// The moved pane brings its unsaved edits: it is moved, never re-read.
+    func testAPaneDraggedToAnotherWindowKeepsItsEdits() throws {
+        let (source, other, _, _) = try twoWindows()
+        let moved = source.windowModel.pane1
+        try moved.pasteWrite([0xFF, 0xFE])
+        XCTAssertTrue(moved.status.isDirty, "the premise")
+
+        other.performPaneDrop(draggedPaneID: moved.dragID, onPaneAt: 0)
+
+        XCTAssertTrue(other.windowModel.pane1.status.isDirty)
+    }
+
+    // MARK: - The strip takes a pane too
+
+    /// A pane let go on the strip leaves for a tab of its own — the same
+    /// operation `Open in New Tab` performs from the pane's menu.
+    func testAPaneDroppedOnTheStripTearsOffIntoANewTab() throws {
+        let (source, a, b) = try comparison()
+        let tab = MainViewController()
+        source.makeSiblingTab = { tab }
+
+        source.tearOffPaneToNewTab(draggedPaneID: source.windowModel.pane2.dragID)
+
+        XCTAssertEqual(tab.windowModel.pane1.status.fileName, b.lastPathComponent)
+        XCTAssertEqual(source.mode, .singleFile)
+        XCTAssertEqual(source.windowModel.pane1.status.fileName, a.lastPathComponent)
+    }
+
+    /// The tab is made beside the window whose strip took the pane, not beside
+    /// the one it came from: the gesture was aimed here.
+    func testTheTornOffTabIsMadeBesideTheWindowThatTookIt() throws {
+        let (source, other, _, b) = try twoWindows()
+        let tab = MainViewController()
+        var sourceAsked = 0
+        source.makeSiblingTab = { sourceAsked += 1; return MainViewController() }
+        other.makeSiblingTab = { tab }
+
+        other.tearOffPaneToNewTab(draggedPaneID: source.windowModel.pane2.dragID)
+
+        XCTAssertEqual(sourceAsked, 0, "the window it came from was not asked")
+        XCTAssertEqual(tab.windowModel.pane1.status.fileName, b.lastPathComponent)
+    }
+
+    /// The marks come from the window the pane was read under, which is the one
+    /// it left — not the one that happened to host the new tab.
+    func testTheTornOffTabTakesTheSourceWindowsMarks() throws {
+        let (source, other, _, _) = try twoWindows()
+        let tab = MainViewController()
+        other.makeSiblingTab = { tab }
+        _ = source.windowModel.bookmarkStore.add(rowContaining: 0, name: "read here")
+        _ = other.windowModel.bookmarkStore.add(rowContaining: 16, name: "not this one")
+
+        other.tearOffPaneToNewTab(draggedPaneID: source.windowModel.pane2.dragID)
+
+        XCTAssertEqual(tab.windowModel.bookmarkStore.bookmarks.map(\.name), ["read here"])
+    }
+
+    /// A pane whose window is gone tears nothing off.
+    func testTearingOffAnUnknownPaneDoesNothing() throws {
+        let (source, a, b) = try comparison()
+        var asked = 0
+        source.makeSiblingTab = { asked += 1; return MainViewController() }
+
+        source.tearOffPaneToNewTab(draggedPaneID: UUID())
+
+        XCTAssertEqual(asked, 0)
+        XCTAssertEqual(source.windowModel.pane1.status.fileName, a.lastPathComponent)
+        XCTAssertEqual(source.windowModel.pane2.status.fileName, b.lastPathComponent)
     }
 
     // MARK: - Picking a pane up
@@ -373,5 +454,55 @@ final class PaneDragTests: XCTestCase {
         XCTAssertEqual(NewTabDropStrip.height, 44)
         XCTAssertGreaterThan(layout.replaceRange.upperBound, layout.replaceRange.lowerBound,
                              "the middle band survives the strip's share")
+    }
+
+    // MARK: - Landing on a window that is not a comparison
+
+    /// A pane dropped on a single-file window joins it as the second pane —
+    /// which is the comparison the gesture was for. This is the case that did
+    /// not work at first: only the comparison-mode overlay was registered for a
+    /// pane drag, so a single-file tab had nobody waiting.
+    func testAPaneMovesIntoASingleFileWindowsFreePane() throws {
+        let registry = OpenDocumentRegistry()
+        let (source, a, b) = try comparison()
+        let lone = MainViewController()
+        let c = try tempFile([UInt8](repeating: 0xC0, count: 64))
+        lone.openFiles([c])
+        for controller in [source, lone] {
+            controller.openDocuments = registry
+            registry.register(controller)
+        }
+        liveRegistry = registry
+        XCTAssertEqual(lone.mode, .singleFile, "the premise")
+
+        XCTAssertEqual(lone.paneDropOutcome(draggedPaneID: source.windowModel.pane2.dragID,
+                                            onPaneAt: 1),
+                       .move(intoPane: 1))
+        lone.performPaneDrop(draggedPaneID: source.windowModel.pane2.dragID, onPaneAt: 1)
+
+        XCTAssertEqual(lone.mode, .comparison, "the dropped pane made it a comparison")
+        XCTAssertEqual(lone.windowModel.pane1.status.fileName, c.lastPathComponent)
+        XCTAssertEqual(lone.windowModel.pane2.status.fileName, b.lastPathComponent)
+        XCTAssertEqual(source.mode, .singleFile)
+        XCTAssertEqual(source.windowModel.pane1.status.fileName, a.lastPathComponent)
+    }
+
+    /// A pane dropped on an empty window fills it.
+    func testAPaneMovesIntoAnEmptyWindow() throws {
+        let registry = OpenDocumentRegistry()
+        let (source, a, b) = try comparison()
+        let empty = MainViewController()
+        for controller in [source, empty] {
+            controller.openDocuments = registry
+            registry.register(controller)
+        }
+        liveRegistry = registry
+        XCTAssertEqual(empty.mode, .empty, "the premise")
+
+        empty.performPaneDrop(draggedPaneID: source.windowModel.pane2.dragID, onPaneAt: 0)
+
+        XCTAssertEqual(empty.mode, .singleFile)
+        XCTAssertEqual(empty.windowModel.pane1.status.fileName, b.lastPathComponent)
+        XCTAssertEqual(source.windowModel.pane1.status.fileName, a.lastPathComponent)
     }
 }

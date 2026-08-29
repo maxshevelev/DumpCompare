@@ -440,6 +440,10 @@ final class NewTabDropStrip: NSView {
     /// Fired when files are dropped on the strip.
     var onDropFiles: (([URL]) -> Void)?
 
+    /// Fired when a dragged pane is let go on the strip: it leaves for a tab of
+    /// its own.
+    var onPaneDropped: ((_ draggedPaneID: UUID) -> Void)?
+
     private let target = DropTargetView(title: "Open in New Tab")
     private var dragActive = false
 
@@ -453,7 +457,9 @@ final class NewTabDropStrip: NSView {
             target.topAnchor.constraint(equalTo: topAnchor, constant: 4),
             target.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
         ])
-        registerForDraggedTypes([.fileURL, .fileNames])
+        // Both payloads mean the same thing here — this goes into a tab of its
+        // own — which is why one strip serves a file and a pane alike.
+        registerForDraggedTypes([.fileURL, .fileNames, .pane])
         setDragActive(false)
     }
 
@@ -475,18 +481,32 @@ final class NewTabDropStrip: NSView {
         target.alphaValue = active ? 1 : 0
         if !active { target.setHighlighted(false) }
     }
+
+    /// The caption, which differs by what is being carried: a file is opened in
+    /// a new tab, a pane moves into one.
+    func setTitle(forPane isPane: Bool) {
+        target.setTitle(isPane ? "Move to New Tab" : "Open in New Tab")
+    }
 }
 
 extension NewTabDropStrip {
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if sender.draggingPasteboard.draggedPaneID != nil {
+            setDragActive(true)
+            setTitle(forPane: true)
+            target.setHighlighted(true)
+            return .move
+        }
         guard !sender.draggingPasteboard.droppedFileURLs.isEmpty else { return [] }
         setDragActive(true)
+        setTitle(forPane: false)
         target.setHighlighted(true)
         return .copy
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        dragActive ? .copy : []
+        guard dragActive else { return [] }
+        return sender.draggingPasteboard.draggedPaneID != nil ? .move : .copy
     }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
@@ -505,6 +525,10 @@ extension NewTabDropStrip {
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         setDragActive(false)
+        if let paneID = sender.draggingPasteboard.draggedPaneID {
+            onPaneDropped?(paneID)
+            return true
+        }
         let urls = sender.draggingPasteboard.droppedFileURLs
         guard !urls.isEmpty else { return true }
         onDropFiles?(urls)
