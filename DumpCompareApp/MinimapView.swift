@@ -2096,9 +2096,14 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// drag is in flight.
     private var dragGrabOffset: CGFloat?
 
-    /// Moves the caret of `mapIndex`'s pane to `offset` and centres it there.
-    /// The map draws real bytes, so a click on one means that byte — unlike a
-    /// drag of the band, which is a scrollbar gesture and leaves the caret be.
+    /// Brings `offset` into view in `mapIndex`'s pane, centred, and makes that
+    /// pane the active one. The map draws real bytes, so a click on one means
+    /// "take me to that byte".
+    ///
+    /// It moves neither the caret nor the selection: a click on the map
+    /// navigates, and where the caret was left is not the map's to change (§19).
+    /// The band's drag goes through `onScrollToOffset` instead — a scrollbar
+    /// gesture, which scrolls without activating a pane.
     var onSelectOffset: ((_ mapIndex: Int, _ offset: UInt64) -> Void)?
 
     /// The right-click menu for a point on the segment strip, built by the
@@ -2151,7 +2156,7 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         // The segment strip positions like the map does: a click on it means
-        // "take me here" — the caret goes to the byte the click's y stands for,
+        // "take me here" — the pane goes to the byte the click's y stands for,
         // or to the nearest cut's exact offset when one is in reach (§19.4.4).
         // Checked before the band, which runs edge to edge and would otherwise
         // swallow the strip's clicks as a drag.
@@ -2161,15 +2166,15 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         }
         let bands = viewportRects()
         if let band = bands.first(where: { $0.contains(point) }) {
-            // The band is the drag handle: grabbing it scrolls and must not
-            // disturb the caret.
+            // The band is the drag handle: grabbing it starts a scroll, so the
+            // press must not also be read as a "take me here" jump.
             dragGrabOffset = point.y - band.minY
             return
         }
         // Off the band: the click means the byte drawn under it — or the row of a
-        // bookmark whose mark it landed near (§19.6) — so the caret goes there and
-        // the pane centres on it. The drag then continues from the band's middle,
-        // so the press can still turn into a scroll.
+        // bookmark whose mark it landed near (§19.6) — so the pane centres on it.
+        // The drag then continues from the band's middle, so the press can still
+        // turn into a scroll.
         if let (mapIndex, offset) = snappedOffset(at: point) {
             onSelectOffset?(mapIndex, offset)
         }
@@ -2263,7 +2268,7 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     // MARK: - The segment strip's click (§19.4.4)
 
     /// The map and byte a click on the segment strip stands for: the nearest cut
-    /// within the snap distance (the caret goes to its exact offset), or the byte
+    /// within the snap distance (the pane goes to its exact offset), or the byte
     /// drawn at the click's y when no cut is in reach. The strip positions like
     /// the map does — a click anywhere on it means "take me here" — a cut is just
     /// a target worth snapping to, the way a bookmark's mark is (§19.6.1). Nil
