@@ -67,7 +67,10 @@ final class SingleFileDropView: NSView {
     /// The "second file" half — a self-contained single-target drop region.
     private let addTarget = DropZoneView(title: SingleFileDropTarget.addSecond.title)
 
-    private static let layoutKey = "ComparisonPaneLayoutIsVertical"
+    /// The constraints that split this view into its two halves, held so the
+    /// split can be re-made when the pane layout direction changes.
+    private var splitConstraints: [NSLayoutConstraint] = []
+    private var layoutDirectionObserver: NSObjectProtocol?
 
     init(paneView: FilePaneView) {
         self.paneView = paneView
@@ -90,40 +93,25 @@ final class SingleFileDropView: NSView {
             paneView.trailingAnchor.constraint(equalTo: trailingAnchor),
         ])
 
-        // Split the two regions along the current/default layout: isVertical
-        // (left/right) ⇒ regions side by side; top/bottom ⇒ stacked (§4.3).
-        // The "this file" half holds the three bands; the "second file" half
-        // holds the single Open-as-Second target.
-        let isVertical = UserDefaults.standard.object(forKey: Self.layoutKey) as? Bool ?? true
         thisFileBands.translatesAutoresizingMaskIntoConstraints = false
         addTarget.translatesAutoresizingMaskIntoConstraints = false
         addSubview(thisFileBands)
         addSubview(addTarget)
 
-        if isVertical {
-            thisFileBands.leadingAnchor.constraint(equalTo: leadingAnchor).isActive = true
-            thisFileBands.topAnchor.constraint(equalTo: topAnchor).isActive = true
-            thisFileBands.bottomAnchor.constraint(equalTo: bottomAnchor).isActive = true
-            bandsShareHalf = thisFileBands.widthAnchor.constraint(equalTo: widthAnchor,
-                                                                 multiplier: 0.5)
-            bandsTakeAll = thisFileBands.widthAnchor.constraint(equalTo: widthAnchor)
-            bandsShareHalf?.isActive = true
-            addTarget.leadingAnchor.constraint(equalTo: thisFileBands.trailingAnchor).isActive = true
-            addTarget.trailingAnchor.constraint(equalTo: trailingAnchor).isActive = true
-            addTarget.topAnchor.constraint(equalTo: topAnchor).isActive = true
-            addTarget.bottomAnchor.constraint(equalTo: bottomAnchor).isActive = true
-        } else {
-            thisFileBands.leadingAnchor.constraint(equalTo: leadingAnchor).isActive = true
-            thisFileBands.trailingAnchor.constraint(equalTo: trailingAnchor).isActive = true
-            thisFileBands.topAnchor.constraint(equalTo: topAnchor).isActive = true
-            bandsShareHalf = thisFileBands.heightAnchor.constraint(equalTo: heightAnchor,
-                                                                  multiplier: 0.5)
-            bandsTakeAll = thisFileBands.heightAnchor.constraint(equalTo: heightAnchor)
-            bandsShareHalf?.isActive = true
-            addTarget.topAnchor.constraint(equalTo: thisFileBands.bottomAnchor).isActive = true
-            addTarget.bottomAnchor.constraint(equalTo: bottomAnchor).isActive = true
-            addTarget.leadingAnchor.constraint(equalTo: leadingAnchor).isActive = true
-            addTarget.trailingAnchor.constraint(equalTo: trailingAnchor).isActive = true
+        applySplit(isVertical: LayoutSettings.isVertical)
+        // The direction is settings, not a constant, and it can change while
+        // this view is on screen — with one file open there is no comparison for
+        // the controller to re-apply it to, so nothing else would rebuild this
+        // split. Read once at construction, it went on offering the old
+        // arrangement: a drop overlay divided side by side over panes that had
+        // been told to stack.
+        layoutDirectionObserver = NotificationCenter.default.addObserver(
+            forName: LayoutSettings.layoutDirectionDidChangeNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.applySplit(isVertical: LayoutSettings.isVertical)
+            }
         }
 
         // `.pane` as well as the file types: a pane dragged here goes into the
@@ -131,6 +119,64 @@ final class SingleFileDropView: NSView {
         // it without registering for it is silent — AppKit simply never delivers
         // the drag, and the zone never appears (`Design/PANE_DRAG_PLAN.md`).
         registerForDraggedTypes([.fileURL, .fileNames, .pane])
+    }
+
+    deinit {
+        if let layoutDirectionObserver {
+            NotificationCenter.default.removeObserver(layoutDirectionObserver)
+        }
+    }
+
+    /// Divides the view into its two halves along `isVertical`: side by side
+    /// (left/right) or stacked (top/bottom), matching how the panes themselves
+    /// are arranged (§4.3). The "this file" half holds the three bands; the
+    /// "second file" half holds the single Open-as-Second target.
+    private func applySplit(isVertical: Bool) {
+        NSLayoutConstraint.deactivate(splitConstraints)
+        bandsShareHalf?.isActive = false
+        bandsTakeAll?.isActive = false
+
+        let half: NSLayoutConstraint
+        let all: NSLayoutConstraint
+        var constraints: [NSLayoutConstraint]
+        if isVertical {
+            half = thisFileBands.widthAnchor.constraint(equalTo: widthAnchor, multiplier: 0.5)
+            all = thisFileBands.widthAnchor.constraint(equalTo: widthAnchor)
+            constraints = [
+                thisFileBands.leadingAnchor.constraint(equalTo: leadingAnchor),
+                thisFileBands.topAnchor.constraint(equalTo: topAnchor),
+                thisFileBands.bottomAnchor.constraint(equalTo: bottomAnchor),
+                addTarget.leadingAnchor.constraint(equalTo: thisFileBands.trailingAnchor),
+                addTarget.trailingAnchor.constraint(equalTo: trailingAnchor),
+                addTarget.topAnchor.constraint(equalTo: topAnchor),
+                addTarget.bottomAnchor.constraint(equalTo: bottomAnchor),
+            ]
+        } else {
+            half = thisFileBands.heightAnchor.constraint(equalTo: heightAnchor, multiplier: 0.5)
+            all = thisFileBands.heightAnchor.constraint(equalTo: heightAnchor)
+            constraints = [
+                thisFileBands.leadingAnchor.constraint(equalTo: leadingAnchor),
+                thisFileBands.trailingAnchor.constraint(equalTo: trailingAnchor),
+                thisFileBands.topAnchor.constraint(equalTo: topAnchor),
+                addTarget.topAnchor.constraint(equalTo: thisFileBands.bottomAnchor),
+                addTarget.bottomAnchor.constraint(equalTo: bottomAnchor),
+                addTarget.leadingAnchor.constraint(equalTo: leadingAnchor),
+                addTarget.trailingAnchor.constraint(equalTo: trailingAnchor),
+            ]
+        }
+        bandsShareHalf = half
+        bandsTakeAll = all
+        // The half is the resting state; `setSecondHalfOffered` swaps to `all`
+        // when a drop has nothing to put in the second half.
+        half.isActive = true
+        constraints.append(half)
+        NSLayoutConstraint.activate(constraints)
+        splitConstraints = constraints
+    }
+
+    /// Which way this view is split (for tests).
+    var isSplitVerticallyForTesting: Bool {
+        bandsShareHalf?.firstAttribute == .width
     }
 
     // MARK: - Drag targeting (§4.3)
