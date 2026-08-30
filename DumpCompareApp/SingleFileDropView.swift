@@ -46,11 +46,21 @@ final class SingleFileDropView: NSView {
     /// has a free second pane, so the answer is normally "move it in beside this
     /// one" — but it is the controller's to give, and it says no to a pane from
     /// this very window, which has nowhere else to be.
-    var paneDropOutcome: ((_ draggedPaneID: UUID, _ target: SingleFileDropTarget)
-                          -> PaneDrop.Outcome)?
+    var paneDropOutcome: ((_ draggedPaneID: UUID, _ target: SingleFileDropTarget,
+                           _ copying: Bool) -> PaneDrop.Outcome)?
 
     /// Fired when a dragged pane is let go here, in the zone it landed in.
-    var onPaneDropped: ((_ draggedPaneID: UUID, _ target: SingleFileDropTarget) -> Void)?
+    var onPaneDropped: ((_ draggedPaneID: UUID, _ target: SingleFileDropTarget,
+                        _ copying: Bool) -> Void)?
+
+    /// Whether the drag in flight is asking to copy — the Option key, re-read on
+    /// every update so the zones re-label as it is pressed and released.
+    private var draggedPaneIsCopying = false
+
+    /// Fired when Option goes down or up over this view, which is the only place
+    /// the news arrives while the pointer is here. See
+    /// `PaneDropBandsView.onCopyModifierChanged`.
+    var onCopyModifierChanged: ((Bool) -> Void)?
 
     /// Fired when a drag session starts here and when it ends — never when it
     /// merely leaves. See `PaneDropBandsView.onDragSessionChanged`: leaving is
@@ -192,6 +202,7 @@ final class SingleFileDropView: NSView {
         // the whole view is one target rather than the file bands.
         if let paneID = sender.draggingPasteboard.draggedPaneID {
             draggedPaneID = paneID
+            notePaneDragCopying(sender.isCopyRequested)
             return paneOperation(at: sender.draggingLocation)
         }
         guard !sender.draggingPasteboard.droppedFileURLs.isEmpty else { return [] }
@@ -201,7 +212,10 @@ final class SingleFileDropView: NSView {
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        if draggedPaneID != nil { return paneOperation(at: sender.draggingLocation) }
+        if draggedPaneID != nil {
+            notePaneDragCopying(sender.isCopyRequested)
+            return paneOperation(at: sender.draggingLocation)
+        }
         updateDragTarget(at: sender.draggingLocation)
         return .copy
     }
@@ -215,10 +229,10 @@ final class SingleFileDropView: NSView {
         // already in this window — leaves that half with nothing to say, so the
         // bands take the whole view instead of standing beside a reserved space
         // for something that will not happen.
-        let secondHalf = paneDropOutcome?(paneID, .addSecond) ?? .none
+        let secondHalf = paneDropOutcome?(paneID, .addSecond, draggedPaneIsCopying) ?? .none
         setSecondHalfOffered(secondHalf != .none)
         let target = dropTarget(at: windowPoint) ?? .addSecond
-        let outcome = paneDropOutcome?(paneID, target) ?? .none
+        let outcome = paneDropOutcome?(paneID, target, draggedPaneIsCopying) ?? .none
         // Nothing to offer, so nothing is shown — a window's own pane has
         // nowhere to go here, and lighting the zones for it would offer a
         // choice that does not exist.
@@ -226,18 +240,7 @@ final class SingleFileDropView: NSView {
             clearDragTarget()
             return []
         }
-        // This view owns the provider, so it is the one that can answer for a
-        // band; the overlay's own is nil here.
-        thisFileBands.retitleBands(forPane: paneID) { [weak self] band in
-            self?.paneDropOutcome?(paneID, band) ?? .none
-        }
-        // Captioned from what it will do, like the bands are. A pane from
-        // elsewhere becomes this window's second one, so the zone's own name is
-        // the right words for it; the window's own pane is copied, and "Open as
-        // Second Pane" would say nothing about the copy being made.
-        addTarget.setTitle(secondHalf.isDuplicate
-                           ? "Duplicate Here"
-                           : SingleFileDropTarget.addSecond.title)
+        retitlePaneZones(for: paneID, secondHalf: secondHalf)
         updateDragTarget(at: windowPoint)
         switch outcome {
         // A join and a duplicate both copy — the pane they came from is left
@@ -246,6 +249,47 @@ final class SingleFileDropView: NSView {
         case .swap, .move: return .move
         case .none, .tearOff: return []
         }
+    }
+
+    /// Captions the four zones from what each of them would do.
+    ///
+    /// `secondHalf` is that zone's outcome, passed in when the caller has just
+    /// asked for it rather than asked for again.
+    private func retitlePaneZones(for paneID: UUID, secondHalf: PaneDrop.Outcome? = nil) {
+        // This view owns the provider, so it is the one that can answer for a
+        // band; the overlay's own is nil here.
+        thisFileBands.retitleBands(forPane: paneID) { [weak self] band in
+            guard let self else { return .none }
+            return self.paneDropOutcome?(paneID, band, self.draggedPaneIsCopying) ?? .none
+        }
+        // Captioned from what it will do, like the bands are. A pane from
+        // elsewhere becomes this window's second one, so the zone's own name is
+        // the right words for it; the window's own pane is copied, and "Open as
+        // Second Pane" would say nothing about the copy being made.
+        let second = secondHalf
+            ?? paneDropOutcome?(paneID, .addSecond, draggedPaneIsCopying)
+            ?? .none
+        addTarget.setTitle(second.isDuplicate
+                           ? "Duplicate Here"
+                           : SingleFileDropTarget.addSecond.title)
+    }
+
+    /// Records the modifier and tells the window when it changed, so the zones
+    /// that are not under the pointer can be re-captioned too.
+    private func notePaneDragCopying(_ copying: Bool) {
+        guard draggedPaneIsCopying != copying else { return }
+        draggedPaneIsCopying = copying
+        onCopyModifierChanged?(copying)
+    }
+
+    /// Takes a modifier change heard by another zone — the New Tab strip above,
+    /// or a zone in another window — and re-captions these ones from it. Silent
+    /// when no pane is in flight here, and never fires `onCopyModifierChanged`:
+    /// this is the news arriving, not being made.
+    func setPaneDragCopying(_ copying: Bool) {
+        guard let paneID = draggedPaneID, draggedPaneIsCopying != copying else { return }
+        draggedPaneIsCopying = copying
+        retitlePaneZones(for: paneID)
     }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
@@ -275,9 +319,10 @@ final class SingleFileDropView: NSView {
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         if let paneID = sender.draggingPasteboard.draggedPaneID {
             let target = dropTarget(at: sender.draggingLocation) ?? .addSecond
+            let copying = sender.isCopyRequested
             endPaneDrag()
             clearDragTarget()
-            onPaneDropped?(paneID, target)
+            onPaneDropped?(paneID, target, copying)
             return true
         }
         let urls = sender.draggingPasteboard.droppedFileURLs

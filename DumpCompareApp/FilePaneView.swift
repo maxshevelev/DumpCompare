@@ -1543,11 +1543,15 @@ final class OperationStatusView: NSView {
 }
 
 extension FilePaneView: NSDraggingSource {
-    /// A pane can be moved, and only inside this app: outside it the drag means
-    /// nothing, so it is offered nothing to mean.
+    /// A pane can be moved or copied, and only inside this app: outside it the
+    /// drag means nothing, so it is offered nothing to mean.
+    ///
+    /// Both are offered so AppKit can narrow the mask to `.copy` while Option is
+    /// held — that is how the modifier reaches the destinations, and how they
+    /// know to say "Duplicate" instead of "Move".
     func draggingSession(_ session: NSDraggingSession,
                          sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
-        context == .withinApplication ? .move : []
+        context == .withinApplication ? [.move, .copy] : []
     }
 
     func draggingSession(_ session: NSDraggingSession, willBeginAt screenPoint: NSPoint) {

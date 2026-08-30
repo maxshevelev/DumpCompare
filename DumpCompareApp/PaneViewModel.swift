@@ -345,6 +345,9 @@ final class PaneViewModel: HexViewDataSource {
         // flag an earlier New File left behind, or the pane header keeps showing
         // "Untitled" with the new-file glyph instead of the loaded file (§4/§5).
         isUntitled = false
+        // Whatever name a duplicate was wearing belongs to the document that
+        // has just been replaced, not to this one.
+        untitledName = nil
         refreshSavedStorage()
         // A new file re-arms the one-time insert-mode warning (it is per opened
         // file, not per session).
@@ -380,6 +383,7 @@ final class PaneViewModel: HexViewDataSource {
         document = doc
         savedStorage = nil
         isUntitled = true
+        untitledName = nil
         // A new file re-arms the one-time insert-mode warning.
         hasWarnedInsertShift = false
         resetEditingState()
@@ -407,10 +411,21 @@ final class PaneViewModel: HexViewDataSource {
     ///
     /// Throws when the snapshot cannot be taken; the pane is unchanged in that
     /// case (the document is only swapped in after the copy exists).
-    func openDuplicate(of source: PaneViewModel) throws {
+    /// The name an untitled document goes by, when it has one worth showing.
+    ///
+    /// A duplicate of a file is called after it — `bios-2.bin` — so two copies
+    /// are told apart and each says which dump it came from (§23). Nothing is
+    /// written to disk for it: this is the header's label and the save panel's
+    /// pre-fill, and the file exists only once the user saves. Nil for a
+    /// document with no such story, like `File ▸ New File`, which is "Untitled"
+    /// because that is exactly what it is.
+    private(set) var untitledName: String?
+
+    func openDuplicate(of source: PaneViewModel, named name: String? = nil) throws {
         guard let sourceDoc = source.document else { return }
         let doc = try sourceDoc.duplicate()
         document = doc
+        untitledName = name
         // Nothing on disk to compare against: like an untitled document, the copy
         // has no saved bytes, so no byte of it reads as modified (§6) until it is
         // saved and edited.
@@ -438,6 +453,7 @@ final class PaneViewModel: HexViewDataSource {
         document = nil
         savedStorage = nil
         isUntitled = false
+        untitledName = nil
         // Closing drops the file, so the one-time insert-mode warning re-arms
         // for whatever opens next.
         hasWarnedInsertShift = false
@@ -477,6 +493,7 @@ final class PaneViewModel: HexViewDataSource {
         // a watcher (none was needed while nothing existed on disk) and a saved
         // reference for modified-byte detection.
         isUntitled = false
+        untitledName = nil
         refreshSavedStorage()
         resetEditingState()
         if changeWatcher == nil {
@@ -856,7 +873,7 @@ final class PaneViewModel: HexViewDataSource {
         guard let doc = document else { return PaneStatus(isInsertMode: isInsertMode) }
         let caret = doc.selection.start
         return PaneStatus(
-            fileName: isUntitled ? "Untitled" : doc.url.lastPathComponent,
+            fileName: isUntitled ? (untitledName ?? "Untitled") : doc.url.lastPathComponent,
             fileSize: doc.size,
             cursorOffset: caret,
             selectionLength: doc.selection.count,
@@ -1348,6 +1365,7 @@ final class PaneViewModel: HexViewDataSource {
         // The document detached: it is untitled now, with no on-disk reference
         // (the placeholder URL has no file behind it) and no watcher.
         isUntitled = true
+        untitledName = nil
         refreshSavedStorage()
         changeWatcher?.stop()
         changeWatcher = nil

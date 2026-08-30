@@ -101,6 +101,7 @@
 		BA09A682770E765EA63950E5 /* SegmentPaletteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8FE77BD408D4E768F8FC6EF /* SegmentPaletteTests.swift */; };
 		BBA569BD55CADEA84C29281E /* NewFileAndSwapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D56C7E4027097952395DD0AF /* NewFileAndSwapTests.swift */; };
 		BF5D32DED859E97ED617A9C0 /* TextDecodingSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 212A4A8B0EA478EDDEB03EA5 /* TextDecodingSettingsViewController.swift */; };
+		C01A0ED0C2313F3DA6CED68D /* DuplicateName.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5838CE0EABD53B017D68DA93 /* DuplicateName.swift */; };
 		C268E54A71DBE773D3595CDF /* ByteSignificanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B0D5CB24B4DFBC1B37F3F42 /* ByteSignificanceTests.swift */; };
 		C35E1583998132707D8E1749 /* SettingsWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE9F686DC291219019034AF9 /* SettingsWindowController.swift */; };
 		C469DA232E32792EBE3B5607 /* SingleFileDropView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 843BDADF6DC010ED5707D0F2 /* SingleFileDropView.swift */; };
@@ -129,6 +130,7 @@
 		F22634DB7ED7BAAC9A491020 /* DefaultHandlerSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F07F5F1B62FF782811B10B5 /* DefaultHandlerSettingsTests.swift */; };
 		F22E5BE6C522ABA4E1AB95C7 /* BookmarkMinimapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F189C34D5AB2C07E056E3153 /* BookmarkMinimapTests.swift */; };
 		F2EA05CD73EFD077B98A8C99 /* ToolbarItemsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5642C6A5E8AFA36773D021E6 /* ToolbarItemsTests.swift */; };
+		F40FE9163519A4DF06A608DE /* DuplicateNameTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C3EEEBCBDA05CE93D5D8646 /* DuplicateNameTests.swift */; };
 		FC15B3B76A3DB244F7A1BBEE /* ActivePaneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0947EB3C44A8B0879C9B66A /* ActivePaneTests.swift */; };
 		FC89C9381F04CF1A1E46F3DC /* TestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C493FB0DA34423850B00F051 /* TestSupport.swift */; };
 		FD51EAC14BECCAC66D3AC19F /* ComparisonCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7338140948096ABDADE950FE /* ComparisonCoordinatorTests.swift */; };
@@ -171,6 +173,7 @@
 		2751D9902BBBD4771AFB0FD5 /* MainViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainViewController.swift; sourceTree = "<group>"; };
 		27C6A9590239BF0BA6B2EC2B /* MinimapTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MinimapTests.swift; sourceTree = "<group>"; };
 		2B6700D9C2E00D1370AB090A /* ComparisonResizeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComparisonResizeTests.swift; sourceTree = "<group>"; };
+		2C3EEEBCBDA05CE93D5D8646 /* DuplicateNameTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DuplicateNameTests.swift; sourceTree = "<group>"; };
 		2CD97E5E51E50F0E06BF9B0E /* SegmentSaveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentSaveTests.swift; sourceTree = "<group>"; };
 		2D6C40AE03786A3BEF22AFFF /* SegmentReplaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentReplaceTests.swift; sourceTree = "<group>"; };
 		2EDEBBD2483CAEDFE3574C52 /* KeyboardNavigationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardNavigationTests.swift; sourceTree = "<group>"; };
@@ -193,6 +196,7 @@
 		4EF3302417C4C7338004CE67 /* SandboxBookmarkStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SandboxBookmarkStore.swift; sourceTree = "<group>"; };
 		5642C6A5E8AFA36773D021E6 /* ToolbarItemsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolbarItemsTests.swift; sourceTree = "<group>"; };
 		569D15C9837FF35B5622867D /* OpenPlacement.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenPlacement.swift; sourceTree = "<group>"; };
+		5838CE0EABD53B017D68DA93 /* DuplicateName.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DuplicateName.swift; sourceTree = "<group>"; };
 		5A2833E2E2F58FCECF7731BB /* FillSelectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FillSelectionTests.swift; sourceTree = "<group>"; };
 		5A61B0AA7755933DD1B3D4F8 /* DividerDragTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DividerDragTests.swift; sourceTree = "<group>"; };
 		6024791311F62D1D8A32128B /* BookmarkDragTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookmarkDragTests.swift; sourceTree = "<group>"; };
@@ -337,6 +341,7 @@
 				0B8427CB107B2BDD59342ACC /* DragDrop.swift */,
 				956D924E94797AA8575FE2D6 /* DropBands.swift */,
 				1D73B46350757B2E6D907D7F /* DumpCompare.entitlements */,
+				5838CE0EABD53B017D68DA93 /* DuplicateName.swift */,
 				EC412178C2384FA9774DA559 /* EditingSettings.swift */,
 				90019A1C55E04846EB502E49 /* EmptyStateView.swift */,
 				443E56A308DC1D5D8E806F72 /* FileChangeWatcher.swift */,
@@ -407,6 +412,7 @@
 				C69836FF0C4CE8AC846BC7CB /* DropBandLayoutTests.swift */,
 				A4166C141DBC4BDC31BAF9BB /* DropBandsTests.swift */,
 				C09AC6F1143FA3369F2AB40B /* DropSplitLayoutTests.swift */,
+				2C3EEEBCBDA05CE93D5D8646 /* DuplicateNameTests.swift */,
 				E2FFB4C256441E0544EDCAE6 /* DuplicateTests.swift */,
 				B7A094B2E245E822EEB75E7F /* EditingSettingsTests.swift */,
 				070D6C147B5AC22ABEA67A97 /* EmptyStateBookmarksTests.swift */,
@@ -581,6 +587,7 @@
 				41BBE1AE6F88877447A4EA28 /* DefaultHandlerSettings.swift in Sources */,
 				AF59EBD1B601A04F936643D0 /* DragDrop.swift in Sources */,
 				CC8D2C00070382ACCCEFBD6B /* DropBands.swift in Sources */,
+				C01A0ED0C2313F3DA6CED68D /* DuplicateName.swift in Sources */,
 				839AFC91D590341F759B10D2 /* EditingSettings.swift in Sources */,
 				3B4F8F01DAD4F7BE904898CF /* EmptyStateView.swift in Sources */,
 				5B3F5E75CD647B8FBC63F2B0 /* FileChangeWatcher.swift in Sources */,
@@ -641,6 +648,7 @@
 				DFD60EF4AA86EE3BFB8CDA69 /* DropBandLayoutTests.swift in Sources */,
 				9036D9A7A9C57DD767CCADED /* DropBandsTests.swift in Sources */,
 				91CC6F94328ECADF1275AB7A /* DropSplitLayoutTests.swift in Sources */,
+				F40FE9163519A4DF06A608DE /* DuplicateNameTests.swift in Sources */,
 				0090A7327FD59E37D6B3A3EA /* DuplicateTests.swift in Sources */,
 				D6ED287D2A8DB2A57583D655 /* EditingSettingsTests.swift in Sources */,
 				B3890F0857CD8AEF44A6D6C0 /* EmptyStateBookmarksTests.swift in Sources */,

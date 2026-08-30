@@ -43,8 +43,8 @@ final class PaneDragTests: XCTestCase {
 
     /// The strip means a tab of its own, wherever the pane came from.
     func testDroppingOnTheStripTearsOff() {
-        XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 0, onto: .newTabStrip), .tearOff)
-        XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 1, onto: .newTabStrip), .tearOff)
+        XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 0, onto: .newTabStrip), .tearOff(copying: false))
+        XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 1, onto: .newTabStrip), .tearOff(copying: false))
     }
 
     /// A drop that lands nowhere returns the pane. Deliberately not a new
@@ -746,7 +746,7 @@ final class PaneDragTests: XCTestCase {
         bands.layout()
         let dragged = UUID()
         var asked: [SingleFileDropTarget] = []
-        bands.paneDropOutcome = { _, band in
+        bands.paneDropOutcome = { _, band, _ in
             asked.append(band)
             // The shape of a pane over its own slot: the ends join, the middle
             // has nothing.
@@ -829,8 +829,9 @@ final class PaneDragTests: XCTestCase {
         XCTAssertEqual(controller.windowModel.pane2.fileSize, 48)
     }
 
-    /// A copy needs a free pane and bytes to copy — the same conditions the menu
-    /// command is validated against.
+    /// The `.addSecond` band stands for the free half of a single-file window,
+    /// so a copy aimed at it is refused once that pane is taken — the band is
+    /// not on screen then. (The middle band is the one that may replace.)
     func testDuplicatingByDropNeedsAFreePaneAndBytes() throws {
         let controller = MainViewController()
         let a = try tempFile([UInt8](repeating: 0xAA, count: 48))
@@ -1006,5 +1007,212 @@ final class PaneDragTests: XCTestCase {
 
         XCTAssertEqual(controller.windowModel.pane2.fileSize, 24)
         XCTAssertEqual(controller.windowModel.activePaneIndex, 1)
+    }
+
+    // MARK: - Option turns a move into a copy
+
+    /// Option is the platform's "copy rather than move", and it changes exactly
+    /// the outcomes that move the pane.
+    func testOptionTurnsAMoveIntoADuplicate() {
+        let toOtherWindow = PaneDrop.Destination.pane(index: 1, inOriginWindow: false,
+                                                      band: .replace)
+
+        XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 0, onto: toOtherWindow),
+                       .move(intoPane: 1))
+        XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 0, onto: toOtherWindow, copying: true),
+                       .duplicate(intoPane: 1))
+    }
+
+    /// The strip too: the pane leaves for a tab of its own, or leaves a copy
+    /// there and stays where it is.
+    func testOptionMakesTheStripCopyRatherThanMove() {
+        XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 0, onto: .newTabStrip),
+                       .tearOff(copying: false))
+        XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 0, onto: .newTabStrip, copying: true),
+                       .tearOff(copying: true))
+    }
+
+    /// The middle band answers Option wherever it lands. Without it, a drop on
+    /// the other pane of one's own window is the swap; with it, the band does
+    /// what it does everywhere else and leaves a copy in that pane.
+    func testOptionTurnsASwapIntoADuplicate() {
+        let ownWindow = PaneDrop.Destination.pane(index: 1, inOriginWindow: true,
+                                                  band: .replace)
+
+        XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 0, onto: ownWindow), .swap)
+        XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 0, onto: ownWindow, copying: true),
+                       .duplicate(intoPane: 1))
+    }
+
+    /// The join is the one outcome Option leaves alone: it already copies, since
+    /// the pane it reads from is left as it was.
+    func testOptionLeavesAJoinAlone() {
+        let ownWindow = PaneDrop.Destination.pane(index: 1, inOriginWindow: true,
+                                                  band: .insertAtStart)
+
+        for copying in [false, true] {
+            XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 0, onto: ownWindow,
+                                            copying: copying),
+                           .join(intoPane: 1, at: .start), "copying: \(copying)")
+        }
+    }
+
+    /// A pane dropped on itself is the gesture abandoned, Option or not — there
+    /// is no copy of a pane into the slot it already occupies.
+    func testOptionDoesNotMakeAPaneDroppedOnItselfDoAnything() {
+        let itself = PaneDrop.Destination.pane(index: 0, inOriginWindow: true, band: .replace)
+
+        for copying in [false, true] {
+            XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 0, onto: itself, copying: copying),
+                           .none, "copying: \(copying)")
+        }
+    }
+
+    /// The captions follow the modifier, so a zone says which of the two it will
+    /// do before the mouse comes up.
+    func testTheCaptionFollowsTheModifier() {
+        XCTAssertEqual(PaneDropBandsView.paneBandTitle(for: .move(intoPane: 1)), "Move Here")
+        XCTAssertEqual(PaneDropBandsView.paneBandTitle(for: .duplicate(intoPane: 1)),
+                       "Duplicate Here")
+    }
+
+    /// A band re-reads the modifier on every update, so pressing Option under a
+    /// stationary pointer re-labels the zone rather than waiting for a move.
+    func testABandRelabelsWhenTheModifierChanges() {
+        let bands = PaneDropBandsView(paneView: FilePaneView(viewModel: PaneViewModel()))
+        bands.frame = NSRect(x: 0, y: 0, width: 300, height: 400)
+        bands.layout()
+        bands.paneDropOutcome = { _, band, copying in
+            guard band == .replace else { return .none }
+            return copying ? .duplicate(intoPane: 1) : .move(intoPane: 1)
+        }
+        let dragged = UUID()
+
+        XCTAssertEqual(bands.paneDragEnteredForTesting(dragged, at: .replace), .move)
+        XCTAssertEqual(bands.bandForTesting(.replace).titleForTesting, "Move Here")
+
+        XCTAssertEqual(bands.paneDragEnteredForTesting(dragged, at: .replace, copying: true),
+                       .copy)
+        XCTAssertEqual(bands.bandForTesting(.replace).titleForTesting, "Duplicate Here")
+    }
+
+    /// Option-dropping a pane on another window leaves it where it was and puts
+    /// a copy in the target.
+    func testOptionDroppingOnAnotherWindowCopiesRatherThanMoves() throws {
+        let (source, other, a, b) = try twoWindows()
+        let moved = source.windowModel.pane1
+
+        other.performPaneDrop(draggedPaneID: moved.dragID, onPaneAt: 0,
+                              band: .replace, copying: true)
+
+        XCTAssertIdentical(source.windowModel.pane1, moved, "the pane stayed where it was")
+        XCTAssertEqual(source.windowModel.pane1.status.fileName, a.lastPathComponent)
+        XCTAssertEqual(source.windowModel.pane2.status.fileName, b.lastPathComponent)
+        XCTAssertEqual(source.mode, .comparison, "the comparison it came from is intact")
+
+        XCTAssertTrue(other.windowModel.pane1.isUntitled, "and the other window has a copy")
+        XCTAssertEqual(other.windowModel.pane1.fileSize, moved.fileSize)
+    }
+
+    // MARK: - Every zone hears the modifier, not just the hovered one
+
+    /// The strip re-captions itself for a modifier change it did not hear
+    /// first — the pointer is over a band, and only that band is sent the
+    /// update.
+    func testTheStripRelabelsForAModifierHeardElsewhere() {
+        let strip = NewTabDropStrip()
+        strip.setDragActive(true, forPane: true)
+        XCTAssertEqual(strip.titleForTesting, "Move to New Tab")
+
+        strip.setPaneDragCopying(true)
+        XCTAssertEqual(strip.titleForTesting, "Duplicate to New Tab")
+
+        strip.setPaneDragCopying(false)
+        XCTAssertEqual(strip.titleForTesting, "Move to New Tab", "and back again")
+    }
+
+    /// A file is opened in a new tab whether or not Option is down, so the
+    /// strip's file caption does not answer the modifier at all.
+    func testTheStripIgnoresTheModifierForAFileDrag() {
+        let strip = NewTabDropStrip()
+        strip.setDragActive(true, forPane: false)
+
+        strip.setPaneDragCopying(true)
+
+        XCTAssertEqual(strip.titleForTesting, "Open in New Tab")
+    }
+
+    /// The bands do the same in the other direction: the pointer is over the
+    /// strip, and the bands take the news second-hand.
+    func testTheBandsRelabelForAModifierHeardElsewhere() {
+        let bands = PaneDropBandsView(paneView: nil)
+        bands.paneDropOutcome = { _, band, copying in
+            guard band == .replace else { return .none }
+            return copying ? .duplicate(intoPane: 1) : .move(intoPane: 1)
+        }
+        _ = bands.paneDragEnteredForTesting(UUID(), at: .replace)
+        XCTAssertEqual(bands.bandForTesting(.replace).titleForTesting, "Move Here")
+
+        bands.setPaneDragCopying(true)
+
+        XCTAssertEqual(bands.bandForTesting(.replace).titleForTesting, "Duplicate Here")
+    }
+
+    /// The whole point, end to end: Option pressed while the pointer is over a
+    /// pane's bands re-captions the strip above them too. Two zones describing
+    /// one drop must not disagree — whichever the user reads has to be true.
+    func testOptionOverAPaneRelabelsTheStripAsWell() throws {
+        let (controller, _, _) = try comparison()
+        let strip = controller.newTabStripForTesting
+        strip.setDragActive(true, forPane: true)
+        let bands = try XCTUnwrap(controller.comparisonBandsForTesting).1
+        let dragged = controller.windowModel.pane1.dragID
+
+        _ = bands.paneDragEnteredForTesting(dragged, at: .replace)
+        XCTAssertEqual(strip.titleForTesting, "Move to New Tab")
+
+        // The same band again with Option down, which is what an update carrying
+        // a changed modifier looks like from here.
+        _ = bands.paneDragEnteredForTesting(dragged, at: .replace, copying: true)
+
+        XCTAssertEqual(bands.bandForTesting(.replace).titleForTesting, "Duplicate Here")
+        XCTAssertEqual(strip.titleForTesting, "Duplicate to New Tab",
+                       "the strip cannot go on promising a move")
+    }
+
+    /// Option-dropping a pane on the other pane of its own window copies into
+    /// that pane instead of swapping: the dump beside itself, in one gesture.
+    func testOptionDroppingOnTheOtherPaneCopiesInsteadOfSwapping() throws {
+        let (controller, a, _) = try comparison()
+        let source = controller.windowModel.pane1
+
+        controller.performPaneDrop(draggedPaneID: source.dragID, onPaneAt: 1,
+                                   band: .replace, copying: true)
+
+        XCTAssertEqual(controller.windowModel.pane1.status.fileName, a.lastPathComponent,
+                       "the source is untouched — no swap happened")
+        XCTAssertTrue(controller.windowModel.pane2.isUntitled, "the other pane holds a copy")
+        XCTAssertEqual(controller.windowModel.pane2.fileSize, source.fileSize)
+        XCTAssertEqual(controller.windowModel.pane2.status.fileName,
+                       DuplicateName.next(after: a.lastPathComponent,
+                                          taken: [a.lastPathComponent]),
+                       "and it is named after what it was copied from (§23)")
+    }
+
+    /// Option-dropping on the strip leaves the pane and opens a copy in the new
+    /// tab.
+    func testOptionDroppingOnTheStripCopiesIntoTheNewTab() throws {
+        let (controller, a, b) = try comparison()
+        let tab = MainViewController()
+        controller.makeSiblingTab = { tab }
+
+        controller.tearOffPaneToNewTab(draggedPaneID: controller.windowModel.pane2.dragID,
+                                       copying: true)
+
+        XCTAssertEqual(controller.mode, .comparison, "nothing left the window")
+        XCTAssertEqual(controller.windowModel.pane1.status.fileName, a.lastPathComponent)
+        XCTAssertEqual(controller.windowModel.pane2.status.fileName, b.lastPathComponent)
+        XCTAssertTrue(tab.windowModel.pane1.isUntitled, "the new tab holds a copy")
+        XCTAssertEqual(tab.windowModel.pane1.fileSize, controller.windowModel.pane2.fileSize)
     }
 }

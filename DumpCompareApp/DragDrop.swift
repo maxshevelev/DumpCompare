@@ -120,11 +120,15 @@ enum PaneDrop {
         /// other. A join copies — the pane it came from is left as it was, the
         /// way a joined file is left on disk.
         case join(intoPane: Int, at: JoinPosition)
-        /// The pane's content is copied into the destination window's free pane
-        /// as an untitled document — `File ▸ Duplicate`, reached by hand.
+        /// The pane's content is copied into the destination window's pane
+        /// `index` as an untitled document (§23). Into a free pane this is
+        /// `File ▸ Duplicate` reached by hand; into an occupied one it replaces
+        /// what is there, the way a move does, and asks first if that pane has
+        /// unsaved work.
         case duplicate(intoPane: Int)
-        /// The pane leaves for a tab of its own.
-        case tearOff
+        /// The pane goes to a tab of its own — moved, or copied there when
+        /// `copying`, which leaves it where it is as well.
+        case tearOff(copying: Bool)
 
         /// Whether this outcome copies the pane rather than moving it.
         var isDuplicate: Bool {
@@ -134,8 +138,17 @@ enum PaneDrop {
     }
 
     /// The meaning of letting `originIndex`'s pane go at `destination`.
+    ///
+    /// `copying` is the Option key, and it turns the outcomes that *move* the
+    /// pane into ones that copy it — the modifier's meaning everywhere else on
+    /// the platform. The middle band answers it wherever it lands: a swap moves
+    /// both panes, so its copying form is the one the other bands have, a copy
+    /// into the slot under the pointer. The only outcome Option leaves alone is
+    /// the join, which already copies, since the pane it reads from is left as
+    /// it was.
     static func outcome(draggingPaneAt originIndex: Int,
-                        onto destination: Destination) -> Outcome {
+                        onto destination: Destination,
+                        copying: Bool = false) -> Outcome {
         switch destination {
         case .outside:
             // Deliberately not "make a new window": an accidental drop onto the
@@ -143,7 +156,7 @@ enum PaneDrop {
             // version of that act is the strip, or Move Tab to New Window.
             return .none
         case .newTabStrip:
-            return .tearOff
+            return .tearOff(copying: copying)
         case .pane(let index, let inOriginWindow, let band):
             let ontoItself = inOriginWindow && index == originIndex
             switch band {
@@ -157,20 +170,23 @@ enum PaneDrop {
                 return .join(intoPane: index, at: .end)
             case .replace:
                 // Trading a pane with itself is the gesture abandoned, not
-                // performed. Otherwise two panes of one window trade places, and
-                // a pane from elsewhere takes the slot, there being nothing to
+                // performed. With Option the band copies wherever it lands, near
+                // or far. Otherwise two panes of one window trade places, and a
+                // pane from elsewhere takes the slot, there being nothing to
                 // trade with.
                 if ontoItself { return .none }
+                if copying { return .duplicate(intoPane: index) }
                 return inOriginWindow ? .swap : .move(intoPane: index)
             case .addSecond:
                 // The free second pane of a single-file window. A pane from
-                // elsewhere moves into it; the window's own pane cannot be
-                // *moved* there — it is already in this window — but it can be
-                // **copied**, which is what `File ▸ Duplicate` does and is worth
-                // having as a gesture: the dump beside itself, so a patch can be
-                // made on the copy and every difference that appears is one the
-                // user made (§23).
-                return inOriginWindow ? .duplicate(intoPane: index) : .move(intoPane: index)
+                // elsewhere moves into it — or is copied into it with Option
+                // held. The window's own pane cannot be *moved* there — it is
+                // already in this window — but it can be **copied**, which is
+                // what `File ▸ Duplicate` does and is worth having as a gesture:
+                // the dump beside itself, so a patch can be made on the copy and
+                // every difference that appears is one the user made (§23).
+                if inOriginWindow { return .duplicate(intoPane: index) }
+                return copying ? .duplicate(intoPane: index) : .move(intoPane: index)
             }
         }
     }
@@ -203,6 +219,21 @@ extension NSPasteboard.PasteboardType {
     /// file) and would invite every other app to accept the drag. A type nobody
     /// else declares is refused outside this process for free.
     static let pane = NSPasteboard.PasteboardType("dev.maxik.DumpCompare.pane")
+}
+
+extension NSDraggingInfo {
+    /// Whether the drag is asking to **copy** rather than move — the Option key.
+    ///
+    /// Read from the operation mask rather than from `NSEvent.modifierFlags`,
+    /// because that is what AppKit narrows when a modifier is held: the source
+    /// offers both `.move` and `.copy`, and Option leaves only `.copy` in the
+    /// mask. It is also what makes this update mid-drag — pressing or releasing
+    /// the key sends another `draggingUpdated`, which is how the zones can
+    /// re-label themselves under a stationary pointer.
+    var isCopyRequested: Bool {
+        let mask = draggingSourceOperationMask
+        return mask.contains(.copy) && !mask.contains(.move)
+    }
 }
 
 extension NSPasteboard {

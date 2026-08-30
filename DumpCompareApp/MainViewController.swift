@@ -153,9 +153,43 @@ final class MainViewController: NSViewController {
 
     /// A pane let go on this window's New Tab strip: it leaves for a tab of its
     /// own beside this window, wherever it came from.
-    func tearOffPaneToNewTab(draggedPaneID: UUID) {
+    func tearOffPaneToNewTab(draggedPaneID: UUID, copying: Bool = false) {
         guard let origin = paneLocation(ofPaneWith: draggedPaneID) else { return }
-        origin.controller.tearOff(paneAt: origin.paneIndex, into: self)
+        guard copying else {
+            origin.controller.tearOff(paneAt: origin.paneIndex, into: self)
+            return
+        }
+        // Copied rather than moved: the pane stays where it is and a duplicate
+        // of it opens in the new tab, the way Option means everywhere else.
+        let source = origin.paneIndex == 0
+            ? origin.controller.windowModel.pane1
+            : origin.controller.windowModel.pane2
+        guard source.isOpen, source.fileSize > 0, let tab = makeSiblingTab?() else { return }
+        do {
+            try tab.windowModel.pane1.openDuplicate(of: source,
+                                                    named: duplicateName(for: source))
+        } catch {
+            presentFileError("Could not duplicate the pane.", error, url: nil)
+            return
+        }
+        tab.windowModel.bookmarkStore.seed(origin.controller.windowModel.bookmarkStore.bookmarks)
+        tab.apply(mode: .singleFile)
+    }
+
+    /// Copies `source` into this window's pane `index`, replacing whatever is
+    /// there — the cross-window form of Duplicate, which `File ▸ Duplicate`
+    /// itself never needs because it only ever copies within one window.
+    private func copyPane(_ source: PaneViewModel, into index: Int) {
+        let target = index == 0 ? windowModel.pane1 : windowModel.pane2
+        guard confirmReplaceDirtyPane(target) else { return }
+        do {
+            try target.openDuplicate(of: source, named: duplicateName(for: source))
+        } catch {
+            presentFileError("Could not duplicate the pane.", error, url: nil)
+            return
+        }
+        windowModel.setActivePane(index)
+        apply(mode: windowModel.openPaneCount >= 2 ? .comparison : .singleFile)
     }
 
     /// Takes a pane torn off another window, with a copy of that window's marks.
@@ -195,24 +229,38 @@ final class MainViewController: NSViewController {
     }
 
     func paneDropOutcome(draggedPaneID: UUID, onPaneAt index: Int,
-                         band: SingleFileDropTarget = .replace) -> PaneDrop.Outcome {
+                         band: SingleFileDropTarget = .replace,
+                         copying: Bool = false) -> PaneDrop.Outcome {
         guard let origin = paneLocation(ofPaneWith: draggedPaneID) else { return .none }
         let outcome = PaneDrop.outcome(
             draggingPaneAt: origin.paneIndex,
-            onto: .pane(index: index, inOriginWindow: origin.controller === self, band: band))
+            onto: .pane(index: index, inOriginWindow: origin.controller === self, band: band),
+            copying: copying)
         // A join needs both panes to hold something; the target's own emptiness
         // is the only case the pure rule cannot see.
         if case .join = outcome {
             let target = index == 0 ? windowModel.pane1 : windowModel.pane2
             guard target.isOpen else { return .none }
         }
-        // A copy needs a free pane and bytes to copy — the same conditions the
-        // menu command is validated against, asked of the same helper.
+        // A copy needs bytes to copy, and that is all it needs: where it lands
+        // is the drop's business. `canDuplicate` is deliberately not asked here
+        // — it speaks for the menu command, whose copy has to find a *free*
+        // pane, while a drop names the pane itself and may replace an occupied
+        // one, near or far, the way a move does.
         if case .duplicate = outcome {
             let source = origin.paneIndex == 0
                 ? origin.controller.windowModel.pane1
                 : origin.controller.windowModel.pane2
-            guard origin.controller === self, canDuplicate(source) else { return .none }
+            guard source.isOpen, source.fileSize > 0 else { return .none }
+            // One exception to "where it lands is the drop's business": the
+            // `.addSecond` band *is* the free half of a single-file window's
+            // zone. If that pane is not free the band is not on screen, and a
+            // copy aimed at it has nowhere to go — unlike the middle band, which
+            // names a pane outright and may replace it.
+            if band == .addSecond {
+                let target = index == 0 ? windowModel.pane1 : windowModel.pane2
+                guard !target.isOpen else { return .none }
+            }
         }
         return outcome
     }
@@ -220,8 +268,10 @@ final class MainViewController: NSViewController {
     /// Performs whatever the drop means. Nothing here is a new operation —
     /// each case is a command that already exists.
     func performPaneDrop(draggedPaneID: UUID, onPaneAt index: Int,
-                         band: SingleFileDropTarget = .replace) {
-        switch paneDropOutcome(draggedPaneID: draggedPaneID, onPaneAt: index, band: band) {
+                         band: SingleFileDropTarget = .replace,
+                         copying: Bool = false) {
+        switch paneDropOutcome(draggedPaneID: draggedPaneID, onPaneAt: index,
+                               band: band, copying: copying) {
         case .swap:
             swapPanes()
         case .join(let intoPane, let position):
@@ -241,11 +291,22 @@ final class MainViewController: NSViewController {
                              self?.performPaneDrop(draggedPaneID: draggedPaneID,
                                                    onPaneAt: intoPane)
                          })
-        case .duplicate:
-            // The window's own pane, copied into its free one. Nothing new
-            // happens here: this is `File ▸ Duplicate`, which already reports
-            // itself and re-applies the mode.
-            duplicate(from: windowModel.pane1)
+        case .duplicate(let intoPane):
+            guard let origin = paneLocation(ofPaneWith: draggedPaneID) else { return }
+            let source = origin.paneIndex == 0
+                ? origin.controller.windowModel.pane1
+                : origin.controller.windowModel.pane2
+            let target = intoPane == 0 ? windowModel.pane1 : windowModel.pane2
+            // What decides is whether the slot is free, not which window it is
+            // in. Into this window's free pane nothing new happens: it is `File
+            // ▸ Duplicate`, which already reports itself and re-applies the
+            // mode. Any occupied pane — this window's other one included — is
+            // the replacing form, which asks before discarding unsaved work.
+            if origin.controller === self, !target.isOpen {
+                duplicate(from: source)
+            } else {
+                copyPane(source, into: intoPane)
+            }
         case .none, .tearOff:
             // A tear-off never lands on a pane; the strip owns that one.
             break
@@ -262,6 +323,29 @@ final class MainViewController: NSViewController {
             return openDocuments.location(ofPaneWith: dragID)
         }
         return paneIndex(withDragID: dragID).map { (self, $0) }
+    }
+
+    /// The name a copy of `source` should wear until it is saved (§23).
+    ///
+    /// Every name on screen anywhere in the app is off limits, not just this
+    /// window's: two tabs each showing a `bios-2.bin` would be the confusion
+    /// this naming exists to remove, only harder to spot.
+    ///
+    /// What decides is whether the source has a name, not whether it has a file.
+    /// A copy is untitled from the moment it is made, so copying a copy has to
+    /// read the name it is wearing: `bios-2.bin` gives `bios-3.bin` though
+    /// neither is on disk yet. Only a document with no name of its own — `File ▸
+    /// New File`, or a join — has nothing to be named after, and its copy stays
+    /// untitled.
+    func duplicateName(for source: PaneViewModel) -> String? {
+        guard !source.isUntitled || source.untitledName != nil else { return nil }
+        let controllers = openDocuments?.controllers ?? [self]
+        let taken = Set(controllers.flatMap { controller in
+            [controller.windowModel.pane1, controller.windowModel.pane2]
+                .filter(\.isOpen)
+                .map { $0.status.fileName }
+        })
+        return DuplicateName.next(after: source.status.fileName, taken: taken)
     }
 
     /// The index of this window's pane with `dragID`, if either has it — the
@@ -632,8 +716,11 @@ final class MainViewController: NSViewController {
         newTabDropStrip.onDropFiles = { [weak self] urls in
             self?.openFilesInNewTab(urls)
         }
-        newTabDropStrip.onPaneDropped = { [weak self] paneID in
-            self?.tearOffPaneToNewTab(draggedPaneID: paneID)
+        newTabDropStrip.onCopyModifierChanged = { [weak self] copying in
+            self?.setPaneDragCopyingEverywhere(copying)
+        }
+        newTabDropStrip.onPaneDropped = { [weak self] paneID, copying in
+            self?.tearOffPaneToNewTab(draggedPaneID: paneID, copying: copying)
         }
         contentContainer.addSubview(newTabDropStrip)
         let stripHeight = newTabDropStrip.heightAnchor.constraint(equalToConstant: 0)
@@ -766,14 +853,15 @@ final class MainViewController: NSViewController {
             }
             // An empty window is the most obvious place to put a pane, and it
             // has only the first one to put it in.
-            emptyView.paneDropOutcome = { [weak self] paneID in
+            emptyView.paneDropOutcome = { [weak self] paneID, copying in
                 guard let self,
                       self.paneLocation(ofPaneWith: paneID)?.controller !== self
                 else { return .none }
-                return self.paneDropOutcome(draggedPaneID: paneID, onPaneAt: 0)
+                return self.paneDropOutcome(draggedPaneID: paneID, onPaneAt: 0,
+                                            copying: copying)
             }
-            emptyView.onPaneDropped = { [weak self] paneID in
-                self?.performPaneDrop(draggedPaneID: paneID, onPaneAt: 0)
+            emptyView.onPaneDropped = { [weak self] paneID, copying in
+                self?.performPaneDrop(draggedPaneID: paneID, onPaneAt: 0, copying: copying)
             }
             setContentView(emptyView)
 
@@ -823,6 +911,9 @@ final class MainViewController: NSViewController {
             dropView.onDragSessionChanged = { [weak self] active in
                 self?.setNewTabStripVisible(active)
             }
+            dropView.onCopyModifierChanged = { [weak self] copying in
+                self?.setPaneDragCopyingEverywhere(copying)
+            }
             // A dragged pane gets the same four zones a file gets, and they
             // mean the same four things: the far half opens it as the second
             // pane, and the three bands over this file join it at either end or
@@ -832,14 +923,16 @@ final class MainViewController: NSViewController {
             // say, not a blanket refusal here: its own pane can still be joined
             // to itself at either end, and only the middle band and the second
             // half are meaningless for it.
-            dropView.paneDropOutcome = { [weak self] paneID, target in
+            dropView.paneDropOutcome = { [weak self] paneID, target, copying in
                 guard let self else { return .none }
                 let (index, band) = Self.singleFilePaneDrop(target)
-                return self.paneDropOutcome(draggedPaneID: paneID, onPaneAt: index, band: band)
+                return self.paneDropOutcome(draggedPaneID: paneID, onPaneAt: index,
+                                            band: band, copying: copying)
             }
-            dropView.onPaneDropped = { [weak self] paneID, target in
+            dropView.onPaneDropped = { [weak self] paneID, target, copying in
                 let (index, band) = Self.singleFilePaneDrop(target)
-                self?.performPaneDrop(draggedPaneID: paneID, onPaneAt: index, band: band)
+                self?.performPaneDrop(draggedPaneID: paneID, onPaneAt: index,
+                                      band: band, copying: copying)
             }
             dropView.onDrop = { [weak self] target, urls in
                 self?.handleSingleFileDrop(target: target, urls: urls)
@@ -899,17 +992,21 @@ final class MainViewController: NSViewController {
             // join this at the front, join it at the back — and only the middle
             // differs (`Design/PANE_DRAG_PLAN.md`).
             for (index, bands) in [(0, view.bands1!), (1, view.bands2!)] {
-                bands.paneDropOutcome = { [weak self] paneID, band in
+                bands.paneDropOutcome = { [weak self] paneID, band, copying in
                     self?.paneDropOutcome(draggedPaneID: paneID, onPaneAt: index,
-                                          band: band) ?? .none
+                                          band: band, copying: copying) ?? .none
                 }
-                bands.onPaneDropped = { [weak self] paneID, band in
-                    self?.performPaneDrop(draggedPaneID: paneID, onPaneAt: index, band: band)
+                bands.onPaneDropped = { [weak self] paneID, band, copying in
+                    self?.performPaneDrop(draggedPaneID: paneID, onPaneAt: index,
+                                          band: band, copying: copying)
                 }
                 // A drag entering either pane raises the strip, so it is on
                 // screen before the pointer could reach it.
                 bands.onDragSessionChanged = { [weak self] active in
                     self?.setNewTabStripVisible(active)
+                }
+                bands.onCopyModifierChanged = { [weak self] copying in
+                    self?.setPaneDragCopyingEverywhere(copying)
                 }
             }
             pane1View.onClose = { [weak self] in self?.closePane(at: 0) }
@@ -1084,6 +1181,42 @@ final class MainViewController: NSViewController {
         for controller in openDocuments?.controllers ?? [self] {
             controller.setNewTabStripVisible(visible, forPane: true)
         }
+    }
+
+    /// Passes an Option press or release on to every drop zone the drag has put
+    /// on screen, in this window and the others.
+    ///
+    /// Only the zone under the pointer hears the modifier: AppKit sends
+    /// `draggingUpdated` to the destination the pointer is in and to no other,
+    /// so the band being hovered re-labelled itself while the New Tab strip
+    /// above it went on reading "Move to New Tab" until the pointer reached it.
+    /// The zones are all promises about the same drop, and one of them saying
+    /// "move" while another says "duplicate" means at least one is lying — so
+    /// the news travels the same road the strip's own raising does.
+    private func setPaneDragCopyingEverywhere(_ copying: Bool) {
+        for controller in openDocuments?.controllers ?? [self] {
+            controller.setPaneDragCopying(copying)
+        }
+    }
+
+    /// This window's New Tab strip and its comparison overlays, so a test can
+    /// read what every zone on screen is promising at once — which is the whole
+    /// question the broadcast above answers.
+    var newTabStripForTesting: NewTabDropStrip { newTabDropStrip }
+    var comparisonBandsForTesting: (PaneDropBandsView, PaneDropBandsView)? {
+        guard let view = comparisonView else { return nil }
+        return (view.bands1, view.bands2)
+    }
+
+    /// Re-captions this window's zones for the modifier. Each one ignores it
+    /// unless it has a pane in flight, so the mode's unused zones stay as they
+    /// are, and none of them reports the change back — it came from a zone that
+    /// already knows, and answering would be a loop.
+    func setPaneDragCopying(_ copying: Bool) {
+        newTabDropStrip.setPaneDragCopying(copying)
+        singleFileDropView?.setPaneDragCopying(copying)
+        comparisonView?.bands1.setPaneDragCopying(copying)
+        comparisonView?.bands2.setPaneDragCopying(copying)
     }
 
     private func setNewTabStripVisible(_ visible: Bool, forPane isPane: Bool = false) {
@@ -2959,7 +3092,7 @@ final class MainViewController: NSViewController {
         let sourceName = source.status.fileName
 
         do {
-            try target.openDuplicate(of: source)
+            try target.openDuplicate(of: source, named: duplicateName(for: source))
         } catch {
             presentFileError("Could not duplicate the file.", error, url: nil)
             return

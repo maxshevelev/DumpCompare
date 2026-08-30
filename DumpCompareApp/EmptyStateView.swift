@@ -9,11 +9,11 @@ final class EmptyStateView: NSView {
 
     /// Asks what letting the dragged pane go on an empty window would do; the
     /// controller answers, and the view accepts only when there is an answer.
-    var paneDropOutcome: ((_ draggedPaneID: UUID) -> PaneDrop.Outcome)?
+    var paneDropOutcome: ((_ draggedPaneID: UUID, _ copying: Bool) -> PaneDrop.Outcome)?
 
     /// Fired when a dragged pane is let go on the empty window: it moves in, and
     /// the window stops being empty.
-    var onPaneDropped: ((_ draggedPaneID: UUID) -> Void)?
+    var onPaneDropped: ((_ draggedPaneID: UUID, _ copying: Bool) -> Void)?
 
     /// The muted grey shared by the icon and the headline — softer than the
     /// regular secondary text, so the landing screen reads as a hint, not a
@@ -299,9 +299,11 @@ final class EmptyStateView: NSView {
 extension EmptyStateView {
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         if let paneID = sender.draggingPasteboard.draggedPaneID {
-            guard paneDropOutcome?(paneID) ?? .none != .none else { return [] }
+            let copying = sender.isCopyRequested
+            let outcome = paneDropOutcome?(paneID, copying) ?? .none
+            guard outcome != .none else { return [] }
             setDropHighlighted(true)
-            return .move
+            return copying ? .copy : .move
         }
         guard !sender.draggingPasteboard.droppedFileURLs.isEmpty else { return [] }
         setDropHighlighted(true)
@@ -323,7 +325,7 @@ extension EmptyStateView {
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         setDropHighlighted(false)
         if let paneID = sender.draggingPasteboard.draggedPaneID {
-            onPaneDropped?(paneID)
+            onPaneDropped?(paneID, sender.isCopyRequested)
             return true
         }
         let urls = sender.draggingPasteboard.droppedFileURLs

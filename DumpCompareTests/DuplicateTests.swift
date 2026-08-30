@@ -50,7 +50,12 @@ final class DuplicateTests: XCTestCase {
                        "a second document must switch to comparison mode")
         XCTAssertTrue(copy.isOpen)
         XCTAssertTrue(copy.isUntitled, "the copy is a new document, not a file on disk")
-        XCTAssertEqual(copy.status.fileName, "Untitled")
+        // Named after the file it came from rather than "Untitled": two panes
+        // under one name say nothing about which dump each holds (§23). The name
+        // is a proposal — the header's label and the save panel's pre-fill —
+        // and nothing is written for it until the user saves.
+        XCTAssertEqual(copy.status.fileName,
+                       DuplicateName.next(after: url.lastPathComponent, taken: []))
         XCTAssertTrue(copy.status.isDirty,
                       "content that has never been on disk must warn on close")
         XCTAssertFalse(copy.status.isReadOnly)

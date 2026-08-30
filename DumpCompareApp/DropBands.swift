@@ -115,6 +115,9 @@ final class DropTargetView: NSView {
     /// Whether the zone is showing its refusal symbol (for tests).
     var isShowingRefusal: Bool { !refusalIcon.isHidden }
 
+    /// The caption the zone is showing (for tests).
+    var titleForTesting: String { label.stringValue }
+
     func setHighlighted(_ highlighted: Bool) {
         // Hover floods the zone with a translucent accent-blue fill; idle keeps
         // the quiet milky plate. Hover is also signalled by the accent border
@@ -203,11 +206,22 @@ final class PaneDropBandsView: NSView {
     /// Asks what dropping the dragged pane on *this* pane would do. The overlay
     /// accepts the drag only when the answer is something, so a landing with no
     /// meaning is refused by the cursor rather than swallowed and ignored.
-    var paneDropOutcome: ((_ draggedPaneID: UUID, _ band: SingleFileDropTarget)
-                          -> PaneDrop.Outcome)?
+    var paneDropOutcome: ((_ draggedPaneID: UUID, _ band: SingleFileDropTarget,
+                           _ copying: Bool) -> PaneDrop.Outcome)?
 
     /// Fired when a dragged pane is let go on this one, in the band it landed in.
-    var onPaneDropped: ((_ draggedPaneID: UUID, _ band: SingleFileDropTarget) -> Void)?
+    var onPaneDropped: ((_ draggedPaneID: UUID, _ band: SingleFileDropTarget,
+                        _ copying: Bool) -> Void)?
+
+    /// Whether the drag in flight is asking to copy. Held between updates so the
+    /// captions can be recomputed without the dragging info to hand.
+    private var draggedPaneIsCopying = false
+
+    /// Fired when Option goes down or up over this overlay, which is the only
+    /// place the news arrives: AppKit sends `draggingUpdated` to the destination
+    /// under the pointer and to no other. The window passes it on to the zones
+    /// that cannot hear it (`setPaneDragCopying`).
+    var onCopyModifierChanged: ((Bool) -> Void)?
 
     /// Fired when a drag *session* starts over this overlay and when it ends —
     /// not when it merely leaves, which is a different thing entirely.
@@ -354,9 +368,12 @@ final class PaneDropBandsView: NSView {
 
     /// A pane drag arriving over a band, the way `draggingEntered` does — the
     /// only step that learns which pane is in flight.
-    func paneDragEnteredForTesting(_ paneID: UUID, at band: SingleFileDropTarget)
-    -> NSDragOperation {
+    func paneDragEnteredForTesting(_ paneID: UUID, at band: SingleFileDropTarget,
+                                   copying: Bool = false) -> NSDragOperation {
         draggedPaneID = paneID
+        // Through the same note-and-report the real entry uses, so a test drives
+        // the reporting rather than a shortcut past it.
+        notePaneDragCopying(copying)
         return paneOperation(forBand: band)
     }
 
@@ -364,6 +381,29 @@ final class PaneDropBandsView: NSView {
     /// which knows nothing but what the entry remembered.
     func paneDragMovedForTesting(to band: SingleFileDropTarget) -> NSDragOperation {
         paneOperation(forBand: band)
+    }
+
+    /// Records the modifier and tells the window when it changed, so the zones
+    /// that are not under the pointer can be re-captioned too.
+    private func notePaneDragCopying(_ copying: Bool) {
+        guard draggedPaneIsCopying != copying else { return }
+        draggedPaneIsCopying = copying
+        onCopyModifierChanged?(copying)
+    }
+
+    /// Takes a modifier change heard by another zone and re-captions these bands
+    /// from it. Silent when no pane is in flight over this overlay: its bands
+    /// are down, and a caption written now would be the one showing when the
+    /// next drag arrives. Never fires `onCopyModifierChanged` — this is the news
+    /// arriving, not being made, and answering it would be a loop.
+    func setPaneDragCopying(_ copying: Bool) {
+        guard let paneID = draggedPaneID, draggedPaneIsCopying != copying else { return }
+        draggedPaneIsCopying = copying
+        guard dragActive else { return }
+        retitleBands(forPane: paneID) { [weak self] band in
+            guard let self else { return .none }
+            return self.paneDropOutcome?(paneID, band, self.draggedPaneIsCopying) ?? .none
+        }
     }
 
     /// Forgets what is in flight. Only when the drag has actually gone — a
@@ -472,6 +512,7 @@ extension PaneDropBandsView {
         // file URLs for the bands to misread.
         if let paneID = sender.draggingPasteboard.draggedPaneID {
             draggedPaneID = paneID
+            notePaneDragCopying(sender.isCopyRequested)
             return paneOperation(at: sender.draggingLocation)
         }
         guard !sender.draggingPasteboard.droppedFileURLs.isEmpty else { return [] }
@@ -482,7 +523,13 @@ extension PaneDropBandsView {
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        if draggedPaneID != nil { return paneOperation(at: sender.draggingLocation) }
+        if draggedPaneID != nil {
+            // Re-read every update: Option pressed or released mid-drag arrives
+            // as one of these, and the zones re-label themselves from it — these
+            // bands here, and the rest through the window.
+            notePaneDragCopying(sender.isCopyRequested)
+            return paneOperation(at: sender.draggingLocation)
+        }
         guard dragActive else { return [] }
         updateHover(at: sender.draggingLocation)
         return .copy
@@ -499,7 +546,7 @@ extension PaneDropBandsView {
 
     private func paneOperation(forBand band: SingleFileDropTarget) -> NSDragOperation {
         guard let paneID = draggedPaneID else { return [] }
-        let outcome = paneDropOutcome?(paneID, band) ?? .none
+        let outcome = paneDropOutcome?(paneID, band, draggedPaneIsCopying) ?? .none
         // Nothing to offer, so nothing is shown. The zones are the offer: a
         // pane over the one band with no meaning is refused by the cursor, and
         // lighting the bands anyway would put a choice on screen that does not
@@ -511,7 +558,8 @@ extension PaneDropBandsView {
         }
         setDragActive(true)
         retitleBands(forPane: paneID) { [weak self] band in
-            self?.paneDropOutcome?(paneID, band) ?? .none
+            guard let self else { return .none }
+            return self.paneDropOutcome?(paneID, band, self.draggedPaneIsCopying) ?? .none
         }
         switch outcome {
         // A join and a duplicate both copy — the pane they came from is left
@@ -543,9 +591,10 @@ extension PaneDropBandsView {
         onDragSessionChanged?(false)
         if let paneID = sender.draggingPasteboard.draggedPaneID {
             let band = band(at: sender.draggingLocation) ?? .replace
+            let copying = sender.isCopyRequested
             setDragActive(false)
             forgetDraggedPane()
-            onPaneDropped?(paneID, band)
+            onPaneDropped?(paneID, band, copying)
             return true
         }
         setDragActive(false)
@@ -586,12 +635,21 @@ final class NewTabDropStrip: NSView {
     /// Fired when files are dropped on the strip.
     var onDropFiles: (([URL]) -> Void)?
 
-    /// Fired when a dragged pane is let go on the strip: it leaves for a tab of
-    /// its own.
-    var onPaneDropped: ((_ draggedPaneID: UUID) -> Void)?
+    /// Fired when a dragged pane is let go on the strip: it goes to a tab of its
+    /// own, moved or copied there.
+    var onPaneDropped: ((_ draggedPaneID: UUID, _ copying: Bool) -> Void)?
+
+    /// Fired when Option goes down or up while the pointer is over the strip —
+    /// the pane overlays cannot hear it then, and their bands would go on
+    /// promising a move. See `PaneDropBandsView.onCopyModifierChanged`.
+    var onCopyModifierChanged: ((Bool) -> Void)?
 
     private let target = DropTargetView(title: "Open in New Tab")
     private var dragActive = false
+    /// What the strip is captioned for: a pane says "Move to New Tab", a file
+    /// "Open in New Tab", and only the pane's caption answers the modifier.
+    private var dragIsPane = false
+    private var paneDragIsCopying = false
 
     init() {
         super.init(frame: .zero)
@@ -628,9 +686,11 @@ final class NewTabDropStrip: NSView {
     /// start of the session, so a caption left from the previous drag would be
     /// on screen the whole time the pointer was on its way over — a file drag
     /// reading "Move to New Tab" because the last thing dragged was a pane.
-    func setDragActive(_ active: Bool, forPane isPane: Bool = false) {
+    func setDragActive(_ active: Bool, forPane isPane: Bool = false, copying: Bool = false) {
         dragActive = active
-        setTitle(forPane: isPane)
+        dragIsPane = isPane
+        paneDragIsCopying = copying
+        setTitle(forPane: isPane, copying: copying)
         target.isHidden = !active
         target.alphaValue = active ? 1 : 0
         if !active { target.setHighlighted(false) }
@@ -638,17 +698,37 @@ final class NewTabDropStrip: NSView {
 
     /// The caption, which differs by what is being carried: a file is opened in
     /// a new tab, a pane moves into one.
-    func setTitle(forPane isPane: Bool) {
-        target.setTitle(isPane ? "Move to New Tab" : "Open in New Tab")
+    func setTitle(forPane isPane: Bool, copying: Bool = false) {
+        guard isPane else {
+            target.setTitle("Open in New Tab")
+            return
+        }
+        target.setTitle(copying ? "Duplicate to New Tab" : "Move to New Tab")
+    }
+
+    /// The strip's caption, so a test can read what it is promising.
+    var titleForTesting: String { target.titleForTesting }
+
+    /// Takes a modifier change heard by a zone elsewhere in the window and
+    /// re-captions the strip from it, so what it promises and what the band
+    /// under the pointer promises are the same drop. Only while it is up for a
+    /// pane: a file is opened in a new tab either way.
+    func setPaneDragCopying(_ copying: Bool) {
+        guard dragActive, dragIsPane, paneDragIsCopying != copying else { return }
+        paneDragIsCopying = copying
+        setTitle(forPane: true, copying: copying)
     }
 }
 
 extension NewTabDropStrip {
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         if sender.draggingPasteboard.draggedPaneID != nil {
-            setDragActive(true, forPane: true)
+            let copying = sender.isCopyRequested
+            let changed = !dragActive || !dragIsPane || paneDragIsCopying != copying
+            setDragActive(true, forPane: true, copying: copying)
+            if changed { onCopyModifierChanged?(copying) }
             target.setHighlighted(true)
-            return .move
+            return copying ? .copy : .move
         }
         guard !sender.draggingPasteboard.droppedFileURLs.isEmpty else { return [] }
         setDragActive(true, forPane: false)
@@ -658,7 +738,18 @@ extension NewTabDropStrip {
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
         guard dragActive else { return [] }
-        return sender.draggingPasteboard.draggedPaneID != nil ? .move : .copy
+        guard sender.draggingPasteboard.draggedPaneID != nil else { return .copy }
+        // Re-read and re-caption on every update: Option pressed or released
+        // mid-drag arrives as one of these, and the strip has to say which of
+        // the two it will do.
+        let copying = sender.isCopyRequested
+        guard paneDragIsCopying != copying else { return copying ? .copy : .move }
+        paneDragIsCopying = copying
+        setTitle(forPane: true, copying: copying)
+        // The pane overlays are not under the pointer and hear nothing; the
+        // window passes this on to them.
+        onCopyModifierChanged?(copying)
+        return copying ? .copy : .move
     }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
@@ -678,7 +769,7 @@ extension NewTabDropStrip {
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         setDragActive(false)
         if let paneID = sender.draggingPasteboard.draggedPaneID {
-            onPaneDropped?(paneID)
+            onPaneDropped?(paneID, sender.isCopyRequested)
             return true
         }
         let urls = sender.draggingPasteboard.droppedFileURLs
