@@ -30,6 +30,22 @@ final class EmptyStateView: NSView {
 
     private let openButton = NSButton()
 
+    /// The bookmark list shown under the hint, and the scroll view that bounds
+    /// it. Hidden while the window has no marks.
+    private let bookmarkGrid = NSGridView(views: [])
+    private let bookmarkScroll = NSScrollView()
+    private let bookmarkHeading = NSTextField(labelWithString: "Bookmarks")
+    private var bookmarkSection: NSStackView?
+
+    /// The tallest the list gets before it scrolls. A window kept open only for
+    /// its marks should show them, not become a list with a landing screen
+    /// stapled to the top of it.
+    private static let maxBookmarkListHeight: CGFloat = 220
+
+    /// The gap between the hint and the bookmarks section, wider than the
+    /// stack's own spacing.
+    private static let bookmarkSectionGap: CGFloat = 30
+
     /// The vertical stack holding the icon, headline and hint — kept so
     /// `updateIconSize()` can adjust the icon–headline gap per size.
     private var contentStack: NSStackView?
@@ -80,6 +96,10 @@ final class EmptyStateView: NSView {
         stackView.addArrangedSubview(openButton)
         stackView.addArrangedSubview(titleLabel)
         stackView.addArrangedSubview(hintLabel)
+        stackView.addArrangedSubview(makeBookmarkSection())
+        // More air than the stack's usual rhythm: the list is a different
+        // subject from the landing screen above it, not the next line of it.
+        stackView.setCustomSpacing(Self.bookmarkSectionGap, after: hintLabel)
         addSubview(stackView)
         contentStack = stackView
 
@@ -116,6 +136,110 @@ final class EmptyStateView: NSView {
     /// Sizes the icon to a third of the window's shorter side, capped at
     /// `maxIconSize`. Falls back to a fixed 96pt when there's no window yet
     /// (e.g. in headless tests).
+    /// The bookmarks section: a heading and a read-only list.
+    ///
+    /// It is the answer to what an empty window is *for*. The marks belong to
+    /// the window rather than to a file (§20), so closing the last dump leaves a
+    /// window that still holds them — and until now said nothing about it, which
+    /// made it look like a window with no reason to exist.
+    private func makeBookmarkSection() -> NSView {
+        // In the bookmark colour, and big enough to be a heading rather than a
+        // caption: it names what the list is, and the purple ties it to the
+        // addresses under it and to the marks those addresses point at (§20.4).
+        bookmarkHeading.font = .systemFont(ofSize: 13, weight: .semibold)
+        bookmarkHeading.textColor = HexTheme.bookmarkColor
+        bookmarkHeading.alignment = .left
+
+        bookmarkGrid.rowSpacing = 4
+        bookmarkGrid.columnSpacing = 10
+        bookmarkGrid.translatesAutoresizingMaskIntoConstraints = false
+
+        bookmarkScroll.translatesAutoresizingMaskIntoConstraints = false
+        bookmarkScroll.hasVerticalScroller = true
+        bookmarkScroll.drawsBackground = false
+        bookmarkScroll.borderType = .noBorder
+        bookmarkScroll.documentView = bookmarkGrid
+
+        let section = NSStackView()
+        section.orientation = .vertical
+        // Leading, not centred: the heading lines up with the left edge of the
+        // addresses below it rather than floating over the middle of them. The
+        // section as a whole is still centred, by the stack that holds it.
+        section.alignment = .leading
+        section.spacing = 8
+        section.addArrangedSubview(bookmarkHeading)
+        section.addArrangedSubview(bookmarkScroll)
+        section.isHidden = true
+        bookmarkSection = section
+        return section
+    }
+
+    /// Shows the window's marks, or hides the section when there are none.
+    ///
+    /// Read-only on purpose: with no file open there is nowhere to go, so a row
+    /// that could be clicked would promise something it cannot do.
+    func setBookmarks(_ bookmarks: [Bookmark]) {
+        while bookmarkGrid.numberOfRows > 0 { bookmarkGrid.removeRow(at: 0) }
+        bookmarkSection?.isHidden = bookmarks.isEmpty
+        guard !bookmarks.isEmpty else { return }
+
+        bookmarkHeading.stringValue = bookmarks.count == 1
+            ? "1 Bookmark Here:"
+            : "\(bookmarks.count) Bookmarks Here:"
+        for bookmark in bookmarks {
+            let address = NSTextField(labelWithString: bookmark.row.bareAddress)
+            // The dump's address shape, in the bookmark colour: the same purple
+            // as the mark in the gutter and the arrow on the minimap, so the
+            // three read as one thing (§20.4). Bare digits, no "0x" — a column
+            // of addresses does not need each one announcing it is hex.
+            address.font = AppearanceSettings.font(size: 12)
+            address.textColor = HexTheme.bookmarkColor
+            address.alignment = .right
+
+            // A named mark shows its name. An unnamed one shows nothing further:
+            // what the list would otherwise describe it by is the row's bytes,
+            // and in a window with no file open there are none to read (§20.5).
+            let name = NSTextField(labelWithString: bookmark.name)
+            name.font = .systemFont(ofSize: 12)
+            name.textColor = .labelColor
+            name.lineBreakMode = .byTruncatingTail
+
+            bookmarkGrid.addRow(with: [address, name])
+        }
+        bookmarkGrid.column(at: 0).xPlacement = .trailing
+        bookmarkGrid.layoutSubtreeIfNeeded()
+
+        let wanted = min(bookmarkGrid.fittingSize.height, Self.maxBookmarkListHeight)
+        bookmarkScroll.heightAnchor.constraint(equalToConstant: wanted).isActive = true
+        bookmarkScroll.widthAnchor.constraint(
+            equalToConstant: max(220, bookmarkGrid.fittingSize.width)).isActive = true
+    }
+
+    /// What the list is showing, row by row (for tests).
+    var bookmarkRowsForTesting: [(address: String, name: String)] {
+        (0..<bookmarkGrid.numberOfRows).compactMap { row in
+            let cells = bookmarkGrid.row(at: row)
+            guard cells.numberOfCells >= 2,
+                  let address = cells.cell(at: 0).contentView as? NSTextField,
+                  let name = cells.cell(at: 1).contentView as? NSTextField else { return nil }
+            return (address.stringValue, name.stringValue)
+        }
+    }
+
+    /// The list's heading (for tests).
+    var bookmarkHeadingForTesting: NSTextField? { bookmarkHeading }
+
+    /// Whether the bookmarks section is on screen at all (for tests).
+    var isShowingBookmarksForTesting: Bool { !(bookmarkSection?.isHidden ?? true) }
+
+    /// The colour the addresses are drawn in (for tests).
+    var bookmarkAddressColorForTesting: NSColor? {
+        guard bookmarkGrid.numberOfRows > 0,
+              let address = bookmarkGrid.row(at: 0).cell(at: 0).contentView as? NSTextField
+        else { return nil }
+        return address.textColor
+    }
+
     private func updateIconSize() {
         let windowSize = window?.frame.size
         let shortSide = windowSize.map { min($0.width, $0.height) } ?? 0

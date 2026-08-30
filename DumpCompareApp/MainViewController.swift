@@ -344,6 +344,17 @@ final class MainViewController: NSViewController {
     /// The single-file mode's drop container, held so its bands can be inset by
     /// the strip's share the way the comparison's are. Nil in the other modes.
     private weak var singleFileDropView: SingleFileDropView?
+
+    /// The empty mode's placeholder, held so the bookmark list it shows can be
+    /// kept current. Nil in the other modes.
+    private weak var emptyStateView: EmptyStateView?
+
+    /// Re-reads the marks into the empty window's list and its title.
+    private func refreshEmptyStateBookmarks() {
+        guard mode == .empty else { return }
+        emptyStateView?.setBookmarks(windowModel.bookmarkStore.bookmarks)
+        updateWindowTitle()
+    }
     /// The right-hand minimap panel (hidden by default, toggled by the toolbar
     /// button). Internal so tests can assert its visibility (§19).
     let minimapView = MinimapView()
@@ -470,6 +481,10 @@ final class MainViewController: NSViewController {
             self?.dismissEditPopoverIfItsMarkIsGone(row: row)
             self?.openGoToForm?.reloadBookmarks()
             self?.syncMinimapBookmarks()
+            // The empty window shows the list too, and it is the only thing it
+            // shows — so a mark added or removed while no file is open has to
+            // reach it, and the title that counts them (§3.1, §20).
+            self?.refreshEmptyStateBookmarks()
         }
         // Apply the Layout settings tab's direction change to an open comparison
         // immediately; outside comparison mode the value is stored and the next
@@ -744,6 +759,8 @@ final class MainViewController: NSViewController {
             // nothing is left to search (§11).
             hideFindBar()
             let emptyView = EmptyStateView()
+            emptyStateView = emptyView
+            emptyView.setBookmarks(windowModel.bookmarkStore.bookmarks)
             emptyView.onOpenFiles = { [weak self] urls in
                 self?.handleEmptyDrop(urls)
             }
@@ -1019,7 +1036,12 @@ final class MainViewController: NSViewController {
     var windowTitle: String {
         switch mode {
         case .empty:
-            return "Empty"
+            // A window with no file is not necessarily a window with nothing in
+            // it: the marks are the window's, not the file's (§20), so a window
+            // kept open for them says how many it is keeping.
+            let marks = windowModel.bookmarkStore.bookmarks.count
+            guard marks > 0 else { return "Empty" }
+            return marks == 1 ? "Empty (1 Bookmark)" : "Empty (\(marks) Bookmarks)"
         case .singleFile:
             return windowModel.pane1.status.fileName
         case .comparison:
