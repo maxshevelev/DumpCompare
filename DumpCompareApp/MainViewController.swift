@@ -2839,10 +2839,22 @@ final class MainViewController: NSViewController {
         // size, the way the app reports a search result, then yields back.
         let total = pane.fileSize
         let size = ByteCountFormatter.string(fromByteCount: Int64(total), countStyle: .file)
+        activateJoinedPane(pane)
+
         let message = (position == .start)
             ? "Inserted \(url.lastPathComponent) before \(originalName). Total: \(size)."
             : "Appended \(url.lastPathComponent) after \(originalName). Total: \(size)."
         filePaneView(for: pane)?.showTransientMessage(message)
+    }
+
+    /// Makes the pane that just received a join the active one.
+    ///
+    /// The join leaves the caret at its seam and centres it there (§22.5), so
+    /// the eyes have already been sent to this pane; leaving the keys pointed at
+    /// the other one splits the two. A no-op outside comparison mode, where
+    /// there is only one pane to be active.
+    private func activateJoinedPane(_ pane: PaneViewModel) {
+        activatePane(at: paneIndex(pane))
     }
 
     /// Joins one open pane's bytes into another, at one end or the other — the
@@ -2882,6 +2894,8 @@ final class MainViewController: NSViewController {
             presentError("Could not join the pane.", error)
             return
         }
+
+        activateJoinedPane(pane)
 
         let size = ByteCountFormatter.string(fromByteCount: Int64(pane.fileSize), countStyle: .file)
         let message = (position == .start)

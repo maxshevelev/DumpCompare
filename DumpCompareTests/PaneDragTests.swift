@@ -965,4 +965,46 @@ final class PaneDragTests: XCTestCase {
         }, "a hairline along the bottom edge")
         XCTAssertEqual(separator.frame.minY, 0, "at the bottom, against the dump")
     }
+
+    // MARK: - Where the keys go after a join
+
+    /// The pane that received the bytes becomes the active one.
+    ///
+    /// The join centres the caret on its seam in *that* pane (§22.5), so the
+    /// eyes have already been sent there; leaving the active pane pointed at the
+    /// other one splits where you are looking from where you are typing.
+    func testAJoinedPaneBecomesActive() throws {
+        let controller = MainViewController()
+        let a = try tempFile([UInt8](repeating: 0xAA, count: 16))
+        let b = try tempFile([UInt8](repeating: 0xBB, count: 16))
+        controller.openFiles([a, b])
+        controller.windowModel.setActivePane(0)
+        controller.joinConfirm = { _ in .alertFirstButtonReturn }
+
+        // Drag pane 1 onto pane 2's end band: the bytes land in pane 2.
+        controller.performPaneDrop(draggedPaneID: controller.windowModel.pane1.dragID,
+                                   onPaneAt: 1, band: .appendAtEnd)
+
+        XCTAssertEqual(controller.windowModel.pane2.fileSize, 32, "the join happened there")
+        XCTAssertEqual(controller.windowModel.activePaneIndex, 1,
+                       "the keys follow the bytes")
+    }
+
+    /// The same for a file dropped on a pane's end band — it is the same
+    /// operation, and the answer to "which pane am I typing into" should not
+    /// depend on where the bytes came from.
+    func testAPaneJoinedFromAFileBecomesActiveToo() throws {
+        let controller = MainViewController()
+        let a = try tempFile([UInt8](repeating: 0xAA, count: 16))
+        let b = try tempFile([UInt8](repeating: 0xBB, count: 16))
+        let donor = try tempFile([UInt8](repeating: 0xCC, count: 8))
+        controller.openFiles([a, b])
+        controller.windowModel.setActivePane(0)
+        controller.joinConfirm = { _ in .alertFirstButtonReturn }
+
+        controller.handleComparisonBandDrop(targetPane: 1, target: .insertAtStart, urls: [donor])
+
+        XCTAssertEqual(controller.windowModel.pane2.fileSize, 24)
+        XCTAssertEqual(controller.windowModel.activePaneIndex, 1)
+    }
 }
