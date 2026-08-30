@@ -1058,7 +1058,11 @@ final class MainViewController: NSViewController {
         guard stripHeight.constant != target else { return }
         newTabDropStrip.setDragActive(wanted, forPane: isPane)
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.12
+            // Slightly quicker on the way out than in. It cannot beat a
+            // cancelled drag's pill home — `endedAt` only arrives once the
+            // pill has landed — so this is about the panes not dawdling once
+            // the drag is over, nothing more.
+            context.duration = wanted ? 0.12 : 0.10
             context.allowsImplicitAnimation = true
             stripHeight.animator().constant = target
             contentContainer.layoutSubtreeIfNeeded()

@@ -16,6 +16,88 @@ final class PaneHeaderView: NSView {
     /// should begin from.
     var onDragThresholdPassed: ((NSEvent) -> Void)?
 
+    /// The hairline along the header's bottom edge, which together with the
+    /// header's own fill draws the line between the window's chrome and the
+    /// dump.
+    private let bottomSeparator = NSView()
+
+    /// How strong the header's bottom rule is, as a fraction of `separatorColor`.
+    ///
+    /// Half. At full strength it read heavier than the system's own rule under
+    /// the tab bar, which sits a few points above it — two lines doing the same
+    /// job in different weights, which looks like a mistake because it is one.
+    /// The tab bar's rule is AppKit's and its colour is not exposed, so this is
+    /// matched by eye; it is a single constant so the next eye can adjust it.
+    static let separatorStrength: CGFloat = 0.5
+
+    /// `separatorColor` at `separatorStrength` of its own opacity.
+    ///
+    /// Scaled, not assigned. `withAlphaComponent` **replaces** the alpha rather
+    /// than scaling it, and `separatorColor` is already translucent — 9.8 % —
+    /// so asking for 0.5 made the rule five times stronger instead of half, and
+    /// a hairline at 50 % black reads as a black line.
+    ///
+    /// Resolved through sRGB inside the caller's drawing appearance, because a
+    /// catalog colour has no components to scale until it is.
+    private static func headerRuleColor() -> NSColor {
+        let separator = NSColor.separatorColor
+        guard let resolved = separator.usingColorSpace(.sRGB) else { return separator }
+        return resolved.withAlphaComponent(resolved.alphaComponent * separatorStrength)
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        // The header is a strip of chrome, not part of the document: the dump
+        // and the column header above it both draw `textBackgroundColor`, so
+        // without a fill of its own the header dissolved into them and the pane
+        // read as one flat sheet from the tab bar down, with no visible edge on
+        // the strip that is meant to be grabbed (§3.4).
+        //
+        // A system fill rather than `windowBackgroundColor`, which was the
+        // obvious choice and is the wrong one: measured on this OS,
+        // `windowBackgroundColor`, `controlBackgroundColor` and
+        // `textBackgroundColor` are the *same colour* in both appearances —
+        // white on white in light, 0.118 grey on itself in dark — so a header
+        // filled with it would have been exactly as flat as no fill at all. A
+        // system fill is translucent by design and made to sit over content, and
+        // adapts on its own: black over light, white over dark.
+        //
+        // The tertiary weight (4.7 %) rather than the secondary (7.8 %), which
+        // read as a heavy bar. Most of the delineating is done by the hairline
+        // below, so the fill only has to say "not the document" — the lightest
+        // touch that does is the right one. `quaternarySystemFill` (2.7 %) is
+        // the step below if even this reads as too much.
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.tertiarySystemFill.cgColor
+        bottomSeparator.wantsLayer = true
+        bottomSeparator.layer?.backgroundColor = Self.headerRuleColor().cgColor
+        bottomSeparator.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(bottomSeparator)
+        NSLayoutConstraint.activate([
+            bottomSeparator.leadingAnchor.constraint(equalTo: leadingAnchor),
+            bottomSeparator.trailingAnchor.constraint(equalTo: trailingAnchor),
+            bottomSeparator.bottomAnchor.constraint(equalTo: bottomAnchor),
+            bottomSeparator.heightAnchor.constraint(equalToConstant: 1),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    /// A layer colour is resolved once, when it is assigned — and these are
+    /// assigned before the header is in a window, so a later switch to dark mode
+    /// would leave the strip light. Re-resolved here, where the effective
+    /// appearance is authoritative (§3.2), the same way the find bar does it.
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = NSColor.tertiarySystemFill.cgColor
+            bottomSeparator.layer?.backgroundColor = Self.headerRuleColor().cgColor
+        }
+    }
+
     /// How far the pointer travels before a press on the header becomes a drag
     /// (`Design/PANE_DRAG_PLAN.md`).
     ///
@@ -1026,6 +1108,27 @@ final class FilePaneView: NSView {
         // One item, and it is already where it should be: without this AppKit
         // is free to re-arrange the drag's contents into a formation of its own.
         session.draggingFormation = .none
+        // The cancel animation is kept, and it does not land where the header
+        // is. Two facts about AppKit, both established by watching it rather
+        // than by reading it:
+        //
+        // - **The return position is screen coordinates, fixed when the item's
+        //   frame is set** — not a live view-relative frame. `draggingFrame` is
+        //   given in the source view's space, but it is resolved to the screen
+        //   there and then. So when the New Tab strip opens and pushes the panes
+        //   down, the recorded point stays where the header *was*, which by then
+        //   is where the strip is.
+        // - **`endedAt` arrives after the flight, not at the mouse-up.** So the
+        //   strip cannot be collapsed in time to meet the pill; the panes rise
+        //   after it has landed, whatever the collapse is timed to.
+        //
+        // Left as it is, deliberately. Turning the animation off is the honest
+        // alternative and was tried; keeping the panes still during a pane drag
+        // (the strip overlaying instead of displacing) would fix the target but
+        // brings back the covered headers that displacing was introduced to
+        // solve. Retargeting mid-flight through `enumerateDraggingItems` is the
+        // third option and the least safe: `draggingFrame` also governs where
+        // the image sits under the cursor.
     }
 
     /// The pill the hand carries: the pane's document glyph and file name on an
@@ -1453,6 +1556,8 @@ extension FilePaneView: NSDraggingSource {
 
     func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint,
                          operation: NSDragOperation) {
+        // First thing, so the panes start rising while the pill is still in the
+        // air rather than after it has landed.
         onDragSessionChanged?(false)
     }
 }

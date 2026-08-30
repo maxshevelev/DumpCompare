@@ -877,4 +877,42 @@ final class PaneDragTests: XCTestCase {
         XCTAssertTrue(bands.bandForTesting(.replace).isShowingRefusal,
                       "only the band with nothing to offer shows the symbol")
     }
+
+    // MARK: - The header is chrome, not document
+
+    /// The header the pane is dragged by has a fill of its own and a hairline
+    /// under it.
+    ///
+    /// The dump and the column header above it both draw `textBackgroundColor`,
+    /// so a header without one dissolved into them: the pane read as one flat
+    /// sheet from the tab bar down, and the strip meant to be grabbed had no
+    /// visible edge. `windowBackgroundColor` is the window's own grey — the
+    /// relationship a toolbar has to the content beside it.
+    func testTheHeaderCarriesItsOwnBackgroundAndEdge() throws {
+        let header = PaneHeaderView(frame: NSRect(x: 0, y: 0, width: 200, height: 28))
+        header.layoutSubtreeIfNeeded()
+
+        XCTAssertNotNil(header.layer?.backgroundColor,
+                        "the header fills itself rather than showing what is behind it")
+
+        // The premise, and the reason the obvious colour was not the one taken.
+        // Measured, not assumed: on this OS `windowBackgroundColor` and
+        // `textBackgroundColor` are the same colour in both appearances, so a
+        // header filled with the first would be exactly as flat as no fill.
+        for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+            NSAppearance(named: appearance)?.performAsCurrentDrawingAppearance {
+                XCTAssertEqual(NSColor.windowBackgroundColor.cgColor,
+                               NSColor.textBackgroundColor.cgColor,
+                               "\(appearance.rawValue): the window grey is the document white")
+                XCTAssertNotEqual(NSColor.tertiarySystemFill.cgColor,
+                                  NSColor.textBackgroundColor.cgColor,
+                                  "\(appearance.rawValue): the fill actually differs")
+            }
+        }
+
+        let separator = try XCTUnwrap(header.subviews.first {
+            $0.frame.height == 1 && $0.frame.width == header.bounds.width
+        }, "a hairline along the bottom edge")
+        XCTAssertEqual(separator.frame.minY, 0, "at the bottom, against the dump")
+    }
 }
