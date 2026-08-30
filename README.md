@@ -9,7 +9,7 @@ DumpCompare grew out of bench work on BIOS and EC dumps, so the comparison model
 
 ## Download
 
-[**DumpCompare 0.5**](https://github.com/maxshevelev/DumpCompare/releases/latest) — a universal `.dmg` (Apple silicon and Intel), macOS 14 or later.
+[**DumpCompare 0.6**](https://github.com/maxshevelev/DumpCompare/releases/latest) — a universal `.dmg` (Apple silicon and Intel), macOS 14 or later.
 
 The build is ad-hoc signed and not notarized, so Gatekeeper stops the first launch: right-click the app and choose **Open**, or clear the quarantine flag once.
 
@@ -27,6 +27,7 @@ The workflows the app is shaped around:
 - **Keeping your place in it.** ⌘D marks the caret's row and offers it a name; the mark is a purple arrow in the Offset column and in the minimap's margin, so the header, the table and the region under investigation stay findable while you work between them.
 - **Patching by hand.** ⌘L to the offset, type the hex digits, the changed bytes turn red until saved. Confirmations guard the operations that shift data.
 - **Two chips, one image.** Plenty of boards split the BIOS region across two SPI flashes. Read both, **File ▸ Append File…** to join them in order, work on the whole image as one dump — compare, search, patch — then **Save All as Separate Files…** to split it back at the same seam and flash each half.
+- **More than one comparison at a time.** A board rarely gives you one question. ⌘T opens another tab — its own two panes, its own bookmarks, its own comparison — so the donor pair stays open while you look at the second chip, and ⌃Tab goes back.
 - **Verifying a write-back.** Re-read the chip and compare the new dump against the file you flashed; the difference count is the pass/fail.
 - **Chip-sized files, not toy files.** Files are read in chunks and never loaded whole, so a 16 MB SPI dump — or a 1 GB image — opens immediately and stays within a low double-digit megabyte working set.
 
@@ -38,6 +39,16 @@ The workflows the app is shaped around:
 - Differing bytes get an orange fill, tuned for light and dark mode; the shorter file's EOF tail counts as a difference too. The status bar shows a live summary — `12 differing · 2048 same` — updating as you edit.
 - **Next/Previous Difference** (⌘⌥→ / ⌘⌥←) and **Next/Previous Same Block** (⌘⌥⇧→ / ⌘⌥⇧←) centre each result. Navigation steps between *changes*, not bytes: differing bytes closer together than the grouping distance (64 bytes by default) are one target, so a rewritten NVRAM area is one press instead of hundreds while highlighting stays per byte.
 - A selection in one pane is outlined in the other, so the two halves of the same offset read as one. **View > Toggle Pane Layout** (⌘⌥L) switches side-by-side and stacked; **Swap Panels** exchanges the two files without reopening them.
+
+### Tabs and windows
+
+- **⌘T opens a tab**, ⇧⌘N a window. A tab is a whole comparison of its own: two panes, one bookmark list, its own diff index and minimap. ⌃Tab moves between them, and a tab can be dragged out into a window or back in — the tab bar is the system's, so it behaves like every other one on the Mac.
+- Each tab is named after what it holds — `dump.bin`, `A.bin ↔ B.bin`, or `Empty` — so the bar and the Window menu are readable.
+- **⌘W steps down**: it closes the active pane, then the tab once no pane is left, then the window once no tab is. ⇧⌘W closes the window and every tab in it.
+- **A file is open in one place at a time.** Opening one that is already open somewhere asks what you meant: show it where it is, move that pane into this tab, or cancel. The pane *moves* — the unsaved edits, the undo history and the segments come with it, and the file is never open twice.
+- **Drag a pane by its header.** Onto the other pane to swap them, onto its top or bottom edge to join it in, onto another tab to move it there (hover the tab and the bar switches), or onto the strip that appears at the top of the window to give it a tab of its own. In single-file mode the free half offers **Duplicate Here** — the dump beside itself, so a patch you make shows every difference it causes.
+- **Drop a file on that strip** to open it in a new tab without disturbing the window you dropped it on.
+- An empty window is not an empty room: bookmarks belong to the window, so closing the last dump leaves the marks, and the window lists them and counts them in its title — `Empty (3 Bookmarks)`.
 
 ### Going somewhere, and coming back
 
@@ -76,6 +87,7 @@ The workflows the app is shaped around:
 - **Split Here at «address»** in the dump's context menu is the fast path; **Edit ▸ Add Cut…** takes a typed offset, and **Merge** folds a piece into its neighbour. Every piece gets a tint: a faint wash on the dump's rows, and a colour strip beside the minimap that reads the file's make-up at a glance.
 - **A cut travels with the content** — the opposite rule to a bookmark, which is an address you chose and must stay put. Insert bytes before a seam and the seam moves with the bytes it belongs to. Cuts are undoable along with the edits that move them.
 - **Segments…** (⌥⌘S) opens the partition's own form: the pieces in a table, a row editor for the name and the boundary, and the operations that write. **Save Segment…** writes one piece to a file, **Save All as Separate Files…** writes the whole partition into a folder, and **Replace Segment from File…** swaps a piece's bytes for a file's contents in a single undo step.
+- **A pane can be joined into another pane**, not only a file into a pane: drag one pane's header onto the top or bottom edge of the other and its bytes join there, unsaved edits included. It is the same operation, so it reads the same — *Insert at Start*, *Append at End* — and the pane it came from is left exactly as it was, the way a joined file is left on disk.
 - **File ▸ Append File…** and **Insert File at Start…** are the other half of the round trip: a second file's bytes join the pane's content at one end or the other, and the seam they create is a cut — so a joined image splits back at exactly the boundary it was joined at. A join detaches the pane from its file: the result is untitled, so ⌘S cannot write a joined image over the dump it was opened from. ⌘Z reverses the whole join, re-attaching the pane to its original file.
 - Both commands also sit in the pane header's own menu, and both accept a drop: drag a file onto the band at the top or the bottom of a pane to insert or append it.
 

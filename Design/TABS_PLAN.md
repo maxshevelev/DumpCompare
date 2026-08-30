@@ -36,7 +36,7 @@ Each tab is a real `NSWindow` joined with `addTabbedWindow(_:ordered:)`, with
 every window the app makes.
 
 What that buys, none of which then has to be built or maintained: the tab bar
-itself, ⌃Tab and ⌘1…⌘9, dragging a tab out into its own window and dragging one
+itself, ⌃Tab, dragging a tab out into its own window and dragging one
 back in, and the Window menu's Show Tab Bar / Show All Tabs / Move Tab to New
 Window / Merge All Windows.
 
