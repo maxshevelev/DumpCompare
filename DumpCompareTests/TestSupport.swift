@@ -107,3 +107,54 @@ func makeTestWindow(width: CGFloat = 800, height: CGFloat = 600) -> NSWindow {
     window.isReleasedWhenClosed = false
     return window
 }
+
+
+/// A stand-in for the drag session AppKit hands a destination view.
+///
+/// The drag callbacks are where the modifier is read and the cursor is decided,
+/// and until this existed no test could enter one: the views grew
+/// `…ForTesting` seams that called the internals directly, which is exactly the
+/// path a bug in `draggingEntered`/`draggingUpdated` itself walks past. Only the
+/// four members our destinations touch carry anything; the rest of
+/// `NSDraggingInfo` is stubbed because a destination that reached for them would
+/// be doing something this app does not do.
+final class FakeDraggingInfo: NSObject, NSDraggingInfo {
+    var draggingSourceOperationMask: NSDragOperation
+    var draggingLocation: NSPoint
+    let draggingPasteboard: NSPasteboard
+
+    /// A session carrying `paneID`, with the mask AppKit narrows to `.copy` when
+    /// Option is held and leaves as `[.move, .copy]` when it is not.
+    init(paneID: UUID, copying: Bool, at location: NSPoint = .zero) {
+        let board = NSPasteboard(name: NSPasteboard.Name("FakeDrag-\(UUID().uuidString)"))
+        board.clearContents()
+        board.setString(paneID.uuidString, forType: .pane)
+        draggingPasteboard = board
+        draggingSourceOperationMask = copying ? .copy : [.move, .copy]
+        draggingLocation = location
+    }
+
+    /// Option pressed or released mid-drag: AppKit re-narrows the mask and sends
+    /// another update, which is the whole shape of the bug this exists for.
+    func setCopying(_ copying: Bool) {
+        draggingSourceOperationMask = copying ? .copy : [.move, .copy]
+    }
+
+    var draggingDestinationWindow: NSWindow? { nil }
+    var draggedImageLocation: NSPoint { .zero }
+    var draggedImage: NSImage? { nil }
+    var draggingSource: Any? { nil }
+    var draggingSequenceNumber: Int { 1 }
+    var animatesToDestination: Bool = false
+    var numberOfValidItemsForDrop: Int = 1
+    var draggingFormation: NSDraggingFormation = .default
+    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+    func slideDraggedImage(to screenPoint: NSPoint) {}
+    override func namesOfPromisedFilesDropped(atDestination dropDestination: URL) -> [String]? { nil }
+    func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions,
+                                for view: NSView?,
+                                classes classArray: [AnyClass],
+                                searchOptions: [NSPasteboard.ReadingOptionKey: Any],
+                                using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
+    func resetSpringLoading() {}
+}

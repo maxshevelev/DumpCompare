@@ -866,6 +866,9 @@ final class MainViewController: NSViewController {
             emptyView.onPaneDropped = { [weak self] paneID, copying in
                 self?.performPaneDrop(draggedPaneID: paneID, onPaneAt: 0, copying: copying)
             }
+            emptyView.onCopyModifierChanged = { [weak self] copying in
+                self?.setPaneDragCopyingEverywhere(copying)
+            }
             setContentView(emptyView)
 
         case .singleFile:

@@ -15,6 +15,17 @@ final class EmptyStateView: NSView {
     /// the window stops being empty.
     var onPaneDropped: ((_ draggedPaneID: UUID, _ copying: Bool) -> Void)?
 
+    /// Fired when Option goes down or up over this window, so the drop zones
+    /// raised in the *other* windows can be re-captioned. Nothing here needs
+    /// telling in return: an empty window has no caption to keep in step, only a
+    /// cursor, and the cursor is the operation this view returns.
+    /// See `PaneDropBandsView.onCopyModifierChanged`.
+    var onCopyModifierChanged: ((Bool) -> Void)?
+
+    /// Whether the pane drag in flight is asking to copy, as last read. Held so
+    /// a change can be told from a repeat.
+    private var draggedPaneIsCopying = false
+
     /// The muted grey shared by the icon and the headline — softer than the
     /// regular secondary text, so the landing screen reads as a hint, not a
     /// primary control.
@@ -299,15 +310,43 @@ final class EmptyStateView: NSView {
 extension EmptyStateView {
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         if let paneID = sender.draggingPasteboard.draggedPaneID {
-            let copying = sender.isCopyRequested
-            let outcome = paneDropOutcome?(paneID, copying) ?? .none
-            guard outcome != .none else { return [] }
-            setDropHighlighted(true)
-            return copying ? .copy : .move
+            return paneOperation(paneID, copying: sender.isCopyRequested)
         }
         guard !sender.draggingPasteboard.droppedFileURLs.isEmpty else { return [] }
         setDropHighlighted(true)
         return .copy
+    }
+
+    /// Re-read on every update, because Option pressed or released mid-drag
+    /// arrives as one of these.
+    ///
+    /// Without an override of its own, AppKit answers every update with whatever
+    /// `draggingEntered` returned: the cursor kept promising a move while the
+    /// drop — which reads the modifier itself, when it happens — performed a
+    /// copy. A window with nothing in it is exactly where that is hardest to
+    /// notice, since it has no zones with captions to disagree with.
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard let paneID = sender.draggingPasteboard.draggedPaneID else {
+            return sender.draggingPasteboard.droppedFileURLs.isEmpty ? [] : .copy
+        }
+        return paneOperation(paneID, copying: sender.isCopyRequested)
+    }
+
+    /// What dropping the pane here would do, as the cursor: the copy's + with
+    /// Option, the move's arrow without it, and nothing at all when this window
+    /// has nothing to offer (its own pane has nowhere else to be).
+    private func paneOperation(_ paneID: UUID, copying: Bool) -> NSDragOperation {
+        if draggedPaneIsCopying != copying {
+            draggedPaneIsCopying = copying
+            onCopyModifierChanged?(copying)
+        }
+        let outcome = paneDropOutcome?(paneID, copying) ?? .none
+        guard outcome != .none else {
+            setDropHighlighted(false)
+            return []
+        }
+        setDropHighlighted(true)
+        return copying ? .copy : .move
     }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {

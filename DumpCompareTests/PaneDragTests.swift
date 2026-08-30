@@ -1180,6 +1180,48 @@ final class PaneDragTests: XCTestCase {
                        "the strip cannot go on promising a move")
     }
 
+    /// An empty window answers drag updates itself. Until it did, AppKit went on
+    /// handing back whatever `draggingEntered` had returned, so Option pressed
+    /// after arriving left the cursor promising a move while the drop — which
+    /// reads the modifier when it happens — performed a duplicate.
+    ///
+    /// Take the override away and this test fails loudly rather than quietly:
+    /// AppKit's default asks the session for `_lastDragDestinationOperation`,
+    /// which the double does not answer — the mechanism of the bug, named.
+    func testAnEmptyWindowsCursorFollowsTheModifier() {
+        let view = EmptyStateView()
+        view.paneDropOutcome = { _, copying in
+            copying ? .duplicate(intoPane: 0) : .move(intoPane: 0)
+        }
+        let drag = FakeDraggingInfo(paneID: UUID(), copying: false)
+
+        XCTAssertEqual(view.draggingEntered(drag), .move)
+
+        drag.setCopying(true)
+        XCTAssertEqual(view.draggingUpdated(drag), .copy, "Option carries the +")
+
+        drag.setCopying(false)
+        XCTAssertEqual(view.draggingUpdated(drag), .move, "and releasing it takes it back")
+    }
+
+    /// It reports the change too: the zones raised in the other windows hear
+    /// nothing while the pointer is over this one. A repeat is not a change and
+    /// is not reported.
+    func testAnEmptyWindowReportsTheModifierOncePerChange() {
+        var reported: [Bool] = []
+        let view = EmptyStateView()
+        view.paneDropOutcome = { _, _ in .move(intoPane: 0) }
+        view.onCopyModifierChanged = { reported.append($0) }
+        let drag = FakeDraggingInfo(paneID: UUID(), copying: false)
+
+        _ = view.draggingEntered(drag)
+        drag.setCopying(true)
+        _ = view.draggingUpdated(drag)
+        _ = view.draggingUpdated(drag)
+
+        XCTAssertEqual(reported, [true])
+    }
+
     /// Option-dropping a pane on the other pane of its own window copies into
     /// that pane instead of swapping: the dump beside itself, in one gesture.
     func testOptionDroppingOnTheOtherPaneCopiesInsteadOfSwapping() throws {
