@@ -323,4 +323,68 @@ final class BinaryDocumentJoinTests: XCTestCase {
         _ = try doc.undo()
         XCTAssertEqual(doc.url, original, "and undoing again gives it back once more")
     }
+
+    // MARK: - Joining a document to itself
+
+    /// A document can be joined to its own storage — the same bytes twice.
+    ///
+    /// This is the case that cannot be written naively: the source is the
+    /// storage being written to, so its size grows with every chunk. A loop that
+    /// reads "until the end of the source" never reaches it, and the document
+    /// grows until the disk stops it. The size is therefore taken once, before
+    /// anything is written.
+    func testAppendingADocumentToItselfDoublesIt() throws {
+        let document = makeDocument([0x01, 0x02, 0x03, 0x04])
+
+        try document.join(contentsOf: document.storage, at: .end)
+
+        XCTAssertEqual(document.size, 8)
+        XCTAssertEqual(try document.read(at: 0, length: 8),
+                       [0x01, 0x02, 0x03, 0x04, 0x01, 0x02, 0x03, 0x04])
+    }
+
+    /// Inserting at the start moves the original bytes right as it goes, so a
+    /// self-join has to follow them: byte `k` is at `k + inserted` by the time it
+    /// is read. Without that the second half comes out as a copy of the first
+    /// chunk over and over.
+    func testInsertingADocumentIntoItsOwnStartDoublesIt() throws {
+        let document = makeDocument([0xAA, 0xBB, 0xCC, 0xDD])
+
+        try document.join(contentsOf: document.storage, at: .start)
+
+        XCTAssertEqual(document.size, 8)
+        XCTAssertEqual(try document.read(at: 0, length: 8),
+                       [0xAA, 0xBB, 0xCC, 0xDD, 0xAA, 0xBB, 0xCC, 0xDD])
+    }
+
+    /// The same, over more than one chunk, so the offset arithmetic is exercised
+    /// rather than a single read that happens to cover everything.
+    func testASelfJoinIsCorrectAcrossSeveralChunks() throws {
+        let size = BinaryDocument.joinChunkSize + BinaryDocument.joinChunkSize / 2
+        // Every byte distinct within a chunk, so a chunk read from the wrong
+        // offset cannot look like the right one.
+        let bytes = (0..<size).map { UInt8($0 % 251) }
+        let document = makeDocument(bytes)
+
+        try document.join(contentsOf: document.storage, at: .start)
+
+        XCTAssertEqual(document.size, UInt64(size * 2))
+        // The whole content, not samples of it: sampling passed even with the
+        // offset correction removed, because the places sampled happened to hold
+        // the right bytes either way.
+        XCTAssertEqual(try document.read(at: 0, length: size * 2), bytes + bytes)
+    }
+
+    /// A self-join is one undo step, like any other join.
+    func testASelfJoinUndoesInOneStep() throws {
+        let document = makeDocument([0x10, 0x20])
+
+        try document.join(contentsOf: document.storage, at: .end)
+        XCTAssertEqual(document.size, 4)
+
+        try document.undo()
+
+        XCTAssertEqual(document.size, 2)
+        XCTAssertEqual(try document.read(at: 0, length: 2), [0x10, 0x20])
+    }
 }

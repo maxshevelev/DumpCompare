@@ -136,20 +136,28 @@ enum PaneDrop {
         case .newTabStrip:
             return .tearOff
         case .pane(let index, let inOriginWindow, let band):
-            // Dropped back on itself: the gesture was abandoned, not performed.
-            // A pane cannot join or replace itself either, so this comes first.
-            if inOriginWindow, index == originIndex { return .none }
+            let ontoItself = inOriginWindow && index == originIndex
             switch band {
             case .insertAtStart:
+                // A pane joined to itself doubles its dump — the same operation
+                // a file dropped on the pane it is already open in performs, and
+                // just as real. Only the middle band is meaningless on a pane's
+                // own slot.
                 return .join(intoPane: index, at: .start)
             case .appendAtEnd:
                 return .join(intoPane: index, at: .end)
             case .replace:
-                // Two panes of one window trade places; a pane from elsewhere
-                // takes the slot, since there is nothing to trade with.
+                // Trading a pane with itself is the gesture abandoned, not
+                // performed. Otherwise two panes of one window trade places, and
+                // a pane from elsewhere takes the slot, there being nothing to
+                // trade with.
+                if ontoItself { return .none }
                 return inOriginWindow ? .swap : .move(intoPane: index)
             case .addSecond:
-                return .move(intoPane: index)
+                // The free second pane of a single-file window. A pane already
+                // in that window has nothing to be brought into it — it is
+                // there — so only a pane from elsewhere means anything here.
+                return inOriginWindow ? .none : .move(intoPane: index)
             }
         }
     }

@@ -536,14 +536,60 @@ final class PaneDragTests: XCTestCase {
                        .move(intoPane: 1))
     }
 
-    /// A pane cannot be joined into itself, whichever band the pointer is over.
-    func testAPaneCannotJoinItself() {
-        for band: SingleFileDropTarget in [.insertAtStart, .replace, .appendAtEnd] {
-            XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 1,
-                                            onto: .pane(index: 1, inOriginWindow: true,
-                                                        band: band)),
-                           .none, "band \(band)")
+    /// A pane dropped on its own end bands joins itself — the same doubling a
+    /// file dropped on the pane it is already open in performs. Only the middle
+    /// band is meaningless there: trading a pane with itself is the gesture
+    /// abandoned, not performed.
+    func testAPaneCanJoinItselfButNotSwapWithItself() {
+        XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 1,
+                                        onto: .pane(index: 1, inOriginWindow: true,
+                                                    band: .insertAtStart)),
+                       .join(intoPane: 1, at: .start))
+        XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 1,
+                                        onto: .pane(index: 1, inOriginWindow: true,
+                                                    band: .appendAtEnd)),
+                       .join(intoPane: 1, at: .end))
+        XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 1,
+                                        onto: .pane(index: 1, inOriginWindow: true,
+                                                    band: .replace)),
+                       .none)
+    }
+
+    /// Joining a pane to itself doubles its content, and asks first — the same
+    /// question a file joined to itself asks, in the same words.
+    func testJoiningAPaneToItselfDoublesItAfterAsking() throws {
+        let controller = MainViewController()
+        let a = try tempFile([UInt8](repeating: 0xAA, count: 16))
+        let b = try tempFile([UInt8](repeating: 0xBB, count: 16))
+        controller.openFiles([a, b])
+        var asked: NSAlert?
+        MainViewController.modalResponder = { alert in
+            asked = alert
+            return .alertFirstButtonReturn
         }
+        addTeardownBlock { MainViewController.modalResponder = nil }
+
+        controller.performPaneDrop(draggedPaneID: controller.windowModel.pane1.dragID,
+                                   onPaneAt: 0, band: .appendAtEnd)
+
+        let alert = try XCTUnwrap(asked, "a pane joined to itself must ask")
+        XCTAssertTrue(alert.messageText.contains("to itself"))
+        XCTAssertEqual(controller.windowModel.pane1.fileSize, 32, "the dump, twice")
+    }
+
+    /// Cancelled, it changes nothing.
+    func testCancellingASelfJoinOfAPaneChangesNothing() throws {
+        let controller = MainViewController()
+        let a = try tempFile([UInt8](repeating: 0xAA, count: 16))
+        let b = try tempFile([UInt8](repeating: 0xBB, count: 16))
+        controller.openFiles([a, b])
+        MainViewController.modalResponder = { _ in .alertSecondButtonReturn }
+        addTeardownBlock { MainViewController.modalResponder = nil }
+
+        controller.performPaneDrop(draggedPaneID: controller.windowModel.pane1.dragID,
+                                   onPaneAt: 0, band: .insertAtStart)
+
+        XCTAssertEqual(controller.windowModel.pane1.fileSize, 16)
     }
 
     /// The join runs, and the pane it came from is left exactly as it was: a
@@ -684,5 +730,151 @@ final class PaneDragTests: XCTestCase {
         XCTAssertEqual(lone.mode, .singleFile, "a join does not make a second pane")
         XCTAssertEqual(source.windowModel.pane2.fileSize, sourceSize,
                        "the pane it came from is untouched")
+    }
+
+    // MARK: - Crossing a zone with nothing to offer
+
+    /// The overlay must not forget what is in flight when it hides its bands.
+    ///
+    /// The middle band of a pane's own slot is the one zone with nothing to
+    /// offer, so the bands go away there. Clearing the dragged pane at the same
+    /// time meant the overlay answered "no" for the rest of the drag: entering
+    /// from outside worked, moving out of the middle band did not.
+    func testCrossingTheRefusedMiddleBandDoesNotEndTheDrag() throws {
+        let bands = PaneDropBandsView(paneView: FilePaneView(viewModel: PaneViewModel()))
+        bands.frame = NSRect(x: 0, y: 0, width: 300, height: 400)
+        bands.layout()
+        let dragged = UUID()
+        var asked: [SingleFileDropTarget] = []
+        bands.paneDropOutcome = { _, band in
+            asked.append(band)
+            // The shape of a pane over its own slot: the ends join, the middle
+            // has nothing.
+            switch band {
+            case .insertAtStart: return .join(intoPane: 0, at: .start)
+            case .appendAtEnd: return .join(intoPane: 0, at: .end)
+            default: return .none
+            }
+        }
+
+        // Enter on the middle band, where there is nothing to offer…
+        XCTAssertEqual(bands.paneDragEnteredForTesting(dragged, at: .replace), [])
+        // …then move to an end band, which has. This step knows nothing but what
+        // the entry remembered, which is the whole point.
+        XCTAssertEqual(bands.paneDragMovedForTesting(to: .insertAtStart), .copy)
+        // The captions ask for every band's own outcome, so the exact sequence is
+        // longer than the two moves; what matters is that asking continued at
+        // all after the first no.
+        XCTAssertTrue(asked.contains(.insertAtStart),
+                      "the overlay kept asking rather than giving up after the first no")
+    }
+
+    /// A lone pane can be joined to itself in a single-file window: the same two
+    /// bands, the same doubling. Only the middle band and the second half mean
+    /// nothing for a pane already in this window.
+    func testASingleFileWindowsOwnPaneCanJoinItself() throws {
+        let controller = MainViewController()
+        let a = try tempFile([UInt8](repeating: 0xAA, count: 16))
+        controller.openFiles([a])
+        let own = controller.windowModel.pane1.dragID
+
+        for (target, expected) in [(SingleFileDropTarget.insertAtStart,
+                                    PaneDrop.Outcome.join(intoPane: 0, at: .start)),
+                                   (.appendAtEnd, .join(intoPane: 0, at: .end)),
+                                   (.replace, .none),
+                                   (.addSecond, .none)] {
+            let (index, band) = MainViewController.singleFilePaneDrop(target)
+            XCTAssertEqual(controller.paneDropOutcome(draggedPaneID: own,
+                                                      onPaneAt: index, band: band),
+                           expected, "zone \(target)")
+        }
+    }
+
+    /// A pane already in a window is not "opened as its second pane" — it is
+    /// already there, and moving it across its own window means nothing.
+    func testAWindowsOwnPaneIsNotOfferedItsSecondSlot() {
+        XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 0,
+                                        onto: .pane(index: 1, inOriginWindow: true,
+                                                    band: .addSecond)),
+                       .none)
+        XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 0,
+                                        onto: .pane(index: 1, inOriginWindow: false,
+                                                    band: .addSecond)),
+                       .move(intoPane: 1))
+    }
+
+    // MARK: - What a zone says
+
+    /// Every band is captioned from its own outcome. Asking once for the band
+    /// under the pointer and using that answer for all three left the others
+    /// saying something they do not do — and the middle band, over a pane's own
+    /// slot, saying nothing at all: an empty grey plate.
+    func testEachBandIsCaptionedFromItsOwnOutcome() {
+        // The same words a file gets, from the same place: it is the same
+        // operation, and a second vocabulary for it would only suggest a
+        // difference that does not exist.
+        XCTAssertEqual(PaneDropBandsView.paneBandTitle(for: .join(intoPane: 0, at: .start)),
+                       SingleFileDropTarget.insertAtStart.title)
+        XCTAssertEqual(PaneDropBandsView.paneBandTitle(for: .join(intoPane: 0, at: .end)),
+                       SingleFileDropTarget.appendAtEnd.title)
+        XCTAssertEqual(SingleFileDropTarget.insertAtStart.title, "Insert at Start")
+        XCTAssertEqual(SingleFileDropTarget.appendAtEnd.title, "Append at End")
+        XCTAssertEqual(PaneDropBandsView.paneBandTitle(for: .swap), "Swap Panes")
+        XCTAssertEqual(PaneDropBandsView.paneBandTitle(for: .move(intoPane: 1)), "Move Here")
+    }
+
+    /// A band with nothing to offer has no caption to give, and says so with a
+    /// symbol rather than with an empty plate.
+    func testARefusingBandShowsTheRefusalSymbol() {
+        XCTAssertNil(PaneDropBandsView.paneBandTitle(for: .none),
+                     "nothing to say means the symbol, not an empty caption")
+
+        let zone = DropTargetView(title: "Swap Panes")
+        XCTAssertFalse(zone.isShowingRefusal)
+
+        zone.setRefused()
+        XCTAssertTrue(zone.isShowingRefusal)
+
+        zone.setTitle("Move Here")
+        XCTAssertFalse(zone.isShowingRefusal, "a caption puts the symbol away again")
+    }
+
+    /// Over its own slot a pane can join at either end and nothing else, so the
+    /// middle band is the one that shows the refusal.
+    func testTheMiddleBandIsTheOneThatRefusesOverAPanesOwnSlot() {
+        let own = { (band: SingleFileDropTarget) in
+            PaneDrop.outcome(draggingPaneAt: 0,
+                             onto: .pane(index: 0, inOriginWindow: true, band: band))
+        }
+
+        XCTAssertNotNil(PaneDropBandsView.paneBandTitle(for: own(.insertAtStart)))
+        XCTAssertNotNil(PaneDropBandsView.paneBandTitle(for: own(.appendAtEnd)))
+        XCTAssertNil(PaneDropBandsView.paneBandTitle(for: own(.replace)))
+    }
+
+    /// The captions come from the resolver the caller hands in, not from the
+    /// overlay's own provider — which in single-file mode is nil, because the
+    /// container owns it. Asking itself there returned "nothing" for every band
+    /// and put the refusal symbol on all three, insert and append included.
+    func testBandCaptionsComeFromTheResolverTheCallerHandsIn() {
+        let bands = PaneDropBandsView(paneView: FilePaneView(viewModel: PaneViewModel()))
+        bands.frame = NSRect(x: 0, y: 0, width: 300, height: 400)
+        bands.layout()
+        // Deliberately left nil, the way the single-file container leaves it.
+        XCTAssertNil(bands.paneDropOutcome)
+
+        bands.retitleBands(forPane: UUID()) { band in
+            switch band {
+            case .insertAtStart: return .join(intoPane: 0, at: .start)
+            case .appendAtEnd: return .join(intoPane: 0, at: .end)
+            default: return .none
+            }
+        }
+
+        XCTAssertFalse(bands.bandForTesting(.insertAtStart).isShowingRefusal,
+                       "the end bands have something to offer and say so")
+        XCTAssertFalse(bands.bandForTesting(.appendAtEnd).isShowingRefusal)
+        XCTAssertTrue(bands.bandForTesting(.replace).isShowingRefusal,
+                      "only the band with nothing to offer shows the symbol")
     }
 }

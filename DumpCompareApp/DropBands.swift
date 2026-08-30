@@ -8,6 +8,13 @@ import Cocoa
 final class DropTargetView: NSView {
     private let plate = NSVisualEffectView()
     private let label = NSTextField(labelWithString: "")
+    private let refusalIcon = NSImageView()
+    /// Held so the plate can be squared for a refusal and let go for a caption.
+    private var plateSquareWidth: NSLayoutConstraint?
+    private var plateSquareHeight: NSLayoutConstraint?
+
+    /// The side of the square plate a refusal wears.
+    static let refusalPlateSide: CGFloat = 56
 
     init(title: String) {
         super.init(frame: .zero)
@@ -41,6 +48,19 @@ final class DropTargetView: NSView {
         label.translatesAutoresizingMaskIntoConstraints = false
         plate.addSubview(label)
 
+        // Shown in the label's place when the zone refuses what is being
+        // carried. A caption would have to find words for "nothing"; the symbol
+        // says it without any, and an empty plate says nothing at all — which is
+        // what the middle band looked like when a pane was dragged over its own
+        // slot.
+        refusalIcon.translatesAutoresizingMaskIntoConstraints = false
+        refusalIcon.image = NSImage(systemSymbolName: "nosign",
+                                    accessibilityDescription: "Not allowed here")?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 30, weight: .semibold))
+        refusalIcon.contentTintColor = .secondaryLabelColor
+        refusalIcon.isHidden = true
+        plate.addSubview(refusalIcon)
+
         addSubview(plate)
         NSLayoutConstraint.activate([
             plate.centerXAnchor.constraint(equalTo: centerXAnchor),
@@ -57,7 +77,15 @@ final class DropTargetView: NSView {
             label.trailingAnchor.constraint(lessThanOrEqualTo: plate.trailingAnchor, constant: -10),
             label.topAnchor.constraint(equalTo: plate.topAnchor, constant: 5),
             label.bottomAnchor.constraint(equalTo: plate.bottomAnchor, constant: -5),
+
+            refusalIcon.centerXAnchor.constraint(equalTo: plate.centerXAnchor),
+            refusalIcon.centerYAnchor.constraint(equalTo: plate.centerYAnchor),
         ])
+
+        // A refusal is a symbol, not a sentence, so its plate is a square rather
+        // than the lozenge a caption needs.
+        plateSquareWidth = plate.widthAnchor.constraint(equalToConstant: Self.refusalPlateSide)
+        plateSquareHeight = plate.heightAnchor.constraint(equalToConstant: Self.refusalPlateSide)
     }
 
     @available(*, unavailable)
@@ -69,7 +97,23 @@ final class DropTargetView: NSView {
     /// (`Design/PANE_DRAG_PLAN.md`), and one plate says whichever it is.
     func setTitle(_ title: String) {
         label.stringValue = title
+        label.isHidden = false
+        refusalIcon.isHidden = true
+        plateSquareWidth?.isActive = false
+        plateSquareHeight?.isActive = false
     }
+
+    /// Marks the zone as one that will not take what is being carried: a
+    /// no-entry symbol in place of a caption.
+    func setRefused() {
+        label.isHidden = true
+        refusalIcon.isHidden = false
+        plateSquareWidth?.isActive = true
+        plateSquareHeight?.isActive = true
+    }
+
+    /// Whether the zone is showing its refusal symbol (for tests).
+    var isShowingRefusal: Bool { !refusalIcon.isHidden }
 
     func setHighlighted(_ highlighted: Bool) {
         // Hover floods the zone with a translucent accent-blue fill; idle keeps
@@ -305,25 +349,91 @@ final class PaneDropBandsView: NSView {
             target.isHidden = true
             target.alphaValue = 0
         }
+        retitleBandsForFile()
+    }
+
+    /// A pane drag arriving over a band, the way `draggingEntered` does — the
+    /// only step that learns which pane is in flight.
+    func paneDragEnteredForTesting(_ paneID: UUID, at band: SingleFileDropTarget)
+    -> NSDragOperation {
+        draggedPaneID = paneID
+        return paneOperation(forBand: band)
+    }
+
+    /// The pane drag moving to another band, the way `draggingUpdated` does —
+    /// which knows nothing but what the entry remembered.
+    func paneDragMovedForTesting(to band: SingleFileDropTarget) -> NSDragOperation {
+        paneOperation(forBand: band)
+    }
+
+    /// Forgets what is in flight. Only when the drag has actually gone — a
+    /// hidden band is not a finished drag. Clearing this whenever the bands went
+    /// away meant that crossing the one zone with nothing to offer (the middle
+    /// band of the pane's own slot) made the overlay forget the pane, and every
+    /// band after that answered "no" for the rest of the drag: entering from
+    /// outside worked, moving out of the middle did not.
+    private func forgetDraggedPane() {
         draggedPaneID = nil
-        retitleBands(forPane: false)
     }
 
-    /// Names the bands for what is being carried. The ends read the same for
-    /// both — a join is a join — and only the middle changes, because replacing
-    /// a pane with a file and trading two panes are different acts.
-    func retitleBands(forPane isPane: Bool, middle: String = "") {
-        insertTarget.setTitle(isPane ? "Join at Start" : SingleFileDropTarget.insertAtStart.title)
-        appendTarget.setTitle(isPane ? "Join at End" : SingleFileDropTarget.appendAtEnd.title)
-        replaceTarget.setTitle(isPane ? middle : SingleFileDropTarget.replace.title)
+    /// Puts the file captions back on the bands.
+    func retitleBandsForFile() {
+        insertTarget.setTitle(SingleFileDropTarget.insertAtStart.title)
+        replaceTarget.setTitle(SingleFileDropTarget.replace.title)
+        appendTarget.setTitle(SingleFileDropTarget.appendAtEnd.title)
     }
 
-    /// What the middle band says for the pane in flight.
-    static func paneMiddleTitle(for outcome: PaneDrop.Outcome) -> String {
+    /// Captions every band from **its own** outcome, not from the one under the
+    /// pointer.
+    ///
+    /// Asking once for the hovered band and using that answer for all three left
+    /// the others captioned for something they do not do — the middle band went
+    /// blank, an empty grey plate saying nothing, whenever an end band was
+    /// hovered over a pane's own slot. A band that will not take what is carried
+    /// now says so with the refusal symbol instead of saying nothing.
+    /// `outcomeForBand` is passed in rather than read from this view's own
+    /// `paneDropOutcome`, which is not always the one that knows: in single-file
+    /// mode the container owns the provider and this overlay's is nil, so asking
+    /// itself returned "nothing" for every band and put the refusal symbol on
+    /// all three.
+    func retitleBands(forPane paneID: UUID,
+                      outcomeForBand: (SingleFileDropTarget) -> PaneDrop.Outcome) {
+        for (band, target) in [(SingleFileDropTarget.insertAtStart, insertTarget),
+                               (.replace, replaceTarget),
+                               (.appendAtEnd, appendTarget)] {
+            if let title = Self.paneBandTitle(for: outcomeForBand(band)) {
+                target.setTitle(title)
+            } else {
+                target.setRefused()
+            }
+        }
+    }
+
+    /// One band's plate, so a test can read what it is showing.
+    func bandForTesting(_ band: SingleFileDropTarget) -> DropTargetView {
+        switch band {
+        case .insertAtStart: return insertTarget
+        case .appendAtEnd: return appendTarget
+        case .replace, .addSecond: return replaceTarget
+        }
+    }
+
+    /// What a band says for the outcome it would produce, or nil when it would
+    /// produce nothing and should show the refusal symbol instead.
+    ///
+    /// The ends read exactly as they do for a file, and take their words from
+    /// the same place: it is the same operation — `join(contentsOf:at:)` either
+    /// way — and two sets of words for it would only invite the reader to look
+    /// for a difference that is not there.
+    static func paneBandTitle(for outcome: PaneDrop.Outcome) -> String? {
         switch outcome {
+        case .join(_, let position):
+            return position == .start
+                ? SingleFileDropTarget.insertAtStart.title
+                : SingleFileDropTarget.appendAtEnd.title
         case .swap: return "Swap Panes"
         case .move: return "Move Here"
-        case .join, .tearOff, .none: return ""
+        case .none, .tearOff: return nil
         }
     }
 
@@ -381,19 +491,27 @@ extension PaneDropBandsView {
     /// mean. A join is a **copy** — the pane it came from is left as it was, so
     /// the cursor carries the + that says so — while the middle band moves.
     private func paneOperation(at windowPoint: NSPoint) -> NSDragOperation {
+        let operation = paneOperation(forBand: band(at: windowPoint) ?? .replace)
+        if operation != [] { updateHover(at: windowPoint) }
+        return operation
+    }
+
+    private func paneOperation(forBand band: SingleFileDropTarget) -> NSDragOperation {
         guard let paneID = draggedPaneID else { return [] }
-        let band = band(at: windowPoint) ?? .replace
         let outcome = paneDropOutcome?(paneID, band) ?? .none
         // Nothing to offer, so nothing is shown. The zones are the offer: a
-        // pane dropped back on itself is refused by the cursor, and lighting
-        // the bands anyway would put a choice on screen that does not exist.
+        // pane over the one band with no meaning is refused by the cursor, and
+        // lighting the bands anyway would put a choice on screen that does not
+        // exist. What is *not* forgotten here is the pane itself — the drag is
+        // still in flight, and the next band may well have something to offer.
         guard outcome != .none else {
             setDragActive(false)
             return []
         }
         setDragActive(true)
-        retitleBands(forPane: true, middle: Self.paneMiddleTitle(for: outcome))
-        updateHover(at: windowPoint)
+        retitleBands(forPane: paneID) { [weak self] band in
+            self?.paneDropOutcome?(paneID, band) ?? .none
+        }
         switch outcome {
         case .join: return .copy
         case .swap, .move: return .move
@@ -405,10 +523,12 @@ extension PaneDropBandsView {
         // This overlay's own bands go — the pointer is no longer choosing among
         // them — but the session is not over, so the strip stays up.
         setDragActive(false)
+        forgetDraggedPane()
     }
 
     override func draggingEnded(_ sender: NSDraggingInfo) {
         setDragActive(false)
+        forgetDraggedPane()
         onDragSessionChanged?(false)
     }
 
@@ -421,6 +541,7 @@ extension PaneDropBandsView {
         if let paneID = sender.draggingPasteboard.draggedPaneID {
             let band = band(at: sender.draggingLocation) ?? .replace
             setDragActive(false)
+            forgetDraggedPane()
             onPaneDropped?(paneID, band)
             return true
         }
@@ -497,8 +618,16 @@ final class NewTabDropStrip: NSView {
     /// Shown for the drag's lifetime. The window's overlays raise this as soon
     /// as a drag enters any of them, so the strip is on screen before the
     /// pointer reaches it — a target nobody can see is a target nobody uses.
-    func setDragActive(_ active: Bool) {
+    /// Raised for a drag's lifetime, captioned for what is being carried.
+    ///
+    /// The caption is set here, when the strip goes up, and not only when a drag
+    /// reaches it: the strip is raised by the window's other destinations at the
+    /// start of the session, so a caption left from the previous drag would be
+    /// on screen the whole time the pointer was on its way over — a file drag
+    /// reading "Move to New Tab" because the last thing dragged was a pane.
+    func setDragActive(_ active: Bool, forPane isPane: Bool = false) {
         dragActive = active
+        setTitle(forPane: isPane)
         target.isHidden = !active
         target.alphaValue = active ? 1 : 0
         if !active { target.setHighlighted(false) }
@@ -514,14 +643,12 @@ final class NewTabDropStrip: NSView {
 extension NewTabDropStrip {
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         if sender.draggingPasteboard.draggedPaneID != nil {
-            setDragActive(true)
-            setTitle(forPane: true)
+            setDragActive(true, forPane: true)
             target.setHighlighted(true)
             return .move
         }
         guard !sender.draggingPasteboard.droppedFileURLs.isEmpty else { return [] }
-        setDragActive(true)
-        setTitle(forPane: false)
+        setDragActive(true, forPane: false)
         target.setHighlighted(true)
         return .copy
     }

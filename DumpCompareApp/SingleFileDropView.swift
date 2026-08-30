@@ -16,6 +16,22 @@ final class SingleFileDropView: NSView {
     /// Fired when the user drops on one of the targets or bands.
     var onDrop: ((SingleFileDropTarget, [URL]) -> Void)?
 
+    /// The two halves' split, and the whole-view alternative to it. A drop that
+    /// cannot use the second half gets no second half — the bands take the room
+    /// rather than leaving a reserved space for something that will not happen.
+    private var bandsShareHalf: NSLayoutConstraint?
+    private var bandsTakeAll: NSLayoutConstraint?
+
+    /// Whether the second-pane half is on offer, and so whether the bands share
+    /// the view with it.
+    private func setSecondHalfOffered(_ offered: Bool) {
+        guard bandsShareHalf?.isActive != offered else { return }
+        bandsShareHalf?.isActive = offered
+        bandsTakeAll?.isActive = !offered
+        addTarget.isHidden = !offered
+        layoutSubtreeIfNeeded()
+    }
+
     /// The pane being dragged over this view, or nil when what is in flight is
     /// not a pane.
     ///
@@ -88,7 +104,10 @@ final class SingleFileDropView: NSView {
             thisFileBands.leadingAnchor.constraint(equalTo: leadingAnchor).isActive = true
             thisFileBands.topAnchor.constraint(equalTo: topAnchor).isActive = true
             thisFileBands.bottomAnchor.constraint(equalTo: bottomAnchor).isActive = true
-            thisFileBands.widthAnchor.constraint(equalTo: widthAnchor, multiplier: 0.5).isActive = true
+            bandsShareHalf = thisFileBands.widthAnchor.constraint(equalTo: widthAnchor,
+                                                                 multiplier: 0.5)
+            bandsTakeAll = thisFileBands.widthAnchor.constraint(equalTo: widthAnchor)
+            bandsShareHalf?.isActive = true
             addTarget.leadingAnchor.constraint(equalTo: thisFileBands.trailingAnchor).isActive = true
             addTarget.trailingAnchor.constraint(equalTo: trailingAnchor).isActive = true
             addTarget.topAnchor.constraint(equalTo: topAnchor).isActive = true
@@ -97,7 +116,10 @@ final class SingleFileDropView: NSView {
             thisFileBands.leadingAnchor.constraint(equalTo: leadingAnchor).isActive = true
             thisFileBands.trailingAnchor.constraint(equalTo: trailingAnchor).isActive = true
             thisFileBands.topAnchor.constraint(equalTo: topAnchor).isActive = true
-            thisFileBands.heightAnchor.constraint(equalTo: heightAnchor, multiplier: 0.5).isActive = true
+            bandsShareHalf = thisFileBands.heightAnchor.constraint(equalTo: heightAnchor,
+                                                                  multiplier: 0.5)
+            bandsTakeAll = thisFileBands.heightAnchor.constraint(equalTo: heightAnchor)
+            bandsShareHalf?.isActive = true
             addTarget.topAnchor.constraint(equalTo: thisFileBands.bottomAnchor).isActive = true
             addTarget.bottomAnchor.constraint(equalTo: bottomAnchor).isActive = true
             addTarget.leadingAnchor.constraint(equalTo: leadingAnchor).isActive = true
@@ -143,6 +165,12 @@ final class SingleFileDropView: NSView {
     /// replacing and opening as the second pane move it.
     private func paneOperation(at windowPoint: NSPoint) -> NSDragOperation {
         guard let paneID = draggedPaneID else { return [] }
+        // A pane that cannot become this window's second one — because it is
+        // already in this window — leaves that half with nothing to say, so the
+        // bands take the whole view instead of standing beside a reserved space
+        // for something that will not happen.
+        let secondHalf = paneDropOutcome?(paneID, .addSecond) ?? .none
+        setSecondHalfOffered(secondHalf != .none)
         let target = dropTarget(at: windowPoint) ?? .addSecond
         let outcome = paneDropOutcome?(paneID, target) ?? .none
         // Nothing to offer, so nothing is shown — a window's own pane has
@@ -152,8 +180,11 @@ final class SingleFileDropView: NSView {
             clearDragTarget()
             return []
         }
-        thisFileBands.retitleBands(forPane: true,
-                                  middle: PaneDropBandsView.paneMiddleTitle(for: outcome))
+        // This view owns the provider, so it is the one that can answer for a
+        // band; the overlay's own is nil here.
+        thisFileBands.retitleBands(forPane: paneID) { [weak self] band in
+            self?.paneDropOutcome?(paneID, band) ?? .none
+        }
         addTarget.setTitle("Open as Second Pane")
         updateDragTarget(at: windowPoint)
         switch outcome {
@@ -178,7 +209,8 @@ final class SingleFileDropView: NSView {
     /// a file gets, so the next file drag does not read as a join of panes.
     private func endPaneDrag() {
         draggedPaneID = nil
-        thisFileBands.retitleBands(forPane: false)
+        setSecondHalfOffered(true)
+        thisFileBands.retitleBandsForFile()
         addTarget.setTitle(SingleFileDropTarget.addSecond.title)
     }
 

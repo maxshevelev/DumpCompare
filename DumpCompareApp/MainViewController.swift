@@ -796,12 +796,14 @@ final class MainViewController: NSViewController {
             // A dragged pane gets the same four zones a file gets, and they
             // mean the same four things: the far half opens it as the second
             // pane, and the three bands over this file join it at either end or
-            // put it in this pane's place. A pane from this very window is
-            // refused — there is only one, and it is already here.
+            // put it in this pane's place.
+            //
+            // Which of those a pane from *this* window may do is `PaneDrop`'s to
+            // say, not a blanket refusal here: its own pane can still be joined
+            // to itself at either end, and only the middle band and the second
+            // half are meaningless for it.
             dropView.paneDropOutcome = { [weak self] paneID, target in
-                guard let self,
-                      self.paneLocation(ofPaneWith: paneID)?.controller !== self
-                else { return .none }
+                guard let self else { return .none }
                 let (index, band) = Self.singleFilePaneDrop(target)
                 return self.paneDropOutcome(draggedPaneID: paneID, onPaneAt: index, band: band)
             }
@@ -1045,16 +1047,16 @@ final class MainViewController: NSViewController {
     /// this window is the whole app.
     private func setNewTabStripVisibleEverywhere(_ visible: Bool) {
         for controller in openDocuments?.controllers ?? [self] {
-            controller.setNewTabStripVisible(visible)
+            controller.setNewTabStripVisible(visible, forPane: true)
         }
     }
 
-    private func setNewTabStripVisible(_ visible: Bool) {
+    private func setNewTabStripVisible(_ visible: Bool, forPane isPane: Bool = false) {
         let wanted = visible && mode != .empty
         guard let stripHeight = newTabDropStripHeight else { return }
         let target: CGFloat = wanted ? NewTabDropStrip.height : 0
         guard stripHeight.constant != target else { return }
-        newTabDropStrip.setDragActive(wanted)
+        newTabDropStrip.setDragActive(wanted, forPane: isPane)
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.12
             context.allowsImplicitAnimation = true
@@ -2749,11 +2751,17 @@ final class MainViewController: NSViewController {
         guard let identity = pane.document?.identity, identity == FileIdentity(url: url) else {
             return true
         }
-        let name = url.lastPathComponent
+        return confirmJoinToItself(named: url.lastPathComponent, verb: verb)
+    }
+
+    /// The question itself, asked of a file dropped on the pane that already
+    /// holds it and of a pane dropped on its own bands alike — it is the same
+    /// act and deserves the same words.
+    private func confirmJoinToItself(named name: String, verb: String) -> Bool {
         let alert = NSAlert()
         alert.messageText = "Join “\(name)” to itself?"
-        alert.informativeText = "This pane already holds “\(name)”. Joining it here doubles "
-            + "the content: the same bytes twice, one copy after the other."
+        alert.informativeText = "This doubles the content: the same bytes twice, one copy "
+            + "after the other."
         alert.addButton(withTitle: verb)
         alert.addButton(withTitle: "Cancel")
         // Cancel in tests, and Cancel is where the Escape key lands.
@@ -2830,9 +2838,16 @@ final class MainViewController: NSViewController {
     /// from the pane's live storage rather than from the disk underneath it.
     private func join(pane source: PaneViewModel, at position: JoinPosition,
                       into pane: PaneViewModel) {
-        guard pane.isOpen, source.isOpen, source !== pane,
+        guard pane.isOpen, source.isOpen,
               let sourceStorage = source.byteStorage else { return }
         let verb = (position == .start) ? "Insert" : "Append"
+        // A pane joined to itself is allowed, and asked about: the document
+        // streams from its own storage, which `BinaryDocument.join` handles by
+        // taking the source's size once and following the bytes as an insert at
+        // the start moves them.
+        if source === pane {
+            guard confirmJoinToItself(named: pane.status.fileName, verb: verb) else { return }
+        }
         guard confirmJoinWithUnsavedChanges(pane, verb: verb) else { return }
 
         let originalName = pane.status.fileName
