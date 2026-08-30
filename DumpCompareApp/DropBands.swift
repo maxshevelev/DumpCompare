@@ -433,6 +433,7 @@ final class PaneDropBandsView: NSView {
                 : SingleFileDropTarget.appendAtEnd.title
         case .swap: return "Swap Panes"
         case .move: return "Move Here"
+        case .duplicate: return "Duplicate Here"
         case .none, .tearOff: return nil
         }
     }
@@ -513,7 +514,9 @@ extension PaneDropBandsView {
             self?.paneDropOutcome?(paneID, band) ?? .none
         }
         switch outcome {
-        case .join: return .copy
+        // A join and a duplicate both copy — the pane they came from is left
+        // as it was — so the cursor carries the + that says so.
+        case .join, .duplicate: return .copy
         case .swap, .move: return .move
         case .none, .tearOff: return []
         }

@@ -770,8 +770,8 @@ final class PaneDragTests: XCTestCase {
     }
 
     /// A lone pane can be joined to itself in a single-file window: the same two
-    /// bands, the same doubling. Only the middle band and the second half mean
-    /// nothing for a pane already in this window.
+    /// bands, the same doubling. The middle band means nothing for a pane
+    /// already in this window; the far half copies it instead.
     func testASingleFileWindowsOwnPaneCanJoinItself() throws {
         let controller = MainViewController()
         let a = try tempFile([UInt8](repeating: 0xAA, count: 16))
@@ -782,7 +782,9 @@ final class PaneDragTests: XCTestCase {
                                     PaneDrop.Outcome.join(intoPane: 0, at: .start)),
                                    (.appendAtEnd, .join(intoPane: 0, at: .end)),
                                    (.replace, .none),
-                                   (.addSecond, .none)] {
+                                   // The far half copies rather than refusing:
+                                   // the dump beside itself is `Duplicate`.
+                                   (.addSecond, .duplicate(intoPane: 1))] {
             let (index, band) = MainViewController.singleFilePaneDrop(target)
             XCTAssertEqual(controller.paneDropOutcome(draggedPaneID: own,
                                                       onPaneAt: index, band: band),
@@ -790,17 +792,65 @@ final class PaneDragTests: XCTestCase {
         }
     }
 
-    /// A pane already in a window is not "opened as its second pane" — it is
-    /// already there, and moving it across its own window means nothing.
-    func testAWindowsOwnPaneIsNotOfferedItsSecondSlot() {
+    /// A pane already in a window cannot be *moved* to its free pane — it is
+    /// already in that window — but it can be **copied** there, which is what
+    /// `File ▸ Duplicate` does: the dump beside itself, so a patch made on the
+    /// copy shows every difference it causes.
+    func testAWindowsOwnPaneIsDuplicatedIntoItsFreeSlot() {
         XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 0,
                                         onto: .pane(index: 1, inOriginWindow: true,
                                                     band: .addSecond)),
-                       .none)
+                       .duplicate(intoPane: 1))
         XCTAssertEqual(PaneDrop.outcome(draggingPaneAt: 0,
                                         onto: .pane(index: 1, inOriginWindow: false,
                                                     band: .addSecond)),
-                       .move(intoPane: 1))
+                       .move(intoPane: 1), "a pane from elsewhere moves rather than copies")
+    }
+
+    /// Dropped on the second-pane zone, a single-file window's own pane leaves a
+    /// copy of itself beside it — the same document `File ▸ Duplicate` makes,
+    /// untitled and sharing its content until one of them is written.
+    func testDroppingAWindowsOwnPaneOnTheSecondZoneDuplicatesIt() throws {
+        let controller = MainViewController()
+        let a = try tempFile([UInt8](repeating: 0xAA, count: 48))
+        controller.openFiles([a])
+        let own = controller.windowModel.pane1.dragID
+
+        let (index, band) = MainViewController.singleFilePaneDrop(.addSecond)
+        XCTAssertEqual(controller.paneDropOutcome(draggedPaneID: own, onPaneAt: index,
+                                                  band: band),
+                       .duplicate(intoPane: 1))
+        controller.performPaneDrop(draggedPaneID: own, onPaneAt: index, band: band)
+
+        XCTAssertEqual(controller.mode, .comparison)
+        XCTAssertEqual(controller.windowModel.pane1.status.fileName, a.lastPathComponent,
+                       "the original stays where it was")
+        XCTAssertTrue(controller.windowModel.pane2.isUntitled, "the copy is a new document")
+        XCTAssertEqual(controller.windowModel.pane2.fileSize, 48)
+    }
+
+    /// A copy needs a free pane and bytes to copy — the same conditions the menu
+    /// command is validated against.
+    func testDuplicatingByDropNeedsAFreePaneAndBytes() throws {
+        let controller = MainViewController()
+        let a = try tempFile([UInt8](repeating: 0xAA, count: 48))
+        let b = try tempFile([UInt8](repeating: 0xBB, count: 48))
+        controller.openFiles([a, b])
+        let (index, band) = MainViewController.singleFilePaneDrop(.addSecond)
+
+        XCTAssertEqual(controller.paneDropOutcome(draggedPaneID: controller.windowModel.pane1.dragID,
+                                                  onPaneAt: index, band: band),
+                       .none, "both panes are taken; there is nowhere to put a copy")
+    }
+
+    /// A copy leaves its source alone, so the cursor says copy rather than move,
+    /// and the zone says what it will do rather than where it will put it.
+    func testADuplicateIsReportedAsACopy() {
+        XCTAssertEqual(PaneDropBandsView.paneBandTitle(for: .duplicate(intoPane: 1)),
+                       "Duplicate Here")
+        XCTAssertTrue(PaneDrop.Outcome.duplicate(intoPane: 1).isDuplicate)
+        XCTAssertFalse(PaneDrop.Outcome.move(intoPane: 1).isDuplicate,
+                       "a pane from elsewhere moves; the zone keeps its own name for that")
     }
 
     // MARK: - What a zone says

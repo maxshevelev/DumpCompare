@@ -120,8 +120,17 @@ enum PaneDrop {
         /// other. A join copies — the pane it came from is left as it was, the
         /// way a joined file is left on disk.
         case join(intoPane: Int, at: JoinPosition)
+        /// The pane's content is copied into the destination window's free pane
+        /// as an untitled document — `File ▸ Duplicate`, reached by hand.
+        case duplicate(intoPane: Int)
         /// The pane leaves for a tab of its own.
         case tearOff
+
+        /// Whether this outcome copies the pane rather than moving it.
+        var isDuplicate: Bool {
+            if case .duplicate = self { return true }
+            return false
+        }
     }
 
     /// The meaning of letting `originIndex`'s pane go at `destination`.
@@ -154,10 +163,14 @@ enum PaneDrop {
                 if ontoItself { return .none }
                 return inOriginWindow ? .swap : .move(intoPane: index)
             case .addSecond:
-                // The free second pane of a single-file window. A pane already
-                // in that window has nothing to be brought into it — it is
-                // there — so only a pane from elsewhere means anything here.
-                return inOriginWindow ? .none : .move(intoPane: index)
+                // The free second pane of a single-file window. A pane from
+                // elsewhere moves into it; the window's own pane cannot be
+                // *moved* there — it is already in this window — but it can be
+                // **copied**, which is what `File ▸ Duplicate` does and is worth
+                // having as a gesture: the dump beside itself, so a patch can be
+                // made on the copy and every difference that appears is one the
+                // user made (§23).
+                return inOriginWindow ? .duplicate(intoPane: index) : .move(intoPane: index)
             }
         }
     }

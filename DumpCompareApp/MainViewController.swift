@@ -206,6 +206,14 @@ final class MainViewController: NSViewController {
             let target = index == 0 ? windowModel.pane1 : windowModel.pane2
             guard target.isOpen else { return .none }
         }
+        // A copy needs a free pane and bytes to copy — the same conditions the
+        // menu command is validated against, asked of the same helper.
+        if case .duplicate = outcome {
+            let source = origin.paneIndex == 0
+                ? origin.controller.windowModel.pane1
+                : origin.controller.windowModel.pane2
+            guard origin.controller === self, canDuplicate(source) else { return .none }
+        }
         return outcome
     }
 
@@ -233,6 +241,11 @@ final class MainViewController: NSViewController {
                              self?.performPaneDrop(draggedPaneID: draggedPaneID,
                                                    onPaneAt: intoPane)
                          })
+        case .duplicate:
+            // The window's own pane, copied into its free one. Nothing new
+            // happens here: this is `File ▸ Duplicate`, which already reports
+            // itself and re-applies the mode.
+            duplicate(from: windowModel.pane1)
         case .none, .tearOff:
             // A tear-off never lands on a pane; the strip owns that one.
             break

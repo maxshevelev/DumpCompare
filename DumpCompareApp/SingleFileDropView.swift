@@ -185,10 +185,18 @@ final class SingleFileDropView: NSView {
         thisFileBands.retitleBands(forPane: paneID) { [weak self] band in
             self?.paneDropOutcome?(paneID, band) ?? .none
         }
-        addTarget.setTitle("Open as Second Pane")
+        // Captioned from what it will do, like the bands are. A pane from
+        // elsewhere becomes this window's second one, so the zone's own name is
+        // the right words for it; the window's own pane is copied, and "Open as
+        // Second Pane" would say nothing about the copy being made.
+        addTarget.setTitle(secondHalf.isDuplicate
+                           ? "Duplicate Here"
+                           : SingleFileDropTarget.addSecond.title)
         updateDragTarget(at: windowPoint)
         switch outcome {
-        case .join: return .copy
+        // A join and a duplicate both copy — the pane they came from is left
+        // as it was — so the cursor carries the + that says so.
+        case .join, .duplicate: return .copy
         case .swap, .move: return .move
         case .none, .tearOff: return []
         }
