@@ -75,6 +75,28 @@ final class DuplicateNameTests: XCTestCase {
             "the name is a proposal, not a file")
     }
 
+    /// The line the copy reports itself with names both ends, so the pair can be
+    /// told apart without reading the two headers: it said "as Untitled" when a
+    /// copy had no name of its own, and the copy has one now.
+    func testTheDuplicateReportNamesTheCopy() throws {
+        let controller = MainViewController()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 400),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = controller
+        window.makeKeyAndOrderFront(nil)
+        let url = try tempFile([UInt8](repeating: 0xAA, count: 32))
+        controller.openFiles([url])
+
+        controller.duplicate(from: controller.windowModel.pane1)
+        window.layoutIfNeeded()
+
+        let copy = controller.windowModel.pane2
+        let copyView = try XCTUnwrap(descendants(of: controller.view, FilePaneView.self).last)
+        XCTAssertEqual(copyView.statusLabel.stringValue,
+                       "Duplicated \(url.lastPathComponent) as \(copy.status.fileName). Size: 32 bytes.")
+    }
+
     /// The names in use anywhere in the app are avoided, not just this window's:
     /// two tabs each showing a `bios-2.bin` would be the confusion this naming
     /// exists to remove.

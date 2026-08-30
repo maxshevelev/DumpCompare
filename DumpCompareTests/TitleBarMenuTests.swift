@@ -52,6 +52,7 @@ final class TitleBarMenuTests: XCTestCase {
             .separator,
             .title("Save"),
             .title("Save As…"),
+            .title("Rename"),
             .title("Revert to Saved"),
             .separator,
             .title("Insert File at Start…"),

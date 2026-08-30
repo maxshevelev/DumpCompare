@@ -3068,6 +3068,18 @@ final class MainViewController: NSViewController {
         duplicate(from: activePane)
     }
 
+    /// Rename from the pane's header menu (§23): the title turns into a field in
+    /// the header, so the name is typed where it is read rather than in a sheet
+    /// raised to hold one short string.
+    ///
+    /// Only an unsaved document has a name to change this way — the item is
+    /// disabled otherwise — and the pane view owns the editing, since the field
+    /// belongs to the header it stands in.
+    @objc func renamePaneDocument(_ sender: Any?) {
+        guard let pane = pane(from: sender), pane.canRename else { return }
+        filePaneView(for: pane)?.beginRenaming()
+    }
+
     /// The pane-menu twin: duplicates the pane the menu was built for rather
     /// than the active one (§23). In single-file mode they are the same pane;
     /// the item exists so the header carries every file-scoped command.
@@ -3087,8 +3099,8 @@ final class MainViewController: NSViewController {
         guard canDuplicate(source) else { return }
         let targetIndex = paneIndex(source) == 0 ? 1 : 0
         let target = targetIndex == 0 ? windowModel.pane1 : windowModel.pane2
-        // The name the source carries now — the copy's own header only ever says
-        // "Untitled", so the status line below is where the pair is named (§23).
+        // The name the source carries now, so the line below can name both ends
+        // of the copy (§23).
         let sourceName = source.status.fileName
 
         do {
@@ -3106,7 +3118,7 @@ final class MainViewController: NSViewController {
         // mode apply, which rebuilds the pane views.
         let size = ByteCountFormatter.string(fromByteCount: Int64(target.fileSize), countStyle: .file)
         filePaneView(for: target)?.showTransientMessage(
-            "Duplicated \(sourceName) as Untitled. Size: \(size).")
+            "Duplicated \(sourceName) as \(target.status.fileName). Size: \(size).")
     }
 
     /// Whether Duplicate can act on `pane` (§23): the copy needs a free pane to
@@ -3442,6 +3454,11 @@ final class MainViewController: NSViewController {
         menu.addItem(.separator())
         add("Save", #selector(savePaneDocument(_:)), "s")
         add("Save As…", #selector(savePaneDocumentAs(_:)), "S")
+        // Rename (§23) sits with the two Saves because it is the third thing
+        // that decides what this document is called — and the only one of them
+        // that writes nothing. Enabled for an unsaved document alone; a file's
+        // name is its file's.
+        add("Rename", #selector(renamePaneDocument(_:)), "")
         add("Revert to Saved", #selector(revertPaneDocument(_:)), "")
         menu.addItem(.separator())
         // The join twins (§22.1): beside the file-scoped commands, acting on
@@ -4451,7 +4468,12 @@ final class MainViewController: NSViewController {
         guard let directory else { return false }
 
         // One file per piece, named for the document: `bios_S0.bin`, `bios_S1.bin`, …
-        let baseName = pane.document?.url.lastPathComponent ?? "Untitled"
+        // The name the header shows, not the document's URL: an unsaved document
+        // has no URL worth reading (it points at a temporary file called
+        // "Untitled"), and its name is the label — which the user can set, and
+        // for this above all, since a directory is the only other thing this
+        // command asks for (§23).
+        let baseName = pane.status.fileName
         let parts = segments.map {
             SegmentWriter.Part(range: $0.range, name: "\(baseName)_\($0.label).bin")
         }
@@ -4467,7 +4489,8 @@ final class MainViewController: NSViewController {
     /// actually started.
     private func savePiece(_ piece: Segment, of pane: PaneViewModel) -> Bool {
         guard pane.isOpen, let storage = pane.byteStorage else { return false }
-        let baseName = pane.document?.url.lastPathComponent ?? "Untitled"
+        // The header's name, for the reason `saveAllPieces` gives.
+        let baseName = pane.status.fileName
 
         let panel = NSSavePanel()
         panel.nameFieldStringValue = "\(baseName)_\(piece.label).bin"
@@ -5330,6 +5353,10 @@ extension MainViewController: NSMenuItemValidation {
         case #selector(duplicatePaneDocument(_:)):
             guard let pane = pane(from: menuItem) else { return false }
             return canDuplicate(pane)
+        case #selector(renamePaneDocument(_:)):
+            // A saved document's name belongs to its file; only the label of an
+            // unsaved one is the app's to change (§23).
+            return pane(from: menuItem)?.canRename ?? false
         case #selector(openPaneInNewTab(_:)):
             // Only a comparison has a pane to spare. In single-file mode the
             // command would move the window's only document into a new tab and

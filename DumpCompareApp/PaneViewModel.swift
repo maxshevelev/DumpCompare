@@ -421,6 +421,28 @@ final class PaneViewModel: HexViewDataSource {
     /// because that is exactly what it is.
     private(set) var untitledName: String?
 
+    /// Whether this pane's name can be changed by hand (§23).
+    ///
+    /// Only a document with no file behind it. Its name is a label — what the
+    /// header shows, what the save panel opens with, and what Save All as
+    /// Separate Files builds each piece's file name from (§21.5) — and a label
+    /// costs nothing to change. A saved document's name is its file's, and
+    /// moving a file is Save As's business, not a field in a header.
+    var canRename: Bool { isOpen && isUntitled }
+
+    /// Renames an unsaved document, reporting whether the name was taken.
+    ///
+    /// Nothing is written and nothing moves: this sets the label, which is the
+    /// whole of an unsaved document's name. Refused for a document with a file
+    /// behind it, and for a name that survives `PaneName.sanitized` as nothing.
+    @discardableResult
+    func rename(to raw: String) -> Bool {
+        guard canRename, let name = PaneName.sanitized(raw) else { return false }
+        guard name != untitledName else { return false }
+        untitledName = name
+        return true
+    }
+
     func openDuplicate(of source: PaneViewModel, named name: String? = nil) throws {
         guard let sourceDoc = source.document else { return }
         let doc = try sourceDoc.duplicate()

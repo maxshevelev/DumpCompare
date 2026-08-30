@@ -116,6 +116,12 @@ final class PaneHeaderView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard let hit = super.hitTest(point) else { return nil }
         if hit is NSButton { return hit }
+        // The name field, while a name is being edited, and the field editor
+        // that does the editing. Routing their clicks to the bar would leave a
+        // field nobody can put a caret in — the labels are text to look at, but
+        // this one is text to work on.
+        if hit is NSTextView { return hit }
+        if let field = hit as? NSTextField, field.isEditable { return hit }
         return self
     }
 
@@ -216,6 +222,13 @@ final class FilePaneView: NSView {
     }
 
     private let titleLabel = NSTextField(labelWithString: "")
+    /// The field that stands in the title's place while the name is being
+    /// edited (§23), or nil when it is not. Built on demand and gone when the
+    /// edit ends: a header holds a label, and only briefly something else.
+    private var nameEditor: NSTextField?
+    /// Set when Escape ended the edit, so the field's closing does not write
+    /// what was typed. Read and cleared by `endRenaming`.
+    private var renameWasCancelled = false
     /// The document glyph before the file name: "document" while the file is
     /// clean, "document.fill" once there are unsaved changes (§3.4). Tinted to
     /// match the title so it reads as part of the header, not as a button.
@@ -1539,6 +1552,107 @@ final class OperationStatusView: NSView {
 
     @objc private func cancelPressed() {
         onCancel?()
+    }
+}
+
+// MARK: - Renaming an unsaved document in place (§23)
+
+extension FilePaneView: NSTextFieldDelegate {
+    /// Whether a name is being edited right now — the header shows a field
+    /// rather than its title.
+    var isRenaming: Bool { nameEditor != nil }
+
+    /// The name field's current text, for a test to read and set.
+    var renameFieldForTesting: NSTextField? { nameEditor }
+
+    /// Starts renaming in place: the title becomes a field in the same spot,
+    /// carrying the name the header was showing, with all of it selected.
+    ///
+    /// In place rather than in a dialog because the name is one short string and
+    /// the header is where it is read — a sheet to type a filename into would be
+    /// a window's worth of ceremony for a label. The pane's own file menu is
+    /// what opens it (Rename), so the gesture is the one the Finder taught.
+    func beginRenaming() {
+        guard viewModel.canRename, nameEditor == nil else { return }
+        let field = NSTextField(string: viewModel.status.fileName)
+        field.font = titleLabel.font
+        field.delegate = self
+        field.isEditable = true
+        field.isSelectable = true
+        field.isBezeled = true
+        field.bezelStyle = .roundedBezel
+        field.drawsBackground = true
+        field.usesSingleLineMode = true
+        field.lineBreakMode = .byClipping
+        field.cell?.isScrollable = true
+        field.setAccessibilityLabel("File name")
+        field.translatesAutoresizingMaskIntoConstraints = false
+        header.addSubview(field)
+        // Where the title is, and no narrower than a name can be read in. Every
+        // link breakable, like the rest of the header's chain (§3.4): a pane
+        // squeezed to nothing must still be able to reach nothing.
+        let placement = [
+            field.leadingAnchor.constraint(equalTo: documentIcon.trailingAnchor, constant: 6),
+            field.trailingAnchor.constraint(lessThanOrEqualTo: lockLabel.leadingAnchor,
+                                            constant: -6),
+            field.widthAnchor.constraint(greaterThanOrEqualToConstant: 140),
+            field.centerYAnchor.constraint(equalTo: header.centerYAnchor),
+            field.heightAnchor.constraint(equalToConstant: 20),
+        ]
+        for constraint in placement { constraint.priority = .defaultHigh }
+        NSLayoutConstraint.activate(placement)
+        titleLabel.isHidden = true
+        nameEditor = field
+        renameWasCancelled = false
+        window?.makeFirstResponder(field)
+        field.currentEditor()?.selectAll(nil)
+    }
+
+    /// Ends the edit: writes the name unless Escape cancelled it, takes the
+    /// field away and gives the title back.
+    ///
+    /// The model refuses a name that is empty once trimmed, or one that has not
+    /// changed — so a field closed on an accident leaves the header as it was
+    /// rather than blanking it.
+    func endRenaming(commit: Bool) {
+        guard let field = nameEditor else { return }
+        let typed = field.stringValue
+        // Cleared first: taking the field away makes it resign, which comes back
+        // here through the delegate, and a second pass would rename again.
+        nameEditor = nil
+        field.delegate = nil
+        let wasFirstResponder = field.currentEditor() != nil
+        field.removeFromSuperview()
+        titleLabel.isHidden = false
+        if commit, !renameWasCancelled, viewModel.rename(to: typed) {
+            updateHeader()
+        }
+        renameWasCancelled = false
+        // The dump takes focus back, the way it has it everywhere else — a pane
+        // whose field just vanished must not leave the window with no responder.
+        if wasFirstResponder { focusHexView() }
+    }
+
+    func controlTextDidEndEditing(_ obj: Notification) {
+        // Clicking away, or anything else that takes the focus, is a commit:
+        // the Finder's rename behaves this way, and the alternative — losing
+        // what was typed to a stray click — is the worse surprise.
+        endRenaming(commit: true)
+    }
+
+    func control(_ control: NSControl, textView: NSTextView,
+                 doCommandBy commandSelector: Selector) -> Bool {
+        switch commandSelector {
+        case #selector(NSResponder.insertNewline(_:)):
+            endRenaming(commit: true)
+            return true
+        case #selector(NSResponder.cancelOperation(_:)):
+            renameWasCancelled = true
+            endRenaming(commit: false)
+            return true
+        default:
+            return false
+        }
     }
 }
 

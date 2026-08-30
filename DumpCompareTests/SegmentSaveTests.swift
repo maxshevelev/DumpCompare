@@ -92,6 +92,33 @@ final class SegmentSaveTests: XCTestCase {
         }
     }
 
+    // MARK: - Save All: the base name
+
+    /// The pieces are named after what the header shows, so renaming an unsaved
+    /// pane is how its pieces get a base name (§23). Save All asks for a folder
+    /// and nothing else; without this every copy's pieces arrive as
+    /// `Untitled_S0.bin`, and a second copy's overwrite the first's.
+    func testSaveAllNamesThePiecesAfterARenamedUnsavedPane() throws {
+        let (controller, _, url) = try makeController([UInt8](0..<16))
+        defer { cleanup(controller, url) }
+        controller.duplicate(from: controller.windowModel.pane1)
+        let copy = controller.windowModel.pane2
+        XCTAssertTrue(copy.rename(to: "patched"))
+        copy.segmentStore.addCut(at: 8)  // S0 [0,8), S1 [8,16)
+
+        let form = try capturedForm(controller)
+        let capture = SaveCapture()
+        let directory = try makeOutputDirectory()
+        wire(controller, capture, directory: directory)
+
+        XCTAssertTrue(form.saveAll?() ?? false, "the write started")
+        XCTAssertNil(capture.writeError)
+        XCTAssertEqual(try read(directory.appendingPathComponent("patched_S0.bin")),
+                       Data([UInt8](0..<8)))
+        XCTAssertEqual(try read(directory.appendingPathComponent("patched_S1.bin")),
+                       Data([UInt8](8..<16)))
+    }
+
     // MARK: - Save All: the preview's mapping
 
     /// Save All previews every part — `S<i> → <base>_S<i>.bin (size)` — chooses

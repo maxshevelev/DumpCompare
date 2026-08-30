@@ -19,6 +19,7 @@
 		1D538ECD5ACD42E2BE53460B /* ToolbarValidationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19B4629E1E5C13B990345DDA /* ToolbarValidationTests.swift */; };
 		1F891EE0D25A946BB63C2AEC /* HexView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95D1B66993C6EA8CDEE1ADD7 /* HexView.swift */; };
 		230C0980A700727CC7796F8B /* AppMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB33DB1270B0F3AD9A668F5C /* AppMain.swift */; };
+		23B4B170F8C2B4DBFE8E21CE /* PaneName.swift in Sources */ = {isa = PBXBuildFile; fileRef = 295A13534A60309ECF0AFF33 /* PaneName.swift */; };
 		24C17C26B9CDABCDF110EFDF /* ALSplitView in Frameworks */ = {isa = PBXBuildFile; productRef = AD6E71504179520D86EC624C /* ALSplitView */; };
 		24FDE8550B83BC61EAC8F3BB /* LayoutToggleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39D2A05C7DA0DE400C947364 /* LayoutToggleTests.swift */; };
 		26D5FD5ACF1831847A92FF79 /* FindBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CFFEE3A09573CD5106182E9 /* FindBarView.swift */; };
@@ -131,6 +132,7 @@
 		F22E5BE6C522ABA4E1AB95C7 /* BookmarkMinimapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F189C34D5AB2C07E056E3153 /* BookmarkMinimapTests.swift */; };
 		F2EA05CD73EFD077B98A8C99 /* ToolbarItemsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5642C6A5E8AFA36773D021E6 /* ToolbarItemsTests.swift */; };
 		F40FE9163519A4DF06A608DE /* DuplicateNameTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C3EEEBCBDA05CE93D5D8646 /* DuplicateNameTests.swift */; };
+		F7E3476CA446ABC76182DF67 /* RenamePaneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1E5A6B9F0A95E72BBC345FB /* RenamePaneTests.swift */; };
 		FC15B3B76A3DB244F7A1BBEE /* ActivePaneTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0947EB3C44A8B0879C9B66A /* ActivePaneTests.swift */; };
 		FC89C9381F04CF1A1E46F3DC /* TestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = C493FB0DA34423850B00F051 /* TestSupport.swift */; };
 		FD51EAC14BECCAC66D3AC19F /* ComparisonCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7338140948096ABDADE950FE /* ComparisonCoordinatorTests.swift */; };
@@ -172,6 +174,7 @@
 		2581320A3453C01FF111B29B /* ComparisonPaneTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComparisonPaneTests.swift; sourceTree = "<group>"; };
 		2751D9902BBBD4771AFB0FD5 /* MainViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainViewController.swift; sourceTree = "<group>"; };
 		27C6A9590239BF0BA6B2EC2B /* MinimapTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MinimapTests.swift; sourceTree = "<group>"; };
+		295A13534A60309ECF0AFF33 /* PaneName.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneName.swift; sourceTree = "<group>"; };
 		2B6700D9C2E00D1370AB090A /* ComparisonResizeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComparisonResizeTests.swift; sourceTree = "<group>"; };
 		2C3EEEBCBDA05CE93D5D8646 /* DuplicateNameTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DuplicateNameTests.swift; sourceTree = "<group>"; };
 		2CD97E5E51E50F0E06BF9B0E /* SegmentSaveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SegmentSaveTests.swift; sourceTree = "<group>"; };
@@ -232,6 +235,7 @@
 		9CFFEE3A09573CD5106182E9 /* FindBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FindBarView.swift; sourceTree = "<group>"; };
 		9F07F5F1B62FF782811B10B5 /* DefaultHandlerSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DefaultHandlerSettingsTests.swift; sourceTree = "<group>"; };
 		9FB49BC2E9C7922B6194C285 /* ZoomToFitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZoomToFitTests.swift; sourceTree = "<group>"; };
+		A1E5A6B9F0A95E72BBC345FB /* RenamePaneTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenamePaneTests.swift; sourceTree = "<group>"; };
 		A4166C141DBC4BDC31BAF9BB /* DropBandsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DropBandsTests.swift; sourceTree = "<group>"; };
 		A7139D54D91271EEF21E25A0 /* AutoscrollSelectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutoscrollSelectionTests.swift; sourceTree = "<group>"; };
 		A9B783C280D6385562203A2F /* AppIconTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIconTests.swift; sourceTree = "<group>"; };
@@ -360,6 +364,7 @@
 				0BD77B47E583DB31515ECB21 /* MinimapView.swift */,
 				C1C134C72BE111F8A0F5F4B7 /* OpenDocumentRegistry.swift */,
 				569D15C9837FF35B5622867D /* OpenPlacement.swift */,
+				295A13534A60309ECF0AFF33 /* PaneName.swift */,
 				6818FEF833F78019596D65BB /* PaneViewModel.swift */,
 				4EF3302417C4C7338004CE67 /* SandboxBookmarkStore.swift */,
 				94F9798D65C19064B84DBD0D /* SearchResultsView.swift */,
@@ -443,6 +448,7 @@
 				F2C7301D0193A3E8079F472C /* PaneHeaderIconTests.swift */,
 				96966FE774DE9A046371E9AC /* PanelAppearanceTests.swift */,
 				7FC713959D9654C564AB34E0 /* PaneViewModelTests.swift */,
+				A1E5A6B9F0A95E72BBC345FB /* RenamePaneTests.swift */,
 				B8E2C4E8BCD5826CF561D492 /* ReparentPaneReproTests.swift */,
 				FBEF0C558873BA9AEAF948A6 /* ScrollPreservationTests.swift */,
 				CD60D91BEDA4290B2A565D76 /* SegmentCommandsTests.swift */,
@@ -605,6 +611,7 @@
 				D01ED9E3023BFE9253AA0703 /* MinimapView.swift in Sources */,
 				5B2738A27713B3FDBC55BFFE /* OpenDocumentRegistry.swift in Sources */,
 				046DB0B0F51FAD7F7428CFEB /* OpenPlacement.swift in Sources */,
+				23B4B170F8C2B4DBFE8E21CE /* PaneName.swift in Sources */,
 				7868ABBF947C029B69867CA0 /* PaneViewModel.swift in Sources */,
 				6C4A2D07C512800E3647C334 /* SandboxBookmarkStore.swift in Sources */,
 				B46F403617E9FED68876637C /* SearchResultsView.swift in Sources */,
@@ -679,6 +686,7 @@
 				A87964BADD3A4153189BB25B /* PaneHeaderIconTests.swift in Sources */,
 				E48043200E726B8423B101CD /* PaneViewModelTests.swift in Sources */,
 				3D4497C958650F03D3B40CC7 /* PanelAppearanceTests.swift in Sources */,
+				F7E3476CA446ABC76182DF67 /* RenamePaneTests.swift in Sources */,
 				4F51D02C82FA7D6D589A30BD /* ReparentPaneReproTests.swift in Sources */,
 				9FF1FB1522CEBA883D7677A8 /* ScrollPreservationTests.swift in Sources */,
 				710ECC65E66F697855FF6398 /* SegmentCommandsTests.swift in Sources */,
