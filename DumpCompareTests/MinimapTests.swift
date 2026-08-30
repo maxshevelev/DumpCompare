@@ -16,7 +16,6 @@ final class MinimapTests: XCTestCase {
     /// dragged while trying the app by hand).
     private var isolatedSuiteName = ""
     private var isolatedDefaults: UserDefaults!
-    private var savedMainMenu: NSMenu?
     private var savedLayoutIsVertical: Bool?
 
     override func setUp() {
@@ -29,9 +28,6 @@ final class MinimapTests: XCTestCase {
         // Deterministic: clear any autosaved window frame and force the layout
         // start so the window opens at a known size.
         UserDefaults.standard.removeObject(forKey: "NSWindow Frame MainWindow")
-        // Building a MainWindowController rebuilds the app menu; keep the prior
-        // menu intact for whatever other test runs after this one.
-        savedMainMenu = NSApp.mainMenu
         savedLayoutIsVertical = LayoutSettings.isVertical
     }
 
@@ -42,7 +38,6 @@ final class MinimapTests: XCTestCase {
         if let savedLayoutIsVertical {
             LayoutSettings.set(isVertical: savedLayoutIsVertical)
         }
-        NSApp.mainMenu = savedMainMenu
         isolatedDefaults.removePersistentDomain(forName: isolatedSuiteName)
         MainViewController.minimapDefaults = .standard
         isolatedDefaults = nil
@@ -1342,8 +1337,7 @@ final class MinimapTests: XCTestCase {
         let wc = MainWindowController()
         defer { wc.close() }
         let controller = try XCTUnwrap(wc.mainViewController)
-        let viewMenu = try XCTUnwrap(NSApp.mainMenu?.items
-            .compactMap(\.submenu).first { $0.title == "View" }, "the View menu")
+        let viewMenu = MainMenu.makeViewMenu()
         let item = try XCTUnwrap(viewMenu.items.first {
             $0.action == #selector(MainViewController.toggleMinimap)
         }, "a View item toggling the minimap")
@@ -1873,8 +1867,7 @@ final class MinimapTests: XCTestCase {
         let wc = MainWindowController()
         defer { wc.close() }
         let controller = try XCTUnwrap(wc.mainViewController)
-        let viewMenu = try XCTUnwrap(NSApp.mainMenu?.items
-            .compactMap(\.submenu).first { $0.title == "View" })
+        let viewMenu = MainMenu.makeViewMenu()
         let item = try XCTUnwrap(viewMenu.items.first {
             $0.action == #selector(MainViewController.toggleMinimapOverview)
         }, "a View item switching the minimap's mode")

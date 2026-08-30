@@ -18,21 +18,6 @@ import XCTest
 /// The bookmark list, the form, and the minimap arrows are later stages.
 @MainActor
 final class BookmarkTests: XCTestCase {
-    /// `MainWindowController()` assigns `NSApp.mainMenu`; restore it so the menu
-    /// tests leave no process-wide side effect (same pattern as MainWindowMenuTests).
-    private var previousMainMenu: NSMenu?
-
-    override func setUp() {
-        super.setUp()
-        previousMainMenu = NSApp.mainMenu
-    }
-
-    override func tearDown() {
-        NSApp.mainMenu = previousMainMenu
-        previousMainMenu = nil
-        super.tearDown()
-    }
-
     // MARK: - Store arithmetic
 
     /// A bookmark snaps to its row: any offset in a row marks that row's start,
@@ -458,8 +443,7 @@ final class BookmarkTests: XCTestCase {
         let wc = MainWindowController()
         defer { wc.close() }
         let controller = try XCTUnwrap(wc.mainViewController)
-        let editMenu = try XCTUnwrap(NSApp.mainMenu?.items
-            .compactMap(\.submenu).first { $0.title == "Edit" })
+        let editMenu = MainMenu.makeEditMenu()
         let item = try XCTUnwrap(editMenu.items.first {
             $0.action == #selector(MainViewController.toggleBookmark)
         }, "an Edit item toggling a bookmark")
@@ -1075,7 +1059,7 @@ final class BookmarkTests: XCTestCase {
 
     /// The Edit menu's two bookmark commands and their keys.
     func testEditMenuHasBothBookmarkCommands() throws {
-        let items = MainWindowController().makeEditMenu().items
+        let items = MainMenu.makeEditMenu().items
         let toggle = try XCTUnwrap(items.first { $0.action == #selector(MainViewController.toggleBookmark) })
         XCTAssertEqual(toggle.title, "Toggle Bookmark")
         XCTAssertEqual(toggle.keyEquivalent, "d")

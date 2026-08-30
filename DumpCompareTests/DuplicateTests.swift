@@ -156,7 +156,7 @@ final class DuplicateTests: XCTestCase {
         let (controller, _) = makeController()
         defer { cleanup(controller) }
         let item = try XCTUnwrap(
-            MainWindowController().makeFileMenu().items.first { $0.title == "Duplicate" })
+            MainMenu.makeFileMenu().items.first { $0.title == "Duplicate" })
         XCTAssertEqual(item.action, #selector(MainViewController.duplicateDocument))
 
         // Empty: nothing to copy.

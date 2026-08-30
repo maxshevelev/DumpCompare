@@ -211,12 +211,28 @@ public final class BinaryDocument: @unchecked Sendable {
         // commits the transaction.
         let attachmentBeforeJoin = (url: url, identity: identity, readOnly: readOnly)
         let anchor: UInt64 = (position == .start) ? 0 : storage.size
+        // The source's size is taken once, before anything is written. It has to
+        // be: a document can be joined to *itself*, and then the source is this
+        // document's own storage, growing with every chunk inserted — a loop
+        // that reads until it reaches the end never reaches it, and the document
+        // grows until the disk stops it.
+        let sourceSize = source.size
+        // The same case shifts what the reads are aimed at. Inserting at the
+        // start moves the original bytes right by however much has gone in, so a
+        // self-join reading its own byte `k` has to look for it at `k + inserted`.
+        // Appending leaves the bytes before the anchor where they are, so it
+        // needs no such correction, and a source that is a different storage
+        // never moves at all.
+        let readsShiftWithWrites = (position == .start) && (source as AnyObject) === (storage as AnyObject)
         beginEditGroup()
         do {
             var at = anchor
             var readOffset: UInt64 = 0
-            while readOffset < source.size {
-                let chunk = try source.read(at: readOffset, length: Self.joinChunkSize)
+            while readOffset < sourceSize {
+                let from = readsShiftWithWrites ? readOffset + (at - anchor) : readOffset
+                let remaining = sourceSize - readOffset
+                let chunk = try source.read(at: from,
+                                            length: min(Self.joinChunkSize, Int(remaining)))
                 guard !chunk.isEmpty else { break }
                 try insert(at: at, bytes: chunk)
                 at += UInt64(chunk.count)

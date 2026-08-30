@@ -1647,7 +1647,7 @@ its map, so the whole of it is legible at a glance without opening anything.
   S0* — the piece's bytes merge into a neighbour that keeps its name). Each
   item carries the piece it acts on.
 - A left-click on the strip positions to the click location, the way a click on
-  the map does: the caret goes to the byte the click's y stands for, or to the
+  the map does: the pane centres on the byte the click's y stands for, or on the
   nearest cut's exact offset when one is within 4 pt — reusing the snapping the
   bookmark marks already have (§19.6.1) with the cut list as the second source of
   targets. The strip's ends clamp to the file's own start and last byte.
@@ -1708,13 +1708,16 @@ The panes' visible slice is drawn as a translucent band over the map.
   Because the window slides with the panes, the band travels the map's full
   height over the course of the whole file, so the map acts as a
   proportional scroll bar for it.
-- Clicking the map away from the band moves the caret to the byte drawn at
+- Clicking the map away from the band centres the pane on the byte drawn at
   that point — row from the vertical position, column from the horizontal
-  one — and centres the pane on it. In comparison mode the click also makes
-  the clicked map's pane active. In overview the same rule lands the caret
-  proportionally into the file, the column narrowing the target within the
-  row's slice.
-- Clicking the band itself begins a drag and must leave the caret alone.
+  one. In comparison mode the click also makes the clicked map's pane active.
+  In overview the same rule lands proportionally into the file, the column
+  narrowing the target within the row's slice.
+- **A click on the map moves neither the caret nor the selection.** It
+  navigates the view; where the caret was left is the pane's business, not the
+  map's. The map is a place to look at the file from, and looking somewhere
+  else must not cost the position being worked on.
+- Clicking the band itself begins a drag rather than a jump.
 - A scroll wheel over the panel scrolls the panes.
 - Navigation by pointer must clamp at the file's start and end.
 

@@ -11,6 +11,105 @@ final class PaneHeaderView: NSView {
     /// Fired on a double-click in the header (not on the close button).
     var onDoubleClick: (() -> Void)?
 
+    /// Fired once the pointer has moved far enough from the mouse-down for the
+    /// gesture to mean a drag rather than a click, carrying the event the drag
+    /// should begin from.
+    var onDragThresholdPassed: ((NSEvent) -> Void)?
+
+    /// The hairline along the header's bottom edge, which together with the
+    /// header's own fill draws the line between the window's chrome and the
+    /// dump.
+    private let bottomSeparator = NSView()
+
+    /// How strong the header's bottom rule is, as a fraction of `separatorColor`.
+    ///
+    /// Half. At full strength it read heavier than the system's own rule under
+    /// the tab bar, which sits a few points above it — two lines doing the same
+    /// job in different weights, which looks like a mistake because it is one.
+    /// The tab bar's rule is AppKit's and its colour is not exposed, so this is
+    /// matched by eye; it is a single constant so the next eye can adjust it.
+    static let separatorStrength: CGFloat = 0.5
+
+    /// `separatorColor` at `separatorStrength` of its own opacity.
+    ///
+    /// Scaled, not assigned. `withAlphaComponent` **replaces** the alpha rather
+    /// than scaling it, and `separatorColor` is already translucent — 9.8 % —
+    /// so asking for 0.5 made the rule five times stronger instead of half, and
+    /// a hairline at 50 % black reads as a black line.
+    ///
+    /// Resolved through sRGB inside the caller's drawing appearance, because a
+    /// catalog colour has no components to scale until it is.
+    private static func headerRuleColor() -> NSColor {
+        let separator = NSColor.separatorColor
+        guard let resolved = separator.usingColorSpace(.sRGB) else { return separator }
+        return resolved.withAlphaComponent(resolved.alphaComponent * separatorStrength)
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        // The header is a strip of chrome, not part of the document: the dump
+        // and the column header above it both draw `textBackgroundColor`, so
+        // without a fill of its own the header dissolved into them and the pane
+        // read as one flat sheet from the tab bar down, with no visible edge on
+        // the strip that is meant to be grabbed (§3.4).
+        //
+        // A system fill rather than `windowBackgroundColor`, which was the
+        // obvious choice and is the wrong one: measured on this OS,
+        // `windowBackgroundColor`, `controlBackgroundColor` and
+        // `textBackgroundColor` are the *same colour* in both appearances —
+        // white on white in light, 0.118 grey on itself in dark — so a header
+        // filled with it would have been exactly as flat as no fill at all. A
+        // system fill is translucent by design and made to sit over content, and
+        // adapts on its own: black over light, white over dark.
+        //
+        // The tertiary weight (4.7 %) rather than the secondary (7.8 %), which
+        // read as a heavy bar. Most of the delineating is done by the hairline
+        // below, so the fill only has to say "not the document" — the lightest
+        // touch that does is the right one. `quaternarySystemFill` (2.7 %) is
+        // the step below if even this reads as too much.
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.tertiarySystemFill.cgColor
+        bottomSeparator.wantsLayer = true
+        bottomSeparator.layer?.backgroundColor = Self.headerRuleColor().cgColor
+        bottomSeparator.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(bottomSeparator)
+        NSLayoutConstraint.activate([
+            bottomSeparator.leadingAnchor.constraint(equalTo: leadingAnchor),
+            bottomSeparator.trailingAnchor.constraint(equalTo: trailingAnchor),
+            bottomSeparator.bottomAnchor.constraint(equalTo: bottomAnchor),
+            bottomSeparator.heightAnchor.constraint(equalToConstant: 1),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    /// A layer colour is resolved once, when it is assigned — and these are
+    /// assigned before the header is in a window, so a later switch to dark mode
+    /// would leave the strip light. Re-resolved here, where the effective
+    /// appearance is authoritative (§3.2), the same way the find bar does it.
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = NSColor.tertiarySystemFill.cgColor
+            bottomSeparator.layer?.backgroundColor = Self.headerRuleColor().cgColor
+        }
+    }
+
+    /// How far the pointer travels before a press on the header becomes a drag
+    /// (`Design/PANE_DRAG_PLAN.md`).
+    ///
+    /// The header is not free: it already answers a double-click (fit the pane
+    /// to its content width, §3.3) and a right-click (the pane's File menu). A
+    /// drag that began on the first stray pixel would steal the clicks meant for
+    /// those. Same shape as `HexView.bookmarkDragHysteresis`, same reason.
+    static let dragThreshold: CGFloat = 4
+
+    /// Where the press started, while it could still turn into a drag.
+    private var pressOrigin: NSPoint?
+
     /// Routes every click in the bar to the bar itself — the title/lock labels
     /// are plain text and must not swallow the gesture. The close button keeps
     /// its clicks. Points outside the bar pass through untouched.
@@ -25,7 +124,26 @@ final class PaneHeaderView: NSView {
             onDoubleClick?()
             return
         }
+        pressOrigin = event.locationInWindow
         super.mouseDown(with: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let origin = pressOrigin, onDragThresholdPassed != nil else {
+            super.mouseDragged(with: event)
+            return
+        }
+        let moved = hypot(event.locationInWindow.x - origin.x,
+                          event.locationInWindow.y - origin.y)
+        guard moved >= Self.dragThreshold else { return }
+        // One drag per press: the session takes the mouse from here.
+        pressOrigin = nil
+        onDragThresholdPassed?(event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        pressOrigin = nil
+        super.mouseUp(with: event)
     }
 
     /// Right-click pops the pane's File menu (assigned via `menu`), acting on
@@ -203,6 +321,15 @@ final class FilePaneView: NSView {
     var onActivate: (() -> Void)?
     /// Fired when the user double-clicks the header: expand this pane so its
     /// hex content fits by width (§3.3).
+    /// Fired when this pane's own drag session begins and ends.
+    ///
+    /// A pane drag is the application's business, not one window's: any window
+    /// can receive it, so every window's New Tab strip goes up for its duration.
+    /// The source is the only participant guaranteed to see both ends of the
+    /// session — a destination that declined the drag may never be told it is
+    /// over.
+    var onDragSessionChanged: ((Bool) -> Void)?
+
     var onHeaderDoubleClick: (() -> Void)?
     /// Fired when the comparison-mode close button is clicked.
     var onClose: (() -> Void)?
@@ -278,6 +405,9 @@ final class FilePaneView: NSView {
         header.translatesAutoresizingMaskIntoConstraints = false
         header.onDoubleClick = { [weak self] in
             self?.onHeaderDoubleClick?()
+        }
+        header.onDragThresholdPassed = { [weak self] event in
+            self?.beginPaneDrag(with: event)
         }
         // Low priorities keep this container flexible so a narrow pane
         // (§3.3) can shrink it and truncate the title instead of forcing a
@@ -919,6 +1049,170 @@ final class FilePaneView: NSView {
         }
     }
 
+    /// Fired whenever the header's picture of its file changed — the name, the
+    /// untitled badge, the dirty glyph. The window's title says the same thing
+    /// about the same files, so it rides this rather than a signal of its own:
+    /// whatever keeps the header honest keeps the title honest, and there is no
+    /// second list of places to remember to update.
+    var onHeaderChanged: (() -> Void)?
+
+    // MARK: - Dragging the pane by its header
+
+    /// The pill is carried at its drawn size. It is a plate with a file name on
+    /// it, and a name that has to be squinted at says nothing worth carrying —
+    /// leaving its pane is already visible from the pill leaving the pane.
+    static let paneDragMinWidth: CGFloat = 200
+
+    /// The widest the pill gets. Past this the name truncates rather than the
+    /// pill stretching across the screen.
+    static let paneDragMaxWidth: CGFloat = 260
+
+    /// The pill's size, given the width of what goes on it — the document glyph,
+    /// the gap after it, and the name.
+    ///
+    /// Height is the header's: the pill is not scaled at all, so the shape stays
+    /// the shape the pane wears, which is what makes it recognisable in flight.
+    /// Width fits the content between its paddings, floored so a two-letter name
+    /// still gets a plate rather than a lozenge, and capped so a long one
+    /// truncates. Pure, so the arithmetic is checked without drawing anything.
+    static func paneDragPillSize(contentWidth: CGFloat, height: CGFloat) -> NSSize {
+        let padded = contentWidth + paneDragTextInset * 2
+        let width = min(paneDragMaxWidth, max(paneDragMinWidth, padded))
+        return NSSize(width: width, height: height)
+    }
+
+    /// The gap between the content and the pill's rounded ends.
+    static let paneDragTextInset: CGFloat = 16
+
+    /// The gap between the document glyph and the name.
+    static let paneDragIconGap: CGFloat = 6
+
+    /// Picks the pane up: a dragging session carrying nothing but this pane's
+    /// identity (`Design/PANE_DRAG_PLAN.md`).
+    private func beginPaneDrag(with event: NSEvent) {
+        let item = NSPasteboardItem()
+        item.setString(viewModel.dragID.uuidString, forType: .pane)
+        let dragItem = NSDraggingItem(pasteboardWriter: item)
+
+        let image = paneDragPill()
+        let size = image.size
+        // Centred on the pointer, so the pill goes where the hand goes rather
+        // than trailing from wherever in the header the press landed.
+        let point = convert(event.locationInWindow, from: nil)
+        dragItem.setDraggingFrame(
+            NSRect(x: point.x - size.width / 2, y: point.y - size.height / 2,
+                   width: size.width, height: size.height),
+            contents: image)
+
+        let session = beginDraggingSession(with: [dragItem], event: event, source: self)
+        // One item, and it is already where it should be: without this AppKit
+        // is free to re-arrange the drag's contents into a formation of its own.
+        session.draggingFormation = .none
+        // The cancel animation is kept, and it does not land where the header
+        // is. Two facts about AppKit, both established by watching it rather
+        // than by reading it:
+        //
+        // - **The return position is screen coordinates, fixed when the item's
+        //   frame is set** — not a live view-relative frame. `draggingFrame` is
+        //   given in the source view's space, but it is resolved to the screen
+        //   there and then. So when the New Tab strip opens and pushes the panes
+        //   down, the recorded point stays where the header *was*, which by then
+        //   is where the strip is.
+        // - **`endedAt` arrives after the flight, not at the mouse-up.** So the
+        //   strip cannot be collapsed in time to meet the pill; the panes rise
+        //   after it has landed, whatever the collapse is timed to.
+        //
+        // Left as it is, deliberately. Turning the animation off is the honest
+        // alternative and was tried; keeping the panes still during a pane drag
+        // (the strip overlaying instead of displacing) would fix the target but
+        // brings back the covered headers that displacing was introduced to
+        // solve. Retargeting mid-flight through `enumerateDraggingItems` is the
+        // third option and the least safe: `draggingFrame` also governs where
+        // the image sits under the cursor.
+    }
+
+    /// The pill the hand carries: the pane's document glyph and file name on an
+    /// opaque rounded plate with a hairline edge.
+    ///
+    /// Drawn rather than snapshotted. The header's own picture is text on
+    /// nothing — over a dump it reads as a smear of letters with no object
+    /// behind them, and there is nothing to see the edge of when it crosses into
+    /// another pane. The glyph is the header's own, so a modified or untitled
+    /// pane is still recognisable as itself while it is in flight.
+    private func paneDragPill() -> NSImage {
+        let name = viewModel.status.fileName
+        let paragraph = NSMutableParagraphStyle()
+        // Middle truncation: the tail of a dump's name is what tells two apart
+        // (`…_donor.bin` against `…_board.bin`), so it is the middle that goes.
+        paragraph.lineBreakMode = .byTruncatingMiddle
+        paragraph.alignment = .left
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
+            .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: paragraph,
+        ]
+        let height = max(24, header.bounds.height)
+        let icon = paneDragGlyph()
+        let iconWidth = icon?.size.width ?? 0
+        let gap = icon == nil ? 0 : Self.paneDragIconGap
+        let nameSize = (name as NSString).size(withAttributes: attributes)
+        let size = Self.paneDragPillSize(contentWidth: iconWidth + gap + nameSize.width,
+                                         height: height)
+
+        let image = NSImage(size: size)
+        image.lockFocus()
+        // The window's appearance, not whatever is current: the pill is drawn
+        // once and carried, so its colours have to be resolved against the theme
+        // it was picked up in (§3.2).
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            let rect = NSRect(origin: .zero, size: size).insetBy(dx: 0.5, dy: 0.5)
+            let pill = NSBezierPath(roundedRect: rect,
+                                    xRadius: rect.height / 2, yRadius: rect.height / 2)
+            // Near-opaque: enough of the dump shows through to say the pill is
+            // over it, not enough for the two to be read together.
+            NSColor.windowBackgroundColor.withAlphaComponent(0.95).setFill()
+            pill.fill()
+            NSColor.separatorColor.setStroke()
+            pill.lineWidth = 1
+            pill.stroke()
+
+            // Glyph and name are centred together, so a short name sits in the
+            // middle of the minimum-width plate rather than clinging to its left
+            // end. A name too long for the plate takes what is left and
+            // truncates inside it.
+            let budget = size.width - Self.paneDragTextInset * 2 - iconWidth - gap
+            let textWidth = min(nameSize.width, budget)
+            let contentWidth = iconWidth + gap + textWidth
+            var x = (size.width - contentWidth) / 2
+            if let icon {
+                icon.draw(in: NSRect(x: x, y: (size.height - icon.size.height) / 2,
+                                     width: icon.size.width, height: icon.size.height))
+                x += iconWidth + gap
+            }
+            (name as NSString).draw(
+                with: NSRect(x: x, y: (size.height - nameSize.height) / 2,
+                             width: textWidth, height: nameSize.height),
+                options: [.usesLineFragmentOrigin], attributes: attributes)
+        }
+        image.unlockFocus()
+        return image
+    }
+
+    /// The header's document glyph, tinted for the pill. A template image draws
+    /// as a mask, so it is filled rather than simply drawn.
+    private func paneDragGlyph() -> NSImage? {
+        let configuration = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
+        guard let symbol = NSImage(systemSymbolName: documentSymbolName,
+                                   accessibilityDescription: nil)?
+            .withSymbolConfiguration(configuration) else { return nil }
+        return NSImage(size: symbol.size, flipped: false) { rect in
+            symbol.draw(in: rect)
+            NSColor.labelColor.set()
+            rect.fill(using: .sourceAtop)
+            return true
+        }
+    }
+
     private func updateHeader() {
         let status = viewModel.status
         titleLabel.stringValue = status.fileName
@@ -945,6 +1239,7 @@ final class FilePaneView: NSView {
         lockLabel.stringValue = status.isReadOnly ? "🔒 Read-Only" : ""
         // VoiceOver names the grid after its file (§15).
         hexView.accessibilityTitle = "Hex dump — \(status.fileName)"
+        onHeaderChanged?()
     }
 
     private func updateStatus() {
@@ -1246,3 +1541,24 @@ final class OperationStatusView: NSView {
         onCancel?()
     }
 }
+
+extension FilePaneView: NSDraggingSource {
+    /// A pane can be moved, and only inside this app: outside it the drag means
+    /// nothing, so it is offered nothing to mean.
+    func draggingSession(_ session: NSDraggingSession,
+                         sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        context == .withinApplication ? .move : []
+    }
+
+    func draggingSession(_ session: NSDraggingSession, willBeginAt screenPoint: NSPoint) {
+        onDragSessionChanged?(true)
+    }
+
+    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint,
+                         operation: NSDragOperation) {
+        // First thing, so the panes start rising while the pill is still in the
+        // air rather than after it has landed.
+        onDragSessionChanged?(false)
+    }
+}
+

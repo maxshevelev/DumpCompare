@@ -8,23 +8,8 @@ import XCTest
 /// into the dump instead of pasting into the field.
 @MainActor
 final class MainWindowMenuTests: XCTestCase {
-    /// `buildMainMenu()` assigns `NSApp.mainMenu`; restore it so this suite
-    /// leaves no process-wide side effect.
-    private var previousMainMenu: NSMenu?
-
-    override func setUp() {
-        super.setUp()
-        previousMainMenu = NSApp.mainMenu
-    }
-
-    override func tearDown() {
-        NSApp.mainMenu = previousMainMenu
-        previousMainMenu = nil
-        super.tearDown()
-    }
-
     private func makeEditMenu() -> NSMenu {
-        MainWindowController().makeEditMenu()
+        MainMenu.makeEditMenu()
     }
 
     // MARK: - ⌘V routing
@@ -92,8 +77,7 @@ final class MainWindowMenuTests: XCTestCase {
         let wc = MainWindowController()
         defer { wc.close() }
         let controller = try XCTUnwrap(wc.mainViewController)
-        let editMenu = try XCTUnwrap(NSApp.mainMenu?.items
-            .compactMap(\.submenu).first { $0.title == "Edit" })
+        let editMenu = MainMenu.makeEditMenu()
         let item = try XCTUnwrap(editMenu.items.first {
             $0.action == #selector(MainViewController.toggleInsertMode)
         }, "an Edit item toggling insert mode")

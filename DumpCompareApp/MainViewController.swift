@@ -21,6 +21,278 @@ final class MainViewController: NSViewController {
     /// and caret change; the menu items read it via `validateMenuItem` (§10.3).
     private(set) var diffNavigationState = DiffNavigationState()
     let windowModel = WindowViewModel()
+
+    /// Every window's controller, so "is this file already open?" can be asked
+    /// of the whole application rather than of this window's two panes (§4.1
+    /// rule 6).
+    ///
+    /// Nil in a controller built on its own — which every test does — and the
+    /// rule then falls back to this window's own panes, exactly as it has always
+    /// worked. Weak: the registry outlives no window, and this is a back
+    /// reference to something the app owns.
+    weak var openDocuments: OpenDocumentRegistry?
+
+    /// What to do about a file that is already open in another window or tab.
+    private enum AlreadyOpenChoice {
+        /// Bring that window forward with the file's pane active.
+        case show
+        /// Move that pane into this window, where the user asked for it.
+        case move
+        case cancel
+    }
+
+    private func askAboutFileOpenElsewhere(named name: String) -> AlreadyOpenChoice {
+        let alert = NSAlert()
+        alert.messageText = "“\(name)” is already open"
+        alert.informativeText = "A file is open in one place at a time, so it cannot be opened "
+            + "here as well. Show it where it is, or move that pane into this tab."
+        alert.addButton(withTitle: "Show in Its Tab")
+        alert.addButton(withTitle: "Move to This Tab")
+        // AppKit gives a button titled "Cancel" the Escape key.
+        alert.addButton(withTitle: "Cancel")
+        switch Self.presentModal(alert, defaultInTest: .alertFirstButtonReturn) {
+        case .alertFirstButtonReturn: return .show
+        case .alertSecondButtonReturn: return .move
+        default: return .cancel
+        }
+    }
+
+    /// Moves the pane holding a file out of `holder` and into this window's pane
+    /// `index` — the answer to "open it here" that actually opens it here.
+    ///
+    /// The document is moved rather than re-opened, for the same reason the
+    /// tear-off moves it: the file stays open exactly once, and the unsaved
+    /// edits, undo history and segments travel with it.
+    ///
+    /// The marks do not. Bookmarks belong to a window (§20), and this window has
+    /// its own list already — merging two would be merging two windows' notes on
+    /// one row. A pane joins the list of the window it lands in. (The tear-off
+    /// copies its list instead, because the tab it makes starts with none.)
+    @discardableResult
+    private func movePaneHere(from holder: MainViewController, at holdingPane: Int,
+                              into index: Int,
+                              onSaved: @escaping () -> Void) -> Bool {
+        let target = index == 0 ? windowModel.pane1 : windowModel.pane2
+        // The pane being displaced gets the ordinary prompt; a dirty untitled one
+        // saves first and whatever asked for the move runs again from the top.
+        guard confirmReplaceDirtyPane(target, onSaved: onSaved) else { return false }
+        let moved = holder.releasePane(at: holdingPane)
+        if target !== moved {
+            paneViews.removeValue(forKey: ObjectIdentifier(target))
+            target.close()
+        }
+        windowModel.adopt(moved, at: index)
+        // Applied rather than refreshed: replacing one pane with another leaves
+        // the open-pane count alone, and `refreshMode` skips a mode that has not
+        // changed — which would leave the old pane's view on screen.
+        apply(mode: windowModel.openPaneCount >= 2 ? .comparison : .singleFile)
+        return true
+    }
+
+    /// Takes the pane at `index` out of this window and hands it over, leaving
+    /// the window to re-render with one pane fewer. The shared half of both
+    /// moves: tearing a pane off into a new tab, and giving it up to a window
+    /// that asked to open its file.
+    func releasePane(at index: Int) -> PaneViewModel {
+        // The comparison ends here, so the two panes must stop holding each
+        // other as companions before one of them leaves.
+        if mode == .comparison { unwireComparison() }
+        let pane = windowModel.detachPane(index)
+        // The view bound to it belongs to this window; wherever it lands builds
+        // its own from the model.
+        paneViews.removeValue(forKey: ObjectIdentifier(pane))
+        refreshMode()
+        return pane
+    }
+
+    /// Makes a tab beside this window and hands back the controller that runs
+    /// it. Set by the app delegate, which owns the windows; nil in a controller
+    /// built on its own, where there is no window to put a tab beside and the
+    /// command that needs one is disabled.
+    var makeSiblingTab: (() -> MainViewController?)?
+
+    /// File ▸ New Tab (⌘T): an empty tab beside this window.
+    ///
+    /// It lands on the key window's controller, which is the window the tab
+    /// should join — the reason this is a controller command rather than the app
+    /// delegate's, which has no window in mind.
+    @objc func newTab(_ sender: Any?) {
+        _ = makeSiblingTab?()
+    }
+
+    /// Pane menu ▸ Open in New Tab: this pane's document leaves for a tab of its
+    /// own, and the window it left keeps the other file on its own.
+    ///
+    /// The document is **moved**, not opened again: re-opening the URL would put
+    /// two live documents over one file, which is exactly what §4.1 rule 6
+    /// exists to prevent, and the unsaved edits, the undo history, the segments
+    /// and the change watcher would all be left behind. Moving the pane object
+    /// takes every one of them along by construction.
+    @objc func openPaneInNewTab(_ sender: Any?) {
+        guard let pane = (sender as? NSMenuItem)?.representedObject as? PaneViewModel else { return }
+        movePaneToNewTab(at: paneIndex(pane))
+    }
+
+    private func movePaneToNewTab(at index: Int) {
+        guard mode == .comparison else { return }
+        tearOff(paneAt: index, into: self)
+    }
+
+    /// Moves `index`'s pane out of this window and into a tab `host` makes
+    /// beside itself.
+    ///
+    /// `host` is the window the gesture was aimed at, which is not always this
+    /// one: a pane dragged onto another window's New Tab strip belongs in a tab
+    /// beside *that* window. The marks are this window's, because they are the
+    /// ones the pane was read under.
+    private func tearOff(paneAt index: Int, into host: MainViewController) {
+        guard let tab = host.makeSiblingTab?() else { return }
+        let marks = windowModel.bookmarkStore.bookmarks
+        tab.adoptPane(releasePane(at: index), bookmarks: marks)
+    }
+
+    /// A pane let go on this window's New Tab strip: it leaves for a tab of its
+    /// own beside this window, wherever it came from.
+    func tearOffPaneToNewTab(draggedPaneID: UUID) {
+        guard let origin = paneLocation(ofPaneWith: draggedPaneID) else { return }
+        origin.controller.tearOff(paneAt: origin.paneIndex, into: self)
+    }
+
+    /// Takes a pane torn off another window, with a copy of that window's marks.
+    ///
+    /// The marks are copied rather than shared or dropped: they were made
+    /// against absolute offsets, and those offsets mean the same thing in the
+    /// file that just arrived. From here the two lists are independent — a mark
+    /// added in one window does not appear in the other.
+    func adoptPane(_ pane: PaneViewModel, bookmarks: [Bookmark]) {
+        windowModel.bookmarkStore.seed(bookmarks)
+        windowModel.adopt(pane)
+        apply(mode: .singleFile)
+    }
+
+    /// Brings this window to the front and makes `paneIndex` its active pane —
+    /// what happens instead of a refusal when the file someone asked to open is
+    /// already open in another window or tab (§4.1 rule 6).
+    func revealOpenFile(inPane paneIndex: Int) {
+        if mode == .comparison, paneIndex != windowModel.activePaneIndex {
+            activatePane(at: paneIndex)
+        }
+        viewIfLoaded?.window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// What letting the dragged pane go on this window's pane `index` would do
+    /// (`Design/PANE_DRAG_PLAN.md`).
+    ///
+    /// The decision itself is `PaneDrop`'s and is pure; all this adds is finding
+    /// where the dragged pane currently lives. A pane whose window has gone
+    /// resolves to nothing, and the drop is refused.
+    /// Which pane a single-file window's drop zone stands for, and in which
+    /// band. The far half is the free second pane; the three bands are the one
+    /// that is already open.
+    static func singleFilePaneDrop(_ target: SingleFileDropTarget)
+    -> (index: Int, band: SingleFileDropTarget) {
+        target == .addSecond ? (1, .addSecond) : (0, target)
+    }
+
+    func paneDropOutcome(draggedPaneID: UUID, onPaneAt index: Int,
+                         band: SingleFileDropTarget = .replace) -> PaneDrop.Outcome {
+        guard let origin = paneLocation(ofPaneWith: draggedPaneID) else { return .none }
+        let outcome = PaneDrop.outcome(
+            draggingPaneAt: origin.paneIndex,
+            onto: .pane(index: index, inOriginWindow: origin.controller === self, band: band))
+        // A join needs both panes to hold something; the target's own emptiness
+        // is the only case the pure rule cannot see.
+        if case .join = outcome {
+            let target = index == 0 ? windowModel.pane1 : windowModel.pane2
+            guard target.isOpen else { return .none }
+        }
+        // A copy needs a free pane and bytes to copy — the same conditions the
+        // menu command is validated against, asked of the same helper.
+        if case .duplicate = outcome {
+            let source = origin.paneIndex == 0
+                ? origin.controller.windowModel.pane1
+                : origin.controller.windowModel.pane2
+            guard origin.controller === self, canDuplicate(source) else { return .none }
+        }
+        return outcome
+    }
+
+    /// Performs whatever the drop means. Nothing here is a new operation —
+    /// each case is a command that already exists.
+    func performPaneDrop(draggedPaneID: UUID, onPaneAt index: Int,
+                         band: SingleFileDropTarget = .replace) {
+        switch paneDropOutcome(draggedPaneID: draggedPaneID, onPaneAt: index, band: band) {
+        case .swap:
+            swapPanes()
+        case .join(let intoPane, let position):
+            guard let origin = paneLocation(ofPaneWith: draggedPaneID) else { return }
+            let source = origin.paneIndex == 0
+                ? origin.controller.windowModel.pane1
+                : origin.controller.windowModel.pane2
+            join(pane: source, at: position,
+                 into: intoPane == 0 ? windowModel.pane1 : windowModel.pane2)
+            refreshMode()
+        case .move(let intoPane):
+            guard let origin = paneLocation(ofPaneWith: draggedPaneID) else { return }
+            movePaneHere(from: origin.controller, at: origin.paneIndex, into: intoPane,
+                         onSaved: { [weak self] in
+                             // Re-resolved rather than captured: the pane may
+                             // have moved again while the save panel was up.
+                             self?.performPaneDrop(draggedPaneID: draggedPaneID,
+                                                   onPaneAt: intoPane)
+                         })
+        case .duplicate:
+            // The window's own pane, copied into its free one. Nothing new
+            // happens here: this is `File ▸ Duplicate`, which already reports
+            // itself and re-applies the mode.
+            duplicate(from: windowModel.pane1)
+        case .none, .tearOff:
+            // A tear-off never lands on a pane; the strip owns that one.
+            break
+        }
+    }
+
+    /// Where the pane with `dragID` is, asked of the whole app when there is a
+    /// registry and of this window alone when there is not — the same fallback
+    /// the already-open rule uses, and for the same reason: a controller built
+    /// on its own must still answer for itself.
+    private func paneLocation(ofPaneWith dragID: UUID)
+    -> (controller: MainViewController, paneIndex: Int)? {
+        if let openDocuments {
+            return openDocuments.location(ofPaneWith: dragID)
+        }
+        return paneIndex(withDragID: dragID).map { (self, $0) }
+    }
+
+    /// The index of this window's pane with `dragID`, if either has it — the
+    /// pane half of the registry's question, beside the file half below.
+    /// Internal so the registry can ask it of every window.
+    func paneIndex(withDragID dragID: UUID) -> Int? {
+        [windowModel.pane1, windowModel.pane2].firstIndex { $0.dragID == dragID }
+    }
+
+    /// The index of this window's pane holding `identity`, if either does.
+    /// `excluding` skips one pane — the target of an open, which is never its
+    /// own obstacle. Internal so the registry can ask it of every window.
+    func paneIndex(holding identity: FileIdentity, excluding: Int?) -> Int? {
+        for (index, pane) in [windowModel.pane1, windowModel.pane2].enumerated()
+        where index != excluding {
+            if pane.isOpen, pane.document?.identity == identity { return index }
+        }
+        return nil
+    }
+
+    /// Where the file at `url` is already open, skipping the pane an open is
+    /// aimed at. Answered by the registry when the app has installed one, and by
+    /// this window alone otherwise.
+    private func documentLocation(of url: URL, excluding paneIndex: Int)
+    -> (controller: MainViewController, paneIndex: Int)? {
+        if let openDocuments {
+            return openDocuments.location(of: url, excluding: (self, paneIndex))
+        }
+        return self.paneIndex(holding: FileIdentity(url: url), excluding: paneIndex)
+            .map { (self, $0) }
+    }
     private weak var activeFilePane: FilePaneView?
     private weak var comparisonView: ComparisonView?
 
@@ -42,6 +314,47 @@ final class MainViewController: NSViewController {
     /// The left pane of the minimap split — the mode's content lives here, so
     /// the minimap panel can share the content area to its right (§19).
     private let contentHost = NSView()
+
+    /// The window-level drop target under the tab bar: a file let go there opens
+    /// in a tab of its own (`Design/PANE_DRAG_PLAN.md`).
+    ///
+    /// It sits above everything the window shows — both panes and the minimap —
+    /// and takes its own height while a drag is in flight rather than lying over
+    /// the content. Overlaying was tried and looked wrong: the strip covered the
+    /// pane headers and the top of the column headers, and the bands below it no
+    /// longer lined up with the dump they were describing.
+    ///
+    /// Moving the content is safe *because* the strip's visibility follows the
+    /// drag session rather than which view the pointer is over. Tied to the
+    /// pointer it would be a loop, and was: leaving the panes hid the strip, the
+    /// content rose, the pointer was over a pane again, the strip came back.
+    ///
+    /// A `.bottom` titlebar accessory was tried first, to keep the strip out of
+    /// the content entirely. AppKit places one **above** the tab bar, between it
+    /// and the toolbar, where the pointer cannot reach it without crossing the
+    /// bar. Nothing public places a view below the bar, and nothing public makes
+    /// the bar itself a target.
+    private let newTabDropStrip = NewTabDropStrip()
+
+    /// The strip's height: zero between drags, `NewTabDropStrip.height` while
+    /// one is in flight. Animated, so the content glides down rather than being
+    /// snatched.
+    private var newTabDropStripHeight: NSLayoutConstraint?
+
+    /// The single-file mode's drop container, held so its bands can be inset by
+    /// the strip's share the way the comparison's are. Nil in the other modes.
+    private weak var singleFileDropView: SingleFileDropView?
+
+    /// The empty mode's placeholder, held so the bookmark list it shows can be
+    /// kept current. Nil in the other modes.
+    private weak var emptyStateView: EmptyStateView?
+
+    /// Re-reads the marks into the empty window's list and its title.
+    private func refreshEmptyStateBookmarks() {
+        guard mode == .empty else { return }
+        emptyStateView?.setBookmarks(windowModel.bookmarkStore.bookmarks)
+        updateWindowTitle()
+    }
     /// The right-hand minimap panel (hidden by default, toggled by the toolbar
     /// button). Internal so tests can assert its visibility (§19).
     let minimapView = MinimapView()
@@ -168,6 +481,10 @@ final class MainViewController: NSViewController {
             self?.dismissEditPopoverIfItsMarkIsGone(row: row)
             self?.openGoToForm?.reloadBookmarks()
             self?.syncMinimapBookmarks()
+            // The empty window shows the list too, and it is the only thing it
+            // shows — so a mark added or removed while no file is open has to
+            // reach it, and the title that counts them (§3.1, §20).
+            self?.refreshEmptyStateBookmarks()
         }
         // Apply the Layout settings tab's direction change to an open comparison
         // immediately; outside comparison mode the value is stored and the next
@@ -311,9 +628,25 @@ final class MainViewController: NSViewController {
         minimapSplit.onDividerMoved = { [weak self] _, position in
             self?.persistMinimapPanelWidth(position: position)
         }
+        newTabDropStrip.translatesAutoresizingMaskIntoConstraints = false
+        newTabDropStrip.onDropFiles = { [weak self] urls in
+            self?.openFilesInNewTab(urls)
+        }
+        newTabDropStrip.onPaneDropped = { [weak self] paneID in
+            self?.tearOffPaneToNewTab(draggedPaneID: paneID)
+        }
+        contentContainer.addSubview(newTabDropStrip)
+        let stripHeight = newTabDropStrip.heightAnchor.constraint(equalToConstant: 0)
+        newTabDropStripHeight = stripHeight
         contentContainer.addSubview(minimapSplit)
         NSLayoutConstraint.activate([
-            minimapSplit.topAnchor.constraint(equalTo: contentContainer.topAnchor),
+            // Above everything, across the whole window: the strip is about the
+            // window's tabs, so it spans the minimap as well as the panes.
+            newTabDropStrip.topAnchor.constraint(equalTo: contentContainer.topAnchor),
+            newTabDropStrip.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor),
+            newTabDropStrip.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
+            stripHeight,
+            minimapSplit.topAnchor.constraint(equalTo: newTabDropStrip.bottomAnchor),
             minimapSplit.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor),
             minimapSplit.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor),
             minimapSplit.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
@@ -426,8 +759,21 @@ final class MainViewController: NSViewController {
             // nothing is left to search (§11).
             hideFindBar()
             let emptyView = EmptyStateView()
+            emptyStateView = emptyView
+            emptyView.setBookmarks(windowModel.bookmarkStore.bookmarks)
             emptyView.onOpenFiles = { [weak self] urls in
                 self?.handleEmptyDrop(urls)
+            }
+            // An empty window is the most obvious place to put a pane, and it
+            // has only the first one to put it in.
+            emptyView.paneDropOutcome = { [weak self] paneID in
+                guard let self,
+                      self.paneLocation(ofPaneWith: paneID)?.controller !== self
+                else { return .none }
+                return self.paneDropOutcome(draggedPaneID: paneID, onPaneAt: 0)
+            }
+            emptyView.onPaneDropped = { [weak self] paneID in
+                self?.performPaneDrop(draggedPaneID: paneID, onPaneAt: 0)
             }
             setContentView(emptyView)
 
@@ -473,6 +819,28 @@ final class MainViewController: NSViewController {
             // Wrap in the drop-target split view (§4.3 single-file mode). The
             // pane itself is NOT drop-registered here so the outer view wins.
             let dropView = SingleFileDropView(paneView: pane)
+            singleFileDropView = dropView
+            dropView.onDragSessionChanged = { [weak self] active in
+                self?.setNewTabStripVisible(active)
+            }
+            // A dragged pane gets the same four zones a file gets, and they
+            // mean the same four things: the far half opens it as the second
+            // pane, and the three bands over this file join it at either end or
+            // put it in this pane's place.
+            //
+            // Which of those a pane from *this* window may do is `PaneDrop`'s to
+            // say, not a blanket refusal here: its own pane can still be joined
+            // to itself at either end, and only the middle band and the second
+            // half are meaningless for it.
+            dropView.paneDropOutcome = { [weak self] paneID, target in
+                guard let self else { return .none }
+                let (index, band) = Self.singleFilePaneDrop(target)
+                return self.paneDropOutcome(draggedPaneID: paneID, onPaneAt: index, band: band)
+            }
+            dropView.onPaneDropped = { [weak self] paneID, target in
+                let (index, band) = Self.singleFilePaneDrop(target)
+                self?.performPaneDrop(draggedPaneID: paneID, onPaneAt: index, band: band)
+            }
             dropView.onDrop = { [weak self] target, urls in
                 self?.handleSingleFileDrop(target: target, urls: urls)
             }
@@ -526,6 +894,24 @@ final class MainViewController: NSViewController {
             view.bands2.onDrop = { [weak self] target, urls in
                 self?.handleComparisonBandDrop(targetPane: 1, target: target, urls: urls)
             }
+            // The same overlays take a dragged pane, in the same three bands: a
+            // pane holds a dump, so the ends mean what they mean for a file —
+            // join this at the front, join it at the back — and only the middle
+            // differs (`Design/PANE_DRAG_PLAN.md`).
+            for (index, bands) in [(0, view.bands1!), (1, view.bands2!)] {
+                bands.paneDropOutcome = { [weak self] paneID, band in
+                    self?.paneDropOutcome(draggedPaneID: paneID, onPaneAt: index,
+                                          band: band) ?? .none
+                }
+                bands.onPaneDropped = { [weak self] paneID, band in
+                    self?.performPaneDrop(draggedPaneID: paneID, onPaneAt: index, band: band)
+                }
+                // A drag entering either pane raises the strip, so it is on
+                // screen before the pointer could reach it.
+                bands.onDragSessionChanged = { [weak self] active in
+                    self?.setNewTabStripVisible(active)
+                }
+            }
             pane1View.onClose = { [weak self] in self?.closePane(at: 0) }
             pane2View.onClose = { [weak self] in self?.closePane(at: 1) }
             // Closing a pane's Search All panel stops that search (§11).
@@ -554,6 +940,10 @@ final class MainViewController: NSViewController {
         // the detail window opens in overview (§19.4).
         applyPreferredMinimapMode()
         refreshDiffNavigation()
+        // The empty state has no pane view to report a header, so the title is
+        // set here too; with panes open this is the first of many, and the pane
+        // views keep it current from then on.
+        updateWindowTitle()
     }
 
     /// Wires companion panes and coordinator callbacks for comparison mode.
@@ -621,8 +1011,46 @@ final class MainViewController: NSViewController {
         let key = ObjectIdentifier(model)
         if let existing = paneViews[key] { return existing }
         let view = FilePaneView(viewModel: model)
+        // A pane drag raises every window's strip, since any of them could take
+        // the pane, and lowers them all when the session ends.
+        view.onDragSessionChanged = { [weak self] active in
+            self?.setNewTabStripVisibleEverywhere(active)
+        }
+        // The window is named after the files its panes hold, so the title
+        // follows the very signal the pane headers follow — a file opened,
+        // saved under a new name, reverted or detached by a join moves both at
+        // once, and there is no second list of places to remember.
+        view.onHeaderChanged = { [weak self] in self?.updateWindowTitle() }
         paneViews[key] = view
         return view
+    }
+
+    /// What the window (and so its tab) is called: the files it holds.
+    ///
+    /// A tab bar with nothing to read on it is not worth having, and the Window
+    /// menu listing the app's name three times is no better. A window holding
+    /// nothing says so — "Empty", which is what it is. Not the app's name, which
+    /// says nothing about this window in particular, and not "Untitled", which
+    /// already means a New File that has never been saved and would make an
+    /// empty tab and a fresh document read alike.
+    var windowTitle: String {
+        switch mode {
+        case .empty:
+            // A window with no file is not necessarily a window with nothing in
+            // it: the marks are the window's, not the file's (§20), so a window
+            // kept open for them says how many it is keeping.
+            let marks = windowModel.bookmarkStore.bookmarks.count
+            guard marks > 0 else { return "Empty" }
+            return marks == 1 ? "Empty (1 Bookmark)" : "Empty (\(marks) Bookmarks)"
+        case .singleFile:
+            return windowModel.pane1.status.fileName
+        case .comparison:
+            return "\(windowModel.pane1.status.fileName) ↔ \(windowModel.pane2.status.fileName)"
+        }
+    }
+
+    private func updateWindowTitle() {
+        viewIfLoaded?.window?.title = windowTitle
     }
 
     private func setContentView(_ newView: NSView) {
@@ -635,6 +1063,79 @@ final class MainViewController: NSViewController {
             newView.leadingAnchor.constraint(equalTo: contentHost.leadingAnchor),
             newView.trailingAnchor.constraint(equalTo: contentHost.trailingAnchor),
         ])
+    }
+
+    /// Opens the strip for a drag's lifetime, or closes it when the drag is over.
+    ///
+    /// Never in the empty mode: a window holding nothing has no reason to send a
+    /// file somewhere else.
+    ///
+    /// The panes move down to make room rather than being covered, so the bands
+    /// keep describing the dump they are drawn over — an overlay left them
+    /// offset from the content by the strip's height, and hid the pane headers
+    /// besides.
+    /// Raises or lowers the strip in every open window.
+    ///
+    /// A file drag belongs to the window it is over, but a pane drag belongs to
+    /// the app: the pane can land in any window, so every window has to offer
+    /// somewhere to put it. With no registry — a controller built on its own —
+    /// this window is the whole app.
+    private func setNewTabStripVisibleEverywhere(_ visible: Bool) {
+        for controller in openDocuments?.controllers ?? [self] {
+            controller.setNewTabStripVisible(visible, forPane: true)
+        }
+    }
+
+    private func setNewTabStripVisible(_ visible: Bool, forPane isPane: Bool = false) {
+        let wanted = visible && mode != .empty
+        guard let stripHeight = newTabDropStripHeight else { return }
+        let target: CGFloat = wanted ? NewTabDropStrip.height : 0
+        guard stripHeight.constant != target else { return }
+        newTabDropStrip.setDragActive(wanted, forPane: isPane)
+        NSAnimationContext.runAnimationGroup { context in
+            // Slightly quicker on the way out than in. It cannot beat a
+            // cancelled drag's pill home — `endedAt` only arrives once the
+            // pill has landed — so this is about the panes not dawdling once
+            // the drag is over, nothing more.
+            context.duration = wanted ? 0.12 : 0.10
+            context.allowsImplicitAnimation = true
+            stripHeight.animator().constant = target
+            contentContainer.layoutSubtreeIfNeeded()
+        }
+    }
+
+    /// Opens files in a tab of their own — the strip's whole purpose.
+    func openFilesInNewTab(_ urls: [URL]) {
+        guard let tab = makeSiblingTab?() else { return }
+        tab.openFiles(urls)
+    }
+
+    /// How much of a pane overlay's top the strip covers, so its bands can start
+    /// below it.
+    ///
+    /// **Zero in the arrangement that shipped**, where the strip takes its own
+    /// height above everything and covers nothing. Kept, and kept measured, for
+    /// the reason it was written: where the strip goes has already moved three
+    /// times, and AppKit resolves a drop destination by frame among registered
+    /// views rather than by hit-testing (`PaneDropBandsView` records a file
+    /// silently discarded to that once). A geometric answer cannot disagree with
+    /// where the strip actually is; a constant would, quietly, the next time it
+    /// moves.
+    private func dropStripInset(for overlay: NSView) -> CGFloat {
+        guard newTabDropStrip.superview != nil, overlay.window != nil else { return 0 }
+        let stripBottom = newTabDropStrip.convert(NSPoint(x: 0, y: newTabDropStrip.bounds.minY),
+                                                  to: nil).y
+        let overlayTop = overlay.convert(NSPoint(x: 0, y: overlay.bounds.maxY), to: nil).y
+        return max(0, min(overlay.bounds.height, overlayTop - stripBottom))
+    }
+
+    /// Re-measures the strip's share of each pane overlay after a layout pass.
+    private func updateDropStripInsets() {
+        let overlays = [comparisonView?.bands1, comparisonView?.bands2,
+                        singleFileDropView?.thisFileBands].compactMap { $0 }
+        for bands in overlays {
+            bands.topInset = dropStripInset(for: bands)
+        }
     }
 
     // MARK: - Minimap (§19)
@@ -1106,6 +1607,7 @@ final class MainViewController: NSViewController {
     override func viewDidLayout() {
         super.viewDidLayout()
         updateMinimapChrome()
+        updateDropStripInsets()
     }
 
     override func viewDidAppear() {
@@ -2118,12 +2620,33 @@ final class MainViewController: NSViewController {
     /// Returns false when the open was refused or failed.
     private func openIntoPane(index: Int, url: URL) -> Bool {
         let pane = index == 0 ? windowModel.pane1 : windowModel.pane2
-        let other = index == 0 ? windowModel.pane2 : windowModel.pane1
 
-        // Rule 6: same file already open in the other pane.
-        if other.isOpen, FileIdentity(url: url) == other.document?.identity {
-            presentAlert(title: "File already open",
-                         message: "“\(url.lastPathComponent)” is already open in the other pane and cannot be opened twice.")
+        // Rule 6: the same file is already open somewhere else.
+        if let (holder, holdingPane) = documentLocation(of: url, excluding: index) {
+            if holder === self {
+                // The other pane of this window. There is nowhere to send the
+                // user that they are not already looking at, so the refusal is
+                // the whole answer.
+                presentAlert(title: "File already open",
+                             message: "“\(url.lastPathComponent)” is already open in the other pane and cannot be opened twice.")
+            } else {
+                // Another window or tab has it. "Cannot be opened twice" is true
+                // but useless there — the file is on screen — and so is silently
+                // jumping to it: the user asked to work on it *here*, and being
+                // moved somewhere else without a word is its own surprise. Both
+                // useful answers are offered instead.
+                switch askAboutFileOpenElsewhere(named: url.lastPathComponent) {
+                case .show:
+                    holder.revealOpenFile(inPane: holdingPane)
+                case .move:
+                    return movePaneHere(from: holder, at: holdingPane, into: index,
+                                        onSaved: { [weak self] in
+                                            _ = self?.openIntoPane(index: index, url: url)
+                                        })
+                case .cancel:
+                    break
+                }
+            }
             return false
         }
 
@@ -2253,27 +2776,65 @@ final class MainViewController: NSViewController {
     /// Shared by the menu commands (after the open panel) and the drop bands
     /// (§22.4), which already have the URL. An untitled dirty pane is joined
     /// without a warning: there is no saved state to diverge from.
+    /// A file joined into the pane that already holds it doubles its content.
+    ///
+    /// Not refused: a join copies bytes, so none of the hazards §4.1 rule 6
+    /// guards against apply — there is no second live document, no second
+    /// watcher, and no piece table whose base moves underneath it. The result is
+    /// one document that happens to be the dump twice, which is a thing someone
+    /// could mean.
+    ///
+    /// But on a bench it is far more often a slip: the file was dragged onto the
+    /// pane it is already open in. So it asks, and the default is to do nothing.
+    private func confirmSelfJoin(url: URL, into pane: PaneViewModel, verb: String) -> Bool {
+        guard let identity = pane.document?.identity, identity == FileIdentity(url: url) else {
+            return true
+        }
+        return confirmJoinToItself(named: url.lastPathComponent, verb: verb)
+    }
+
+    /// The question itself, asked of a file dropped on the pane that already
+    /// holds it and of a pane dropped on its own bands alike — it is the same
+    /// act and deserves the same words.
+    private func confirmJoinToItself(named name: String, verb: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Join “\(name)” to itself?"
+        alert.informativeText = "This doubles the content: the same bytes twice, one copy "
+            + "after the other."
+        alert.addButton(withTitle: verb)
+        alert.addButton(withTitle: "Cancel")
+        // Cancel in tests, and Cancel is where the Escape key lands.
+        return Self.presentModal(alert, defaultInTest: .alertSecondButtonReturn)
+            == .alertFirstButtonReturn
+    }
+
+    /// §22.2: a dirty pane is warned about before a join, with two buttons —
+    /// Cancel and the operation's verb. An untitled dirty pane gets no alert:
+    /// there is no saved state for the join to diverge from.
+    private func confirmJoinWithUnsavedChanges(_ pane: PaneViewModel, verb: String) -> Bool {
+        guard pane.status.isDirty, !pane.isUntitled else { return true }
+        let alert = NSAlert()
+        alert.messageText = "Join with unsaved changes?"
+        alert.informativeText = "“\(pane.status.fileName)” has unsaved changes. They travel into the joined image; the file on disk keeps its saved bytes."
+        alert.addButton(withTitle: verb)
+        alert.addButton(withTitle: "Cancel")
+        if let joinConfirm {
+            return joinConfirm(alert) == .alertFirstButtonReturn
+        }
+        // Cancel in tests.
+        return Self.presentModal(alert, defaultInTest: .alertSecondButtonReturn)
+            == .alertFirstButtonReturn
+    }
+
     private func join(url: URL, at position: JoinPosition, in pane: PaneViewModel) {
         guard pane.isOpen else { return }
         let verb = (position == .start) ? "Insert" : "Append"
 
-        // §22.2: a dirty pane is warned about, with two buttons — Cancel and
-        // the operation's verb. An untitled dirty pane gets no alert: there is
-        // no saved state to diverge from.
-        if pane.status.isDirty && !pane.isUntitled {
-            let alert = NSAlert()
-            alert.messageText = "Join with unsaved changes?"
-            alert.informativeText = "“\(pane.status.fileName)” has unsaved changes. They travel into the joined image; the file on disk keeps its saved bytes."
-            alert.addButton(withTitle: verb)
-            alert.addButton(withTitle: "Cancel")
-            let response: NSApplication.ModalResponse
-            if let joinConfirm {
-                response = joinConfirm(alert)
-            } else {
-                response = Self.presentModal(alert, defaultInTest: .alertSecondButtonReturn)  // Cancel in tests
-            }
-            guard response == .alertFirstButtonReturn else { return }
-        }
+        // Asked before anything else, because it is the question of whether the
+        // join was meant at all; the unsaved-changes prompt below is about the
+        // consequences of one already decided on.
+        guard confirmSelfJoin(url: url, into: pane, verb: verb) else { return }
+        guard confirmJoinWithUnsavedChanges(pane, verb: verb) else { return }
 
         // The name the pane's content carries now, remembered before the join
         // detaches the document — the status line names both sources (§22.2).
@@ -2300,9 +2861,68 @@ final class MainViewController: NSViewController {
         // size, the way the app reports a search result, then yields back.
         let total = pane.fileSize
         let size = ByteCountFormatter.string(fromByteCount: Int64(total), countStyle: .file)
+        activateJoinedPane(pane)
+
         let message = (position == .start)
             ? "Inserted \(url.lastPathComponent) before \(originalName). Total: \(size)."
             : "Appended \(url.lastPathComponent) after \(originalName). Total: \(size)."
+        filePaneView(for: pane)?.showTransientMessage(message)
+    }
+
+    /// Makes the pane that just received a join the active one.
+    ///
+    /// The join leaves the caret at its seam and centres it there (§22.5), so
+    /// the eyes have already been sent to this pane; leaving the keys pointed at
+    /// the other one splits the two. A no-op outside comparison mode, where
+    /// there is only one pane to be active.
+    private func activateJoinedPane(_ pane: PaneViewModel) {
+        activatePane(at: paneIndex(pane))
+    }
+
+    /// Joins one open pane's bytes into another, at one end or the other — the
+    /// same operation `join(url:at:in:)` performs, sourced from a pane instead
+    /// of a file (`Design/PANE_DRAG_PLAN.md`).
+    ///
+    /// The source pane is left exactly as it was. A join **copies**: dropping a
+    /// file to append it does not consume the file, and dropping a pane does not
+    /// consume the pane. Its unsaved edits travel, because the bytes are read
+    /// from the pane's live storage rather than from the disk underneath it.
+    private func join(pane source: PaneViewModel, at position: JoinPosition,
+                      into pane: PaneViewModel) {
+        guard pane.isOpen, source.isOpen,
+              let sourceStorage = source.byteStorage else { return }
+        let verb = (position == .start) ? "Insert" : "Append"
+        // A pane joined to itself is allowed, and asked about: the document
+        // streams from its own storage, which `BinaryDocument.join` handles by
+        // taking the source's size once and following the bytes as an insert at
+        // the start moves them.
+        if source === pane {
+            guard confirmJoinToItself(named: pane.status.fileName, verb: verb) else { return }
+        }
+        guard confirmJoinWithUnsavedChanges(pane, verb: verb) else { return }
+
+        let originalName = pane.status.fileName
+        let sourceName = source.status.fileName
+        do {
+            try pane.join(contentsOf: sourceStorage, named: sourceName, at: position)
+        } catch let error as JoinError {
+            switch error {
+            case .emptySource:
+                presentAlert(title: "Pane is empty",
+                             message: "“\(sourceName)” has no bytes to join.")
+            }
+            return
+        } catch {
+            presentError("Could not join the pane.", error)
+            return
+        }
+
+        activateJoinedPane(pane)
+
+        let size = ByteCountFormatter.string(fromByteCount: Int64(pane.fileSize), countStyle: .file)
+        let message = (position == .start)
+            ? "Inserted \(sourceName) before \(originalName). Total: \(size)."
+            : "Appended \(sourceName) after \(originalName). Total: \(size)."
         filePaneView(for: pane)?.showTransientMessage(message)
     }
 
@@ -2620,6 +3240,23 @@ final class MainViewController: NSViewController {
         closePane(at: windowModel.activePaneIndex)
     }
 
+    /// File ▸ Close Window (⇧⌘W): this window and every tab in it.
+    ///
+    /// ⌘W is the step-at-a-time version — the active pane, then the tab once no
+    /// pane is left, then the window once no tab is — which needed no change for
+    /// tabs: closing a window that is a tab closes that tab, and closing the last
+    /// tab closes the window. This is the one gesture that skips to the end.
+    ///
+    /// Each tab is asked to close in the ordinary way, so each still puts up its
+    /// own unsaved-changes prompt; a tab whose prompt is cancelled stays, and the
+    /// window stays with it.
+    @objc func closeWindow(_ sender: Any?) {
+        guard let window = view.window else { return }
+        for tab in window.tabGroup?.windows ?? [window] {
+            tab.performClose(nil)
+        }
+    }
+
     /// Closes the pane at `index` after the standard dirty prompt. An untitled
     /// pane's "Save" picks a location first (Save As sheet); the pane closes
     /// once that completes.
@@ -2687,6 +3324,11 @@ final class MainViewController: NSViewController {
         // own block, because it is the only item here that is about the window's
         // second pane.
         add("Duplicate", #selector(duplicatePaneDocument(_:)), "")
+        // Open in New Tab: the same subject as Duplicate — where this document
+        // lives — pointing the other way. Duplicate sends a copy into the free
+        // pane; this sends the document itself out to a tab of its own, leaving
+        // the comparison behind as a single file (`Design/TABS_PLAN.md`).
+        add("Open in New Tab", #selector(openPaneInNewTab(_:)), "")
         menu.addItem(.separator())
         // Show in Finder is header-only: it reveals THIS pane's file in the
         // Finder, which is a per-pane act, so the menu bar's File submenu
@@ -4142,6 +4784,13 @@ final class MainViewController: NSViewController {
             || environment["XCTestBundlePath"] != nil
     }
 
+    /// Answers alerts in place of the user, so a test can choose a specific
+    /// button rather than living with the call site's default — needed wherever
+    /// the buttons do three different things and each has to be covered.
+    ///
+    /// Consulted only under test, so it can never intercept a real alert.
+    static var modalResponder: ((NSAlert) -> NSApplication.ModalResponse)?
+
     /// Presents `alert` modally, or returns `defaultInTest` immediately when
     /// running under XCTest. Callers pick a response that leaves the document
     /// untouched (Cancel / Keep Current Contents) so a stray alert can never
@@ -4149,7 +4798,7 @@ final class MainViewController: NSViewController {
     /// can pin the suppression contract.
     @discardableResult
     static func presentModal(_ alert: NSAlert, defaultInTest: NSApplication.ModalResponse) -> NSApplication.ModalResponse {
-        guard !isRunningTests else { return defaultInTest }
+        guard !isRunningTests else { return modalResponder?(alert) ?? defaultInTest }
         return alert.runModal()
     }
 
@@ -4548,6 +5197,14 @@ extension MainViewController: NSMenuItemValidation {
         case #selector(duplicatePaneDocument(_:)):
             guard let pane = pane(from: menuItem) else { return false }
             return canDuplicate(pane)
+        case #selector(openPaneInNewTab(_:)):
+            // Only a comparison has a pane to spare. In single-file mode the
+            // command would move the window's only document into a new tab and
+            // leave an empty window behind — a move that separates nothing.
+            // `makeSiblingTab` is nil in a controller with no window to put a
+            // tab beside.
+            guard let pane = pane(from: menuItem), makeSiblingTab != nil else { return false }
+            return mode == .comparison && pane.isOpen
         case #selector(savePaneDocument(_:)),
              #selector(savePaneDocumentAs(_:)):
             // Context-menu items act on the pane they were built for.

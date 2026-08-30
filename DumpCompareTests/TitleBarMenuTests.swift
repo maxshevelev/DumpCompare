@@ -24,6 +24,8 @@ final class TitleBarMenuTests: XCTestCase {
     /// joins, and the one item that is about the window's second pane.
     private let fileMenuItems: [ExpectedItem] = [
         .title("New File"),
+        .title("New Window"),
+        .title("New Tab"),
         .title("Open…"),
         .separator,
         .title("Save"),
@@ -36,6 +38,7 @@ final class TitleBarMenuTests: XCTestCase {
         .title("Duplicate"),
         .separator,
         .title("Close"),
+        .title("Close Window"),
     ]
 
     /// The pane header menu: every File item (the join twins mirroring the
@@ -55,6 +58,7 @@ final class TitleBarMenuTests: XCTestCase {
             .title("Append File…"),
             .separator,
             .title("Duplicate"),
+            .title("Open in New Tab"),
             .separator,
             .title("Show in Finder"),
             .title("Close"),
@@ -72,26 +76,28 @@ final class TitleBarMenuTests: XCTestCase {
     // MARK: - App menu bar File submenu
 
     /// One built File menu, described completely: its items and separators in
-    /// order, every real item routing to `mainViewController` (never the nil
-    /// target / responder chain, so the menu bar acts on the active pane), and
-    /// the key equivalent each one carries.
+    /// order, every real item carrying NO target, and the key equivalent each
+    /// one carries.
     ///
-    /// Built once on purpose: `MainWindowController.init` calls
-    /// `buildMainMenu()`, which assigns `NSApp.mainMenu`, so each instance a
-    /// test creates replaces the process's menu bar and leaks its window.
+    /// The nil target is the point. There is one menu bar per application, so a
+    /// File item addressed to one particular window's controller would go on
+    /// addressing it after the user moved to another window or tab. Travelling
+    /// the responder chain lands the command on whichever `MainViewController`
+    /// is key, which is what "acts on the active pane" has to mean once there
+    /// is more than one window (§4, §5).
     func testFileMenuCarriesEveryItemWithItsTargetAndKey() {
-        let wc = MainWindowController()
-        let menu = wc.makeFileMenu()
+        let menu = MainMenu.makeFileMenu()
 
         XCTAssertEqual(titlesAndSeparators(of: menu), fileMenuItems)
 
         for item in menu.items where !item.isSeparatorItem {
-            XCTAssertTrue(item.target === wc.mainViewController,
-                          "\(item.title) must target mainViewController")
+            XCTAssertNil(item.target,
+                         "\(item.title) must travel the responder chain, not a fixed target")
         }
 
         // Duplicate carries no key equivalent: ⌘D is Toggle Bookmark (§20).
-        let expectedKeys = ["n", "o", nil, "s", "S", "", nil, "", "", nil, "", nil, "w"]
+        // "N" is ⇧⌘N — the capital carries the shift.
+        let expectedKeys = ["n", "N", "t", "o", nil, "s", "S", "", nil, "", "", nil, "", nil, "w", "W"]
         let keys = menu.items.map { $0.isSeparatorItem ? nil : $0.keyEquivalent }
         XCTAssertEqual(keys, expectedKeys, "the File menu's key equivalents")
     }

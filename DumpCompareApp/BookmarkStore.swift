@@ -46,6 +46,20 @@ final class BookmarkStore {
     /// The bookmarks, kept sorted by `row`.
     private(set) var bookmarks: [Bookmark] = []
 
+    /// Replaces the whole list at once, reporting nothing.
+    ///
+    /// Every other verb here is per row and fires `onChange(row)`, which fans
+    /// out to both panes and the controller so each repaints exactly the row
+    /// that moved (§19.9). Replaying a list through them would repaint a window
+    /// once per mark — and the only caller is a tab being built, whose marks are
+    /// copied from the tab it was torn off (`Design/TABS_PLAN.md`).
+    ///
+    /// That is the contract: seed a store nothing is drawing yet. Seeding a live
+    /// one would leave every consumer showing the marks it had before.
+    func seed(_ marks: [Bookmark]) {
+        bookmarks = marks.sorted { $0.row < $1.row }
+    }
+
     /// Fired after any change with the affected row's start offset, so the
     /// consumers — the panes' affected rows, the minimap's margin, an open
     /// form's table — can repaint exactly what moved. The row, not a bare

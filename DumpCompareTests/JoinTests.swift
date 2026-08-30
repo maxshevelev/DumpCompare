@@ -431,4 +431,63 @@ final class JoinTests: XCTestCase {
         XCTAssertFalse(pane.status.isDirty, "a refused join makes nothing dirty")
         _ = window
     }
+
+    // MARK: - Joining a file to itself
+
+    /// A file dropped on a pane that already holds it doubles the content, which
+    /// on a bench is a slip far more often than an intention. It asks, and doing
+    /// nothing is the default answer.
+    func testJoiningAFileToItselfAsksFirst() throws {
+        let controller = MainViewController()
+        let url = try tempFile([UInt8](repeating: 0xA5, count: 32))
+        controller.openFiles([url])
+        let pane = controller.windowModel.pane1
+        var asked: NSAlert?
+        MainViewController.modalResponder = { alert in
+            asked = alert
+            return .alertSecondButtonReturn  // Cancel
+        }
+        addTeardownBlock { MainViewController.modalResponder = nil }
+
+        controller.handleSingleFileDrop(target: .appendAtEnd, urls: [url])
+
+        let alert = try XCTUnwrap(asked, "joining a file to itself must ask")
+        XCTAssertTrue(alert.messageText.contains(url.lastPathComponent))
+        XCTAssertTrue(alert.messageText.contains("to itself"))
+        XCTAssertEqual(pane.fileSize, 32, "cancelled: nothing was joined")
+    }
+
+    /// It asks rather than refusing: a join copies bytes, so the doubled dump is
+    /// a real document and someone may mean it.
+    func testJoiningAFileToItselfIsAllowedWhenConfirmed() throws {
+        let controller = MainViewController()
+        let url = try tempFile([UInt8](repeating: 0xA5, count: 32))
+        controller.openFiles([url])
+        MainViewController.modalResponder = { _ in .alertFirstButtonReturn }
+        addTeardownBlock { MainViewController.modalResponder = nil }
+
+        controller.handleSingleFileDrop(target: .appendAtEnd, urls: [url])
+
+        XCTAssertEqual(controller.windowModel.pane1.fileSize, 64, "the dump, twice")
+    }
+
+    /// A different file is joined without the question — it is only the same
+    /// file that is worth asking about.
+    func testJoiningADifferentFileDoesNotAsk() throws {
+        let controller = MainViewController()
+        let mine = try tempFile([UInt8](repeating: 0xA5, count: 32))
+        let other = try tempFile([UInt8](repeating: 0x5A, count: 16))
+        controller.openFiles([mine])
+        var asked = 0
+        MainViewController.modalResponder = { _ in
+            asked += 1
+            return .alertFirstButtonReturn
+        }
+        addTeardownBlock { MainViewController.modalResponder = nil }
+
+        controller.handleSingleFileDrop(target: .appendAtEnd, urls: [other])
+
+        XCTAssertEqual(asked, 0, "a clean pane joining another file asks nothing")
+        XCTAssertEqual(controller.windowModel.pane1.fileSize, 48)
+    }
 }
