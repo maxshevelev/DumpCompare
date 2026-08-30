@@ -115,7 +115,7 @@ final class DuplicateNameTests: XCTestCase {
 
         // The second window duplicates the same source; the first copy's name is
         // already on screen.
-        XCTAssertNotEqual(second.duplicateName(for: first.windowModel.pane1), firstCopyName)
+        XCTAssertNotEqual(second.unsavedName(for: first.windowModel.pane1), firstCopyName)
     }
 
     /// A copy of something that has no name of its own stays untitled — there is
@@ -124,7 +124,7 @@ final class DuplicateNameTests: XCTestCase {
         let controller = MainViewController()
         controller.newDocument()
 
-        XCTAssertNil(controller.duplicateName(for: controller.windowModel.pane1))
+        XCTAssertNil(controller.unsavedName(for: controller.windowModel.pane1))
     }
 
     /// A copy is untitled the moment it is made, and copying it again continues
@@ -138,7 +138,7 @@ final class DuplicateNameTests: XCTestCase {
 
         let copy = controller.windowModel.pane2
         XCTAssertTrue(copy.isUntitled, "the copy is not on disk")
-        XCTAssertEqual(controller.duplicateName(for: copy),
+        XCTAssertEqual(controller.unsavedName(for: copy),
                        DuplicateName.next(after: copy.status.fileName,
                                           taken: [copy.status.fileName]))
     }

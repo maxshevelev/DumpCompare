@@ -9,6 +9,10 @@ import Foundation
 /// disk; this is a name for the header to show and for the save panel to
 /// pre-fill, and the file appears only when the user actually saves.
 ///
+/// A joined image takes a name the same way (§22.2), and for the same reason: it
+/// is that dump with something added, and the header, the save panel and Save
+/// All as Separate Files all need something to call it.
+///
 /// Pure, like `OpenPlacement` and `DropBandLayout`: naming is a rule, and a rule
 /// is worth checking without a document, a window or a filesystem.
 enum DuplicateName {

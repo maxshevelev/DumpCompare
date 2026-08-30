@@ -1314,10 +1314,12 @@ final class PaneViewModel: HexViewDataSource {
     /// (§22.1). The file is opened as the chunked reader and streamed in, so it
     /// is never loaded whole into RAM. The joined piece is named for the file it
     /// came from (§22.3).
-    func join(contentsOf url: URL, at position: JoinPosition) throws {
+    func join(contentsOf url: URL, at position: JoinPosition,
+              becoming joinedName: String? = nil) throws {
         try join(contentsOf: FileBackedStorage(url: url),
                  named: url.lastPathComponent,
-                 at: position)
+                 at: position,
+                 becoming: joinedName)
     }
 
     /// The chunked join, given an already-open source and the name to give the
@@ -1329,8 +1331,13 @@ final class PaneViewModel: HexViewDataSource {
     /// warns. The seam is a cut (§22.3): the content the pane already held keeps
     /// the name of the file it was opened from, and the joined bytes take
     /// `sourceName`.
+    /// `joinedName` is the name the detached image takes — the pane's own name
+    /// with a series suffix (§22.2). The caller derives it, because the series
+    /// has to step over the names in use across the whole app and a pane can see
+    /// only its own window. Nil leaves the image unnamed, which is what a pane
+    /// that had already detached wants: it keeps what it is wearing.
     func join(contentsOf source: any ByteStorage, named sourceName: String,
-              at position: JoinPosition) throws {
+              at position: JoinPosition, becoming joinedName: String? = nil) throws {
         guard let doc = document else { return }
         breakTypingSeries()
         let sizeBefore = doc.size
@@ -1386,8 +1393,21 @@ final class PaneViewModel: HexViewDataSource {
         // returns the pre-join caret). No caret work left for the pane.
         // The document detached: it is untitled now, with no on-disk reference
         // (the placeholder URL has no file behind it) and no watcher.
+        //
+        // It is not the file it came from, but it is that file with something
+        // added, so it wears that file's name with a series suffix — `bios.bin`
+        // becomes `bios-2.bin` (§22.2), the same shape a copy takes (§23), and
+        // for the same reason: the header has to say which dump is on screen,
+        // and Save All as Separate Files has to have a base name to build the
+        // pieces from (§21.5).
+        //
+        // Only the first join names it. A pane that had already detached keeps
+        // the name it is wearing: joining a second donor into an image does not
+        // make a different image, and a name that stepped on every join would
+        // count joins instead of naming what is on screen.
+        let wasAttached = !isUntitled
         isUntitled = true
-        untitledName = nil
+        if wasAttached { untitledName = joinedName }
         refreshSavedStorage()
         changeWatcher?.stop()
         changeWatcher = nil

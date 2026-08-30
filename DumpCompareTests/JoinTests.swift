@@ -103,6 +103,82 @@ final class JoinTests: XCTestCase {
         return nil
     }
 
+    // MARK: - What the joined image is called (§22.2)
+
+    /// The image is not the file it came from, but it is that file plus
+    /// something — so it wears that file's name with a series suffix, the shape
+    /// a copy takes (§23). Nothing is written: it is still an unsaved document.
+    func testTheJoinedImageIsNamedAfterTheFileItCameFrom() throws {
+        let (controller, _, url) = try makeController([UInt8](0..<16))
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+        let capture = JoinCapture()
+        wire(controller, capture, sources: [try makeSourceFile([0xA0, 0xA1])],
+             confirmResponse: .alertFirstButtonReturn)
+
+        controller.appendFile()
+
+        XCTAssertTrue(pane.isUntitled, "still a document with no file")
+        XCTAssertEqual(pane.status.fileName,
+                       DuplicateName.next(after: url.lastPathComponent,
+                                          taken: [url.lastPathComponent]))
+    }
+
+    /// Only the first join names it. Joining a second donor into the image does
+    /// not make a different image, and a name that stepped on every join would
+    /// count joins rather than say what is on screen.
+    func testASecondJoinLeavesTheNameAlone() throws {
+        let (controller, _, url) = try makeController([UInt8](0..<16))
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+        let capture = JoinCapture()
+        wire(controller, capture,
+             sources: [try makeSourceFile([0xA0]), try makeSourceFile([0xB0])],
+             confirmResponse: .alertFirstButtonReturn)
+
+        controller.appendFile()
+        let afterFirst = pane.status.fileName
+        controller.appendFile()
+
+        XCTAssertEqual(pane.fileSize, 18, "both joins landed")
+        XCTAssertEqual(pane.status.fileName, afterFirst)
+    }
+
+    /// A document with no name of its own has nothing to be named after, so the
+    /// join leaves it Untitled — the same answer a copy of it gets (§23).
+    func testJoiningIntoAnUntitledDocumentLeavesItUntitled() throws {
+        let (controller, _) = try makeUntitledController([UInt8](0..<8))
+        let pane = controller.windowModel.pane1
+        let capture = JoinCapture()
+        wire(controller, capture, sources: [try makeSourceFile([0xA0])],
+             confirmResponse: .alertFirstButtonReturn)
+
+        controller.appendFile()
+
+        XCTAssertEqual(pane.fileSize, 9, "the join landed")
+        XCTAssertEqual(pane.status.fileName, "Untitled")
+    }
+
+    /// Undo re-attaches the pane, so the file's own name comes back; redo
+    /// detaches it again, and the joined name with it (§22.2).
+    func testUndoAndRedoCarryTheNameWithTheAttachment() throws {
+        let (controller, _, url) = try makeController([UInt8](0..<16))
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+        let capture = JoinCapture()
+        wire(controller, capture, sources: [try makeSourceFile([0xA0, 0xA1])],
+             confirmResponse: .alertFirstButtonReturn)
+        controller.appendFile()
+        let joinedName = pane.status.fileName
+
+        XCTAssertTrue(try pane.undo())
+        XCTAssertEqual(pane.status.fileName, url.lastPathComponent,
+                       "the pane is its file's again")
+
+        XCTAssertTrue(try pane.redo())
+        XCTAssertEqual(pane.status.fileName, joinedName)
+    }
+
     // MARK: - The bytes after a join
 
     /// Append File… joins the chosen file's bytes after the pane's content. The

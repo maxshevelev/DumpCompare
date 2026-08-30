@@ -2446,7 +2446,8 @@ and every operation that writes is explicit about it.
   chosen with an open panel in directory mode — a save panel grants access to
   one file and this writes N, so the sandbox would refuse the rest. Each piece
   becomes `<name>_S<i>.bin`, named for the document (`bios_S0.bin`,
-  `bios_S1.bin`, …). Before anything is written, one confirmation previews
+  `bios_S1.bin`, …) — the name the header shows, which for a document with no
+  file behind it is the label it wears (§22.2, §23). Before anything is written, one confirmation previews
   every piece — `S0 → bios_S0.bin (4 MB)` — and names the files that would be
   replaced; a cancel writes nothing.
 - **Save Segment…** writes one piece to one file — the ordinary save panel,
@@ -2547,20 +2548,32 @@ feature's Save All as Separate Files (§21.5).
     while the file keeps its own, and offers Cancel.
   - An **untitled** dirty pane gets no alert: there is no saved state to diverge
     from, and its content is carried like any other.
-- **Naming: the joined document is Untitled, and that is the honest answer.**
-  There is nothing to derive a name from: a dump off a programmer is
-  `W25Q128FV_20260821_1a2b3c4d.bin` — chip model, date, checksum — and neither
-  half's name says anything about the pair. Deriving a joined name would be a
-  long name that is now also wrong. So the joined document is Untitled, like any
-  document the app made rather than opened, and the user names it when they save
-  it — which in this workflow happens immediately. No name is derived from the
-  sources, in any case.
-- **Where "what am I looking at" actually lives.** An Untitled header says
-  nothing about the two dumps behind it. Two places carry it instead: the seam's
-  pieces are named for their sources (below) — the durable record of which half
-  came from which chip — and a transient status-bar line right after the join
-  names both sources and the total size, the way the app already reports "No
-  match found." and then yields the stats back (§14).
+- **Naming: the joined image wears the pane's own name with a series suffix.**
+  A join into `bios.bin` leaves `bios-2.bin` — the shape a copy takes (§23), and
+  unsaved in exactly the same way: nothing is written for it, and the name is
+  what the header shows, what the save panel opens pre-filled with, and the base
+  Save All as Separate Files builds every piece's file name from (§21.5). The
+  suffix steps over names already on screen anywhere in the app.
+  - **Only the first join names it.** Joining a second donor into an image does
+    not make a different image, so the name stands. A suffix that stepped on
+    every join would count joins rather than say what is on screen.
+  - **A document with no name of its own stays Untitled** — File ▸ New File, or
+    an image that was already unnamed. There is nothing to derive from, and
+    Untitled is the honest answer.
+  - **Nothing is derived from the donor.** A dump off a programmer is
+    `W25Q128FV_20260821_1a2b3c4d.bin` — chip model, date, checksum — and a name
+    carrying both halves would be long, and wrong again after the next join. The
+    pane's own name is the one thing that stays true: this is that dump, with
+    something added to it.
+  - **Undo carries the name with the attachment.** Undoing the join re-attaches
+    the pane to its file, so the file's own name is back; redo detaches it again
+    and the joined name returns with it.
+- **Where "what am I looking at" actually lives.** The header names the dump the
+  image grew from and nothing else — not which donor went into it. Two places
+  carry that: the seam's pieces are named for their sources (below) — the
+  durable record of which half came from which chip — and a transient status-bar
+  line right after the join names both sources and the total size, the way the
+  app already reports "No match found." and then yields the stats back (§14).
 
 22.3 The seam is a cut
 
@@ -2663,10 +2676,10 @@ holding.
 
 23.2 The copy is a new unsaved document
 
-- **The copy is Untitled and never-saved**, exactly like the result of a join
-  (§22.2) or of File ▸ New File: placeholder URL, no watcher, ⌘S opens a save
-  panel rather than writing anywhere. The header shows "Untitled" with the
-  new-file badge.
+- **The copy is never-saved**, exactly like the result of a join (§22.2) or of
+  File ▸ New File: placeholder URL, no watcher, ⌘S opens a save panel rather
+  than writing anywhere. The header carries the new-file badge, over a name of
+  the copy's own (below).
 - **The copy is dirty.** Its bytes have never been written anywhere, so closing
   the pane or the window warns about it (Save / Don't Save / Cancel, §3.6).
 - **The copy cannot be undone into existence backwards.** Its undo history is
@@ -2678,11 +2691,44 @@ holding.
   disk. A dump opened, patched and not yet saved duplicates with the patch in it.
   This needs no warning, unlike a join (§22.2): the source keeps its file and its
   unsaved edits, so nothing is at risk of being lost.
-- **Naming.** No name is derived from the source, for the reason a join derives
-  none (§22.2): `W25Q128FV_20260821_1a2b3c4d.bin (copy)` is a long name that says
-  nothing true. The copy is Untitled, and a transient status-bar line right after
-  the duplicate names the source and the size — the way the app reports a search
-  result and then yields the stats back (§14).
+- **Naming: the copy is called after what it was copied from.** `bios.bin`
+  copies to `bios-2.bin`, and a copy of that continues the series — `bios-3.bin`,
+  not `bios-2-2.bin`: the suffix is a position in a series, so a run of copies
+  reads as one. Untitled would be true and useless the moment there are two of
+  them: two panes under one name say nothing about which dump each came from.
+  Nothing is written to disk — the name is the header's label and the save
+  panel's pre-fill, and the file appears when the user saves.
+  - Not `(copy)`, and nothing built out of the donor's name: on this bench a
+    dump is `W25Q128FV_20260821_1a2b3c4d.bin` already, and a longer name that
+    has to be re-read to be told from its neighbour is worse than a suffix.
+  - **Digits at the end are not a series unless a dash puts them there.**
+    `W25Q128.bin` copies to `W25Q128-2.bin`, not `W25Q129.bin`: there the digits
+    are the chip's name.
+  - **Names in use are avoided across the whole app**, not one window. Two tabs
+    each showing a `bios-2.bin` is exactly the confusion this naming removes,
+    only harder to notice.
+  - **A source with no name of its own gives an Untitled copy** — there is
+    nothing to name it after.
+  - A transient status-bar line right after the duplicate names both ends and
+    the size — the way the app reports a search result and then yields the stats
+    back (§14).
+- **An unsaved document's name can be changed by hand.** Right-click the pane
+  header and *Rename*: the title becomes a field in the same place, carrying the
+  name it was showing, all of it selected. Enter writes it, Escape leaves it,
+  and clicking away writes it — losing what was typed to a stray click is the
+  worse surprise. In place rather than in a sheet: the name is one short string,
+  and the header is where it is read.
+  - **Only a document with no file behind it** — a New File, a copy, a joined
+    image (§22.2). A saved document's name is its file's, and moving a file is
+    Save As's business, not a field in a header; the item is disabled there.
+  - The name is trimmed at both ends, and the path separators (`/`, `:`) and the
+    null are dropped rather than the name refused — the result is in the header
+    the moment the field closes, so what was taken is visible. A name that
+    survives as nothing leaves the old one standing.
+  - **This is what Save All as Separate Files needs** (§21.5): that command asks
+    for a folder and nothing else, so without a name of its own every unsaved
+    document's pieces arrive as `Untitled_S0.bin`, and a second document's
+    overwrite the first's.
 - **The partition comes across** (§21): the copy is the same bytes, so it is the
   same pieces, with the same cuts and the same names. The names are the record of
   which chip each region came from, and dropping them would lose it.

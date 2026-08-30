@@ -167,7 +167,7 @@ final class MainViewController: NSViewController {
         guard source.isOpen, source.fileSize > 0, let tab = makeSiblingTab?() else { return }
         do {
             try tab.windowModel.pane1.openDuplicate(of: source,
-                                                    named: duplicateName(for: source))
+                                                    named: unsavedName(for: source))
         } catch {
             presentFileError("Could not duplicate the pane.", error, url: nil)
             return
@@ -183,7 +183,7 @@ final class MainViewController: NSViewController {
         let target = index == 0 ? windowModel.pane1 : windowModel.pane2
         guard confirmReplaceDirtyPane(target) else { return }
         do {
-            try target.openDuplicate(of: source, named: duplicateName(for: source))
+            try target.openDuplicate(of: source, named: unsavedName(for: source))
         } catch {
             presentFileError("Could not duplicate the pane.", error, url: nil)
             return
@@ -325,7 +325,10 @@ final class MainViewController: NSViewController {
         return paneIndex(withDragID: dragID).map { (self, $0) }
     }
 
-    /// The name a copy of `source` should wear until it is saved (§23).
+    /// The name an unsaved image made from `source` should wear (§23): a copy of
+    /// it (§23), or `source` itself once a join has detached it (§22.2). Both
+    /// are the pane's content plus or minus something, and both take the pane's
+    /// name with the next free series suffix.
     ///
     /// Every name on screen anywhere in the app is off limits, not just this
     /// window's: two tabs each showing a `bios-2.bin` would be the confusion
@@ -337,7 +340,7 @@ final class MainViewController: NSViewController {
     /// neither is on disk yet. Only a document with no name of its own — `File ▸
     /// New File`, or a join — has nothing to be named after, and its copy stays
     /// untitled.
-    func duplicateName(for source: PaneViewModel) -> String? {
+    func unsavedName(for source: PaneViewModel) -> String? {
         guard !source.isUntitled || source.untitledName != nil else { return nil }
         let controllers = openDocuments?.controllers ?? [self]
         let taken = Set(controllers.flatMap { controller in
@@ -2972,9 +2975,13 @@ final class MainViewController: NSViewController {
         // The name the pane's content carries now, remembered before the join
         // detaches the document — the status line names both sources (§22.2).
         let originalName = pane.status.fileName
+        // What the detached image will be called (§22.2). Derived here, where
+        // the names in use across the app can be seen, and only for a pane that
+        // still has a file: one that is already untitled keeps its name.
+        let joinedName = pane.isUntitled ? nil : unsavedName(for: pane)
 
         do {
-            try pane.join(contentsOf: url, at: position)
+            try pane.join(contentsOf: url, at: position, becoming: joinedName)
         } catch let error as JoinError {
             switch error {
             case .emptySource:
@@ -3036,8 +3043,11 @@ final class MainViewController: NSViewController {
 
         let originalName = pane.status.fileName
         let sourceName = source.status.fileName
+        // The detached image's name, for the reason the file join gives.
+        let joinedName = pane.isUntitled ? nil : unsavedName(for: pane)
         do {
-            try pane.join(contentsOf: sourceStorage, named: sourceName, at: position)
+            try pane.join(contentsOf: sourceStorage, named: sourceName,
+                          at: position, becoming: joinedName)
         } catch let error as JoinError {
             switch error {
             case .emptySource:
@@ -3104,7 +3114,7 @@ final class MainViewController: NSViewController {
         let sourceName = source.status.fileName
 
         do {
-            try target.openDuplicate(of: source, named: duplicateName(for: source))
+            try target.openDuplicate(of: source, named: unsavedName(for: source))
         } catch {
             presentFileError("Could not duplicate the file.", error, url: nil)
             return
