@@ -4,6 +4,9 @@ Reasoning, not a plan. Nothing here proposes a change to this codebase; the
 codebase appears only as evidence, because it is a real AppKit app of a real size
 and it is what the argument can be tested against.
 
+The mechanics — ownership, protocol shapes, assembly, lifecycle, teardown — are
+the other half, in `VIEW_INTERACTOR_PROPOSAL.md`.
+
 The scheme under discussion, brought from iOS work where it has earned its keep:
 
 - **View / view controller** — UI only: composing components, layout, colours,

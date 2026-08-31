@@ -287,8 +287,12 @@ is decided about the rest.
 
 ### View, interactor, coordinator — reasoning, not an entry
 
-**Not a task, and deliberately in Someday rather than Next.**
-`Design/VIEW_INTERACTOR_IDEA.md` weighs a division of roles — view / interactor /
+**Not a task, and deliberately in Someday rather than Next.** Two documents:
+`Design/VIEW_INTERACTOR_PROPOSAL.md` is the technical design — ownership (the view
+owns the interactor, which holds the view weakly), the `Actions` / `DisplayOutput`
+protocol pair, a `buildController` assembly helper, lifecycle and teardown, with
+the ownership alternatives weighed. `Design/VIEW_INTERACTOR_IDEA.md` weighs the
+division of roles — view / interactor /
 coordinator, the interactor pure logic with no AppKit — for applicability to an
 AppKit app, with this one as the evidence. It reaches verdicts per role (view and
 interactor fit, and fit better on macOS than on iOS; coordinator barely applies,
