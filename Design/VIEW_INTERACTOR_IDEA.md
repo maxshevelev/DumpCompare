@@ -15,11 +15,16 @@ The scheme under discussion, brought from iOS work where it has earned its keep:
 - **Coordinator** — navigation and presentation: transitions, navigation chrome,
   presenting child views.
 
-Held together by three rules: the view forwards every action and decides nothing;
-the interactor decides about presentation while the coordinator performs it; and
-the interactor never holds a view nor imports AppKit — where an action is tied to
-a component, an opaque **context object** rides along, meaningful only to the
-layer that presents.
+The pairing is the unit: **one view, one interactor, one user-facing surface**,
+inseparable — and knowing nothing of each other's implementation, talking through
+protocols in both directions, so either side can be replaced by a mock.
+
+Held together by four rules: the view forwards every action and decides nothing;
+the interactor fills the view with data, reacts to actions, talks to the models,
+and asks the coordinator for navigation; the interactor decides about presentation
+while the coordinator performs it; and the interactor never holds a view nor
+imports AppKit — where an action is tied to a component, an opaque **context
+object** rides along, meaningful only to the layer that presents.
 
 Models are outside the scheme. It exists to untangle views with several jobs
 mixed into them; models go on as they were, and the interactor is what talks to
@@ -39,6 +44,10 @@ The three roles do not fare equally on this platform.
   navigation to coordinate. The role survives if it is renamed to what it
   actually does here — present anchored and modal UI, and own windows and tabs —
   and if it is allowed to be two objects rather than one.
+- **One pair per surface is the right unit, and it prices the scheme.** Sixteen
+  pairs here, six of them settings panes with a `UserDefaults` key behind them.
+  It also forces shared logic *down* into models rather than sideways between
+  interactors, which is a demand on the model tier more than on the UI.
 - **The no-AppKit law is right, and needs admitted carve-outs.** Drag-and-drop,
   the pasteboard and modality are places where the domain genuinely is
   AppKit-shaped, and pretending otherwise buys a translation layer whose only job
@@ -215,13 +224,35 @@ worked because the rule is twenty lines. A richer drag interaction would grow a
 translation layer whose only job is restating framework vocabulary. That cost
 should be admitted in advance, not discovered.
 
-**5. Without "screens", an interactor's scope is undefined.** On iOS the screen
-bounds it. Here nothing does, and both errors are easy: per-surface interactors
-give roughly forty new types for an app whose entire UI layer is 25k lines, while
-one per window gives back the object the exercise was meant to break up. The only
-answer I can defend is grouping by feature — documents, editing, search,
-segments, bookmarks, minimap — which is six, and which is a judgement call the
-scheme does not make for you.
+**5. Scope: the 1:1 rule answers this, and the answer costs.** Left open, an
+interactor's scope is the scheme's worst ambiguity on macOS: on iOS the screen
+bounds it, and here nothing does. One interactor per pairing settles it — the unit
+is a surface, which exists whether or not anyone names it — and it settles it in a
+way I got wrong earlier in this document, where I proposed grouping by feature
+instead. That was a different scheme smuggled in: a feature cuts across surfaces,
+so grouping by feature breaks the pairing.
+
+Counted honestly against this app, one pair per surface gives roughly **sixteen**:
+thirteen view controllers exist already (the window's content, the results panel,
+the segments and bookmarks forms, the two popovers, six settings panes), and four
+surfaces are currently plain views that would become pairs — the file pane, the
+find bar, the minimap panel, the empty state. Not the forty a per-component
+reading would give, and not the six a per-feature one would.
+
+The cost lands in two places. **Six of the sixteen are settings panes** whose
+interactor would read and write one `UserDefaults` key: a protocol, a mock and a
+test file each, for a checkbox. And the pairing is *inseparable*, so a surface
+cannot opt out — the ceremony is uniform by construction, which is the rule's
+strength for consistency and its weakness for cost.
+
+The more interesting consequence is where cross-surface work goes. Save All
+Segments starts in the segments form, writes bytes owned by a pane, reports
+progress in that pane's status bar, and asks a question in an alert. Under 1:1 no
+interactor may reach into another, so the shared part has to go **down** into the
+models and services rather than sideways between peers. That is a better answer
+than the "one object for all the flows" I floated earlier, and it is a real
+demand on the design: the model tier grows to hold what today lives in one
+controller because it belonged to no single surface.
 
 **6. Validation is a query, and it runs in bursts.** `NSMenuItemValidation` and
 `NSToolbarItemValidation` are protocols on the *responder*, so the view
@@ -277,6 +308,13 @@ direction of causation is worth noticing: those twelve closures were not designe
 as a boundary — they were *discovered*, one at a time, by tests that needed a flow
 without a modal. A seam found by tests is a seam.
 
+Mocking cuts both ways in the scheme, but not equally here. A fake view lets an
+interactor be tested with no AppKit at all — that is where the 3.1 s column comes
+from. A fake *interactor* makes a view's test deterministic (no real data, no
+async settling), but it does not make it cheap: the view still needs a window, a
+layout pass and a runloop, because that is what an AppKit view is. So the win is
+asymmetric — most of it is on the interactor's side of the protocol.
+
 The honest counterweight: unit tests of an interactor also test less. A
 view-bound test that clicks Find All and reads the header count checks the wiring
 too — that the button is connected, that the panel is in the hierarchy, that the
@@ -316,7 +354,8 @@ longevity means an unhelpful abstraction also survives for years.
    stay readable end to end.
 3. Whether the coordinator is one object or two, and whether the app-level one is
    the same idea at all.
-4. What bounds an interactor when there are no screens.
+4. Whether the surfaces that are plain views today are worth promoting to pairs
+   one at a time, given the pairing cannot be partial within a surface.
 5. Which AppKit vocabularies get an admitted translation layer, and which stay in
    the view layer untranslated.
 
