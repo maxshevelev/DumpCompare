@@ -246,6 +246,32 @@ views, which has silently eaten a dropped file here once before.
 window); the strip for files, shippable alone; then the strip and other tabs for
 panes.
 
+### Take the flows out of the view controller
+
+**What.** `MainViewController` is 5484 lines and holds 61 stored properties. The
+view controller keeps building and shaping views; each feature's *flow* — the
+transaction behind a command, with its panels, confirmations and background work
+— moves to an object of its own, reached through one narrow UI protocol.
+
+**Why.** Every feature's change starts by opening the same file, and the file's
+state says why: 17 of its 61 properties are the minimap's overview subsystem and
+11 more are one in-flight flow or another. Action handling is *not* the problem —
+63 actions, 516 lines, median 4 — so this is about the flows, not the plumbing.
+
+**How.** Taken apart in **`Design/VIEW_INTERACTOR_IDEA.md`** — not a plan. The
+short version: `ComparisonCoordinator` is already an interactor that was never
+called one, and the interactor's UI protocol has already been written one
+function at a time by the tests, as the twelve injected panel/confirm/present
+closures. Minimap first (it is a subsystem with a bad address, not a flow), then
+one flow as a fair test — writing pieces out, §21.5 — and only then the decision
+whether the rest follow separately or as one `DocumentFlows`. Menu validation
+stays whole in the controller, deliberately. The measure is stored properties,
+not lines: eleven files reaching into each other is worse than one big one.
+
+**Cost.** The minimap move is the bulk and is counted under the entry below.
+The pilot flow is 4–6 hours including its tests; the decision after it is the
+point of stopping there.
+
 ### Split the minimap into layers
 
 **What.** `MinimapView.swift` is ~2500 lines and grows with every feature that
