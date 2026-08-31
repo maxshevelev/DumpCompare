@@ -10,35 +10,60 @@ argument can be tested against.
 
 Brought from iOS work, where it has earned its keep:
 
-- **View / view controller** — UI only: composing components, layout, colours,
-  fonts, gestures, drawing, lifecycle, and receiving actions. No handling of user
-  actions beyond a complex view's own internals, and no presenting of other
-  views.
+- **View** — UI only: composing components, layout, colours, fonts, gestures,
+  drawing, lifecycle, and receiving actions. No handling of user actions beyond a
+  complex view's own internals, and no presenting of other views.
 - **Interactor** — the logic behind the UI: filling the view's elements with data,
   answering user actions, talking to the data models, asking the coordinator to
-  navigate. Knows nothing about how the view is built.
-- **Coordinator** — navigation and presentation: transitions, navigation chrome,
-  presenting child views.
+  build and place things.
+- **Coordinator** — lifetime and composition: it creates and destroys views,
+  decides how long they live, installs them into the hierarchy, and wires
+  surfaces to each other.
+
+**"View" here means the layer, not the class.** A surface's UI half may be an
+`NSView` or an `NSViewController` — that is an implementation choice made per
+surface, and this document says "the view" for the UI part of a surface either
+way. Where the distinction actually matters (presentation contracts are written in
+terms of `NSViewController`; the responder chain includes both) it is called out
+explicitly.
 
 The pairing is the unit: **one view, one interactor, one user-facing surface**,
 inseparable — and knowing nothing of each other's implementation, talking through
 protocols in both directions, so either side can be replaced by a mock.
 
-Four rules hold it together:
+Five rules hold it together:
 
 1. The view forwards every action and decides nothing.
 2. The interactor fills the view with data, answers actions, talks to the models,
-   and asks the coordinator for navigation.
-3. **The interactor decides about presentation; the coordinator performs it.** The
+   and asks the coordinator to build, place or dismiss things.
+3. **The data flow is one cycle.** View → UI events → interactor → data updates →
+   view, and nothing else: no delegates back, no closures back, and no asking the
+   view about its own state.
+4. **The interactor decides about presentation; the coordinator performs it.** The
    rule most often lost — a coordinator that decides *when* to present is a second
    interactor with windows in it.
-4. **The interactor never holds a view and never imports AppKit.** It is pure
+5. **The interactor never holds a view and never imports AppKit.** It is pure
    logic. Where an action is tied to a component, an opaque **context object**
    rides along: meaningful to the layer that presents, passed through the
    interactor as a black box it never looks inside.
 
 Models are outside the scheme. It exists to untangle views with several jobs mixed
 into them; models go on as they were, and the interactor is what talks to them.
+
+## What the scheme is for
+
+Before the platform: the reason to want any of this. **5484 lines in one class is
+an architectural failure, not a size.** Everything is interleaved — a feature's
+state, its flow, its layout and its menu validation sit hundreds of lines apart —
+so orienting in it is expensive for a person, and expensive for a large-context
+model too: the whole file has to be carried to change one corner of it, and
+nothing in it announces where a concern begins or ends.
+
+What is wanted is a concept that *bounds* the complexity of any one piece and
+organises the code as self-contained, semantically complete elements of a
+hierarchy, each with a stated role and stated interfaces to the others. The rest
+of this document is an argument about whether these three roles are that concept
+on this platform, and what they cost.
 
 ## The verdict, up front
 
@@ -50,10 +75,13 @@ The three roles do not fare equally on this platform.
   yes. Preparing data for display: mostly already solved, by AppKit-free models
   that hand out domain snapshots and views that format them. So an interactor in
   an app shaped like this one is a *flow* object, not a presenter.
-- **Coordinator is the weak fit**, because on macOS there is barely any
-  navigation to coordinate. The role survives if it is renamed to what it actually
-  does here — present anchored and modal UI, and own windows and tabs — and if it
-  is allowed to be two objects rather than one.
+- **Coordinator is not the weak fit — it is the role with the most work here.**
+  Defined as *navigation*, it looked nearly empty on macOS, which is where I had
+  it wrong. Defined as *lifetime and composition* — who builds a surface, how long
+  it lives, where it is installed, what it is wired to — it is the role this app
+  is missing most, and a large share of the 5484 lines is that role's work with
+  nowhere to live. Whether it is one object or several is a technical question on
+  this platform; the role itself is unambiguous.
 - **One pair per surface is the right unit, and it prices the scheme.** Sixteen
   pairs here, six of them settings panes with a `UserDefaults` key behind them. It
   also forces shared logic *down* into models and services rather than sideways
@@ -97,12 +125,12 @@ what one might expect:
   and the core package and contains one `NS` symbol in 1877 lines (an observer
   token); so do `WindowViewModel`, `SegmentStore`, `BookmarkStore`,
   `ComparisonCoordinator`, `BackgroundOperation`. All of the AppKit is in the view
-  controller. So rule 4 is affordable — the ground an interactor would stand on is
+  controller. So rule 5 is affordable — the ground an interactor would stand on is
   clean already.
 
 ## Role by role
 
-### View controller: fits, with one caveat
+### View: fits, with one caveat
 
 "UI only" is a clean rule here, and the view controller keeps a job the iOS
 version of this scheme does not name: it is the **responder-chain adapter**. On
@@ -163,30 +191,55 @@ callbacks, owns a lifecycle and a generation counter, is `@MainActor`, imports n
 AppKit, and its tests construct it rather than a window. It is an interactor that
 nobody called one, and it is the least troublesome object in the window layer.
 
-### Coordinator: the weak fit
+### Coordinator: the role this app is missing
 
-Three quarters of what this role does on iOS does not exist here.
+The view/interactor pair contains nothing that **creates** a view, **destroys** it,
+decides **how long** it lives, **installs** it into a hierarchy of subviews and
+controllers, or **wires** one surface to another. That work exists in every app;
+the coordinator is where it goes.
 
-There is no navigation stack and no current screen. What *looks* like navigation on
-macOS mostly belongs to the system: one line,
-`NSWindow.allowsAutomaticWindowTabbing = true`, is what gives ⌘T, ⌃Tab, ⌘1…⌘9,
-dragging a tab out into its own window, dragging one back in, and the Window
-menu's Show Tab Bar / Move Tab to New Window / Merge All Windows. A coordinator
-cannot own any of that; it can only answer it.
+Stated that way the role is unambiguous, and my earlier reading of it — navigation
+— was too narrow, which made it look almost empty on a platform with no navigation
+stack. What is actually true is the opposite. Look at what is coordinator work in
+this app today, all of it inside `MainViewController`:
 
-What remains is real but small: sheets, popovers, the settings window, new windows
-and tabs, and "which window already has this file open". And it divides along a
-seam the scheme does not anticipate:
+- `paneView(for:)` builds a pane's view and caches it per model; two call sites
+  drop it again — creation and destruction.
+- `apply(mode:)` and `wireComparison()` / `unwireComparison()` install panes into
+  the empty, single-file or comparison arrangement and connect them to each other
+  and to the minimap — composition and wiring, ~500 lines.
+- `releasePane(at:)` / `adoptPane(_:bookmarks:)` move a pane between windows on a
+  tear-off — lifetime across two coordinators' territory.
+- `makeSiblingTab`, `openFilesInNewTab`, `movePaneToNewTab` — new surfaces.
+- `addChild` for the results panel; the four `…Presenter` closures for popovers,
+  forms and sheets.
+- `OpenDocumentRegistry` — which window holds which file, the one question no
+  single window can answer.
 
-- **window-level** — sheets, popovers, forms, alerts. Needs the window, and must
-  behave when there is none (a controller under test).
-- **app-level** — windows, tabs, and which window holds what. A genuinely
-  different scope: in this app it is `OpenDocumentRegistry`, which answers a
-  question no window can — a file is open exactly once in the app.
+None of that is navigation, and all of it is lifetime and composition. It is also
+the part of the file with no name for what it does, which is why it accreted there.
 
-One protocol over both is forcing it. And a role with little to do is a role that
-drifts: the failure mode is a coordinator that starts deciding *whether* to present
-rather than *how*, which is rule 3 broken.
+The platform does constrain *how* it is built, not *whether*:
+
+- **Some of it is the system's.** `NSWindow.allowsAutomaticWindowTabbing = true`
+  gives ⌘T, ⌃Tab, ⌘1…⌘9, dragging a tab out into its own window and back, and the
+  Window menu's Show Tab Bar / Move Tab to New Window / Merge All Windows. The
+  coordinator does not own those gestures; it answers them — a tab the system
+  created still needs its content built and wired by us.
+- **It splits by scope.** Window-level: sheets, popovers, forms, alerts, the
+  arrangement of panes inside one window. App-level: windows, tabs, and which
+  window holds what. These are different lifetimes with different owners, and one
+  protocol over both would be forcing it. That is a technical division of one
+  role, not two roles.
+- **Presentations are anchored.** A popover opens relative to a rect in a view; a
+  sheet belongs to a window. So the interactor emits a request value the
+  coordinator resolves — `BookmarkEditRequest` does exactly this today, carrying
+  what to edit and what to do about it, and deliberately not the anchor — and when
+  only the view knows where the thing is, an opaque context object rides from view
+  through interactor to coordinator. The interactor never learns what a row is.
+
+The failure mode to watch is still rule 4: a coordinator that decides *whether* to
+present rather than *how* is a second interactor with windows in it.
 
 ## Where the platform argues back
 
@@ -202,13 +255,13 @@ answer was given up.
 
 **2. Target/action, delegate and data source are the native idiom.** AppKit views
 expect to be driven that way, and a strict `Actions` boundary adds a hop to every
-callback: delegate method → Actions → interactor → protocol → view. For
-data-source-heavy UI the hop is per-row-ish. Which forces a carve-out: a
-virtualized view has to *pull*. `HexView` asks for the byte state of the rows it is
-about to draw; pushing a formatted row model per row would be a rewrite and a
-regression on a 16 MB dump. The boundary survives — the view holds no domain logic
-— but the direction inverts, and the scheme's wording ("the interactor prepares
-what the view shows") is the wrong way round for this case.
+callback: delegate method → Actions → interactor → update → view. For
+data-source-heavy UI that hop is per-row-ish, and the single-cycle rule has to
+answer for it: `NSTableView` and `HexView` *pull*. Either the visible range becomes
+an event and the interactor pushes rows for it, or a read-only data-source port is
+admitted as a documented exception — the two options are laid out under the
+mechanics. Neither is free, and on a 16 MB dump the difference is measurable rather
+than theoretical.
 
 **3. Modality is synchronous in the platform's grain.** `runModal` returns an
 answer inline, and flow code reads as straight-line prose because of it. A
@@ -329,7 +382,7 @@ var segmentOpenPanel:     ((NSOpenPanel) -> URL?)?
 var segmentWriteConfirm:  ((NSAlert) -> NSApplication.ModalResponse)?
 ```
 
-An interactor cannot hold any of these. Under rule 4 they would have to be
+An interactor cannot hold any of these. Under rule 5 they would have to be
 restated in the domain's own words —
 
 ```swift
@@ -361,7 +414,7 @@ an unhelpful abstraction also survives for years.
 
 ## The model layer, outside the scheme
 
-Measured, the tier is already what rule 4 needs: `Foundation` and the core package,
+Measured, the tier is already what rule 5 needs: `Foundation` and the core package,
 no AppKit. `PaneStatus` is the shape of what it hands out — domain facts, no
 formatting — so the display path for panes needs no interactor inserted into it:
 the model answers, the view formats.
@@ -377,6 +430,48 @@ file called `PaneViewModel`, inviting exactly the wrong guess about which holds 
 logic.
 
 ## Mechanics: how the pair would be built
+
+### One cycle, and what it forbids
+
+```
+    View ──── UI events ────▶ Interactor ──── data updates ────▶ View
+```
+
+Two channels, one direction each. The structure of the events and of the updates
+is the design work of a surface: it has to cover what the surface does, and it has
+to be shaped so the updates are cheap enough for the traffic they carry.
+
+What the rule forbids is everything that would make a second, informal path:
+delegates back from the interactor, closures handed across, and — the easy one to
+get wrong — **asking the view about its own state**. `DisplayOutput` has no
+getters. If the interactor needs to know whether a scan is running, it is the
+interactor's fact, not the view's; the view knows it only because it was told.
+
+Two consequences worth naming, because they cut against things written elsewhere
+in this document:
+
+**Validation from the last rendered state does not break the cycle.** The view
+keeps the `State` it was pushed and answers `validateMenuItem` from it locally.
+Nothing is pulled across the boundary — the state is already on the view's side,
+and enablement is a projection of it. That is what makes it the right answer
+rather than a convenient one.
+
+**Virtualized views are the real friction.** `NSTableView` asks for row N when row
+N draws; `HexView` asks for the byte state of the rows it is about to paint. Both
+are pulls by construction, and the honest options are:
+
+1. **Push the visible window.** The scroll becomes a UI event ("visible range
+   changed"), the interactor answers with the rows for that range, and the cycle is
+   intact. Costs a round trip per scroll and makes the interactor hold the visible
+   window — which it arguably should, since it is what decides what is worth
+   preparing.
+2. **Admit a read-only data-source port**, held by the view, that reads *model*
+   data — not view state, not a back-channel to the interactor. Cheaper and closer
+   to how AppKit wants to be driven, at the price of one documented exception to
+   the single cycle.
+
+This is the first thing to decide, because the whole shape of `DisplayOutput`
+follows from it, and because a 16 MB dump makes the wrong answer measurable.
 
 ### Ownership
 
@@ -553,6 +648,40 @@ them for work and render what comes back. `ComparisonCoordinator` is already
 exactly that shape. It also means the growth lands in the model tier, not in the
 UI layer.
 
+### A surface does not know how it is presented
+
+The find bar is at the top of the window because that is what was decided, not
+because it is part of the window's controller. As a piece of UI it is
+self-contained: a pattern field, an encoding choice, a case toggle, next/previous,
+Find All, a close button. It could be a strip at the top, a strip at the bottom, a
+sidebar, a popover, or a window of its own, and none of that is its business.
+
+Which is the practical test of the scheme on this platform: a surface knows its own
+protocols and nothing about its placement. The coordinator installs it — as a
+subview, as a child controller, as a popover's content — and the surface is
+unchanged by which. In this app that is nearly true of the find bar already and not
+at all true of its *effects*: the search runs on the window's controller, so the
+bar is wired to one arrangement by the code that answers it, not by the code that
+draws it.
+
+Which raises the question of who receives what a surface reports. A find bar acts
+on whichever pane is focused, so it cannot be wired to one collaborator forever.
+Two shapes:
+
+- **An abstract port the coordinator supplies** — `FindTarget`, re-pointed when
+  focus moves. The flow stays traceable: one named collaborator at a time, and the
+  coordinator is the only thing that knows which.
+- **Notifications the interested components subscribe to.** More decoupled, and it
+  scales to several receivers — but it is also the shape the single-cycle rule
+  distrusts, because "who reacted to this" stops being answerable by reading the
+  code.
+
+The first is more consistent with the rest of the scheme; the second is what
+"notify whoever is subscribed" asks for. Worth settling deliberately, because it
+decides how traceable the app's control flow is — and the answer may well differ
+between a surface with one natural receiver (a results panel and its pane) and one
+with many (a settings pane whose change touches every open window).
+
 ### Worked sketch: the results panel
 
 The surface closest to this today — already a view controller that owns its content
@@ -611,12 +740,14 @@ Two things this sketch makes visible that the prose did not:
 
 ## The questions that would decide it
 
-1. Synchronous ports or async ones, for modality — chosen once, for everything.
-2. Push versus pull in `DisplayOutput`, given streaming and virtualized rows: the
-   two problems the sketch ran into immediately.
-3. Whether `State` carries enablement, or validation gets its own channel.
-4. Whether the coordinator is one object or two, and whether the app-level one is
-   the same idea at all.
+1. **Push versus pull** for virtualized rows and streamed batches — the visible
+   range as an event, or an admitted read-only data-source port. Everything about
+   `DisplayOutput`'s shape follows from this one.
+2. Synchronous ports or async ones, for modality — chosen once, for everything.
+3. How a surface's reports reach their receivers: an abstract port the coordinator
+   re-points, or subscriptions.
+4. How the coordinator divides by scope — window-level and app-level are different
+   lifetimes; whether they share any protocol at all.
 5. Whether the surfaces that are plain views today are worth promoting to pairs one
    at a time, given the pairing cannot be partial within a surface.
 6. What the service tier looks like once long-running work moves out of surfaces:
@@ -627,7 +758,7 @@ Two things this sketch makes visible that the prose did not:
 ## What this document does not claim
 
 That any of this should be built. The measurements size the argument; they do not
-schedule it. In particular: the model tier being AppKit-free says rule 4 is
+schedule it. In particular: the model tier being AppKit-free says rule 5 is
 *affordable*, not that it is *warranted*; and the 5484 lines say the problem is
 real, not that this scheme is the only answer to it — the same lines would also
 yield to plain decomposition into extensions and one or two subsystem objects, with
