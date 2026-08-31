@@ -457,6 +457,21 @@ final class FilePaneView: NSView {
         addSubview(searchResultsSplit)
         addSubview(statusBar)
 
+        // The one link in the vertical chain that yields. The chrome above the
+        // dump is 76 points of required heights — header, column header, status
+        // bar — and a pane can be shorter than that: squeezed to nothing by the
+        // splitter (§3.3), or laid out before its window has a size. Nothing is
+        // legible at that height either way, so the chrome keeps its sizes and
+        // the bottom pin lets it overflow, instead of the solver breaking a
+        // constraint of its choosing and saying so on every layout pass.
+        //
+        // 999, not 750: it must still outrank the split view's content
+        // compression resistance at any real height, where the whole system is
+        // satisfiable and the status bar belongs on the bottom edge. Same
+        // reasoning as the header's breakable horizontal chain above.
+        let bottomPin = statusBar.bottomAnchor.constraint(equalTo: bottomAnchor)
+        bottomPin.priority = NSLayoutConstraint.Priority(999)
+
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: topAnchor),
             header.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -473,7 +488,7 @@ final class FilePaneView: NSView {
             statusBar.topAnchor.constraint(equalTo: searchResultsSplit.bottomAnchor),
             statusBar.leadingAnchor.constraint(equalTo: leadingAnchor),
             statusBar.trailingAnchor.constraint(equalTo: trailingAnchor),
-            statusBar.bottomAnchor.constraint(equalTo: bottomAnchor),
+            bottomPin,
         ])
     }
 

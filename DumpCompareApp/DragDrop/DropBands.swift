@@ -65,10 +65,6 @@ final class DropTargetView: NSView {
         NSLayoutConstraint.activate([
             plate.centerXAnchor.constraint(equalTo: centerXAnchor),
             plate.centerYAnchor.constraint(equalTo: centerYAnchor),
-            // Keep the plate inside the zone even if it gets narrow: the plate
-            // still hugs the caption, just clamped to the zone's edges.
-            plate.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 8),
-            plate.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -8),
 
             // The label may truncate (not pin the plate to its full width) so a
             // zero-width zone — a collapsed drop band — doesn't force a minimum
@@ -81,6 +77,19 @@ final class DropTargetView: NSView {
             refusalIcon.centerXAnchor.constraint(equalTo: plate.centerXAnchor),
             refusalIcon.centerYAnchor.constraint(equalTo: plate.centerYAnchor),
         ])
+
+        // Keep the plate inside the zone even when the zone gets narrow: it
+        // still hugs the caption, just clamped to the zone's edges. Breakable,
+        // because a band can be squeezed past narrow to *zero* — a pane dragged
+        // to nothing (§3.3), or the collapsed strip above — and 8 points of
+        // inset either side of nothing is not a width a solver can find.
+        for clamp in [plate.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor,
+                                                     constant: 8),
+                      plate.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor,
+                                                      constant: -8)] {
+            clamp.priority = .defaultHigh
+            clamp.isActive = true
+        }
 
         // A refusal is a symbol, not a sentence, so its plate is a square rather
         // than the lozenge a caption needs.
@@ -655,11 +664,19 @@ final class NewTabDropStrip: NSView {
         super.init(frame: .zero)
         target.translatesAutoresizingMaskIntoConstraints = false
         addSubview(target)
+        // The strip's height is 0 while no drag is in flight and animates to
+        // `height` when one starts, so the vertical inset cannot be required:
+        // 4 + a plate + 4 does not fit in nothing, and the solver said so on
+        // every launch. The bottom pin yields — which is the one AppKit was
+        // breaking anyway — and at any real height both hold exactly. Same
+        // shape as the pane header's breakable chain (§3.4), same reason.
+        let bottomInset = target.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4)
+        bottomInset.priority = .defaultHigh
         NSLayoutConstraint.activate([
             target.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             target.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             target.topAnchor.constraint(equalTo: topAnchor, constant: 4),
-            target.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
+            bottomInset,
         ])
         // Both payloads mean the same thing here — this goes into a tab of its
         // own — which is why one strip serves a file and a pane alike.
