@@ -1,180 +1,277 @@
-# View and interactor — an idea, thought through
+# View, interactor, coordinator — an idea, thought through
 
-Not a plan. `MainViewController.swift` is 5484 lines, and the proposal is to stop
-keeping logic and action handling in it: the view controller builds and shapes
-views, and an interactor per feature owns the flow behind each command. This
-document is what that idea looks like after taking it apart — what is actually in
-those lines, which part an interactor is the right answer for, where the
-abstraction leaks, and what the repo already does that this should look like.
+Not a plan. The proposal is a division of roles brought from iOS work, where it
+has earned its keep:
 
-The verdict up front: the idea is sound for one of the three things tangled in
-that file, and the target is **not** action handling. The actions are already
-thin — 63 of them, 516 lines all told, median 4 lines each. Nothing needs to be
-lifted out of them, because there is almost nothing in them. The mass is in the
-flows they call, in one whole subsystem that moved in and never left, and in view
-construction; and those three want three different exits.
+- **View / view controller** — UI only: composing components, layout, colours,
+  fonts, gestures, drawing. No handling of user actions beyond a complex view's
+  own internals, and no presenting of other views.
+- **Interactor** — the logic behind the UI: user actions, preparing what the view
+  shows, deciding what happens next. Knows nothing about how the view is built;
+  reaches it through a protocol.
+- **Coordinator** — navigation and presentation: transitions, navigation chrome,
+  presenting child views.
+
+With two rules holding it together: the view forwards every action to an
+`Actions` protocol and decides nothing, and **the interactor decides about
+navigation while the coordinator performs it**. That second rule is the one most
+often lost, and it is the one worth writing down: a coordinator that decides when
+to present is a second interactor with windows in it.
+
+This document is what that scheme looks like after taking it apart against *this*
+codebase and against AppKit: which parts are already here under other names,
+where the platform pushes back, and what it costs.
+
+The verdict up front: the roles are right and two of the three already exist here
+in embryo. What needs adapting is not the boundaries but the *directions* — on
+macOS actions arrive from the menu bar rather than from the view, validation has
+to be pulled rather than asked, and the coordinator's subject is barely
+navigation at all. And the whole thing has to be sized for an app whose entire
+UI layer is 25k lines: six interactors, not forty.
 
 ## What is actually in the 5484 lines
 
-| lines | what | where it wants to go |
-|---|---|---|
-| ~730 | `loadView`, `viewDidLoad`, `apply(mode:)`, `wireComparison`, `paneView(for:)`, content/strip layout | stays — this *is* the view controller |
-| ~1290 | minimap: the panel, overview, its data, the segment strip's legend | its own object; not an interactor question |
-| ~2000 | feature flows: open, save/revert, join, duplicate, new file, segments, writing pieces out, bookmarks, search, closing | the interactor's real subject |
-| ~480 | the pane's context menus, toolbar and menu validation | stays, deliberately (below) |
-| ~500 | panes, tabs, drag-and-drop meaning and performance | mostly stays: it shapes windows |
-| ~200 | alerts, dialogs, test seams | becomes the presenter boundary |
+`MainViewController.swift` is the file this is about.
 
-The same split shows in the state, which is the number that matters more than the
-line count: **61 stored instance properties**, of which
+| lines | what | role it belongs to |
+|---|---|---|
+| ~730 | `loadView`, `viewDidLoad`, `apply(mode:)`, `wireComparison`, `paneView(for:)`, content and strip layout | view |
+| ~1290 | minimap: the panel, overview, its data, the segment strip's legend | interactor (a subsystem, below) |
+| ~2000 | open, save/revert, join, duplicate, new file, segments, writing pieces out, bookmarks, search, closing | interactor |
+| ~480 | the pane's context menus, toolbar and menu validation | view, answering from a snapshot |
+| ~500 | panes, tabs, drag-and-drop meaning and performance | coordinator (app-level) + interactor |
+| ~200 | alerts, sheets, popovers, forms | coordinator (window-level) |
+
+The state says the same thing more precisely, and it is the number to watch:
+**61 stored instance properties**, of which
 
 - **17 are minimap and overview** — `overviewDebounceTask`, `overviewPassTask`,
   `overviewRowsAwaitingIndex`, `overviewRebuilds`, `overviewPatches`,
-  `overviewProgress`, `overviewProgressReveal`, `minimapViewports`, and the rest.
-  That is not a view controller's state. It is a subsystem's, and
-  `MINIMAP_LAYERS_IDEA.md` says the same thing from the other side: overview is
-  "a stateful subsystem (a model the controller owns) rather than a layer".
+  `overviewProgress`, `overviewProgressReveal`, `minimapViewports` and the rest;
 - **11 are one in-flight flow or another** — `findTask`, `findOperation`,
-  `searchAllGeneration`, `segmentWriteTask`, `segmentWriteOperation`,
-  `openEditing`, `openGoToForm`, `openSegmentsForm`. Each belongs to exactly one
-  feature and is touched by nothing else.
-- the rest are view handles, the window model, the diff-navigation flags and
-  configuration.
+  `searchAllGeneration`, `searchAllPane`, `segmentWriteTask`,
+  `segmentWriteOperation`, `openEditing`, `openGoToForm`, `openSegmentsForm`;
+- the rest are view handles, the window model, diff-navigation flags and config.
 
-## Why extensions alone plateau
+Action *handling*, by contrast, is not the problem: 63 `@objc` actions, 516 lines
+between them, median 4. They are already adapters. What is massive is what they
+call.
 
-Splitting the file into extensions in one folder is cheap, reversible and worth
-doing regardless — it is what the rest of this cleanup did. But it stops at a
-wall: **an extension cannot hold stored state.** All 61 properties stay on the
-class, so `MainViewController+Minimap.swift` still reaches into seventeen
-properties declared a thousand lines away, and every `private` that crosses the
-new file boundary has to widen to `internal` — the compiler stops saying "only
-this file touches this".
+## What already plays these roles here
 
-That is the honest argument for an interactor rather than more extensions: a
-flow with its own state should own that state. It is also the argument for not
-doing it everywhere — a flow with no state gains nothing but a hop.
+| role | what plays it today | what is missing |
+|---|---|---|
+| interactor | `ComparisonCoordinator` — provider closure in, callbacks out, its own lifecycle and state, `@MainActor`, no view in sight, tests construct it directly | the name, and the other flows |
+| coordinator (window) | `bookmarkEditPresenter`, `cutEditPresenter`, `goToFormPresenter`, `segmentsFormPresenter`, `joinConfirm`, `segmentWriteConfirm`, the panel seams | one object instead of twelve closures |
+| coordinator (app) | `AppDelegate`, `OpenDocumentRegistry`, `makeSiblingTab` | a boundary; today it is spread through the window controller |
+| pure rules | `HexLayout`, `DropBandLayout`, `OpenPlacement`, `PaneDrop.outcome`, `DuplicateName`, `PaneName` | nothing — this tier works |
 
-## The precedent is in the repo already
+`BookmarkEditRequest` is worth looking at closely, because it is the
+interactor→coordinator hand-off already written: a value carrying *what* to edit
+(`pane`, `row`, `existingName`) plus `commit` / `cancel` / `delete`, given to a
+presenter that returns how to dismiss what it opened. Note what it does **not**
+carry: the popover's anchor. The presenter finds that from the pane's view. That
+is exactly the right split, and it was arrived at by need rather than by design —
+the seam exists so tests can drive the command without a popover that closes the
+instant it opens in an offscreen window.
 
-Two tiers of this already exist here, and they work.
+Which is the strongest evidence in this document: **the interactor's protocol has
+already been written, one function at a time, by the tests.** Twelve injected
+closures exist because a flow had to be drivable without a panel or a modal.
+Giving them a name is most of the design work.
 
-**Pure rules**, AppKit-free and tested without a window: `HexLayout`,
-`DropBandLayout`, `OpenPlacement`, `PaneDrop.outcome`, `DuplicateName`,
-`PaneName`. Whenever a decision could be stated as a function of values, it was
-moved out, and those are the tests that never break for the wrong reason.
+## Where AppKit pushes back
 
-**One coordinator**: `ComparisonCoordinator`. Look at its shape —
+### Actions arrive through the responder chain, not from the view
 
-- inputs arrive through a closure (`provider: () -> (left:right:)?`) rather than
-  a reference to the controller, so it cannot reach for anything else;
-- results leave through callbacks (`onIndexChanged`, `onOperation`);
-- it owns a lifecycle (`start`/`record`/`rebuild`/`stop`/`cancelBuild`) and the
-  state that lifecycle needs, including a generation counter;
-- it is `@MainActor`, and it knows nothing about any view;
-- its tests construct it, not a window.
+On iOS an action starts in a view. Here most of them start in the **menu bar or
+the toolbar**, sent to no particular target: `NSApp` walks the key window's
+first responder, its superviews, the view controllers, the window, the window
+controller, itself, then the app delegate. `MainViewController` is a first-class
+action receiver on this platform, not a wiring accident.
 
-That is an interactor that was never called one. Whatever this idea produces
-should look like `ComparisonCoordinator`, not like a new architecture.
+So the scheme gains a second, equal door: the view controller receives menu and
+toolbar commands and forwards them into the same `Actions`. It is the
+responder-chain adapter, and that is a role, not a leak.
 
-**What is missing is the middle tier**: the flows. A flow is not a pure rule —
-it asks the user things, opens panels, runs background work, reports errors — and
-it is not a coordinator of one long-lived index either. It is a short-lived
-transaction with a UI conversation in the middle of it.
+The consequence is a rule: **the interactor must not be in the responder chain.**
+It is called, never messaged. Putting it there would move first-responder
+semantics — which pane is focused, which window is key — into the logic layer,
+where they cannot be reasoned about.
 
-## The boundary has already been discovered by the tests
+### First responder is view-layer state, so actions carry their subject
 
-The file has **13 injected closures**: `joinOpenPanel`, `joinConfirm`,
-`segmentDirectoryPanel`, `segmentSavePanel`, `segmentOpenPanel`,
-`segmentWriteConfirm`, `segmentWriteRunner`, `bookmarkEditPresenter`,
-`cutEditPresenter`, `goToFormPresenter`, `segmentsFormPresenter`,
-`makeSiblingTab`, plus the static `modalResponder`.
+"Which pane is active" is decided by focus: `focusHexView()` → `onFocus` →
+`onActivate`, and focus stays the single source of truth (§3.3). An interactor
+needs to act on a pane but must not own focus.
 
-They exist because the test suite needed to drive a flow without a panel or a
-modal. Which is to say: **the interactor's protocol is already written, one
-function at a time, by the tests.** Giving those twelve members a name is most of
-the design work, and the fact that they were discovered rather than invented is
-the strongest evidence that the seam is real:
+Therefore every `Actions` call carries its subject — *append a file to this
+pane*, not *append a file to whatever is active*. The pane menu already works
+this way, pinning its pane in `representedObject` so a right-click acts on the
+header it was opened from rather than on the active pane. The same rule, applied
+to the whole boundary.
 
-```swift
-@MainActor
-protocol FlowUI {
-    func chooseFile(_ configure: (NSOpenPanel) -> Void) -> URL?
-    func chooseDirectory(message: String) -> URL?
-    func chooseSaveLocation(named: String) -> URL?
-    func confirm(_ alert: NSAlert) -> NSApplication.ModalResponse
-    func presentError(_ title: String, _ error: Error, url: URL?)
-    func present(form: ...)
-    func reveal(offset: UInt64, in pane: PaneViewModel)
-    func refreshMode()
-}
-```
+### Validation wants a snapshot, not a question
 
-The real controller implements it with panels and sheets; the tests implement it
-with canned answers, and stop injecting twelve closures one at a time.
+`NSMenuItemValidation` and `NSToolbarItemValidation` are protocols on the
+*responder*, so the view controller has to answer them — and it is asked on
+**every menu open, for every item**: dozens of synchronous calls in a burst, 63
+selectors in one switch here.
 
-## Where the abstraction leaks
+Asking the interactors per item is the obvious move and the wrong one. The right
+direction is inverted: each interactor keeps a small **state snapshot** (a value:
+`canRevert`, `canJoin`, `hasSelection`, …), updated when its state changes, and
+validation reads it. Cheap, synchronous, and it keeps enablement readable end to
+end — which is why `validateMenuItem` should stay one switch rather than become a
+registry of per-feature validators.
 
-**Flows call each other.** A close can contain a save; a join contains the
-dirty-pane prompt; a drop contains the already-open resolution; Save All
-Segments contains a directory choice *and* an overwrite confirmation. A graph of
-interactors phoning each other is worse than the one class they came from. The
-test to apply: if flow A needs flow B, does it need B's *decision* (fine — pass
-the answer in) or B's *conversation* (a smell)? If it turns out that most of them
-need each other's conversations, then **one `DocumentFlows` object is more honest
-than five that call each other**, and this idea shrinks to "move the flows out of
-the view controller", which is still worth doing.
+So the interactor→view channel is two channels: **pushed updates** (protocol
+calls, "the results changed") and a **pulled snapshot** (what is possible right
+now).
 
-**`refreshMode()` is the universal back-channel.** Almost every flow ends by
-asking the window to re-shape itself, because opening, closing, joining and
-duplicating all change how many panes there are. That is legitimate — but it must
-be one narrow method on the UI protocol, not a `MainViewController` reference. The
-moment a flow holds the controller, this is finished and the file just moved.
+### Presentations are anchored and per-window, so the coordinator splits in two
 
-**Menu validation should not be split.** `validateMenuItem` is one switch over 63
-selectors, and it reads state from every feature. Distributing it — a registry of
-per-feature validators, a chain — is the tempting move and the wrong one: it
-turns one readable list of enablement rules into a lookup, and enablement is
-exactly the kind of thing that should be readable end to end. It stays in the
-controller and asks the interactors when it needs to.
+A popover opens relative to a rect in a view (`show(relativeTo:of:)`); a sheet
+belongs to a window (`beginSheet`). An interactor cannot know a rect and must not
+hold a view. The answer is the one already in the repo: the interactor emits a
+**request value**, and the coordinator resolves it into a presentation, finding
+the anchor itself.
 
-**The test-mode statics become homeless.** `isRunningTests`, `modalResponder`,
-`lastAlertTitle`, `minimapDefaults`, `overviewProgressDelay` — window-scoped
-hooks that live on the class today. Decide where they go *before* moving code,
-not while.
+And "navigation" barely exists here. There is no stack and no current screen: a
+window shows two panes, a minimap, a find bar, a results panel and a tab bar at
+once, all long-lived. What looks like navigation mostly belongs to the *system* —
+`allowsAutomaticWindowTabbing` is what gives ⌘T, ⌃Tab, dragging a tab out into
+its own window, and the Window menu's Merge All Windows. A coordinator cannot own
+those; it can only answer them.
 
-**Undo must not gain a second home.** Flows record their steps through
-`PaneViewModel` onto the document's undo history. An interactor that starts
-knowing how to undo its own work is a second mechanism, and there is a reason
-§22.2's join is one transaction.
+So the role divides along a real seam:
+
+- **window coordinator** — sheets, popovers, forms, the alerts. Needs the window,
+  and must behave when there is none (a controller built in a test).
+- **app coordinator** — windows, tabs, and which window holds which file. This is
+  where `OpenDocumentRegistry` already lives, and it answers a question no window
+  can: a file is open once in the app (§4.1 rule 6).
+
+One protocol over both would be forcing it. The split is the point; the names are
+a choice.
+
+### Modality: pick synchronous or async once
+
+Today the confirmations are synchronous `runModal` with a test seam, and a good
+deal of flow logic reads as straight-line code because of it. An interactor that
+`await`s a decision reads better still — but `await` plus `runModal` is a
+re-entrancy trap, so going async means `beginSheetModal` throughout and rewriting
+the flows as continuations. Both are defensible; mixing them is not. This is a
+decision to take before the first interactor, not during.
+
+### Data-source views pull; they are not handed view models
+
+`HexView` is virtualized: it asks for the byte state of the rows it is about to
+draw (`HexViewDataSource`, `hexByteStates`). A strict reading of "the interactor
+prepares what the view shows" would push a formatted row model per row — a
+rewrite, and a regression on a 16 MB dump.
+
+The carve-out: for a data-source view, the interactor (or the model beneath it)
+supplies a **pull interface**, not pushed data. The boundary is unchanged — the
+view still holds no logic — only the direction is. `PaneViewModel` is already
+that interface.
+
+### One notification idiom, not three
+
+Combine would be a third way to say "something changed" beside the closures
+(`onEdit`, `onIndexChanged`, `onHeaderChanged`) and the async work already here,
+and then every update carries the question of which of the three it travels by.
+The interactor→view channel has many members, which is precisely the case a
+protocol serves. Keep one idiom.
+
+### A subsystem is an interactor whose actions are not user actions
+
+The minimap's overview is 1290 lines and 17 properties of tasks, debounces,
+progress and generation counters. It is not a user-action flow — nothing about it
+starts with a click — but it is exactly "logic that prepares what the view
+shows", so the interactor is its home. Worth naming explicitly, or it gets left
+in the view controller as "drawing support" forever.
+
+## Where `PaneViewModel` sits
+
+It is not an interactor: it handles no actions and decides nothing about
+presentation. It is not a view. It owns the document, the undo history, the
+segments, and answers per-row byte state — it is the **model**, the fourth box,
+already declared in `CLAUDE.md`'s four layers. Interactors sit between the view
+controller and it.
+
+Renaming it into an interactor would collapse two layers into one name. Its undo
+is a case in point: flows record steps through it onto the document's history,
+and an interactor that learns to undo its own work becomes a second mechanism —
+there is a reason a join is one transaction (§22.2).
+
+## What it costs, and the shape that keeps it affordable
+
+Eleven features × (view + `Actions` + interactor + coordinator protocol) is
+around forty new types for an app whose UI layer is 25k lines. At that size the
+scheme costs more than it saves. What keeps it honest:
+
+- **Interactors by feature group, not by screen**: documents, editing, search,
+  segments, bookmarks, minimap. Six.
+- **Two coordinators for the whole app**, not one per feature.
+- **`Actions` protocols only where a view actually talks to an interactor.** A
+  three-line action that toggles a setting does not need a protocol to travel
+  through.
+- Flows that need each other need each other's *answers*, not their
+  *conversations*. If most of them need conversations, one `DocumentFlows` is
+  more honest than six interactors calling each other.
+
+## The pilot: search
+
+It is already in position. The results panel is a controller that owns its
+content, its own composition, and nothing else (`SearchResultsViewController`).
+Two things are missing, and both are named:
+
+1. **`SearchInteractor`** takes `findTask`, `findOperation`,
+   `searchAllGeneration`, `searchAllPane`, and the decisions — start, supersede,
+   cancel, show the panel, hide it. Note what it must *not* take: the panel's
+   height, its divider and the stored preference, which are the pane's
+   arrangement of its own chrome.
+2. **`SearchResultsActions`** replaces the panel's two closures, so the panel
+   stops knowing who listens.
+
+The coordinator barely appears in this pilot, because the panel is embedded —
+which is the argument for going first here. The View↔Interactor boundary gets
+tested on its own, and the coordinator gets its real test later on bookmarks and
+segments, where the popovers and sheets are.
+
+If `SearchInteractor` reads better than what it replaced and its tests stop
+needing a window, the pattern is earned. If it needs six back-channel methods
+into the view, it is not — and stopping after one is the whole reason to start
+with one.
 
 ## Order of work, and how to tell it worked
 
-1. **Minimap out first.** ~1290 lines and 17 of the 61 properties, and it is not
-   an interactor question at all — it is a subsystem with a bad address. Doing
-   this first also means the interactor decision is taken with a file half the
-   size, which is a better place to take it from. This is `MINIMAP_LAYERS_IDEA`'s
-   first step seen from here.
-2. **Then one flow, chosen to be the hardest fair test**: writing pieces out
-   (§21.5) — 490 lines, four of the thirteen seams, its own task and operation
-   state, a confirmation and a background write. If `SegmentWriteFlow` reads
-   better than what it replaced and its tests get shorter, the pattern is earned.
-   If it needs six back-channel methods, it is not, and stopping after one is the
-   whole point of choosing this one first.
-3. **Then decide, once, whether the rest follow** as separate flows or as one
-   `DocumentFlows`. Not before: this is the question the pilot exists to answer.
-4. Menus, validation and view construction stay. So does the drag-and-drop
-   meaning, which is about windows and panes, not about documents.
+1. **Minimap out first**, before any of this: 1290 lines and 17 properties, and
+   it is not an interactor question so much as a subsystem with a bad address.
+   The rest is then decided from a file half the size. This is
+   `MINIMAP_LAYERS_IDEA.md`'s first step seen from here.
+2. **Decide the two questions above** — synchronous or async modality, and the
+   snapshot shape for validation — on paper.
+3. **The search pilot**, in the two commits above.
+4. **Then decide, once**, whether the remaining flows follow as separate
+   interactors or as one object. Not before.
 
-The measures worth watching, in order:
+The measures, in order:
 
 - **stored properties on `MainViewController`** — 61 today. Line count is not the
-  metric: eleven 500-line files that all reach into each other are worse than one
-  5484-line file.
-- **a flow's test constructs the flow**, not a controller in a window.
+  metric: eleven 500-line files reaching into each other are worse than one big
+  file.
+- **how many tests need an `NSWindow`.** Today the suite builds windows to drive
+  flows and injects twelve closures to stub the UI. An interactor's test should
+  need neither.
 - opening `MainViewController.swift` stops being how you change a feature that is
   not about the window.
 
-**Anti-goal.** Not MVVM-C, not a protocol per class, and not an interactor for
-flows that have no state and ask the user nothing — `duplicateDocument()` is
-three lines and should stay three lines.
+## Anti-goals
+
+Not a type per role per screen. Not Combine for its own sake. Not an interactor
+for a flow with no state that asks the user nothing — `duplicateDocument()` is
+three lines and should stay three lines. And not a coordinator that decides: the
+moment it chooses *whether* to present rather than *how*, the scheme has lost the
+rule that makes it worth having.
