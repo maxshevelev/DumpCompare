@@ -35,19 +35,28 @@ final class PanelAppearanceTests: XCTestCase {
                             "the bar must return to the light plate in light mode")
     }
 
-    func testSearchResultsBackgroundFollowsAppearance() {
-        let results = SearchResultsView()
-        defer { results.removeFromSuperview() }
+    /// The results panel draws its fill through an `NSBox`, so there is no baked
+    /// `CGColor` to go stale: AppKit re-resolves an `NSColor` per appearance
+    /// itself. Asserted by resolving the very colour the box is given, in both
+    /// appearances — the bug this replaces was a colour that could not change,
+    /// and a colour that resolves differently cannot have it.
+    func testSearchResultsBackgroundFollowsAppearance() throws {
+        let panel = SearchResultsViewController(pane: PaneViewModel())
+        let box = try XCTUnwrap(descendants(of: panel.view, NSBox.self).first,
+                                "the panel draws its fill with a box")
+        let fill = box.fillColor
 
-        results.appearance = NSAppearance(named: .darkAqua)
-        results.viewDidChangeEffectiveAppearance()
-        XCTAssertLessThan(backgroundComponent(results.layer?.backgroundColor), 0.5,
-                          "the results panel must use the dark plate in dark mode")
+        var dark: CGFloat = 1
+        var light: CGFloat = 0
+        NSAppearance(named: .darkAqua)?.performAsCurrentDrawingAppearance {
+            dark = fill.usingColorSpace(NSColorSpace.deviceRGB)?.redComponent ?? 1
+        }
+        NSAppearance(named: .aqua)?.performAsCurrentDrawingAppearance {
+            light = fill.usingColorSpace(NSColorSpace.deviceRGB)?.redComponent ?? 0
+        }
 
-        results.appearance = NSAppearance(named: .aqua)
-        results.viewDidChangeEffectiveAppearance()
-        XCTAssertGreaterThan(backgroundComponent(results.layer?.backgroundColor), 0.5,
-                            "the results panel must return to the light plate in light mode")
+        XCTAssertLessThan(dark, 0.5, "the results panel must be dark in dark mode")
+        XCTAssertGreaterThan(light, 0.5, "and light in light mode")
     }
 
     /// The minimap paints its paper onto a layer the same way, from

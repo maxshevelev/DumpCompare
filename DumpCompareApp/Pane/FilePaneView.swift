@@ -111,10 +111,6 @@ final class FilePaneView: NSView {
     /// arrangement of its own chrome, not the panel's business.
     let searchResults: SearchResultsViewController
 
-    /// The panel's view. Internal so tests can assert its header count and
-    /// drive row clicks, and so the window controller can feed it a running
-    /// search.
-    var searchResultsView: SearchResultsView { searchResults.resultsView }
 
     /// The dump and the results panel share the pane through an `ALSplitView`:
     /// the dump is the `.fill` pane and the panel a `.fixed` one, so the panel
@@ -872,7 +868,7 @@ final class FilePaneView: NSView {
         let total = searchResultsSplit.bounds.height
         guard total > 0 else { return }
         let stored = Self.defaults.object(forKey: Self.searchResultsHeightDefaultsKey) as? NSNumber
-        let preferred = stored.map { CGFloat($0.doubleValue) } ?? SearchResultsView.panelHeight
+        let preferred = stored.map { CGFloat($0.doubleValue) } ?? SearchResultsViewController.panelHeight
         let height: CGFloat
         if hasRestoredPanelHeightThisSession {
             height = preferred

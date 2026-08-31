@@ -141,23 +141,23 @@ final class FindFlowTests: XCTestCase {
     }
 
     /// The single file pane's Search All results panel.
-    private func resultsView(_ window: NSWindow) throws -> SearchResultsView {
+    private func resultsView(_ window: NSWindow) throws -> SearchResultsViewController {
         let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
-        return paneView.searchResultsView
+        return paneView.searchResults
     }
 
     /// Runs a Search All for `pattern` and waits for it to finish: the panel
     /// opens immediately, and the header's trailing "…" drops once the
     /// background scan completes, so the table holds every match.
     @discardableResult
-    private func runSearchAll(_ pattern: String, in window: NSWindow) throws -> SearchResultsView {
+    private func runSearchAll(_ pattern: String, in window: NSWindow) throws -> SearchResultsViewController {
         let (combo, _, _, _) = try barControls(window)
         combo.stringValue = pattern
         try findAllButton(window).performClick(nil)
         let view = try resultsView(window)
         // The panel is shown immediately; the scan streams results in and the
         // "…" in the count drops when it completes. Wait for both.
-        XCTAssertTrue(pumpUntil(5) { view.frame.height > 1 && !view.isSearching },
+        XCTAssertTrue(pumpUntil(5) { view.view.frame.height > 1 && !view.isSearching },
                       "Search All must show the results panel and finish scanning")
         return view
     }
@@ -661,7 +661,7 @@ final class FindFlowTests: XCTestCase {
         defer { cleanup(controller, url) }
         let view = try resultsView(window)
         window.layoutIfNeeded()
-        XCTAssertLessThan(view.frame.height, 1,
+        XCTAssertLessThan(view.view.frame.height, 1,
                           "the results panel must stay collapsed until a Search All runs")
     }
 
@@ -676,16 +676,16 @@ final class FindFlowTests: XCTestCase {
         let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
 
         // Hide, then make the window bigger and smaller.
-        let closeButton = try XCTUnwrap(descendants(of: view, NSButton.self).first {
+        let closeButton = try XCTUnwrap(descendants(of: view.view, NSButton.self).first {
             $0.accessibilityLabel() == "Close search results"
         })
         closeButton.performClick(nil)
-        XCTAssertTrue(pumpUntil(2) { view.frame.height < 1 })
+        XCTAssertTrue(pumpUntil(2) { view.view.frame.height < 1 })
 
         for newHeight: CGFloat in [700, 500, 800] {
             window.setContentSize(NSSize(width: 800, height: newHeight))
             window.layoutIfNeeded()
-            XCTAssertLessThan(view.frame.height, 1,
+            XCTAssertLessThan(view.view.frame.height, 1,
                               "the collapsed panel must survive a resize to \(newHeight)")
             XCTAssertEqual(paneView.scrollView.frame.height,
                            paneView.searchResultsSplit.bounds.height - paneView.searchResultsSplit.dividerThickness,
@@ -708,7 +708,7 @@ final class FindFlowTests: XCTestCase {
 
         XCTAssertEqual(view.tableView.numberOfRows, 4,
                        "one row per occurrence")
-        let header = try XCTUnwrap(descendants(of: view, NSTextField.self).first {
+        let header = try XCTUnwrap(descendants(of: view.view, NSTextField.self).first {
             $0.stringValue.hasPrefix("Search results")
         })
         XCTAssertEqual(header.stringValue, "Search results (4)")
@@ -742,13 +742,13 @@ final class FindFlowTests: XCTestCase {
         let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
         XCTAssertTrue(paneView.searchResultsPanelVisible,
                       "the panel must be shown immediately on Search All")
-        XCTAssertTrue(paneView.searchResultsView.isSearching,
+        XCTAssertTrue(paneView.searchResults.isSearching,
                       "the scan must still be running right after the click")
 
         // It fills dynamically and settles once the scan completes.
-        XCTAssertTrue(pumpUntil(5) { !paneView.searchResultsView.isSearching },
+        XCTAssertTrue(pumpUntil(5) { !paneView.searchResults.isSearching },
                       "the scan must eventually finish")
-        XCTAssertEqual(paneView.searchResultsView.tableView.numberOfRows, 6,
+        XCTAssertEqual(paneView.searchResults.tableView.numberOfRows, 6,
                        "one row per match after the scan settles — one per chunk")
     }
 
@@ -761,25 +761,25 @@ final class FindFlowTests: XCTestCase {
 
         controller.findPattern()
         let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
-        let view = paneView.searchResultsView
+        let view = paneView.searchResults
         paneView.showSearchResults(matchLength: 2)
 
         XCTAssertEqual(view.tableView.numberOfRows, 0)
         XCTAssertTrue(view.isSearching)
         XCTAssertEqual(headerText(of: view), "Search results (0…)")
 
-        view.append(matches: [0..<2])
-        view.append(matches: [4..<6, 7..<9])
+        view.append([0..<2])
+        view.append([4..<6, 7..<9])
         XCTAssertEqual(view.tableView.numberOfRows, 3, "rows grow with each batch")
         XCTAssertEqual(headerText(of: view), "Search results (3…)")
 
-        view.setSearching(false)
+        view.finishSearch(truncated: false)
         XCTAssertEqual(headerText(of: view), "Search results (3)", "the ellipsis drops once settled")
     }
 
     /// The results panel's header text ("Search results (NNN…)").
-    private func headerText(of view: SearchResultsView) -> String {
-        descendants(of: view, NSTextField.self).first {
+    private func headerText(of panel: SearchResultsViewController) -> String {
+        descendants(of: panel.view, NSTextField.self).first {
             $0.stringValue.hasPrefix("Search results")
         }?.stringValue ?? ""
     }
@@ -836,7 +836,7 @@ final class FindFlowTests: XCTestCase {
         // Narrow the hex column so the excerpt cannot fit on one line.
         let hexColumn = try XCTUnwrap(view.tableView.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier("hex")))
         hexColumn.width = 100
-        view.layoutSubtreeIfNeeded()
+        view.view.layoutSubtreeIfNeeded()
 
         let hexIndex = view.tableView.column(withIdentifier: hexColumn.identifier)
         let cell = try XCTUnwrap(view.tableView.view(atColumn: hexIndex, row: 0,
@@ -886,7 +886,7 @@ final class FindFlowTests: XCTestCase {
         let view = try runSearchAll("FF FF FF", in: window)
 
         XCTAssertEqual(view.tableView.numberOfRows, 0)
-        let header = try XCTUnwrap(descendants(of: view, NSTextField.self).first {
+        let header = try XCTUnwrap(descendants(of: view.view, NSTextField.self).first {
             $0.stringValue.hasPrefix("Search results")
         })
         XCTAssertEqual(header.stringValue, "Search results (0)")
@@ -917,15 +917,15 @@ final class FindFlowTests: XCTestCase {
         // Right after the click the scan is still running (no runloop pump has
         // let the main-actor consumer settle it), so the × below closes it live.
         let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
-        let view = paneView.searchResultsView
+        let view = paneView.searchResults
         XCTAssertTrue(view.isSearching, "the scan must still be running right after the click")
 
-        let closeButton = try XCTUnwrap(descendants(of: view, NSButton.self).first {
+        let closeButton = try XCTUnwrap(descendants(of: view.view, NSButton.self).first {
             $0.accessibilityLabel() == "Close search results"
         })
         closeButton.performClick(nil)
 
-        XCTAssertTrue(pumpUntil(3) { view.frame.height < 1 }, "closing hides the panel")
+        XCTAssertTrue(pumpUntil(3) { view.view.frame.height < 1 }, "closing hides the panel")
         XCTAssertTrue(pumpUntil(3) { !view.isSearching }, "closing stops the search")
         // Give a still-running scan time to keep streaming; the panel must stay
         // empty — matches streamed after the close would refill the rows.
@@ -957,21 +957,21 @@ final class FindFlowTests: XCTestCase {
         let split = paneView.searchResultsSplit
 
         window.layoutIfNeeded()
-        XCTAssertGreaterThan(view.frame.height, 0,
+        XCTAssertGreaterThan(view.view.frame.height, 0,
                              "the panel must be an expanded pane while results are shown")
         XCTAssertGreaterThan(split.bounds.height, 600,
                              "premise: the pane is several times the default height, so the clamp is idle")
-        // The built-in default, written out. Reading `SearchResultsView.panelHeight`
+        // The built-in default, written out. Reading `SearchResultsViewController.panelHeight`
         // back through the clamp the pane applies to it made this assertion true
         // for any default at all.
-        XCTAssertEqual(view.frame.height, 160, accuracy: 0.5,
+        XCTAssertEqual(view.view.frame.height, 160, accuracy: 0.5,
                        "the panel opens at its 160 pt default height (§11)")
 
-        let closeButton = try XCTUnwrap(descendants(of: view, NSButton.self).first {
+        let closeButton = try XCTUnwrap(descendants(of: view.view, NSButton.self).first {
             $0.accessibilityLabel() == "Close search results"
         })
         closeButton.performClick(nil)
-        XCTAssertTrue(pumpUntil(2) { view.frame.height < 1 },
+        XCTAssertTrue(pumpUntil(2) { view.view.frame.height < 1 },
                       "hiding the panel must collapse it to zero height")
         window.layoutIfNeeded()
         // The divider is pinned to the very bottom, so the dump fills the pane
@@ -1002,7 +1002,7 @@ final class FindFlowTests: XCTestCase {
         window.layoutIfNeeded()
         XCTAssertGreaterThan(paneView.searchResultsSplit.bounds.height, 600,
                              "premise: the pane is several times the restored height, so the clamp is idle")
-        XCTAssertEqual(view.frame.height, 120, accuracy: 0.5,
+        XCTAssertEqual(view.view.frame.height, 120, accuracy: 0.5,
                        "Search All must restore the persisted 120 pt panel height")
     }
 
@@ -1027,9 +1027,9 @@ final class FindFlowTests: XCTestCase {
         // the dump keeps the larger share — and never below the panel's own
         // minimum. The exact fraction is an implementation detail (§11 does not
         // name one), and re-typing it made this test pass for any fraction.
-        XCTAssertGreaterThanOrEqual(view.frame.height, FilePaneView.minSearchResultsHeight,
+        XCTAssertGreaterThanOrEqual(view.view.frame.height, FilePaneView.minSearchResultsHeight,
                                     "however stale the stored height, the panel is usable")
-        XCTAssertLessThan(view.frame.height, paneView.scrollView.frame.height,
+        XCTAssertLessThan(view.view.frame.height, paneView.scrollView.frame.height,
                           "and the dump keeps the greater part of the pane")
     }
 
@@ -1050,7 +1050,7 @@ final class FindFlowTests: XCTestCase {
         let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
         window.layoutIfNeeded()
         // The first show clamps the stale persisted height to the pane's room.
-        let firstShowHeight = view.frame.height
+        let firstShowHeight = view.view.frame.height
         XCTAssertLessThan(firstShowHeight, paneView.scrollView.frame.height,
                           "the first show clamps the stale persisted height")
 
@@ -1058,20 +1058,20 @@ final class FindFlowTests: XCTestCase {
         // allow; the split persists that height as the user's choice.
         paneView.setSearchResultsPanelHeight(400)
         window.layoutIfNeeded()
-        let draggedHeight = view.frame.height
+        let draggedHeight = view.view.frame.height
         XCTAssertGreaterThan(draggedHeight, firstShowHeight,
                              "a drag must be able to exceed the restored clamp")
 
         // Close and reopen the panel: the height picked in this session wins.
-        let closeButton = try XCTUnwrap(descendants(of: view, NSButton.self).first {
+        let closeButton = try XCTUnwrap(descendants(of: view.view, NSButton.self).first {
             $0.accessibilityLabel() == "Close search results"
         })
         closeButton.performClick(nil)
-        XCTAssertTrue(pumpUntil(2) { view.frame.height < 1 })
+        XCTAssertTrue(pumpUntil(2) { view.view.frame.height < 1 })
 
         try runSearchAll("DE AD", in: window)
         window.layoutIfNeeded()
-        XCTAssertEqual(view.frame.height, draggedHeight, accuracy: 0.5,
+        XCTAssertEqual(view.view.frame.height, draggedHeight, accuracy: 0.5,
                        "a height chosen in this session must apply as-is on the next show")
     }
 
@@ -1100,7 +1100,7 @@ final class FindFlowTests: XCTestCase {
                              "premise: the pane has far more than 120 pt to give away")
         paneView.setSearchResultsPanelHeight(120)
         window.layoutIfNeeded()
-        XCTAssertEqual(view.frame.height, 120, accuracy: 0.5,
+        XCTAssertEqual(view.view.frame.height, 120, accuracy: 0.5,
                        "an in-range panel height must take effect unchanged")
 
         // Asking for less than the panel's minimum clamps up to the minimum —
@@ -1108,7 +1108,7 @@ final class FindFlowTests: XCTestCase {
         // is made of (a minimum of 0 satisfied that).
         paneView.setSearchResultsPanelHeight(10)
         window.layoutIfNeeded()
-        XCTAssertEqual(view.frame.height, 80, accuracy: 0.5,
+        XCTAssertEqual(view.view.frame.height, 80, accuracy: 0.5,
                        "the divider must keep the results panel at its 80 pt minimum")
 
         // Asking for more than the pane's room clamps down so the hex dump
@@ -1275,7 +1275,7 @@ final class FindFlowTests: XCTestCase {
         controller.findPattern()
         let view = try runSearchAll("41 42", in: window)
         XCTAssertEqual(view.tableView.numberOfRows, cap, "every match is listed")
-        let header = try XCTUnwrap(descendants(of: view, NSTextField.self).first {
+        let header = try XCTUnwrap(descendants(of: view.view, NSTextField.self).first {
             $0.stringValue.hasPrefix("Search results")
         })
         XCTAssertEqual(header.stringValue, "Search results (\(cap))",
@@ -1292,7 +1292,7 @@ final class FindFlowTests: XCTestCase {
         controller.findPattern()
         let view = try runSearchAll("41 42", in: window)
         XCTAssertEqual(view.tableView.numberOfRows, cap, "the panel shows at most the cap")
-        let header = try XCTUnwrap(descendants(of: view, NSTextField.self).first {
+        let header = try XCTUnwrap(descendants(of: view.view, NSTextField.self).first {
             $0.stringValue.hasPrefix("Search results")
         })
         XCTAssertEqual(header.stringValue, "Search results (\(cap)) — too many results")
