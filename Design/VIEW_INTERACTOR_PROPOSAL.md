@@ -91,6 +91,38 @@ The three roles do not fare equally on this platform.
   AppKit-shaped, and pretending otherwise buys a translation layer whose only job
   is restating `NSDragOperation`.
 
+## What it buys, if it works
+
+The view does not know what a file is, or where its data came from. It is as
+simple as it can be: display, drawing, layout — it shows what it was given. All
+the logic is outside it.
+
+The immediate payoff is that the work divides where the code divides, and so does
+the question "where do I look":
+
+- Changing how something **looks** — layout, colour, font, spacing, a control's
+  arrangement — is work inside the view, and cannot require reading the logic.
+- Handling a **user reaction or an outside event** is the interactor's or the
+  models', and cannot require reading the drawing.
+- What crosses between them is stated as protocols, so the contract is readable
+  without either side's implementation.
+
+Measured against this repo, that is exactly what is missing now. Over the last 25
+commits that touched Swift at all, **19 — 76% — touched
+`MainViewController.swift`**, at an average of 6.5 files per commit. Almost
+nothing can be changed without opening the one file, whatever the change was
+about. Under the scheme that file is the composition, and it should be touched
+when the composition changes and not otherwise; the percentage is the crude but
+honest measure of whether the concept is working.
+
+One caveat, so "it shows what it was given" is not read as "the view is trivial".
+A view is a function of the pushed state *and* of its own geometry: the window's
+size, the user's font, a column dragged wider, a divider moved, a pane squeezed to
+nothing. That second argument is why the view layer still holds real code and
+needs real tests — `HexView`'s ~2900 lines of drawing are not going anywhere, and
+neither are the render tests that check what lands on which pixel. What leaves is
+only the deciding: what to show, and what a user's action means.
+
 ## Why the problem is worse on macOS than on iOS
 
 This is the strongest argument *for* the scheme, and it is easy to miss.
