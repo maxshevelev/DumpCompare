@@ -491,6 +491,56 @@ pass as the scroll that asked for it, synchronously, or the dump draws a frame o
 stale rows. Since the answer is a read from chunked storage, that is achievable —
 but it is the thing that would break if the update were ever made asynchronous.
 
+### The view's own data, and two import rules
+
+The point of pushing values rather than access is not tidiness — it is
+**limiting what each side can see**. The view gets structures prepared for
+display: exactly the fields it will put on screen, in the form it will use them,
+and nothing else. It does not know the domain model, the storage, the decoder, or
+any external API. Dealing with those is the interactor's job, and the view cannot
+reach past it even by accident.
+
+That gives a boundary that can be *checked* rather than asserted, in both
+directions:
+
+- **The interactor imports no AppKit.**
+- **The view imports no domain module.**
+
+Two greps, and neither is a matter of opinion. Where this app stands today: 16 of
+50 files in the app target import `DumpCompareCore`, and **12 of those 16 are the
+view layer** — the hex view, the find bar, the results panel, the segments form,
+the bookmark and cut popovers, the comparison view, a settings pane, the sheet
+controllers, the drag-and-drop glue, and the window's controller. Only four are
+the model and service tier, where the import belongs.
+
+The results panel is a small, exact example of what the rule would take away from
+a view. Today it holds:
+
+| what it holds | why that is domain knowledge |
+|---|---|
+| `matches: [Range<UInt64>]` | byte ranges in a file |
+| `byteProvider: (UInt64, Int) -> [UInt8]` | reads the document's storage |
+| `textDecoder: (any TextDecoder)?` | decides how bytes become characters |
+| `fileSizeProvider: () -> UInt64` | clamps excerpt windows to the file's end |
+| `excerptPadding = 8`, `matchLength` | decides *what an excerpt is* |
+| `pane: PaneViewModel` | the model object itself |
+| `import DumpCompareCore` | the domain module, in a view file |
+
+After the change it holds `[ResultRow]` — an offset already formatted, a hex
+preview, a text preview — and imports `Cocoa` only. Which relocates three
+decisions that are currently the view's and should not be:
+
+- **What an excerpt covers** (eight bytes either side, clamped to EOF) is a
+  decision about what is worth showing. It belongs to the interactor.
+- **How bytes become characters** is the decoder's, reached by the interactor.
+- **How an offset is written** — zero-padded to the file's width — depends on the
+  file's size, so the width comes with the data rather than being derived in the
+  view.
+
+And it changes the events, not just the updates: the view reports **"row 3 was
+chosen"**, not a `Range<UInt64>`. A range is domain vocabulary, and a view that
+hands one back has kept a piece of the model to be able to.
+
 ### Ownership
 
 ```
