@@ -109,7 +109,7 @@ final class FilePaneView: NSView {
     /// go in a window of its own (see `SearchResultsViewController`). The pane
     /// still decides its height and its divider — that is this pane's
     /// arrangement of its own chrome, not the panel's business.
-    let searchResults = SearchResultsViewController()
+    let searchResults: SearchResultsViewController
 
     /// The panel's view. Internal so tests can assert its header count and
     /// drive row clicks, and so the window controller can feed it a running
@@ -214,6 +214,8 @@ final class FilePaneView: NSView {
         self.viewModel = viewModel
         self.hexView = HexView()
         self.scrollView = NSScrollView()
+        // Made with the pane, so the panel never has to ask who it belongs to.
+        self.searchResults = SearchResultsViewController(pane: viewModel)
         super.init(frame: .zero)
         setUp()
         bind()
@@ -805,19 +807,14 @@ final class FilePaneView: NSView {
 
     // MARK: - Search All results (§11)
 
-    /// Shows the Search All results panel with every match of the pattern, read
-    /// lazily from the pane's live storage so edits since the scan are
-    /// reflected in the excerpts.
-    func showSearchResults(matches: [Range<UInt64>], matchLength: Int) {
-        searchResultsView.configure(
-            matches: matches,
-            byteProvider: { [weak viewModel] offset, length in
-                guard let storage = viewModel?.byteStorage else { return [] }
-                return (try? storage.read(at: offset, length: length)) ?? []
-            },
-            textDecoder: viewModel.textDecoder,
-            fileSize: { [weak viewModel] in viewModel?.fileSize ?? 0 },
-            matchLength: matchLength)
+    /// Makes room for the Search All results panel and opens it, empty, for the
+    /// scan that is about to fill it.
+    ///
+    /// What the panel *shows* is its own controller's business, including how a
+    /// row reads the pane's live bytes. What is left here is what the pane
+    /// arranges: that the panel is on screen at all, and how tall it is (§11).
+    func showSearchResults(matchLength: Int) {
+        searchResults.beginSearch(matchLength: matchLength)
         searchResultsPanelVisible = true
         applySearchResultsHeight()
     }
@@ -830,7 +827,7 @@ final class FilePaneView: NSView {
     /// height is its collapsed state.
     func hideSearchResults() {
         searchResultsPanelVisible = false
-        searchResultsView.clear()
+        searchResults.clear()
         setSearchResultsPanelHeight(0)
     }
 

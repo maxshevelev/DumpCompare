@@ -4825,8 +4825,7 @@ final class MainViewController: NSViewController {
         let paneView = filePaneView(for: pane)
         searchAllPane = paneView
         // Open the panel empty before any scanning; matches stream in below.
-        paneView?.showSearchResults(matches: [], matchLength: pattern.bytes.count)
-        paneView?.searchResultsView.setSearching(true)
+        paneView?.showSearchResults(matchLength: pattern.bytes.count)
         activeFilePane?.beginOperation(operation)
         searchAllGeneration += 1
         let generation = searchAllGeneration
@@ -4843,11 +4842,8 @@ final class MainViewController: NSViewController {
                 // display cap precisely so this is exact: a file with exactly
                 // `defaultMaxResults` matches used to be labelled "too many".
                 if self.searchAllGeneration == generation, let paneView {
-                    let view = paneView.searchResultsView
-                    if count > SearchEngine.defaultMaxResults {
-                        view.setTruncated(true)
-                    }
-                    view.setSearching(false)
+                    paneView.searchResults.finishSearch(
+                        truncated: count > SearchEngine.defaultMaxResults)
                 }
             } catch is CancellationError {
                 // The × button, the status-strip stop, or a newer search ended
@@ -4930,7 +4926,7 @@ final class MainViewController: NSViewController {
         for try await match in stream {
             count += 1
             guard count <= displayCap else { break }
-            paneView.searchResultsView.append(matches: [match])
+            paneView.searchResults.append([match])
         }
         // Distinguish a finished scan from a cancelled one: on this platform a
         // cancelled task's `next()` can return nil (a normal end) instead of

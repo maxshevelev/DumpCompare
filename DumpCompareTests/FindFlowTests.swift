@@ -762,8 +762,7 @@ final class FindFlowTests: XCTestCase {
         controller.findPattern()
         let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
         let view = paneView.searchResultsView
-        paneView.showSearchResults(matches: [], matchLength: 2)
-        view.setSearching(true)
+        paneView.showSearchResults(matchLength: 2)
 
         XCTAssertEqual(view.tableView.numberOfRows, 0)
         XCTAssertTrue(view.isSearching)
