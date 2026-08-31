@@ -253,15 +253,13 @@ being free and turns into plumbing that carries the subject by hand. The
 mitigation is the subject rule above — which exists because the framework's own
 answer was given up.
 
-**2. Target/action, delegate and data source are the native idiom.** AppKit views
-expect to be driven that way, and a strict `Actions` boundary adds a hop to every
-callback: delegate method → Actions → interactor → update → view. For
-data-source-heavy UI that hop is per-row-ish, and the single-cycle rule has to
-answer for it: `NSTableView` and `HexView` *pull*. Either the visible range becomes
-an event and the interactor pushes rows for it, or a read-only data-source port is
-admitted as a documented exception — the two options are laid out under the
-mechanics. Neither is free, and on a 16 MB dump the difference is measurable rather
-than theoretical.
+**2. Target/action, delegate and data source are the native idiom**, and a strict
+`Actions` boundary adds a hop to every callback: delegate method → Actions →
+interactor → update → view. This is a smaller cost than it first looks, because a
+table's `dataSource` stays inside the view (see the mechanics) — the hop is per
+*user action*, not per row. What is left is the visible-range round trip for
+content too large to materialise, which has to be synchronous within the scroll's
+layout pass.
 
 **3. Modality is synchronous in the platform's grain.** `runModal` returns an
 answer inline, and flow code reads as straight-line prose because of it. A
@@ -456,22 +454,42 @@ Nothing is pulled across the boundary — the state is already on the view's sid
 and enablement is a projection of it. That is what makes it the right answer
 rather than a convenient one.
 
-**Virtualized views are the real friction.** `NSTableView` asks for row N when row
-N draws; `HexView` asks for the byte state of the rows it is about to paint. Both
-are pulls by construction, and the honest options are:
+**A table's `dataSource` and `delegate` are the view's own internals.** They are
+how an `NSTableView` is wired up, and they belong entirely to the view half. The
+interactor is never the `dataSource`. What it does is decide *what data the
+dataSource will have*: "the result is now five items, each one an offset and a
+preview". It hands over plain structured values and its part is finished — the
+other end could be an `NSTableView`, a SwiftUI `List`, a canvas, a terminal, a web
+page, or a voice reading them out, and the interactor cannot tell which and does
+not care.
 
-1. **Push the visible window.** The scroll becomes a UI event ("visible range
-   changed"), the interactor answers with the rows for that range, and the cycle is
-   intact. Costs a round trip per scroll and makes the interactor hold the visible
-   window — which it arguably should, since it is what decides what is worth
-   preparing.
-2. **Admit a read-only data-source port**, held by the view, that reads *model*
-   data — not view state, not a back-channel to the interactor. Cheaper and closer
-   to how AppKit wants to be driven, at the price of one documented exception to
-   the single cycle.
+```swift
+struct ResultRow: Equatable {
+    let offset: UInt64
+    let hexPreview: String
+    let textPreview: String
+}
+```
 
-This is the first thing to decide, because the whole shape of `DisplayOutput`
-follows from it, and because a 16 MB dump makes the wrong answer measurable.
+That resolves what I had earlier written up as an unavoidable carve-out for
+virtualized views, and it deserves to be retracted rather than defended.
+
+`NSTableView` asking for row N, and `HexView` asking for the byte state of the rows
+it is about to paint, are both the view talking to *itself*. What the interactor
+owes is the data behind those rows — and where the whole set cannot be materialised,
+what it pushes is a **window** of it: the visible range arrives as a UI event
+("showing rows 1000–1050"), and the answer is the rows for that range. Still one
+cycle, still a data update; the interactor is told a range and never learns what
+draws it.
+
+And the cost of that, measured rather than feared: a hex dump shows a few hundred
+rows at the very most, 16 bytes each plus a per-byte state — **single-digit
+kilobytes per push**. It is whole-file materialisation that is impossible here
+(§ chunked storage, never load 16 MB of rows into value types), not per-window
+push. The one real constraint is timing: the push has to land in the same layout
+pass as the scroll that asked for it, synchronously, or the dump draws a frame of
+stale rows. Since the answer is a read from chunked storage, that is achievable —
+but it is the thing that would break if the update were ever made asynchronous.
 
 ### Ownership
 
@@ -729,20 +747,24 @@ Two things this sketch makes visible that the prose did not:
 - **`render(_:)` per streamed batch is wrong at this granularity.** A Search All
   streams up to a thousand matches; re-rendering the whole state per batch would
   undo the `insertRows` optimisation the panel has today, which exists precisely
-  because `reloadData()` per match re-read every visible row's bytes. So a
-  streaming surface needs either a diff in the state or an explicit
-  `appended(rows:)` on `DisplayOutput` beside `render(_:)`.
-- **The panel reads bytes lazily per visible row** — the excerpt for row N is
-  fetched when row N draws. That is a pull, and it cannot come through `render(_:)`
-  without materialising every excerpt. Either `State` carries a closure (a pull
-  channel dressed as data) or the view keeps a reference to a read-only byte
-  source. Neither violates the boundary; the second is honest and the first is not.
+  because `reloadData()` per match re-read every visible row's bytes. A streaming
+  surface wants either a diff in the state or an explicit `appended(rows:)` beside
+  `render(_:)` — still one direction, just a finer update.
+- **The excerpts move into the row struct, and that is a behaviour change.** Today
+  the panel reads the bytes for row N when row N draws, deliberately: the results
+  stay open across edits, so an excerpt shows the file as it is now rather than as
+  it was when the scan ran. Under a pushed `ResultRow` the excerpt is a string the
+  interactor built, so the interactor has to re-push when the bytes under a result
+  change. That is affordable — a thousand rows of two short strings — but it is a
+  thing to remember rather than a detail: forget it and the panel quietly shows
+  stale bytes.
 
 ## The questions that would decide it
 
-1. **Push versus pull** for virtualized rows and streamed batches — the visible
-   range as an event, or an admitted read-only data-source port. Everything about
-   `DisplayOutput`'s shape follows from this one.
+1. **The granularity of an update**: a whole state per change, a diff, or explicit
+   `appended(rows:)` — and, for content too large to materialise, how the visible
+   range is asked for and answered inside one layout pass. Everything about
+   `DisplayOutput`'s shape follows from this.
 2. Synchronous ports or async ones, for modality — chosen once, for everything.
 3. How a surface's reports reach their receivers: an abstract port the coordinator
    re-points, or subscriptions.
