@@ -62,6 +62,7 @@
 		659568963B3AF88F40BBA4EF /* KeyboardNavigationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EDEBBD2483CAEDFE3574C52 /* KeyboardNavigationTests.swift */; };
 		666ED5D024C7EE6E759D1392 /* SelectBlockSheetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 467E6E8B85C387891E7A7C56 /* SelectBlockSheetTests.swift */; };
 		6DFCCB0D49331C4934B8E052 /* PaneViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5327DBC55217689460B32402 /* PaneViewModel.swift */; };
+		70544A516665A20BFE5B9FEB /* SearchResultsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7E4EC6636A917E3E3CEBC24 /* SearchResultsViewController.swift */; };
 		7108A4ABF852A054F1F5E641 /* OffsetContextMenuTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 209E4194094A04377AA5F50F /* OffsetContextMenuTests.swift */; };
 		710ECC65E66F697855FF6398 /* SegmentCommandsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD60D91BEDA4290B2A565D76 /* SegmentCommandsTests.swift */; };
 		726842FD40A84C81A0D57099 /* HexViewAppearanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02B9500D140BE09B6006859B /* HexViewAppearanceTests.swift */; };
@@ -271,6 +272,7 @@
 		DAB9141A276D1D3ABE1A8DA1 /* TypingModeIndicatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypingModeIndicatorTests.swift; sourceTree = "<group>"; };
 		E2FFB4C256441E0544EDCAE6 /* DuplicateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DuplicateTests.swift; sourceTree = "<group>"; };
 		E67EF396B7D2B32694C3C02D /* LayoutSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LayoutSettingsViewController.swift; sourceTree = "<group>"; };
+		E7E4EC6636A917E3E3CEBC24 /* SearchResultsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchResultsViewController.swift; sourceTree = "<group>"; };
 		E9BBBA06BD7728DB1217E802 /* TextVerticalAlignmentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextVerticalAlignmentTests.swift; sourceTree = "<group>"; };
 		EDC399F1794934F21FA510FC /* OperationStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OperationStatusView.swift; sourceTree = "<group>"; };
 		EEE766993D5D79BAABE7D087 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
@@ -434,6 +436,7 @@
 			children = (
 				269760959ACD3310FE98A13F /* FindBarView.swift */,
 				A4043453E37A0CB9230DDC7D /* SearchResultsView.swift */,
+				E7E4EC6636A917E3E3CEBC24 /* SearchResultsViewController.swift */,
 			);
 			path = Search;
 			sourceTree = "<group>";
@@ -715,6 +718,7 @@
 				6DFCCB0D49331C4934B8E052 /* PaneViewModel.swift in Sources */,
 				D414E9007BEB0E0168E8A353 /* SandboxBookmarkStore.swift in Sources */,
 				8F155C50DF993E4B7224B8FA /* SearchResultsView.swift in Sources */,
+				70544A516665A20BFE5B9FEB /* SearchResultsViewController.swift in Sources */,
 				5BA1FF551136ACF06BBA9FAC /* SegmentStore.swift in Sources */,
 				446BD8F0767480C99D14E071 /* SegmentsForm.swift in Sources */,
 				AE80A9C03D6154A76A6127C4 /* SettingsWindowController.swift in Sources */,

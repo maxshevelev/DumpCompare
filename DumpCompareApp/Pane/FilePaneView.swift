@@ -102,9 +102,19 @@ final class FilePaneView: NSView {
     /// assert the debounced reveal / hide.
     let operationView = OperationStatusView()
     /// The Search All results panel, hidden while no search results are shown
-    /// (§11). Internal so tests can assert its header count and drive row
-    /// clicks.
-    let searchResultsView = SearchResultsView()
+    /// (§11).
+    ///
+    /// A controller owns it, because where it appears is a choice: the pane
+    /// arranges it in a split view today, and the same panel should be able to
+    /// go in a window of its own (see `SearchResultsViewController`). The pane
+    /// still decides its height and its divider — that is this pane's
+    /// arrangement of its own chrome, not the panel's business.
+    let searchResults = SearchResultsViewController()
+
+    /// The panel's view. Internal so tests can assert its header count and
+    /// drive row clicks, and so the window controller can feed it a running
+    /// search.
+    var searchResultsView: SearchResultsView { searchResults.resultsView }
 
     /// The dump and the results panel share the pane through an `ALSplitView`:
     /// the dump is the `.fill` pane and the panel a `.fixed` one, so the panel
@@ -400,14 +410,14 @@ final class FilePaneView: NSView {
         // panel with the standard drag behaviour and cursor; the panel is
         // collapsed (fixed at zero height) while no results are shown and
         // revealed with the user's stored height on a Search All.
-        searchResultsView.onClose = { [weak self] in
+        searchResults.onClose = { [weak self] in
             guard let self else { return }
             // Stop the owner's in-flight search first, then hide and forget the
             // results — a closed panel must not keep receiving matches (§11).
             self.onSearchResultsClose?(self)
             self.hideSearchResults()
         }
-        searchResultsView.onSelect = { [weak self] range in
+        searchResults.onSelect = { [weak self] range in
             guard let self else { return }
             // Selecting a result mirrors a single Find match (§11): the range
             // is selected in the hex view and scrolled to the vertical centre.
@@ -420,7 +430,7 @@ final class FilePaneView: NSView {
         searchResultsSplit.dividerThickness = 1
         searchResultsSplit.translatesAutoresizingMaskIntoConstraints = false
         searchResultsSplit.addPane(scrollView)
-        searchResultsSplit.addPane(searchResultsView)
+        searchResultsSplit.addPane(searchResults.view)
         // The dump fills whatever the panel doesn't take; the panel starts
         // collapsed at zero height, so the dump gets the whole pane until a
         // Search All shows results (§11).

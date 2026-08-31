@@ -78,7 +78,8 @@ final class MainViewController: NSViewController {
         guard confirmReplaceDirtyPane(target, onSaved: onSaved) else { return false }
         let moved = holder.releasePane(at: holdingPane)
         if target !== moved {
-            paneViews.removeValue(forKey: ObjectIdentifier(target))
+            paneViews.removeValue(forKey: ObjectIdentifier(target))?
+                .searchResults.removeFromParent()
             target.close()
         }
         windowModel.adopt(moved, at: index)
@@ -100,7 +101,8 @@ final class MainViewController: NSViewController {
         let pane = windowModel.detachPane(index)
         // The view bound to it belongs to this window; wherever it lands builds
         // its own from the model.
-        paneViews.removeValue(forKey: ObjectIdentifier(pane))
+        paneViews.removeValue(forKey: ObjectIdentifier(pane))?
+            .searchResults.removeFromParent()
         refreshMode()
         return pane
     }
@@ -1124,6 +1126,12 @@ final class MainViewController: NSViewController {
         // saved under a new name, reverted or detached by a join moves both at
         // once, and there is no second list of places to remember.
         view.onHeaderChanged = { [weak self] in self?.updateWindowTitle() }
+        // The results panel is a child controller of this one: containment is
+        // what makes its appear/disappear callbacks fire, and it is what will
+        // let the same panel be presented some other way later. Its *view*
+        // stays where the pane puts it — `addChild` does not care where a
+        // child's view is installed, only who owns the child.
+        addChild(view.searchResults)
         paneViews[key] = view
         return view
     }
