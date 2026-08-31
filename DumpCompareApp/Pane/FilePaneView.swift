@@ -54,9 +54,17 @@ final class FilePaneView: NSView {
     /// never quite right: the scroll view has its own inset, the split adds a
     /// divider, and an open Find bar (§11) or a taller row (§6) moves the dump
     /// besides. Whatever pushes the bytes around, this follows.
+    ///
+    /// The *split's* rectangle, not the scroll view's, so the Search All results
+    /// panel is not one of the things that pushes it around (§11). The panel is
+    /// transient chrome laid over the lower part of the dump; the map mirrors the
+    /// file, and shrinking it because a panel opened would rescale the whole map
+    /// — every mark and the viewport band with it — for something that is about
+    /// to close again. The split spans what the dump owns whether or not the
+    /// panel is showing, which is the honest span for the map to match.
     var dumpAreaInWindow: NSRect? {
         guard window != nil else { return nil }
-        return scrollView.convert(scrollView.bounds, to: nil)
+        return searchResultsSplit.convert(searchResultsSplit.bounds, to: nil)
     }
 
     private let titleLabel = NSTextField(labelWithString: "")

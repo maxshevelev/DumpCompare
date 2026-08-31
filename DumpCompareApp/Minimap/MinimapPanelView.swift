@@ -192,8 +192,10 @@ final class MinimapPanelView: NSView {
     func setChromeHeights(top: CGFloat, bottom: CGFloat) {
         var top = max(Self.switchBandHeight, top)
         var bottom = max(0, bottom)
-        // The map comes first: a Search All panel (§11) can take most of the
-        // pane's height, and matching it exactly would leave no map at all.
+        // The map comes first: a pane squeezed towards nothing by the splitter
+        // (§3.3) would otherwise leave no map at all. (The Search All panel used
+        // to be the case this guarded — it no longer reaches here, because the
+        // dump's rectangle now spans the panel too.)
         let available = bounds.height
         if available > 0, top + bottom > available - Self.minimumMapHeight {
             let spare = max(0, available - Self.minimumMapHeight - top)

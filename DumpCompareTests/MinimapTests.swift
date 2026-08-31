@@ -475,6 +475,72 @@ final class MinimapTests: XCTestCase {
         return (controller, window)
     }
 
+    // MARK: - The results panel does not shrink the map (§11, §19.2)
+
+    /// The map spans the dump's whole area, whether or not a Search All panel is
+    /// covering part of it. The panel is transient chrome over the dump; the map
+    /// mirrors the file, and rescaling it because a panel opened moves every
+    /// mark and every band on it.
+    func testTheSearchResultsPanelDoesNotShrinkTheMap() throws {
+        let url = try tempFile([UInt8](repeating: 0x41, count: 4096))
+        let (controller, window) = try makeController()
+        try controller.windowModel.pane1.open(url: url)
+        controller.apply(mode: .singleFile)
+        window.layoutIfNeeded()
+        let (_, map) = try minimapViews(window)
+        controller.setMinimapPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+        let mapHeight = map.frame.height
+        XCTAssertGreaterThan(mapHeight, 100, "premise: the window is tall enough to matter")
+
+        let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
+        paneView.showSearchResults(matchLength: 2)
+        window.layoutIfNeeded()
+        // The panel re-aligns its chrome to the dump in its own `layout()`, and
+        // opening the results panel does not resize the panel itself — so ask
+        // for the pass that a scroll or a resize would have brought. Without it
+        // this test passes on a stale alignment rather than on the rule.
+        let minimapPanel = try XCTUnwrap(descendants(of: window.contentView!,
+                                                     MinimapPanelView.self).first)
+        minimapPanel.needsLayout = true
+        window.layoutIfNeeded()
+
+        XCTAssertGreaterThan(paneView.searchResults.view.frame.height, 1,
+                             "premise: the results panel took some of the pane")
+        XCTAssertEqual(map.frame.height, mapHeight, accuracy: 0.5,
+                       "the map keeps its height while the results panel is open")
+    }
+
+    /// The same, reached the other way round — the panel is already open when the
+    /// minimap is switched on, which is how this was found.
+    func testTheMapOpensFullHeightOverAnOpenResultsPanel() throws {
+        let url = try tempFile([UInt8](repeating: 0x41, count: 4096))
+        let (controller, window) = try makeController()
+        try controller.windowModel.pane1.open(url: url)
+        controller.apply(mode: .singleFile)
+        window.layoutIfNeeded()
+        let (_, map) = try minimapViews(window)
+        let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
+
+        // Panel first, minimap second.
+        paneView.showSearchResults(matchLength: 2)
+        window.layoutIfNeeded()
+        controller.setMinimapPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+        let minimapPanel = try XCTUnwrap(descendants(of: window.contentView!,
+                                                     MinimapPanelView.self).first)
+        minimapPanel.needsLayout = true
+        window.layoutIfNeeded()
+        let withPanel = map.frame.height
+
+        paneView.hideSearchResults()
+        minimapPanel.needsLayout = true
+        window.layoutIfNeeded()
+
+        XCTAssertEqual(withPanel, map.frame.height, accuracy: 0.5,
+                       "the map is the same height with the panel open and closed")
+    }
+
     func testSingleFileShowsOneMap() throws {
         let url = try tempFile([0x00, 0x01, 0x02])
         let (controller, window) = try makeController()
