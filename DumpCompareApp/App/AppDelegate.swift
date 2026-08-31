@@ -54,7 +54,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         themeObserver = NotificationCenter.default.addObserver(
             forName: AppTheme.didChangeNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            self?.applyTheme()
+            // `queue: .main` is the guarantee: the block is delivered on the
+            // main queue, so it is already on the main actor — the same
+            // assumption the close observer below makes, and for the same
+            // reason. The closure itself is nonisolated, which is why saying so
+            // is necessary.
+            MainActor.assumeIsolated {
+                self?.applyTheme()
+            }
         }
         closeObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification, object: nil, queue: .main
