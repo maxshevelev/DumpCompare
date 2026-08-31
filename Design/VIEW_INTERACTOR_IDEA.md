@@ -12,11 +12,19 @@ has earned its keep:
 - **Coordinator** — navigation and presentation: transitions, navigation chrome,
   presenting child views.
 
-With two rules holding it together: the view forwards every action to an
-`Actions` protocol and decides nothing, and **the interactor decides about
-navigation while the coordinator performs it**. That second rule is the one most
-often lost, and it is the one worth writing down: a coordinator that decides when
-to present is a second interactor with windows in it.
+With three rules holding it together:
+
+1. The view forwards every action to an `Actions` protocol and decides nothing.
+2. **The interactor decides about navigation; the coordinator performs it.** The
+   rule most often lost — a coordinator that decides *when* to present is a
+   second interactor with windows in it.
+3. **The interactor never holds a view, and never imports AppKit.** It is pure
+   logic. Where an action is tied to a component, a **context object** travels
+   with it: opaque to the interactor, meaningful to the layer that presents. The
+   interactor passes it through as a black box and never looks inside.
+
+The third is a law rather than a guideline, and it is the one this codebase can be
+measured against.
 
 This document is what that scheme looks like after taking it apart against *this*
 codebase and against AppKit: which parts are already here under other names,
@@ -75,10 +83,40 @@ is exactly the right split, and it was arrived at by need rather than by design 
 the seam exists so tests can drive the command without a popover that closes the
 instant it opens in an offscreen window.
 
-Which is the strongest evidence in this document: **the interactor's protocol has
-already been written, one function at a time, by the tests.** Twelve injected
-closures exist because a flow had to be drivable without a panel or a modal.
-Giving them a name is most of the design work.
+The twelve injected closures are the other half of that: they exist because a
+flow had to be drivable without a panel or a modal, which means the boundary was
+*discovered* rather than designed. But they are the **coordinator's** protocol,
+not the interactor's, and six of them break the third rule outright:
+
+```swift
+var joinOpenPanel:        ((NSOpenPanel) -> URL?)?
+var joinConfirm:          ((NSAlert) -> NSApplication.ModalResponse)?
+var segmentDirectoryPanel:((NSOpenPanel) -> URL?)?
+var segmentSavePanel:     ((NSSavePanel) -> URL?)?
+var segmentOpenPanel:     ((NSOpenPanel) -> URL?)?
+var segmentWriteConfirm:  ((NSAlert) -> NSApplication.ModalResponse)?
+```
+
+An interactor cannot hold any of these: the types are AppKit. They have to be
+re-stated in the domain's own words before an interactor can own the flow —
+
+```swift
+protocol JoinPresenting {
+    func chooseFileToJoin() -> URL?
+    func confirmJoin(named: String, verb: String, dirty: Bool) -> Bool
+}
+```
+
+— which is worth doing on its own merits: the tests currently build an `NSAlert`
+and read its buttons to answer a question the flow asked in domain terms in the
+first place. The controller keeps the panels and the alerts; what crosses the
+boundary is a URL and a yes.
+
+The same applies to the AppKit services these flows reach for today, and each has
+an obvious side of the line: `NSAlert` (17 uses) and the panels go to the
+coordinator, `NSSound.beep()` is presentation, `NSWorkspace` (Show in Finder) is
+presentation, and `NSPasteboard` is a system port — either behind a protocol the
+interactor can hold, or left in the view layer, but not imported.
 
 ## Where AppKit pushes back
 
@@ -133,9 +171,19 @@ now).
 
 A popover opens relative to a rect in a view (`show(relativeTo:of:)`); a sheet
 belongs to a window (`beginSheet`). An interactor cannot know a rect and must not
-hold a view. The answer is the one already in the repo: the interactor emits a
-**request value**, and the coordinator resolves it into a presentation, finding
-the anchor itself.
+hold a view — rule three. Two mechanisms, and both are needed:
+
+- The interactor emits a **request value** and the coordinator resolves it into a
+  presentation, finding the anchor itself. That is `BookmarkEditRequest` today:
+  it carries `pane`, `row`, `existingName` and what to do about them, and
+  deliberately not the anchor.
+- When only the view knows where the thing is — a clicked row, a mark on the
+  minimap, a byte in the dump — a **context object** rides along from the view,
+  through the interactor, to the coordinator. The interactor takes it as an
+  opaque token and hands it back with the request; the coordinator is the only
+  side that knows it holds a rect and a view. This keeps "anchor the popover on
+  the row that was clicked" possible without the interactor learning what a row
+  is, and it is the piece that makes rule three survive contact with popovers.
 
 And "navigation" barely exists here. There is no stack and no current screen: a
 window shows two panes, a minimap, a find bar, a results panel and a tab bar at
@@ -192,18 +240,39 @@ starts with a click — but it is exactly "logic that prepares what the view
 shows", so the interactor is its home. Worth naming explicitly, or it gets left
 in the view controller as "drawing support" forever.
 
-## Where `PaneViewModel` sits
+## The model layer, which this scheme does not touch
 
-It is not an interactor: it handles no actions and decides nothing about
-presentation. It is not a view. It owns the document, the undo history, the
-segments, and answers per-row byte state — it is the **model**, the fourth box,
-already declared in `CLAUDE.md`'s four layers. Interactors sit between the view
-controller and it.
+The three roles exist to untangle smart views — views with several jobs mixed
+into them. Models are not part of that and go on as they are; the interactor is
+what talks to them.
 
-Renaming it into an interactor would collapse two layers into one name. Its undo
-is a case in point: flows record steps through it onto the document's history,
-and an interactor that learns to undo its own work becomes a second mechanism —
-there is a reason a join is one transaction (§22.2).
+`PaneViewModel` is one, and it is in better shape than its name: it imports
+`Foundation` and `DumpCompareCore` and nothing else, and the only `NS` symbol in
+1877 lines is an `NSObjectProtocol` observer token. So does the rest of the
+tier — `WindowViewModel`, `SegmentStore`, `BookmarkStore`, `ComparisonCoordinator`,
+`BackgroundOperation`: all Foundation. **Rule three is already affordable here**,
+because the layer an interactor would stand on is AppKit-free today. All of the
+AppKit is in the view controller, which is exactly the file this is about.
+
+`PaneStatus` is the shape to notice: a value of domain facts — name, size, caret
+offset, dirty, read-only, undo/redo, insert mode, the caret's piece — and no
+formatting. "The caret's offset, raw — the view renders it as bare hex" is a
+comment in it. That is a model handing out a snapshot, not a view model preparing
+strings, and it means the display path for panes needs no interactor inserted
+into it: the model answers, the view formats.
+
+**The name is wrong, then.** `PaneViewModel` is a leftover of an MVVM framing the
+code does not follow: it owns the document, the undo history, the segments and
+the pane's own state, and it answers the hex view as a data source. `PaneModel`
+(or `PaneDataModel`, if the suffix is the house convention) says what it is. The
+property that holds the window's one is already called `windowModel` in 136
+places, so half the codebase reads it as a model already.
+
+The rename is mechanical and wide: 80 references across 7 app files and 124
+across 39 test files. Worth doing as its own commit, before any interactor exists
+to be confused with it — a file called `PaneViewModel` sitting next to a
+`SearchInteractor` invites exactly the wrong guess about which one holds the
+logic.
 
 ## What it costs, and the shape that keeps it affordable
 
