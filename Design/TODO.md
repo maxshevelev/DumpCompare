@@ -246,35 +246,6 @@ views, which has silently eaten a dropped file here once before.
 window); the strip for files, shippable alone; then the strip and other tabs for
 panes.
 
-### View, interactor, coordinator
-
-**What.** `MainViewController` is 5484 lines and holds 61 stored properties. A
-division of roles: the view controller composes and lays out UI and nothing else;
-an interactor per feature group owns the logic behind it, reached through an
-`Actions` protocol; a coordinator presents — sheets, popovers, windows, tabs. The
-interactor decides about presentation, the coordinator performs it.
-
-**Why.** Every feature's change starts by opening the same file, and the file's
-state says why: 17 of its 61 properties are the minimap's overview subsystem and
-11 more are one in-flight flow or another. Action handling is *not* the problem —
-63 actions, 516 lines, median 4 — so this is about the flows, not the plumbing.
-
-**How.** Taken apart in **`Design/VIEW_INTERACTOR_IDEA.md`** — not a plan. The
-short version: two of the three roles already exist here under other names
-(`ComparisonCoordinator` is an interactor; the twelve injected present/confirm
-closures are a window coordinator), and the interactor's protocol was written one
-function at a time by the tests. What needs adapting is the *directions*, not the
-boundaries — on macOS actions arrive from the menu bar through the responder
-chain rather than from the view, menu validation has to be pulled from a snapshot
-rather than asked per item, and the coordinator's subject is barely navigation, so
-it splits into a window one and an app one. Minimap out first (a subsystem with a
-bad address), then search as the pilot, then one decision about the rest. Six
-interactors, not forty: the scheme has to be sized for a 25k-line UI layer.
-
-**Cost.** The minimap move is the bulk and is counted under the entry below.
-The search pilot is 4–6 hours including its tests; the decision after it is the
-point of stopping there.
-
 ### Split the minimap into layers
 
 **What.** `MinimapView.swift` is ~2500 lines and grows with every feature that
@@ -313,6 +284,21 @@ is decided about the rest.
 ---
 
 ## Someday
+
+### View, interactor, coordinator — reasoning, not an entry
+
+**Not a task, and deliberately in Someday rather than Next.**
+`Design/VIEW_INTERACTOR_IDEA.md` weighs a division of roles — view / interactor /
+coordinator, the interactor pure logic with no AppKit — for applicability to an
+AppKit app, with this one as the evidence. It reaches verdicts per role (view and
+interactor fit, and fit better on macOS than on iOS; coordinator barely applies,
+because the system owns tabs and there is no navigation stack), and it counts what
+the current shape costs: 5484 lines and 61 properties in one controller, 33 of 79
+test files standing up an `NSWindow`, 264 pure-logic tests in 3.1 s against 969
+view-bound ones in ~100 s.
+
+It proposes nothing. If it is ever acted on, the questions it ends with are what
+would have to be decided first.
 
 ### Zones — named intervals of a dump
 

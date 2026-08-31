@@ -1,346 +1,330 @@
-# View, interactor, coordinator — an idea, thought through
+# View, interactor, coordinator in an AppKit app
 
-Not a plan. The proposal is a division of roles brought from iOS work, where it
-has earned its keep:
+Reasoning, not a plan. Nothing here proposes a change to this codebase; the
+codebase appears only as evidence, because it is a real AppKit app of a real size
+and it is what the argument can be tested against.
+
+The scheme under discussion, brought from iOS work where it has earned its keep:
 
 - **View / view controller** — UI only: composing components, layout, colours,
   fonts, gestures, drawing. No handling of user actions beyond a complex view's
   own internals, and no presenting of other views.
 - **Interactor** — the logic behind the UI: user actions, preparing what the view
-  shows, deciding what happens next. Knows nothing about how the view is built;
-  reaches it through a protocol.
+  shows, deciding what happens next. Knows nothing about how the view is built,
+  and reaches it through a protocol.
 - **Coordinator** — navigation and presentation: transitions, navigation chrome,
   presenting child views.
 
-With three rules holding it together:
+Held together by three rules: the view forwards every action and decides nothing;
+the interactor decides about presentation while the coordinator performs it; and
+the interactor never holds a view nor imports AppKit — where an action is tied to
+a component, an opaque **context object** rides along, meaningful only to the
+layer that presents.
 
-1. The view forwards every action to an `Actions` protocol and decides nothing.
-2. **The interactor decides about navigation; the coordinator performs it.** The
-   rule most often lost — a coordinator that decides *when* to present is a
-   second interactor with windows in it.
-3. **The interactor never holds a view, and never imports AppKit.** It is pure
-   logic. Where an action is tied to a component, a **context object** travels
-   with it: opaque to the interactor, meaningful to the layer that presents. The
-   interactor passes it through as a black box and never looks inside.
+Models are outside the scheme. It exists to untangle views with several jobs
+mixed into them; models go on as they were, and the interactor is what talks to
+them.
 
-The third is a law rather than a guideline, and it is the one this codebase can be
-measured against.
+## The verdict, up front
 
-This document is what that scheme looks like after taking it apart against *this*
-codebase and against AppKit: which parts are already here under other names,
-where the platform pushes back, and what it costs.
+The three roles do not fare equally on this platform.
 
-The verdict up front: the roles are right and two of the three already exist here
-in embryo. What needs adapting is not the boundaries but the *directions* — on
-macOS actions arrive from the menu bar rather than from the view, validation has
-to be pulled rather than asked, and the coordinator's subject is barely
-navigation at all. And the whole thing has to be sized for an app whose entire
-UI layer is 25k lines: six interactors, not forty.
+- **View / interactor is a strong fit** — and a stronger fit on macOS than on
+  iOS, for a reason that is structural rather than stylistic (below).
+- **Of the interactor's two jobs, only one is needed here.** Handling actions:
+  yes. Preparing data for display: mostly already solved, by AppKit-free models
+  that hand out domain snapshots and views that format them. So an interactor in
+  an app shaped like this one is a *flow* object, not a presenter.
+- **Coordinator is the weak fit**, because on macOS there is barely any
+  navigation to coordinate. The role survives if it is renamed to what it
+  actually does here — present anchored and modal UI, and own windows and tabs —
+  and if it is allowed to be two objects rather than one.
+- **The no-AppKit law is right, and needs admitted carve-outs.** Drag-and-drop,
+  the pasteboard and modality are places where the domain genuinely is
+  AppKit-shaped, and pretending otherwise buys a translation layer whose only job
+  is restating `NSDragOperation`.
 
-## What is actually in the 5484 lines
+## Why the problem is worse on macOS than on iOS
 
-`MainViewController.swift` is the file this is about.
+This is the strongest argument *for* the scheme, and it is easy to miss.
 
-| lines | what | role it belongs to |
-|---|---|---|
-| ~730 | `loadView`, `viewDidLoad`, `apply(mode:)`, `wireComparison`, `paneView(for:)`, content and strip layout | view |
-| ~1290 | minimap: the panel, overview, its data, the segment strip's legend | interactor (a subsystem, below) |
-| ~2000 | open, save/revert, join, duplicate, new file, segments, writing pieces out, bookmarks, search, closing | interactor |
-| ~480 | the pane's context menus, toolbar and menu validation | view, answering from a snapshot |
-| ~500 | panes, tabs, drag-and-drop meaning and performance | coordinator (app-level) + interactor |
-| ~200 | alerts, sheets, popovers, forms | coordinator (window-level) |
+On iOS the navigation stack imposes decomposition. A screen is a unit, a screen
+is a view controller, and pushing one is the seam. Even a lazy app ends up with
+its logic distributed across screens, because the framework's central metaphor is
+one-screen-at-a-time.
 
-The state says the same thing more precisely, and it is the number to watch:
-**61 stored instance properties**, of which
+macOS has no such pressure. A window holds many long-lived surfaces at once —
+here: two panes, a minimap, a find bar, a results panel, a tab bar, a status bar
+— and *none of them is a screen*. There is no push, no current screen, nothing
+that says "this belongs somewhere else". So the window's controller becomes the
+place where everything that concerns more than one surface goes, and there is no
+framework metaphor pushing back.
 
-- **17 are minimap and overview** — `overviewDebounceTask`, `overviewPassTask`,
-  `overviewRowsAwaitingIndex`, `overviewRebuilds`, `overviewPatches`,
-  `overviewProgress`, `overviewProgressReveal`, `minimapViewports` and the rest;
-- **11 are one in-flight flow or another** — `findTask`, `findOperation`,
-  `searchAllGeneration`, `searchAllPane`, `segmentWriteTask`,
-  `segmentWriteOperation`, `openEditing`, `openGoToForm`, `openSegmentsForm`;
-- the rest are view handles, the window model, diff-navigation flags and config.
+The result, measured in this app: `MainViewController.swift` is **5484 lines**
+with **61 stored instance properties**. Of those properties, 17 are one
+subsystem's (the minimap's overview: debounce and pass tasks, awaiting-index
+rows, rebuild and patch counters, progress reveal/hide tasks, per-map viewports)
+and 11 are one in-flight flow or another (`findTask`, `findOperation`,
+`searchAllGeneration`, `searchAllPane`, `segmentWriteTask`,
+`segmentWriteOperation`, `openEditing`, `openGoToForm`, `openSegmentsForm`).
 
-Action *handling*, by contrast, is not the problem: 63 `@objc` actions, 516 lines
-between them, median 4. They are already adapters. What is massive is what they
-call.
+Two other numbers matter for judging the scheme, and they cut the other way from
+what one might expect:
 
-## What already plays these roles here
+- **Action handling is not the problem.** 63 `@objc` actions, 516 lines between
+  them, median 4 lines. They are already thin adapters. Whatever a scheme buys
+  here, it is not "get the action handling out of the view controller".
+- **The model tier is already AppKit-free.** `PaneViewModel` imports `Foundation`
+  and the core package and contains one `NS` symbol in 1877 lines (an observer
+  token); so do `WindowViewModel`, `SegmentStore`, `BookmarkStore`,
+  `ComparisonCoordinator`, `BackgroundOperation`. All of the AppKit is in the view
+  controller. So the no-AppKit law is affordable — the ground an interactor would
+  stand on is clean already.
 
-| role | what plays it today | what is missing |
-|---|---|---|
-| interactor | `ComparisonCoordinator` — provider closure in, callbacks out, its own lifecycle and state, `@MainActor`, no view in sight, tests construct it directly | the name, and the other flows |
-| coordinator (window) | `bookmarkEditPresenter`, `cutEditPresenter`, `goToFormPresenter`, `segmentsFormPresenter`, `joinConfirm`, `segmentWriteConfirm`, the panel seams | one object instead of twelve closures |
-| coordinator (app) | `AppDelegate`, `OpenDocumentRegistry`, `makeSiblingTab` | a boundary; today it is spread through the window controller |
-| pure rules | `HexLayout`, `DropBandLayout`, `OpenPlacement`, `PaneDrop.outcome`, `DuplicateName`, `PaneName` | nothing — this tier works |
+## Role by role
 
-`BookmarkEditRequest` is worth looking at closely, because it is the
-interactor→coordinator hand-off already written: a value carrying *what* to edit
-(`pane`, `row`, `existingName`) plus `commit` / `cancel` / `delete`, given to a
-presenter that returns how to dismiss what it opened. Note what it does **not**
-carry: the popover's anchor. The presenter finds that from the pane's view. That
-is exactly the right split, and it was arrived at by need rather than by design —
-the seam exists so tests can drive the command without a popover that closes the
-instant it opens in an offscreen window.
+### View controller: fits, with one caveat
 
-The twelve injected closures are the other half of that: they exist because a
-flow had to be drivable without a panel or a modal, which means the boundary was
-*discovered* rather than designed. But they are the **coordinator's** protocol,
-not the interactor's, and six of them break the third rule outright:
-
-```swift
-var joinOpenPanel:        ((NSOpenPanel) -> URL?)?
-var joinConfirm:          ((NSAlert) -> NSApplication.ModalResponse)?
-var segmentDirectoryPanel:((NSOpenPanel) -> URL?)?
-var segmentSavePanel:     ((NSSavePanel) -> URL?)?
-var segmentOpenPanel:     ((NSOpenPanel) -> URL?)?
-var segmentWriteConfirm:  ((NSAlert) -> NSApplication.ModalResponse)?
-```
-
-An interactor cannot hold any of these: the types are AppKit. They have to be
-re-stated in the domain's own words before an interactor can own the flow —
-
-```swift
-protocol JoinPresenting {
-    func chooseFileToJoin() -> URL?
-    func confirmJoin(named: String, verb: String, dirty: Bool) -> Bool
-}
-```
-
-— which is worth doing on its own merits: the tests currently build an `NSAlert`
-and read its buttons to answer a question the flow asked in domain terms in the
-first place. The controller keeps the panels and the alerts; what crosses the
-boundary is a URL and a yes.
-
-The same applies to the AppKit services these flows reach for today, and each has
-an obvious side of the line: `NSAlert` (17 uses) and the panels go to the
-coordinator, `NSSound.beep()` is presentation, `NSWorkspace` (Show in Finder) is
-presentation, and `NSPasteboard` is a system port — either behind a protocol the
-interactor can hold, or left in the view layer, but not imported.
-
-## Where AppKit pushes back
-
-### Actions arrive through the responder chain, not from the view
-
-On iOS an action starts in a view. Here most of them start in the **menu bar or
-the toolbar**, sent to no particular target: `NSApp` walks the key window's
+"UI only" is a clean rule here, and the view controller keeps a job the iOS
+version of this scheme does not name: it is the **responder-chain adapter**. On
+macOS most actions do not start in a view. They start in the menu bar or the
+toolbar, addressed to nobody in particular, and `NSApp` walks the key window's
 first responder, its superviews, the view controllers, the window, the window
-controller, itself, then the app delegate. `MainViewController` is a first-class
-action receiver on this platform, not a wiring accident.
+controller, itself, and finally the app delegate. `NSViewController` is a
+first-class action receiver on this platform.
 
-So the scheme gains a second, equal door: the view controller receives menu and
-toolbar commands and forwards them into the same `Actions`. It is the
-responder-chain adapter, and that is a role, not a leak.
+That is not a leak in the scheme — it is the macOS shape of "the view forwards
+actions". It does mean the interactor must stay *out* of the responder chain: it
+is called, never messaged, or first-responder semantics (which pane is focused,
+which window is key) move into the logic layer where they cannot be reasoned
+about.
 
-The consequence is a rule: **the interactor must not be in the responder chain.**
-It is called, never messaged. Putting it there would move first-responder
-semantics — which pane is focused, which window is key — into the logic layer,
-where they cannot be reasoned about.
+The caveat: **AppKit views are smart by design.** `NSTableView` owns selection
+and column state, `NSSplitView` owns divider geometry, `NSTextView` owns an
+undo manager and a field editor. "The view has no logic" can only ever mean "no
+*domain* logic" — which is a weaker rule than it sounds and has to be restated
+per component. In this app the honest split for a pane's results panel turned out
+to be: content and what a row means belong to the panel; height, divider and
+stored preference belong to the surface hosting it. Nothing in the scheme's
+wording predicts where that line falls.
 
-### First responder is view-layer state, so actions carry their subject
+### Interactor: the strong fit, doing one job rather than two
 
-"Which pane is active" is decided by focus: `focusHexView()` → `onFocus` →
-`onActivate`, and focus stays the single source of truth (§3.3). An interactor
-needs to act on a pane but must not own focus.
+The scheme gives the interactor two jobs. In an app of this shape only the first
+is real.
 
-Therefore every `Actions` call carries its subject — *append a file to this
-pane*, not *append a file to whatever is active*. The pane menu already works
-this way, pinning its pane in `representedObject` so a right-click acts on the
-header it was opened from rather than on the active pane. The same rule, applied
-to the whole boundary.
+**Handling actions and owning flows** — this is what the file above needs. A flow
+is a short-lived transaction with a conversation in the middle: choose a file,
+warn about unsaved bytes, run a background write, report an error. Those are
+exactly the ~2000 lines and 11 properties that have no other home today.
 
-### Validation wants a snapshot, not a question
+**Preparing data for display** — largely unnecessary here, because the model
+already does it in domain terms and the view formats. `PaneStatus` is the shape:
+name, size, caret offset, selection length, dirty, read-only, undo/redo, insert
+mode, the caret's piece. No strings, no formatting — one of its own comments
+reads "the caret's offset, raw — the view renders it as bare hex". Inserting an
+interactor on that path would add a hop that translates domain facts into the
+same domain facts.
 
-`NSMenuItemValidation` and `NSToolbarItemValidation` are protocols on the
-*responder*, so the view controller has to answer them — and it is asked on
-**every menu open, for every item**: dozens of synchronous calls in a burst, 63
-selectors in one switch here.
+There is one exception worth naming because it does not look like a flow: a
+**subsystem** — the minimap's overview, 1290 lines and 17 properties of tasks,
+debounces, progress and generation counters. Nothing about it begins with a
+click, yet it is squarely "logic that prepares what the view shows". If the
+scheme has no name for it, it stays in the view controller forever as "drawing
+support".
 
-Asking the interactors per item is the obvious move and the wrong one. The right
-direction is inverted: each interactor keeps a small **state snapshot** (a value:
-`canRevert`, `canJoin`, `hasSelection`, …), updated when its state changes, and
-validation reads it. Cheap, synchronous, and it keeps enablement readable end to
-end — which is why `validateMenuItem` should stay one switch rather than become a
-registry of per-feature validators.
+And there is a precedent in this app for what an interactor looks like when it
+works. `ComparisonCoordinator` — misleadingly named — takes its inputs through a
+closure rather than a reference to the controller, publishes results through
+callbacks, owns a lifecycle and a generation counter, is `@MainActor`, imports no
+AppKit, and its tests construct it rather than a window. It is an interactor that
+nobody called one, and it is the least troublesome object in the window layer.
 
-So the interactor→view channel is two channels: **pushed updates** (protocol
-calls, "the results changed") and a **pulled snapshot** (what is possible right
-now).
+### Coordinator: the weak fit
 
-### Presentations are anchored and per-window, so the coordinator splits in two
+Three quarters of what this role does on iOS does not exist here.
 
-A popover opens relative to a rect in a view (`show(relativeTo:of:)`); a sheet
-belongs to a window (`beginSheet`). An interactor cannot know a rect and must not
-hold a view — rule three. Two mechanisms, and both are needed:
+There is no navigation stack and no current screen. What *looks* like navigation
+on macOS mostly belongs to the system: one line,
+`NSWindow.allowsAutomaticWindowTabbing = true`, is what gives ⌘T, ⌃Tab, ⌘1…⌘9,
+dragging a tab out into its own window, dragging one back in, and the Window
+menu's Show Tab Bar / Move Tab to New Window / Merge All Windows. A coordinator
+cannot own any of that; it can only answer it.
 
-- The interactor emits a **request value** and the coordinator resolves it into a
-  presentation, finding the anchor itself. That is `BookmarkEditRequest` today:
-  it carries `pane`, `row`, `existingName` and what to do about them, and
-  deliberately not the anchor.
-- When only the view knows where the thing is — a clicked row, a mark on the
-  minimap, a byte in the dump — a **context object** rides along from the view,
-  through the interactor, to the coordinator. The interactor takes it as an
-  opaque token and hands it back with the request; the coordinator is the only
-  side that knows it holds a rect and a view. This keeps "anchor the popover on
-  the row that was clicked" possible without the interactor learning what a row
-  is, and it is the piece that makes rule three survive contact with popovers.
+What remains is real but small: sheets, popovers, the settings window, new
+windows and tabs, and "which window already has this file open". And it divides
+along a seam the scheme does not anticipate:
 
-And "navigation" barely exists here. There is no stack and no current screen: a
-window shows two panes, a minimap, a find bar, a results panel and a tab bar at
-once, all long-lived. What looks like navigation mostly belongs to the *system* —
-`allowsAutomaticWindowTabbing` is what gives ⌘T, ⌃Tab, dragging a tab out into
-its own window, and the Window menu's Merge All Windows. A coordinator cannot own
-those; it can only answer them.
+- **window-level** — sheets, popovers, forms, alerts. Needs the window, and must
+  behave when there is none (a controller under test).
+- **app-level** — windows, tabs, and which window holds what. This is a genuinely
+  different scope: in this app it is `OpenDocumentRegistry`, which answers a
+  question no window can — a file is open exactly once in the app.
 
-So the role divides along a real seam:
+One protocol over both is forcing it. And a role with little to do is a role that
+drifts: the failure mode is a coordinator that starts deciding *whether* to
+present rather than *how*, which is the second rule broken and a second interactor
+with windows in it.
 
-- **window coordinator** — sheets, popovers, forms, the alerts. Needs the window,
-  and must behave when there is none (a controller built in a test).
-- **app coordinator** — windows, tabs, and which window holds which file. This is
-  where `OpenDocumentRegistry` already lives, and it answers a question no window
-  can: a file is open once in the app (§4.1 rule 6).
+The mechanics of what is left also constrain the interactor. A popover opens
+relative to a rect in a view; a sheet belongs to a window. So either the
+interactor emits a request value the coordinator resolves — as
+`BookmarkEditRequest` does here, carrying what to edit and what to do about it,
+and deliberately not the anchor — or, when only the view knows where the thing
+is, a context object rides from view through interactor to coordinator as an
+opaque token. Both are needed; with only the first, "anchor this popover on the
+row that was clicked" cannot be expressed without the interactor learning what a
+row is.
 
-One protocol over both would be forcing it. The split is the point; the names are
-a choice.
+## Where the platform argues back
 
-### Modality: pick synchronous or async once
+Six costs, each specific to AppKit rather than to the scheme.
 
-Today the confirmations are synchronous `runModal` with a test seam, and a good
-deal of flow logic reads as straight-line code because of it. An interactor that
-`await`s a decision reads better still — but `await` plus `runModal` is a
-re-entrancy trap, so going async means `beginSheetModal` throughout and rewriting
-the flows as continuations. Both are defensible; mixing them is not. This is a
-decision to take before the first interactor, not during.
+**1. The responder chain is already a routing mechanism, and a good one.** AppKit
+delivers a command to the right window and the right focused component for free.
+An `Actions` protocol per view partly duplicates that, and can fight it: once
+actions must be forwarded explicitly, "whatever is focused handles this" stops
+being free and turns into plumbing that carries the subject by hand. The
+mitigation is a rule — every `Actions` call names its subject, "append to *this*
+pane" — but the rule exists because the framework's own answer was given up.
 
-### Data-source views pull; they are not handed view models
+**2. Target/action, delegate and data source are the native idiom.** AppKit views
+expect to be driven that way, and a strict `Actions` boundary adds a hop to every
+callback: delegate method → Actions → interactor → protocol → view. For
+data-source-heavy UI the hop is per-row-ish. Which forces a carve-out: a
+virtualized view has to *pull*. `HexView` asks for the byte state of the rows it
+is about to draw; pushing a formatted row model per row would be a rewrite and a
+regression on a 16 MB dump. The boundary survives — the view holds no domain
+logic — but the direction inverts, and the scheme's wording ("the interactor
+prepares what the view shows") is the wrong way round for this case.
 
-`HexView` is virtualized: it asks for the byte state of the rows it is about to
-draw (`HexViewDataSource`, `hexByteStates`). A strict reading of "the interactor
-prepares what the view shows" would push a formatted row model per row — a
-rewrite, and a regression on a 16 MB dump.
+**3. Modality is synchronous in the platform's grain.** `runModal` returns a
+answer inline, and flow code reads as straight-line prose because of it. A
+pure-logic interactor can keep that (it holds no AppKit and still asks a question
+through a port) — or go async with `beginSheetModal`, at which point every flow
+becomes continuations and re-entrancy becomes a class of bug that did not exist.
+Both are defensible; mixing them is not, and the choice has to be made once for
+the whole app rather than per flow.
 
-The carve-out: for a data-source view, the interactor (or the model beneath it)
-supplies a **pull interface**, not pushed data. The boundary is unchanged — the
-view still holds no logic — only the direction is. `PaneViewModel` is already
-that interface.
+**4. The no-AppKit law needs admitted carve-outs.** Some domains here genuinely
+are AppKit-shaped: drag-and-drop (`NSDragOperation`, pasteboard types, drag
+sessions), the pasteboard's contents, services, printing. This app has one happy
+example — the rule that decides what a drop means is a pure function over its own
+enums, and only its *result* is mapped to `NSDragOperation` at the edge — but that
+worked because the rule is twenty lines. A richer drag interaction would grow a
+translation layer whose only job is restating framework vocabulary. That cost
+should be admitted in advance, not discovered.
 
-### One notification idiom, not three
+**5. Without "screens", an interactor's scope is undefined.** On iOS the screen
+bounds it. Here nothing does, and both errors are easy: per-surface interactors
+give roughly forty new types for an app whose entire UI layer is 25k lines, while
+one per window gives back the object the exercise was meant to break up. The only
+answer I can defend is grouping by feature — documents, editing, search,
+segments, bookmarks, minimap — which is six, and which is a judgement call the
+scheme does not make for you.
 
-Combine would be a third way to say "something changed" beside the closures
-(`onEdit`, `onIndexChanged`, `onHeaderChanged`) and the async work already here,
-and then every update carries the question of which of the three it travels by.
-The interactor→view channel has many members, which is precisely the case a
-protocol serves. Keep one idiom.
+**6. Validation is a query, and it runs in bursts.** `NSMenuItemValidation` and
+`NSToolbarItemValidation` are protocols on the *responder*, so the view
+controller must answer them — for every item, on every menu open. Dozens of
+synchronous calls in a burst, 63 selectors in one switch here. Asking interactors
+per item is the obvious move and the wrong one; the workable direction is
+inverted, with each interactor keeping a cheap state snapshot the view pulls. So
+the interactor→view channel is really two channels — pushed updates and a pulled
+snapshot — which the scheme describes as one.
 
-### A subsystem is an interactor whose actions are not user actions
+## Testing: the measurable difference
 
-The minimap's overview is 1290 lines and 17 properties of tasks, debounces,
-progress and generation counters. It is not a user-action flow — nothing about it
-starts with a click — but it is exactly "logic that prepares what the view
-shows", so the interactor is its home. Worth naming explicitly, or it gets left
-in the view controller as "drawing support" forever.
+This is the strongest argument for the scheme, and it is the one that can be
+measured rather than argued.
 
-## The model layer, which this scheme does not touch
+Pure logic gets unit tests. Logic living inside a view controller gets tests that
+have to stand up the UI to reach it — and on macOS that is worse than on iOS:
+modal panels block the runloop, an offscreen window makes a popover close the
+instant it opens (a comment in this codebase says exactly that, next to the seam
+invented to work around it), and menu commands and drag sessions are not
+straightforwardly drivable at all.
 
-The three roles exist to untangle smart views — views with several jobs mixed
-into them. Models are not part of that and go on as they are; the interactor is
-what talks to them.
+One nuance against the strong form of the claim: it is not that *only* UI tests
+are possible. On macOS you can build the controller in-process and drive it
+directly, without XCUITest, and this app does — all 969 of its tests are that
+kind. So the choice is not "unit tests or screen-scraping"; it is "unit tests or
+in-process view tests". What the second costs, in this suite:
 
-`PaneViewModel` is one, and it is in better shape than its name: it imports
-`Foundation` and `DumpCompareCore` and nothing else, and the only `NS` symbol in
-1877 lines is an `NSObjectProtocol` observer token. So does the rest of the
-tier — `WindowViewModel`, `SegmentStore`, `BookmarkStore`, `ComparisonCoordinator`,
-`BackgroundOperation`: all Foundation. **Rule three is already affordable here**,
-because the layer an interactor would stand on is AppKit-free today. All of the
-AppKit is in the view controller, which is exactly the file this is about.
+| | pure logic (`DumpCompareCore`) | view-bound (app suite) |
+|---|---|---|
+| tests | 264 | 969 |
+| wall clock | **3.1 s** | **~100 s** |
+| per test | ~12 ms | ~103 ms |
 
-`PaneStatus` is the shape to notice: a value of domain facts — name, size, caret
-offset, dirty, read-only, undo/redo, insert mode, the caret's piece — and no
-formatting. "The caret's offset, raw — the view renders it as bare hex" is a
-comment in it. That is a model handing out a snapshot, not a view model preparing
-strings, and it means the display path for panes needs no interactor inserted
-into it: the model answers, the view formats.
+Nine times slower per test, and the slowness is the least of it. The suite also
+carries, purely to neutralise the UI:
 
-**The name is wrong, then.** `PaneViewModel` is a leftover of an MVVM framing the
-code does not follow: it owns the document, the undo history, the segments and
-the pane's own state, and it answers the hex view as a data source. `PaneModel`
-(or `PaneDataModel`, if the suffix is the house convention) says what it is. The
-property that holds the window's one is already called `windowModel` in 136
-places, so half the codebase reads it as a model already.
+- **33 of 79 test files build an `NSWindow`** — a window, a content view
+  controller, and a layout pass, to ask a question about a flow.
+- **226 explicit layout calls** and **170 runloop pumps**: a view-bound test has
+  to make the layout happen and then wait for the main actor to settle before it
+  can assert.
+- **83 walks of the view tree** (`descendants(of:_:)`) to reach a subview the
+  controller does not hand out.
+- **24 test-only hooks in production code** — the twelve panel/confirm/present
+  closures, an `isRunningTests` flag, a static modal responder, swappable
+  `UserDefaults`, and a handful of `…ForTesting` accessors. Every one of them is a
+  line in the app that exists because a test could not otherwise get in.
 
-The rename is mechanical and wide: 80 references across 7 app files and 124
-across 39 test files. Worth doing as its own commit, before any interactor exists
-to be confused with it — a file called `PaneViewModel` sitting next to a
-`SearchInteractor` invites exactly the wrong guess about which one holds the
-logic.
+None of that is bad engineering; it is the correct response to the constraint. It
+is also precisely the bill an AppKit-free interactor would stop paying. And the
+direction of causation is worth noticing: those twelve closures were not designed
+as a boundary — they were *discovered*, one at a time, by tests that needed a flow
+without a modal. A seam found by tests is a seam.
 
-## What it costs, and the shape that keeps it affordable
+The honest counterweight: unit tests of an interactor also test less. A
+view-bound test that clicks Find All and reads the header count checks the wiring
+too — that the button is connected, that the panel is in the hierarchy, that the
+layout gives it a height. Split the layers and that coverage does not move to the
+interactor's tests; it has to be kept somewhere else, or it is lost. In this suite
+several tests are exactly of that kind, and they are among the ones that have
+caught real regressions.
 
-Eleven features × (view + `Actions` + interactor + coordinator protocol) is
-around forty new types for an app whose UI layer is 25k lines. At that size the
-scheme costs more than it saves. What keeps it honest:
+## What tips the balance
 
-- **Interactors by feature group, not by screen**: documents, editing, search,
-  segments, bookmarks, minimap. Six.
-- **Two coordinators for the whole app**, not one per feature.
-- **`Actions` protocols only where a view actually talks to an interactor.** A
-  three-line action that toggles a setting does not need a protocol to travel
-  through.
-- Flows that need each other need each other's *answers*, not their
-  *conversations*. If most of them need conversations, one `DocumentFlows` is
-  more honest than six interactors calling each other.
+Worth noting against my own earlier reading: those twelve closures are the
+**coordinator's** protocol, not the interactor's. Six are typed in AppKit —
+`((NSOpenPanel) -> URL?)`, `((NSAlert) -> NSApplication.ModalResponse)` — so an
+interactor could not hold them. Under the law they would have to be restated in
+the domain's words (`chooseFileToJoin() -> URL?`,
+`confirmJoin(named:verb:dirty:) -> Bool`), which is a real conversion cost and
+also a real gain: the tests currently build an `NSAlert` and read its buttons to
+answer a question the flow asked in domain terms to begin with.
 
-## The pilot: search
+**There is no framework binding story to displace.** On iOS this scheme has to
+argue against SwiftUI, `@Observable`, Combine. In AppKit there is nothing modern
+to compete with: Cocoa Bindings are KVO-era and legacy. An explicit
+interactor→view protocol fills a hole rather than duplicating a framework
+feature. (Which is also the argument for *not* introducing Combine here just for
+this: it would be a third way of saying "something changed", beside the closures
+and the async work already in use.)
 
-It is already in position. The results panel is a controller that owns its
-content, its own composition, and nothing else (`SearchResultsViewController`).
-Two things are missing, and both are named:
+**Longevity.** A macOS tool like this accumulates features for years — this one
+is at twenty-five numbered sections of requirements — and role boundaries are
+worth more the longer the code lives. The counterweight is that the same
+longevity means an unhelpful abstraction also survives for years.
 
-1. **`SearchInteractor`** takes `findTask`, `findOperation`,
-   `searchAllGeneration`, `searchAllPane`, and the decisions — start, supersede,
-   cancel, show the panel, hide it. Note what it must *not* take: the panel's
-   height, its divider and the stored preference, which are the pane's
-   arrangement of its own chrome.
-2. **`SearchResultsActions`** replaces the panel's two closures, so the panel
-   stops knowing who listens.
+## The questions that would actually decide it
 
-The coordinator barely appears in this pilot, because the panel is embedded —
-which is the argument for going first here. The View↔Interactor boundary gets
-tested on its own, and the coordinator gets its real test later on bookmarks and
-segments, where the popovers and sheets are.
+1. Synchronous ports or async ones, for modality — chosen once, for everything.
+2. What shape the validation snapshot takes, given it is read in bursts and must
+   stay readable end to end.
+3. Whether the coordinator is one object or two, and whether the app-level one is
+   the same idea at all.
+4. What bounds an interactor when there are no screens.
+5. Which AppKit vocabularies get an admitted translation layer, and which stay in
+   the view layer untranslated.
 
-If `SearchInteractor` reads better than what it replaced and its tests stop
-needing a window, the pattern is earned. If it needs six back-channel methods
-into the view, it is not — and stopping after one is the whole reason to start
-with one.
+## What this document does not claim
 
-## Order of work, and how to tell it worked
-
-1. **Minimap out first**, before any of this: 1290 lines and 17 properties, and
-   it is not an interactor question so much as a subsystem with a bad address.
-   The rest is then decided from a file half the size. This is
-   `MINIMAP_LAYERS_IDEA.md`'s first step seen from here.
-2. **Decide the two questions above** — synchronous or async modality, and the
-   snapshot shape for validation — on paper.
-3. **The search pilot**, in the two commits above.
-4. **Then decide, once**, whether the remaining flows follow as separate
-   interactors or as one object. Not before.
-
-The measures, in order:
-
-- **stored properties on `MainViewController`** — 61 today. Line count is not the
-  metric: eleven 500-line files reaching into each other are worse than one big
-  file.
-- **how many tests need an `NSWindow`.** Today the suite builds windows to drive
-  flows and injects twelve closures to stub the UI. An interactor's test should
-  need neither.
-- opening `MainViewController.swift` stops being how you change a feature that is
-  not about the window.
-
-## Anti-goals
-
-Not a type per role per screen. Not Combine for its own sake. Not an interactor
-for a flow with no state that asks the user nothing — `duplicateDocument()` is
-three lines and should stay three lines. And not a coordinator that decides: the
-moment it chooses *whether* to present rather than *how*, the scheme has lost the
-rule that makes it worth having.
+That any of this should be built. The measurements are here to size the argument,
+not to schedule it. In particular: the model tier being AppKit-free says the law
+is *affordable*, not that it is *warranted*; and the 5484 lines say the problem is
+real, not that this scheme is the only answer to it — the same lines would also
+yield to plain decomposition into extensions and one or two subsystem objects,
+with none of the ceremony and none of the boundaries.
