@@ -68,6 +68,12 @@ final class FilePaneView: NSView {
     }
 
     private let titleLabel = NSTextField(labelWithString: "")
+    /// The comparison-mode close button, and the status strip that holds the
+    /// readout. Stored because a very narrow pane has to be able to take them
+    /// away — see `layout()`.
+    private let closeButton = NSButton()
+    private let statusBar = NSView()
+    private let statusStack = NSStackView()
     /// The field that stands in the title's place while the name is being
     /// edited (§23), or nil when it is not. Built on demand and gone when the
     /// edit ends: a header holds a label, and only briefly something else.
@@ -163,6 +169,16 @@ final class FilePaneView: NSView {
     /// visible keeps the pane both findable and grabbable, and it is the least
     /// that can be shown to say "this is still here".
     static let minPaneWidth: CGFloat = 30
+
+    /// Below this width a pane stops showing its trailing chrome — the close
+    /// button, the read-only lock, and the status bar's readout (§3.3).
+    ///
+    /// It is what those controls need: the glyph block that `minPaneWidth`
+    /// guarantees (30), the 6-point gap after it, the 11-point ×, and its
+    /// 6-point trailing inset. Under that they do not fit, and the chain that
+    /// places them is breakable, so they would be put outside the strip instead
+    /// of being made to fit.
+    static let trailingChromeMinWidth: CGFloat = 54
 
     /// Extra status text appended on the right (e.g. "Indexing… 42%" or diff
     /// counts in comparison mode). Set by ComparisonView/MainViewController.
@@ -268,12 +284,10 @@ final class FilePaneView: NSView {
         // the interface instead of being a 10 pt letter. The default button type
         // dims it while it is held; `.momentaryChange` swapped in an
         // `alternateTitle` that was never set, so a press showed nothing.
-        let closeButton = NSButton(
-            image: NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close pane")
-                ?? NSImage(),
-            target: self,
-            action: #selector(closeTapped)
-        )
+        closeButton.image = NSImage(systemSymbolName: "xmark",
+                                    accessibilityDescription: "Close pane")
+        closeButton.target = self
+        closeButton.action = #selector(closeTapped)
         closeButton.isBordered = false
         closeButton.imagePosition = .imageOnly
         closeButton.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 10, weight: .semibold)
@@ -282,6 +296,17 @@ final class FilePaneView: NSView {
         closeButton.contentTintColor = .secondaryLabelColor
 
         header.translatesAutoresizingMaskIntoConstraints = false
+        // The chrome's horizontal chain is breakable end to end (below), which
+        // is what lets a pane reach its minimum width — but a broken chain puts
+        // the trailing controls outside the strip, and an `NSView` does not clip
+        // its subviews' drawing. Unclipped, a squeezed pane's × and its
+        // INS/OVR indicator painted over the pane beside it. `layout()` takes
+        // them away when they no longer fit; this is the guarantee that whatever
+        // it misses cannot escape the strip either.
+        header.wantsLayer = true
+        header.layer?.masksToBounds = true
+        statusBar.wantsLayer = true
+        statusBar.layer?.masksToBounds = true
         header.onDoubleClick = { [weak self] in
             self?.onHeaderDoubleClick?()
         }
@@ -349,7 +374,6 @@ final class FilePaneView: NSView {
         operationView.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         operationView.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
 
-        let statusStack = NSStackView()
         statusStack.orientation = .horizontal
         statusStack.alignment = .centerY
         statusStack.spacing = 10
@@ -358,7 +382,6 @@ final class FilePaneView: NSView {
         statusStack.addArrangedSubview(typingModeLabel)
         statusStack.addArrangedSubview(operationView)
 
-        let statusBar = NSView()
         statusBar.translatesAutoresizingMaskIntoConstraints = false
         // Same as the header: stay flexible so a narrow pane can shrink it.
         statusBar.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -804,6 +827,21 @@ final class FilePaneView: NSView {
         // of truth for the active pane (§3.3).
         focusHexView()
         super.mouseDown(with: event)
+    }
+
+    /// Takes the trailing chrome away when the pane is too narrow to hold it.
+    ///
+    /// At `minPaneWidth` (§3.3) a pane is a strip showing its document glyph and
+    /// nothing else: a × that is mostly off the edge is a misclick waiting to
+    /// happen, and a three-letter typing indicator in a 30-point bar is not a
+    /// readout. The title and the status text are exempt — they truncate, which
+    /// is a legible answer at any width.
+    override func layout() {
+        super.layout()
+        let fits = bounds.width >= Self.trailingChromeMinWidth
+        closeButton.isHidden = !fits
+        lockLabel.isHidden = !fits
+        statusStack.isHidden = !fits
     }
 
     private func refresh(center: Bool = false) {

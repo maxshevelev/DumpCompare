@@ -127,6 +127,33 @@ final class ComparisonResizeTests: XCTestCase {
         sv.mouseUp(with: mouse(.leftMouseUp, at: sv.convert(target, to: nil), window: window))
     }
 
+    /// A pane squeezed to its minimum shows its glyph and nothing else: the ×
+    /// and the typing indicator go, rather than being placed outside the strip
+    /// and painted over the pane beside it. The wide pane keeps both, which is
+    /// what proves the rule is about width and not a mode.
+    func testASqueezedPaneDropsItsTrailingChrome() throws {
+        let (cv, window) = try makeComparisonView(vertical: true)
+
+        cv.splitView.setDividerPosition(0)
+        window.layoutIfNeeded()
+        XCTAssertEqual(cv.paneView1.frame.width, FilePaneView.minPaneWidth, accuracy: 0.5,
+                       "premise: the left pane is at its minimum")
+
+        let narrowClose = try XCTUnwrap(closeButton(in: cv.paneView1))
+        XCTAssertTrue(narrowClose.isHiddenOrHasHiddenAncestor, "no × in a 30-point strip")
+        XCTAssertTrue(cv.paneView1.typingModeLabel.isHiddenOrHasHiddenAncestor,
+                      "and no INS/OVR readout")
+
+        let wideClose = try XCTUnwrap(closeButton(in: cv.paneView2))
+        XCTAssertFalse(wideClose.isHiddenOrHasHiddenAncestor, "the wide pane keeps its ×")
+        XCTAssertFalse(cv.paneView2.typingModeLabel.isHiddenOrHasHiddenAncestor,
+                       "and its readout")
+    }
+
+    private func closeButton(in pane: FilePaneView) -> NSButton? {
+        descendants(of: pane, NSButton.self).first { $0.accessibilityLabel() == "Close pane" }
+    }
+
     func testDefaultSplitIsEven() throws {
         let (cv, _) = try makeComparisonView(vertical: true)
 
