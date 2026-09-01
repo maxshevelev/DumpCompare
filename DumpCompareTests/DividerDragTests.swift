@@ -119,16 +119,24 @@ final class DividerDragTests: XCTestCase {
         XCTAssertEqual(cv.paneView1.frame.width / available, 0.2, accuracy: 0.01)
     }
 
-    func testDividerDragIsClampedToTheSplitBounds() throws {
+    /// A drag far beyond the edge stops at the far pane's minimum width (§3.3).
+    ///
+    /// This used to assert the far pane reached exactly zero, which is the
+    /// behaviour that was changed: at zero the pane is gone from the screen
+    /// entirely, and the divider that would bring it back is flush against the
+    /// window's edge, beside the minimap's own divider. It now keeps room for its
+    /// header glyph, so it stays visible and grabbable.
+    func testDividerDragIsClampedToTheFarPanesMinimum() throws {
         let (cv, window) = try makeComparisonView(vertical: true)
         let dividerX = cv.paneView1.frame.maxX
+        let available = 1200 - cv.splitView.dividerThickness
 
-        // Drag far beyond the right edge: the first pane may not exceed the
-        // available width, and the second pane must not go negative.
         drag(splitView: cv.splitView, to: NSPoint(x: dividerX + 5000, y: 300), window: window)
 
-        XCTAssertEqual(cv.paneView1.frame.width, 1200 - cv.splitView.dividerThickness, accuracy: 1)
-        XCTAssertEqual(cv.paneView2.frame.width, 0, accuracy: 1)
+        XCTAssertEqual(cv.paneView2.frame.width, FilePaneView.minPaneWidth, accuracy: 1,
+                       "the far pane keeps its minimum rather than going to zero")
+        XCTAssertEqual(cv.paneView1.frame.width, available - FilePaneView.minPaneWidth, accuracy: 1,
+                       "and the near pane takes everything else — never more than the split has")
     }
 
     func testResizeAfterDragKeepsTheDraggedRatio() throws {

@@ -65,6 +65,68 @@ final class ComparisonResizeTests: XCTestCase {
         sv.mouseUp(with: mouse(.leftMouseUp, at: sv.convert(target, to: nil), window: window))
     }
 
+    // MARK: - Neither pane can be squeezed out of existence (§3.3)
+
+    /// Dragging the divider to the window's edge leaves the pane its header
+    /// glyph's worth of width. At zero it would vanish, and the divider that
+    /// brings it back would be flush against the window's edge — or against the
+    /// minimap's divider, which is what the hand catches instead.
+    func testDraggingToTheEdgeLeavesThePaneItsMinimumWidth() throws {
+        let (cv, window) = try makeComparisonView(vertical: true)
+
+        dragVerticalDivider(of: cv, to: -500, window: window)
+        window.layoutIfNeeded()
+        XCTAssertEqual(cv.splitView.panes[0].frame.width, FilePaneView.minPaneWidth, accuracy: 0.5,
+                       "the left pane keeps its minimum")
+
+        dragVerticalDivider(of: cv, to: 5000, window: window)
+        window.layoutIfNeeded()
+        XCTAssertEqual(cv.splitView.panes[1].frame.width, FilePaneView.minPaneWidth, accuracy: 0.5,
+                       "and so does the right one")
+    }
+
+    /// The same limit applies to the header's double-click fit, which is how the
+    /// pane gets swallowed in practice: a window too narrow for one pane's
+    /// content, double-click, and the other pane is gone.
+    func testDoubleClickFitLeavesTheOtherPaneItsMinimumWidth() throws {
+        let (cv, window) = try makeComparisonView(vertical: true)
+        // Narrow enough that one pane's content cannot fit, which is what makes
+        // the fit ask for everything.
+        window.setContentSize(NSSize(width: 420, height: 600))
+        window.layoutIfNeeded()
+
+        cv.fitContentWidth(of: 0)
+        // The fit animates; the animation lands through the same clamp, so drive
+        // it to its end rather than waiting on the timer.
+        cv.splitView.setDividerPosition(cv.splitView.axisAvailable())
+        window.layoutIfNeeded()
+
+        XCTAssertEqual(cv.splitView.panes[1].frame.width, FilePaneView.minPaneWidth, accuracy: 0.5,
+                       "the pane that gave up its width is still on screen")
+    }
+
+    /// Stacked panes get the same rule on their own axis, where the least that
+    /// says "this pane is here" is its header.
+    func testStackedPanesKeepTheirHeader() throws {
+        let (cv, window) = try makeComparisonView(vertical: false)
+
+        dragStackedDivider(of: cv, to: -500, window: window)
+        window.layoutIfNeeded()
+
+        XCTAssertEqual(cv.splitView.panes[0].frame.height, FilePaneView.headerHeight, accuracy: 0.5)
+    }
+
+    /// Drags the vertical divider to `x` (the split view's own coordinates) with
+    /// synthesized mouse events — the gesture the app offers.
+    private func dragVerticalDivider(of cv: ComparisonView, to x: CGFloat, window: NSWindow) {
+        let sv = cv.splitView
+        let start = NSPoint(x: sv.panes[0].frame.maxX, y: sv.bounds.midY)
+        let target = NSPoint(x: x, y: sv.bounds.midY)
+        sv.mouseDown(with: mouse(.leftMouseDown, at: sv.convert(start, to: nil), window: window))
+        sv.mouseDragged(with: mouse(.leftMouseDragged, at: sv.convert(target, to: nil), window: window))
+        sv.mouseUp(with: mouse(.leftMouseUp, at: sv.convert(target, to: nil), window: window))
+    }
+
     func testDefaultSplitIsEven() throws {
         let (cv, _) = try makeComparisonView(vertical: true)
 

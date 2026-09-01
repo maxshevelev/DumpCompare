@@ -152,6 +152,18 @@ final class FilePaneView: NSView {
     /// The hex dump keeps at least this height when the panel is resized (§11).
     static let minHexHeightInPane: CGFloat = 40
 
+    /// The narrowest a pane may be squeezed to in a side-by-side comparison
+    /// (§3.3): room for the header's document glyph — the 10-point leading
+    /// inset, the 14-point glyph, and the 6-point gap the title would have had.
+    ///
+    /// A pane pushed all the way to zero disappears: nothing left on screen says
+    /// the second file is still open, and getting it back means catching a
+    /// divider that is now flush against the window's edge — or against the
+    /// minimap's own divider, which is easy to grab by mistake. Keeping the glyph
+    /// visible keeps the pane both findable and grabbable, and it is the least
+    /// that can be shown to say "this is still here".
+    static let minPaneWidth: CGFloat = 30
+
     /// Extra status text appended on the right (e.g. "Indexing… 42%" or diff
     /// counts in comparison mode). Set by ComparisonView/MainViewController.
     var comparisonInfo: String = "" {

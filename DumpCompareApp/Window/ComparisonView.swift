@@ -110,6 +110,29 @@ final class ComparisonView: NSView {
         splitView.setPaneLayout(.proportional(fraction), at: 0)
         splitView.setPaneLayout(.fill, at: 1)
 
+        // §3.3: neither pane may be squeezed out of existence. Every way the
+        // divider moves — a drag, the header's double-click fit, the divider's
+        // own double-click, a window resize — goes through this clamp
+        // (`ALSplitView` applies it in `setDividerPosition`, which the drag and
+        // each animation tick both call), so the rule is stated once here rather
+        // than at each of those call sites.
+        //
+        // Stacked panes get the same treatment on their own axis, where the
+        // least that says "this pane is here" is its header.
+        splitView.clampDividerPosition = { [weak self] _, position in
+            guard let self else { return position }
+            let available = self.splitView.axisAvailable()
+            let minimum = self.splitView.isVertical
+                ? FilePaneView.minPaneWidth
+                : FilePaneView.headerHeight
+            // In a window too small for both minimums there is nothing to
+            // enforce: clamping would fight itself, so the position stands.
+            guard available >= 2 * minimum else { return position }
+            // The position *is* pane 0's size, and the remainder is pane 1's, so
+            // one interval covers both.
+            return min(max(position, minimum), available - minimum)
+        }
+
         // A divider drag re-derives the ratio from where the divider lands and
         // reports it: the minimap's stacked divider line is glued to this one
         // via onFractionChanged (§19).
