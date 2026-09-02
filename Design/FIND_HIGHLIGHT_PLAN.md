@@ -437,8 +437,10 @@ Three things turned out differently, and the code and §11 follow the code:
    selection fill for that range.
 6. **A modified byte keeps its red ink inside the yellow indicator**; everything
    else goes black there.
-7. **The set dies with the pattern, the bar, or Escape** — but survives the bar's
-   close while a results panel for the same pattern is open.
+7. **The set dies with the pattern, the bar, or Escape** — including while a
+   results panel is open, which keeps its rows without a session behind them.
+   (The plan first had it survive behind an open panel; closing the bar reads as
+   "finished searching", and greys after that claim otherwise.)
 
 Nothing here is open. The first thing Stage 1 should produce is `MatchSet` with
 its tests; the first thing Stage 2 changes in the spec is §11's navigation rule.

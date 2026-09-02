@@ -4845,12 +4845,12 @@ final class MainViewController: NSViewController {
         // long done (§11).
         findTask?.cancel()
         findOperation?.finish()
-        // The highlighting ends with the bar — except where a results panel for
-        // the same search is still open. The panel deliberately outlives the bar,
-        // and its rows and the dump's greys must not disagree about what was
-        // searched (`Design/FIND_HIGHLIGHT_PLAN.md`).
-        for pane in [windowModel.pane1, windowModel.pane2]
-        where !(filePaneView(for: pane)?.searchResultsPanelVisible ?? false) {
+        // The highlighting ends with the bar, always: Done and Esc mean "I am
+        // finished searching", and greys left on the dump after that claim a
+        // search is still running. An open results panel keeps its rows — it is
+        // a list that was asked for, and its offsets are still true — but it no
+        // longer has a session behind it (§11).
+        for pane in [windowModel.pane1, windowModel.pane2] {
             pane.clearMatches()
         }
         focusActiveHexView()

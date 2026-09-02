@@ -1110,9 +1110,12 @@ Search navigation:
   lay behind the caret; the set removed that ignorance, and the wrap removed
   the rule.)
 - The set lives as long as the search: it ends when the pattern changes, when
-  the Find bar closes — unless a results panel for the same search is still
-  open (below) — on Escape, and when the pane's content changes under it, since
-  after an edit every offset in it would be a guess.
+  the Find bar closes — by `Done` or Escape, and **whether or not** a results
+  panel is open, because closing the bar means "I am finished searching" and
+  greys left behind would claim otherwise — and when the pane's content changes
+  under it, since after an edit every offset in it would be a guess. An open
+  results panel keeps its rows: it is a list that was asked for, and its
+  offsets are still true; it simply no longer has a session behind it.
 
 The results panel:
 
@@ -1133,8 +1136,9 @@ The results panel:
   way, because the count is the diagnosis.
 - The panel has its own close control, which hides it and forgets its rows —
   the search itself is untouched, since the pattern in the field has not
-  changed. Dismissing the Find bar must not close the panel; a change of window
-  mode must, since the pane it belongs to is rebuilt.
+  changed. Dismissing the Find bar leaves the panel open but ends the
+  highlighting (above); a change of window mode closes it, since the pane it
+  belongs to is rebuilt.
 - Picking a row jumps to that match: it is selected, centred, and the find
   indicator moves onto it, so the row and the plate cannot disagree about where
   the user is.

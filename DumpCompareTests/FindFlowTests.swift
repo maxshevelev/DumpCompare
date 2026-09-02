@@ -507,12 +507,27 @@ final class FindFlowTests: XCTestCase {
         let (_, _, done, _) = try barControls(window)
         done.performClick(nil)
         XCTAssertNil(pane.matchSet)
+
+        // And Escape, which is the other way out of the bar.
+        controller.findPattern()
+        let (reopened, _, _, _) = try barControls(window)
+        reopened.stringValue = "AA"
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(3) { pane.matchSet != nil })
+        let esc = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                                   timestamp: 0, windowNumber: window.windowNumber,
+                                   context: nil, characters: "\u{1B}",
+                                   charactersIgnoringModifiers: "\u{1B}",
+                                   isARepeat: false, keyCode: 53)!
+        _ = window.performKeyEquivalent(with: esc)
+        XCTAssertTrue(pumpUntil(2) { pane.matchSet == nil },
+                      "Escape ends the session too")
     }
 
-    /// Except while a results panel for that search is open: the panel outlives
-    /// the bar (§11), and its rows and the dump's greys must not disagree about
-    /// what was searched.
-    func testClosingTheBarKeepsTheSessionBehindAResultsPanel() throws {
+    /// Including while a results panel is open: closing the bar means the search
+    /// is over, and greys left on the dump would say otherwise. The panel keeps
+    /// its rows — they were asked for, and their offsets are still true.
+    func testClosingTheBarEndsTheSessionEvenBehindAResultsPanel() throws {
         let bytes: [UInt8] = [0xAA, 0x00, 0xAA]
         let (controller, window, url) = try makeController(bytes)
         defer { cleanup(controller, url) }
@@ -523,12 +538,14 @@ final class FindFlowTests: XCTestCase {
         combo.stringValue = "AA"
         try clickFindNext(window)
         XCTAssertTrue(pumpUntil(3) { pane.matchSet != nil })
-        try runSearchAll("AA", in: window)
+        let panel = try runSearchAll("AA", in: window)
+        XCTAssertEqual(panel.tableView.numberOfRows, 2)
 
         let (_, _, done, _) = try barControls(window)
         done.performClick(nil)
-        XCTAssertNotNil(pane.matchSet,
-                        "the panel is still listing this search, so the greys stay")
+        XCTAssertNil(pane.matchSet, "the highlighting goes with the bar")
+        XCTAssertEqual(panel.tableView.numberOfRows, 2,
+                       "the panel keeps the rows it was asked for")
     }
 
     /// After a Return search the focus stays in the pattern field, so a second
