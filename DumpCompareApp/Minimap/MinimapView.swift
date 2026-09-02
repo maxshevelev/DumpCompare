@@ -755,34 +755,6 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// throughout (§20.4), which keeps a mark apart from the grey viewport marker
     /// that can share the margin with it — the shape is the same, deliberately,
     /// because both say the same kind of thing about a position (§19.4.3).
-    /// Marks the current match in the margin, in overview only (§11).
-    ///
-    /// At a row per 13 KB the match's yellow cells are one pixel tall and easy
-    /// to miss, and the margin arrow is the shape the panel already uses for
-    /// "the thing you are looking at is here" (§19.6). In detail the cells are
-    /// exact and two points tall, so nothing is added there. Yellow is free in
-    /// that margin: grey is the viewport, purple is a bookmark.
-    private func drawCurrentMatchMarker(dirtyRect: NSRect) {
-        guard renderMode == .overview else { return }
-        for index in maps.indices {
-            guard let match = currentMatchRange?(index),
-                  let margin = bookmarkMargin(forMapAt: index),
-                  margin.strip.intersects(dirtyRect),
-                  // The mark is placed by offset; `bookmarkMarkRect` takes one.
-                  let box = bookmarkMarkRect(row: match.lowerBound, forMapAt: index),
-                  box.maxY >= dirtyRect.minY, box.minY <= dirtyRect.maxY else { continue }
-            (HexTheme.findIndicatorFill.usingColorSpace(.deviceRGB)
-                ?? HexTheme.findIndicatorFill).setFill()
-            Self.marginMarkerPath(in: box, pointingRight: margin.pointsRight).fill()
-        }
-    }
-
-    /// Where the current match's margin marker sits, for tests.
-    func currentMatchMarkerRect(forMapAt index: Int) -> NSRect? {
-        guard renderMode == .overview, let match = currentMatchRange?(index) else { return nil }
-        return bookmarkMarkRect(row: match.lowerBound, forMapAt: index)
-    }
-
     private func drawBookmarkMarks(dirtyRect: NSRect) {
         guard !bookmarks.isEmpty else { return }
         (HexTheme.bookmarkColor.usingColorSpace(.deviceRGB) ?? HexTheme.bookmarkColor).setFill()
@@ -1201,10 +1173,6 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         // topmost "you are here" marker (§19.4.4).
         drawSegmentStrip(dirtyRect: dirtyRect)
         drawViewports(dirtyRect: dirtyRect)
-        // The current match's own marker, under the bookmarks: a bookmark is
-        // something the user placed, a match is where they happen to be
-        // standing (§11).
-        drawCurrentMatchMarker(dirtyRect: dirtyRect)
         // After the viewport, so a bookmark's mark is not buried under the grey
         // chevron when the two land in the same margin: there are few marks and
         // they are what the user put there on purpose.
@@ -1634,19 +1602,33 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         // it is drawn directly: stretching it 1:1 would be the same pixels, and
         // building the stand-in image costs 20 ms — per keystroke, since an edit
         // invalidates the cache (§19.9).
-        if geometryIsSettling || summary.rowCount != overviewRowCount() {
-            drawOverviewStandIn(forMapAt: index, in: area)
-            return
-        }
+        let panelRows = overviewRowCount()
+        let settling = geometryIsSettling || summary.rowCount != panelRows
         let cells = overviewColumnLayout(in: area)
-        guard !cells.isEmpty else { return }
-        let first = max(0, Int(floor((dirtyRect.minY - area.minY) / rowHeight)))
-        let last = min(summary.rowCount - 1, Int(floor((dirtyRect.maxY - area.minY) / rowHeight)))
-        guard last >= first else { return }
-        drawOverviewCells(summary, fileSize: maps.indices.contains(index) ? maps[index].fileSize : 0,
-                          rows: first...last, top: area.minY, cells: cells, rowHeight: rowHeight)
-        drawOverviewMatches(forMapAt: index, rows: first...last, top: area.minY,
-                            cells: cells, rowHeight: rowHeight)
+        if settling {
+            drawOverviewStandIn(forMapAt: index, in: area)
+        } else {
+            guard !cells.isEmpty else { return }
+            let first = max(0, Int(floor((dirtyRect.minY - area.minY) / rowHeight)))
+            let last = min(summary.rowCount - 1,
+                           Int(floor((dirtyRect.maxY - area.minY) / rowHeight)))
+            guard last >= first else { return }
+            drawOverviewCells(summary,
+                              fileSize: maps.indices.contains(index) ? maps[index].fileSize : 0,
+                              rows: first...last, top: area.minY, cells: cells,
+                              rowHeight: rowHeight)
+        }
+        // The search's marks go on in both cases, including over the stand-in:
+        // they are binned for the panel's *current* row count rather than
+        // derived from the stretched picture, and a mark that disappears while
+        // the panel settles reads as a bug rather than as a transient (§11).
+        guard !cells.isEmpty, panelRows > 0 else { return }
+        let firstMarked = max(0, Int(floor((dirtyRect.minY - area.minY) / rowHeight)))
+        let lastMarked = min(panelRows - 1,
+                             Int(floor((dirtyRect.maxY - area.minY) / rowHeight)))
+        guard lastMarked >= firstMarked else { return }
+        drawOverviewMatches(forMapAt: index, rows: firstMarked...lastMarked, top: area.minY,
+                            cells: cells, rowHeight: rowHeight, expecting: panelRows)
     }
 
     /// Marks the search's matches over the overview's density picture (§11).
@@ -1661,11 +1643,13 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// a thin ink frame — "you are here", in the one hue reserved for search.
     private func drawOverviewMatches(forMapAt index: Int, rows: ClosedRange<Int>,
                                      top: CGFloat, cells: [(x: CGFloat, width: CGFloat)],
-                                     rowHeight: CGFloat) {
+                                     rowHeight: CGFloat, expecting rowCount: Int) {
         guard matchOverlays.indices.contains(index), let firstCell = cells.first,
               let lastCell = cells.last else { return }
         let overlay = matchOverlays[index]
-        guard overlay.rowCount > 0 else { return }
+        // An overlay binned for a different row count would put its marks on the
+        // wrong rows; it is rebuilt the moment the panel's count settles.
+        guard overlay.rowCount == rowCount, rowCount > 0 else { return }
         let columns = Int(Self.bytesPerRow)
         let ink = (HexTheme.byteText.usingColorSpace(.deviceRGB) ?? HexTheme.byteText)
         let currentInk = (HexTheme.findIndicatorFill.usingColorSpace(.deviceRGB)
@@ -1695,27 +1679,35 @@ final class MinimapView: NSView, NSViewToolTipOwner {
             return NSRect(x: x, y: y, width: width, height: height)
         }
 
+        // Two passes, because a row here is about a pixel tall while the marks
+        // are a few: a stroke drawn for a later row would otherwise land on top
+        // of the current match's plate, and the plate has to be the topmost
+        // thing on the map (§11).
+        ink.setFill()
         for row in rows {
             guard overlay.matched.indices.contains(row) else { break }
-            let matched = overlay.matched[row]
-            let current = overlay.current.indices.contains(row) ? overlay.current[row] : 0
-            guard matched != 0 || current != 0 else { continue }
-            let y = top + CGFloat(row) * rowHeight
-            if let box = mark(for: matched, y: y, height: Self.overviewMatchHeight) {
-                ink.setFill()
+            guard overlay.matched[row] != 0 else { continue }
+            if let box = mark(for: overlay.matched[row], y: top + CGFloat(row) * rowHeight,
+                              height: Self.overviewMatchHeight) {
                 box.fill()
             }
-            // The current match's plate is a little taller, or its frame would
-            // have no room to read as a frame.
-            if let box = mark(for: current, y: y - 1,
-                              height: Self.overviewMatchHeight + 2) {
-                currentInk.setFill()
-                box.fill()
-                ink.setStroke()
-                let frame = NSBezierPath(rect: box.insetBy(dx: 0.5, dy: 0.5))
-                frame.lineWidth = 1
-                frame.stroke()
-            }
+        }
+        // The current match's plate: a horizontal rectangle centred on its row,
+        // yellow inside a thin ink frame.
+        let currentHeight = Self.overviewCurrentMatchHeight
+        let inset = (currentHeight - Self.overviewMatchHeight) / 2
+        for row in rows {
+            guard overlay.current.indices.contains(row) else { break }
+            guard overlay.current[row] != 0 else { continue }
+            guard let box = mark(for: overlay.current[row],
+                                 y: top + CGFloat(row) * rowHeight - inset,
+                                 height: currentHeight) else { continue }
+            currentInk.setFill()
+            box.fill()
+            ink.setStroke()
+            let frame = NSBezierPath(rect: box.insetBy(dx: 0.5, dy: 0.5))
+            frame.lineWidth = 1
+            frame.stroke()
         }
     }
 
@@ -1723,6 +1715,11 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// enough to be seen when its bytes fall in a single cell.
     static let overviewMatchHeight: CGFloat = 2
     static let overviewMatchWidth: CGFloat = 7
+    /// The current match's plate: a horizontal rectangle, 2 pt of yellow inside
+    /// a 1 pt frame. It carries "you are here" alone — there is no margin
+    /// marker — so it is taller than a match's stroke, but only just: a tall
+    /// plate reads as a block on the map rather than as a position in it.
+    static let overviewCurrentMatchHeight: CGFloat = 4
 
     /// Draws one map's cells into the current context: `rows` of `summary`, the
     /// first of them starting at `top`, each `rowHeight` tall, with the columns

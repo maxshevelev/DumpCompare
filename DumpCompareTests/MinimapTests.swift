@@ -728,17 +728,53 @@ final class MinimapTests: XCTestCase {
         XCTAssertNotEqual(overlay.current[farRow], 0, "the current match is the second one")
         XCTAssertEqual(overlay.current[0], 0)
 
-        // And it is marked in the margin, where a one-pixel row would be missed.
-        let marker = try XCTUnwrap(panel.currentMatchMarkerRect(forMapAt: 0),
-                                   "the current match must be marked in the margin")
-        XCTAssertGreaterThan(marker.width, 0)
-
         pane.clearMatches()
         window.layoutIfNeeded()
         XCTAssertTrue(panel.matchOverlays.allSatisfy { overlay in
             overlay.matched.allSatisfy { $0 == 0 } && overlay.current.allSatisfy { $0 == 0 }
         }, "the session ended, so the overview marks nothing")
-        XCTAssertNil(panel.currentMatchMarkerRect(forMapAt: 0))
+    }
+
+    /// The current match's plate is the topmost thing on the map: a row here is
+    /// about a pixel tall while the marks are a few, so neighbouring matches'
+    /// strokes would otherwise be painted over it (§11).
+    func testTheCurrentMatchsPlateIsNotBuriedByNeighbouringMatches() throws {
+        let size = 200 * 1024
+        let (controller, window, panel) = try makeSingleFileWindow([UInt8](repeating: 0x41,
+                                                                          count: size))
+        controller.setMinimapRenderModeForTesting(.overview)
+        window.layoutIfNeeded()
+        XCTAssertTrue(pumpUntil(3) { (panel.overviewSummaries.first?.rowCount ?? 0) > 0 })
+        let rowCount = panel.overviewRowCount()
+        let bytesPerRow = UInt64(size / rowCount)
+
+        // Matches on a dozen consecutive map rows, with the current one in the
+        // middle: every neighbour is drawn after it in row order.
+        let starts = (0..<12).map { UInt64($0) * bytesPerRow + bytesPerRow / 2 }
+        controller.windowModel.pane1.setMatches(
+            MatchSet(pattern: SearchPattern(bytes: [0x41, 0x41], encoding: .hex),
+                     folding: .exact, extent: UInt64(size), starts: starts),
+            current: 6)
+        window.layoutIfNeeded()
+
+        let rep = try XCTUnwrap(panel.bitmapImageRepForCachingDisplay(in: panel.bounds))
+        panel.cacheDisplay(in: panel.bounds, to: rep)
+        var yellow = 0
+        for y in 0..<rep.pixelsHigh {
+            for x in 0..<rep.pixelsWide {
+                guard let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
+                if c.redComponent > 0.8, c.greenComponent > 0.8, c.blueComponent < 0.4 {
+                    yellow += 1
+                }
+            }
+        }
+        // The plate's interior is `overviewMatchWidth` by 2 pt; at the rep's
+        // scale that is a few dozen pixels, and a plate buried under its
+        // neighbours' strokes would leave far fewer.
+        let scale = CGFloat(rep.pixelsWide) / panel.bounds.width
+        let interior = MinimapView.overviewMatchWidth * 2 * scale * scale
+        XCTAssertGreaterThan(CGFloat(yellow), interior * 0.6,
+                             "the plate must survive its neighbours")
     }
 
     /// A search must not cost a density rebuild: the picture is invalidated by

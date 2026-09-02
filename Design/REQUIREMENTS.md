@@ -1697,12 +1697,12 @@ Search matches in overview:
   What matters is that something was found around here.
 - The dump's match grey is not used here: a row is aggregated content drawn as
   a grey *tone*, so a grey mark cannot be told from content. Ink can.
-- The current match is a **plate** instead: the find indicator's yellow inside a
-  thin ink frame, so "you are here" reads apart from "something is here".
-- The current match is **also marked in the margin**, in the same arrow shape a
-  bookmark uses (§19.4.3) and in the same yellow: at a row per 13 KB its cells
-  are one pixel tall and easy to miss. Under the bookmarks, because a bookmark
-  is something the user placed and a match is where they happen to be standing.
+- The current match is a **plate** instead: a horizontal rectangle, 2 pt of the
+  find indicator's yellow inside a thin ink frame, so "you are here" reads apart
+  from "something is here". It carries that job alone — there is no margin
+  marker for it — and it is drawn **over every stroke**, not just the ones on
+  its own row: a row here is about a pixel tall while the marks are a few, so
+  a neighbouring match would otherwise be painted on top of it.
 - The bits are binned by the same arithmetic as the density picture, so a match
   lands on the cell its bytes land in — including the stretch regime above. They
   are computed from the match set, not from the file, and a new search therefore
