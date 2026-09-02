@@ -43,8 +43,10 @@ final class TitleBarMenuTests: XCTestCase {
 
     /// The pane header menu: every File item (the join twins mirroring the
     /// menu bar's File submenu — Insert and Append in one block, then
-    /// Duplicate), then the header-only Show in Finder grouped with Close, then
-    /// Swap Panels in its own block.
+    /// Duplicate, then Open in New Tab), followed by the header-only copy
+    /// commands (Copy File Name / Copy Full Path) in a block of their own,
+    /// then the header-only Show in Finder grouped with Close, then Swap
+    /// Panels in its own block.
     private var paneMenuItems: [ExpectedItem] {
         [
             .title("New File"),
@@ -60,6 +62,9 @@ final class TitleBarMenuTests: XCTestCase {
             .separator,
             .title("Duplicate"),
             .title("Open in New Tab"),
+            .separator,
+            .title("Copy File Name"),
+            .title("Copy Full Path"),
             .separator,
             .title("Show in Finder"),
             .title("Close"),
@@ -187,6 +192,42 @@ final class TitleBarMenuTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: url) }
         try pane.open(url: url)
         XCTAssertTrue(mvc.validateMenuItem(showInFinder))
+    }
+
+    /// Copy File Name and Copy Full Path are header-only items that copy a real
+    /// file's identity: both are disabled for an empty pane and for an untitled
+    /// in-memory document (no file on disk to name or path), and enabled once
+    /// the pane holds a real file — the same rule as Show in Finder.
+    func testCopyFileCommandsNeedAFileOnDisk() throws {
+        for title in ["Copy File Name", "Copy Full Path"] {
+            let mvc = MainViewController()
+            let pane = mvc.windowModel.pane1
+            let item = try XCTUnwrap(
+                mvc.makePaneMenu(for: pane).items.first { $0.title == title },
+                "missing \(title)")
+            XCTAssertEqual(item.action, title == "Copy File Name"
+                              ? #selector(MainViewController.copyPaneFileName(_:))
+                              : #selector(MainViewController.copyPaneFullPath(_:)))
+            XCTAssertTrue(item.target === mvc, "\(title) must target mainViewController")
+            XCTAssertTrue(item.representedObject as? PaneViewModel === pane,
+                          "\(title) must carry the pane the menu was built for")
+
+            // Empty pane: nothing on disk to copy.
+            XCTAssertFalse(mvc.validateMenuItem(item), "\(title) enabled with no file")
+
+            // Untitled in-memory document: still no file on disk.
+            pane.openUntitled()
+            XCTAssertFalse(mvc.validateMenuItem(item), "\(title) enabled for Untitled")
+
+            // A real file on disk is copyable.
+            let url = try tempFile([UInt8](repeating: 0x41, count: 16))
+            defer {
+                pane.close()
+                try? FileManager.default.removeItem(at: url)
+            }
+            try pane.open(url: url)
+            XCTAssertTrue(mvc.validateMenuItem(item), "\(title) disabled for a real file")
+        }
     }
 
     /// The controller wires the menu onto the pane header when it builds a pane,

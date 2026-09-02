@@ -3329,6 +3329,37 @@ final class MainViewController: NSViewController {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
+    /// The on-disk URL behind the pane a header context-menu item was built for,
+    /// when there is one to copy. Empty panes have nothing, and an untitled
+    /// document's only URL is a placeholder with no file behind it — both need
+    /// the menu item to stay disabled (validation), so nil here is unreachable
+    /// for an enabled item and merely makes the action a no-op.
+    private func copyableURL(from sender: Any?) -> URL? {
+        guard let pane = pane(from: sender), pane.isOpen, !pane.isUntitled else { return nil }
+        return pane.document?.url
+    }
+
+    /// Header context menu > Copy File Name: copies just the right-clicked
+    /// pane's file name ("bios.bin", no directory) to the clipboard. Resolves
+    /// the pane the item was built for, so it copies that pane's file even when
+    /// another pane is active.
+    @objc func copyPaneFileName(_ sender: Any?) {
+        guard let url = copyableURL(from: sender) else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(url.lastPathComponent, forType: .string)
+    }
+
+    /// Header context menu > Copy Full Path: copies the right-clicked pane's
+    /// file's full POSIX path ("/Users/…/bios.bin") to the clipboard. Like Copy
+    /// File Name it resolves the item's own pane, never the active pane.
+    @objc func copyPaneFullPath(_ sender: Any?) {
+        guard let url = copyableURL(from: sender) else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(url.path, forType: .string)
+    }
+
     // MARK: - External change detection (§5.5)
 
     /// Wires each pane's watcher to the conflict prompt. Closures capture the
@@ -3457,12 +3488,13 @@ final class MainViewController: NSViewController {
     // MARK: - Pane header context menu (§4/§5)
 
     /// Builds the right-click menu for a pane's header. It carries the same
-    /// items as the menu bar's File submenu (plus the header-only Show in
-    /// Finder), and every item's action resolves the pane captured here (via
-    /// `representedObject`) — so New, Open, Save and Close always act on the
-    /// header that was right-clicked, even when another pane is active or only
-    /// one pane is open. A final separate block holds Swap Panels, which is
-    /// mode-scoped (comparison only) and so carries no `representedObject`.
+    /// items as the menu bar's File submenu (plus the header-only Copy File
+    /// Name / Copy Full Path and Show in Finder), and every item's action
+    /// resolves the pane captured here (via `representedObject`) — so New,
+    /// Open, Save and Close always act on the header that was right-clicked,
+    /// even when another pane is active or only one pane is open. A final
+    /// separate block holds Swap Panels, which is mode-scoped (comparison only)
+    /// and so carries no `representedObject`.
     func makePaneMenu(for pane: PaneViewModel) -> NSMenu {
         let menu = NSMenu(title: "File")
         func add(_ title: String, _ action: Selector, _ key: String) {
@@ -3500,6 +3532,15 @@ final class MainViewController: NSViewController {
         // pane; this sends the document itself out to a tab of its own, leaving
         // the comparison behind as a single file (`Design/TABS_PLAN.md`).
         add("Open in New Tab", #selector(openPaneInNewTab(_:)), "")
+        menu.addItem(.separator())
+        // Copy File Name / Copy Full Path are header-only, like Show in Finder
+        // below: they put THIS pane's file's name (or its whole path) on the
+        // clipboard, which is a per-pane act, so the menu bar's File submenu
+        // (active-pane) doesn't duplicate them. They need a real file to copy —
+        // nothing for an empty pane, no name or path for an untitled document —
+        // so validation disables them there, the same rule as Show in Finder.
+        add("Copy File Name", #selector(copyPaneFileName(_:)), "")
+        add("Copy Full Path", #selector(copyPaneFullPath(_:)), "")
         menu.addItem(.separator())
         // Show in Finder is header-only: it reveals THIS pane's file in the
         // Finder, which is a per-pane act, so the menu bar's File submenu
@@ -5392,6 +5433,13 @@ extension MainViewController: NSMenuItemValidation {
         case #selector(showPaneInFinder(_:)):
             // A file must be on disk to reveal it in the Finder — an empty pane
             // has nothing, and an untitled document has no URL.
+            guard let pane = pane(from: menuItem) else { return false }
+            return pane.isOpen && !pane.isUntitled
+        case #selector(copyPaneFileName(_:)),
+             #selector(copyPaneFullPath(_:)):
+            // A file must be on disk to have a name or a path to copy — an
+            // empty pane has nothing, and an untitled document has no file.
+            // The same rule as Show in Finder, for the same reason.
             guard let pane = pane(from: menuItem) else { return false }
             return pane.isOpen && !pane.isUntitled
         case #selector(copyPaneSelection(_:)),
