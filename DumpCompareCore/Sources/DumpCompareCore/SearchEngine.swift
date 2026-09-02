@@ -260,6 +260,76 @@ public enum SearchEngine {
         }
     }
 
+    /// How many matches the highlighting scan delivers at a time. A batch is a
+    /// delivery cost, not a limit: `findAllStream` yields one match per hop onto
+    /// the consumer, which is right for a table growing a row at a time and
+    /// wrong for the million matches a single-byte pattern has.
+    public static let defaultBatchSize = 4096
+
+    /// Streams **every** match of `pattern`, in file order, as batches of match
+    /// starts — the scan that fills a `MatchSet`
+    /// (`Design/FIND_HIGHLIGHT_PLAN.md`).
+    ///
+    /// Deliberately uncapped, unlike `findAllStream`: the count this feeds is
+    /// the Find bar's diagnosis of the pattern, and a capped count would make
+    /// 1001 and 3 000 000 look alike. What is bounded is the *index* built from
+    /// it, which `MatchSet` handles by choosing its representation.
+    ///
+    /// A start is all that travels, because every match is the pattern's length.
+    /// Matching is the same non-overlapping walk `findAll` performs — the scan
+    /// resumes past each match's end — so the highlight, the results panel and
+    /// Find Next cannot disagree about what counts as a match.
+    ///
+    /// Progress and cancellation behave exactly as in `findAllStream`: the scan
+    /// runs on a detached task, reports `progress` per chunk, and stops promptly
+    /// when the consuming task is cancelled or the stream is abandoned.
+    public static func matchStartsStream(
+        pattern: [UInt8],
+        in storage: ByteStorage,
+        folding: CaseFolding = .exact,
+        chunkSize: Int = defaultChunkSize,
+        batchSize: Int = defaultBatchSize,
+        shouldCancel: @escaping @Sendable () -> Bool = { Task.isCancelled },
+        progress: @escaping @Sendable (Double) -> Void = { _ in }
+    ) -> AsyncThrowingStream<[UInt64], any Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task.detached(priority: .userInitiated) {
+                do {
+                    guard !pattern.isEmpty else { throw SearchError.emptyPattern }
+                    let patternLength = UInt64(pattern.count)
+                    let size = storage.size
+                    guard patternLength <= size else {
+                        continuation.finish()
+                        return
+                    }
+                    var patternBytes = pattern
+                    Self.foldInPlace(&patternBytes, using: folding)
+                    let patternData = Data(patternBytes)
+                    var batch: [UInt64] = []
+                    batch.reserveCapacity(min(batchSize, 1024))
+                    try scanAll(
+                        pattern: patternData, patternLength: patternLength, storage: storage,
+                        size: size, folding: folding, chunkSize: chunkSize,
+                        shouldCancel: shouldCancel, progress: progress
+                    ) { match in
+                        batch.append(match.lowerBound)
+                        if batch.count >= batchSize {
+                            continuation.yield(batch)
+                            batch.removeAll(keepingCapacity: true)
+                        }
+                    }
+                    if !batch.isEmpty { continuation.yield(batch) }
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
     // MARK: - Parsing
 
     /// Parses a hexadecimal byte sequence. Whitespace between bytes is ignored,

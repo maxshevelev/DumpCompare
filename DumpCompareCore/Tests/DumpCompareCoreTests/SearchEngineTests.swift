@@ -328,6 +328,108 @@ final class SearchEngineTests: XCTestCase {
         }
     }
 
+    // MARK: - matchStartsStream (the highlighting scan)
+
+    /// The highlighting scan delivers starts, batched, in file order — and the
+    /// same matches `findAll` reports, because the greys, the results panel and
+    /// Find Next must not disagree about what a match is.
+    func testMatchStartsStreamAgreesWithFindAll() async throws {
+        let bytes: [UInt8] = [0xDE, 0xAD, 0xBE, 0x00, 0xDE, 0xAD, 0xBE, 0xDE, 0xAD]
+        let storage = ArrayStorage(bytes)
+        let expected = try SearchEngine.findAll(pattern: [0xDE, 0xAD], in: storage).map(\.lowerBound)
+
+        var starts: [UInt64] = []
+        for try await batch in SearchEngine.matchStartsStream(pattern: [0xDE, 0xAD], in: storage) {
+            starts.append(contentsOf: batch)
+        }
+        XCTAssertEqual(starts, expected)
+    }
+
+    /// A batch is a delivery cost, not a limit: the batches partition the
+    /// matches in order, and the last one is short.
+    func testMatchStartsStreamBatchesInOrder() async throws {
+        let storage = ArrayStorage([UInt8](repeating: 0xAA, count: 10))
+        var batches: [[UInt64]] = []
+        for try await batch in SearchEngine.matchStartsStream(pattern: [0xAA], in: storage,
+                                                             batchSize: 4) {
+            batches.append(batch)
+        }
+        XCTAssertEqual(batches, [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9]])
+    }
+
+    /// Unlike `findAllStream`, this scan is uncapped: the count it feeds is the
+    /// Find bar's diagnosis of the pattern, and `defaultMaxResults` is a limit
+    /// on *listing*, not on counting.
+    func testMatchStartsStreamIsNotCappedByTheResultsLimit() async throws {
+        let count = SearchEngine.defaultMaxResults + 500
+        let storage = ArrayStorage([UInt8](repeating: 0xAA, count: count))
+        var total = 0
+        for try await batch in SearchEngine.matchStartsStream(pattern: [0xAA], in: storage) {
+            total += batch.count
+        }
+        XCTAssertEqual(total, count, "every occurrence is counted, however many there are")
+    }
+
+    /// End to end: the scan fills a `MatchSet` whose picture is exactly the
+    /// navigation's own list of matches.
+    func testMatchStartsStreamFillsAMatchSet() async throws {
+        var bytes = [UInt8](repeating: 0x00, count: 4096)
+        let placed: [Int] = [0, 17, 1000, 2048, 4092]
+        for offset in placed { bytes[offset] = 0xFF }
+        let storage = ArrayStorage(bytes)
+        let pattern = SearchPattern(bytes: [0xFF], encoding: .hex)
+
+        var builder = MatchSetBuilder(pattern: pattern, folding: .exact, extent: storage.size)
+        for try await batch in SearchEngine.matchStartsStream(pattern: pattern.bytes, in: storage) {
+            builder.add(batch)
+        }
+        let set = builder.finish()
+        XCTAssertEqual(set.total, placed.count)
+        XCTAssertEqual(set.matches(intersecting: 0..<storage.size),
+                       placed.map { UInt64($0)..<UInt64($0) + 1 })
+        XCTAssertEqual(set.index(atOrAfter: 18), 2, "the ordinal the Find bar shows")
+    }
+
+    func testMatchStartsStreamEmptyPatternThrows() async {
+        let stream = SearchEngine.matchStartsStream(pattern: [], in: ArrayStorage([1, 2, 3]))
+        do {
+            for try await _ in stream {}
+            XCTFail("an empty pattern must fail the stream")
+        } catch {
+            XCTAssertEqual(error as? SearchError, .emptyPattern)
+        }
+    }
+
+    /// A pattern longer than the file finishes the stream with nothing, rather
+    /// than failing: an unfinished pattern in the field is not an error.
+    func testMatchStartsStreamPatternLongerThanTheFileYieldsNothing() async throws {
+        var batches = 0
+        for try await _ in SearchEngine.matchStartsStream(pattern: [1, 2, 3, 4],
+                                                          in: ArrayStorage([1, 2])) {
+            batches += 1
+        }
+        XCTAssertEqual(batches, 0)
+    }
+
+    /// A cancelled scan ends the stream normally, delivering whatever complete
+    /// batches it had: a superseded search must not throw at the app.
+    func testMatchStartsStreamStopsMidScanOnShouldCancel() async throws {
+        let counter = CancellationCounter()
+        let stream = SearchEngine.matchStartsStream(
+            pattern: [0xAA], in: ArrayStorage([UInt8](repeating: 0xAA, count: 32)),
+            chunkSize: 4, batchSize: 2,
+            shouldCancel: { counter.bump() > 1 })
+
+        var starts: [UInt64] = []
+        do {
+            for try await batch in stream { starts.append(contentsOf: batch) }
+        } catch {
+            XCTFail("a shouldCancel stop must finish the stream normally, got \(error)")
+        }
+        XCTAssertEqual(starts, [0, 1, 2, 3],
+                       "the first chunk's matches arrive, the rest of the file is never scanned")
+    }
+
     // MARK: - findAllStream
 
     /// The streaming API yields the same matches as `findAll`, one `Range` per
