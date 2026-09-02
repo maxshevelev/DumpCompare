@@ -1359,14 +1359,16 @@ final class HexView: NSView, NSViewToolTipOwner {
         for loop in loops where loop.count >= 3 {
             let path = roundedContourPath(loops: [loop], radius: Self.mirrorContourRadius)
             if lift > 0 {
-                // Lifting reads as two things at once: the bubble grows a little
-                // (it is nearer the eye) and rises a little. Each column's loop
-                // does it about its own centre — scaling the two together would
-                // drag the hex and text bubbles towards each other instead of
-                // growing them in place.
+                // The plate grows about its own centre and does not move: it
+                // must stay lined up with the bytes it is highlighting, so the
+                // hop expands it evenly in every direction rather than lifting
+                // it off its row. What says "higher" is the shadow.
+                //
+                // Each column's loop scales about its own centre — scaling the
+                // two together would drag the hex and text plates towards each
+                // other instead of growing them in place.
                 let box = path.bounds
-                var transform = AffineTransform(translationByX: box.midX,
-                                                byY: box.midY - elevation.rise)
+                var transform = AffineTransform(translationByX: box.midX, byY: box.midY)
                 transform.scale(elevation.scale)
                 transform.translate(x: -box.midX, y: -box.midY)
                 path.transform(using: transform)
@@ -1420,10 +1422,9 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// second the jump registered as a flicker, which is worse than nothing —
     /// the eye reads it as a redraw glitch.
     static let indicatorBounceDuration: TimeInterval = 0.55
-    /// How much bigger, how much higher, and how much deeper the shadow gets at
-    /// the top of the hop.
+    /// How much bigger the plate gets, and how much deeper its shadow, at the
+    /// top of the hop. The plate does not move — see `drawFindIndicator`.
     static let indicatorLiftScale: CGFloat = 0.14
-    static let indicatorLiftRise: CGFloat = 3
     /// The key shadow drops and spreads as the bubble climbs; the ambient halo
     /// widens with it, so the plate keeps its edge on the light side too.
     static let indicatorLiftShadowDrop: CGFloat = 2
@@ -1499,16 +1500,15 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// bigger shadow" is a fact about the code rather than about three call
     /// sites.
     static func indicatorElevation(atLift lift: CGFloat)
-        -> (scale: CGFloat, rise: CGFloat, ambient: IndicatorShadow, key: IndicatorShadow) {
+        -> (scale: CGFloat, ambient: IndicatorShadow, key: IndicatorShadow) {
         let clamped = min(max(lift, 0), 1)
         return (scale: 1 + indicatorLiftScale * clamped,
-                rise: indicatorLiftRise * clamped,
                 ambient: IndicatorShadow(
                     offset: .zero,
                     blur: indicatorAmbientBlur + indicatorLiftAmbientBlur * clamped,
                     alpha: indicatorAmbientAlpha + 0.08 * clamped),
-                // The bubble climbs while its shadow stays on the page, so the
-                // drop between them grows with the height (§11).
+                // The plate climbs *visually* while its shadow stays on the
+                // page, so the drop between them grows with the height (§11).
                 key: IndicatorShadow(
                     offset: NSSize(width: indicatorShadowOffset.width
                                     + indicatorLiftShadowSpread * clamped,

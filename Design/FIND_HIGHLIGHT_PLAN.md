@@ -49,10 +49,17 @@ in `draw(_:)`, and a layer would cover them. What is taken from the platform is
 its frame clock: `NSView.displayLink(target:selector:)` (macOS 14) drives the
 hop, not a `Timer`.
 
-The hop itself is one idea — height — with four consequences: the bubble grows a
-little, rises a little, and its shadow grows wider, softer and deeper. Half a
-second, one clear jump and a small second one. A quarter of a second was tried
-and reads as a redraw glitch rather than as movement.
+The hop itself is one idea — height — with three consequences: the plate grows
+about its own centre (never moving off the bytes it marks), and its shadow grows
+wider, softer and deeper. Half a second, one clear jump and a small second one.
+A quarter of a second was tried and reads as a redraw glitch rather than as
+movement.
+
+The shadow is drawn from the plate's own geometry — concentric strokes of the
+same outline — rather than with `NSShadow`, and that is a correctness decision:
+an `NSShadow` offset is interpreted in whatever space the current graphics
+context is in, and this view is painted through more than one, which had the
+shadow falling downward in a render test while falling upward on screen.
 
 ## One scan is the source of everything
 

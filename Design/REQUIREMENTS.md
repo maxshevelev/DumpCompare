@@ -388,14 +388,14 @@ Visual states:
      match it lands on, so the two coincide, and the plate is the statement
      about that range; the blue also peeked out from under the plate as it
      rose.
-   - each step of Find Next / Find Previous makes it **hop**: it rises off the
-     page and comes back, once clearly and once smaller, over about half a
-     second. Height is one idea with four consequences — the bubble grows a
-     little, rises a little, and its shadow grows wider, softer and deeper —
-     which is what makes the movement read as height rather than as a twitch in
-     size. The animation must be slow enough to see; a quarter of a second
-     reads as a redraw glitch. A wrap onto a lone match hops too, or the press
-     would look swallowed.
+   - each step of Find Next / Find Previous makes it **hop**: it comes off the
+     page and settles back, once clearly and once smaller, over about half a
+     second. The plate grows about its **own centre** and does not move — it
+     must stay lined up with the bytes it is highlighting, so it expands evenly
+     in every direction; what says "higher" is the shadow growing wider, softer
+     and deeper, not a jump upwards. The animation must be slow enough to see;
+     a quarter of a second reads as a redraw glitch. A wrap onto a lone match
+     hops too, or the press would look swallowed.
    - the ink over it is forced **black**, because that colour is the same in
      both appearances (the platform's own instruction). A modified byte keeps
      its red — an unsaved edit outranks the convention — and the muted

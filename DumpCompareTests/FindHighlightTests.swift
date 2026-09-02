@@ -426,13 +426,11 @@ final class FindHighlightTests: XCTestCase {
         let rest = HexView.indicatorElevation(atLift: 0)
         let top = HexView.indicatorElevation(atLift: 1)
         XCTAssertEqual(rest.scale, 1, accuracy: 0.0001)
-        XCTAssertEqual(rest.rise, 0, accuracy: 0.0001)
         XCTAssertEqual(rest.key.offset.width, HexView.indicatorShadowOffset.width,
                        accuracy: 0.0001, "at rest the shadow is the resting one")
         XCTAssertEqual(rest.key.offset.height, HexView.indicatorShadowOffset.height,
                        accuracy: 0.0001)
         XCTAssertGreaterThan(top.scale, rest.scale)
-        XCTAssertGreaterThan(top.rise, rest.rise)
         XCTAssertEqual(rest.ambient.offset, .zero,
                        "the halo has no offset: it is the plate's edge on every side")
         XCTAssertGreaterThan(top.ambient.blur, rest.ambient.blur,
@@ -449,6 +447,51 @@ final class FindHighlightTests: XCTestCase {
         XCTAssertLessThan(top.key.offset.height, 6,
                           "and short even at the top of the hop: a long shadow reads as a "
                           + "drop-shadow effect rather than as a small lift")
+    }
+
+    /// The hop grows the plate about its own centre and never moves it: it has
+    /// to stay lined up with the bytes it highlights, so it expands evenly in
+    /// every direction. What says "higher" is the shadow, not a jump upwards.
+    func testTheHopGrowsThePlateWithoutMovingIt() throws {
+        var bytes = [UInt8](repeating: 0x11, count: 48)
+        bytes.replaceSubrange(18..<20, with: [0xAA, 0xBB])
+        let (controller, window) = try makeController(bytes)
+        let view = try hexView(window)
+        try search("AA BB", in: controller, window)
+
+        let layout = view.hexLayout
+        let plate = layout.hexByteFrame(row: 1, column: 2)
+            .union(layout.hexByteFrame(row: 1, column: 3))
+
+        /// The yellow's own extent in a column of pixels through the plate.
+        func yellowBand(atPhase phase: CGFloat) throws -> (top: CGFloat, bottom: CGFloat) {
+            view.indicatorBouncePhaseForTests = phase
+            view.needsDisplay = true
+            let rep = try render(view)
+            view.indicatorBouncePhaseForTests = nil
+            let scale = CGFloat(rep.pixelsWide) / view.bounds.width
+            let x = Int(plate.midX * scale)
+            var first = CGFloat.greatestFiniteMagnitude
+            var last = -CGFloat.greatestFiniteMagnitude
+            for y in 0..<rep.pixelsHigh {
+                guard let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
+                // Yellow: red and green up, blue down.
+                guard c.redComponent > 0.8, c.greenComponent > 0.8, c.blueComponent < 0.4
+                else { continue }
+                first = min(first, CGFloat(y) / scale)
+                last = max(last, CGFloat(y) / scale)
+            }
+            return (first, last)
+        }
+
+        let rest = try yellowBand(atPhase: 1)
+        let top = try yellowBand(atPhase: 0.31)
+        XCTAssertGreaterThan(top.bottom - top.top, rest.bottom - rest.top,
+                             "the plate is taller at the top of the hop")
+        XCTAssertEqual((top.top + top.bottom) / 2, (rest.top + rest.bottom) / 2, accuracy: 0.6,
+                       "and its centre has not moved off the row")
+        XCTAssertLessThan(top.top, rest.top, "it grew upward")
+        XCTAssertGreaterThan(top.bottom, rest.bottom, "and downward by as much")
     }
 
     /// The hop is slow enough to be seen: a quarter of a second read as a
