@@ -367,9 +367,15 @@ Visual states:
      it, rounds by the same radius, and traces one staircase around a match that
      crosses rows. A frame that hugged the glyphs read as a box drawn on the
      text instead of something the text sits on.
-   - it carries **no outline**: a soft shadow below and to the right is what
-     makes it read as raised, and a dark rim around yellow reads instead as a
-     box drawn on the text. (The platform's own find indicator has none either.)
+   - it carries **no outline**: a soft shadow is what makes it read as raised,
+     and a dark rim around yellow reads instead as a box drawn on the text.
+     (The platform's own find indicator has none either.)
+   - the shadow shows on **every** side — a soft edge, so the bubble is not cut
+     out of the page — but it is weighted: barely there at the top-left, and an
+     order of magnitude heavier at the bottom-right. It stays short: a long
+     shadow reads as a drop-shadow effect rather than as a small thing lifted a
+     little way off the page. The direction is pinned by a render test, because
+     the sign that puts it downward in this view is not the one you would guess.
    - each step of Find Next / Find Previous makes it **hop**: it rises off the
      page and comes back, once clearly and once smaller, over about half a
      second. Height is one idea with four consequences — the bubble grows a

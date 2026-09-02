@@ -317,32 +317,81 @@ final class FindHighlightTests: XCTestCase {
                              "the bubble reaches into the gap, as a mirrored selection would")
     }
 
-    /// The shadow falls below and to the right, which is what makes the bubble
-    /// read as raised rather than sunken.
+    /// The shadow falls **below** the bubble, not above it, and is heavier on
+    /// the right than on the left — while the blur leaves a trace of it on
+    /// every side. `NSShadow` is not flipped with the view, so this is the
+    /// assertion that keeps the sign honest.
+    ///
+    /// Measured as the *difference* between two frames of the same view — the
+    /// bubble at rest and at the top of its hop. Absolute samples would be
+    /// reading the neighbouring rows' glyphs, which are far darker than any
+    /// shadow; the difference cancels them and leaves only what the shadow did.
     func testTheShadowFallsBelowAndToTheRight() throws {
         XCTAssertGreaterThan(HexView.indicatorShadowOffset.width, 0)
         XCTAssertGreaterThan(HexView.indicatorShadowOffset.height, 0,
-                             "a flipped view puts positive y downward")
+                             "down is positive: the shadow follows this view's flipped space")
 
-        // Three full rows, so the paper the shadow falls on is inside the view.
         var bytes = [UInt8](repeating: 0x11, count: 48)
-        bytes.replaceSubrange(2..<4, with: [0xAA, 0xBB])
+        bytes.replaceSubrange(18..<20, with: [0xAA, 0xBB])   // row 1, clear of both edges
         let (controller, window) = try makeController(bytes)
         let view = try hexView(window)
         try search("AA BB", in: controller, window)
 
+        let darkening = try shadowDarkening(view, row: 1, columns: 2...3)
+        XCTAssertGreaterThan(darkening.below, 0.02,
+                             "lifting the bubble darkens the paper below it")
+        XCTAssertGreaterThan(darkening.below, darkening.above * 5,
+                             "the shadow is under the bubble, not over it")
+        XCTAssertGreaterThan(darkening.right, darkening.left * 5,
+                             "and far heavier on the right than on the left")
+        XCTAssertGreaterThan(darkening.above, 0,
+                             "while the soft edge still leaves a trace on the light side")
+        XCTAssertGreaterThan(darkening.left, 0)
+    }
+
+    /// How much darker each side of a bubble's surroundings gets between the
+    /// bubble at rest and the bubble at the top of its hop.
+    private func shadowDarkening(_ view: HexView, row: Int, columns: ClosedRange<Int>) throws
+        -> (below: CGFloat, above: CGFloat, right: CGFloat, left: CGFloat) {
         let layout = view.hexLayout
-        let first = layout.hexByteFrame(row: 0, column: 2)
-        let last = layout.hexByteFrame(row: 0, column: 3)
-        let rep = try render(view)
-        let scale = CGFloat(rep.pixelsWide) / view.bounds.width
-        // Two patches just below the bubble, one under each end.
-        let below = CGRect(x: last.maxX, y: last.maxY, width: 2, height: 2)
-        let belowLeft = CGRect(x: first.minX - 4, y: first.maxY, width: 2, height: 2)
-        let right = meanColor(rep, in: below, scale: scale)
-        let left = meanColor(rep, in: belowLeft, scale: scale)
-        XCTAssertLessThan(right.r + right.g + right.b, left.r + left.g + left.b,
-                          "the paper below the bubble's right end is darkened by the shadow")
+        let bubble = layout.hexByteFrame(row: row, column: columns.lowerBound)
+            .union(layout.hexByteFrame(row: row, column: columns.upperBound))
+        // Far enough out to clear the bubble even at the top of its hop, where
+        // it is both bigger and higher.
+        let gap: CGFloat = 5
+        let patch = CGSize(width: 4, height: 3)
+        let places = [
+            "below": CGRect(x: bubble.midX, y: bubble.maxY + gap,
+                            width: patch.width, height: patch.height),
+            "above": CGRect(x: bubble.midX, y: bubble.minY - gap - patch.height,
+                            width: patch.width, height: patch.height),
+            "right": CGRect(x: bubble.maxX + gap, y: bubble.midY - patch.height / 2,
+                            width: patch.width, height: patch.height),
+            "left": CGRect(x: bubble.minX - gap - patch.width, y: bubble.midY - patch.height / 2,
+                           width: patch.width, height: patch.height),
+        ]
+
+        func luminances(atPhase phase: CGFloat) throws -> [String: CGFloat] {
+            view.indicatorBouncePhaseForTests = phase
+            view.needsDisplay = true
+            let rep = try render(view)
+            let scale = CGFloat(rep.pixelsWide) / view.bounds.width
+            return places.mapValues { rect in
+                let colour = meanColor(rep, in: rect, scale: scale)
+                // `min(r, g)` isolates the shadow: it drops wherever the paper
+                // is darkened and stays at 1 under the bubble's own yellow
+                // (which has r == g == 1), so a bubble that has moved into the
+                // patch cannot be mistaken for its shadow.
+                return min(colour.r, colour.g)
+            }
+        }
+        let rest = try luminances(atPhase: 1)
+        let top = try luminances(atPhase: 0.31)
+        view.indicatorBouncePhaseForTests = nil
+        return (below: rest["below"]! - top["below"]!,
+                above: rest["above"]! - top["above"]!,
+                right: rest["right"]! - top["right"]!,
+                left: rest["left"]! - top["left"]!)
     }
 
     // MARK: - The bounce
@@ -376,47 +425,23 @@ final class FindHighlightTests: XCTestCase {
                        accuracy: 0.0001)
         XCTAssertGreaterThan(top.scale, rest.scale)
         XCTAssertGreaterThan(top.rise, rest.rise)
-        XCTAssertGreaterThan(top.shadowOffset.height, rest.shadowOffset.height * 2)
-        XCTAssertGreaterThan(top.shadowBlur, rest.shadowBlur * 2)
+        XCTAssertGreaterThan(top.shadowBlur, rest.shadowBlur,
+                             "and softer, which is what puts a trace of it on every side")
         XCTAssertGreaterThan(top.shadowAlpha, rest.shadowAlpha)
-        XCTAssertGreaterThan(top.shadowOffset.width, 0,
-                             "the shadow keeps falling down-right as it grows")
-        XCTAssertGreaterThan(top.shadowOffset.height, top.shadowOffset.width,
-                             "and the climb adds to the drop, so it falls further down than right")
+        XCTAssertGreaterThan(top.shadowOffset.width, rest.shadowOffset.width,
+                             "the shadow keeps falling to the right as it grows")
+        XCTAssertGreaterThan(top.shadowOffset.height, rest.shadowOffset.height,
+                             "and further down as the bubble climbs away from it")
+        XCTAssertLessThan(top.shadowOffset.width, top.shadowOffset.height,
+                          "biased downward more than sideways")
+        XCTAssertLessThan(top.shadowOffset.height, 5,
+                          "and short either way: a long shadow reads as an effect")
     }
 
     /// The hop is slow enough to be seen: a quarter of a second read as a
     /// redraw glitch rather than as movement.
     func testTheHopIsSlowEnoughToRead() {
         XCTAssertGreaterThanOrEqual(HexView.indicatorBounceDuration, 0.5)
-    }
-
-    /// And it is visible on the page: mid-hop the paper below the bubble is
-    /// darker than at rest, because the shadow has grown with the height.
-    func testMidHopTheShadowIsDeeperThanAtRest() throws {
-        var bytes = [UInt8](repeating: 0x11, count: 48)
-        bytes.replaceSubrange(2..<4, with: [0xAA, 0xBB])
-        let (controller, window) = try makeController(bytes)
-        let view = try hexView(window)
-        try search("AA BB", in: controller, window)
-
-        let layout = view.hexLayout
-        let cell = layout.hexByteFrame(row: 0, column: 3)
-        let below = CGRect(x: cell.midX, y: cell.maxY, width: 4, height: 3)
-
-        view.indicatorBouncePhaseForTests = 1   // settled
-        var rep = try render(view)
-        var scale = CGFloat(rep.pixelsWide) / view.bounds.width
-        let atRest = meanColor(rep, in: below, scale: scale)
-
-        view.indicatorBouncePhaseForTests = 0.31   // the top of the jump
-        rep = try render(view)
-        scale = CGFloat(rep.pixelsWide) / view.bounds.width
-        let lifted = meanColor(rep, in: below, scale: scale)
-        view.indicatorBouncePhaseForTests = nil
-
-        XCTAssertLessThan(lifted.r + lifted.g + lifted.b, atRest.r + atRest.g + atRest.b - 0.05,
-                          "the lifted bubble casts a deeper shadow than the resting one")
     }
 
     /// Every step pops the indicator — including a wrap onto a lone match,

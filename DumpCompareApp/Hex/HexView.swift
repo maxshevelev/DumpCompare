@@ -1392,11 +1392,17 @@ final class HexView: NSView, NSViewToolTipOwner {
 
     // MARK: - The indicator's hop (§11)
 
-    /// The bubble's shadow at rest: offset down-right, and deep enough to read
-    /// as a raised element rather than as a rim.
+    /// The bubble's shadow at rest: a soft halo all round the bubble, biased
+    /// down and to the right. The blur is what puts a trace of it on every side;
+    /// the offset is what makes the bottom-right side the heavy one.
+    ///
+    /// **Positive height is downward here**, measured rather than assumed: this
+    /// view is flipped, and `NSShadow` follows the same flipped space, so a
+    /// negative height casts the shadow *up* (which is how the first attempt
+    /// got it backwards). A render test pins the direction.
     static let indicatorShadowOffset = NSSize(width: 1, height: 1.5)
-    static let indicatorShadowBlur: CGFloat = 3
-    static let indicatorShadowAlpha: CGFloat = 0.38
+    static let indicatorShadowBlur: CGFloat = 2.5
+    static let indicatorShadowAlpha: CGFloat = 0.35
 
     /// How long the hop lasts. Slow enough to be *seen*: at a quarter of a
     /// second the jump registered as a flicker, which is worse than nothing —
@@ -1406,7 +1412,15 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// the top of the hop.
     static let indicatorLiftScale: CGFloat = 0.14
     static let indicatorLiftRise: CGFloat = 3
-    static let indicatorLiftShadow: CGFloat = 6
+    /// How much further the shadow drops, and how much softer it gets, at the
+    /// top of the hop. Deliberately short: a long shadow reads as a drop-shadow
+    /// effect rather than as a small thing lifted a little way off the page.
+    /// The blur is deliberately kept just above the drop, so the soft edge
+    /// still reaches a point or two *past* the bubble on the top-left while the
+    /// bottom-right side carries the weight (§11).
+    static let indicatorLiftShadowDrop: CGFloat = 3
+    static let indicatorLiftShadowSpread: CGFloat = 1.5
+    static let indicatorLiftShadowBlur: CGFloat = 3
 
     /// When the current hop started, or nil when nothing is hopping.
     private var indicatorBounceStarted: TimeInterval?
@@ -1439,17 +1453,16 @@ final class HexView: NSView, NSViewToolTipOwner {
         -> (scale: CGFloat, rise: CGFloat, shadowOffset: NSSize,
             shadowBlur: CGFloat, shadowAlpha: CGFloat) {
         let clamped = min(max(lift, 0), 1)
-        // The rise is part of the offset too: the shadow stays on the page
-        // while the bubble climbs away from it, so the gap between them grows
-        // by exactly as much as the bubble has risen.
-        let spread = indicatorShadowOffset.height + (indicatorLiftShadow + indicatorLiftRise) * clamped
         return (scale: 1 + indicatorLiftScale * clamped,
                 rise: indicatorLiftRise * clamped,
+                // The bubble climbs while its shadow stays on the page, so the
+                // drop between them grows with the height (§11).
                 shadowOffset: NSSize(width: indicatorShadowOffset.width
-                                        + indicatorLiftShadow * clamped,
-                                     height: spread),
-                shadowBlur: indicatorShadowBlur + indicatorLiftShadow * 1.6 * clamped,
-                shadowAlpha: indicatorShadowAlpha + 0.22 * clamped)
+                                        + indicatorLiftShadowSpread * clamped,
+                                     height: indicatorShadowOffset.height
+                                        + indicatorLiftShadowDrop * clamped),
+                shadowBlur: indicatorShadowBlur + indicatorLiftShadowBlur * clamped,
+                shadowAlpha: indicatorShadowAlpha + 0.15 * clamped)
     }
 
     /// Starts the hop — called when the indicator lands on another match.
