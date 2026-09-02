@@ -360,11 +360,19 @@ Visual states:
 
 8. The current match — the find indicator (§11):
    - the match the caret is standing on is drawn as a raised yellow bubble in
-     the platform's find-indicator colour, over every other fill: rounded ends,
-     a hairline border and a soft shadow, so it reads as lifted off the page
-     rather than as another background. Both columns.
-   - rounded only at the match's real ends; where a match continues onto the
-     next row the edge is square, so the run reads as one match.
+     the platform's find-indicator colour, over every other fill, so it reads
+     as lifted off the page rather than as another background. Both columns.
+   - its outline is the **mirrored selection's own** (§3.3): the same contour
+     builder, so it stands the same 2 pt off the glyphs wherever a spacer allows
+     it, rounds by the same radius, and traces one staircase around a match that
+     crosses rows. A frame that hugged the glyphs read as a box drawn on the
+     text instead of something the text sits on.
+   - the shadow falls below and to the right — the direction that reads as
+     raised.
+   - each step of Find Next / Find Previous **pops** it: it lands a quarter
+     larger and springs down through one small undershoot, the way the
+     platform's own find indicator does. A wrap onto a lone match pops too,
+     or the press would look swallowed.
    - the ink over it is forced **black**, because that colour is the same in
      both appearances (the platform's own instruction). A modified byte keeps
      its red — an unsaved edit outranks the convention — and the muted

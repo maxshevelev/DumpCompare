@@ -130,13 +130,16 @@ final class FindHighlightTests: XCTestCase {
     /// Every occurrence gets a background, in the hex column and in the decoded
     /// text — and the bytes between them do not.
     func testEveryMatchIsFilledInBothColumns() throws {
-        // Matches at 0x00 and 0x04; 0x02 is not a match.
-        let bytes: [UInt8] = [0xAA, 0xBB, 0x11, 0x22, 0xAA, 0xBB, 0x33, 0x44]
+        // Matches at 0x00 and 0x06. The byte sampled as "not a match" is two
+        // cells clear of both: the current match's bubble stands 2 pt off its
+        // own cells and casts a shadow, so its immediate neighbour is not the
+        // place to ask whether an unmatched byte was left alone.
+        let bytes: [UInt8] = [0xAA, 0xBB, 0x11, 0x22, 0x33, 0x44, 0xAA, 0xBB]
         let (controller, window) = try makeController(bytes)
         let view = try hexView(window)
 
-        let matched = cellRects(view, row: 0, column: 4)
-        let unmatched = cellRects(view, row: 0, column: 2)
+        let matched = cellRects(view, row: 0, column: 6)
+        let unmatched = cellRects(view, row: 0, column: 3)
         var rep = try render(view)
         var scale = CGFloat(rep.pixelsWide) / view.bounds.width
         let matchedBefore = meanColor(rep, in: matched.hex, scale: scale)
@@ -217,6 +220,35 @@ final class FindHighlightTests: XCTestCase {
                           "a byte that is only matched wears the neutral grey")
     }
 
+    /// A match straddling a row boundary keeps its grey on both rows while some
+    /// *other* match is the current one — the case the indicator hides when it
+    /// happens to sit on the straddling match itself.
+    func testAStraddlingMatchThatIsNotCurrentIsStillGreyOnBothRows() throws {
+        var bytes = [UInt8](repeating: 0x11, count: 48)
+        bytes.replaceSubrange(0..<4, with: [0xDE, 0xAD, 0xBE, 0xEF])     // current match
+        bytes.replaceSubrange(14..<18, with: [0xDE, 0xAD, 0xBE, 0xEF])   // straddles rows 0/1
+        let (controller, window) = try makeController(bytes)
+        let view = try hexView(window)
+        let tail = cellRects(view, row: 0, column: 15).hex
+        let head = cellRects(view, row: 1, column: 0).hex
+
+        var rep = try render(view)
+        var scale = CGFloat(rep.pixelsWide) / view.bounds.width
+        let tailBefore = meanColor(rep, in: tail, scale: scale)
+        let headBefore = meanColor(rep, in: head, scale: scale)
+
+        try search("DE AD BE EF", in: controller, window)
+        XCTAssertEqual(controller.windowModel.pane1.currentMatchIndex, 0,
+                       "the first match is the current one, not the straddling one")
+
+        rep = try render(view)
+        scale = CGFloat(rep.pixelsWide) / view.bounds.width
+        XCTAssertGreaterThan(distance(meanColor(rep, in: tail, scale: scale), tailBefore), 0.05,
+                             "the straddling match is grey on the first row")
+        XCTAssertGreaterThan(distance(meanColor(rep, in: head, scale: scale), headBefore), 0.05,
+                             "and on the next row")
+    }
+
     // MARK: - The find indicator (the current match)
 
     /// The match the user is standing on is yellow; the others stay grey. That
@@ -263,25 +295,89 @@ final class FindHighlightTests: XCTestCase {
                              0.25, "the second one is")
     }
 
-    /// The bubble is rounded at the match's real ends and square where the
-    /// match continues onto the next row, so a match across a row boundary
-    /// reads as one run rather than two pills.
-    func testTheBubbleRoundsOnlyTheMatchsRealEnds() {
-        let rect = CGRect(x: 0, y: 0, width: 40, height: 16)
-        let radius = HexView.indicatorRadius
-        let both = HexView.indicatorPath(in: rect, radius: radius,
-                                         roundedLeft: true, roundedRight: true)
-        let openLeft = HexView.indicatorPath(in: rect, radius: radius,
-                                             roundedLeft: false, roundedRight: true)
+    /// The outline is the selection mirror's own contour: it stands off the
+    /// glyphs where a spacer allows it, instead of hugging them. A match
+    /// starting at a word boundary therefore reaches into the gap before it.
+    func testTheIndicatorStandsOffTheGlyphsLikeAMirroredSelection() throws {
+        let bytes: [UInt8] = [0xAA, 0xBB, 0x11, 0x22, 0xAA, 0xBB]
+        let (controller, window) = try makeController(bytes)
+        let view = try hexView(window)
+        try search("AA BB", in: controller, window)
 
-        // A point just inside the bottom-left corner: outside a rounded corner,
-        // inside a square one.
-        let corner = CGPoint(x: rect.minX + 0.4, y: rect.minY + 0.4)
-        XCTAssertFalse(both.contains(corner), "a real end is rounded")
-        XCTAssertTrue(openLeft.contains(corner), "a continuing end is square")
-        // Both stay inside their cells: the relief must not bleed into the row
-        // above or below.
-        XCTAssertTrue(rect.contains(both.bounds))
+        let layout = view.hexLayout
+        let cell = layout.hexByteFrame(row: 0, column: 0)
+        // The strip immediately left of the first byte: inside the contour's
+        // padding, outside the cell.
+        let padding = HexView.mirrorContourPadding
+        let outside = CGRect(x: cell.minX - padding, y: cell.minY + 2,
+                             width: padding, height: cell.height - 4)
+        let rep = try render(view)
+        let scale = CGFloat(rep.pixelsWide) / view.bounds.width
+        XCTAssertGreaterThan(yellowness(meanColor(rep, in: outside, scale: scale)), 0.2,
+                             "the bubble reaches into the gap, as a mirrored selection would")
+    }
+
+    /// The shadow falls below and to the right, which is what makes the bubble
+    /// read as raised rather than sunken.
+    func testTheShadowFallsBelowAndToTheRight() throws {
+        XCTAssertGreaterThan(HexView.indicatorShadowOffset.width, 0)
+        XCTAssertGreaterThan(HexView.indicatorShadowOffset.height, 0,
+                             "a flipped view puts positive y downward")
+
+        // Three full rows, so the paper the shadow falls on is inside the view.
+        var bytes = [UInt8](repeating: 0x11, count: 48)
+        bytes.replaceSubrange(2..<4, with: [0xAA, 0xBB])
+        let (controller, window) = try makeController(bytes)
+        let view = try hexView(window)
+        try search("AA BB", in: controller, window)
+
+        let layout = view.hexLayout
+        let first = layout.hexByteFrame(row: 0, column: 2)
+        let last = layout.hexByteFrame(row: 0, column: 3)
+        let rep = try render(view)
+        let scale = CGFloat(rep.pixelsWide) / view.bounds.width
+        // Two patches just below the bubble, one under each end.
+        let below = CGRect(x: last.maxX, y: last.maxY, width: 2, height: 2)
+        let belowLeft = CGRect(x: first.minX - 4, y: first.maxY, width: 2, height: 2)
+        let right = meanColor(rep, in: below, scale: scale)
+        let left = meanColor(rep, in: belowLeft, scale: scale)
+        XCTAssertLessThan(right.r + right.g + right.b, left.r + left.g + left.b,
+                          "the paper below the bubble's right end is darkened by the shadow")
+    }
+
+    // MARK: - The bounce
+
+    /// The pop: a quarter larger when it lands, springing down through one
+    /// small undershoot, and exactly 1 outside the animation.
+    func testTheBounceCurvePopsAndSettles() {
+        XCTAssertEqual(HexView.indicatorBounceScale(atPhase: 0), 1, accuracy: 0.0001,
+                       "settled before it starts")
+        XCTAssertEqual(HexView.indicatorBounceScale(atPhase: 1), 1, accuracy: 0.0001,
+                       "and settled again at the end")
+        XCTAssertGreaterThan(HexView.indicatorBounceScale(atPhase: 0.02), 1.2,
+                             "it lands large")
+        let samples = stride(from: 0.02, to: 0.98, by: 0.02)
+            .map { HexView.indicatorBounceScale(atPhase: CGFloat($0)) }
+        XCTAssertTrue(samples.contains { $0 < 1 }, "and undershoots once on the way down")
+        XCTAssertLessThan(samples.last!, 1.02, "then settles")
+    }
+
+    /// Every step pops the indicator — including a wrap onto a lone match,
+    /// where no index changes and the press would otherwise look swallowed.
+    func testEveryStepPopsTheIndicator() throws {
+        let bytes: [UInt8] = [0x11, 0xAA, 0xBB, 0x11]
+        let (controller, window) = try makeController(bytes)
+        let view = try hexView(window)
+        try search("AA BB", in: controller, window)
+        XCTAssertTrue(view.isBouncingFindIndicatorForTests, "the search's own landing pops")
+
+        XCTAssertTrue(pumpUntil(2) { !view.isBouncingFindIndicatorForTests },
+                      "and the bounce ends on its own")
+
+        let bar = try descendant(FindBarView.self, of: window.contentView!)
+        bar.pressFindForTests(.forward)
+        XCTAssertTrue(view.isBouncingFindIndicatorForTests,
+                      "a wrap onto the only match pops too")
     }
 
     /// Ink over the yellow is forced black — Apple's own instruction for

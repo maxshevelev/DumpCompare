@@ -1898,8 +1898,12 @@ final class MainViewController: NSViewController {
         var different = [UInt16](repeating: 0, count: rows.count)
         guard let storage = source.storage else { return (density, modified, different) }
 
+        // One mapping, shared with the search's match overlay: the two must
+        // land on the same cells or the map contradicts itself (§19.4.2).
+        let binning = OverviewBinning(extent: extent, rowCount: rowCount)
+
         /// The first byte of a row's slice of the file.
-        func start(ofRow row: Int) -> UInt64 { extent * UInt64(row) / UInt64(rowCount) }
+        func start(ofRow row: Int) -> UInt64 { binning.start(ofRow: row) }
 
         /// The cells one byte of a row's slice occupies, when the slice is
         /// thinner than the row's 16 cells: the byte is stretched over the cells
@@ -1912,26 +1916,12 @@ final class MainViewController: NSViewController {
         /// the last an empty byte range: the picture came out a pale field with
         /// the whole file collapsed into a stripe down its right edge (§19.4.2).
         func stretchedColumns(forByteAt index: UInt64, ofSpan span: UInt64) -> ClosedRange<Int> {
-            let effective = max(span, 1)
-            let clamped = min(index, effective - 1)
-            let first = Int(clamped * UInt64(columns) / effective)
-            let last = Int((clamped + 1) * UInt64(columns) / effective) - 1
-            return first...max(first, min(columns - 1, last))
+            binning.stretchedColumns(forByteAt: index, ofSpan: span)
         }
 
         /// The row a byte offset falls in, and the cells it occupies there.
         func cells(of offset: UInt64) -> (row: Int, columns: ClosedRange<Int>)? {
-            guard offset < extent else { return nil }
-            let row = Int(offset * UInt64(rowCount) / extent)
-            guard rows.contains(row) else { return nil }
-            let rowStart = start(ofRow: row)
-            let span = start(ofRow: row + 1) - rowStart
-            guard span >= UInt64(columns) else {
-                let index = offset > rowStart ? offset - rowStart : 0
-                return (row, stretchedColumns(forByteAt: index, ofSpan: span))
-            }
-            let column = Int(min(UInt64(columns - 1), (offset - rowStart) * UInt64(columns) / span))
-            return (row, column...column)
+            binning.cells(of: offset, within: rows)
         }
 
         // The byte range these rows cover, so the passes below read and scan
@@ -2066,28 +2056,7 @@ final class MainViewController: NSViewController {
         for block in source.differences?.blocks(in: windowStart..<windowEnd) ?? []
         where block.kind == .different {
             if shouldCancel() { return nil }
-            let range = block.range
-            let lower = max(range.lowerBound, windowStart)
-            let upper = min(range.upperBound, min(windowEnd, extent))
-            guard lower < upper, let first = cells(of: lower), let last = cells(of: upper - 1)
-            else { continue }
-            if first.row == last.row {
-                let from = min(first.columns.lowerBound, last.columns.lowerBound)
-                let to = max(first.columns.upperBound, last.columns.upperBound)
-                for column in from...to {
-                    different[first.row - rows.lowerBound] |= UInt16(1) << UInt16(column)
-                }
-                continue
-            }
-            for column in first.columns.lowerBound..<columns {
-                different[first.row - rows.lowerBound] |= UInt16(1) << UInt16(column)
-            }
-            if last.row > first.row + 1 {
-                for row in (first.row + 1)..<last.row { different[row - rows.lowerBound] = .max }
-            }
-            for column in 0...last.columns.upperBound {
-                different[last.row - rows.lowerBound] |= UInt16(1) << UInt16(column)
-            }
+            binning.mark(block.range, rows: rows, into: &different)
         }
 
         // A cell past this file's own end holds none of its bytes, so it can
@@ -4919,6 +4888,9 @@ final class MainViewController: NSViewController {
         guard let range = set.range(at: index) else { return }
         pane.select(range: range)
         pane.setCurrentMatch(index)
+        // The pop answers the key press — including when a lone match wraps
+        // onto itself, where no index changed (§11).
+        filePaneView(for: pane)?.bounceFindIndicator()
         // Show the match mid-pane: a plain reveal only scrolls the found row to
         // the nearest edge (bottom after Find Next, top after Find Previous) (§11).
         filePaneView(for: pane)?.revealSelectionCentered()

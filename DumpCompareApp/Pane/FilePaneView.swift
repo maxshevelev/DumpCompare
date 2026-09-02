@@ -231,6 +231,14 @@ final class FilePaneView: NSView {
     /// regardless; the owner uses the hook to stop the in-flight search (§11).
     var onSearchResultsClose: ((FilePaneView) -> Void)?
 
+    /// Pops the find indicator, the way the platform's own does when it moves
+    /// to another match (§11). Called by the owner after a step, not by the
+    /// pane's own change channel: a wrap onto a lone match moves no index and
+    /// must still answer the key press.
+    func bounceFindIndicator() {
+        hexView.bounceFindIndicator()
+    }
+
     /// Fired after the pane's match set or find indicator changed, once the
     /// dump has been marked for repaint — the owner's cue to refresh what lives
     /// outside the pane (the Find bar's count, the minimap) (§11).
