@@ -83,14 +83,24 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         var isModified: Bool
         /// The byte differs from the companion file.
         var isDifferent: Bool
+        /// The byte belongs to an occurrence of the active search pattern
+        /// (§11). A byte state like the two above, which is why it is drawn in
+        /// the map's content and not in its margin.
+        var isMatch: Bool
+        /// The byte belongs to the *current* match — the one the find indicator
+        /// marks in the dump.
+        var isCurrentMatch: Bool
 
         static let insignificant = CellState(isSignificant: false, isModified: false, isDifferent: false)
         static let significant = CellState(isSignificant: true, isModified: false, isDifferent: false)
 
-        init(isSignificant: Bool, isModified: Bool, isDifferent: Bool) {
+        init(isSignificant: Bool, isModified: Bool, isDifferent: Bool,
+             isMatch: Bool = false, isCurrentMatch: Bool = false) {
             self.isSignificant = isSignificant
             self.isModified = isModified
             self.isDifferent = isDifferent
+            self.isMatch = isMatch
+            self.isCurrentMatch = isCurrentMatch
         }
 
         /// The cell for one byte of the dump. Significance is that byte's own —
@@ -99,6 +109,8 @@ final class MinimapView: NSView, NSViewToolTipOwner {
             isSignificant = state.byte != 0x00 && state.byte != 0xFF
             isModified = state.isModified
             isDifferent = state.isDifferent
+            isMatch = false
+            isCurrentMatch = false
         }
     }
 
@@ -268,6 +280,14 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// map. Called from `draw` for the visible rows only — the map stores no
     /// cells, so this is the whole data path.
     var byteStates: ((_ mapIndex: Int, _ range: Range<UInt64>) -> [HexByteState])?
+
+    /// The active search's matches inside a range of one map's file, pulled per
+    /// repaint like the byte states — the map reads the same set the dump does,
+    /// so the two cannot disagree about where the matches are (§11).
+    var matchRanges: ((_ mapIndex: Int, _ range: Range<UInt64>) -> [Range<UInt64>])?
+    /// The current match in one map's file, if any — what the dump marks with
+    /// the find indicator.
+    var currentMatchRange: ((_ mapIndex: Int) -> Range<UInt64>?)?
 
     /// Asks for the panes to scroll so that `offset`'s hex row sits at the top
     /// of the pane — the minimap's drag and wheel both go through it. The panes
@@ -1223,13 +1243,33 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         guard renderMode == .detail else { return [] }
         let range = windowByteRange(forMapAt: index)
         guard !range.isEmpty, let states = byteStates?(index, range) else { return [] }
+        // The window's matches as flags per byte, so marking a cell is a lookup
+        // rather than a walk of the match list per byte.
+        var matched = [Bool](repeating: false, count: states.count)
+        var current = [Bool](repeating: false, count: states.count)
+        func mark(_ flags: inout [Bool], _ match: Range<UInt64>) {
+            let lower = max(match.lowerBound, range.lowerBound)
+            let upper = min(match.upperBound, range.upperBound)
+            guard lower < upper else { return }
+            for offset in lower..<upper {
+                let index = Int(offset - range.lowerBound)
+                if index < flags.count { flags[index] = true }
+            }
+        }
+        for match in matchRanges?(index, range) ?? [] { mark(&matched, match) }
+        if let match = currentMatchRange?(index) { mark(&current, match) }
+
         var rows: [ByteRow] = []
         rows.reserveCapacity(states.count / Int(Self.bytesPerRow) + 1)
         var offset = 0
         while offset < states.count {
             let end = min(offset + Int(Self.bytesPerRow), states.count)
-            let cells = states[offset..<end].filter { !$0.isEOF }.map(CellState.init)
+            var cells = states[offset..<end].filter { !$0.isEOF }.map(CellState.init)
             if cells.isEmpty { break }  // past EOF: no more rows to draw
+            for column in cells.indices {
+                cells[column].isMatch = matched[offset + column]
+                cells[column].isCurrentMatch = current[offset + column]
+            }
             rows.append(ByteRow(cells: cells))
             offset = end
         }
@@ -1469,15 +1509,36 @@ final class MinimapView: NSView, NSViewToolTipOwner {
                 // whole row step leaves the inter-row gap orange, so a differing
                 // run reads as a continuous orange band behind the bytes, while
                 // the columns stay separated horizontally.
+                // A match is a background too, and it layers where the dump
+                // layers it (§6): under the difference, because telling two
+                // dumps apart outranks it, and the current match over both,
+                // because that is where the user is standing (§11). Each fills
+                // the whole row step, like the difference, so a run of matches
+                // reads as a continuous band behind the bytes.
+                if state.isMatch {
+                    HexTheme.matchFill.setFill()
+                    NSRect(x: rect.minX, y: y, width: cellWidth, height: rowStep).fill()
+                }
                 if state.isDifferent {
                     HexTheme.differenceFill.setFill()
                     NSRect(x: rect.minX, y: y, width: cellWidth, height: rowStep).fill()
                 }
+                if state.isCurrentMatch {
+                    HexTheme.findIndicatorFill.setFill()
+                    NSRect(x: rect.minX, y: y, width: cellWidth, height: rowStep).fill()
+                }
                 // The byte itself is drawn on top of that background, so a
                 // modified byte shows as red ink on orange, exactly as the hex
-                // panes draw it.
-                let color = state.isModified ? HexTheme.modifiedText
-                    : (state.isSignificant ? HexTheme.byteText : HexTheme.mutedByteText)
+                // panes draw it. Over the indicator's fixed yellow the ink is
+                // forced the way the dump forces it — `labelColor` there would
+                // be white on yellow in dark mode.
+                let color: NSColor
+                if state.isCurrentMatch {
+                    color = state.isModified ? HexTheme.modifiedText : HexTheme.indicatorInk
+                } else {
+                    color = state.isModified ? HexTheme.modifiedText
+                        : (state.isSignificant ? HexTheme.byteText : HexTheme.mutedByteText)
+                }
                 color.setFill()
                 rect.fill()
             }

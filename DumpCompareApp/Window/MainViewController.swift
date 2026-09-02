@@ -753,6 +753,12 @@ final class MainViewController: NSViewController {
         minimapView.byteStates = { [weak self] mapIndex, range in
             self?.minimapByteStates(mapIndex: mapIndex, range: range) ?? []
         }
+        minimapView.matchRanges = { [weak self] mapIndex, range in
+            self?.minimapMatchRanges(mapIndex: mapIndex, range: range) ?? []
+        }
+        minimapView.currentMatchRange = { [weak self] mapIndex in
+            self?.minimapCurrentMatch(mapIndex: mapIndex)
+        }
         minimapView.onScrollToOffset = { [weak self] offset in
             self?.scrollPanesToOffset(offset)
         }
@@ -899,6 +905,9 @@ final class MainViewController: NSViewController {
             }
             pane.onMatchesChanged = { [weak self] in
                 self?.refreshFindCount()
+                // The map paints the matches too (§11), and no range describes
+                // a set arriving or going, so its cells are all suspect.
+                self?.minimapView.invalidateCells()
             }
             // The minimap's single map mirrors this pane: edits rebuild its
             // cells, a moved caret moves the selection overlay, and scrolling
@@ -1038,9 +1047,11 @@ final class MainViewController: NSViewController {
             }
             pane1View.onMatchesChanged = { [weak self] in
                 self?.refreshFindCount()
+                self?.minimapView.invalidateCells()
             }
             pane2View.onMatchesChanged = { [weak self] in
                 self?.refreshFindCount()
+                self?.minimapView.invalidateCells()
             }
 
             activeFilePane = windowModel.activePaneIndex == 0 ? pane1View : pane2View
@@ -2123,6 +2134,17 @@ final class MainViewController: NSViewController {
             pane = nil
         }
         return pane?.hexByteStates(in: range) ?? []
+    }
+
+    /// Feeds the minimap the active search's matches for the rows it is
+    /// showing (§11), from the same set the dump paints from — the map cannot
+    /// disagree with the dump for the same reason its byte states cannot.
+    private func minimapMatchRanges(mapIndex: Int, range: Range<UInt64>) -> [Range<UInt64>] {
+        minimapPane(at: mapIndex)?.matchRanges(intersecting: range) ?? []
+    }
+
+    private func minimapCurrentMatch(mapIndex: Int) -> Range<UInt64>? {
+        minimapPane(at: mapIndex)?.currentMatchRange
     }
 
     /// Hands the minimap the window's bookmarks (§19.4.3). The store is the one

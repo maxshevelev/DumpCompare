@@ -663,6 +663,38 @@ final class MinimapTests: XCTestCase {
                        "only 0x42 is significant in row 2")
     }
 
+    /// §11: the map marks the search's matches in its own cells, from the same
+    /// set the dump paints from — a match is a byte state, like a difference,
+    /// not an annotation like a bookmark, so it belongs in the content.
+    func testMatchCellsMarkTheSearchsOccurrences() throws {
+        // 0xDE 0xAD at 0x02 and at 0x14 (row 1, column 4).
+        var bytes = [UInt8](repeating: 0x41, count: 48)
+        bytes.replaceSubrange(2..<4, with: [0xDE, 0xAD])
+        bytes.replaceSubrange(20..<22, with: [0xDE, 0xAD])
+        let (controller, _, panel) = try makeSingleFileWindow(bytes)
+        let pane = controller.windowModel.pane1
+
+        pane.setMatches(MatchSet(pattern: SearchPattern(bytes: [0xDE, 0xAD], encoding: .hex),
+                                 folding: .exact, extent: UInt64(bytes.count),
+                                 starts: [2, 20]),
+                        current: 1)
+
+        let rows = panel.visibleCells(forMapAt: 0)
+        XCTAssertTrue(rows[0].cells[2].isMatch, "both bytes of the first occurrence")
+        XCTAssertTrue(rows[0].cells[3].isMatch)
+        XCTAssertFalse(rows[0].cells[4].isMatch, "and nothing beyond it")
+        XCTAssertFalse(rows[0].cells[2].isCurrentMatch,
+                       "the indicator is on the second occurrence")
+        XCTAssertTrue(rows[1].cells[4].isCurrentMatch, "0x14 is row 1, column 4")
+        XCTAssertTrue(rows[1].cells[5].isCurrentMatch)
+        XCTAssertTrue(rows[1].cells[4].isMatch, "the current match is a match too")
+
+        pane.clearMatches()
+        XCTAssertFalse(panel.visibleCells(forMapAt: 0).contains { row in
+            row.cells.contains { $0.isMatch || $0.isCurrentMatch }
+        }, "the session ended, so the map marks nothing")
+    }
+
     func testPartialLastRowKeepsOnlyItsBytes() throws {
         // 3 bytes = one partial hex row → one mini row with exactly 3 cells.
         let (_, _, panel) = try makeSingleFileWindow([0x41, 0x00, 0x42])
