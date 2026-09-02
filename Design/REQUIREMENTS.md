@@ -1114,18 +1114,30 @@ Search navigation:
   open (below) — on Escape, and when the pane's content changes under it, since
   after an edit every offset in it would be a guess.
 
-Search All (results panel):
+The results panel:
 
-- Every occurrence is listed in a panel belonging to the pane that was
-  searched, filling as the scan streams matches in rather than at the end.
-- The panel caps how many results it lists. The header must distinguish a
-  search that filled the cap exactly (a complete result) from one that had
-  more matches than the cap (reported as too many results).
-- The panel has its own close control, which stops the scan behind it.
-  Dismissing the Find bar must not close the panel or cancel its scan; a
-  change of window mode must, since the pane it belongs to is rebuilt.
-- Starting another Search All supersedes the previous one: the older scan must
-  not touch the newer one's panel, nor disable its close control.
+- Every occurrence of the current pattern is listed in a panel belonging to the
+  pane that was searched. It is **not** a search of its own: the scan that
+  built the pane's match set is the one behind it, so the panel opens with its
+  rows already in place rather than filling as a scan streams in. A pattern
+  that has been typed but not yet searched is scanned first, and the panel
+  opens on the result.
+- The Find bar's results control is therefore a **toggle**: it shows the panel,
+  and pressing it again hides it. It reads as on while the panel is up, and a
+  search that found nothing opens no panel at all — the bar already says
+  `Not found`.
+- Past the listing limit the panel lists **nothing**: it shows the exact count
+  and what to do about it ("… matches — too many to list. Refine the pattern.").
+  A list of four thousand rows looks exactly like a list of forty until you
+  scroll to the end, so it would impersonate a tool. The count is exact either
+  way, because the count is the diagnosis.
+- The panel has its own close control, which hides it and forgets its rows —
+  the search itself is untouched, since the pattern in the field has not
+  changed. Dismissing the Find bar must not close the panel; a change of window
+  mode must, since the pane it belongs to is rebuilt.
+- Picking a row jumps to that match: it is selected, centred, and the find
+  indicator moves onto it, so the row and the plate cannot disagree about where
+  the user is.
 - Excerpts and offsets are read from the pane's live content, so they follow
   edits made while the panel is open.
 - Column widths default to the width of the values they hold, not to fixed
@@ -1676,25 +1688,6 @@ resolution is used and nothing is spent on gaps.
   the bins change (a resize), when the bytes change, and when the comparison
   index changes — difference marks come from that index rather than from
   re-reading both files.
-
-Search matches in overview:
-
-- A match marks the cells its bytes fall in, two pixel rows tall like a
-  difference, so a single occurrence is not lost inside a dense region.
-- The mark is the find indicator's yellow, **thinned** — not the dump's grey.
-  A row here is kilobytes of aggregated content drawn as a grey *tone*, so a
-  grey mark cannot be told from content; at this scale a mark needs a hue,
-  which is the same reason a difference is orange rather than dark grey. The
-  current match is drawn over it at full strength.
-- The current match is **also marked in the margin**, in the same arrow shape a
-  bookmark uses (§19.4.3) and in the same yellow: at a row per 13 KB its cells
-  are one pixel tall and easy to miss. Under the bookmarks, because a bookmark
-  is something the user placed and a match is where they happen to be standing.
-- The bits are binned by the same arithmetic as the density picture, so a match
-  lands on the cell its bytes land in — including the stretch regime above. They
-  are computed from the match set, not from the file, and a new search therefore
-  costs no density rebuild: the picture is invalidated by bytes, these marks by
-  the pattern.
 
 19.4.3 Bookmarks in the margin
 

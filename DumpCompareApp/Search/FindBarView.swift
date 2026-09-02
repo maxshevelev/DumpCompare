@@ -330,6 +330,18 @@ final class FindBarView: NSView, NSComboBoxDelegate {
         findAllButton.isEnabled = live
     }
 
+    /// Reflects whether the pane's results panel is open: the button is a
+    /// toggle now, not a search (§11). Accent while the panel is up, the bar's
+    /// quiet grey otherwise — the same "on" language the case toggle uses.
+    func setResultsShown(_ shown: Bool) {
+        resultsShown = shown
+        findAllButton.contentTintColor = shown ? .controlAccentColor : .secondaryLabelColor
+        findAllButton.toolTip = shown ? "Hide Search Results" : "Show Search Results"
+    }
+
+    private var resultsShown = false
+    var resultsShownForTests: Bool { resultsShown }
+
     /// What the count label reads, for tests.
     var countTextForTests: String { countLabel.stringValue }
     /// The warning glyph's sentence, or nil when it is not shown.
@@ -381,8 +393,8 @@ final class FindBarView: NSView, NSComboBoxDelegate {
                                       accessibilityDescription: "Find All")
         findAllButton.symbolConfiguration = NSImage.SymbolConfiguration(
             pointSize: Self.iconPointSize, weight: .regular)
-        findAllButton.setAccessibilityLabel("Find All")
-        findAllButton.toolTip = "Find All"
+        findAllButton.setAccessibilityLabel("Search Results")
+        findAllButton.toolTip = "Show Search Results"
         findAllButton.target = self
         findAllButton.action = #selector(findAllPressed)
     }

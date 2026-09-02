@@ -532,7 +532,6 @@ final class MainViewController: NSViewController {
     /// × must stop that search. Nil once the Search All task ends, so closing a
     /// stale panel (an already-completed search, or the other pane's) never
     /// cancels an unrelated search (§11).
-    private weak var searchAllPane: FilePaneView?
     /// Reacts to the Layout settings tab changing the default direction: an open
     /// comparison re-lays out live, like the Word Size/Appearance settings (§6).
     private var layoutSettingsObserver: NSObjectProtocol?
@@ -644,7 +643,7 @@ final class MainViewController: NSViewController {
             self?.runSearch(pattern: pattern, direction: direction, caseSensitive: caseSensitive)
         }
         findBar.onSearchAll = { [weak self] pattern, caseSensitive in
-            self?.runSearchAll(pattern: pattern, caseSensitive: caseSensitive)
+            self?.toggleSearchResults(pattern: pattern, caseSensitive: caseSensitive)
         }
         findBar.onError = { [weak self] message in
             self?.showFindMessage(message)
@@ -840,14 +839,11 @@ final class MainViewController: NSViewController {
             self?.openSegmentsForm?.reloadSegments()
             self?.syncMinimapSegments()
         }
-        // The panes are about to be rebuilt, so an in-flight Search All would
-        // stream into an orphaned view (and its × would be gone). Stop it here:
-        // `hideFindBar` deliberately leaves a Search All running (§11).
-        if searchAllPane != nil {
-            findTask?.cancel()
-            findOperation?.finish()
-            searchAllPane = nil
-        }
+        // The panes are about to be rebuilt, so a scan in flight would land its
+        // set in a pane that is going away.
+        findTask?.cancel()
+        findOperation?.finish()
+        findBar.setResultsShown(false)
         // Panes are rebuilt on every apply, so the viewport mirrors must start
         // empty and fill in as the new panes report their visible ranges (§19).
         minimapViewports.removeAll()
@@ -899,9 +895,9 @@ final class MainViewController: NSViewController {
             wireBookmarkDoubleClick(pane, for: paneModel)
             // Close button: closing the last file returns to empty mode (§3.5).
             pane.onClose = { [weak self] in self?.closePane(at: 0) }
-            // Closing the Search All panel stops the in-flight search (§11).
-            pane.onSearchResultsClose = { [weak self] pane in
-                self?.cancelSearchAll(from: pane)
+            // The panel closed itself; the bar's toggle follows (§11).
+            pane.onSearchResultsClose = { [weak self] _ in
+                self?.findBar.setResultsShown(false)
             }
             pane.onMatchesChanged = { [weak self] in
                 self?.refreshFindCount()
@@ -1040,11 +1036,11 @@ final class MainViewController: NSViewController {
             pane1View.onClose = { [weak self] in self?.closePane(at: 0) }
             pane2View.onClose = { [weak self] in self?.closePane(at: 1) }
             // Closing a pane's Search All panel stops that search (§11).
-            pane1View.onSearchResultsClose = { [weak self] pane in
-                self?.cancelSearchAll(from: pane)
+            pane1View.onSearchResultsClose = { [weak self] _ in
+                self?.findBar.setResultsShown(false)
             }
-            pane2View.onSearchResultsClose = { [weak self] pane in
-                self?.cancelSearchAll(from: pane)
+            pane2View.onSearchResultsClose = { [weak self] _ in
+                self?.findBar.setResultsShown(false)
             }
             pane1View.onMatchesChanged = { [weak self] in
                 self?.refreshFindCount()
@@ -4844,13 +4840,11 @@ final class MainViewController: NSViewController {
         findBar.isHidden = true
         contentTopToFindBar.isActive = false
         contentTopToView.isActive = true
-        // A Search All outlives the bar: its results live in the pane's own
-        // panel, with its own × to stop it, so dismissing the bar must not wipe
-        // them (§11). A single find has nothing to leave behind, so it stops.
-        if searchAllPane == nil {
-            findTask?.cancel()
-            findOperation?.finish()
-        }
+        // Nothing survives the bar's dismissal except an open results panel,
+        // and that panel holds its rows itself — the scan that filled it is
+        // long done (§11).
+        findTask?.cancel()
+        findOperation?.finish()
         // The highlighting ends with the bar — except where a results panel for
         // the same search is still open. The panel deliberately outlives the bar,
         // and its rows and the dump's greys must not disagree about what was
@@ -5080,145 +5074,62 @@ final class MainViewController: NSViewController {
         pane?.clearMatches()
     }
 
-    /// Launches a Search All from the find bar (§11): the results panel opens
-    /// immediately at its default height, and every occurrence of the pattern is
-    /// found in the background and streamed into the table as the scan runs, so
-    /// the table and its count fill live while a large file is still being
-    /// searched. Runs as a `BackgroundOperation` like a single search, so the
-    /// strip (name + progress + ×) appears in the status bar and it can be
-    /// cancelled (§14.4).
+    /// The Find bar's results button (§11): shows or hides the pane's results
+    /// panel.
     ///
-    /// The pane active when the search started is captured up front so the
-    /// results land in the right hosting view even if the active pane changes
-    /// while scanning. Each search captures a `searchAllGeneration` token and
-    /// checks it against the live one before touching the panel, so a
-    /// superseded search can never clobber the results of a newer one (§11).
-    private func runSearchAll(pattern: SearchPattern, caseSensitive: Bool) {
+    /// It is no longer a search. Activating a search already scanned the file —
+    /// that scan is what feeds the dump's highlighting — so the results exist
+    /// and this only presents them. When the field holds a pattern that has not
+    /// been searched yet, the scan runs first and the panel opens on its result.
+    private func toggleSearchResults(pattern: SearchPattern, caseSensitive: Bool) {
+        let pane = activePane
+        guard pane.isOpen, let paneView = filePaneView(for: pane) else { return }
+        if paneView.searchResultsPanelVisible {
+            paneView.hideSearchResults()
+            findBar.setResultsShown(false)
+            return
+        }
+        let folding = CaseFolding(encoding: pattern.encoding, caseSensitive: caseSensitive)
+        if pane.hasMatches(for: pattern, folding: folding) {
+            presentSearchResults(for: pane)
+            return
+        }
+
         findTask?.cancel()
         findOperation?.finish()
-        let operation = BackgroundOperation(name: "Finding all…") { [weak self] in
+        let operation = BackgroundOperation(name: "Searching…") { [weak self] in
             self?.findTask?.cancel()
         }
         findOperation = operation
-        let pane = activePane
-        let paneView = filePaneView(for: pane)
-        searchAllPane = paneView
-        // Open the panel empty before any scanning; matches stream in below.
-        paneView?.showSearchResults(matchLength: pattern.bytes.count)
-        activeFilePane?.beginOperation(operation)
-        searchAllGeneration += 1
-        let generation = searchAllGeneration
-
-        let task = Task { [weak self] in
+        paneView.beginOperation(operation)
+        findTask = Task { [weak self] in
             guard let self else { return }
-            do {
-                let count = try await self.streamFindAll(pattern: pattern, caseSensitive: caseSensitive,
-                                                         operation: operation, into: paneView)
-                // The scan completed: settle the header's count (drop the "…"),
-                // or — when there turned out to be more matches than the panel
-                // shows — say the search returned too many results instead of a
-                // final count (§11). The scan is asked for one match beyond the
-                // display cap precisely so this is exact: a file with exactly
-                // `defaultMaxResults` matches used to be labelled "too many".
-                if self.searchAllGeneration == generation, let paneView {
-                    paneView.searchResults.finishSearch(
-                        truncated: count > SearchEngine.defaultMaxResults)
-                }
-            } catch is CancellationError {
-                // The × button, the status-strip stop, or a newer search ended
-                // this one. End it, hiding its panel only when that cannot
-                // clobber a newer search's live results (§11).
-                self.endSearchAllTask(generation: generation, paneView: paneView)
-            } catch {
-                // A scan error (e.g. a storage read failure) aborts the search.
-                self.endSearchAllTask(generation: generation, paneView: paneView)
-            }
+            let set = await self.scanMatches(pattern: pattern, folding: folding,
+                                             in: pane, operation: operation)
             operation.finish()
-            // This search is over (completed, cancelled, or superseded); a later
-            // close of a results panel must not cancel anything else. Guarded by
-            // the generation like every other write here: a *superseded* search
-            // reaches this line after the newer one has already claimed
-            // `searchAllPane`, and clearing it then would leave the newer
-            // search's panel unable to cancel it (its × checks this pointer).
-            if self.searchAllGeneration == generation {
-                self.searchAllPane = nil
-            }
-        }
-        findTask = task
-    }
-
-    /// Stops the in-flight Search All when the user closes its results panel
-    /// (the ×): cancels the scan and dismisses its status strip. Only acts if
-    /// the closing panel belongs to the current Search All — a stale panel (a
-    /// search that already finished, or the other pane's panel) must not cancel
-    /// an unrelated search.
-    private func cancelSearchAll(from pane: FilePaneView?) {
-        guard searchAllPane === pane else { return }
-        findTask?.cancel()
-        findOperation?.finish()
-    }
-
-    /// Ends a Search All that did not complete (cancelled or errored). When it
-    /// is still the current search, its results panel is hidden (the handle is
-    /// cleared later, at the task's end). When a newer search superseded it,
-    /// the newer search's panel is left alone — but this task's own panel, in a
-    /// different pane, is still collapsed so it is not left behind with a
-    /// forever-hanging "…" count (§11).
-    private func endSearchAllTask(generation: Int, paneView: FilePaneView?) {
-        if searchAllGeneration == generation {
-            paneView?.hideSearchResults()
-        } else if let paneView, paneView !== searchAllPane {
-            paneView.hideSearchResults()
+            guard !Task.isCancelled, let set, pane.isOpen else { return }
+            pane.setMatches(set)
+            self.presentSearchResults(for: pane)
         }
     }
 
-    /// Streams every match of `pattern` from the pane's live storage into the
-    /// given results panel, one row at a time, as the detached scan finds them —
-    /// the first occurrence appears the moment it is found, not when the scan
-    /// completes (§11). `operation` receives the scan's progress so the status
-    /// bar advances. Returns how many matches were delivered (at most
-    /// `SearchEngine.defaultMaxResults`), so the caller can tell a capped scan
-    /// from one that fully completed.
-    ///
-    /// When the surrounding task is cancelled the scan stops and the loop ends;
-    /// this method then rethrows `CancellationError` so the caller can tell a
-    /// cancelled search from a completed one (throws immediately, too, when the
-    /// pane has no storage to scan).
-    private func streamFindAll(pattern: SearchPattern, caseSensitive: Bool,
-                               operation: BackgroundOperation, into paneView: FilePaneView?) async throws -> Int {
-        guard let paneView, let storage = paneView.viewModel.byteStorage else {
-            throw CancellationError()
+    /// Opens the pane's results panel on its current set: the matches as rows,
+    /// or — past the listing limit — the count and the reason there are no rows
+    /// (§11). A search that found nothing opens nothing; the bar already says
+    /// "Not found".
+    private func presentSearchResults(for pane: PaneViewModel) {
+        guard let paneView = filePaneView(for: pane), let set = pane.matchSet else { return }
+        guard set.total > 0 else {
+            findBar.setResultsShown(false)
+            return
         }
-        // One past the display cap: the extra match is never shown, it only
-        // proves there were more, so "too many results" is exact rather than
-        // inferred from hitting the cap.
-        let displayCap = SearchEngine.defaultMaxResults
-        let stream = SearchEngine.findAllStream(
-            pattern: pattern.bytes, in: storage,
-            folding: CaseFolding(encoding: pattern.encoding, caseSensitive: caseSensitive),
-            chunkSize: Self.searchChunkSize,
-            maxResults: displayCap + 1,
-            shouldCancel: { Task.isCancelled },
-            progress: { operation.report($0) }
-        )
-        var count = 0
-        for try await match in stream {
-            count += 1
-            guard count <= displayCap else { break }
-            paneView.searchResults.append([match])
-        }
-        // Distinguish a finished scan from a cancelled one: on this platform a
-        // cancelled task's `next()` can return nil (a normal end) instead of
-        // throwing, so check explicitly — a cancelled Search All must hide its
-        // panel, not leave partial results with a settled count.
-        if Task.isCancelled {
-            throw CancellationError()
-        }
-        return count
+        let content: SearchResultsViewController.Content = set.isListable
+            ? .matches(set.matches(intersecting: 0..<max(set.extent, 1)))
+            : .tooMany(total: set.total)
+        paneView.showSearchResults(content, patternLength: set.patternLength)
+        findBar.setResultsShown(true)
     }
 
-    /// Beeps and flashes `message` in the active pane's status bar (used for
-    /// parse errors and empty search results from the Find bar, §11).
     private func showFindMessage(_ message: String) {
         NSSound.beep()
         activeFilePane?.showTransientMessage(message)

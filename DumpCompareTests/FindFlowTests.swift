@@ -127,13 +127,6 @@ final class FindFlowTests: XCTestCase {
         try findBar(window).pressFindForTests(.backward)
     }
 
-    /// A number in the reader's region format — what the count label shows.
-    private func grouped(_ value: Int) -> String {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .decimal
-        return formatter.string(from: NSNumber(value: value))!
-    }
-
     /// Whether the find bar's count label says `text` — "3 of 128",
     /// "Not found", or nothing at all (§11).
     private func hasCount(_ text: String, in window: NSWindow) -> Bool {
@@ -149,8 +142,8 @@ final class FindFlowTests: XCTestCase {
     /// The Search All button in the find bar.
     private func findAllButton(_ window: NSWindow) throws -> NSButton {
         let bar = try findBar(window)
-        return try XCTUnwrap(descendants(of: bar, NSButton.self).first { $0.accessibilityLabel() == "Find All" },
-                             "Find All button")
+        return try XCTUnwrap(descendants(of: bar, NSButton.self).first { $0.accessibilityLabel() == "Search Results" },
+                             "Search Results button")
     }
 
     /// The single file pane's Search All results panel.
@@ -159,19 +152,26 @@ final class FindFlowTests: XCTestCase {
         return paneView.searchResults
     }
 
-    /// Runs a Search All for `pattern` and waits for it to finish: the panel
-    /// opens immediately, and the header's trailing "…" drops once the
-    /// background scan completes, so the table holds every match.
+    /// The results panel's header text.
+    private func headerText(of view: SearchResultsViewController) -> String {
+        (descendants(of: view.view, NSTextField.self)
+            .first { $0.stringValue.hasPrefix("Search results") })?.stringValue ?? ""
+    }
+
+    /// Presses the results button for `pattern` and waits for the panel to open
+    /// on the search's result.
+    ///
+    /// The panel no longer opens empty and fills: the scan that feeds the dump's
+    /// highlighting is the one behind it, so the panel appears with its rows
+    /// already in place (§11).
     @discardableResult
     private func runSearchAll(_ pattern: String, in window: NSWindow) throws -> SearchResultsViewController {
         let (combo, _, _, _) = try barControls(window)
         combo.stringValue = pattern
         try findAllButton(window).performClick(nil)
         let view = try resultsView(window)
-        // The panel is shown immediately; the scan streams results in and the
-        // "…" in the count drops when it completes. Wait for both.
-        XCTAssertTrue(pumpUntil(5) { view.view.frame.height > 1 && !view.isSearching },
-                      "Search All must show the results panel and finish scanning")
+        XCTAssertTrue(pumpUntil(5) { view.view.frame.height > 1 },
+                      "the results button must open the panel")
         return view
     }
 
@@ -1063,75 +1063,43 @@ final class FindFlowTests: XCTestCase {
     /// Search All opens the results panel immediately — before any scanning — in
     /// its "searching" state, and the count/table settle once the scan finishes.
     /// Previously the panel only appeared after the whole scan completed.
-    func testSearchAllShowsPanelImmediately() throws {
-        // Big enough that the scan cannot finish inside the click: `performClick`
-        // spins the run loop for the button's highlight, and over a 20-byte file
-        // the scan used to complete there — so the "still searching" assertion
-        // below failed about half the time. Several default 1 MB chunks make it
-        // deterministic.
-        var bytes = [UInt8](repeating: 0x00, count: 6 * SearchEngine.defaultChunkSize)
-        for i in stride(from: 0, to: bytes.count, by: SearchEngine.defaultChunkSize) {
-            bytes[i] = 0xDE
-            bytes[i + 1] = 0xAD
-        }
+    func testTheResultsButtonOpensThePanelOnTheSearchsResult() throws {
+        // Six matches, one per chunk, so the scan really does have to cover the
+        // file before the panel can be right.
+        MainViewController.searchChunkSize = 8
+        addTeardownBlock { MainViewController.searchChunkSize = SearchEngine.defaultChunkSize }
+        var bytes = [UInt8](repeating: 0x00, count: 48)
+        for chunk in 0..<6 { bytes[chunk * 8] = 0xDE; bytes[chunk * 8 + 1] = 0xAD }
         let (controller, window, url) = try makeController(bytes)
         defer { cleanup(controller, url) }
 
         controller.findPattern()
-        let (combo, _, _, _) = try barControls(window)
-        combo.stringValue = "DE AD"
-        try findAllButton(window).performClick(nil)
-
-        // Right after the click the panel is already shown and searching: both
-        // `showSearchResults` and `setSearching(true)` run synchronously inside
-        // the click handler, before the background scan has produced a result.
+        let bar = try findBar(window)
+        let view = try runSearchAll("DE AD", in: window)
         let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
-        XCTAssertTrue(paneView.searchResultsPanelVisible,
-                      "the panel must be shown immediately on Search All")
-        XCTAssertTrue(paneView.searchResults.isSearching,
-                      "the scan must still be running right after the click")
+        XCTAssertTrue(paneView.searchResultsPanelVisible)
+        XCTAssertEqual(view.tableView.numberOfRows, 6, "one row per match, all of them")
+        XCTAssertTrue(bar.resultsShownForTests, "and the button reads as on")
 
-        // It fills dynamically and settles once the scan completes.
-        XCTAssertTrue(pumpUntil(5) { !paneView.searchResults.isSearching },
-                      "the scan must eventually finish")
-        XCTAssertEqual(paneView.searchResults.tableView.numberOfRows, 6,
-                       "one row per match after the scan settles — one per chunk")
+        // It is a toggle now, not a search: pressing it again puts the panel away.
+        try findAllButton(window).performClick(nil)
+        XCTAssertFalse(paneView.searchResultsPanelVisible, "a second press hides it")
+        XCTAssertFalse(bar.resultsShownForTests)
     }
 
-    /// The panel's count and table update live as a search streams in: each
-    /// `append` grows both, and the header's trailing "…" marks a still-running
-    /// search, dropping once it settles.
-    func testSearchResultsCountUpdatesLive() throws {
-        let (controller, window, url) = try makeController([0xDE, 0xAD])
+    /// The panel lists what the set holds, and says so in its header — the same
+    /// count the Find bar shows.
+    func testThePanelListsTheSetsMatches() throws {
+        let (controller, window, url) = try makeController([0xDE, 0xAD, 0x00, 0xDE, 0xAD])
         defer { cleanup(controller, url) }
 
         controller.findPattern()
-        let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
-        let view = paneView.searchResults
-        paneView.showSearchResults(matchLength: 2)
-
-        XCTAssertEqual(view.tableView.numberOfRows, 0)
-        XCTAssertTrue(view.isSearching)
-        XCTAssertEqual(headerText(of: view), "Search results (0…)")
-
-        view.append([0..<2])
-        view.append([4..<6, 7..<9])
-        XCTAssertEqual(view.tableView.numberOfRows, 3, "rows grow with each batch")
-        XCTAssertEqual(headerText(of: view), "Search results (3…)")
-
-        view.finishSearch(truncated: false)
-        XCTAssertEqual(headerText(of: view), "Search results (3)", "the ellipsis drops once settled")
+        let view = try runSearchAll("DE AD", in: window)
+        XCTAssertEqual(view.tableView.numberOfRows, 2)
+        XCTAssertEqual(headerText(of: view), "Search results (2)")
+        XCTAssertEqual(view.content, .matches([0..<2, 3..<5]))
     }
 
-    /// The results panel's header text ("Search results (NNN…)").
-    private func headerText(of panel: SearchResultsViewController) -> String {
-        descendants(of: panel.view, NSTextField.self).first {
-            $0.stringValue.hasPrefix("Search results")
-        }?.stringValue ?? ""
-    }
-
-    /// The found bytes are drawn bold in each row's hex and text excerpts —
-    /// the emphasis that marks the match inside its context window.
     func testSearchAllBoldsTheMatchInExcerpts() throws {
         let bytes: [UInt8] = [0xDE, 0xAD, 0x00, 0x00, 0x00, 0x00]
         let (controller, window, url) = try makeController(bytes)
@@ -1224,47 +1192,31 @@ final class FindFlowTests: XCTestCase {
 
     /// A Search All with no occurrences shows an empty panel with "(0)" — the
     /// panel always reports the count.
-    func testSearchAllNoMatchesShowsZeroCount() throws {
+    func testTheResultsButtonOpensNothingWhenThereAreNoMatches() throws {
         let (controller, window, url) = try makeController([0x41, 0x42, 0x43])
         defer { cleanup(controller, url) }
 
         controller.findPattern()
-        let view = try runSearchAll("FF FF FF", in: window)
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "FF FF FF"
+        try findAllButton(window).performClick(nil)
+        XCTAssertTrue(pumpUntil(3) { self.hasCount("Not found", in: window) })
 
-        XCTAssertEqual(view.tableView.numberOfRows, 0)
-        let header = try XCTUnwrap(descendants(of: view.view, NSTextField.self).first {
-            $0.stringValue.hasPrefix("Search results")
-        })
-        XCTAssertEqual(header.stringValue, "Search results (0)")
+        let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
+        XCTAssertFalse(paneView.searchResultsPanelVisible,
+                       "an empty result opens no panel — the bar already says Not found")
+        XCTAssertFalse(try findBar(window).resultsShownForTests)
     }
 
-    /// Closing the panel mid-search stops the scan and forgets the results: a
-    /// scan left running would keep streaming matches into the cleared panel,
-    /// so the table must stay empty after the close.
-    func testSearchAllCloseStopsTheSearch() throws {
-        // A match every 64 KiB across a 32 MiB file: the scan streams matches
-        // for a while, so it is certainly still running when we close the panel
-        // a moment later.
-        var bytes = [UInt8](repeating: 0x00, count: 1 << 25)
-        var offset = 0
-        while offset + 2 < bytes.count {
-            bytes[offset] = 0xDE
-            bytes[offset + 1] = 0xAD
-            offset += 64 << 10
-        }
-        let (controller, window, url) = try makeController(bytes)
+    /// Closing the panel forgets its rows, and leaves the search itself alone:
+    /// the pattern in the field is unchanged, so the greys and the count stay.
+    func testClosingThePanelForgetsItsResults() throws {
+        let (controller, window, url) = try makeController([0xDE, 0xAD, 0x00, 0xDE, 0xAD])
         defer { cleanup(controller, url) }
 
         controller.findPattern()
-        let (combo, _, _, _) = try barControls(window)
-        combo.stringValue = "DE AD"
-        try findAllButton(window).performClick(nil)
-
-        // Right after the click the scan is still running (no runloop pump has
-        // let the main-actor consumer settle it), so the × below closes it live.
-        let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
-        let view = paneView.searchResults
-        XCTAssertTrue(view.isSearching, "the scan must still be running right after the click")
+        let view = try runSearchAll("DE AD", in: window)
+        XCTAssertEqual(view.tableView.numberOfRows, 2)
 
         let closeButton = try XCTUnwrap(descendants(of: view.view, NSButton.self).first {
             $0.accessibilityLabel() == "Close search results"
@@ -1272,13 +1224,12 @@ final class FindFlowTests: XCTestCase {
         closeButton.performClick(nil)
 
         XCTAssertTrue(pumpUntil(3) { view.view.frame.height < 1 }, "closing hides the panel")
-        XCTAssertTrue(pumpUntil(3) { !view.isSearching }, "closing stops the search")
-        // Give a still-running scan time to keep streaming; the panel must stay
-        // empty — matches streamed after the close would refill the rows.
-        let deadline = Date().addingTimeInterval(1)
-        while Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
-        XCTAssertEqual(view.tableView.numberOfRows, 0,
-                       "closing the panel stops the search and forgets the results")
+        XCTAssertEqual(view.tableView.numberOfRows, 0, "and forgets the rows")
+        XCTAssertFalse(try findBar(window).resultsShownForTests,
+                       "the bar's toggle follows the panel")
+        // The search itself is untouched: the greys and the count stay, because
+        // the pattern is still what is in the field (§11).
+        XCTAssertEqual(controller.windowModel.pane1.matchSet?.total, 2)
     }
 
     /// The results panel is a pane of the pane's split view: shown after Search
@@ -1606,42 +1557,48 @@ final class FindFlowTests: XCTestCase {
                       "case-sensitive means the lower-case spelling is not there")
     }
 
-    // MARK: - "Too many results" is exact (§11)
+    // MARK: - The listing limit (§11)
 
-    /// A file with exactly as many matches as the panel shows is complete, not
-    /// truncated: the count used to be compared with `>=` against the cap, so an
-    /// exact hit was labelled "too many results".
-    func testExactlyTheResultCapIsNotReportedAsTruncated() throws {
-        let cap = SearchEngine.defaultMaxResults
-        // "AB" repeated `cap` times: exactly `cap` non-overlapping matches.
-        let bytes = [UInt8](repeating: 0, count: 0) + (0..<cap).flatMap { _ -> [UInt8] in [0x41, 0x42] }
+    /// Exactly the limit is a list: every match is a row, and the header counts
+    /// them.
+    func testExactlyTheListingLimitIsStillListed() throws {
+        let limit = SearchEngine.defaultMaxResults
+        let bytes = (0..<limit).flatMap { _ -> [UInt8] in [0x41, 0x42] }
         let (controller, window, url) = try makeController(bytes)
         defer { cleanup(controller, url) }
 
         controller.findPattern()
         let view = try runSearchAll("41 42", in: window)
-        XCTAssertEqual(view.tableView.numberOfRows, cap, "every match is listed")
-        let header = try XCTUnwrap(descendants(of: view.view, NSTextField.self).first {
-            $0.stringValue.hasPrefix("Search results")
-        })
-        XCTAssertEqual(header.stringValue, "Search results (\(cap))",
-                       "an exact cap is a finished search, not a truncated one")
+        XCTAssertEqual(view.tableView.numberOfRows, limit, "every match is listed")
+        XCTAssertEqual(headerText(of: view), "Search results (\(grouped(limit)))")
     }
 
-    /// One match past the cap is truncated: the panel shows the cap and says so.
-    func testMoreThanTheResultCapIsReportedAsTruncated() throws {
-        let cap = SearchEngine.defaultMaxResults
-        let bytes = (0..<(cap + 1)).flatMap { _ -> [UInt8] in [0x41, 0x42] }
+    /// One past the limit is not a list at all: the panel states the count and
+    /// what to do about it, because four thousand rows look exactly like forty
+    /// until you scroll to the end (§11).
+    func testPastTheListingLimitThePanelSaysWhyInsteadOfListing() throws {
+        let limit = SearchEngine.defaultMaxResults
+        let bytes = (0..<(limit + 1)).flatMap { _ -> [UInt8] in [0x41, 0x42] }
         let (controller, window, url) = try makeController(bytes)
         defer { cleanup(controller, url) }
 
         controller.findPattern()
         let view = try runSearchAll("41 42", in: window)
-        XCTAssertEqual(view.tableView.numberOfRows, cap, "the panel shows at most the cap")
-        let header = try XCTUnwrap(descendants(of: view.view, NSTextField.self).first {
-            $0.stringValue.hasPrefix("Search results")
-        })
-        XCTAssertEqual(header.stringValue, "Search results (\(cap)) — too many results")
+        XCTAssertEqual(view.content, .tooMany(total: limit + 1))
+        XCTAssertEqual(view.tableView.numberOfRows, 0, "nothing is listed")
+        XCTAssertEqual(headerText(of: view), "Search results (\(grouped(limit + 1)))",
+                       "the count is exact — it is the diagnosis")
+        let message = try XCTUnwrap(descendants(of: view.view, NSTextField.self)
+            .first { $0.stringValue.contains("too many to list") })
+        XCTAssertFalse(message.isHidden)
+        XCTAssertTrue(message.stringValue.contains("Refine the pattern"))
+    }
+
+    /// A count in the reader's region format, as the panel prints it.
+    private func grouped(_ value: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        return formatter.string(from: NSNumber(value: value))!
     }
 
     // MARK: - The results panel outlives the Find bar (§11)

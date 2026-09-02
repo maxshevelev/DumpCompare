@@ -34,6 +34,16 @@ import DumpCompareCore
 @MainActor
 final class SearchResultsViewController: NSViewController {
     /// Fired when the user clicks a result row, with the match's byte range.
+    /// What the panel is showing (§11).
+    enum Content: Equatable {
+        /// These matches, as rows.
+        case matches([Range<UInt64>])
+        /// Too many to list: the count and the reason instead of rows. A list of
+        /// four thousand rows looks exactly like a list of forty until you
+        /// scroll to the end, so it would impersonate a tool.
+        case tooMany(total: Int)
+    }
+
     var onSelect: ((Range<UInt64>) -> Void)?
 
     /// Fired when the user closes the panel (the ×).
@@ -48,14 +58,11 @@ final class SearchResultsViewController: NSViewController {
 
     /// The matches to show, in file order.
     private var matches: [Range<UInt64>] = []
-    /// Whether a Search All is still scanning; while true the header's count
-    /// gains a trailing "…" so a running search reads differently from a
-    /// completed one (§11).
-    private(set) var isSearching = false
-    /// Whether the last Search All stopped at the match cap (the scan found
-    /// `maxResults` occurrences and halted); the header then says so instead of
-    /// presenting the count as final (§11).
-    private(set) var isTruncated = false
+    /// What the panel is showing — rows, or a count and the reason there are no
+    /// rows (§11).
+    private(set) var content: Content = .matches([])
+    /// Shown instead of the table past the listing limit.
+    private let messageLabel = NSTextField(labelWithString: "")
     /// Reads `length` bytes at `offset` from the pane's live storage (clamped
     /// to EOF) for the row excerpts.
     private var byteProvider: ((UInt64, Int) -> [UInt8])?
@@ -175,9 +182,19 @@ final class SearchResultsViewController: NSViewController {
         scrollView.autohidesScrollers = true
         scrollView.drawsBackground = true
 
+        // Shown in the table's place past the listing limit (§11).
+        messageLabel.font = .systemFont(ofSize: 12)
+        messageLabel.textColor = .secondaryLabelColor
+        messageLabel.alignment = .center
+        messageLabel.lineBreakMode = .byWordWrapping
+        messageLabel.maximumNumberOfLines = 2
+        messageLabel.isHidden = true
+        messageLabel.translatesAutoresizingMaskIntoConstraints = false
+
         panel.addSubview(headerLabel)
         panel.addSubview(closeButton)
         panel.addSubview(scrollView)
+        panel.addSubview(messageLabel)
 
         let scrollTop = scrollView.topAnchor.constraint(equalTo: headerLabel.bottomAnchor,
                                                         constant: 4)
@@ -211,39 +228,44 @@ final class SearchResultsViewController: NSViewController {
             scrollView.leadingAnchor.constraint(equalTo: panel.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: panel.trailingAnchor),
             scrollBottom,
+
+            messageLabel.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 12),
+            messageLabel.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -12),
+            messageLabel.topAnchor.constraint(equalTo: scrollView.topAnchor, constant: 8),
         ])
         view = panel
     }
 
     // MARK: - What the panel is showing (§11)
 
-    /// Opens the panel for a scan that is about to start: no rows yet, the
-    /// header counting with a "…", and every row it will draw wired to the
-    /// pane's live bytes.
+    /// Shows a completed search's results (§11).
     ///
-    /// The wiring lives here rather than being handed in by the pane's view:
-    /// what a row reads is the panel's business, and a panel presented some
-    /// other way would need exactly the same answer.
-    func beginSearch(matchLength: Int) {
+    /// There is no streaming any more: the search's set already exists by the
+    /// time the panel opens, because the scan that produced it is the one
+    /// feeding the dump's highlighting (`Design/FIND_HIGHLIGHT_PLAN.md`). Past
+    /// the listing limit the panel says the count and why, instead of listing.
+    ///
+    /// The row wiring lives here rather than being handed in by the pane's
+    /// view: what a row reads is the panel's business, and a panel presented
+    /// some other way would need exactly the same answer.
+    func show(_ content: Content, patternLength: Int) {
         let pane = self.pane
+        let matches: [Range<UInt64>]
+        switch content {
+        case .matches(let found): matches = found
+        case .tooMany: matches = []
+        }
         configure(
-            matches: [],
+            matches: matches,
             byteProvider: { [weak pane] offset, length in
                 guard let storage = pane?.byteStorage else { return [] }
                 return (try? storage.read(at: offset, length: length)) ?? []
             },
             textDecoder: pane.textDecoder,
             fileSize: { [weak pane] in pane?.fileSize ?? 0 },
-            matchLength: matchLength)
-        setSearching(true)
-    }
-
-    /// The scan finished: the count settles (the "…" goes). `truncated` says
-    /// there were more matches than the panel shows, in which case it says so
-    /// instead of giving a count that would be a lie.
-    func finishSearch(truncated: Bool) {
-        if truncated { setTruncated(true) }
-        setSearching(false)
+            matchLength: patternLength)
+        self.content = content
+        applyContent()
     }
 
     private func setUpTable() {
@@ -300,44 +322,25 @@ final class SearchResultsViewController: NSViewController {
         self.textDecoder = textDecoder
         self.fileSizeProvider = fileSize
         self.matchLength = matchLength
-        isSearching = false
-        isTruncated = false
         sizeColumnsToContent()
         updateHeader()
         tableView.reloadData()
     }
 
-    /// Appends a freshly found batch of matches to the table and updates the
-    /// header's count. Called repeatedly as a background Search All streams its
-    /// results, so the table fills while the scan is still running (§11).
-    func append(_ newMatches: [Range<UInt64>]) {
-        guard !newMatches.isEmpty else { return }
-        let first = matches.count
-        matches.append(contentsOf: newMatches)
+    /// Switches between the table and the message, and refreshes the header.
+    private func applyContent() {
+        switch content {
+        case .matches:
+            messageLabel.isHidden = true
+            scrollView.isHidden = false
+        case .tooMany(let total):
+            messageLabel.stringValue = "\(Self.grouped(total)) matches — too many to list. "
+                + "Refine the pattern."
+            messageLabel.isHidden = false
+            scrollView.isHidden = true
+        }
         updateHeader()
-        // Insert just the new rows. A `reloadData()` per streamed match rebuilt
-        // every visible row — and re-read its bytes — on each of up to a
-        // thousand appends; inserting costs only the rows that arrived (§11).
-        tableView.insertRows(at: IndexSet(integersIn: first..<matches.count),
-                             withAnimation: [])
-    }
-
-    /// Marks whether a Search All is still scanning. While true the header's
-    /// count keeps its trailing "…"; a completed search drops it, so the count
-    /// reads as final (§11).
-    private func setSearching(_ searching: Bool) {
-        guard isSearching != searching else { return }
-        isSearching = searching
-        updateHeader()
-    }
-
-    /// Marks whether the last Search All stopped at the match cap (the scan
-    /// found `maxResults` occurrences and halted instead of completing). The
-    /// header then reports the search returned too many results (§11).
-    private func setTruncated(_ truncated: Bool) {
-        guard isTruncated != truncated else { return }
-        isTruncated = truncated
-        updateHeader()
+        tableView.reloadData()
     }
 
     /// Sets each column's width to the widest value it can hold for this search.
@@ -375,14 +378,20 @@ final class SearchResultsViewController: NSViewController {
     }
 
     private func updateHeader() {
-        let count = matches.count
-        if isSearching {
-            headerLabel.stringValue = "Search results (\(count)…)"
-        } else if isTruncated {
-            headerLabel.stringValue = "Search results (\(count)) — too many results"
-        } else {
-            headerLabel.stringValue = "Search results (\(count))"
+        switch content {
+        case .matches(let found):
+            headerLabel.stringValue = "Search results (\(Self.grouped(found.count)))"
+        case .tooMany(let total):
+            headerLabel.stringValue = "Search results (\(Self.grouped(total)))"
         }
+    }
+
+    /// A count in the reader's region format — the same shape the Find bar's
+    /// count uses.
+    private static func grouped(_ value: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        return formatter.string(from: NSNumber(value: value)) ?? String(value)
     }
 
     /// Forgets the current results (used when hiding the panel).
@@ -391,10 +400,8 @@ final class SearchResultsViewController: NSViewController {
         byteProvider = nil
         fileSizeProvider = nil
         textDecoder = nil
-        isSearching = false
-        isTruncated = false
-        updateHeader()
-        tableView.reloadData()
+        content = .matches([])
+        applyContent()
     }
 
     @objc private func closePressed() {

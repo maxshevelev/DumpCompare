@@ -473,9 +473,16 @@ final class FilePaneView: NSView {
         }
         searchResults.onSelect = { [weak self] range in
             guard let self else { return }
-            // Selecting a result mirrors a single Find match (§11): the range
-            // is selected in the hex view and scrolled to the vertical centre.
+            // Picking a row is a jump to that match (§11): it is selected, the
+            // find indicator moves onto it — the row and the plate must not
+            // disagree about where the user is — and it hops, as a step does.
             self.viewModel.select(range: range)
+            if let index = self.viewModel.matchSet?.index(startingAt: range.lowerBound) {
+                self.viewModel.setCurrentMatch(index)
+                self.bounceFindIndicator()
+            }
+            // A row picked from a list is a deliberate jump, so it is centred
+            // whether or not it was already on screen (§10.2).
             self.hexView.revealSelectionCentered()
             self.focusHexView()
         }
@@ -897,8 +904,13 @@ final class FilePaneView: NSView {
     /// What the panel *shows* is its own controller's business, including how a
     /// row reads the pane's live bytes. What is left here is what the pane
     /// arranges: that the panel is on screen at all, and how tall it is (§11).
-    func showSearchResults(matchLength: Int) {
-        searchResults.beginSearch(matchLength: matchLength)
+    /// Opens the results panel showing `content` (§11). The search's set
+    /// already exists by the time this is called — the scan that built it is the
+    /// one feeding the dump's highlighting — so the panel opens filled rather
+    /// than empty and growing.
+    func showSearchResults(_ content: SearchResultsViewController.Content,
+                           patternLength: Int) {
+        searchResults.show(content, patternLength: patternLength)
         searchResultsPanelVisible = true
         applySearchResultsHeight()
     }
