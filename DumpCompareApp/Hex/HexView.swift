@@ -1351,16 +1351,22 @@ final class HexView: NSView, NSViewToolTipOwner {
         if drawsHex { loops.append(contour(of: span, layout: layout, region: .hex)) }
         if drawsAscii { loops.append(contour(of: span, layout: layout, region: .ascii)) }
 
-        let scale = Self.indicatorBounceScale(atPhase: indicatorBouncePhase())
+        // How high the bubble is off the page right now — 0 at rest, 1 at the
+        // top of the hop. Everything about the lift follows from it.
+        let lift = Self.indicatorLift(atPhase: indicatorBouncePhase())
+        let elevation = Self.indicatorElevation(atLift: lift)
         for loop in loops where loop.count >= 3 {
             let path = roundedContourPath(loops: [loop], radius: Self.mirrorContourRadius)
-            if scale != 1 {
-                // Each column's loop pops about its own centre: scaling the two
-                // together would drag the hex and text bubbles towards each
-                // other instead of growing them in place.
+            if lift > 0 {
+                // Lifting reads as two things at once: the bubble grows a little
+                // (it is nearer the eye) and rises a little. Each column's loop
+                // does it about its own centre — scaling the two together would
+                // drag the hex and text bubbles towards each other instead of
+                // growing them in place.
                 let box = path.bounds
-                var transform = AffineTransform(translationByX: box.midX, byY: box.midY)
-                transform.scale(scale)
+                var transform = AffineTransform(translationByX: box.midX,
+                                                byY: box.midY - elevation.rise)
+                transform.scale(elevation.scale)
                 transform.translate(x: -box.midX, y: -box.midY)
                 path.transform(using: transform)
             }
@@ -1370,85 +1376,132 @@ final class HexView: NSView, NSViewToolTipOwner {
             NSGraphicsContext.saveGraphicsState()
             let shadow = NSShadow()
             // Below and to the right. A flipped view puts positive y downward,
-            // so both components are positive here.
-            shadow.shadowOffset = Self.indicatorShadowOffset
-            shadow.shadowBlurRadius = 2
+            // so both components are positive here — and both grow with the
+            // lift, which is what makes the hop read as height rather than as
+            // a twitch in size.
+            shadow.shadowOffset = elevation.shadowOffset
+            shadow.shadowBlurRadius = elevation.shadowBlur
             shadow.shadowColor = HexTheme.indicatorShadow
+                .withAlphaComponent(elevation.shadowAlpha)
             shadow.set()
             HexTheme.findIndicatorFill.setFill()
             path.fill()
             NSGraphicsContext.restoreGraphicsState()
-            HexTheme.indicatorBorder.setStroke()
-            path.lineWidth = 1
-            path.stroke()
         }
     }
 
-    /// Where the bubble's shadow falls: below it and to the right, in a flipped
-    /// view's own directions.
-    static let indicatorShadowOffset = NSSize(width: 1, height: 1)
+    // MARK: - The indicator's hop (§11)
 
-    // MARK: - The indicator's bounce (§11)
+    /// The bubble's shadow at rest: offset down-right, and deep enough to read
+    /// as a raised element rather than as a rim.
+    static let indicatorShadowOffset = NSSize(width: 1, height: 1.5)
+    static let indicatorShadowBlur: CGFloat = 3
+    static let indicatorShadowAlpha: CGFloat = 0.38
 
-    /// How long the pop lasts when the indicator moves to another match.
-    static let indicatorBounceDuration: TimeInterval = 0.28
-    /// How much bigger the bubble is at the start of the pop.
-    static let indicatorBounceOvershoot: CGFloat = 0.25
+    /// How long the hop lasts. Slow enough to be *seen*: at a quarter of a
+    /// second the jump registered as a flicker, which is worse than nothing —
+    /// the eye reads it as a redraw glitch.
+    static let indicatorBounceDuration: TimeInterval = 0.55
+    /// How much bigger, how much higher, and how much deeper the shadow gets at
+    /// the top of the hop.
+    static let indicatorLiftScale: CGFloat = 0.14
+    static let indicatorLiftRise: CGFloat = 3
+    static let indicatorLiftShadow: CGFloat = 6
 
-    /// When the current bounce started, or nil when nothing is bouncing.
+    /// When the current hop started, or nil when nothing is hopping.
     private var indicatorBounceStarted: TimeInterval?
-    private var indicatorBounceTimer: Timer?
+    private var indicatorDisplayLink: CADisplayLink?
+    /// Forces the hop's phase, for tests that need a frame of the animation
+    /// rather than a moment of the clock.
+    var indicatorBouncePhaseForTests: CGFloat?
 
-    /// The scale the bubble is drawn at, `phase` of the way through the bounce:
-    /// it appears a quarter larger and springs down through one small
-    /// undershoot, the shape the platform's own find indicator has.
+    /// How high off the page the bubble is, `phase` of the way through the hop:
+    /// one clear jump and a small second one, the shape a thing that has been
+    /// dropped has. 0 at both ends, 1 at the top of the first jump.
     ///
-    /// Pure, so the curve is asserted without a clock: 1 outside the bounce,
-    /// above 1 at the start, and below 1 somewhere in the middle.
-    static func indicatorBounceScale(atPhase phase: CGFloat) -> CGFloat {
-        guard phase > 0, phase < 1 else { return 1 }
-        return 1 + indicatorBounceOvershoot * cos(2 * .pi * 1.2 * phase) * exp(-4 * phase)
+    /// Pure, so the shape is asserted without a clock.
+    static func indicatorLift(atPhase phase: CGFloat) -> CGFloat {
+        guard phase > 0, phase < 1 else { return 0 }
+        /// One parabolic arc between two phases, peaking at `height`.
+        func arc(from: CGFloat, to: CGFloat, height: CGFloat) -> CGFloat {
+            guard phase >= from, phase <= to else { return 0 }
+            let t = (phase - from) / (to - from)
+            return height * 4 * t * (1 - t)
+        }
+        return max(arc(from: 0, to: 0.62, height: 1),
+                   arc(from: 0.62, to: 1, height: 0.3))
     }
 
-    /// Starts the pop — called when the indicator lands on another match.
+    /// What a given lift does to the bubble: its size, how far it rises, and
+    /// the shadow it casts. Pure and in one place, so "higher means a bigger
+    /// shadow" is a fact about the code rather than about three call sites.
+    static func indicatorElevation(atLift lift: CGFloat)
+        -> (scale: CGFloat, rise: CGFloat, shadowOffset: NSSize,
+            shadowBlur: CGFloat, shadowAlpha: CGFloat) {
+        let clamped = min(max(lift, 0), 1)
+        // The rise is part of the offset too: the shadow stays on the page
+        // while the bubble climbs away from it, so the gap between them grows
+        // by exactly as much as the bubble has risen.
+        let spread = indicatorShadowOffset.height + (indicatorLiftShadow + indicatorLiftRise) * clamped
+        return (scale: 1 + indicatorLiftScale * clamped,
+                rise: indicatorLiftRise * clamped,
+                shadowOffset: NSSize(width: indicatorShadowOffset.width
+                                        + indicatorLiftShadow * clamped,
+                                     height: spread),
+                shadowBlur: indicatorShadowBlur + indicatorLiftShadow * 1.6 * clamped,
+                shadowAlpha: indicatorShadowAlpha + 0.22 * clamped)
+    }
+
+    /// Starts the hop — called when the indicator lands on another match.
     ///
-    /// A timer rather than a layer animation: the bubble is drawn by `draw(_:)`
-    /// along with the bytes it sits on, so what animates is the redraw, and the
-    /// rows it covers are the only thing invalidated.
+    /// Driven by the view's own `CADisplayLink` (macOS 14's
+    /// `displayLink(target:selector:)`), which is the platform's frame clock:
+    /// the bubble is painted by `draw(_:)` along with the bytes it sits on, so
+    /// what animates is the redraw, and the rows the indicator covers are the
+    /// only thing invalidated.
+    ///
+    /// Core Animation's own `CASpringAnimation` would be the API for this if the
+    /// bubble were a layer of its own — see `Design/FIND_HIGHLIGHT_PLAN.md` for
+    /// why it is not (a sublayer composites *above* the view's drawing, so the
+    /// bubble would cover the bytes it is supposed to sit under).
     func bounceFindIndicator() {
-        indicatorBounceTimer?.invalidate()
         indicatorBounceStarted = Date().timeIntervalSinceReferenceDate
-        let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] timer in
-            MainActor.assumeIsolated {
-                guard let self else {
-                    timer.invalidate()
-                    return
-                }
-                if self.indicatorBouncePhase() >= 1 {
-                    self.endIndicatorBounce()
-                }
-                self.redrawFindIndicatorRows()
-            }
+        if indicatorDisplayLink == nil {
+            let link = displayLink(target: self, selector: #selector(stepIndicatorBounce))
+            link.add(to: .main, forMode: .common)
+            indicatorDisplayLink = link
         }
-        RunLoop.main.add(timer, forMode: .common)
-        indicatorBounceTimer = timer
         redrawFindIndicatorRows()
     }
 
-    /// How far through the bounce we are, 0...1; 1 when nothing is bouncing.
+    /// A view that has left its window has no frame clock and nothing to
+    /// animate: the hop is dropped rather than left running against a display
+    /// link the window took with it.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { endIndicatorBounce() }
+    }
+
+    @objc private func stepIndicatorBounce() {
+        if indicatorBouncePhase() >= 1 { endIndicatorBounce() }
+        redrawFindIndicatorRows()
+    }
+
+    /// How far through the hop we are, 0...1; 1 when nothing is hopping.
     private func indicatorBouncePhase() -> CGFloat {
+        if let forced = indicatorBouncePhaseForTests { return forced }
         guard let started = indicatorBounceStarted else { return 1 }
         let elapsed = Date().timeIntervalSinceReferenceDate - started
         return CGFloat(min(max(elapsed / Self.indicatorBounceDuration, 0), 1))
     }
 
     private func endIndicatorBounce() {
-        indicatorBounceTimer?.invalidate()
-        indicatorBounceTimer = nil
+        indicatorDisplayLink?.invalidate()
+        indicatorDisplayLink = nil
         indicatorBounceStarted = nil
     }
 
-    /// Whether a bounce is running, for tests.
+    /// Whether a hop is running, for tests.
     var isBouncingFindIndicatorForTests: Bool { indicatorBounceStarted != nil }
 
     /// Repaints the rows the indicator covers — the bounce's damage, and all of
@@ -3035,12 +3088,12 @@ enum HexTheme {
     /// and **the same in both appearances**, which is why the ink over it is
     /// forced below rather than left to `labelColor`.
     static let findIndicatorFill = NSColor.findHighlightColor
-    /// The bubble's hairline edge and the shadow under it — what makes the
-    /// yellow read as raised rather than as a flat fill. Fixed blacks, not
-    /// semantic colours: they sit on a fixed yellow, so they must not follow
-    /// the appearance.
-    static let indicatorBorder = NSColor.black.withAlphaComponent(0.25)
-    static let indicatorShadow = NSColor.black.withAlphaComponent(0.35)
+    /// The shadow under the bubble — the only thing that makes the yellow read
+    /// as raised, since the platform's own indicator has no outline and a dark
+    /// rim around yellow reads as a box drawn on the text. A fixed black, not a
+    /// semantic colour: it falls on a fixed yellow, so it must not follow the
+    /// appearance.
+    static let indicatorShadow = NSColor.black
 
     /// Ink for a byte inside the find indicator. Black, per Apple's own
     /// instruction for `findHighlightColor` — in dark mode `labelColor` would be

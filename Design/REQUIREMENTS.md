@@ -367,12 +367,17 @@ Visual states:
      it, rounds by the same radius, and traces one staircase around a match that
      crosses rows. A frame that hugged the glyphs read as a box drawn on the
      text instead of something the text sits on.
-   - the shadow falls below and to the right — the direction that reads as
-     raised.
-   - each step of Find Next / Find Previous **pops** it: it lands a quarter
-     larger and springs down through one small undershoot, the way the
-     platform's own find indicator does. A wrap onto a lone match pops too,
-     or the press would look swallowed.
+   - it carries **no outline**: a soft shadow below and to the right is what
+     makes it read as raised, and a dark rim around yellow reads instead as a
+     box drawn on the text. (The platform's own find indicator has none either.)
+   - each step of Find Next / Find Previous makes it **hop**: it rises off the
+     page and comes back, once clearly and once smaller, over about half a
+     second. Height is one idea with four consequences — the bubble grows a
+     little, rises a little, and its shadow grows wider, softer and deeper —
+     which is what makes the movement read as height rather than as a twitch in
+     size. The animation must be slow enough to see; a quarter of a second
+     reads as a redraw glitch. A wrap onto a lone match hops too, or the press
+     would look swallowed.
    - the ink over it is forced **black**, because that colour is the same in
      both appearances (the platform's own instruction). A modified byte keeps
      its red — an unsaved edit outranks the convention — and the muted

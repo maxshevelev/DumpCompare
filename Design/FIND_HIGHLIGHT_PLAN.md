@@ -28,16 +28,31 @@ than inventing ours:
   **the same in both appearances** — Apple's documentation says to use it with
   black text, and that constraint is real (see *Ink over the indicator*).
 
-The relief is drawn, not free: a rounded rect (radius ≈ 3 pt) inset half a point
-inside the cell run, filled yellow, with a hairline `black @ 0.25` border and a
-1 pt shadow below. That is what makes the yellow read as a raised bubble rather
-than a flat fill. `showFindIndicator` cannot be reused: it is an `NSTextView`
-animation over text storage, and it flashes and dies where we need a state that
-holds until the next Find Next.
+**The relief is drawn, and its outline is not ours.** The bubble's shape comes
+from the *mirrored selection's* contour builder (§3.3) — the same padding away
+from the glyphs, the same corner radius, one staircase around a match that
+crosses rows. One algorithm, two users. It carries no border: a soft shadow
+below and to the right is what says "raised", and a dark rim around yellow reads
+as a box drawn on the text. Both columns, both states.
 
-The shape spans the match's bytes *within one row*, like the selection fill:
-rounded at the ends that are the match's real ends, square where it continues
-onto the next row. Both the hex column and the decoded-text column, both states.
+**Why not the SDK's own indicator.** `NSTextView.showFindIndicator(for:)` draws
+exactly this bubble — it is what TextEdit and Xcode get for free — but it takes
+a *text range* in an `NSTextView`'s storage, so a custom hex view cannot ask for
+it, and it flashes and dies where we need a state that holds until the next Find
+Next.
+
+**Why not Core Animation for the hop.** `CASpringAnimation` on a layer's
+`transform.scale` and shadow properties is the platform's own way to animate
+this — but it animates a *layer*, and a sublayer composites **above** its view's
+own drawing. The bubble has to sit under the bytes it highlights, so it belongs
+in `draw(_:)`, and a layer would cover them. What is taken from the platform is
+its frame clock: `NSView.displayLink(target:selector:)` (macOS 14) drives the
+hop, not a `Timer`.
+
+The hop itself is one idea — height — with four consequences: the bubble grows a
+little, rises a little, and its shadow grows wider, softer and deeper. Half a
+second, one clear jump and a small second one. A quarter of a second was tried
+and reads as a redraw glitch rather than as movement.
 
 ## One scan is the source of everything
 

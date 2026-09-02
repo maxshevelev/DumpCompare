@@ -347,19 +347,76 @@ final class FindHighlightTests: XCTestCase {
 
     // MARK: - The bounce
 
-    /// The pop: a quarter larger when it lands, springing down through one
-    /// small undershoot, and exactly 1 outside the animation.
-    func testTheBounceCurvePopsAndSettles() {
-        XCTAssertEqual(HexView.indicatorBounceScale(atPhase: 0), 1, accuracy: 0.0001,
-                       "settled before it starts")
-        XCTAssertEqual(HexView.indicatorBounceScale(atPhase: 1), 1, accuracy: 0.0001,
-                       "and settled again at the end")
-        XCTAssertGreaterThan(HexView.indicatorBounceScale(atPhase: 0.02), 1.2,
-                             "it lands large")
-        let samples = stride(from: 0.02, to: 0.98, by: 0.02)
-            .map { HexView.indicatorBounceScale(atPhase: CGFloat($0)) }
-        XCTAssertTrue(samples.contains { $0 < 1 }, "and undershoots once on the way down")
-        XCTAssertLessThan(samples.last!, 1.02, "then settles")
+    /// The hop: one clear jump and a small second one, and nothing at either
+    /// end — the shape a thing that has been dropped has.
+    func testTheHopRisesAndBouncesOnce() {
+        XCTAssertEqual(HexView.indicatorLift(atPhase: 0), 0, accuracy: 0.0001,
+                       "on the page before it starts")
+        XCTAssertEqual(HexView.indicatorLift(atPhase: 1), 0, accuracy: 0.0001,
+                       "and back on the page at the end")
+        XCTAssertEqual(HexView.indicatorLift(atPhase: 0.31), 1, accuracy: 0.02,
+                       "the top of the first jump")
+        let second = HexView.indicatorLift(atPhase: 0.81)
+        XCTAssertGreaterThan(second, 0.15, "there is a second, smaller jump")
+        XCTAssertLessThan(second, 0.5)
+        XCTAssertLessThan(HexView.indicatorLift(atPhase: 0.62), 0.1,
+                          "and it touches down between the two")
+    }
+
+    /// Height is one idea, not three: the higher the bubble, the bigger it
+    /// looks, the further it has risen, and the deeper and wider its shadow.
+    func testHeightGrowsTheShadow() {
+        let rest = HexView.indicatorElevation(atLift: 0)
+        let top = HexView.indicatorElevation(atLift: 1)
+        XCTAssertEqual(rest.scale, 1, accuracy: 0.0001)
+        XCTAssertEqual(rest.rise, 0, accuracy: 0.0001)
+        XCTAssertEqual(rest.shadowOffset.width, HexView.indicatorShadowOffset.width,
+                       accuracy: 0.0001, "at rest the shadow is the resting one")
+        XCTAssertEqual(rest.shadowOffset.height, HexView.indicatorShadowOffset.height,
+                       accuracy: 0.0001)
+        XCTAssertGreaterThan(top.scale, rest.scale)
+        XCTAssertGreaterThan(top.rise, rest.rise)
+        XCTAssertGreaterThan(top.shadowOffset.height, rest.shadowOffset.height * 2)
+        XCTAssertGreaterThan(top.shadowBlur, rest.shadowBlur * 2)
+        XCTAssertGreaterThan(top.shadowAlpha, rest.shadowAlpha)
+        XCTAssertGreaterThan(top.shadowOffset.width, 0,
+                             "the shadow keeps falling down-right as it grows")
+        XCTAssertGreaterThan(top.shadowOffset.height, top.shadowOffset.width,
+                             "and the climb adds to the drop, so it falls further down than right")
+    }
+
+    /// The hop is slow enough to be seen: a quarter of a second read as a
+    /// redraw glitch rather than as movement.
+    func testTheHopIsSlowEnoughToRead() {
+        XCTAssertGreaterThanOrEqual(HexView.indicatorBounceDuration, 0.5)
+    }
+
+    /// And it is visible on the page: mid-hop the paper below the bubble is
+    /// darker than at rest, because the shadow has grown with the height.
+    func testMidHopTheShadowIsDeeperThanAtRest() throws {
+        var bytes = [UInt8](repeating: 0x11, count: 48)
+        bytes.replaceSubrange(2..<4, with: [0xAA, 0xBB])
+        let (controller, window) = try makeController(bytes)
+        let view = try hexView(window)
+        try search("AA BB", in: controller, window)
+
+        let layout = view.hexLayout
+        let cell = layout.hexByteFrame(row: 0, column: 3)
+        let below = CGRect(x: cell.midX, y: cell.maxY, width: 4, height: 3)
+
+        view.indicatorBouncePhaseForTests = 1   // settled
+        var rep = try render(view)
+        var scale = CGFloat(rep.pixelsWide) / view.bounds.width
+        let atRest = meanColor(rep, in: below, scale: scale)
+
+        view.indicatorBouncePhaseForTests = 0.31   // the top of the jump
+        rep = try render(view)
+        scale = CGFloat(rep.pixelsWide) / view.bounds.width
+        let lifted = meanColor(rep, in: below, scale: scale)
+        view.indicatorBouncePhaseForTests = nil
+
+        XCTAssertLessThan(lifted.r + lifted.g + lifted.b, atRest.r + atRest.g + atRest.b - 0.05,
+                          "the lifted bubble casts a deeper shadow than the resting one")
     }
 
     /// Every step pops the indicator — including a wrap onto a lone match,
