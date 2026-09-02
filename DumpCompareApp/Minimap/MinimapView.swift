@@ -83,24 +83,13 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         var isModified: Bool
         /// The byte differs from the companion file.
         var isDifferent: Bool
-        /// The byte belongs to an occurrence of the active search pattern
-        /// (§11). A byte state like the two above, which is why it is drawn in
-        /// the map's content and not in its margin.
-        var isMatch: Bool
-        /// The byte belongs to the *current* match — the one the find indicator
-        /// marks in the dump.
-        var isCurrentMatch: Bool
-
         static let insignificant = CellState(isSignificant: false, isModified: false, isDifferent: false)
         static let significant = CellState(isSignificant: true, isModified: false, isDifferent: false)
 
-        init(isSignificant: Bool, isModified: Bool, isDifferent: Bool,
-             isMatch: Bool = false, isCurrentMatch: Bool = false) {
+        init(isSignificant: Bool, isModified: Bool, isDifferent: Bool) {
             self.isSignificant = isSignificant
             self.isModified = isModified
             self.isDifferent = isDifferent
-            self.isMatch = isMatch
-            self.isCurrentMatch = isCurrentMatch
         }
 
         /// The cell for one byte of the dump. Significance is that byte's own —
@@ -109,8 +98,6 @@ final class MinimapView: NSView, NSViewToolTipOwner {
             isSignificant = state.byte != 0x00 && state.byte != 0xFF
             isModified = state.isModified
             isDifferent = state.isDifferent
-            isMatch = false
-            isCurrentMatch = false
         }
     }
 
@@ -1164,8 +1151,11 @@ final class MinimapView: NSView, NSViewToolTipOwner {
             // rect that excludes them cost 30 ms of the main thread (§19.9).
             guard content.intersects(dirtyRect) else { continue }
             switch renderMode {
-            case .detail: drawCells(forMapAt: index, in: content, dirtyRect: dirtyRect)
-            case .overview: drawOverviewRows(forMapAt: index, in: content, dirtyRect: dirtyRect)
+            case .detail:
+                drawCells(forMapAt: index, in: content, dirtyRect: dirtyRect)
+                drawDetailMatches(forMapAt: index, in: content, dirtyRect: dirtyRect)
+            case .overview:
+                drawOverviewRows(forMapAt: index, in: content, dirtyRect: dirtyRect)
             }
         }
         // The strip is a legend beside the content; the viewport band runs edge
@@ -1276,33 +1266,13 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         guard renderMode == .detail else { return [] }
         let range = windowByteRange(forMapAt: index)
         guard !range.isEmpty, let states = byteStates?(index, range) else { return [] }
-        // The window's matches as flags per byte, so marking a cell is a lookup
-        // rather than a walk of the match list per byte.
-        var matched = [Bool](repeating: false, count: states.count)
-        var current = [Bool](repeating: false, count: states.count)
-        func mark(_ flags: inout [Bool], _ match: Range<UInt64>) {
-            let lower = max(match.lowerBound, range.lowerBound)
-            let upper = min(match.upperBound, range.upperBound)
-            guard lower < upper else { return }
-            for offset in lower..<upper {
-                let index = Int(offset - range.lowerBound)
-                if index < flags.count { flags[index] = true }
-            }
-        }
-        for match in matchRanges?(index, range) ?? [] { mark(&matched, match) }
-        if let match = currentMatchRange?(index) { mark(&current, match) }
-
         var rows: [ByteRow] = []
         rows.reserveCapacity(states.count / Int(Self.bytesPerRow) + 1)
         var offset = 0
         while offset < states.count {
             let end = min(offset + Int(Self.bytesPerRow), states.count)
-            var cells = states[offset..<end].filter { !$0.isEOF }.map(CellState.init)
+            let cells = states[offset..<end].filter { !$0.isEOF }.map(CellState.init)
             if cells.isEmpty { break }  // past EOF: no more rows to draw
-            for column in cells.indices {
-                cells[column].isMatch = matched[offset + column]
-                cells[column].isCurrentMatch = current[offset + column]
-            }
             rows.append(ByteRow(cells: cells))
             offset = end
         }
@@ -1542,36 +1512,15 @@ final class MinimapView: NSView, NSViewToolTipOwner {
                 // whole row step leaves the inter-row gap orange, so a differing
                 // run reads as a continuous orange band behind the bytes, while
                 // the columns stay separated horizontally.
-                // A match is a background too, and it layers where the dump
-                // layers it (§6): under the difference, because telling two
-                // dumps apart outranks it, and the current match over both,
-                // because that is where the user is standing (§11). Each fills
-                // the whole row step, like the difference, so a run of matches
-                // reads as a continuous band behind the bytes.
-                if state.isMatch {
-                    HexTheme.matchFill.setFill()
-                    NSRect(x: rect.minX, y: y, width: cellWidth, height: rowStep).fill()
-                }
                 if state.isDifferent {
                     HexTheme.differenceFill.setFill()
                     NSRect(x: rect.minX, y: y, width: cellWidth, height: rowStep).fill()
                 }
-                if state.isCurrentMatch {
-                    HexTheme.findIndicatorFill.setFill()
-                    NSRect(x: rect.minX, y: y, width: cellWidth, height: rowStep).fill()
-                }
                 // The byte itself is drawn on top of that background, so a
                 // modified byte shows as red ink on orange, exactly as the hex
-                // panes draw it. Over the indicator's fixed yellow the ink is
-                // forced the way the dump forces it — `labelColor` there would
-                // be white on yellow in dark mode.
-                let color: NSColor
-                if state.isCurrentMatch {
-                    color = state.isModified ? HexTheme.modifiedText : HexTheme.indicatorInk
-                } else {
-                    color = state.isModified ? HexTheme.modifiedText
-                        : (state.isSignificant ? HexTheme.byteText : HexTheme.mutedByteText)
-                }
+                // panes draw it.
+                let color = state.isModified ? HexTheme.modifiedText
+                    : (state.isSignificant ? HexTheme.byteText : HexTheme.mutedByteText)
                 color.setFill()
                 rect.fill()
             }
@@ -1587,6 +1536,86 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// the two overlap often, and the red is the signal the user just created —
     /// the difference is still legible in the neighbouring cells of the same
     /// region. In detail mode both show at once, which is where that matters.
+    /// The search's marks on the **detail** map (§11), in the same language the
+    /// overview uses: a stroke of solid ink over each match's cells, and the
+    /// current match as a horizontal plate — the find indicator's yellow inside
+    /// a thin ink frame — drawn over every stroke.
+    ///
+    /// Drawn from the match ranges rather than per cell, for the same reason as
+    /// on the overview: a mark is a *shape over* the bytes, not a state of each
+    /// one, and the plate has to end up on top of marks belonging to other rows.
+    private func drawDetailMatches(forMapAt index: Int, in area: NSRect, dirtyRect: NSRect) {
+        guard renderMode == .detail, area.width > 0, area.height > 0 else { return }
+        let bars = detailMatchBars(forMapAt: index, in: area)
+        guard !bars.matches.isEmpty || bars.current != nil else { return }
+        let ink = (HexTheme.byteText.usingColorSpace(.deviceRGB) ?? HexTheme.byteText)
+        ink.setFill()
+        for bar in bars.matches where bar.intersects(dirtyRect) {
+            bar.fill()
+        }
+        guard let plate = bars.current, plate.intersects(dirtyRect) else { return }
+        (HexTheme.findIndicatorFill.usingColorSpace(.deviceRGB)
+            ?? HexTheme.findIndicatorFill).setFill()
+        plate.fill()
+        ink.setStroke()
+        let frame = NSBezierPath(rect: plate.insetBy(dx: 0.5, dy: 0.5))
+        frame.lineWidth = 1
+        frame.stroke()
+    }
+
+    /// Where the detail map's match marks go: one rect per match (per row it
+    /// crosses), and the current match's plate. Internal so a test can assert
+    /// the geometry without reading pixels.
+    func detailMatchBars(forMapAt index: Int, in area: NSRect)
+        -> (matches: [NSRect], current: NSRect?) {
+        guard renderMode == .detail, maps.indices.contains(index) else { return ([], nil) }
+        let window = windowByteRange(forMapAt: index)
+        guard !window.isEmpty else { return ([], nil) }
+        let (origins, cellWidth) = byteColumnLayout(contentWidth: area.width)
+        guard cellWidth > 0, !origins.isEmpty else { return ([], nil) }
+
+        /// The rect covering a match's bytes on one row of the map.
+        func bar(from first: UInt64, to last: UInt64, height: CGFloat,
+                 rise: CGFloat) -> NSRect? {
+            let row = Int((first - window.lowerBound) / Self.bytesPerRow)
+            let firstColumn = Int((first - window.lowerBound) % Self.bytesPerRow)
+            let lastColumn = Int((last - window.lowerBound) % Self.bytesPerRow)
+            guard origins.indices.contains(firstColumn), origins.indices.contains(lastColumn)
+            else { return nil }
+            let left = area.minX + origins[firstColumn]
+            let right = area.minX + origins[lastColumn] + cellWidth
+            let y = area.minY + CGFloat(row) * Self.rowStep - rise
+            return NSRect(x: left, y: y, width: max(right - left, 1), height: height)
+        }
+
+        /// A match, split at the map's row boundaries.
+        func bars(for match: Range<UInt64>, height: CGFloat, rise: CGFloat) -> [NSRect] {
+            let from = max(match.lowerBound, window.lowerBound)
+            let to = min(match.upperBound, window.upperBound)
+            guard from < to else { return [] }
+            var result: [NSRect] = []
+            var cursor = from
+            while cursor < to {
+                let rowEnd = (cursor / Self.bytesPerRow + 1) * Self.bytesPerRow
+                let last = min(to, rowEnd) - 1
+                if let rect = bar(from: cursor, to: last, height: height, rise: rise) {
+                    result.append(rect)
+                }
+                cursor = last + 1
+            }
+            return result
+        }
+
+        let matches = (matchRanges?(index, window) ?? [])
+            .flatMap { bars(for: $0, height: Self.rowStep, rise: 0) }
+        // The plate is a point taller than a stroke, so its frame has room; the
+        // extra point is split above and below, keeping it on its row.
+        let plateHeight = Self.rowStep + 1
+        let current = currentMatchRange?(index)
+            .flatMap { bars(for: $0, height: plateHeight, rise: 0.5).first }
+        return (matches, current)
+    }
+
     private func drawOverviewRows(forMapAt index: Int, in area: NSRect, dirtyRect: NSRect) {
         guard area.width > 0, area.height > 0,
               let summary = overviewSummary(forMapAt: index) else { return }

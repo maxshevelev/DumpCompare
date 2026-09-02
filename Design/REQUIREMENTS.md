@@ -1614,10 +1614,13 @@ text.
   the modified colour, significant bytes in ink, a 0x00/0xFF fill muted.
   The difference background must remain visible behind an opaque byte.
 - The selection is drawn as a translucent overlay on top of the cells.
-- While a search is running, a matched byte carries the dump's own match grey
-  and the current match its find-indicator yellow (§11), layered as the dump
-  layers them — grey under the difference, the current match over both, and the
-  byte drawn on top with the same forced ink.
+- While a search is running, the matches are marked the same way as in overview
+  (§11): a **stroke of solid ink** over each match's cells — continuous across
+  the cells it covers, and split at the map's row boundaries — and the current
+  match as a **plate**, the find indicator's yellow inside a thin ink frame,
+  drawn over every stroke. Not the dump's grey-and-yellow pair: the map draws a
+  byte as a cell of ink, so a background behind one byte says nothing at this
+  size, while a bar over several does.
 - Byte state must come from the same per-byte source the panes paint from,
   so the map cannot disagree with the dump beside it.
 

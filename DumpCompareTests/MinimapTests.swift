@@ -663,140 +663,67 @@ final class MinimapTests: XCTestCase {
                        "only 0x42 is significant in row 2")
     }
 
-    /// §11: the map marks the search's matches in its own cells, from the same
-    /// set the dump paints from — a match is a byte state, like a difference,
-    /// not an annotation like a bookmark, so it belongs in the content.
-    func testMatchCellsMarkTheSearchsOccurrences() throws {
+    /// §11: the detail map marks the search's matches the way the overview does
+    /// — a stroke of ink over each match's cells, and the current match as a
+    /// plate over every stroke. From the same set the dump reads.
+    func testDetailMapMarksTheSearchsMatches() throws {
         // 0xDE 0xAD at 0x02 and at 0x14 (row 1, column 4).
         var bytes = [UInt8](repeating: 0x41, count: 48)
         bytes.replaceSubrange(2..<4, with: [0xDE, 0xAD])
         bytes.replaceSubrange(20..<22, with: [0xDE, 0xAD])
-        let (controller, _, panel) = try makeSingleFileWindow(bytes)
+        let (controller, window, panel) = try makeSingleFileWindow(bytes)
         let pane = controller.windowModel.pane1
+        window.layoutIfNeeded()
+
+        XCTAssertTrue(panel.detailMatchBars(forMapAt: 0, in: panel.bounds).matches.isEmpty,
+                      "no search, no marks")
 
         pane.setMatches(MatchSet(pattern: SearchPattern(bytes: [0xDE, 0xAD], encoding: .hex),
                                  folding: .exact, extent: UInt64(bytes.count),
                                  starts: [2, 20]),
                         current: 1)
-
-        let rows = panel.visibleCells(forMapAt: 0)
-        XCTAssertTrue(rows[0].cells[2].isMatch, "both bytes of the first occurrence")
-        XCTAssertTrue(rows[0].cells[3].isMatch)
-        XCTAssertFalse(rows[0].cells[4].isMatch, "and nothing beyond it")
-        XCTAssertFalse(rows[0].cells[2].isCurrentMatch,
-                       "the indicator is on the second occurrence")
-        XCTAssertTrue(rows[1].cells[4].isCurrentMatch, "0x14 is row 1, column 4")
-        XCTAssertTrue(rows[1].cells[5].isCurrentMatch)
-        XCTAssertTrue(rows[1].cells[4].isMatch, "the current match is a match too")
-
-        pane.clearMatches()
-        XCTAssertFalse(panel.visibleCells(forMapAt: 0).contains { row in
-            row.cells.contains { $0.isMatch || $0.isCurrentMatch }
-        }, "the session ended, so the map marks nothing")
-    }
-
-    /// §11: the overview marks the search's matches on its own rows, from the
-    /// same set the dump reads — and the current match separately, so the panel
-    /// can draw it in the find indicator's yellow.
-    func testOverviewMarksTheSearchsMatchesAndTheCurrentOne() throws {
-        // Big enough that the overview compresses the file (§19.4).
-        let size = 200 * 1024
-        let (controller, window, panel) = try makeSingleFileWindow([UInt8](repeating: 0x41,
-                                                                          count: size))
-        controller.setMinimapRenderModeForTesting(.overview)
-        window.layoutIfNeeded()
-        XCTAssertTrue(pumpUntil(3) { (panel.overviewSummaries.first?.rowCount ?? 0) > 0 },
-                      "the overview needs its picture before its rows mean anything")
-        let rowCount = panel.overviewRowCount()
-        XCTAssertGreaterThan(rowCount, 1)
-
-        let pane = controller.windowModel.pane1
-        let far = UInt64(size / 2)
-        pane.setMatches(MatchSet(pattern: SearchPattern(bytes: [0x41, 0x41], encoding: .hex),
-                                 folding: .exact, extent: UInt64(size),
-                                 starts: [0, far]),
-                        current: 1)
         window.layoutIfNeeded()
 
-        let overlay = try XCTUnwrap(panel.matchOverlays.first)
-        XCTAssertEqual(overlay.rowCount, rowCount, "binned onto the panel's own rows")
-        XCTAssertEqual(overlay.extent, UInt64(size))
-        let farRow = Int(far * UInt64(rowCount) / UInt64(size))
-        XCTAssertNotEqual(overlay.matched[0], 0, "the match at the file's start")
-        XCTAssertNotEqual(overlay.matched[farRow], 0, "and the one halfway down")
-        XCTAssertEqual(overlay.matched.filter { $0 != 0 }.count, 2, "and nowhere else")
-        XCTAssertNotEqual(overlay.current[farRow], 0, "the current match is the second one")
-        XCTAssertEqual(overlay.current[0], 0)
+        let bars = panel.detailMatchBars(forMapAt: 0, in: panel.bounds)
+        XCTAssertEqual(bars.matches.count, 2, "one stroke per match")
+        // Both marks are two bytes wide and sit on their own row: the first on
+        // the map's first row, the second one row down.
+        let first = bars.matches[0]
+        let second = bars.matches[1]
+        XCTAssertEqual(second.minY - first.minY, MinimapView.rowStep, accuracy: 0.01,
+                       "the second match is one map row below the first")
+        XCTAssertGreaterThan(first.width, 0)
+        XCTAssertEqual(first.height, MinimapView.rowStep, accuracy: 0.01)
+
+        let plate = try XCTUnwrap(bars.current, "the current match gets a plate")
+        XCTAssertEqual(plate.midY, second.midY, accuracy: 0.01,
+                       "on the current match's own row — the second one")
+        XCTAssertGreaterThan(plate.height, first.height,
+                             "and taller than a stroke, so its frame has room")
 
         pane.clearMatches()
         window.layoutIfNeeded()
-        XCTAssertTrue(panel.matchOverlays.allSatisfy { overlay in
-            overlay.matched.allSatisfy { $0 == 0 } && overlay.current.allSatisfy { $0 == 0 }
-        }, "the session ended, so the overview marks nothing")
+        let cleared = panel.detailMatchBars(forMapAt: 0, in: panel.bounds)
+        XCTAssertTrue(cleared.matches.isEmpty, "the session ended, so the map marks nothing")
+        XCTAssertNil(cleared.current)
     }
 
-    /// The current match's plate is the topmost thing on the map: a row here is
-    /// about a pixel tall while the marks are a few, so neighbouring matches'
-    /// strokes would otherwise be painted over it (§11).
-    func testTheCurrentMatchsPlateIsNotBuriedByNeighbouringMatches() throws {
-        let size = 200 * 1024
-        let (controller, window, panel) = try makeSingleFileWindow([UInt8](repeating: 0x41,
-                                                                          count: size))
-        controller.setMinimapRenderModeForTesting(.overview)
+    /// A match crossing one of the map's row boundaries is marked on both rows.
+    func testDetailMapSplitsAMatchAcrossRows() throws {
+        var bytes = [UInt8](repeating: 0x41, count: 48)
+        bytes.replaceSubrange(14..<18, with: [0xDE, 0xAD, 0xBE, 0xEF])
+        let (controller, window, panel) = try makeSingleFileWindow(bytes)
         window.layoutIfNeeded()
-        XCTAssertTrue(pumpUntil(3) { (panel.overviewSummaries.first?.rowCount ?? 0) > 0 })
-        let rowCount = panel.overviewRowCount()
-        let bytesPerRow = UInt64(size / rowCount)
-
-        // Matches on a dozen consecutive map rows, with the current one in the
-        // middle: every neighbour is drawn after it in row order.
-        let starts = (0..<12).map { UInt64($0) * bytesPerRow + bytesPerRow / 2 }
         controller.windowModel.pane1.setMatches(
-            MatchSet(pattern: SearchPattern(bytes: [0x41, 0x41], encoding: .hex),
-                     folding: .exact, extent: UInt64(size), starts: starts),
-            current: 6)
-        window.layoutIfNeeded()
-
-        let rep = try XCTUnwrap(panel.bitmapImageRepForCachingDisplay(in: panel.bounds))
-        panel.cacheDisplay(in: panel.bounds, to: rep)
-        var yellow = 0
-        for y in 0..<rep.pixelsHigh {
-            for x in 0..<rep.pixelsWide {
-                guard let c = rep.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
-                if c.redComponent > 0.8, c.greenComponent > 0.8, c.blueComponent < 0.4 {
-                    yellow += 1
-                }
-            }
-        }
-        // The plate's interior is `overviewMatchWidth` by 2 pt; at the rep's
-        // scale that is a few dozen pixels, and a plate buried under its
-        // neighbours' strokes would leave far fewer.
-        let scale = CGFloat(rep.pixelsWide) / panel.bounds.width
-        let interior = MinimapView.overviewMatchWidth * 2 * scale * scale
-        XCTAssertGreaterThan(CGFloat(yellow), interior * 0.6,
-                             "the plate must survive its neighbours")
-    }
-
-    /// A search must not cost a density rebuild: the picture is invalidated by
-    /// bytes, the match bits by the pattern (§11).
-    func testASearchDoesNotRebuildTheOverviewPicture() throws {
-        let (controller, window, panel) = try makeSingleFileWindow([UInt8](repeating: 0x41,
-                                                                          count: 200 * 1024))
-        controller.setMinimapRenderModeForTesting(.overview)
-        window.layoutIfNeeded()
-        XCTAssertTrue(pumpUntil(3) { (panel.overviewSummaries.first?.rowCount ?? 0) > 0 })
-        let rebuilds = controller.overviewRebuilds
-
-        controller.windowModel.pane1.setMatches(
-            MatchSet(pattern: SearchPattern(bytes: [0x41], encoding: .hex), folding: .exact,
-                     extent: UInt64(200 * 1024), starts: [7]),
+            MatchSet(pattern: SearchPattern(bytes: [0xDE, 0xAD, 0xBE, 0xEF], encoding: .hex),
+                     folding: .exact, extent: UInt64(bytes.count), starts: [14]),
             current: 0)
         window.layoutIfNeeded()
 
-        XCTAssertNotEqual(panel.matchOverlays.first?.matched.filter { $0 != 0 }.count, 0,
-                          "the match is on the map")
-        XCTAssertEqual(controller.overviewRebuilds, rebuilds,
-                       "and the density picture was not rebuilt for it")
+        let bars = panel.detailMatchBars(forMapAt: 0, in: panel.bounds)
+        XCTAssertEqual(bars.matches.count, 2, "two bytes on one row, two on the next")
+        XCTAssertEqual(bars.matches[1].minY - bars.matches[0].minY, MinimapView.rowStep,
+                       accuracy: 0.01)
     }
 
     func testPartialLastRowKeepsOnlyItsBytes() throws {
