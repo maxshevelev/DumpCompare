@@ -1744,12 +1744,13 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         }
     }
 
-    /// A match's stroke on the **detail** map: the height of a byte cell, so it
-    /// reads as a bar laid over the bytes rather than as a band across the row.
-    static let detailMatchHeight: CGFloat = byteHeight
+    /// A match's stroke on the **detail** map. Deliberately taller than a byte
+    /// cell — and so a point past the row step — because at this scale a mark
+    /// the size of the content it marks does not read as a mark.
+    static let detailMatchHeight: CGFloat = 4
     /// The current match's plate there: taller and wider than a stroke on every
     /// side, because it is the mark that has to be found rather than noticed.
-    static let detailCurrentMatchHeight: CGFloat = 6
+    static let detailCurrentMatchHeight: CGFloat = 8
     static let detailCurrentMatchPadding: CGFloat = 2
 
     /// A match's stroke on the overview: a couple of pixels tall, and wide
