@@ -1370,39 +1370,47 @@ final class HexView: NSView, NSViewToolTipOwner {
                 transform.translate(x: -box.midX, y: -box.midY)
                 path.transform(using: transform)
             }
-            // The shadow belongs to the fill only: stroking inside the same
-            // graphics state would draw the border's own shadow on top of the
-            // bubble's.
-            NSGraphicsContext.saveGraphicsState()
-            let shadow = NSShadow()
-            // Below and to the right. A flipped view puts positive y downward,
-            // so both components are positive here — and both grow with the
-            // lift, which is what makes the hop read as height rather than as
-            // a twitch in size.
-            shadow.shadowOffset = elevation.shadowOffset
-            shadow.shadowBlurRadius = elevation.shadowBlur
-            shadow.shadowColor = HexTheme.indicatorShadow
-                .withAlphaComponent(elevation.shadowAlpha)
-            shadow.set()
+            // One fill per shadow: the halo first, then the drop over it, then
+            // the plate itself with no shadow at all. Filling the same shape
+            // three times is what layers two shadows — `NSShadow` holds one.
+            for shadow in [elevation.ambient, elevation.key] {
+                NSGraphicsContext.saveGraphicsState()
+                let drawn = NSShadow()
+                drawn.shadowOffset = shadow.offset
+                drawn.shadowBlurRadius = shadow.blur
+                drawn.shadowColor = HexTheme.indicatorShadow
+                    .withAlphaComponent(shadow.alpha)
+                drawn.set()
+                HexTheme.findIndicatorFill.setFill()
+                path.fill()
+                NSGraphicsContext.restoreGraphicsState()
+            }
             HexTheme.findIndicatorFill.setFill()
             path.fill()
-            NSGraphicsContext.restoreGraphicsState()
         }
     }
 
     // MARK: - The indicator's hop (§11)
 
-    /// The bubble's shadow at rest: a soft halo all round the bubble, biased
-    /// down and to the right. The blur is what puts a trace of it on every side;
-    /// the offset is what makes the bottom-right side the heavy one.
+    /// The bubble's shadow at rest, in two parts — the recipe a raised surface
+    /// needs, and the reason a single offset shadow read as "bare on the
+    /// top-left": with the blur no wider than the drop, the light side gets
+    /// nothing at all.
+    ///
+    /// - **ambient**: no offset, a soft even halo, so the plate has a faint
+    ///   edge on *every* side and is not cut out of the page.
+    /// - **key**: a short drop down and to the right, which is what gives the
+    ///   bottom-right side its weight.
     ///
     /// **Positive height is downward here**, measured rather than assumed: this
-    /// view is flipped, and `NSShadow` follows the same flipped space, so a
-    /// negative height casts the shadow *up* (which is how the first attempt
-    /// got it backwards). A render test pins the direction.
-    static let indicatorShadowOffset = NSSize(width: 1, height: 1.5)
-    static let indicatorShadowBlur: CGFloat = 2.5
-    static let indicatorShadowAlpha: CGFloat = 0.35
+    /// view is flipped and `NSShadow` follows the same space, so a negative
+    /// height casts the shadow *up* (which is how a first attempt got it
+    /// backwards). A render test pins the direction and the weighting.
+    static let indicatorAmbientBlur: CGFloat = 4
+    static let indicatorAmbientAlpha: CGFloat = 0.35
+    static let indicatorShadowOffset = NSSize(width: 1, height: 2)
+    static let indicatorShadowBlur: CGFloat = 4
+    static let indicatorShadowAlpha: CGFloat = 0.40
 
     /// How long the hop lasts. Slow enough to be *seen*: at a quarter of a
     /// second the jump registered as a flicker, which is worse than nothing —
@@ -1412,15 +1420,12 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// the top of the hop.
     static let indicatorLiftScale: CGFloat = 0.14
     static let indicatorLiftRise: CGFloat = 3
-    /// How much further the shadow drops, and how much softer it gets, at the
-    /// top of the hop. Deliberately short: a long shadow reads as a drop-shadow
-    /// effect rather than as a small thing lifted a little way off the page.
-    /// The blur is deliberately kept just above the drop, so the soft edge
-    /// still reaches a point or two *past* the bubble on the top-left while the
-    /// bottom-right side carries the weight (§11).
-    static let indicatorLiftShadowDrop: CGFloat = 3
+    /// The key shadow drops and spreads as the bubble climbs; the ambient halo
+    /// widens with it, so the plate keeps its edge on the light side too.
+    static let indicatorLiftShadowDrop: CGFloat = 2.5
     static let indicatorLiftShadowSpread: CGFloat = 1.5
     static let indicatorLiftShadowBlur: CGFloat = 3
+    static let indicatorLiftAmbientBlur: CGFloat = 2.5
 
     /// When the current hop started, or nil when nothing is hopping.
     private var indicatorBounceStarted: TimeInterval?
@@ -1446,23 +1451,37 @@ final class HexView: NSView, NSViewToolTipOwner {
                    arc(from: 0.62, to: 1, height: 0.3))
     }
 
+    /// One shadow of the bubble: how far it is offset, how soft it is, and how
+    /// dark. Two of these make the plate read as raised (see
+    /// `indicatorAmbientBlur`).
+    struct IndicatorShadow: Equatable {
+        var offset: NSSize
+        var blur: CGFloat
+        var alpha: CGFloat
+    }
+
     /// What a given lift does to the bubble: its size, how far it rises, and
-    /// the shadow it casts. Pure and in one place, so "higher means a bigger
-    /// shadow" is a fact about the code rather than about three call sites.
+    /// the two shadows it casts. Pure and in one place, so "higher means a
+    /// bigger shadow" is a fact about the code rather than about three call
+    /// sites.
     static func indicatorElevation(atLift lift: CGFloat)
-        -> (scale: CGFloat, rise: CGFloat, shadowOffset: NSSize,
-            shadowBlur: CGFloat, shadowAlpha: CGFloat) {
+        -> (scale: CGFloat, rise: CGFloat, ambient: IndicatorShadow, key: IndicatorShadow) {
         let clamped = min(max(lift, 0), 1)
         return (scale: 1 + indicatorLiftScale * clamped,
                 rise: indicatorLiftRise * clamped,
+                ambient: IndicatorShadow(
+                    offset: .zero,
+                    blur: indicatorAmbientBlur + indicatorLiftAmbientBlur * clamped,
+                    alpha: indicatorAmbientAlpha + 0.08 * clamped),
                 // The bubble climbs while its shadow stays on the page, so the
                 // drop between them grows with the height (§11).
-                shadowOffset: NSSize(width: indicatorShadowOffset.width
-                                        + indicatorLiftShadowSpread * clamped,
-                                     height: indicatorShadowOffset.height
-                                        + indicatorLiftShadowDrop * clamped),
-                shadowBlur: indicatorShadowBlur + indicatorLiftShadowBlur * clamped,
-                shadowAlpha: indicatorShadowAlpha + 0.15 * clamped)
+                key: IndicatorShadow(
+                    offset: NSSize(width: indicatorShadowOffset.width
+                                    + indicatorLiftShadowSpread * clamped,
+                                   height: indicatorShadowOffset.height
+                                    + indicatorLiftShadowDrop * clamped),
+                    blur: indicatorShadowBlur + indicatorLiftShadowBlur * clamped,
+                    alpha: indicatorShadowAlpha + 0.15 * clamped))
     }
 
     /// Starts the hop — called when the indicator lands on another match.

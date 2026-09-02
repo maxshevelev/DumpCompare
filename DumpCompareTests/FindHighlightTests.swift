@@ -317,16 +317,16 @@ final class FindHighlightTests: XCTestCase {
                              "the bubble reaches into the gap, as a mirrored selection would")
     }
 
-    /// The shadow falls **below** the bubble, not above it, and is heavier on
-    /// the right than on the left — while the blur leaves a trace of it on
-    /// every side. `NSShadow` is not flipped with the view, so this is the
-    /// assertion that keeps the sign honest.
+    /// The plate's shadow shows on every side — a halo, so the plate is not cut
+    /// out of the page — and is weighted to the bottom-right. `NSShadow` is not
+    /// flipped with the view, so this is also the assertion that keeps the sign
+    /// honest.
     ///
-    /// Measured as the *difference* between two frames of the same view — the
-    /// bubble at rest and at the top of its hop. Absolute samples would be
-    /// reading the neighbouring rows' glyphs, which are far darker than any
-    /// shadow; the difference cancels them and leaves only what the shadow did.
-    func testTheShadowFallsBelowAndToTheRight() throws {
+    /// Measured against a frame of the *same* view with no search running at
+    /// all: absolute samples would be reading the neighbouring rows' glyphs,
+    /// which are far darker than any shadow, and a rest-versus-hop difference
+    /// would measure the change rather than the weighting.
+    func testTheShadowHalosThePlateAndFallsToTheBottomRight() throws {
         XCTAssertGreaterThan(HexView.indicatorShadowOffset.width, 0)
         XCTAssertGreaterThan(HexView.indicatorShadowOffset.height, 0,
                              "down is positive: the shadow follows this view's flipped space")
@@ -336,62 +336,70 @@ final class FindHighlightTests: XCTestCase {
         let (controller, window) = try makeController(bytes)
         let view = try hexView(window)
         try search("AA BB", in: controller, window)
+        let pane = controller.windowModel.pane1
 
-        let darkening = try shadowDarkening(view, row: 1, columns: 2...3)
-        XCTAssertGreaterThan(darkening.below, 0.02,
-                             "lifting the bubble darkens the paper below it")
-        XCTAssertGreaterThan(darkening.below, darkening.above * 5,
-                             "the shadow is under the bubble, not over it")
-        XCTAssertGreaterThan(darkening.right, darkening.left * 5,
-                             "and far heavier on the right than on the left")
-        XCTAssertGreaterThan(darkening.above, 0,
-                             "while the soft edge still leaves a trace on the light side")
-        XCTAssertGreaterThan(darkening.left, 0)
+        let rest = try shadowWeight(view, pane: pane, row: 1, columns: 2...3, phase: 1)
+        XCTAssertGreaterThan(rest.above, 0.004,
+                             "the halo gives the plate an edge on the light side")
+        XCTAssertGreaterThan(rest.left, 0.004)
+        XCTAssertGreaterThan(rest.below, rest.above * 1.5,
+                             "and the weight is below the plate, not above it")
+        XCTAssertGreaterThan(rest.right, rest.left * 1.5,
+                             "and to the right, not to the left")
+
+        let top = try shadowWeight(view, pane: pane, row: 1, columns: 2...3, phase: 0.31)
+        XCTAssertGreaterThan(top.below, rest.below,
+                             "lifting the plate deepens the shadow under it")
     }
 
-    /// How much darker each side of a bubble's surroundings gets between the
-    /// bubble at rest and the bubble at the top of its hop.
-    private func shadowDarkening(_ view: HexView, row: Int, columns: ClosedRange<Int>) throws
+    /// How much darker each side of a plate's surroundings is than in a frame
+    /// with no search running — the plate's own shadow, isolated.
+    private func shadowWeight(_ view: HexView, pane: PaneViewModel,
+                              row: Int, columns: ClosedRange<Int>, phase: CGFloat) throws
         -> (below: CGFloat, above: CGFloat, right: CGFloat, left: CGFloat) {
         let layout = view.hexLayout
-        let bubble = layout.hexByteFrame(row: row, column: columns.lowerBound)
+        let plate = layout.hexByteFrame(row: row, column: columns.lowerBound)
             .union(layout.hexByteFrame(row: row, column: columns.upperBound))
-        // Far enough out to clear the bubble even at the top of its hop, where
-        // it is both bigger and higher.
-        let gap: CGFloat = 5
-        let patch = CGSize(width: 4, height: 3)
+        // Close in, where a halo meant to edge the plate has to show.
+        let gap: CGFloat = 2.5
+        let patch = CGSize(width: 4, height: 2)
         let places = [
-            "below": CGRect(x: bubble.midX, y: bubble.maxY + gap,
+            "below": CGRect(x: plate.midX, y: plate.maxY + gap,
                             width: patch.width, height: patch.height),
-            "above": CGRect(x: bubble.midX, y: bubble.minY - gap - patch.height,
+            "above": CGRect(x: plate.midX, y: plate.minY - gap - patch.height,
                             width: patch.width, height: patch.height),
-            "right": CGRect(x: bubble.maxX + gap, y: bubble.midY - patch.height / 2,
+            "right": CGRect(x: plate.maxX + gap, y: plate.midY - patch.height / 2,
                             width: patch.width, height: patch.height),
-            "left": CGRect(x: bubble.minX - gap - patch.width, y: bubble.midY - patch.height / 2,
+            "left": CGRect(x: plate.minX - gap - patch.width, y: plate.midY - patch.height / 2,
                            width: patch.width, height: patch.height),
         ]
 
-        func luminances(atPhase phase: CGFloat) throws -> [String: CGFloat] {
-            view.indicatorBouncePhaseForTests = phase
+        func samples() throws -> [String: CGFloat] {
             view.needsDisplay = true
             let rep = try render(view)
             let scale = CGFloat(rep.pixelsWide) / view.bounds.width
             return places.mapValues { rect in
                 let colour = meanColor(rep, in: rect, scale: scale)
-                // `min(r, g)` isolates the shadow: it drops wherever the paper
-                // is darkened and stays at 1 under the bubble's own yellow
-                // (which has r == g == 1), so a bubble that has moved into the
-                // patch cannot be mistaken for its shadow.
+                // `min(r, g)` isolates a shadow: it drops wherever the paper is
+                // darkened and stays at 1 under the plate's own yellow (r == g
+                // == 1), so a plate that has moved into the patch cannot be
+                // mistaken for its shadow.
                 return min(colour.r, colour.g)
             }
         }
-        let rest = try luminances(atPhase: 1)
-        let top = try luminances(atPhase: 0.31)
+
+        let set = try XCTUnwrap(pane.matchSet)
+        let current = pane.currentMatchIndex
+        pane.clearMatches()
+        let baseline = try samples()
+        pane.setMatches(set, current: current)
+        view.indicatorBouncePhaseForTests = phase
+        let lit = try samples()
         view.indicatorBouncePhaseForTests = nil
-        return (below: rest["below"]! - top["below"]!,
-                above: rest["above"]! - top["above"]!,
-                right: rest["right"]! - top["right"]!,
-                left: rest["left"]! - top["left"]!)
+        return (below: baseline["below"]! - lit["below"]!,
+                above: baseline["above"]! - lit["above"]!,
+                right: baseline["right"]! - lit["right"]!,
+                left: baseline["left"]! - lit["left"]!)
     }
 
     // MARK: - The bounce
@@ -419,22 +427,26 @@ final class FindHighlightTests: XCTestCase {
         let top = HexView.indicatorElevation(atLift: 1)
         XCTAssertEqual(rest.scale, 1, accuracy: 0.0001)
         XCTAssertEqual(rest.rise, 0, accuracy: 0.0001)
-        XCTAssertEqual(rest.shadowOffset.width, HexView.indicatorShadowOffset.width,
+        XCTAssertEqual(rest.key.offset.width, HexView.indicatorShadowOffset.width,
                        accuracy: 0.0001, "at rest the shadow is the resting one")
-        XCTAssertEqual(rest.shadowOffset.height, HexView.indicatorShadowOffset.height,
+        XCTAssertEqual(rest.key.offset.height, HexView.indicatorShadowOffset.height,
                        accuracy: 0.0001)
         XCTAssertGreaterThan(top.scale, rest.scale)
         XCTAssertGreaterThan(top.rise, rest.rise)
-        XCTAssertGreaterThan(top.shadowBlur, rest.shadowBlur,
-                             "and softer, which is what puts a trace of it on every side")
-        XCTAssertGreaterThan(top.shadowAlpha, rest.shadowAlpha)
-        XCTAssertGreaterThan(top.shadowOffset.width, rest.shadowOffset.width,
-                             "the shadow keeps falling to the right as it grows")
-        XCTAssertGreaterThan(top.shadowOffset.height, rest.shadowOffset.height,
+        XCTAssertEqual(rest.ambient.offset, .zero,
+                       "the halo has no offset: it is the plate's edge on every side")
+        XCTAssertGreaterThan(top.ambient.blur, rest.ambient.blur,
+                             "the halo widens as the plate climbs")
+        XCTAssertGreaterThan(top.key.blur, rest.key.blur,
+                             "and the drop softens with it")
+        XCTAssertGreaterThan(top.key.alpha, rest.key.alpha)
+        XCTAssertGreaterThan(top.key.offset.width, rest.key.offset.width,
+                             "the drop keeps falling to the right as it grows")
+        XCTAssertGreaterThan(top.key.offset.height, rest.key.offset.height,
                              "and further down as the bubble climbs away from it")
-        XCTAssertLessThan(top.shadowOffset.width, top.shadowOffset.height,
+        XCTAssertLessThan(top.key.offset.width, top.key.offset.height,
                           "biased downward more than sideways")
-        XCTAssertLessThan(top.shadowOffset.height, 5,
+        XCTAssertLessThan(top.key.offset.height, 5,
                           "and short either way: a long shadow reads as an effect")
     }
 

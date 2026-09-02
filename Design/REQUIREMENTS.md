@@ -370,12 +370,17 @@ Visual states:
    - it carries **no outline**: a soft shadow is what makes it read as raised,
      and a dark rim around yellow reads instead as a box drawn on the text.
      (The platform's own find indicator has none either.)
-   - the shadow shows on **every** side — a soft edge, so the bubble is not cut
-     out of the page — but it is weighted: barely there at the top-left, and an
-     order of magnitude heavier at the bottom-right. It stays short: a long
-     shadow reads as a drop-shadow effect rather than as a small thing lifted a
-     little way off the page. The direction is pinned by a render test, because
-     the sign that puts it downward in this view is not the one you would guess.
+   - the shadow is **two shadows**, which is what a raised surface needs: an
+     ambient halo with no offset, so the plate has a soft edge on *every* side
+     and is not cut out of the page, and a short key drop down and to the
+     right, which gives that side the weight. One offset shadow was tried
+     first and left the top-left edge bare — with the blur no wider than the
+     drop, the light side gets nothing at all.
+   - it stays short: a long shadow reads as a drop-shadow effect rather than as
+     a small thing lifted a little way off the page. The direction and the
+     weighting are pinned by a render test — measured against a frame with no
+     search running, since the sign that puts a shadow downward in this view is
+     not the one you would guess.
    - each step of Find Next / Find Previous makes it **hop**: it rises off the
      page and comes back, once clearly and once smaller, over about half a
      second. Height is one idea with four consequences — the bubble grows a
