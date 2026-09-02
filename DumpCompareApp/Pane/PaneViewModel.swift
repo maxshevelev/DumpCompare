@@ -887,6 +887,14 @@ final class PaneViewModel: HexViewDataSource {
     /// for the row's background tint (§21.3). Empty when the pane is one piece
     /// (no cuts): a single colour over a whole file is noise, and the readout
     /// appearing at all is the signal that the dump is partitioned.
+    func hexMatchRanges(in range: Range<UInt64>) -> [Range<UInt64>] {
+        matchRanges(intersecting: range)
+    }
+
+    func hexCurrentMatch() -> Range<UInt64>? {
+        currentMatchRange
+    }
+
     func hexSegmentSpans(in range: Range<UInt64>) -> [HexSegmentSpan] {
         // One partition value per paint job: the whole drawn range tints from a
         // single `current`, so the page cannot split across two boundaries if a

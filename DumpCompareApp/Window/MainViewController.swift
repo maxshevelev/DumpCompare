@@ -897,6 +897,9 @@ final class MainViewController: NSViewController {
             pane.onSearchResultsClose = { [weak self] pane in
                 self?.cancelSearchAll(from: pane)
             }
+            pane.onMatchesChanged = { [weak self] in
+                self?.refreshFindCount()
+            }
             // The minimap's single map mirrors this pane: edits rebuild its
             // cells, a moved caret moves the selection overlay, and scrolling
             // moves the viewport rectangle (§19).
@@ -918,9 +921,6 @@ final class MainViewController: NSViewController {
             }
             paneModel.onCaretChanged = { [weak self] in
                 self?.updateMinimapSelections()
-            }
-            paneModel.onMatchesChanged = { [weak self] in
-                self?.refreshFindCount()
             }
             // Wrap in the drop-target split view (§4.3 single-file mode). The
             // pane itself is NOT drop-registered here so the outer view wins.
@@ -1036,6 +1036,12 @@ final class MainViewController: NSViewController {
             pane2View.onSearchResultsClose = { [weak self] pane in
                 self?.cancelSearchAll(from: pane)
             }
+            pane1View.onMatchesChanged = { [weak self] in
+                self?.refreshFindCount()
+            }
+            pane2View.onMatchesChanged = { [weak self] in
+                self?.refreshFindCount()
+            }
 
             activeFilePane = windowModel.activePaneIndex == 0 ? pane1View : pane2View
             comparisonView = view
@@ -1089,12 +1095,6 @@ final class MainViewController: NSViewController {
             self?.refreshMinimapMaps()
             self?.invalidateMatches(in: self?.windowModel.pane2)
         }
-        windowModel.pane1.onMatchesChanged = { [weak self] in
-            self?.refreshFindCount()
-        }
-        windowModel.pane2.onMatchesChanged = { [weak self] in
-            self?.refreshFindCount()
-        }
         // A save clears modified state without changing a byte, so the minimap's
         // red cells have to go even though the bytes stayed put (§19).
         windowModel.pane1.onSavedStateChanged = { [weak self] in
@@ -1123,8 +1123,6 @@ final class MainViewController: NSViewController {
         windowModel.pane2.companion = nil
         windowModel.pane1.onEdit = nil
         windowModel.pane2.onEdit = nil
-        windowModel.pane1.onMatchesChanged = nil
-        windowModel.pane2.onMatchesChanged = nil
         windowModel.pane1.onFullInvalidation = nil
         windowModel.pane2.onFullInvalidation = nil
         windowModel.pane1.onSavedStateChanged = nil

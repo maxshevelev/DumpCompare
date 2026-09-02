@@ -345,11 +345,24 @@ Visual states:
      modified, or selected in its byte cells, and the arrow is drawn on top of
      the Offset column without disturbing them.
 
+7. Search match (§11):
+   - while a search is active, **every** occurrence of the pattern is filled in
+     the platform's unfocused-selection grey — what a selection looks like in a
+     view without focus, which is the statement being made: a match, but not
+     the one you are standing on.
+   - both columns, hex and decoded text, as one continuous fill per match
+     through the word and group gaps; a match crossing a row boundary is filled
+     on both rows.
+   - it is the lowest of the state fills: a byte that is both matched and
+     different reads as **different**, because telling two dumps apart is what
+     the app is for. A match hidden under a difference is still reachable — the
+     navigation lands on it and the minimap marks it.
+
 The layering, bottom to top, for a byte cell: the segment tint (§21.3), then the
-difference fill (1), the selection fill (4), and the text — modified bytes red
-(2), muted `0x00`/`0xFF` grey, the caret over everything. A state covers the
-tint, which is correct: what a byte *is* outranks which piece it belongs to, and
-the piece stays readable in the gaps and the rows either side.
+match fill (7), the difference fill (1), the selection fill (4), and the text —
+modified bytes red (2), muted `0x00`/`0xFF` grey, the caret over everything. A
+state covers the tint, which is correct: what a byte *is* outranks which piece it
+belongs to, and the piece stays readable in the gaps and the rows either side.
 
 =====================================================================
 7. EDITING MODEL

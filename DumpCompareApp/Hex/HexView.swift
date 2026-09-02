@@ -42,6 +42,15 @@ protocol HexViewDataSource: AnyObject {
     /// range rather than a call per row, the same shape as `hexBookmarkedRows`.
     /// Empty when the pane is one piece (no cuts) — there is nothing to tint.
     func hexSegmentSpans(in range: Range<UInt64>) -> [HexSegmentSpan]
+    /// The matches of the active search that overlap `range`, for the dump's
+    /// grey match highlight (§11). A list per range rather than a call per row,
+    /// the same shape as `hexSegmentSpans`; a match starting before the range
+    /// and reaching into it is included. Empty when no search is active, and
+    /// when the set is too large to hold positions for.
+    func hexMatchRanges(in range: Range<UInt64>) -> [Range<UInt64>]
+    /// The current match — what the find indicator marks in yellow — or nil
+    /// when the caret is not on one (§11).
+    func hexCurrentMatch() -> Range<UInt64>?
     /// The bookmark on the row containing `offset`, if any (§20.2). One row, not
     /// a range: this answers the questions about a single row — what the mark's
     /// tooltip says, what VoiceOver reads, whether a right-clicked address
@@ -851,6 +860,18 @@ final class HexView: NSView, NSViewToolTipOwner {
             segmentSpans = dataSource.hexSegmentSpans(in: lower..<upper)
         }
 
+        // The matches in the drawn range, asked once per range like the pieces
+        // above (§11). The set answers with whole matches, including one that
+        // starts above the range and reaches into it.
+        let matchRanges: [Range<UInt64>]
+        if rows.isEmpty {
+            matchRanges = []
+        } else {
+            let lower = UInt64(rows.lowerBound) * UInt64(HexLayout.bytesPerRow)
+            let upper = UInt64(rows.upperBound) * UInt64(HexLayout.bytesPerRow)
+            matchRanges = dataSource.hexMatchRanges(in: lower..<upper)
+        }
+
         // The row whose address carries a right-click menu, if any. A bookmarked
         // row shows that menu through its own mark — outlined instead of filled
         // (§20.4) — because the accent ring lands on top of the fill. A menu
@@ -870,7 +891,8 @@ final class HexView: NSView, NSViewToolTipOwner {
                 drawsOffset: drawsOffset, drawsHex: drawsHex, drawsAscii: drawsAscii,
                 isBookmarked: bookmarkedRows.contains(rowAddress),
                 bookmarkOutlined: rowAddress == contextMenuRowAddress,
-                segmentSpans: segmentSpans
+                segmentSpans: segmentSpans,
+                matchRanges: matchRanges
             )
         }
 
@@ -923,7 +945,8 @@ final class HexView: NSView, NSViewToolTipOwner {
                          selection: SelectionModel, baseline: CGFloat,
                          drawsOffset: Bool, drawsHex: Bool, drawsAscii: Bool,
                          isBookmarked: Bool, bookmarkOutlined: Bool,
-                         segmentSpans: [HexSegmentSpan]) {
+                         segmentSpans: [HexSegmentSpan],
+                         matchRanges: [Range<UInt64>]) {
         let rowStart = layout.byteOffset(row: row, column: 0)
         let rowEnd = rowStart + UInt64(HexLayout.bytesPerRow)
         let rowY = layout.rowFrame(row: row).minY
@@ -972,6 +995,17 @@ final class HexView: NSView, NSViewToolTipOwner {
         }
 
         let states = dataSource?.hexByteStates(in: rowStart..<rowEnd) ?? []
+
+        // The grey match highlight: every occurrence of the search pattern,
+        // under the difference fill (§6, §11). Grey yields to orange because
+        // telling two dumps apart is what the app is for — a match buried under
+        // a difference is still reachable, since Find Next brings the indicator
+        // to it and the map marks it.
+        if drawsHex || drawsAscii {
+            drawMatchFills(row: row, rowStart: rowStart, rowEnd: rowEnd,
+                           matches: matchRanges, layout: layout,
+                           drawsHex: drawsHex, drawsAscii: drawsAscii)
+        }
 
         // Backgrounds: EOF cells and the comparison difference stay per-byte;
         // the selection is one continuous fill across the whole selected span
@@ -1199,6 +1233,38 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// the hex column and one through the ASCII column — no gaps between words
     /// or byte cells, and no gap between the two 8-byte groups (§6). Each half
     /// is drawn only when its column band is being repainted.
+    /// Fills the grey behind every match crossing this row (§11).
+    ///
+    /// One continuous fill per match, exactly like the selection's: a match
+    /// spans its bytes through the word and group gaps, and a match crossing a
+    /// row boundary is drawn as its part of each row.
+    private func drawMatchFills(row: Int, rowStart: UInt64, rowEnd: UInt64,
+                                matches: [Range<UInt64>], layout: HexLayout,
+                                drawsHex: Bool, drawsAscii: Bool) {
+        guard !matches.isEmpty else { return }
+        let rowFrame = layout.rowFrame(row: row)
+        HexTheme.matchFill.setFill()
+        for match in matches {
+            let start = max(match.lowerBound, rowStart)
+            let end = min(match.upperBound, rowEnd)
+            guard start < end else { continue }
+            let firstColumn = Int(start - rowStart)
+            let lastColumn = Int(end - rowStart) - 1
+            if drawsHex {
+                let left = layout.hexByteX(column: firstColumn)
+                let right = layout.hexByteX(column: lastColumn) + layout.hexByteWidth
+                NSBezierPath(rect: CGRect(x: left, y: rowFrame.minY,
+                                          width: right - left, height: layout.rowHeight)).fill()
+            }
+            if drawsAscii {
+                let left = layout.asciiX(column: firstColumn)
+                let right = layout.asciiX(column: lastColumn) + layout.charWidth
+                NSBezierPath(rect: CGRect(x: left, y: rowFrame.minY,
+                                          width: right - left, height: layout.rowHeight)).fill()
+            }
+        }
+    }
+
     private func drawSelectionFill(row: Int, rowStart: UInt64, rowEnd: UInt64,
                                    selection: SelectionModel, layout: HexLayout,
                                    drawsHex: Bool, drawsAscii: Bool) {
@@ -2751,6 +2817,14 @@ enum HexTheme {
             ? NSColor.systemOrange.withAlphaComponent(0.45)
             : NSColor.systemOrange.withAlphaComponent(0.35)
     }
+
+    /// Every occurrence of the current search pattern (§11): the platform's own
+    /// unfocused-selection grey — what a selection looks like in a view that
+    /// does not have focus, which is exactly the statement being made ("a match,
+    /// but not the one you are standing on"). It is the grey Xcode puts behind
+    /// the other occurrences, and it is opaque, so it covers the segment tint —
+    /// correct per §6, where a byte's state outranks which piece it belongs to.
+    static let matchFill = NSColor.unemphasizedSelectedTextBackgroundColor
 
     static let selectionFill = NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua

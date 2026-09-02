@@ -230,6 +230,11 @@ final class FilePaneView: NSView {
     /// this pane. The panel is hidden and cleared by `hideSearchResults()`
     /// regardless; the owner uses the hook to stop the in-flight search (§11).
     var onSearchResultsClose: ((FilePaneView) -> Void)?
+
+    /// Fired after the pane's match set or find indicator changed, once the
+    /// dump has been marked for repaint — the owner's cue to refresh what lives
+    /// outside the pane (the Find bar's count, the minimap) (§11).
+    var onMatchesChanged: (() -> Void)?
     /// Fired with the dropped file URLs (comparison-mode drops target this pane,
     /// §4.3). Only active after `enableFileDrop()`.
     var onDropFiles: (([URL]) -> Void)?
@@ -600,6 +605,15 @@ final class FilePaneView: NSView {
         // own content, status, and scroll are untouched (§3.3 extension).
         viewModel.onCompanionContentChanged = { [weak self] change in
             self?.hexView.reloadContent(change)
+        }
+        // The search's matches changed — a new set, a cleared one, or a step of
+        // the find indicator. The dump repaints whole: a set arrives or goes
+        // wholesale, and a step moves a highlight off one row and onto another,
+        // which no single range describes. No scroll: the reveal belongs to the
+        // navigation that moved the caret (§11, §10.4).
+        viewModel.onMatchesChanged = { [weak self] in
+            self?.hexView.needsDisplay = true
+            self?.onMatchesChanged?()
         }
         // When the companion's selection changed, this pane's mirror frames
         // moved — redraw only the rows those frames now cover differently. A
