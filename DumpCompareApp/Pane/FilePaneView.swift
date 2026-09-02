@@ -649,10 +649,18 @@ final class FilePaneView: NSView {
     }
 
     /// Scrolls the hex view so the current selection sits in the vertical centre
-    /// of the visible area — used after a Find result lands, so the match is
-    /// shown mid-pane instead of at its edge (§11).
+    /// of the visible area — used where a command must put a range mid-pane
+    /// whether or not it was already visible (§10.2).
     func revealSelectionCentered() {
         hexView.revealSelectionCentered()
+    }
+
+    /// Reveals the current selection only if it is not already on screen, and
+    /// then centres it — the caret's own rule (§10.4). A step through the
+    /// search's matches uses this, so a match a couple of rows away moves the
+    /// highlight rather than the page (§11).
+    func revealSelectionCenteredIfNeeded() {
+        hexView.revealSelectionCenteredIfNeeded()
     }
 
     /// Scrolls the hex view so the row containing `offset` sits in the vertical

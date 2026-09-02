@@ -2414,6 +2414,25 @@ final class HexView: NSView, NSViewToolTipOwner {
         scroll.reflectScrolledClipView(clip)
     }
 
+    /// Reveals the current selection the way the caret is revealed by a
+    /// navigation command (§10.4): if it is already fully on screen the view
+    /// does not move at all, and only a selection that is off screen (or half
+    /// off it) is centred.
+    ///
+    /// This is what a step through the search's matches uses (§11): pressing
+    /// Find Next on a match two rows down should move the highlight, not the
+    /// page under it.
+    func revealSelectionCenteredIfNeeded() {
+        guard let dataSource else { return }
+        let selection = dataSource.hexSelection()
+        let first = selection.start
+        let last = selection.isEmpty ? selection.start : selection.end - 1
+        // Both ends, because a match can straddle a row boundary and a match
+        // hanging over the viewport's edge is not "visible".
+        guard !(isRowVisible(containing: first) && isRowVisible(containing: last)) else { return }
+        revealSelectionCentered()
+    }
+
     /// Scrolls the current selection (or the caret when there is none) to the
     /// vertical centre of the visible area.
     func revealSelectionCentered() {

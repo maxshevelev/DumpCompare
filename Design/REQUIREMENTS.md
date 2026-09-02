@@ -1094,7 +1094,11 @@ Search navigation:
   - move cursor to match start;
   - select the matched byte range;
   - synchronize the other pane in comparison mode;
-  - ensure match is visible.
+  - ensure match is visible — but **only scroll if it is not already**. A match
+    inside the viewport moves the highlight and leaves the page where it is; one
+    off screen (or hanging over an edge) is centred. This is the caret's own
+    reveal rule (§10.4), and without it a walk through a cluster of matches
+    re-centres the view on every press.
 - Navigation **wraps**: Find Next at the last match returns to the first, Find
   Previous at the first returns to the last. A single match wraps onto itself,
   and is re-selected and re-revealed rather than ignored — a press that does

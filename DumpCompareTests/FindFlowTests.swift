@@ -813,6 +813,38 @@ final class FindFlowTests: XCTestCase {
 
     /// The toggle actually changes matching: "hi" finds "Hi" by default,
     /// finds only exact "hi" with the toggle on, and "hI" has no match then.
+    /// A match already on screen moves the highlight, not the page: the same
+    /// rule the caret follows (§10.4). Walking a cluster of matches used to
+    /// re-centre the view on every press.
+    func testAMatchAlreadyOnScreenDoesNotScrollThePane() throws {
+        // 300 rows, with two matches four rows apart in the middle of the file,
+        // well away from the ends where a centred reveal would be clamped: the
+        // first press centres row 40, and row 44 is then plainly on screen.
+        var bytes = [UInt8](repeating: 0x11, count: 300 * 16)
+        bytes.replaceSubrange(40 * 16..<(40 * 16 + 3), with: [0xDE, 0xAD, 0xBE])
+        bytes.replaceSubrange(44 * 16..<(44 * 16 + 3), with: [0xDE, 0xAD, 0xBE])
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+
+        controller.findPattern()
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "DE AD BE"
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(3) { pane.currentMatchIndex == 0 })
+
+        let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
+        let clip = paneView.scrollView.contentView
+        let before = clip.bounds.origin.y
+
+        XCTAssertGreaterThan(before, 1, "the first match was off screen, so it was centred")
+
+        try clickFindNext(window)
+        XCTAssertEqual(pane.hexSelection().start, UInt64(44 * 16), "the highlight moved")
+        XCTAssertEqual(clip.bounds.origin.y, before, accuracy: 0.5,
+                       "and the page did not")
+    }
+
     func testCaseSensitiveToggleControlsMatching() throws {
         let bytes: [UInt8] = Array("Hi hi HI".utf8)  // "hi" at 0 and 3; "HI" at 6
         let (controller, window, url) = try makeController(bytes)

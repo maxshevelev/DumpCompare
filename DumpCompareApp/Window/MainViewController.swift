@@ -4891,9 +4891,11 @@ final class MainViewController: NSViewController {
         // The pop answers the key press — including when a lone match wraps
         // onto itself, where no index changed (§11).
         filePaneView(for: pane)?.bounceFindIndicator()
-        // Show the match mid-pane: a plain reveal only scrolls the found row to
-        // the nearest edge (bottom after Find Next, top after Find Previous) (§11).
-        filePaneView(for: pane)?.revealSelectionCentered()
+        // A match already on screen moves the highlight, not the page; one off
+        // screen is centred. The caret's own rule (§10.4) — and the reason a
+        // walk through a cluster of matches no longer jerks the view a row at a
+        // time.
+        filePaneView(for: pane)?.revealSelectionCenteredIfNeeded()
         handOffFocusAfterFind()
     }
 
@@ -4963,7 +4965,7 @@ final class MainViewController: NSViewController {
         )
         guard !Task.isCancelled, let range, pane.isOpen else { return false }
         pane.select(range: range)
-        filePaneView(for: pane)?.revealSelectionCentered()
+        filePaneView(for: pane)?.revealSelectionCenteredIfNeeded()
         handOffFocusAfterFind()
         return true
     }
