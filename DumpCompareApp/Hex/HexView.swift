@@ -1409,10 +1409,12 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// height casts the shadow *up* (which is how a first attempt got it
     /// backwards). A render test pins the direction and the weighting.
     static let indicatorAmbientBlur: CGFloat = 3
-    static let indicatorAmbientAlpha: CGFloat = 0.13
-    static let indicatorShadowOffset = NSSize(width: 1.5, height: 2.5)
+    static let indicatorAmbientAlpha: CGFloat = 0.28
+    /// Short on purpose: the plate is lifted a little way off the page, not
+    /// floating above it, so the drop is about a point either way.
+    static let indicatorShadowOffset = NSSize(width: 1, height: 1.5)
     static let indicatorShadowBlur: CGFloat = 4
-    static let indicatorShadowAlpha: CGFloat = 0.20
+    static let indicatorShadowAlpha: CGFloat = 0.42
 
     /// How long the hop lasts. Slow enough to be *seen*: at a quarter of a
     /// second the jump registered as a flicker, which is worse than nothing —
@@ -1424,8 +1426,8 @@ final class HexView: NSView, NSViewToolTipOwner {
     static let indicatorLiftRise: CGFloat = 3
     /// The key shadow drops and spreads as the bubble climbs; the ambient halo
     /// widens with it, so the plate keeps its edge on the light side too.
-    static let indicatorLiftShadowDrop: CGFloat = 2.5
-    static let indicatorLiftShadowSpread: CGFloat = 1.5
+    static let indicatorLiftShadowDrop: CGFloat = 2
+    static let indicatorLiftShadowSpread: CGFloat = 1
     static let indicatorLiftShadowBlur: CGFloat = 3
     static let indicatorLiftAmbientBlur: CGFloat = 2.5
 
@@ -1504,7 +1506,7 @@ final class HexView: NSView, NSViewToolTipOwner {
                 ambient: IndicatorShadow(
                     offset: .zero,
                     blur: indicatorAmbientBlur + indicatorLiftAmbientBlur * clamped,
-                    alpha: indicatorAmbientAlpha + 0.04 * clamped),
+                    alpha: indicatorAmbientAlpha + 0.08 * clamped),
                 // The bubble climbs while its shadow stays on the page, so the
                 // drop between them grows with the height (§11).
                 key: IndicatorShadow(
@@ -1513,7 +1515,7 @@ final class HexView: NSView, NSViewToolTipOwner {
                                    height: indicatorShadowOffset.height
                                     + indicatorLiftShadowDrop * clamped),
                     blur: indicatorShadowBlur + indicatorLiftShadowBlur * clamped,
-                    alpha: indicatorShadowAlpha + 0.08 * clamped))
+                    alpha: indicatorShadowAlpha + 0.15 * clamped))
     }
 
     /// Starts the hop — called when the indicator lands on another match.
