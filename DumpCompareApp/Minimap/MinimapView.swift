@@ -1607,12 +1607,16 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         }
 
         let matches = (matchRanges?(index, window) ?? [])
-            .flatMap { bars(for: $0, height: Self.rowStep, rise: 0) }
-        // The plate is a point taller than a stroke, so its frame has room; the
-        // extra point is split above and below, keeping it on its row.
-        let plateHeight = Self.rowStep + 1
+            .flatMap { bars(for: $0, height: Self.detailMatchHeight, rise: 0) }
+        // The plate is deliberately bigger than a stroke in both directions: it
+        // is the one mark that has to be found rather than noticed, and its
+        // frame needs room to read as a frame. Grown about the stroke's own
+        // band, so it stays on its row.
+        let plateHeight = Self.detailCurrentMatchHeight
+        let rise = (plateHeight - Self.detailMatchHeight) / 2
         let current = currentMatchRange?(index)
-            .flatMap { bars(for: $0, height: plateHeight, rise: 0.5).first }
+            .flatMap { bars(for: $0, height: plateHeight, rise: rise).first }
+            .map { $0.insetBy(dx: -Self.detailCurrentMatchPadding, dy: 0) }
         return (matches, current)
     }
 
@@ -1739,6 +1743,14 @@ final class MinimapView: NSView, NSViewToolTipOwner {
             frame.stroke()
         }
     }
+
+    /// A match's stroke on the **detail** map: the height of a byte cell, so it
+    /// reads as a bar laid over the bytes rather than as a band across the row.
+    static let detailMatchHeight: CGFloat = byteHeight
+    /// The current match's plate there: taller and wider than a stroke on every
+    /// side, because it is the mark that has to be found rather than noticed.
+    static let detailCurrentMatchHeight: CGFloat = 6
+    static let detailCurrentMatchPadding: CGFloat = 2
 
     /// A match's stroke on the overview: a couple of pixels tall, and wide
     /// enough to be seen when its bytes fall in a single cell.

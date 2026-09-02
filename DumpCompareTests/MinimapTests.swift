@@ -693,13 +693,15 @@ final class MinimapTests: XCTestCase {
         XCTAssertEqual(second.minY - first.minY, MinimapView.rowStep, accuracy: 0.01,
                        "the second match is one map row below the first")
         XCTAssertGreaterThan(first.width, 0)
-        XCTAssertEqual(first.height, MinimapView.rowStep, accuracy: 0.01)
+        XCTAssertEqual(first.height, MinimapView.detailMatchHeight, accuracy: 0.01)
 
         let plate = try XCTUnwrap(bars.current, "the current match gets a plate")
         XCTAssertEqual(plate.midY, second.midY, accuracy: 0.01,
                        "on the current match's own row — the second one")
         XCTAssertGreaterThan(plate.height, first.height,
                              "and taller than a stroke, so its frame has room")
+        XCTAssertGreaterThan(plate.width, second.width,
+                             "and wider than the stroke it replaces")
 
         pane.clearMatches()
         window.layoutIfNeeded()

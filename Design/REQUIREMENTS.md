@@ -1615,10 +1615,12 @@ text.
   The difference background must remain visible behind an opaque byte.
 - The selection is drawn as a translucent overlay on top of the cells.
 - While a search is running, the matches are marked the same way as in overview
-  (§11): a **stroke of solid ink** over each match's cells — continuous across
-  the cells it covers, and split at the map's row boundaries — and the current
-  match as a **plate**, the find indicator's yellow inside a thin ink frame,
-  drawn over every stroke. Not the dump's grey-and-yellow pair: the map draws a
+  (§11): a **stroke of solid ink** over each match's cells — a byte-cell tall,
+  continuous across the cells it covers, and split at the map's row boundaries
+  — and the current match as a **plate**, the find indicator's yellow inside a
+  thin ink frame, drawn over every stroke and deliberately bigger than a stroke
+  on every side, because it is the mark that has to be found rather than
+  noticed. Not the dump's grey-and-yellow pair: the map draws a
   byte as a cell of ink, so a background behind one byte says nothing at this
   size, while a bar over several does.
 - Byte state must come from the same per-byte source the panes paint from,
