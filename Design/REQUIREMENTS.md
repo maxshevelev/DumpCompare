@@ -1689,6 +1689,26 @@ resolution is used and nothing is spent on gaps.
   index changes — difference marks come from that index rather than from
   re-reading both files.
 
+Search matches in overview:
+
+- Precision is not the point at this scale — a row is kilobytes — so a match is
+  a **stroke of solid ink**: a couple of pixels tall, over the cells its bytes
+  fall in, and widened to a readable minimum when they fall in a single cell.
+  What matters is that something was found around here.
+- The dump's match grey is not used here: a row is aggregated content drawn as
+  a grey *tone*, so a grey mark cannot be told from content. Ink can.
+- The current match is a **plate** instead: the find indicator's yellow inside a
+  thin ink frame, so "you are here" reads apart from "something is here".
+- The current match is **also marked in the margin**, in the same arrow shape a
+  bookmark uses (§19.4.3) and in the same yellow: at a row per 13 KB its cells
+  are one pixel tall and easy to miss. Under the bookmarks, because a bookmark
+  is something the user placed and a match is where they happen to be standing.
+- The bits are binned by the same arithmetic as the density picture, so a match
+  lands on the cell its bytes land in — including the stretch regime above. They
+  are computed from the match set, not from the file, and a new search therefore
+  costs no density rebuild: the picture is invalidated by bytes, these marks by
+  the pattern.
+
 19.4.3 Bookmarks in the margin
 
 Bookmarked rows (§20) are marked on the maps, so a marked region can be found

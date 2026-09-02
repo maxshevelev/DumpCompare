@@ -1651,23 +1651,49 @@ final class MinimapView: NSView, NSViewToolTipOwner {
 
     /// Marks the search's matches over the overview's density picture (§11).
     ///
-    /// Like a difference, a match is drawn two pixel rows tall: one cell of a
-    /// one-pixel row is invisible inside a dense region, so it spills into the
-    /// next row rather than disappearing. The mark is a thinned version of the
-    /// find indicator's yellow rather than the dump's grey — see
-    /// `HexTheme.overviewMatchMark` — and the current match goes on top of it at
-    /// full strength.
+    /// Precision is not the point here — a row is kilobytes — so a match is a
+    /// **stroke**: solid ink, a couple of pixels tall and at least
+    /// `overviewMatchWidth` wide, over the cells its bytes fall in. What matters
+    /// is that something was found around here and that it reads at a glance,
+    /// which a grey tint could not do against a grey density picture.
+    ///
+    /// The current match is a plate instead: the find indicator's yellow inside
+    /// a thin ink frame — "you are here", in the one hue reserved for search.
     private func drawOverviewMatches(forMapAt index: Int, rows: ClosedRange<Int>,
                                      top: CGFloat, cells: [(x: CGFloat, width: CGFloat)],
                                      rowHeight: CGFloat) {
-        guard matchOverlays.indices.contains(index) else { return }
+        guard matchOverlays.indices.contains(index), let firstCell = cells.first,
+              let lastCell = cells.last else { return }
         let overlay = matchOverlays[index]
         guard overlay.rowCount > 0 else { return }
         let columns = Int(Self.bytesPerRow)
-        let matchInk = (HexTheme.overviewMatchMark.usingColorSpace(.deviceRGB)
-                         ?? HexTheme.overviewMatchMark)
+        let ink = (HexTheme.byteText.usingColorSpace(.deviceRGB) ?? HexTheme.byteText)
         let currentInk = (HexTheme.findIndicatorFill.usingColorSpace(.deviceRGB)
                           ?? HexTheme.findIndicatorFill)
+        let mapRight = lastCell.x + lastCell.width
+
+        /// The mark for a row's mask: the marked cells' span, widened to a
+        /// readable minimum and kept inside the map.
+        func mark(for mask: UInt16, y: CGFloat, height: CGFloat) -> NSRect? {
+            guard mask != 0 else { return nil }
+            var first = columns
+            var last = -1
+            for column in 0..<min(columns, cells.count)
+            where mask & (UInt16(1) << UInt16(column)) != 0 {
+                first = min(first, column)
+                last = max(last, column)
+            }
+            guard last >= first else { return nil }
+            let left = cells[first].x
+            let right = cells[last].x + cells[last].width
+            var width = right - left
+            var x = left
+            if width < Self.overviewMatchWidth {
+                width = Self.overviewMatchWidth
+                x = max(firstCell.x, min(left, mapRight - width))
+            }
+            return NSRect(x: x, y: y, width: width, height: height)
+        }
 
         for row in rows {
             guard overlay.matched.indices.contains(row) else { break }
@@ -1675,38 +1701,28 @@ final class MinimapView: NSView, NSViewToolTipOwner {
             let current = overlay.current.indices.contains(row) ? overlay.current[row] : 0
             guard matched != 0 || current != 0 else { continue }
             let y = top + CGFloat(row) * rowHeight
-            // Neighbouring cells that draw the same thing are one fill, as in
-            // the density pass: a run of matches is usually contiguous.
-            var runColour: NSColor?
-            var runFrom = 0
-            var runTo = -1
-            func flush() {
-                guard let colour = runColour, runTo >= runFrom else {
-                    runColour = nil
-                    return
-                }
-                colour.setFill()
-                NSRect(x: cells[runFrom].x, y: y,
-                       width: cells[runTo].x + cells[runTo].width - cells[runFrom].x,
-                       height: rowHeight * 2).fill()
-                runColour = nil
+            if let box = mark(for: matched, y: y, height: Self.overviewMatchHeight) {
+                ink.setFill()
+                box.fill()
             }
-            for column in 0..<min(columns, cells.count) {
-                let bit = UInt16(1) << UInt16(column)
-                let colour: NSColor? = current & bit != 0 ? currentInk
-                    : (matched & bit != 0 ? matchInk : nil)
-                if colour === runColour, runTo == column - 1 {
-                    runTo = column
-                } else {
-                    flush()
-                    runColour = colour
-                    runFrom = column
-                    runTo = column
-                }
+            // The current match's plate is a little taller, or its frame would
+            // have no room to read as a frame.
+            if let box = mark(for: current, y: y - 1,
+                              height: Self.overviewMatchHeight + 2) {
+                currentInk.setFill()
+                box.fill()
+                ink.setStroke()
+                let frame = NSBezierPath(rect: box.insetBy(dx: 0.5, dy: 0.5))
+                frame.lineWidth = 1
+                frame.stroke()
             }
-            flush()
         }
     }
+
+    /// A match's stroke on the overview: a couple of pixels tall, and wide
+    /// enough to be seen when its bytes fall in a single cell.
+    static let overviewMatchHeight: CGFloat = 2
+    static let overviewMatchWidth: CGFloat = 7
 
     /// Draws one map's cells into the current context: `rows` of `summary`, the
     /// first of them starting at `top`, each `rowHeight` tall, with the columns
