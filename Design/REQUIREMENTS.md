@@ -373,14 +373,21 @@ Visual states:
    - the shadow is **two shadows**, which is what a raised surface needs: an
      ambient halo with no offset, so the plate has a soft edge on *every* side
      and is not cut out of the page, and a short key drop down and to the
-     right, which gives that side the weight. One offset shadow was tried
-     first and left the top-left edge bare — with the blur no wider than the
-     drop, the light side gets nothing at all.
+     right, which gives that side the weight. One offset shadow was tried first
+     and left the top-left edge bare — with the blur no wider than the drop, the
+     light side gets nothing at all.
+   - it is drawn from the plate's **own geometry** — concentric strokes of the
+     same outline — and not with `NSShadow`. That is a correctness rule, not a
+     style: an `NSShadow` offset is interpreted in whatever space the current
+     graphics context is in, and this view is painted through more than one, so
+     the shadow fell downward in a render test while falling upward on screen.
+     Strokes of the plate's own path cannot disagree with the plate.
    - it stays short: a long shadow reads as a drop-shadow effect rather than as
-     a small thing lifted a little way off the page. The direction and the
-     weighting are pinned by a render test — measured against a frame with no
-     search running, since the sign that puts a shadow downward in this view is
-     not the one you would guess.
+     a small thing lifted a little way off the page.
+   - the **selection is not painted under the plate**. Find Next selects the
+     match it lands on, so the two coincide, and the plate is the statement
+     about that range; the blue also peeked out from under the plate as it
+     rose.
    - each step of Find Next / Find Previous makes it **hop**: it rises off the
      page and comes back, once clearly and once smaller, over about half a
      second. Height is one idea with four consequences — the bubble grows a

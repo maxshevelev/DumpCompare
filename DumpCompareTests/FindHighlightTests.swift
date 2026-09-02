@@ -446,8 +446,9 @@ final class FindHighlightTests: XCTestCase {
                              "and further down as the bubble climbs away from it")
         XCTAssertLessThan(top.key.offset.width, top.key.offset.height,
                           "biased downward more than sideways")
-        XCTAssertLessThan(top.key.offset.height, 5,
-                          "and short either way: a long shadow reads as an effect")
+        XCTAssertLessThan(top.key.offset.height, 6,
+                          "and short even at the top of the hop: a long shadow reads as a "
+                          + "drop-shadow effect rather than as a small lift")
     }
 
     /// The hop is slow enough to be seen: a quarter of a second read as a

@@ -1061,7 +1061,8 @@ final class HexView: NSView, NSViewToolTipOwner {
             }
             drawSelectionFill(row: row, rowStart: rowStart, rowEnd: rowEnd,
                               selection: selection, layout: layout,
-                              drawsHex: drawsHex, drawsAscii: drawsAscii)
+                              drawsHex: drawsHex, drawsAscii: drawsAscii,
+                              skipping: indicatorColumns)
         }
 
         // EOF placeholder styling, per cell: the muted fill and hatch mark the
@@ -1370,21 +1371,22 @@ final class HexView: NSView, NSViewToolTipOwner {
                 transform.translate(x: -box.midX, y: -box.midY)
                 path.transform(using: transform)
             }
-            // One fill per shadow: the halo first, then the drop over it, then
-            // the plate itself with no shadow at all. Filling the same shape
-            // three times is what layers two shadows — `NSShadow` holds one.
-            for shadow in [elevation.ambient, elevation.key] {
-                NSGraphicsContext.saveGraphicsState()
-                let drawn = NSShadow()
-                drawn.shadowOffset = shadow.offset
-                drawn.shadowBlurRadius = shadow.blur
-                drawn.shadowColor = HexTheme.indicatorShadow
-                    .withAlphaComponent(shadow.alpha)
-                drawn.set()
-                HexTheme.findIndicatorFill.setFill()
-                path.fill()
-                NSGraphicsContext.restoreGraphicsState()
-            }
+            // The shadow is drawn from the plate's own geometry rather than by
+            // `NSShadow`, and that is a correctness decision, not a stylistic
+            // one: an `NSShadow` offset is interpreted in whatever coordinate
+            // space the current graphics context happens to be in, and this
+            // view is drawn through two different ones — the window's layer on
+            // screen and a bitmap context under `cacheDisplay` — which
+            // disagreed about which way "down" is. Twice the shadow was
+            // measured going down in a render test while going up on screen.
+            //
+            // Strokes of the same path cannot disagree: they live in the same
+            // space as the plate, where +y is down because row 1 is drawn
+            // below row 0. Each stroke straddles the outline, and the plate's
+            // own fill goes on last and hides every inner half — so what is
+            // left is an outer halo whose reach is the widest stroke.
+            drawIndicatorShadow(around: path, shadow: elevation.ambient)
+            drawIndicatorShadow(around: path, shadow: elevation.key)
             HexTheme.findIndicatorFill.setFill()
             path.fill()
         }
@@ -1406,11 +1408,11 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// view is flipped and `NSShadow` follows the same space, so a negative
     /// height casts the shadow *up* (which is how a first attempt got it
     /// backwards). A render test pins the direction and the weighting.
-    static let indicatorAmbientBlur: CGFloat = 4
-    static let indicatorAmbientAlpha: CGFloat = 0.35
-    static let indicatorShadowOffset = NSSize(width: 1, height: 2)
+    static let indicatorAmbientBlur: CGFloat = 3
+    static let indicatorAmbientAlpha: CGFloat = 0.28
+    static let indicatorShadowOffset = NSSize(width: 1.5, height: 2.5)
     static let indicatorShadowBlur: CGFloat = 4
-    static let indicatorShadowAlpha: CGFloat = 0.40
+    static let indicatorShadowAlpha: CGFloat = 0.42
 
     /// How long the hop lasts. Slow enough to be *seen*: at a quarter of a
     /// second the jump registered as a flicker, which is worse than nothing —
@@ -1451,13 +1453,43 @@ final class HexView: NSView, NSViewToolTipOwner {
                    arc(from: 0.62, to: 1, height: 0.3))
     }
 
-    /// One shadow of the bubble: how far it is offset, how soft it is, and how
-    /// dark. Two of these make the plate read as raised (see
-    /// `indicatorAmbientBlur`).
+    /// One shadow of the plate: where it falls, how far it reaches, and how
+    /// dark it is at the plate's edge. Two of these make the plate read as
+    /// raised (see `indicatorAmbientBlur`).
     struct IndicatorShadow: Equatable {
+        /// Offset in the plate's own space: `height` positive is **down**,
+        /// because row 1 is drawn below row 0.
         var offset: NSSize
+        /// How far past the plate's outline the shadow reaches.
         var blur: CGFloat
+        /// Opacity at the plate's edge; it falls off over `blur`.
         var alpha: CGFloat
+    }
+
+    /// Paints one shadow as concentric strokes of `path`, offset by the
+    /// shadow's own offset: the innermost ring is the darkest and each ring out
+    /// is lighter, which is what makes the edge soft. Drawn before the plate's
+    /// fill, which covers the inner halves.
+    private func drawIndicatorShadow(around path: NSBezierPath, shadow: IndicatorShadow) {
+        guard shadow.blur > 0, shadow.alpha > 0 else { return }
+        let copy = path.copy() as! NSBezierPath
+        if shadow.offset != .zero {
+            copy.transform(using: AffineTransform(translationByX: shadow.offset.width,
+                                                  byY: shadow.offset.height))
+        }
+        // One ring per point of reach, plus a half-point step so a fractional
+        // reach still draws something.
+        let rings = max(Int(shadow.blur.rounded()), 1)
+        for ring in (1...rings).reversed() {
+            let reach = shadow.blur * CGFloat(ring) / CGFloat(rings)
+            // Linear falloff from the edge outwards, and each ring is drawn
+            // over the ones outside it, so the accumulated opacity is highest
+            // against the plate.
+            let alpha = shadow.alpha * (1 - CGFloat(ring - 1) / CGFloat(rings)) / CGFloat(rings)
+            HexTheme.indicatorShadow.withAlphaComponent(alpha).setStroke()
+            copy.lineWidth = reach * 2
+            copy.stroke()
+        }
     }
 
     /// What a given lift does to the bubble: its size, how far it rises, and
@@ -1553,9 +1585,17 @@ final class HexView: NSView, NSViewToolTipOwner {
                                                   dy: -Self.mirrorContourPadding * 2))
     }
 
+    /// Fills the selection for one row, leaving out the columns the find
+    /// indicator covers (§11).
+    ///
+    /// Find Next selects the match it lands on, so the two coincide — and the
+    /// yellow plate is the statement about that range. Painting the blue under
+    /// it is not only redundant: the plate *rises* during its hop, and the blue
+    /// peeked out from under it like a misdrawn edge.
     private func drawSelectionFill(row: Int, rowStart: UInt64, rowEnd: UInt64,
                                    selection: SelectionModel, layout: HexLayout,
-                                   drawsHex: Bool, drawsAscii: Bool) {
+                                   drawsHex: Bool, drawsAscii: Bool,
+                                   skipping indicatorColumns: Range<Int>? = nil) {
         let selStart = max(selection.start, rowStart)
         let selEnd = min(selection.end, rowEnd)
         guard selStart < selEnd else { return }
@@ -1563,17 +1603,41 @@ final class HexView: NSView, NSViewToolTipOwner {
         let lastColumn = Int(selEnd - rowStart) - 1
         let rowFrame = layout.rowFrame(row: row)
         HexTheme.selectionFill.setFill()
-        if drawsHex {
-            let hexLeft = layout.hexByteX(column: firstColumn)
-            let hexRight = layout.hexByteX(column: lastColumn) + layout.hexByteWidth
-            NSBezierPath(rect: CGRect(x: hexLeft, y: rowFrame.minY,
-                                      width: hexRight - hexLeft, height: layout.rowHeight)).fill()
+
+        // The row's selected columns, minus the indicator's — at most two runs.
+        var runs: [ClosedRange<Int>] = [firstColumn...lastColumn]
+        if let indicatorColumns {
+            runs = runs.flatMap { run -> [ClosedRange<Int>] in
+                let cut = indicatorColumns
+                guard cut.lowerBound <= run.upperBound, cut.upperBound > run.lowerBound else {
+                    return [run]
+                }
+                var parts: [ClosedRange<Int>] = []
+                if run.lowerBound < cut.lowerBound {
+                    parts.append(run.lowerBound...(cut.lowerBound - 1))
+                }
+                if run.upperBound > cut.upperBound - 1 {
+                    parts.append(cut.upperBound...run.upperBound)
+                }
+                return parts
+            }
         }
-        if drawsAscii {
-            let asciiLeft = layout.asciiX(column: firstColumn)
-            let asciiRight = layout.asciiX(column: lastColumn) + layout.charWidth
-            NSBezierPath(rect: CGRect(x: asciiLeft, y: rowFrame.minY,
-                                      width: asciiRight - asciiLeft, height: layout.rowHeight)).fill()
+
+        for run in runs {
+            if drawsHex {
+                let hexLeft = layout.hexByteX(column: run.lowerBound)
+                let hexRight = layout.hexByteX(column: run.upperBound) + layout.hexByteWidth
+                NSBezierPath(rect: CGRect(x: hexLeft, y: rowFrame.minY,
+                                          width: hexRight - hexLeft,
+                                          height: layout.rowHeight)).fill()
+            }
+            if drawsAscii {
+                let asciiLeft = layout.asciiX(column: run.lowerBound)
+                let asciiRight = layout.asciiX(column: run.upperBound) + layout.charWidth
+                NSBezierPath(rect: CGRect(x: asciiLeft, y: rowFrame.minY,
+                                          width: asciiRight - asciiLeft,
+                                          height: layout.rowHeight)).fill()
+            }
         }
     }
 
