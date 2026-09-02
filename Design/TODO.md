@@ -66,40 +66,6 @@ hiding rules, not in the drawing.
 **Not urgent because** both places already say what the mark is; this is the
 difference between information you can get and information you can sweep.
 
-### Find highlighting — every occurrence in the dump and on the map
-
-**What.** Two states over the current search pattern: *every* occurrence greyed
-in the hex dump and on the minimap (`unemphasizedSelectedTextBackgroundColor` —
-the platform's unfocused-selection grey), and the current match in a raised
-yellow bubble (`findHighlightColor` — Apple's find indicator, the yellow Xcode
-shows). Both columns of the dump, both modes of the map.
-
-**Why.** Today a search says "here is one match" and, through Search All, "here
-is a list of them" (§11). Neither says *what the neighbourhood looks like*, which
-is the question on a dump: a signature that repeats every 0x1000 bytes, a padding
-run broken in one place, a table of pointers where one entry differs. Seeing the
-matches where the bytes are turns a search from navigation into a reading of the
-file's shape — and the map turns "where else" into one glance.
-
-**How.** Taken apart in **`Design/FIND_HIGHLIGHT_PLAN.md`**, seven stages. The
-short version: activating a search scans the file anyway, so **that one scan is
-the single source** — the greys, the indicator, Find Next (an index step now, not
-a rescan), the count in the bar, the results panel and both minimap modes all
-read the same set. `Find All` stops being a search and becomes the button that
-shows the panel.
-
-The limit that matters is about meaning, not memory: thousands of matches says
-the pattern is too generic, so past 1000 the **panel** lists nothing and shows
-the exact count with the reason — while the **picture** keeps working at any
-count, because a picture is self-limiting (a grey field reads as "everywhere")
-where a list of four thousand rows impersonates a tool. The count is always
-exact, since that is the diagnosis. Storage follows density — sparse starts, then
-a bitmap — so for a dump of tens of megabytes nothing degrades whatever the
-pattern is.
-
-**Cost.** 24–33 hours over seven stages; stages 1–3 (11–15 h) make search instant
-and counted without drawing anything new.
-
 ### Navigation history — back and forward through the file
 
 **What.** A stack of the places the caret has been *sent*, and two commands to
@@ -259,6 +225,13 @@ before.
 
 ## Done
 
+- **Find highlighting** — `Design/FIND_HIGHLIGHT_PLAN.md`, seven stages on the
+  `find-highlight` branch. One scan per activated pattern is the single source:
+  Find Next became an index step (and wraps), the Find bar counts ("3 of 128"),
+  every occurrence is greyed in the dump with the current one on a raised
+  yellow plate, both minimap modes mark the matches, and the results panel
+  reads the set instead of running its own scan — refusing to list past 1000,
+  where a list stops being a tool.
 - **Segments, and joining a second chip's dump** — `Design/SEGMENTS_PLAN.md` and
   `Design/JOIN_SPLIT_PLAN.md`, shipped in 0.5 (`959c7ca`…`ccba1a6`, 2026-08-22 to
   08-29). The partition model that follows the content, the tint, the strip, the

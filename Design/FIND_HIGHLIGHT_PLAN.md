@@ -375,7 +375,8 @@ must not disagree about what was searched.
 
 ## Stages
 
-Each ends with the app working and useful.
+**All seven are built** (branch `find-highlight`). Each ended with the app
+working and useful; what each one actually settled is in its commit.
 
 1. **`MatchSet` and the scan that fills it** (5–7 h). The pure type with both
    representations and the rank table behind `ordinal(of:)`, the scan wiring (one
@@ -400,6 +401,24 @@ Each ends with the app working and useful.
 **Cost: 24–33 hours.** Stages 1–3 are a self-contained improvement (10–13 h) that
 makes search instant and counted without drawing anything new; 4–7 are the
 picture.
+
+## What the build changed about this plan
+
+Three things turned out differently, and the code and §11 follow the code:
+
+- **No partial sets.** The scan runs to completion before anything moves, and
+  the count appears when the set lands. Publishing a set in pieces would have
+  meant copying it per batch, and a press of Find Next has always waited for a
+  scan.
+- **The shadow under the find indicator is drawn from the plate's own
+  geometry**, not with `NSShadow`, whose offset is interpreted in whatever
+  coordinate space the current graphics context is in — and this view is painted
+  through more than one, which had the shadow falling downward in a render test
+  while falling upward on screen.
+- **The overview marks matches with ink strokes**, not with the dump's grey: a
+  row there is kilobytes of aggregated content drawn as a grey tone, so a grey
+  mark cannot be told from content. The current match is a yellow plate in a
+  thin ink frame.
 
 ## Decisions taken
 
