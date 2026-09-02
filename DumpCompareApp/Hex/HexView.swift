@@ -1410,12 +1410,12 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// view is flipped and `NSShadow` follows the same space, so a negative
     /// height casts the shadow *up* (which is how a first attempt got it
     /// backwards). A render test pins the direction and the weighting.
-    static let indicatorAmbientBlur: CGFloat = 3
+    static let indicatorAmbientBlur: CGFloat = 2
     static let indicatorAmbientAlpha: CGFloat = 0.28
     /// Short on purpose: the plate is lifted a little way off the page, not
     /// floating above it, so the drop is about a point either way.
     static let indicatorShadowOffset = NSSize(width: 1, height: 1.5)
-    static let indicatorShadowBlur: CGFloat = 4
+    static let indicatorShadowBlur: CGFloat = 3
     static let indicatorShadowAlpha: CGFloat = 0.42
 
     /// How long the hop lasts. Slow enough to be *seen*: at a quarter of a
@@ -1429,8 +1429,8 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// widens with it, so the plate keeps its edge on the light side too.
     static let indicatorLiftShadowDrop: CGFloat = 2
     static let indicatorLiftShadowSpread: CGFloat = 1
-    static let indicatorLiftShadowBlur: CGFloat = 3
-    static let indicatorLiftAmbientBlur: CGFloat = 2.5
+    static let indicatorLiftShadowBlur: CGFloat = 2.5
+    static let indicatorLiftAmbientBlur: CGFloat = 2
 
     /// When the current hop started, or nil when nothing is hopping.
     private var indicatorBounceStarted: TimeInterval?

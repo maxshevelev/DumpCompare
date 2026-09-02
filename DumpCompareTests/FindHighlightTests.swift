@@ -360,8 +360,9 @@ final class FindHighlightTests: XCTestCase {
         let layout = view.hexLayout
         let plate = layout.hexByteFrame(row: row, column: columns.lowerBound)
             .union(layout.hexByteFrame(row: row, column: columns.upperBound))
-        // Close in, where a halo meant to edge the plate has to show.
-        let gap: CGFloat = 2.5
+        // Close in, where a halo meant to edge the plate has to show — the
+        // reach is a couple of points, so this samples right against it.
+        let gap: CGFloat = 1.5
         let patch = CGSize(width: 4, height: 2)
         let places = [
             "below": CGRect(x: plate.midX, y: plate.maxY + gap,
