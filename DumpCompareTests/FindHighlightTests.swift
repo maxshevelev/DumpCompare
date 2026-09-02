@@ -112,6 +112,12 @@ final class FindHighlightTests: XCTestCase {
         return (hex, ascii)
     }
 
+    /// How yellow a mean colour is: yellow lifts red and green together and
+    /// drops blue, where the match grey and the paper are neutral.
+    private func yellowness(_ c: (r: CGFloat, g: CGFloat, b: CGFloat)) -> CGFloat {
+        min(c.r, c.g) - c.b
+    }
+
     /// How far two mean colours are apart — appearance-agnostic, so the same
     /// assertion holds in light and dark.
     private func distance(_ a: (r: CGFloat, g: CGFloat, b: CGFloat),
@@ -209,6 +215,113 @@ final class FindHighlightTests: XCTestCase {
                              "a differing byte inside a match keeps its orange")
         XCTAssertLessThan(matchedColor.r - matchedColor.b, 0.02,
                           "a byte that is only matched wears the neutral grey")
+    }
+
+    // MARK: - The find indicator (the current match)
+
+    /// The match the user is standing on is yellow; the others stay grey. That
+    /// is the whole point of two states.
+    func testTheCurrentMatchIsYellowAndTheOthersAreNot() throws {
+        let bytes: [UInt8] = [0xAA, 0xBB, 0x11, 0x22, 0xAA, 0xBB]
+        let (controller, window) = try makeController(bytes)
+        let view = try hexView(window)
+
+        try search("AA BB", in: controller, window)
+        let rep = try render(view)
+        let scale = CGFloat(rep.pixelsWide) / view.bounds.width
+        let current = meanColor(rep, in: cellRects(view, row: 0, column: 0).hex, scale: scale)
+        let other = meanColor(rep, in: cellRects(view, row: 0, column: 4).hex, scale: scale)
+
+        XCTAssertGreaterThan(yellowness(current), 0.25,
+                             "the current match wears the platform's find-indicator yellow")
+        XCTAssertLessThan(yellowness(other), 0.05,
+                          "every other occurrence stays the neutral grey")
+        // The decoded-text column carries the indicator too.
+        let currentAscii = meanColor(rep, in: cellRects(view, row: 0, column: 0).ascii, scale: scale)
+        XCTAssertGreaterThan(yellowness(currentAscii), 0.25)
+    }
+
+    /// A step moves the yellow: the match left behind goes back to grey, so at
+    /// most one occurrence ever claims to be the current one.
+    func testTheIndicatorMovesWithTheStep() throws {
+        let bytes: [UInt8] = [0xAA, 0xBB, 0x11, 0x22, 0xAA, 0xBB]
+        let (controller, window) = try makeController(bytes)
+        let view = try hexView(window)
+        try search("AA BB", in: controller, window)
+
+        let bar = try descendant(FindBarView.self, of: window.contentView!)
+        bar.pressFindForTests(.forward)
+        window.layoutIfNeeded()
+
+        let rep = try render(view)
+        let scale = CGFloat(rep.pixelsWide) / view.bounds.width
+        XCTAssertLessThan(yellowness(meanColor(rep, in: cellRects(view, row: 0, column: 0).hex,
+                                               scale: scale)),
+                          0.05, "the first match is no longer the current one")
+        XCTAssertGreaterThan(yellowness(meanColor(rep, in: cellRects(view, row: 0, column: 4).hex,
+                                                  scale: scale)),
+                             0.25, "the second one is")
+    }
+
+    /// The bubble is rounded at the match's real ends and square where the
+    /// match continues onto the next row, so a match across a row boundary
+    /// reads as one run rather than two pills.
+    func testTheBubbleRoundsOnlyTheMatchsRealEnds() {
+        let rect = CGRect(x: 0, y: 0, width: 40, height: 16)
+        let radius = HexView.indicatorRadius
+        let both = HexView.indicatorPath(in: rect, radius: radius,
+                                         roundedLeft: true, roundedRight: true)
+        let openLeft = HexView.indicatorPath(in: rect, radius: radius,
+                                             roundedLeft: false, roundedRight: true)
+
+        // A point just inside the bottom-left corner: outside a rounded corner,
+        // inside a square one.
+        let corner = CGPoint(x: rect.minX + 0.4, y: rect.minY + 0.4)
+        XCTAssertFalse(both.contains(corner), "a real end is rounded")
+        XCTAssertTrue(openLeft.contains(corner), "a continuing end is square")
+        // Both stay inside their cells: the relief must not bleed into the row
+        // above or below.
+        XCTAssertTrue(rect.contains(both.bounds))
+    }
+
+    /// Ink over the yellow is forced black — Apple's own instruction for
+    /// `findHighlightColor`, and in dark mode `labelColor` would be white on
+    /// yellow. A modified byte keeps its red: an unsaved edit outranks the
+    /// convention, and red on yellow still reads as red.
+    func testInkOverTheIndicatorIsBlackExceptForAModifiedByte() {
+        let view = HexView()
+        let layout = HexLayout(charWidth: 8, rowHeight: 17, wordSize: 1)
+        var states = [HexByteState](repeating: HexByteState(byte: 0x41), count: 4)
+        states[1].isModified = true
+        // Bytes 0 and 1 are inside the indicator, 2 and 3 outside it.
+        let string = view.hexColumnAttributedString(states: states, layout: layout,
+                                                    indicatorColumns: 0..<2)
+
+        func colour(at index: Int) -> NSColor? {
+            string.attribute(.foregroundColor, at: index, effectiveRange: nil) as? NSColor
+        }
+        // Each byte is two digits plus the grid space after it, so byte n's
+        // first digit sits at 3n.
+        XCTAssertEqual(colour(at: 0), HexTheme.indicatorInk, "black over the yellow")
+        XCTAssertEqual(colour(at: 3), HexTheme.modifiedText,
+                       "a modified byte inside the indicator keeps its red")
+        XCTAssertEqual(colour(at: 6), HexTheme.byteText,
+                       "outside the indicator the ink is the ordinary one")
+    }
+
+    /// A fill byte is drawn muted everywhere else (§6) — but not inside the
+    /// indicator, where 40 % label on yellow would be a smear.
+    func testAFillByteIsNotMutedInsideTheIndicator() {
+        let view = HexView()
+        let layout = HexLayout(charWidth: 8, rowHeight: 17, wordSize: 1)
+        let states = [HexByteState](repeating: HexByteState(byte: 0xFF), count: 2)
+        let inside = view.hexColumnAttributedString(states: states, layout: layout,
+                                                    indicatorColumns: 0..<1)
+        XCTAssertEqual(inside.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor,
+                       HexTheme.indicatorInk)
+        let outside = view.hexColumnAttributedString(states: states, layout: layout)
+        XCTAssertEqual(outside.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor,
+                       HexTheme.mutedByteText)
     }
 
     /// A match crossing a row boundary is filled on both rows — the case a

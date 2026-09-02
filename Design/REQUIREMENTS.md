@@ -358,9 +358,27 @@ Visual states:
      the app is for. A match hidden under a difference is still reachable — the
      navigation lands on it and the minimap marks it.
 
+8. The current match — the find indicator (§11):
+   - the match the caret is standing on is drawn as a raised yellow bubble in
+     the platform's find-indicator colour, over every other fill: rounded ends,
+     a hairline border and a soft shadow, so it reads as lifted off the page
+     rather than as another background. Both columns.
+   - rounded only at the match's real ends; where a match continues onto the
+     next row the edge is square, so the run reads as one match.
+   - the ink over it is forced **black**, because that colour is the same in
+     both appearances (the platform's own instruction). A modified byte keeps
+     its red — an unsaved edit outranks the convention — and the muted
+     `0x00`/`0xFF` dimming is dropped there, since a dimmed label on yellow is
+     a smear.
+   - it is opaque, so a differing byte inside the current match does not show
+     its difference for as long as the indicator sits on it. That is deliberate:
+     the user navigated there on purpose, at most a few bytes are covered, and
+     the companion pane still shows the same offset as a difference.
+
 The layering, bottom to top, for a byte cell: the segment tint (§21.3), then the
-match fill (7), the difference fill (1), the selection fill (4), and the text —
-modified bytes red (2), muted `0x00`/`0xFF` grey, the caret over everything. A
+match fill (7), the difference fill (1), the selection fill (4), the find
+indicator (8), and the text — modified bytes red (2), muted `0x00`/`0xFF` grey,
+the caret over everything. A
 state covers the tint, which is correct: what a byte *is* outranks which piece it
 belongs to, and the piece stays readable in the gaps and the rows either side.
 

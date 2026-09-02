@@ -871,6 +871,9 @@ final class HexView: NSView, NSViewToolTipOwner {
             let upper = UInt64(rows.upperBound) * UInt64(HexLayout.bytesPerRow)
             matchRanges = dataSource.hexMatchRanges(in: lower..<upper)
         }
+        // The one match the user is standing on, marked in yellow over
+        // everything else (§11).
+        let currentMatch = dataSource.hexCurrentMatch()
 
         // The row whose address carries a right-click menu, if any. A bookmarked
         // row shows that menu through its own mark — outlined instead of filled
@@ -892,7 +895,8 @@ final class HexView: NSView, NSViewToolTipOwner {
                 isBookmarked: bookmarkedRows.contains(rowAddress),
                 bookmarkOutlined: rowAddress == contextMenuRowAddress,
                 segmentSpans: segmentSpans,
-                matchRanges: matchRanges
+                matchRanges: matchRanges,
+                currentMatch: currentMatch
             )
         }
 
@@ -946,7 +950,8 @@ final class HexView: NSView, NSViewToolTipOwner {
                          drawsOffset: Bool, drawsHex: Bool, drawsAscii: Bool,
                          isBookmarked: Bool, bookmarkOutlined: Bool,
                          segmentSpans: [HexSegmentSpan],
-                         matchRanges: [Range<UInt64>]) {
+                         matchRanges: [Range<UInt64>],
+                         currentMatch: Range<UInt64>?) {
         let rowStart = layout.byteOffset(row: row, column: 0)
         let rowEnd = rowStart + UInt64(HexLayout.bytesPerRow)
         let rowY = layout.rowFrame(row: row).minY
@@ -996,6 +1001,16 @@ final class HexView: NSView, NSViewToolTipOwner {
 
         let states = dataSource?.hexByteStates(in: rowStart..<rowEnd) ?? []
 
+        // The part of the current match that falls on this row, as columns:
+        // the find indicator's shape, and the bytes whose ink it forces (§11).
+        let indicatorColumns: Range<Int>? = {
+            guard let currentMatch else { return nil }
+            let start = max(currentMatch.lowerBound, rowStart)
+            let end = min(currentMatch.upperBound, rowEnd)
+            guard start < end else { return nil }
+            return Int(start - rowStart)..<Int(end - rowStart)
+        }()
+
         // The grey match highlight: every occurrence of the search pattern,
         // under the difference fill (§6, §11). Grey yields to orange because
         // telling two dumps apart is what the app is for — a match buried under
@@ -1027,6 +1042,14 @@ final class HexView: NSView, NSViewToolTipOwner {
             drawSelectionFill(row: row, rowStart: rowStart, rowEnd: rowEnd,
                               selection: selection, layout: layout,
                               drawsHex: drawsHex, drawsAscii: drawsAscii)
+            // The find indicator, over the selection: Find Next selects the
+            // match it lands on, so the two ranges coincide and the yellow is
+            // the one that should be read (§6, §11).
+            if let indicatorColumns, let currentMatch {
+                drawFindIndicator(row: row, rowStart: rowStart, rowEnd: rowEnd,
+                                  match: currentMatch, columns: indicatorColumns,
+                                  layout: layout, drawsHex: drawsHex, drawsAscii: drawsAscii)
+            }
         }
 
         // EOF placeholder styling, per cell: the muted fill and hatch mark the
@@ -1066,19 +1089,22 @@ final class HexView: NSView, NSViewToolTipOwner {
             let hexString = hexColumnAttributedString(
                 states: states, layout: layout,
                 pendingLowNibbleColumn: pendingLowNibbleColumn(rowStart: rowStart, rowEnd: rowEnd,
-                                                              fileSize: fileSize))
+                                                              fileSize: fileSize),
+                indicatorColumns: indicatorColumns)
             if hexString.length > 0 {
                 hexString.draw(at: NSPoint(x: layout.hexByteX(column: 0), y: rowY + baseline))
             }
         }
         if drawsAscii {
             if asciiColumnIsMonospaced {
-                let asciiString = asciiColumnAttributedString(states: states)
+                let asciiString = asciiColumnAttributedString(states: states,
+                                                              indicatorColumns: indicatorColumns)
                 if asciiString.length > 0 {
                     asciiString.draw(at: NSPoint(x: layout.asciiX(column: 0), y: rowY + baseline))
                 }
             } else {
-                drawAsciiCells(states: states, layout: layout, rowY: rowY, baseline: baseline)
+                drawAsciiCells(states: states, layout: layout, rowY: rowY, baseline: baseline,
+                               indicatorColumns: indicatorColumns)
             }
         }
     }
@@ -1146,13 +1172,16 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// nothing, so the string ends at the first one. Exposed (internal) so tests
     /// can pin the spacing against the layout's own geometry.
     func hexColumnAttributedString(states: [HexByteState], layout: HexLayout,
-                                   pendingLowNibbleColumn: Int? = nil) -> NSAttributedString {
+                                   pendingLowNibbleColumn: Int? = nil,
+                                   indicatorColumns: Range<Int>? = nil) -> NSAttributedString {
         let result = NSMutableAttributedString()
         var currentColor: NSColor?
         var pending = ""
         for column in 0..<HexLayout.bytesPerRow {
             guard column < states.count, !states[column].isEOF else { break }
-            let color = HexTheme.textColor(for: states[column])
+            let color = indicatorColumns?.contains(column) == true
+                ? HexTheme.indicatorTextColor(for: states[column])
+                : HexTheme.textColor(for: states[column])
             if color !== currentColor {
                 appendRun(&pending, to: result, color: currentColor)
                 currentColor = color
@@ -1190,7 +1219,8 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// colour per byte — dimmed for non-displayable placeholders, the byte's
     /// text colour otherwise. Drawn in one call only when every emitted
     /// character is one cell wide (`asciiColumnIsMonospaced`).
-    private func asciiColumnAttributedString(states: [HexByteState]) -> NSAttributedString {
+    private func asciiColumnAttributedString(states: [HexByteState],
+                                             indicatorColumns: Range<Int>? = nil) -> NSAttributedString {
         let result = NSMutableAttributedString()
         var currentColor: NSColor?
         var pending = ""
@@ -1198,9 +1228,11 @@ final class HexView: NSView, NSViewToolTipOwner {
             guard column < states.count, !states[column].isEOF else { break }
             let state = states[column]
             let char = textDecoder.decode(state.byte)
+            let inIndicator = indicatorColumns?.contains(column) == true
             let color = textDecoder.isDisplayable(state.byte)
-                ? HexTheme.textColor(for: state)
-                : HexTheme.mutedTextColor
+                ? (inIndicator ? HexTheme.indicatorTextColor(for: state)
+                               : HexTheme.textColor(for: state))
+                : (inIndicator ? HexTheme.mutedIndicatorInk : HexTheme.mutedTextColor)
             if color !== currentColor {
                 appendRun(&pending, to: result, color: currentColor)
                 currentColor = color
@@ -1215,16 +1247,19 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// decoder can emit is wider than one cell (a glyph missing from the font
     /// falls back to a substitute). Each character draws at its own cell's
     /// origin, so a wide glyph never pushes its neighbours off the grid.
-    private func drawAsciiCells(states: [HexByteState], layout: HexLayout, rowY: CGFloat, baseline: CGFloat) {
+    private func drawAsciiCells(states: [HexByteState], layout: HexLayout, rowY: CGFloat,
+                                baseline: CGFloat, indicatorColumns: Range<Int>? = nil) {
         for column in 0..<HexLayout.bytesPerRow {
             guard column < states.count, !states[column].isEOF else { break }
             let state = states[column]
             let asciiRect = CGRect(x: layout.asciiX(column: column), y: rowY,
                                    width: layout.charWidth, height: layout.rowHeight)
             let char = textDecoder.decode(state.byte)
+            let inIndicator = indicatorColumns?.contains(column) == true
             let color = textDecoder.isDisplayable(state.byte)
-                ? HexTheme.textColor(for: state)
-                : HexTheme.mutedTextColor
+                ? (inIndicator ? HexTheme.indicatorTextColor(for: state)
+                               : HexTheme.textColor(for: state))
+                : (inIndicator ? HexTheme.mutedIndicatorInk : HexTheme.mutedTextColor)
             draw(text: String(char), in: asciiRect, baseline: baseline, color: color)
         }
     }
@@ -1264,6 +1299,104 @@ final class HexView: NSView, NSViewToolTipOwner {
             }
         }
     }
+
+    /// Draws the find indicator over the current match's bytes on this row
+    /// (§11): a rounded yellow bubble with a hairline border and a soft shadow
+    /// under it — the relief that tells the current match apart from the greys
+    /// of all the others.
+    ///
+    /// Rounded only at the match's real ends: where the match continues onto
+    /// the next row the edge is square, so the two rows read as one run rather
+    /// than two pills.
+    private func drawFindIndicator(row: Int, rowStart: UInt64, rowEnd: UInt64,
+                                   match: Range<UInt64>, columns: Range<Int>,
+                                   layout: HexLayout, drawsHex: Bool, drawsAscii: Bool) {
+        let rowFrame = layout.rowFrame(row: row)
+        let opensHere = match.lowerBound >= rowStart
+        let closesHere = match.upperBound <= rowEnd
+        let first = columns.lowerBound
+        let last = columns.upperBound - 1
+
+        var rects: [CGRect] = []
+        if drawsHex {
+            let left = layout.hexByteX(column: first)
+            let right = layout.hexByteX(column: last) + layout.hexByteWidth
+            rects.append(CGRect(x: left, y: rowFrame.minY,
+                                width: right - left, height: layout.rowHeight))
+        }
+        if drawsAscii {
+            let left = layout.asciiX(column: first)
+            let right = layout.asciiX(column: last) + layout.charWidth
+            rects.append(CGRect(x: left, y: rowFrame.minY,
+                                width: right - left, height: layout.rowHeight))
+        }
+
+        for rect in rects {
+            let body = rect.insetBy(dx: 0, dy: Self.indicatorInset)
+            let path = Self.indicatorPath(in: body, radius: Self.indicatorRadius,
+                                          roundedLeft: opensHere, roundedRight: closesHere)
+            // The shadow belongs to the fill only: stroking inside the same
+            // graphics state would draw the border's own shadow on top of the
+            // bubble's.
+            NSGraphicsContext.saveGraphicsState()
+            let shadow = NSShadow()
+            // A flipped view puts positive y downward, so this falls below the
+            // bubble, which is what makes it read as raised.
+            shadow.shadowOffset = NSSize(width: 0, height: 1)
+            shadow.shadowBlurRadius = 1.5
+            shadow.shadowColor = HexTheme.indicatorShadow
+            shadow.set()
+            HexTheme.findIndicatorFill.setFill()
+            path.fill()
+            NSGraphicsContext.restoreGraphicsState()
+            HexTheme.indicatorBorder.setStroke()
+            path.lineWidth = 0.5
+            path.stroke()
+        }
+    }
+
+    /// The bubble's outline, with the corners rounded only on the sides the
+    /// caller asks for. Built from lines and tangent arcs rather than
+    /// `NSBezierPath(roundedRect:)`, which rounds all four.
+    static func indicatorPath(in rect: CGRect, radius: CGFloat,
+                              roundedLeft: Bool, roundedRight: Bool) -> NSBezierPath {
+        let path = NSBezierPath()
+        let r = min(radius, min(rect.width, rect.height) / 2)
+        let leftRadius = roundedLeft ? r : 0
+        let rightRadius = roundedRight ? r : 0
+        path.move(to: CGPoint(x: rect.minX + leftRadius, y: rect.minY))
+        path.line(to: CGPoint(x: rect.maxX - rightRadius, y: rect.minY))
+        if rightRadius > 0 {
+            path.appendArc(from: CGPoint(x: rect.maxX, y: rect.minY),
+                           to: CGPoint(x: rect.maxX, y: rect.minY + rightRadius),
+                           radius: rightRadius)
+        }
+        path.line(to: CGPoint(x: rect.maxX, y: rect.maxY - rightRadius))
+        if rightRadius > 0 {
+            path.appendArc(from: CGPoint(x: rect.maxX, y: rect.maxY),
+                           to: CGPoint(x: rect.maxX - rightRadius, y: rect.maxY),
+                           radius: rightRadius)
+        }
+        path.line(to: CGPoint(x: rect.minX + leftRadius, y: rect.maxY))
+        if leftRadius > 0 {
+            path.appendArc(from: CGPoint(x: rect.minX, y: rect.maxY),
+                           to: CGPoint(x: rect.minX, y: rect.maxY - leftRadius),
+                           radius: leftRadius)
+        }
+        path.line(to: CGPoint(x: rect.minX, y: rect.minY + leftRadius))
+        if leftRadius > 0 {
+            path.appendArc(from: CGPoint(x: rect.minX, y: rect.minY),
+                           to: CGPoint(x: rect.minX + leftRadius, y: rect.minY),
+                           radius: leftRadius)
+        }
+        path.close()
+        return path
+    }
+
+    /// How far the bubble sits inside its cells vertically, so the relief has
+    /// paper to sit on instead of touching the rows above and below.
+    static let indicatorInset: CGFloat = 0.5
+    static let indicatorRadius: CGFloat = 3
 
     private func drawSelectionFill(row: Int, rowStart: UInt64, rowEnd: UInt64,
                                    selection: SelectionModel, layout: HexLayout,
@@ -2825,6 +2958,34 @@ enum HexTheme {
     /// the other occurrences, and it is opaque, so it covers the segment tint —
     /// correct per §6, where a byte's state outranks which piece it belongs to.
     static let matchFill = NSColor.unemphasizedSelectedTextBackgroundColor
+
+    /// The current match — the find indicator (§11). `findHighlightColor` is
+    /// the platform's own: what `NSTextView.showFindIndicator(for:)` flashes,
+    /// and the yellow Xcode marks the current occurrence with. It is pure yellow
+    /// and **the same in both appearances**, which is why the ink over it is
+    /// forced below rather than left to `labelColor`.
+    static let findIndicatorFill = NSColor.findHighlightColor
+    /// The bubble's hairline edge and the shadow under it — what makes the
+    /// yellow read as raised rather than as a flat fill. Fixed blacks, not
+    /// semantic colours: they sit on a fixed yellow, so they must not follow
+    /// the appearance.
+    static let indicatorBorder = NSColor.black.withAlphaComponent(0.25)
+    static let indicatorShadow = NSColor.black.withAlphaComponent(0.35)
+
+    /// Ink for a byte inside the find indicator. Black, per Apple's own
+    /// instruction for `findHighlightColor` — in dark mode `labelColor` would be
+    /// white on yellow. A **modified** byte keeps its red: an unsaved edit is
+    /// data-integrity information, red on yellow still reads as red, and losing
+    /// it because the caret happens to be there would be the worse trade. The
+    /// muted `0x00`/`0xFF` dimming is dropped — 40 % label on yellow is a smear.
+    static let indicatorInk = NSColor.black
+    /// A placeholder character in the decoded-text column, inside the
+    /// indicator: dimmed black rather than dimmed label, for the same reason.
+    static let mutedIndicatorInk = NSColor.black.withAlphaComponent(0.45)
+
+    static func indicatorTextColor(for state: HexByteState) -> NSColor {
+        state.isModified ? modifiedText : indicatorInk
+    }
 
     static let selectionFill = NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
