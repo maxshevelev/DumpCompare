@@ -898,10 +898,12 @@ final class MainViewController: NSViewController {
             trackMinimapViewport(for: pane)
             paneModel.onEdit = { [weak self] edit in
                 self?.repaintMinimap(after: edit, mapIndex: 0)
+                self?.invalidateMatches(in: paneModel)
             }
             paneModel.onFullInvalidation = { [weak self] in
                 self?.minimapView.invalidateCells()
                 self?.refreshMinimapMaps()
+                self?.invalidateMatches(in: paneModel)
             }
             // A save moves the on-disk reference, so the map's red cells have to
             // clear even though no byte changed (§19).
@@ -1060,20 +1062,24 @@ final class MainViewController: NSViewController {
         windowModel.pane1.onEdit = { [weak self] edit in
             self?.comparisonCoordinator.record(edit: edit)
             self?.repaintMinimap(after: edit, mapIndex: 0)
+            self?.invalidateMatches(in: self?.windowModel.pane1)
         }
         windowModel.pane2.onEdit = { [weak self] edit in
             self?.comparisonCoordinator.record(edit: edit)
             self?.repaintMinimap(after: edit, mapIndex: 1)
+            self?.invalidateMatches(in: self?.windowModel.pane2)
         }
         windowModel.pane1.onFullInvalidation = { [weak self] in
             self?.comparisonCoordinator.rebuild()
             self?.minimapView.invalidateCells()
             self?.refreshMinimapMaps()
+            self?.invalidateMatches(in: self?.windowModel.pane1)
         }
         windowModel.pane2.onFullInvalidation = { [weak self] in
             self?.comparisonCoordinator.rebuild()
             self?.minimapView.invalidateCells()
             self?.refreshMinimapMaps()
+            self?.invalidateMatches(in: self?.windowModel.pane2)
         }
         // A save clears modified state without changing a byte, so the minimap's
         // red cells have to go even though the bytes stayed put (§19).
@@ -4756,15 +4762,35 @@ final class MainViewController: NSViewController {
             findTask?.cancel()
             findOperation?.finish()
         }
+        // The highlighting ends with the bar — except where a results panel for
+        // the same search is still open. The panel deliberately outlives the bar,
+        // and its rows and the dump's greys must not disagree about what was
+        // searched (`Design/FIND_HIGHLIGHT_PLAN.md`).
+        for pane in [windowModel.pane1, windowModel.pane2]
+        where !(filePaneView(for: pane)?.searchResultsPanelVisible ?? false) {
+            pane.clearMatches()
+        }
         focusActiveHexView()
     }
 
-    /// Launches a background search from the find bar. A new search cancels any
-    /// in-flight one (rapid < > presses), and the bar stays open — only the
-    /// selection moves (§11). The search runs as a `BackgroundOperation`, so
-    /// its name, progress and (×) appear in the active pane's status bar while
-    /// it runs and it can be cancelled (§14.4).
+    /// A press of Find Next / Find Previous (§11).
+    ///
+    /// The same pattern is not searched twice: activating a search scans the
+    /// whole file once and keeps the result, so every later press is a step
+    /// through that set — instant, and the reason a count and wrapping are
+    /// possible at all (`Design/FIND_HIGHLIGHT_PLAN.md`). Only a *new* pattern
+    /// (or a set the file's own edits invalidated) costs a scan, which runs as a
+    /// `BackgroundOperation` so its name, progress and (×) appear in the active
+    /// pane's status bar (§14.4).
     private func runSearch(pattern: SearchPattern, direction: SearchDirection, caseSensitive: Bool) {
+        let pane = activePane
+        guard pane.isOpen else { return }
+        let folding = CaseFolding(encoding: pattern.encoding, caseSensitive: caseSensitive)
+        if pane.hasMatches(for: pattern, folding: folding) {
+            stepMatch(direction: direction, in: pane)
+            return
+        }
+
         findTask?.cancel()
         findOperation?.finish()
         let operation = BackgroundOperation(name: "Searching…") { [weak self] in
@@ -4774,50 +4800,148 @@ final class MainViewController: NSViewController {
         activeFilePane?.beginOperation(operation)
         findTask = Task { [weak self] in
             guard let self else { return }
-            let found = await self.performFind(pattern: pattern, direction: direction,
-                                               caseSensitive: caseSensitive, operation: operation)
+            let set = await self.scanMatches(pattern: pattern, folding: folding,
+                                             in: pane, operation: operation)
             operation.finish()
-            guard !Task.isCancelled else { return }
-            if !found {
-                // The scan is directional and does not wrap, so say which way it
-                // looked — "No match found." left the user unable to tell an
-                // empty file from a caret past the last match (§11).
-                self.showFindMessage(direction == .forward
-                    ? "No matches after the cursor."
-                    : "No matches before the cursor.")
+            guard !Task.isCancelled, let set, pane.isOpen else { return }
+            pane.setMatches(set)
+            guard set.total > 0 else {
+                // The scan covered the whole file, so this is not "nothing after
+                // the cursor" any more — there is nothing at all. Which is why
+                // §11's directional message is gone.
+                self.showFindMessage("Not found.")
+                self.handOffFocusAfterFind()
+                return
             }
+            self.stepMatch(direction: direction, in: pane)
         }
     }
 
-    /// Runs a search off the main thread and, on a match, selects it in the
-    /// active pane (§13.8, §14.4, §18 #10). `operation` receives the search's
-    /// progress so the status bar advances as the scan covers the file.
-    private func performFind(pattern: SearchPattern, direction: SearchDirection, caseSensitive: Bool,
-                             operation: BackgroundOperation) async -> Bool {
-        let pane = activePane
-        guard pane.isOpen, let storage = pane.document?.storage else { return false }
+    /// Scans `pane` for every occurrence of `pattern`, off the main thread,
+    /// reporting progress into `operation` (§14.4).
+    ///
+    /// The scan runs to completion before anything moves. Streaming a partial
+    /// set was considered and dropped: a press of Find Next has always waited
+    /// for a scan (today's directional one covers the whole file when there is
+    /// no match), the wait here is the same order — §11 measures 16 MB at ~3 ms
+    /// — and a set published in pieces would have to be copied per batch.
+    ///
+    /// Returns nil when the scan was cancelled or the storage failed, in which
+    /// case the pane keeps whatever set it had.
+    private func scanMatches(pattern: SearchPattern, folding: CaseFolding,
+                             in pane: PaneViewModel,
+                             operation: BackgroundOperation) async -> MatchSet? {
+        guard let storage = pane.document?.storage else { return nil }
+        let extent = storage.size
+        let chunkSize = Self.searchChunkSize
+        let stream = SearchEngine.matchStartsStream(
+            pattern: pattern.bytes, in: storage, folding: folding, chunkSize: chunkSize,
+            shouldCancel: { Task.isCancelled },
+            progress: { operation.report($0) })
+        var builder = MatchSetBuilder(pattern: pattern, folding: folding, extent: extent)
+        do {
+            for try await batch in stream { builder.add(batch) }
+        } catch {
+            return nil
+        }
+        guard !Task.isCancelled else { return nil }
+        return builder.finish()
+    }
+
+    /// Moves to the next or previous match in the pane's set, wrapping at the
+    /// ends.
+    ///
+    /// Wrapping is possible because the set is complete: §11's rule that a
+    /// search never wraps existed because the scan was directional and could not
+    /// know whether anything lay behind the caret. A single match wraps onto
+    /// itself, and is deliberately re-selected and re-centred rather than
+    /// ignored — a press that does nothing reads as a broken key.
+    private func stepMatch(direction: SearchDirection, in pane: PaneViewModel) {
+        guard let set = pane.matchSet, set.total > 0 else { return }
         // Find Next starts after the current selection (so it never re-selects
         // the match just found); Find Previous starts at the selection's start
         // (so it moves back). With no selection both anchor on the caret.
         let selection = pane.hexSelection()
         let from = selection.isEmpty ? pane.caretOffset
             : direction == .forward ? selection.end : selection.start
+        guard set.isHighlightable else {
+            // Past the index ceiling the positions were never kept, so the step
+            // is a scan — with a wrap, since the count proves matches exist.
+            runCountedSearch(set: set, direction: direction, in: pane)
+            return
+        }
+        let index: Int
+        switch direction {
+        case .forward:
+            index = set.index(atOrAfter: from) ?? 0
+        case .backward:
+            index = set.index(before: from) ?? set.total - 1
+        }
+        guard let range = set.range(at: index) else { return }
+        pane.select(range: range)
+        pane.setCurrentMatch(index)
+        // Show the match mid-pane: a plain reveal only scrolls the found row to
+        // the nearest edge (bottom after Find Next, top after Find Previous) (§11).
+        filePaneView(for: pane)?.revealSelectionCentered()
+        handOffFocusAfterFind()
+    }
+
+    /// Navigation for a set too large to hold positions for: the directional
+    /// scan, and on failure a second one from the file's edge, which is the wrap.
+    private func runCountedSearch(set: MatchSet, direction: SearchDirection,
+                                  in pane: PaneViewModel) {
+        findTask?.cancel()
+        findOperation?.finish()
+        let operation = BackgroundOperation(name: "Searching…") { [weak self] in
+            self?.findTask?.cancel()
+        }
+        findOperation = operation
+        activeFilePane?.beginOperation(operation)
+        findTask = Task { [weak self] in
+            guard let self else { return }
+            var found = await self.performFind(pattern: set.pattern, folding: set.folding,
+                                               direction: direction, in: pane,
+                                               operation: operation)
+            if !found, !Task.isCancelled {
+                let edge: UInt64 = direction == .forward ? 0 : pane.fileSize
+                found = await self.performFind(pattern: set.pattern, folding: set.folding,
+                                               direction: direction, in: pane,
+                                               from: edge, operation: operation)
+            }
+            operation.finish()
+            guard !Task.isCancelled, !found else { return }
+            self.showFindMessage("Not found.")
+        }
+    }
+
+    /// One directional scan of `pane`, selecting and revealing the match it
+    /// finds (§13.8, §14.4, §18 #10). `from` overrides the caret anchor, which
+    /// is how a wrap asks for the file's other end. `operation` receives the
+    /// scan's progress so the status bar advances.
+    private func performFind(pattern: SearchPattern, folding: CaseFolding,
+                             direction: SearchDirection, in pane: PaneViewModel,
+                             from: UInt64? = nil,
+                             operation: BackgroundOperation) async -> Bool {
+        guard pane.isOpen, let storage = pane.document?.storage else { return false }
+        let anchor: UInt64
+        if let from {
+            anchor = from
+        } else {
+            let selection = pane.hexSelection()
+            anchor = selection.isEmpty ? pane.caretOffset
+                : direction == .forward ? selection.end : selection.start
+        }
         // Read here, on the main actor that owns it, and passed in: reaching for
         // `Self.searchChunkSize` from inside the detached task is an actor
         // crossing (a hard error under the Swift 6 language mode).
         let chunkSize = Self.searchChunkSize
         let background = Task.detached(priority: .userInitiated) {
             do {
-                // The rule, not a flag: hex is always exact, and UTF-16 folds by
-                // code unit rather than by byte (§11).
-                return try SearchEngine.find(pattern: pattern.bytes, in: storage, from: from, direction: direction,
-                                             folding: CaseFolding(encoding: pattern.encoding,
-                                                                  caseSensitive: caseSensitive),
+                return try SearchEngine.find(pattern: pattern.bytes, in: storage, from: anchor,
+                                             direction: direction, folding: folding,
                                              chunkSize: chunkSize,
                                              shouldCancel: { Task.isCancelled },
                                              progress: { operation.report($0) })
-            } catch is CancellationError {
-                return nil
             } catch {
                 return nil
             }
@@ -4828,18 +4952,31 @@ final class MainViewController: NSViewController {
         )
         guard !Task.isCancelled, let range, pane.isOpen else { return false }
         pane.select(range: range)
-        // Show the match mid-pane: a plain reveal only scrolls the found row to
-        // the nearest edge (bottom after Find Next, top after Find Previous) (§11).
-        activeFilePane?.revealSelectionCentered()
-        // A search launched from the find bar must leave focus in the pattern
-        // field so a subsequent Enter re-searches; only when the bar is hidden
-        // does the search hand focus to the hex view.
+        filePaneView(for: pane)?.revealSelectionCentered()
+        handOffFocusAfterFind()
+        return true
+    }
+
+    /// A search launched from the find bar leaves focus in the pattern field so
+    /// a subsequent Enter re-searches; only when the bar is hidden does the
+    /// search hand focus to the hex view.
+    private func handOffFocusAfterFind() {
         if findBar.isHidden {
             focusActiveHexView()
         } else {
             findBar.focusPatternField()
         }
-        return true
+    }
+
+    /// Drops a pane's match set: the bytes under it moved, so every offset in it
+    /// is a guess. The greys go rather than shift — a grey in the wrong place is
+    /// worse than no grey — and the next press of Find Next scans afresh.
+    ///
+    /// An overwrite could in principle be patched in place (`MatchSet.splice`),
+    /// which is what the plan's edit stage is for; until then any edit ends the
+    /// session.
+    private func invalidateMatches(in pane: PaneViewModel?) {
+        pane?.clearMatches()
     }
 
     /// Launches a Search All from the find bar (§11): the results panel opens

@@ -1021,6 +1021,11 @@ Case-insensitive matching:
 
 Search navigation:
 
+- Activating a search scans the whole file **once** and keeps the result — the
+  set of every occurrence (`Design/FIND_HIGHLIGHT_PLAN.md`). Find Next and Find
+  Previous are steps through that set, not fresh scans, so only a new pattern
+  costs a scan. A set too large to hold positions for falls back to a
+  directional scan per press.
 - Find Next.
 - Find Previous.
 - When a match is found:
@@ -1028,10 +1033,20 @@ Search navigation:
   - select the matched byte range;
   - synchronize the other pane in comparison mode;
   - ensure match is visible.
-- If no match is found, show a status message. The scan is directional and
-  does not wrap, so the message must say which way it looked — otherwise a
-  caret past the last match is indistinguishable from a file with no match at
-  all.
+- Navigation **wraps**: Find Next at the last match returns to the first, Find
+  Previous at the first returns to the last. A single match wraps onto itself,
+  and is re-selected and re-revealed rather than ignored — a press that does
+  nothing reads as a broken key.
+- If the pattern occurs nowhere, show a status message saying exactly that. It
+  must **not** be directional: the scan covered the whole file, so "nothing
+  after the cursor" would understate what it found out. (The message named the
+  direction while the scan was directional and could not know whether anything
+  lay behind the caret; the set removed that ignorance, and the wrap removed
+  the rule.)
+- The set lives as long as the search: it ends when the pattern changes, when
+  the Find bar closes — unless a results panel for the same search is still
+  open (below) — on Escape, and when the pane's content changes under it, since
+  after an edit every offset in it would be a guess.
 
 Search All (results panel):
 

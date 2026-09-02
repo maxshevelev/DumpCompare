@@ -128,7 +128,7 @@ final class FindFlowTests: XCTestCase {
     }
 
     /// Whether any text field in the window shows `text` (e.g. a transient
-    /// "No matches after the cursor." in the pane's status bar).
+    /// "Not found." in the pane's status bar).
     private func hasStatus(_ text: String, in window: NSWindow) -> Bool {
         descendants(of: window.contentView!, NSTextField.self).contains { $0.stringValue == text }
     }
@@ -199,8 +199,11 @@ final class FindFlowTests: XCTestCase {
         XCTAssertTrue(pumpUntil(3) { controller.windowModel.pane1.hexSelection().start == 3 })
     }
 
-    /// A pattern with no match reports it in the pane's status bar and keeps
-    /// the find bar open.
+    /// A pattern with no match reports it and keeps the find bar open. The
+    /// message is not directional any more: the scan covers the whole file, so
+    /// "nothing after the cursor" would understate what it found out
+    /// (`Design/FIND_HIGHLIGHT_PLAN.md`; §11's directional rule went with the
+    /// wrap).
     func testFindNoMatchShowsMessageAndKeepsBarOpen() throws {
         let bytes: [UInt8] = [0x41, 0x42, 0x43, 0x44]
         let (controller, window, url) = try makeController(bytes)
@@ -211,10 +214,194 @@ final class FindFlowTests: XCTestCase {
         combo.stringValue = "FF FF FF FF FF"
         try clickFindNext(window)
 
-        XCTAssertTrue(pumpUntil(2) { self.hasStatus("No matches after the cursor.", in: window) },
-                      "the status bar must say there is nothing after the cursor")
+        XCTAssertTrue(pumpUntil(2) { self.hasStatus("Not found.", in: window) },
+                      "the status bar must say the pattern occurs nowhere")
         XCTAssertFalse(try findBar(window).isHidden,
                        "the find bar must stay open when there is no match")
+    }
+
+    // MARK: - Navigation off the match set
+
+    /// The scan that activates a search keeps its result, so the set is there
+    /// afterwards and holds every occurrence — not the one match the press
+    /// moved to.
+    func testASearchKeepsEveryOccurrenceItFound() throws {
+        let bytes: [UInt8] = [0xAA, 0x00, 0xAA, 0x00, 0xAA]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "AA"
+        try clickFindNext(window)
+
+        let pane = controller.windowModel.pane1
+        XCTAssertTrue(pumpUntil(3) { pane.matchSet?.total == 3 },
+                      "the whole file is scanned once, and the set is kept")
+        XCTAssertEqual(pane.matchRanges(intersecting: 0..<5), [0..<1, 2..<3, 4..<5])
+        XCTAssertEqual(pane.currentMatchIndex, 0, "the first match is the one the press landed on")
+    }
+
+    /// The second press is a step through the set, not another scan: it moves
+    /// the selection in the same turn, with nothing to wait for.
+    func testASecondPressStepsWithoutScanning() throws {
+        let bytes: [UInt8] = [0xAA, 0x00, 0xAA, 0x00, 0xAA]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+
+        controller.findPattern()
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "AA"
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(3) { pane.currentMatchIndex == 0 },
+                      "the scan lands on the first match")
+
+        try clickFindNext(window)
+        XCTAssertEqual(pane.hexSelection().start, 2,
+                       "an index step lands immediately — no background scan to wait for")
+        XCTAssertEqual(pane.currentMatchIndex, 1)
+    }
+
+    /// Find Next at the last match returns to the first: with the whole set in
+    /// hand there is no reason to stop at the end, which is why §11's "no match
+    /// after the cursor" rule is gone.
+    func testFindNextWrapsAtTheLastMatch() throws {
+        let bytes: [UInt8] = [0xAA, 0x00, 0xAA]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+
+        controller.findPattern()
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "AA"
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(3) { pane.currentMatchIndex == 0 })
+        try clickFindNext(window)
+        XCTAssertEqual(pane.hexSelection().start, 2, "the second match")
+
+        try clickFindNext(window)
+        XCTAssertEqual(pane.hexSelection().start, 0, "past the last match, back to the first")
+        XCTAssertEqual(pane.currentMatchIndex, 0)
+        XCTAssertFalse(hasStatus("Not found.", in: window),
+                       "a wrap is not a failure and says nothing")
+    }
+
+    func testFindPreviousWrapsAtTheFirstMatch() throws {
+        let bytes: [UInt8] = [0xAA, 0x00, 0xAA]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+
+        controller.findPattern()
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "AA"
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(3) { pane.currentMatchIndex == 0 })
+
+        try clickFindPrevious(window)
+        XCTAssertEqual(pane.hexSelection().start, 2, "before the first match is the last one")
+        XCTAssertEqual(pane.currentMatchIndex, 1)
+    }
+
+    /// A single match wraps onto itself. The press must not read as a dead key:
+    /// the match stays selected and the view is centred on it again.
+    func testASingleMatchWrapsOntoItself() throws {
+        let bytes: [UInt8] = [0x00, 0xAA, 0x00]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+
+        controller.findPattern()
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "AA"
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(3) { pane.currentMatchIndex == 0 })
+
+        try clickFindNext(window)
+        XCTAssertEqual(pane.hexSelection().start, 1, "the only match stays selected")
+        XCTAssertEqual(pane.hexSelection().end, 2)
+        XCTAssertEqual(pane.currentMatchIndex, 0)
+        XCTAssertFalse(hasStatus("Not found.", in: window))
+    }
+
+    /// The count is uncapped: `defaultMaxResults` limits what the results panel
+    /// *lists*, never what the scan counts, because the count is what tells the
+    /// user the pattern is too generic.
+    func testTheSetCountsPastTheResultsLimit() throws {
+        let count = SearchEngine.defaultMaxResults + 200
+        let (controller, window, url) = try makeController([UInt8](repeating: 0xAA, count: count))
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "AA"
+        try clickFindNext(window)
+
+        XCTAssertTrue(pumpUntil(5) { controller.windowModel.pane1.matchSet?.total == count },
+                      "every occurrence is counted, however many there are")
+    }
+
+    /// An edit moves the bytes the matches were found in, so the session ends
+    /// rather than showing offsets that are now a guess.
+    func testAnEditEndsTheSession() throws {
+        let bytes: [UInt8] = [0xAA, 0x00, 0xAA]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+
+        controller.findPattern()
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "AA"
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(3) { pane.matchSet != nil })
+
+        pane.moveCaret(to: 1)
+        pane.typeHexNibble(0xA)
+        pane.typeHexNibble(0xA)
+        XCTAssertNil(pane.matchSet, "the offsets are stale, so the greys go")
+        XCTAssertNil(pane.currentMatchIndex)
+    }
+
+    /// The session ends with the bar — nothing left on screen claims a search
+    /// is active.
+    func testClosingTheBarEndsTheSession() throws {
+        let bytes: [UInt8] = [0xAA, 0x00, 0xAA]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+
+        controller.findPattern()
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "AA"
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(3) { pane.matchSet != nil })
+
+        let (_, _, done, _) = try barControls(window)
+        done.performClick(nil)
+        XCTAssertNil(pane.matchSet)
+    }
+
+    /// Except while a results panel for that search is open: the panel outlives
+    /// the bar (§11), and its rows and the dump's greys must not disagree about
+    /// what was searched.
+    func testClosingTheBarKeepsTheSessionBehindAResultsPanel() throws {
+        let bytes: [UInt8] = [0xAA, 0x00, 0xAA]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+
+        controller.findPattern()
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "AA"
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(3) { pane.matchSet != nil })
+        try runSearchAll("AA", in: window)
+
+        let (_, _, done, _) = try barControls(window)
+        done.performClick(nil)
+        XCTAssertNotNil(pane.matchSet,
+                        "the panel is still listing this search, so the greys stay")
     }
 
     /// After a Return search the focus stays in the pattern field, so a second
@@ -526,7 +713,7 @@ final class FindFlowTests: XCTestCase {
         // Case-sensitive "hI" exists nowhere → No match found.
         combo.stringValue = "hI"
         try clickFindNext(window)
-        XCTAssertTrue(pumpUntil(2) { self.hasStatus("No matches after the cursor.", in: window) },
+        XCTAssertTrue(pumpUntil(2) { self.hasStatus("Not found.", in: window) },
                       "case-sensitive search must not match mixed case")
     }
 
@@ -1169,7 +1356,7 @@ final class FindFlowTests: XCTestCase {
                           "a long search must not stall the main thread")
 
         // The scan completes: the no-match message shows and the strip hides.
-        XCTAssertTrue(pumpUntil(30) { self.hasStatus("No matches after the cursor.", in: window) },
+        XCTAssertTrue(pumpUntil(30) { self.hasStatus("Not found.", in: window) },
                       "the full-file scan must complete")
         XCTAssertTrue(pumpUntil(5) { paneView.operationView.isHidden },
                       "the strip must hide once the search finishes")
@@ -1237,7 +1424,7 @@ final class FindFlowTests: XCTestCase {
         controller.windowModel.pane1.moveCaret(to: 0)
         combo.stringValue = "\u{6100}"
         try clickFindNext(window)
-        XCTAssertTrue(pumpUntil(3) { self.hasStatus("No matches after the cursor.", in: window) },
+        XCTAssertTrue(pumpUntil(3) { self.hasStatus("Not found.", in: window) },
                       "U+6100 must not match U+4100")
     }
 
@@ -1256,7 +1443,7 @@ final class FindFlowTests: XCTestCase {
 
         combo.stringValue = "setup"
         try clickFindNext(window)
-        XCTAssertTrue(pumpUntil(3) { self.hasStatus("No matches after the cursor.", in: window) },
+        XCTAssertTrue(pumpUntil(3) { self.hasStatus("Not found.", in: window) },
                       "case-sensitive means the lower-case spelling is not there")
     }
 

@@ -277,6 +277,81 @@ final class PaneViewModel: HexViewDataSource {
     /// `FilePaneView.bind`.
     var onBookmarksChanged: ((UInt64) -> Void)?
 
+    // MARK: - Find highlighting (§11)
+
+    /// Where every occurrence of the active search pattern is: the set one scan
+    /// produced, read by the dump's greys, the find indicator, the count in the
+    /// Find bar, the results panel and both minimap modes
+    /// (`Design/FIND_HIGHLIGHT_PLAN.md`). Nil when no search session is active.
+    ///
+    /// It belongs to the pane that was searched, and to no other: greys in a
+    /// file nobody searched would be a plain lie in comparison mode.
+    private(set) var matchSet: MatchSet?
+
+    /// The match the user is standing on — what the find indicator draws in
+    /// yellow, and the "3" in "3 of 128". Nil between activating a search and
+    /// the first Find Next, and whenever the caret has left the matches behind.
+    private(set) var currentMatchIndex: Int?
+
+    /// Fired when the set or the current match changed, so the dump repaints,
+    /// the map re-reads and the Find bar's count refreshes. Not a content
+    /// channel: no byte moved, and nothing here may scroll.
+    var onMatchesChanged: (() -> Void)?
+
+    /// Installs a scan's result. `current` is clamped to the set, so a stale
+    /// ordinal from a previous pattern can never point past the new one.
+    func setMatches(_ set: MatchSet?, current: Int? = nil) {
+        matchSet = set
+        currentMatchIndex = Self.clamped(current, to: set)
+        onMatchesChanged?()
+    }
+
+    /// Moves the find indicator. Out-of-range indices clear it rather than
+    /// throwing: navigation asks for "the next one", and past the end there is
+    /// no next one.
+    func setCurrentMatch(_ index: Int?) {
+        let clamped = Self.clamped(index, to: matchSet)
+        guard clamped != currentMatchIndex else { return }
+        currentMatchIndex = clamped
+        onMatchesChanged?()
+    }
+
+    /// Ends the search session: no pattern, no greys, no indicator.
+    func clearMatches() {
+        guard matchSet != nil || currentMatchIndex != nil else { return }
+        matchSet = nil
+        currentMatchIndex = nil
+        onMatchesChanged?()
+    }
+
+    /// The find indicator's byte range, or nil when the caret is not on a match.
+    var currentMatchRange: Range<UInt64>? {
+        guard let index = currentMatchIndex else { return nil }
+        return matchSet?.range(at: index)
+    }
+
+    /// The matches overlapping `range` — what the dump asks for per row range,
+    /// and the map for its window. Empty when there is no session, and when the
+    /// set is too large to hold positions for (the greys are withheld then, and
+    /// the Find bar says why).
+    func matchRanges(intersecting range: Range<UInt64>) -> [Range<UInt64>] {
+        guard let matchSet, matchSet.isHighlightable else { return [] }
+        return matchSet.matches(intersecting: range)
+    }
+
+    /// Whether this pane's set answers for `pattern` under `folding` — the test
+    /// for "the same search", which decides whether a press of Find Next is an
+    /// index step or a new scan.
+    func hasMatches(for pattern: SearchPattern, folding: CaseFolding) -> Bool {
+        guard let matchSet else { return false }
+        return matchSet.pattern == pattern && matchSet.folding == folding
+    }
+
+    private static func clamped(_ index: Int?, to set: MatchSet?) -> Int? {
+        guard let index, let set, index >= 0, index < set.total else { return nil }
+        return index
+    }
+
     /// The active text decoder, rebuilt whenever decoding settings change.
     private(set) var textDecoder: any TextDecoder
 
@@ -357,6 +432,8 @@ final class PaneViewModel: HexViewDataSource {
         resetEditingState()
         // A new file is one piece — itself — named after the file (§21).
         resetSegments(for: doc)
+        // The matches belonged to the file that was here (§11).
+        clearMatches()
         startWatching(url)
         // Opening a new file replaces the storage wholesale, like a revert —
         // the comparison must re-read, even when the mode is unchanged (both
@@ -389,6 +466,7 @@ final class PaneViewModel: HexViewDataSource {
         resetEditingState()
         // A new (empty) file is one piece, named after the (placeholder) file.
         resetSegments(for: doc)
+        clearMatches()
         changeWatcher?.stop()
         changeWatcher = nil
         // A new document replaces the storage wholesale, like a revert — the
@@ -462,6 +540,8 @@ final class PaneViewModel: HexViewDataSource {
         // above keeps the reset's hooks — it only replaces the partition, which
         // is valid unchanged because the two contents have the same size.
         segmentStore.restore(source.segmentStore.snapshot())
+        // The copy is a different document: it was never searched.
+        clearMatches()
         changeWatcher?.stop()
         changeWatcher = nil
         // A new document replaces the storage wholesale, like a revert — the
@@ -484,6 +564,8 @@ final class PaneViewModel: HexViewDataSource {
         resetEditingState()
         // The segments go with the file (§21 edge cases); nothing is persisted.
         segmentStore.reset(size: 0, name: "")
+        // So does the search session: there is nothing left to highlight (§11).
+        clearMatches()
         segmentUndoStack.removeAll()
         segmentRedoStack.removeAll()
         pendingSegmentSnapshot = nil
@@ -537,6 +619,8 @@ final class PaneViewModel: HexViewDataSource {
         // The partition survives the revert, re-based onto the saved size (§21.2)
         // — the cuts and names the user set up are kept, not reset to one piece.
         preserveSegments(for: doc)
+        // The matches do not: a revert replaces the bytes they were found in.
+        clearMatches()
         notify()
         notifyCompanionContentFullyChanged()
     }
