@@ -18,65 +18,6 @@ be held to — they are there to tell a half-day from a week.
 
 ## Next
 
-### Segments — a dump as the pieces it is made of
-
-**What.** A partition of a pane's content: contiguous named pieces covering the
-file, cut where the user says. A cut line between rows in the offset column, a
-pale tint behind the bytes of each piece — gaps included, the Offset column left
-alone — a colour strip beside the minimap that reads as its legend, the caret's
-piece in the status bar, and a form where the partition is edited and written out:
-one file per piece, or one piece to a file.
-
-**Why.** It is the model the two-chip round trip needs (see below), but it stands
-on its own: "write these 4 MB out", "put the donor's region back", "where does
-this half end" are bench operations that today need `dd` and hand-counted
-offsets. And it is the honest shape for the thing a join produces — a bookmark at
-a seam is wrong after the second join, because a mark is an address and a seam is
-the edge of content that moves.
-
-**How.** `Design/SEGMENTS_PLAN.md`, six stages. Model first (it follows the
-content, updated from the net edit the comparison index already consumes), then
-the tint and the status bar, then the form, then writing out, then the strip,
-then replacing a piece from a file. No dragging of cuts and no click-to-select in
-the margin — deliberately, because the segmentation is what the round trip depends
-on and a slipped mouse must not be able to move it.
-
-**Cost.** 24–30 hours over six stages, each ending with the app working: the
-model, cuts you can make and see, the form, writing pieces out, the ribbon,
-replacing a piece from a file. Stages 1–2 are useful alone.
-
-### Join a second chip's dump into a pane
-
-**What.** Append or insert a whole file into a pane — from the File menu, the
-pane's own menu, or by dropping it on a band at the pane's top or bottom edge —
-and split a pane's content back into two files at a chosen offset. A join marks
-the boundary with a bookmark; a split writes `name_1.bin` and `name_2.bin`.
-
-**Why.** On many boards the BIOS region is two SPI flash chips, so the bench
-workflow is: read both, join them in the right order, hand the whole image to the
-tools that expect one (an ME region update, a BIOS parameter editor, a donor
-comparison), then split it back at the same boundary and flash each half. Steps
-one and four are the only part of that round trip DumpCompare cannot do, and they
-are why it currently happens in `dd` with the offsets written on paper.
-
-**How.** **`Design/JOIN_SPLIT_PLAN.md`**, a layer on the segments feature above —
-a join is how a file becomes a piece, and "split the file" is that feature's Save
-All as Separate Files, so this plan adds no split command at all. The joined document
-detaches from its source file (so ⌘S can never overwrite an 8 MB dump with a
-16 MB image) while keeping the file-backed base, so joining two 1 GB images does
-not mean 2 GB of RAM; it is Untitled, because a dump off a programmer is called
-`W25Q128FV_20260821_1a2b3c4d.bin` and half of that name would be a lie about the
-joined file — what the halves were is kept in the join bookmark instead; the split
-sheet takes an offset — a bookmark fills it in, but it stays typable, because
-bookmarks live only as long as the window and the round trip through external
-tools can include a restart; and both output files are written to temporaries and
-renamed together, so a failure publishes neither.
-
-**Cost.** 13–17 hours on top of the segments feature — the model, the commands,
-the drop bands, polish. The design decisions are settled (they are listed
-at the end of the plan): two commands rather than one with a dialog, bookmarks
-never shift, and a dirty pane gets one warning with Cancel and Continue.
-
 ### Instant hover callouts, the way Xcode shows them
 
 **What.** A small floating capsule — text on a rounded background with a shadow —
@@ -125,48 +66,39 @@ hiding rules, not in the drawing.
 **Not urgent because** both places already say what the mark is; this is the
 difference between information you can get and information you can sweep.
 
-### Highlight search matches in the dump
+### Find highlighting — every occurrence in the dump and on the map
 
-**What.** Show *every* occurrence of the current search pattern in the hex dump —
-a background behind the matching bytes, in both the hex and the decoded-text
-columns — not just the one match Find Next moved to. Cleared when the Find bar
-closes or the pattern changes.
+**What.** Two states over the current search pattern: *every* occurrence greyed
+in the hex dump and on the minimap (`unemphasizedSelectedTextBackgroundColor` —
+the platform's unfocused-selection grey), and the current match in a raised
+yellow bubble (`findHighlightColor` — Apple's find indicator, the yellow Xcode
+shows). Both columns of the dump, both modes of the map.
 
 **Why.** Today a search says "here is one match" and, through Search All, "here
 is a list of them" (§11). Neither says *what the neighbourhood looks like*, which
 is the question on a dump: a signature that repeats every 0x1000 bytes, a padding
 run broken in one place, a table of pointers where one entry differs. Seeing the
 matches where the bytes are turns a search from navigation into a reading of the
-file's shape.
+file's shape — and the map turns "where else" into one glance.
 
-**How.** The dump is virtualized and pulls its byte states per visible row range
-(`hexByteStates`), which suggests the cheap shape: **search the visible window as
-it draws**, rather than keeping a global index. A window is a few hundred bytes,
-the pattern is short, and the scan is the same `SearchEngine` code the Find bar
-uses — no index to invalidate on an edit, and nothing to keep in step with a
-scroll. Matches crossing the window's edges need the window widened by the
-pattern's length either side.
+**How.** Taken apart in **`Design/FIND_HIGHLIGHT_PLAN.md`**, seven stages. The
+short version: activating a search scans the file anyway, so **that one scan is
+the single source** — the greys, the indicator, Find Next (an index step now, not
+a rescan), the count in the bar, the results panel and both minimap modes all
+read the same set. `Find All` stops being a search and becomes the button that
+shows the panel.
 
-The alternative is to reuse Search All's ranges when it has run, which gives the
-count for free but has to be invalidated on every edit and only covers a search
-that was run *as* Search All. Probably both, eventually: the visible-window scan
-as the mechanism, the Search All list as the thing that answers "how many".
+The limit that matters is about meaning, not memory: thousands of matches says
+the pattern is too generic, so past 1000 the **panel** lists nothing and shows
+the exact count with the reason — while the **picture** keeps working at any
+count, because a picture is self-limiting (a grey field reads as "everywhere")
+where a list of four thousand rows impersonates a tool. The count is always
+exact, since that is the diagnosis. Storage follows density — sparse starts, then
+a bitmap — so for a dump of tens of megabytes nothing degrades whatever the
+pattern is.
 
-Colour: AppKit has a semantic `NSColor.findHighlightColor`, which is what the rest
-of the platform highlights a search hit with — worth using rather than inventing a
-yellow. It must layer with what §6 already draws: difference is a background,
-modified is red ink, selection is a background, the caret is a bar. A match is
-also a background, so the layering question is real and belongs in the spec before
-the code: probably match *under* selection (a selected match still reads as
-selected) and *over* difference, since a match is what the user just asked about.
-
-**Touches.** `HexView.drawRow` and its state plumbing, `PaneViewModel` (the byte
-states it answers with), the Find bar for "what is the current pattern", §6 for the
-layering rule and §11 for the search behaviour.
-
-**Cost.** 4–6 hours: the drawing is small, the layering rule and its render tests
-are most of it, and the visible-window scan wants a test that a match straddling
-the window's edge is still highlighted.
+**Cost.** 24–33 hours over seven stages; stages 1–3 (11–15 h) make search instant
+and counted without drawing anything new.
 
 ### Navigation history — back and forward through the file
 
@@ -217,34 +149,6 @@ clears the forward stack.
 ---
 
 ## Later
-
-### Dragging panes, and a drop zone for a new tab
-
-**What.** Three gestures over machinery tabs already built: drop a file on a
-strip at the top of the window to open it in a new tab, drag a pane by its
-header onto the other pane to swap them, and drag it onto another tab (the tab
-bar spring-loads, so hovering one switches to it mid-drag) to move it there.
-
-**Why.** Each of the three exists as a command and none of them is what the hand
-reaches for: opening a dump in a new tab is two steps, moving a pane is a menu
-item or a dialog answer, and swapping two panes that are side by side is
-`View ▸ Swap Panels`.
-
-**How.** Taken apart in **`Design/PANE_DRAG_PLAN.md`**. The short version: the
-drag adds no model operations — swap, move and tear-off are all implemented and
-tested already — so it is a second way to reach four verbs, not a second
-implementation of them. What is genuinely new is that the app has never begun an
-`NSDraggingSession`: every drag it handles today is a Finder file drop or a mouse
-track inside one view. The system tab bar cannot host a drop zone, so the New Tab
-strip lives at the top of our own content and takes its height off the pane
-bands, with `DropBandLayout` gaining a top inset so the two never disagree about
-who owns a point — AppKit picks a drop destination by frame among registered
-views, which has silently eaten a dropped file here once before.
-
-**Cost.** Four steps: identity and the pure drop-meaning function; swap by drag
-(which builds the whole session mechanism on the case that never leaves the
-window); the strip for files, shippable alone; then the strip and other tabs for
-panes.
 
 ### Split the minimap into layers
 
@@ -355,6 +259,15 @@ before.
 
 ## Done
 
+- **Segments, and joining a second chip's dump** — `Design/SEGMENTS_PLAN.md` and
+  `Design/JOIN_SPLIT_PLAN.md`, shipped in 0.5 (`959c7ca`…`ccba1a6`, 2026-08-22 to
+  08-29). The partition model that follows the content, the tint, the strip, the
+  form and writing pieces out; append or insert a file by menu or drop band, and
+  a joined image named after the dump it grew from (`422c22d`).
+- **Dragging panes, and a drop zone for a new tab** — `Design/PANE_DRAG_PLAN.md`,
+  shipped in 0.6 (`8da3103`…`093faef`, 2026-08-29/30). Swap by drag, a strip at
+  the top for opening a file in a new tab, a pane dragged to another tab or into
+  a new one, and Option to copy instead of move.
 - **The test-suite revision** — `Design/TEST_REVIEW.md`, finished 2026-08-22.
   965 tests audited, app suite 674 → 559 and core 291 → 203 with coverage up
   (ten tests added for behaviour nothing watched, nineteen rewritten because
