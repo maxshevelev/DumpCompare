@@ -367,6 +367,11 @@ Visual states:
      it, rounds by the same radius, and traces one staircase around a match that
      crosses rows. A frame that hugged the glyphs read as a box drawn on the
      text instead of something the text sits on.
+   - a span that starts in the right of one row and ends in the left of the
+     next shares no column between the two, and is outlined as **two separate
+     rectangles**. Tracing it as one staircase joined the parts with a line
+     running back along the row boundary, which outlined nothing. This is a
+     rule of the contour builder, so it holds for the mirrored selection too.
    - it carries **no outline**: a soft shadow is what makes it read as raised,
      and a dark rim around yellow reads instead as a box drawn on the text.
      (The platform's own find indicator has none either.)

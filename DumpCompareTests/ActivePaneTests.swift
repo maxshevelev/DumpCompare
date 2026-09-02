@@ -169,6 +169,69 @@ final class ActivePaneTests: XCTestCase {
         XCTAssertTrue(hex2.mirrorContours().isEmpty)
     }
 
+    /// A span that starts in the right of one row and ends in the left of the
+    /// next shares no column between the two rows, so its outline is **two
+    /// rectangles** rather than a staircase. Joined, the two parts were linked
+    /// by a line running back across the row boundary, which outlined nothing.
+    func testMirrorSplitsASpanWhoseRowsShareNoColumn() throws {
+        let (cv, _, url1, url2) = try makeComparisonView()
+        defer { try? FileManager.default.removeItem(at: url1); try? FileManager.default.removeItem(at: url2) }
+        let vm1 = cv.paneView1.viewModel
+        let vm2 = cv.paneView2.viewModel
+        vm1.companion = vm2
+        vm2.companion = vm1
+
+        // Columns 14…15 of row 0, then columns 0…1 of row 1.
+        vm2.setSelection(SelectionModel(start: 14, end: 18, fileSize: 1024))
+
+        let hex1 = try hexView(of: cv.paneView1)
+        let loops = hex1.mirrorContours()
+        XCTAssertEqual(loops.count, 4, "two rectangles per column region, not one staircase")
+        let layout = hex1.hexLayout
+        let pad = HexView.mirrorContourPadding
+        let row0 = layout.rowFrame(row: 0)
+        let row1 = layout.rowFrame(row: 1)
+        XCTAssertEqual(loops[0], [
+            CGPoint(x: layout.hexByteX(column: 14) - pad, y: row0.minY),
+            CGPoint(x: layout.hexByteX(column: 15) + layout.hexByteWidth + pad, y: row0.minY),
+            CGPoint(x: layout.hexByteX(column: 15) + layout.hexByteWidth + pad, y: row0.maxY),
+            CGPoint(x: layout.hexByteX(column: 14) - pad, y: row0.maxY),
+        ], "the first row's part, closed on itself")
+        XCTAssertEqual(loops[1], [
+            CGPoint(x: layout.hexByteX(column: 0) - pad, y: row1.minY),
+            CGPoint(x: layout.hexByteX(column: 1) + layout.hexByteWidth + pad, y: row1.minY),
+            CGPoint(x: layout.hexByteX(column: 1) + layout.hexByteWidth + pad, y: row1.maxY),
+            CGPoint(x: layout.hexByteX(column: 0) - pad, y: row1.maxY),
+        ], "and the next row's part, closed on its own")
+        // Nothing traces the row boundary between them: the rows are
+        // contiguous, so a loop that ran along it would have to reach above and
+        // below that y — which is exactly what the staircase did.
+        let boundary = row0.maxY
+        XCTAssertFalse(loops.contains { loop in
+            let ys = loop.map(\.y)
+            return ys.min()! < boundary && ys.max()! > boundary
+        }, "no loop covers both rows")
+    }
+
+    /// Two rows that *do* share a column are still one staircase: the split is
+    /// for the case where joining them would outline nothing.
+    func testMirrorKeepsTheStaircaseWhenTheRowsOverlap() throws {
+        let (cv, _, url1, url2) = try makeComparisonView()
+        defer { try? FileManager.default.removeItem(at: url1); try? FileManager.default.removeItem(at: url2) }
+        let vm1 = cv.paneView1.viewModel
+        let vm2 = cv.paneView2.viewModel
+        vm1.companion = vm2
+        vm2.companion = vm1
+
+        // Columns 2…15 of row 0, then columns 0…9 of row 1: they overlap.
+        vm2.setSelection(SelectionModel(start: 2, end: 26, fileSize: 1024))
+
+        let hex1 = try hexView(of: cv.paneView1)
+        let loops = hex1.mirrorContours()
+        XCTAssertEqual(loops.count, 2, "one staircase per column region")
+        XCTAssertEqual(loops[0].count, 8, "and it is a staircase, not a rectangle")
+    }
+
     /// A mirrored selection is clamped to this pane's file size: the contour
     /// stops at this pane's EOF, never past it (§9: shorter pane clamps to EOF).
     func testMirrorClampsToPaneFileSize() throws {

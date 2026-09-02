@@ -1349,8 +1349,10 @@ final class HexView: NSView, NSViewToolTipOwner {
         let span = SelectionModel(start: match.lowerBound, end: match.upperBound,
                                   fileSize: dataSource.fileSize)
         var loops: [[CGPoint]] = []
-        if drawsHex { loops.append(contour(of: span, layout: layout, region: .hex)) }
-        if drawsAscii { loops.append(contour(of: span, layout: layout, region: .ascii)) }
+        if drawsHex { loops.append(contentsOf: contour(of: span, layout: layout, region: .hex)) }
+        if drawsAscii {
+            loops.append(contentsOf: contour(of: span, layout: layout, region: .ascii))
+        }
 
         // How high the bubble is off the page right now — 0 at rest, 1 at the
         // top of the hop. Everything about the lift follows from it.
@@ -1726,10 +1728,8 @@ final class HexView: NSView, NSViewToolTipOwner {
             span = mirrored
         }
         let layout = currentLayout
-        return [
-            contour(of: span, layout: layout, region: .hex),
-            contour(of: span, layout: layout, region: .ascii),
-        ]
+        return contour(of: span, layout: layout, region: .hex)
+            + contour(of: span, layout: layout, region: .ascii)
     }
 
     /// The closed contour of `span` in one column region. The hex column pads
@@ -1738,7 +1738,7 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// neighbor glyph. The single source of contour geometry for both the
     /// opposite-pane mirror and the active pane's cross-column link.
     private func contour(of span: SelectionModel, layout: HexLayout,
-                         region: HexInputRegion) -> [CGPoint] {
+                         region: HexInputRegion) -> [[CGPoint]] {
         switch region {
         case .hex:
             let wordSize = layout.wordSize
@@ -1763,7 +1763,7 @@ final class HexView: NSView, NSViewToolTipOwner {
     private func contour(of selection: SelectionModel, layout: HexLayout,
                          x: @escaping (Int) -> CGFloat, width: CGFloat,
                          padLeft: @escaping (Int) -> Bool,
-                         padRight: @escaping (Int) -> Bool) -> [CGPoint] {
+                         padRight: @escaping (Int) -> Bool) -> [[CGPoint]] {
         let pad = Self.mirrorContourPadding
         // Left edge of a selected column, padded outward when a spacer precedes
         // the cell.
@@ -1786,6 +1786,28 @@ final class HexView: NSView, NSViewToolTipOwner {
                 CGPoint(x: right(lastCol), y: bottomY),
                 CGPoint(x: left(firstCol), y: bottomY),
             ]
+        } else if firstRow + 1 == lastRow, lastCol < firstCol {
+            // Two rows whose parts share no column — a span that starts in the
+            // right of one row and ends in the left of the next. There is no
+            // staircase to trace here: the outline is two separate rectangles,
+            // and joining them produced a line running back across the row
+            // boundary between them, which outlined nothing at all.
+            let firstBottomY = layout.rowFrame(row: firstRow).maxY
+            let lastTopY = layout.rowFrame(row: lastRow).minY
+            return [
+                deduplicated([
+                    CGPoint(x: left(firstCol), y: topY),
+                    CGPoint(x: right(HexLayout.bytesPerRow - 1), y: topY),
+                    CGPoint(x: right(HexLayout.bytesPerRow - 1), y: firstBottomY),
+                    CGPoint(x: left(firstCol), y: firstBottomY),
+                ]),
+                deduplicated([
+                    CGPoint(x: left(0), y: lastTopY),
+                    CGPoint(x: right(lastCol), y: lastTopY),
+                    CGPoint(x: right(lastCol), y: bottomY),
+                    CGPoint(x: left(0), y: bottomY),
+                ]),
+            ]
         } else {
             // Several rows with a partial first/last row: the right edge steps
             // in at the last row and the left edge steps in at the first row.
@@ -1802,7 +1824,7 @@ final class HexView: NSView, NSViewToolTipOwner {
                 CGPoint(x: left(firstCol), y: firstBottomY),
             ]
         }
-        return deduplicated(points)
+        return [deduplicated(points)]
     }
 
     /// Drops vertices that aren't corners, so the polygon stays the minimal
@@ -1866,7 +1888,8 @@ final class HexView: NSView, NSViewToolTipOwner {
         guard offset < fileSize else { return [] }
         let span = SelectionModel(start: offset, end: offset + 1, fileSize: fileSize)
         let region: HexInputRegion = dataSource.hexInputRegion() == .ascii ? .hex : .ascii
-        return contour(of: span, layout: currentLayout, region: region)
+        // A single byte is always one loop.
+        return contour(of: span, layout: currentLayout, region: region).first ?? []
     }
 
     /// Draws the active pane's cross-column link (§3.3).
