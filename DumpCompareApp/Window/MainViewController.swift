@@ -908,6 +908,7 @@ final class MainViewController: NSViewController {
                 // The map paints the matches too (§11), and no range describes
                 // a set arriving or going, so its cells are all suspect.
                 self?.minimapView.invalidateCells()
+                self?.syncMinimapMatchOverlays()
             }
             // The minimap's single map mirrors this pane: edits rebuild its
             // cells, a moved caret moves the selection overlay, and scrolling
@@ -1048,10 +1049,12 @@ final class MainViewController: NSViewController {
             pane1View.onMatchesChanged = { [weak self] in
                 self?.refreshFindCount()
                 self?.minimapView.invalidateCells()
+                self?.syncMinimapMatchOverlays()
             }
             pane2View.onMatchesChanged = { [weak self] in
                 self?.refreshFindCount()
                 self?.minimapView.invalidateCells()
+                self?.syncMinimapMatchOverlays()
             }
 
             activeFilePane = windowModel.activePaneIndex == 0 ? pane1View : pane2View
@@ -1669,6 +1672,9 @@ final class MainViewController: NSViewController {
                 self.overviewPassTask = nil
                 guard !Task.isCancelled, self.minimapView.renderMode == .overview else { return }
                 self.minimapView.setOverviewSummaries(summaries)
+                // The row count the picture was built for is now the panel's,
+                // so the match bits are re-binned to match it (§11).
+                self.syncMinimapMatchOverlays()
                 self.overviewRebuildsCompleted += 1
             }
         }
@@ -2124,6 +2130,77 @@ final class MainViewController: NSViewController {
         minimapView.setBookmarks(windowModel.bookmarkStore.bookmarks)
     }
 
+    /// Hands the minimap the search's matches for the overview (§11).
+    ///
+    /// Derived from the pane's match set with the overview's own binning — the
+    /// same arithmetic the density picture uses, so a match lands on the cell
+    /// its bytes land in — and cheap enough to do on the main actor: a couple of
+    /// hundred bytes per map, no file read.
+    private func syncMinimapMatchOverlays() {
+        let rowCount = minimapView.overviewRowCount()
+        let extent = currentFileSizes().max() ?? 0
+        let panes: [PaneViewModel?]
+        switch mode {
+        case .empty:
+            panes = []
+        case .singleFile:
+            panes = [windowModel.pane1]
+        case .comparison:
+            panes = [windowModel.pane1, windowModel.pane2]
+        }
+        guard rowCount > 0, extent > 0, !panes.isEmpty else {
+            minimapView.setMatchOverlays([])
+            return
+        }
+        let binning = OverviewBinning(extent: extent, rowCount: rowCount)
+        minimapView.setMatchOverlays(panes.map {
+            Self.matchOverlay(for: $0, binning: binning, rowCount: rowCount, extent: extent)
+        })
+    }
+
+    /// One map's worth of match bits.
+    ///
+    /// Walks the **rows**, not the matches: a two-byte pattern in a dump has
+    /// hundreds of thousands of occurrences and the overview has a couple of
+    /// thousand rows, so per-match work would be the wrong way round. Each row
+    /// stops early once every column is marked or after `perRowMarkLimit`
+    /// matches — by then the row says all it can say at this scale.
+    private static func matchOverlay(for pane: PaneViewModel?, binning: OverviewBinning,
+                                     rowCount: Int, extent: UInt64) -> MinimapView.MatchOverlay {
+        guard let pane, pane.isOpen, let set = pane.matchSet, set.isHighlightable else {
+            return .empty
+        }
+        let perRowMarkLimit = 32
+        let rows = 0...(rowCount - 1)
+        let reach = UInt64(max(set.patternLength - 1, 0))
+        var matched = [UInt16](repeating: 0, count: rowCount)
+        var current = [UInt16](repeating: 0, count: rowCount)
+
+        for row in rows {
+            let rowStart = binning.start(ofRow: row)
+            let rowEnd = binning.start(ofRow: row + 1)
+            guard rowEnd > rowStart else { continue }
+            // A match starting just above the row can still reach into it.
+            let from = rowStart > reach ? rowStart - reach : 0
+            var index = set.index(atOrAfter: from)
+            var marks = 0
+            while let i = index, marks < perRowMarkLimit, matched[row] != .max {
+                guard let start = set.start(at: i), start < rowEnd else { break }
+                // The whole row range, not this one row: `mark` indexes the
+                // bits from the range's start, and the masks are absolute.
+                binning.mark(start..<start + UInt64(set.patternLength), rows: rows,
+                             into: &matched)
+                marks += 1
+                index = i + 1 < set.total ? i + 1 : nil
+            }
+        }
+        if let currentMatch = pane.currentMatchRange {
+            binning.mark(currentMatch, rows: rows, into: &current)
+        }
+        return MinimapView.MatchOverlay(extent: extent, rowCount: rowCount,
+                                        matched: matched, current: current)
+    }
+
     /// Hands the minimap the open panes' segment partitions, so the strip beside
     /// each map paints the dump's pieces (§19.4.4). The tint is by *position* —
     /// the piece's index into the partition — the same rule the dump's row tint
@@ -2162,6 +2239,9 @@ final class MainViewController: NSViewController {
         // partition follows — and a file that opened or closed changes which
         // panes have a partition at all.
         syncMinimapSegments()
+        // The overview's match bits are binned over the extent, so a file that
+        // grew or shrank re-bins them too (§11).
+        syncMinimapMatchOverlays()
         // An insert or a delete can carry the file across the line where the
         // overview stops magnifying it, so the offer follows the size as well as
         // the panel's height (§19.4). The *mode* is deliberately not re-decided

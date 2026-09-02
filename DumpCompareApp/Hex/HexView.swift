@@ -3199,6 +3199,19 @@ enum HexTheme {
     /// correct per §6, where a byte's state outranks which piece it belongs to.
     static let matchFill = NSColor.unemphasizedSelectedTextBackgroundColor
 
+    /// A match as the minimap's **overview** marks it (§11, §19.4.2): the find
+    /// indicator's yellow, thinned.
+    ///
+    /// Not the dump's grey, which the detail map does use: a row of the overview
+    /// is kilobytes of aggregated content drawn as a grey *tone*, so a grey mark
+    /// cannot be told from content — it reads as a lighter patch of the same
+    /// thing. That is the same reason a difference is orange there rather than
+    /// dark grey: at this scale a mark needs a hue. Thinned, so the current
+    /// match's full-strength yellow still reads as the one you are standing on.
+    static let overviewMatchMark = NSColor(name: nil) { _ in
+        NSColor.findHighlightColor.withAlphaComponent(0.55)
+    }
+
     /// The current match — the find indicator (§11). `findHighlightColor` is
     /// the platform's own: what `NSTextView.showFindIndicator(for:)` flashes,
     /// and the yellow Xcode marks the current occurrence with. It is pure yellow

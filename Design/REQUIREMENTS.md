@@ -1602,6 +1602,10 @@ text.
   the modified colour, significant bytes in ink, a 0x00/0xFF fill muted.
   The difference background must remain visible behind an opaque byte.
 - The selection is drawn as a translucent overlay on top of the cells.
+- While a search is running, a matched byte carries the dump's own match grey
+  and the current match its find-indicator yellow (§11), layered as the dump
+  layers them — grey under the difference, the current match over both, and the
+  byte drawn on top with the same forced ink.
 - Byte state must come from the same per-byte source the panes paint from,
   so the map cannot disagree with the dump beside it.
 
@@ -1672,6 +1676,25 @@ resolution is used and nothing is spent on gaps.
   the bins change (a resize), when the bytes change, and when the comparison
   index changes — difference marks come from that index rather than from
   re-reading both files.
+
+Search matches in overview:
+
+- A match marks the cells its bytes fall in, two pixel rows tall like a
+  difference, so a single occurrence is not lost inside a dense region.
+- The mark is the find indicator's yellow, **thinned** — not the dump's grey.
+  A row here is kilobytes of aggregated content drawn as a grey *tone*, so a
+  grey mark cannot be told from content; at this scale a mark needs a hue,
+  which is the same reason a difference is orange rather than dark grey. The
+  current match is drawn over it at full strength.
+- The current match is **also marked in the margin**, in the same arrow shape a
+  bookmark uses (§19.4.3) and in the same yellow: at a row per 13 KB its cells
+  are one pixel tall and easy to miss. Under the bookmarks, because a bookmark
+  is something the user placed and a match is where they happen to be standing.
+- The bits are binned by the same arithmetic as the density picture, so a match
+  lands on the cell its bytes land in — including the stretch regime above. They
+  are computed from the match set, not from the file, and a new search therefore
+  costs no density rebuild: the picture is invalidated by bytes, these marks by
+  the pattern.
 
 19.4.3 Bookmarks in the margin
 

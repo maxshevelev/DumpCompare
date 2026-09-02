@@ -152,6 +152,26 @@ final class MinimapView: NSView, NSViewToolTipOwner {
                                           modified: [], different: [])
     }
 
+    /// The search's matches as the overview draws them (§11): a bit per column
+    /// per row, the same shape as `OverviewSummary`'s `modified` and
+    /// `different` masks, so the stretch rule for a file smaller than one byte
+    /// per row comes along for free (§19.4.2).
+    ///
+    /// A value of its own rather than a field of the summary, because its
+    /// lifetime is different: the summary is invalidated by *bytes*, this by
+    /// the *pattern*, and a new search must not trigger a density rebuild.
+    struct MatchOverlay: Equatable {
+        /// The extent the rows are binned over — the same one the summary uses.
+        let extent: UInt64
+        let rowCount: Int
+        /// Per row, a bit per column holding at least one match.
+        var matched: [UInt16]
+        /// The same for the current match alone — the one the dump plates.
+        var current: [UInt16]
+
+        static let empty = MatchOverlay(extent: 0, rowCount: 0, matched: [], current: [])
+    }
+
     /// How dark the overview draws its content. Deliberately short of full ink:
     /// the dump itself renders a dense row as *glyphs* on paper, which reads as a
     /// mid grey, and a byte that is a 0x00/0xFF fill is drawn muted rather than
@@ -264,6 +284,19 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// picture that is a fraction of a percent out of date, and an irritating
     /// one: it blinked (§19.9).
     private(set) var overviewBinsAreStale = false
+
+    /// One overlay per map, or empty when no search is running (§11).
+    private(set) var matchOverlays: [MatchOverlay] = []
+
+    /// Hands the panel the search's matches for the overview. Cheap enough to
+    /// hand over whole: it is a couple of hundred bytes per map, derived from
+    /// the match set rather than read from the file.
+    func setMatchOverlays(_ overlays: [MatchOverlay]) {
+        guard overlays != matchOverlays else { return }
+        matchOverlays = overlays
+        guard renderMode == .overview else { return }
+        invalidateAll()
+    }
 
     /// Fired when the number of overview rows the panel can show changes — a
     /// resize, a layout flip, or a switch into overview — so the controller can
@@ -722,6 +755,34 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// throughout (§20.4), which keeps a mark apart from the grey viewport marker
     /// that can share the margin with it — the shape is the same, deliberately,
     /// because both say the same kind of thing about a position (§19.4.3).
+    /// Marks the current match in the margin, in overview only (§11).
+    ///
+    /// At a row per 13 KB the match's yellow cells are one pixel tall and easy
+    /// to miss, and the margin arrow is the shape the panel already uses for
+    /// "the thing you are looking at is here" (§19.6). In detail the cells are
+    /// exact and two points tall, so nothing is added there. Yellow is free in
+    /// that margin: grey is the viewport, purple is a bookmark.
+    private func drawCurrentMatchMarker(dirtyRect: NSRect) {
+        guard renderMode == .overview else { return }
+        for index in maps.indices {
+            guard let match = currentMatchRange?(index),
+                  let margin = bookmarkMargin(forMapAt: index),
+                  margin.strip.intersects(dirtyRect),
+                  // The mark is placed by offset; `bookmarkMarkRect` takes one.
+                  let box = bookmarkMarkRect(row: match.lowerBound, forMapAt: index),
+                  box.maxY >= dirtyRect.minY, box.minY <= dirtyRect.maxY else { continue }
+            (HexTheme.findIndicatorFill.usingColorSpace(.deviceRGB)
+                ?? HexTheme.findIndicatorFill).setFill()
+            Self.marginMarkerPath(in: box, pointingRight: margin.pointsRight).fill()
+        }
+    }
+
+    /// Where the current match's margin marker sits, for tests.
+    func currentMatchMarkerRect(forMapAt index: Int) -> NSRect? {
+        guard renderMode == .overview, let match = currentMatchRange?(index) else { return nil }
+        return bookmarkMarkRect(row: match.lowerBound, forMapAt: index)
+    }
+
     private func drawBookmarkMarks(dirtyRect: NSRect) {
         guard !bookmarks.isEmpty else { return }
         (HexTheme.bookmarkColor.usingColorSpace(.deviceRGB) ?? HexTheme.bookmarkColor).setFill()
@@ -1140,6 +1201,10 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         // topmost "you are here" marker (§19.4.4).
         drawSegmentStrip(dirtyRect: dirtyRect)
         drawViewports(dirtyRect: dirtyRect)
+        // The current match's own marker, under the bookmarks: a bookmark is
+        // something the user placed, a match is where they happen to be
+        // standing (§11).
+        drawCurrentMatchMarker(dirtyRect: dirtyRect)
         // After the viewport, so a bookmark's mark is not buried under the grey
         // chevron when the two land in the same margin: there are few marks and
         // they are what the user put there on purpose.
@@ -1580,6 +1645,67 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         guard last >= first else { return }
         drawOverviewCells(summary, fileSize: maps.indices.contains(index) ? maps[index].fileSize : 0,
                           rows: first...last, top: area.minY, cells: cells, rowHeight: rowHeight)
+        drawOverviewMatches(forMapAt: index, rows: first...last, top: area.minY,
+                            cells: cells, rowHeight: rowHeight)
+    }
+
+    /// Marks the search's matches over the overview's density picture (§11).
+    ///
+    /// Like a difference, a match is drawn two pixel rows tall: one cell of a
+    /// one-pixel row is invisible inside a dense region, so it spills into the
+    /// next row rather than disappearing. The mark is a thinned version of the
+    /// find indicator's yellow rather than the dump's grey — see
+    /// `HexTheme.overviewMatchMark` — and the current match goes on top of it at
+    /// full strength.
+    private func drawOverviewMatches(forMapAt index: Int, rows: ClosedRange<Int>,
+                                     top: CGFloat, cells: [(x: CGFloat, width: CGFloat)],
+                                     rowHeight: CGFloat) {
+        guard matchOverlays.indices.contains(index) else { return }
+        let overlay = matchOverlays[index]
+        guard overlay.rowCount > 0 else { return }
+        let columns = Int(Self.bytesPerRow)
+        let matchInk = (HexTheme.overviewMatchMark.usingColorSpace(.deviceRGB)
+                         ?? HexTheme.overviewMatchMark)
+        let currentInk = (HexTheme.findIndicatorFill.usingColorSpace(.deviceRGB)
+                          ?? HexTheme.findIndicatorFill)
+
+        for row in rows {
+            guard overlay.matched.indices.contains(row) else { break }
+            let matched = overlay.matched[row]
+            let current = overlay.current.indices.contains(row) ? overlay.current[row] : 0
+            guard matched != 0 || current != 0 else { continue }
+            let y = top + CGFloat(row) * rowHeight
+            // Neighbouring cells that draw the same thing are one fill, as in
+            // the density pass: a run of matches is usually contiguous.
+            var runColour: NSColor?
+            var runFrom = 0
+            var runTo = -1
+            func flush() {
+                guard let colour = runColour, runTo >= runFrom else {
+                    runColour = nil
+                    return
+                }
+                colour.setFill()
+                NSRect(x: cells[runFrom].x, y: y,
+                       width: cells[runTo].x + cells[runTo].width - cells[runFrom].x,
+                       height: rowHeight * 2).fill()
+                runColour = nil
+            }
+            for column in 0..<min(columns, cells.count) {
+                let bit = UInt16(1) << UInt16(column)
+                let colour: NSColor? = current & bit != 0 ? currentInk
+                    : (matched & bit != 0 ? matchInk : nil)
+                if colour === runColour, runTo == column - 1 {
+                    runTo = column
+                } else {
+                    flush()
+                    runColour = colour
+                    runFrom = column
+                    runTo = column
+                }
+            }
+            flush()
+        }
     }
 
     /// Draws one map's cells into the current context: `rows` of `summary`, the

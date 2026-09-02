@@ -695,6 +695,74 @@ final class MinimapTests: XCTestCase {
         }, "the session ended, so the map marks nothing")
     }
 
+    /// §11: the overview marks the search's matches on its own rows, from the
+    /// same set the dump reads — and the current match separately, so the panel
+    /// can draw it in the find indicator's yellow.
+    func testOverviewMarksTheSearchsMatchesAndTheCurrentOne() throws {
+        // Big enough that the overview compresses the file (§19.4).
+        let size = 200 * 1024
+        let (controller, window, panel) = try makeSingleFileWindow([UInt8](repeating: 0x41,
+                                                                          count: size))
+        controller.setMinimapRenderModeForTesting(.overview)
+        window.layoutIfNeeded()
+        XCTAssertTrue(pumpUntil(3) { (panel.overviewSummaries.first?.rowCount ?? 0) > 0 },
+                      "the overview needs its picture before its rows mean anything")
+        let rowCount = panel.overviewRowCount()
+        XCTAssertGreaterThan(rowCount, 1)
+
+        let pane = controller.windowModel.pane1
+        let far = UInt64(size / 2)
+        pane.setMatches(MatchSet(pattern: SearchPattern(bytes: [0x41, 0x41], encoding: .hex),
+                                 folding: .exact, extent: UInt64(size),
+                                 starts: [0, far]),
+                        current: 1)
+        window.layoutIfNeeded()
+
+        let overlay = try XCTUnwrap(panel.matchOverlays.first)
+        XCTAssertEqual(overlay.rowCount, rowCount, "binned onto the panel's own rows")
+        XCTAssertEqual(overlay.extent, UInt64(size))
+        let farRow = Int(far * UInt64(rowCount) / UInt64(size))
+        XCTAssertNotEqual(overlay.matched[0], 0, "the match at the file's start")
+        XCTAssertNotEqual(overlay.matched[farRow], 0, "and the one halfway down")
+        XCTAssertEqual(overlay.matched.filter { $0 != 0 }.count, 2, "and nowhere else")
+        XCTAssertNotEqual(overlay.current[farRow], 0, "the current match is the second one")
+        XCTAssertEqual(overlay.current[0], 0)
+
+        // And it is marked in the margin, where a one-pixel row would be missed.
+        let marker = try XCTUnwrap(panel.currentMatchMarkerRect(forMapAt: 0),
+                                   "the current match must be marked in the margin")
+        XCTAssertGreaterThan(marker.width, 0)
+
+        pane.clearMatches()
+        window.layoutIfNeeded()
+        XCTAssertTrue(panel.matchOverlays.allSatisfy { overlay in
+            overlay.matched.allSatisfy { $0 == 0 } && overlay.current.allSatisfy { $0 == 0 }
+        }, "the session ended, so the overview marks nothing")
+        XCTAssertNil(panel.currentMatchMarkerRect(forMapAt: 0))
+    }
+
+    /// A search must not cost a density rebuild: the picture is invalidated by
+    /// bytes, the match bits by the pattern (§11).
+    func testASearchDoesNotRebuildTheOverviewPicture() throws {
+        let (controller, window, panel) = try makeSingleFileWindow([UInt8](repeating: 0x41,
+                                                                          count: 200 * 1024))
+        controller.setMinimapRenderModeForTesting(.overview)
+        window.layoutIfNeeded()
+        XCTAssertTrue(pumpUntil(3) { (panel.overviewSummaries.first?.rowCount ?? 0) > 0 })
+        let rebuilds = controller.overviewRebuilds
+
+        controller.windowModel.pane1.setMatches(
+            MatchSet(pattern: SearchPattern(bytes: [0x41], encoding: .hex), folding: .exact,
+                     extent: UInt64(200 * 1024), starts: [7]),
+            current: 0)
+        window.layoutIfNeeded()
+
+        XCTAssertNotEqual(panel.matchOverlays.first?.matched.filter { $0 != 0 }.count, 0,
+                          "the match is on the map")
+        XCTAssertEqual(controller.overviewRebuilds, rebuilds,
+                       "and the density picture was not rebuilt for it")
+    }
+
     func testPartialLastRowKeepsOnlyItsBytes() throws {
         // 3 bytes = one partial hex row → one mini row with exactly 3 cells.
         let (_, _, panel) = try makeSingleFileWindow([0x41, 0x00, 0x42])
