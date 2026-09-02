@@ -652,6 +652,11 @@ final class MainViewController: NSViewController {
         findBar.onClose = { [weak self] in
             self?.hideFindBar()
         }
+        // A pattern being typed describes no search yet, so the one that was
+        // running ends — count and greys together (§11).
+        findBar.onPatternEdited = { [weak self] in
+            self?.activePane.clearMatches()
+        }
         view.addSubview(findBar)
 
         contentContainer.translatesAutoresizingMaskIntoConstraints = false
@@ -914,6 +919,9 @@ final class MainViewController: NSViewController {
             paneModel.onCaretChanged = { [weak self] in
                 self?.updateMinimapSelections()
             }
+            paneModel.onMatchesChanged = { [weak self] in
+                self?.refreshFindCount()
+            }
             // Wrap in the drop-target split view (§4.3 single-file mode). The
             // pane itself is NOT drop-registered here so the outer view wins.
             let dropView = SingleFileDropView(paneView: pane)
@@ -1081,6 +1089,12 @@ final class MainViewController: NSViewController {
             self?.refreshMinimapMaps()
             self?.invalidateMatches(in: self?.windowModel.pane2)
         }
+        windowModel.pane1.onMatchesChanged = { [weak self] in
+            self?.refreshFindCount()
+        }
+        windowModel.pane2.onMatchesChanged = { [weak self] in
+            self?.refreshFindCount()
+        }
         // A save clears modified state without changing a byte, so the minimap's
         // red cells have to go even though the bytes stayed put (§19).
         windowModel.pane1.onSavedStateChanged = { [weak self] in
@@ -1109,6 +1123,8 @@ final class MainViewController: NSViewController {
         windowModel.pane2.companion = nil
         windowModel.pane1.onEdit = nil
         windowModel.pane2.onEdit = nil
+        windowModel.pane1.onMatchesChanged = nil
+        windowModel.pane2.onMatchesChanged = nil
         windowModel.pane1.onFullInvalidation = nil
         windowModel.pane2.onFullInvalidation = nil
         windowModel.pane1.onSavedStateChanged = nil
@@ -1445,6 +1461,9 @@ final class MainViewController: NSViewController {
         // Navigation anchors on the active pane's caret — a pane switch can
         // change whether a next/previous block exists (§10.3).
         refreshDiffNavigation()
+        // The count describes the active pane's search, and the search belongs
+        // to the pane that was searched (§11).
+        refreshFindCount()
         // The typing mode is per pane (§7.6), so the toolbar's toggle follows
         // the pane the keys now go to (§24.2).
         revalidateToolbar()
@@ -4747,6 +4766,7 @@ final class MainViewController: NSViewController {
         contentTopToView.isActive = false
         contentTopToFindBar.isActive = true
         findBar.isHidden = false
+        refreshFindCount()
         view.layoutSubtreeIfNeeded()
         findBar.prepareForShow()
     }
@@ -4806,10 +4826,9 @@ final class MainViewController: NSViewController {
             guard !Task.isCancelled, let set, pane.isOpen else { return }
             pane.setMatches(set)
             guard set.total > 0 else {
-                // The scan covered the whole file, so this is not "nothing after
-                // the cursor" any more — there is nothing at all. Which is why
-                // §11's directional message is gone.
-                self.showFindMessage("Not found.")
+                // The bar says it, and keeps saying it: a pattern that occurs
+                // nowhere is a standing fact about what is in the field, not a
+                // message that fades while the field still holds it (§11).
                 self.handOffFocusAfterFind()
                 return
             }
@@ -4966,6 +4985,14 @@ final class MainViewController: NSViewController {
         } else {
             findBar.focusPatternField()
         }
+    }
+
+    /// Hands the Find bar the active pane's session: "3 of 128", "Not found",
+    /// or nothing at all (§11). Driven by every change to the set or the
+    /// current match, and by the bar opening.
+    private func refreshFindCount() {
+        findBar.show(count: FindCount.reading(of: activePane.matchSet,
+                                              current: activePane.currentMatchIndex))
     }
 
     /// Drops a pane's match set: the bytes under it moved, so every offset in it

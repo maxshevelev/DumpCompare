@@ -198,16 +198,16 @@ Its states, and nothing else:
 | When | Shows |
 | --- | --- |
 | bar just opened, nothing searched yet | *(empty — the bar stays quiet)* |
-| scanning, no current match yet | `128…` |
-| scanning, standing on a match | `3 of 128…` |
-| scan complete | `3 of 128` |
-| complete, pattern occurs nowhere | `Not found` |
-| complete, past the listing limit | `3 of 4 812` + a warning glyph |
-| complete, past the technical limit (huge images only) | `3 of 2 481 903` + the glyph |
+| a set, nothing stepped to yet | `128` |
+| standing on a match | `3 of 128` |
+| pattern occurs nowhere | `Not found` |
+| past the listing limit | `3 of 4 812` + a warning glyph |
+| past the technical limit (huge images only) | `2 481 903` + the glyph |
 
-- The **ellipsis** is the only indication that the number is still climbing; the
-  scan's progress and its × already live in the pane's status bar (§14.4), and
-  duplicating them on the bar would be noise.
+- **Nothing appears while the scan runs.** An earlier draft had the count climb
+  behind an ellipsis; publishing a set in pieces would mean copying it per
+  batch, and the scan's progress and its × already live in the pane's status
+  bar (§14.4). So the label speaks when the set lands — 3 ms on a 16 MB dump.
 - **`Not found`** replaces today's transient "No matches after the cursor." for
   the case where there are none at all — a persistent statement instead of a
   message that fades while the field still holds the pattern that failed.

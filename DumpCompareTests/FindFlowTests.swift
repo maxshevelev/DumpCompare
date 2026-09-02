@@ -127,8 +127,21 @@ final class FindFlowTests: XCTestCase {
         try findBar(window).pressFindForTests(.backward)
     }
 
+    /// A number in the reader's region format — what the count label shows.
+    private func grouped(_ value: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        return formatter.string(from: NSNumber(value: value))!
+    }
+
+    /// Whether the find bar's count label says `text` — "3 of 128",
+    /// "Not found", or nothing at all (§11).
+    private func hasCount(_ text: String, in window: NSWindow) -> Bool {
+        (try? findBar(window))?.countTextForTests == text
+    }
+
     /// Whether any text field in the window shows `text` (e.g. a transient
-    /// "Not found." in the pane's status bar).
+    /// operation message in the pane's status bar).
     private func hasStatus(_ text: String, in window: NSWindow) -> Bool {
         descendants(of: window.contentView!, NSTextField.self).contains { $0.stringValue == text }
     }
@@ -214,8 +227,8 @@ final class FindFlowTests: XCTestCase {
         combo.stringValue = "FF FF FF FF FF"
         try clickFindNext(window)
 
-        XCTAssertTrue(pumpUntil(2) { self.hasStatus("Not found.", in: window) },
-                      "the status bar must say the pattern occurs nowhere")
+        XCTAssertTrue(pumpUntil(2) { self.hasCount("Not found", in: window) },
+                      "the bar must say the pattern occurs nowhere")
         XCTAssertFalse(try findBar(window).isHidden,
                        "the find bar must stay open when there is no match")
     }
@@ -283,7 +296,7 @@ final class FindFlowTests: XCTestCase {
         try clickFindNext(window)
         XCTAssertEqual(pane.hexSelection().start, 0, "past the last match, back to the first")
         XCTAssertEqual(pane.currentMatchIndex, 0)
-        XCTAssertFalse(hasStatus("Not found.", in: window),
+        XCTAssertFalse(hasCount("Not found", in: window),
                        "a wrap is not a failure and says nothing")
     }
 
@@ -322,7 +335,121 @@ final class FindFlowTests: XCTestCase {
         XCTAssertEqual(pane.hexSelection().start, 1, "the only match stays selected")
         XCTAssertEqual(pane.hexSelection().end, 2)
         XCTAssertEqual(pane.currentMatchIndex, 0)
-        XCTAssertFalse(hasStatus("Not found.", in: window))
+        XCTAssertFalse(hasCount("Not found", in: window))
+    }
+
+    // MARK: - The count in the bar (§11)
+
+    /// The bar counts what the scan found and says where in it the user is,
+    /// and the number follows every step.
+    func testTheBarCountsAndFollowsTheSteps() throws {
+        let bytes: [UInt8] = [0xAA, 0x00, 0xAA, 0x00, 0xAA]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+        controller.findPattern()
+        let bar = try findBar(window)
+        XCTAssertEqual(bar.countTextForTests, "", "before a search the bar stays quiet")
+
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "AA"
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(3) { bar.countTextForTests == "1 of 3" },
+                      "the count and the position arrive with the set")
+
+        try clickFindNext(window)
+        XCTAssertEqual(bar.countTextForTests, "2 of 3")
+        try clickFindPrevious(window)
+        XCTAssertEqual(bar.countTextForTests, "1 of 3")
+        // And around the wrap.
+        try clickFindPrevious(window)
+        XCTAssertEqual(bar.countTextForTests, "3 of 3")
+        XCTAssertNil(bar.countWarningForTests, "three matches is nothing to warn about")
+    }
+
+    /// A pattern that occurs nowhere kills the stepper and the results button:
+    /// there is nothing to step through and nothing to list.
+    func testNotFoundDisablesTheStepperUntilThePatternChanges() throws {
+        let (controller, window, url) = try makeController([0x41, 0x42, 0x43, 0x44])
+        defer { cleanup(controller, url) }
+        controller.findPattern()
+        let bar = try findBar(window)
+        let (combo, _, _, _) = try barControls(window)
+        XCTAssertTrue(bar.navControlEnabledForTests,
+                      "before a search the stepper is how a search is started")
+
+        combo.stringValue = "FF FF"
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(3) { bar.countTextForTests == "Not found" })
+        XCTAssertFalse(bar.navControlEnabledForTests, "nothing to step through")
+        XCTAssertFalse(bar.findAllEnabledForTests, "nothing to list")
+
+        // Editing the pattern describes a different search, so the bar goes
+        // quiet and the controls come back.
+        combo.stringValue = "41"
+        NotificationCenter.default.post(name: NSControl.textDidChangeNotification, object: combo)
+        XCTAssertEqual(bar.countTextForTests, "")
+        XCTAssertTrue(bar.navControlEnabledForTests)
+    }
+
+    /// Typing a new pattern also ends the highlighting the old one earned:
+    /// nothing on screen may describe a pattern that is not in the field.
+    func testEditingThePatternEndsTheSession() throws {
+        let bytes: [UInt8] = [0xAA, 0x00, 0xAA]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+
+        controller.findPattern()
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "AA"
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(3) { pane.matchSet != nil })
+
+        combo.stringValue = "AA 00"
+        NotificationCenter.default.post(name: NSControl.textDidChangeNotification, object: combo)
+        XCTAssertNil(pane.matchSet, "the greys belonged to the pattern that was there")
+    }
+
+    /// The count's width is fixed by a template, so a four-figure count does
+    /// not shove the stepper sideways as the user walks the matches.
+    func testTheCountDoesNotMoveTheStepper() throws {
+        let (controller, window, url) = try makeController([0x41, 0x42])
+        defer { cleanup(controller, url) }
+        controller.findPattern()
+        let bar = try findBar(window)
+        _ = try barControls(window)
+
+        bar.show(count: FindCount(total: 9, ordinal: 1, isListable: true, isHighlightable: true))
+        window.layoutIfNeeded()
+        let narrow = bar.navControlFrameForTests.minX
+
+        bar.show(count: FindCount(total: 4096, ordinal: 128, isListable: false, isHighlightable: true))
+        window.layoutIfNeeded()
+        XCTAssertEqual(bar.navControlFrameForTests.minX, narrow, accuracy: 0.5,
+                       "the stepper stays put between 1 of 9 and 128 of 4,096")
+    }
+
+    /// Past the listing limit the bar carries the reason as a glyph beside the
+    /// count — the count is what proves the matches exist, so the explanation
+    /// belongs next to it rather than in a message that fades.
+    func testTheBarWarnsWhenThereAreTooManyToList() throws {
+        let (controller, window, url) = try makeController([0x41, 0x42])
+        defer { cleanup(controller, url) }
+        controller.findPattern()
+        let bar = try findBar(window)
+        _ = try barControls(window)
+
+        bar.show(count: FindCount(total: 4812, ordinal: 3, isListable: false, isHighlightable: true))
+        // Grouped in the reader's own region format, like every other number
+        // macOS shows, so the expectation is built the same way.
+        XCTAssertEqual(bar.countTextForTests, "3 of \(grouped(4812))")
+        XCTAssertEqual(bar.countWarningForTests, "Too many matches to list. Refine the pattern.")
+
+        bar.show(count: FindCount(total: 2_481_903, ordinal: nil,
+                                  isListable: false, isHighlightable: false))
+        XCTAssertEqual(bar.countTextForTests, grouped(2_481_903))
+        XCTAssertEqual(bar.countWarningForTests,
+                       "Too many matches to highlight — navigation and the map still cover all of them.")
     }
 
     /// The count is uncapped: `defaultMaxResults` limits what the results panel
@@ -713,7 +840,7 @@ final class FindFlowTests: XCTestCase {
         // Case-sensitive "hI" exists nowhere → No match found.
         combo.stringValue = "hI"
         try clickFindNext(window)
-        XCTAssertTrue(pumpUntil(2) { self.hasStatus("Not found.", in: window) },
+        XCTAssertTrue(pumpUntil(2) { self.hasCount("Not found", in: window) },
                       "case-sensitive search must not match mixed case")
     }
 
@@ -1356,7 +1483,7 @@ final class FindFlowTests: XCTestCase {
                           "a long search must not stall the main thread")
 
         // The scan completes: the no-match message shows and the strip hides.
-        XCTAssertTrue(pumpUntil(30) { self.hasStatus("Not found.", in: window) },
+        XCTAssertTrue(pumpUntil(30) { self.hasCount("Not found", in: window) },
                       "the full-file scan must complete")
         XCTAssertTrue(pumpUntil(5) { paneView.operationView.isHidden },
                       "the strip must hide once the search finishes")
@@ -1424,7 +1551,7 @@ final class FindFlowTests: XCTestCase {
         controller.windowModel.pane1.moveCaret(to: 0)
         combo.stringValue = "\u{6100}"
         try clickFindNext(window)
-        XCTAssertTrue(pumpUntil(3) { self.hasStatus("Not found.", in: window) },
+        XCTAssertTrue(pumpUntil(3) { self.hasCount("Not found", in: window) },
                       "U+6100 must not match U+4100")
     }
 
@@ -1443,7 +1570,7 @@ final class FindFlowTests: XCTestCase {
 
         combo.stringValue = "setup"
         try clickFindNext(window)
-        XCTAssertTrue(pumpUntil(3) { self.hasStatus("Not found.", in: window) },
+        XCTAssertTrue(pumpUntil(3) { self.hasCount("Not found", in: window) },
                       "case-sensitive means the lower-case spelling is not there")
     }
 

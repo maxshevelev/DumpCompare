@@ -1068,10 +1068,27 @@ Search All (results panel):
   computed from template strings rather than measured per row. A total wider
   than the panel scrolls horizontally.
 
-Optional but recommended:
+Match count (the Find bar):
 
-- highlight matches in visible region;
-- show match count if it can be computed efficiently.
+- The bar shows how many matches the search found and where in them the user
+  is: `3 of 128`. The number is **exact at any size** — it is the app's
+  diagnosis of the pattern, and `> 1000` is not a diagnosis, since 1001 and
+  3 000 000 call for different actions.
+- A pattern that occurs nowhere reads `Not found` there, and while nothing has
+  been searched the bar shows nothing at all.
+- Past the listing limit, and in the rare case where the matches cannot be
+  highlighted, a warning glyph beside the count carries the reason as its
+  tooltip. The reason belongs next to the count, which is what proves the
+  matches exist.
+- At zero matches the ‹ › stepper and Find All are disabled; editing the
+  pattern clears the count and re-enables them, because a pattern being typed
+  describes no search yet.
+- The count's width is fixed from a template, so a climbing number never
+  shifts the controls beside it. Digits are grouped in the reader's region
+  format.
+
+Highlighting matches in the dump and on the minimap: see
+`Design/FIND_HIGHLIGHT_PLAN.md` (in progress).
 
 =====================================================================
 12. CLIPBOARD, COPY, PASTE

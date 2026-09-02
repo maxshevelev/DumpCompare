@@ -11,7 +11,7 @@ import DumpCompareCore
 /// - The bar stays open after a search — only the selection moves.
 /// - Picking an item from the pattern's history list loads that search (pattern
 ///   + encoding) but does NOT run it; only Enter, `<` and `>` search.
-final class FindBarView: NSView {
+final class FindBarView: NSView, NSComboBoxDelegate {
     /// Fired when the user runs a search (Enter, `<` or `>`). The pattern is
     /// already parsed and validated; the third argument is the case toggle.
     var onSearch: ((SearchPattern, SearchDirection, Bool) -> Void)?
@@ -23,6 +23,10 @@ final class FindBarView: NSView {
     /// Fired when the user runs Search All (§11). The pattern is already parsed
     /// and validated; the second argument is the case toggle.
     var onSearchAll: ((SearchPattern, Bool) -> Void)?
+
+    /// Fired when the pattern in the field is edited, so the session it no
+    /// longer describes can be dropped — the greys and the count with it.
+    var onPatternEdited: (() -> Void)?
 
     /// The point size every icon control on the bar draws its symbol at, so the
     /// chevrons, the list glyph and the "Aa" line up (§11).
@@ -56,6 +60,14 @@ final class FindBarView: NSView {
     /// so `viewDidChangeEffectiveAppearance` can re-resolve its dynamic colour
     /// on a theme switch — a layer background baked in `setUp` would otherwise
     /// keep the launch theme's pixels (§3.1).
+    /// The count: "3 of 128", "Not found", or nothing at all before a search
+    /// (§11). Monospaced digits so a climbing number never shuffles the
+    /// controls beside it.
+    private let countLabel = NSTextField(labelWithString: "")
+    /// Shown only when something is being withheld — too many matches to list,
+    /// or too many to highlight — carrying the reason as its tooltip.
+    private let warningView = NSImageView()
+
     private let separator = NSView()
     private let doneButton = NSButton()
     /// The Search All button: lists every occurrence of the pattern in the
@@ -115,6 +127,7 @@ final class FindBarView: NSView {
         setUpPatternCombo()
         setUpEncodingPopup()
         setUpCaseButton()
+        setUpCountLabel()
         setUpNavControl()
         setUpFindAllButton()
         setUpDoneButton()
@@ -131,6 +144,10 @@ final class FindBarView: NSView {
         stack.addArrangedSubview(patternCombo)
         stack.addArrangedSubview(encodingPopup)
         stack.addArrangedSubview(caseButton)
+        // After the query it describes, before the stepper that walks it —
+        // where the platform's own find bar puts it (§11).
+        stack.addArrangedSubview(countLabel)
+        stack.addArrangedSubview(warningView)
         stack.addArrangedSubview(navControl)
         stack.addArrangedSubview(findAllButton)
         stack.addArrangedSubview(doneButton)
@@ -163,7 +180,8 @@ final class FindBarView: NSView {
 
         // Give everything except the pattern a high hugging priority so only it
         // expands when the window is resized (§11).
-        for view in [findLabel, encodingPopup, caseButton, navControl, findAllButton, doneButton] {
+        for view in [findLabel, encodingPopup, caseButton, countLabel, warningView,
+                     navControl, findAllButton, doneButton] {
             view.setContentHuggingPriority(.defaultHigh, for: .horizontal)
             view.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
         }
@@ -192,6 +210,9 @@ final class FindBarView: NSView {
         patternCombo.setAccessibilityLabel("Find")
         patternCombo.target = self
         patternCombo.action = #selector(patternComboAction)
+        // Editing the pattern ends the search it no longer describes: the count
+        // and the highlighting belong to what is in the field (§11).
+        patternCombo.delegate = self
         // An editable combo only reliably sends its action on Return: picking an
         // item from the popup posts `selectionDidChangeNotification` instead (§11).
         // That's the hook that loads the picked entry into the form.
@@ -270,6 +291,54 @@ final class FindBarView: NSView {
             ? "Case Sensitive — matching exactly"
             : "Case Sensitive — off, upper and lower case match"
     }
+
+    private func setUpCountLabel() {
+        countLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        countLabel.textColor = .secondaryLabelColor
+        countLabel.alignment = .right
+        countLabel.setAccessibilityLabel("Matches")
+        countLabel.translatesAutoresizingMaskIntoConstraints = false
+        // A floor wide enough for four digits either side of "of", measured
+        // from a template rather than from the value: the count changes with
+        // every step, and a label that resizes drags the stepper with it (§11,
+        // the same trick the results panel sizes its columns with).
+        let template = "8888 of 8888" as NSString
+        let width = template.size(withAttributes: [.font: countLabel.font!]).width
+        countLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: ceil(width)).isActive = true
+
+        warningView.image = NSImage(systemSymbolName: "exclamationmark.triangle",
+                                    accessibilityDescription: "Warning")
+        warningView.symbolConfiguration = NSImage.SymbolConfiguration(
+            pointSize: Self.iconPointSize, weight: .regular)
+        warningView.contentTintColor = .secondaryLabelColor
+        warningView.isHidden = true
+        warningView.translatesAutoresizingMaskIntoConstraints = false
+    }
+
+    /// Shows what the search found, or nothing when there is no search
+    /// (§11). At zero the stepper and Find All go dead: there is nothing to
+    /// step through and nothing to list.
+    func show(count: FindCount?) {
+        countLabel.stringValue = count?.text ?? ""
+        countLabel.toolTip = count?.warning
+        warningView.toolTip = count?.warning
+        warningView.isHidden = count?.warning == nil
+        // No search yet is not "no matches": the stepper is how a search is
+        // started, so it stays live until a scan has actually come back empty.
+        let live = count?.hasMatches ?? true
+        navControl.isEnabled = live
+        findAllButton.isEnabled = live
+    }
+
+    /// What the count label reads, for tests.
+    var countTextForTests: String { countLabel.stringValue }
+    /// The warning glyph's sentence, or nil when it is not shown.
+    var countWarningForTests: String? { warningView.isHidden ? nil : warningView.toolTip }
+    /// Where the stepper sits in the bar, for the test that the count's width
+    /// does not move it.
+    var navControlFrameForTests: NSRect { navControl.frame }
+    var navControlEnabledForTests: Bool { navControl.isEnabled }
+    var findAllEnabledForTests: Bool { findAllButton.isEnabled }
 
     private func setUpNavControl() {
         // Two momentary segments: pressing one runs a search, neither stays
@@ -415,6 +484,15 @@ final class FindBarView: NSView {
     /// (e.g. `selectItem(at:)` re-entrantly posting the notification crashes on
     /// an index-out-of-bounds). Defer the load to the next runloop turn, when
     /// the combo has settled.
+    /// Typing in the pattern field ends the search that was running: the count
+    /// clears, and the controller drops the pane's matches, so nothing on
+    /// screen claims to describe a pattern that is no longer in the field.
+    func controlTextDidChange(_ obj: Notification) {
+        guard (obj.object as? NSComboBox) === patternCombo else { return }
+        show(count: nil)
+        onPatternEdited?()
+    }
+
     @objc private func patternSelectionChanged() {
         let index = patternCombo.indexOfSelectedItem
         guard index >= 0 else { return }
