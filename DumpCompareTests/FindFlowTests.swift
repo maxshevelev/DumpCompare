@@ -431,6 +431,47 @@ final class FindFlowTests: XCTestCase {
                        "the stepper stays put between 1 of 9 and 128 of 4,096")
     }
 
+    /// The count is a region of the bar that comes and goes with the search.
+    /// An empty slot held open by its own template reads as a control that
+    /// failed to draw, so with no search the label leaves the layout and the
+    /// stepper closes up against the pattern field (§11).
+    func testTheCountAreaAppearsWithTheSearchAndCollapsesWithout() throws {
+        let (controller, window, url) = try makeController([0x41, 0x42, 0x41])
+        defer { cleanup(controller, url) }
+        controller.findPattern()
+        let bar = try findBar(window)
+        let (combo, _, _, _) = try barControls(window)
+
+        window.layoutIfNeeded()
+        XCTAssertFalse(bar.countShownForTests, "a bar just opened has nothing to count")
+        let stepper = bar.navControlFrameForTests.minX
+        let roomyField = bar.patternFieldWidthForTests
+
+        combo.stringValue = "41"
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(3) { bar.countTextForTests == "1 of 2" })
+        window.layoutIfNeeded()
+        XCTAssertTrue(bar.countShownForTests, "a result claims its place")
+        // The place is real, and it comes out of the pattern field — the only
+        // control that gives width up. The stepper does not budge either way:
+        // its position is what §11 pins against a climbing count.
+        XCTAssertLessThan(bar.patternFieldWidthForTests, roomyField - 60,
+                          "the count took its slot out of the field")
+        XCTAssertEqual(bar.navControlFrameForTests.minX, stepper, accuracy: 0.5,
+                       "and the stepper stayed where it was")
+
+        // An edit voids the set, and the count goes with it rather than
+        // leaving its slot behind.
+        let pane = controller.windowModel.pane1
+        pane.moveCaret(to: 1)
+        try pane.pasteWrite([0xFF])
+        window.layoutIfNeeded()
+        XCTAssertEqual(bar.countTextForTests, "")
+        XCTAssertFalse(bar.countShownForTests, "an invalidated search leaves no gap")
+        XCTAssertEqual(bar.patternFieldWidthForTests, roomyField, accuracy: 0.5,
+                       "the field has the width back")
+    }
+
     /// Past the listing limit the bar carries the reason as a glyph beside the
     /// count — the count is what proves the matches exist, so the explanation
     /// belongs next to it rather than in a message that fades.

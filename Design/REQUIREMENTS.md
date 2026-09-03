@@ -1183,7 +1183,12 @@ Match count (the Find bar):
   diagnosis of the pattern, and `> 1000` is not a diagnosis, since 1001 and
   3 000 000 call for different actions.
 - A pattern that occurs nowhere reads `Not found` there, and while nothing has
-  been searched the bar shows nothing at all.
+  been searched the bar shows nothing at all — and shows it by **leaving**:
+  the count is a region that comes and goes with the search, not a slot held
+  open by its own template. There is nothing to count before a search and
+  nothing after one is invalidated, and an empty reserved gap beside the
+  pattern field reads as a control that failed to draw. The width it gives up
+  goes to the pattern field, which is the one control on the bar that grows.
 - Past the listing limit, and in the rare case where the matches cannot be
   highlighted, a warning glyph beside the count carries the reason as its
   tooltip. The reason belongs next to the count, which is what proves the
@@ -1191,9 +1196,10 @@ Match count (the Find bar):
 - At zero matches the ‹ › stepper and Find All are disabled; editing the
   pattern clears the count and re-enables them, because a pattern being typed
   describes no search yet.
-- The count's width is fixed from a template, so a climbing number never
-  shifts the controls beside it. Digits are grouped in the reader's region
-  format.
+- While it is shown its width is fixed from a template, so a climbing number
+  never shifts the controls beside it — the stepper does not move between
+  `1 of 9` and `128 of 4,096`, nor when the count appears and goes. Digits are
+  grouped in the reader's region format.
 
 Highlighting matches in the dump and on the minimap: see
 `Design/FIND_HIGHLIGHT_PLAN.md` (in progress).

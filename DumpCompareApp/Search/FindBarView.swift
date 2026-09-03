@@ -298,10 +298,15 @@ final class FindBarView: NSView, NSComboBoxDelegate {
         countLabel.alignment = .right
         countLabel.setAccessibilityLabel("Matches")
         countLabel.translatesAutoresizingMaskIntoConstraints = false
+        // Nothing to show until a search says otherwise; `show(count:)` brings
+        // the label back and takes it away again (§11).
+        countLabel.isHidden = true
+
         // A floor wide enough for four digits either side of "of", measured
         // from a template rather than from the value: the count changes with
         // every step, and a label that resizes drags the stepper with it (§11,
-        // the same trick the results panel sizes its columns with).
+        // the same trick the results panel sizes its columns with). It holds
+        // only while the label is shown — a hidden one is out of the layout.
         let template = "8888 of 8888" as NSString
         let width = template.size(withAttributes: [.font: countLabel.font!]).width
         countLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: ceil(width)).isActive = true
@@ -318,8 +323,15 @@ final class FindBarView: NSView, NSComboBoxDelegate {
     /// Shows what the search found, or nothing when there is no search
     /// (§11). At zero the stepper and Find All go dead: there is nothing to
     /// step through and nothing to list.
+    ///
+    /// With nothing to say the label leaves the bar rather than holding its
+    /// template's width open: an empty reserved slot beside the pattern field
+    /// reads as a control that failed to draw. The stack detaches a hidden
+    /// arranged view, so the stepper closes up against the field — the same
+    /// move the case toggle makes when the encoding is hex.
     func show(count: FindCount?) {
         countLabel.stringValue = count?.text ?? ""
+        countLabel.isHidden = count == nil
         countLabel.toolTip = count?.warning
         warningView.toolTip = count?.warning
         warningView.isHidden = count?.warning == nil
@@ -344,11 +356,16 @@ final class FindBarView: NSView, NSComboBoxDelegate {
 
     /// What the count label reads, for tests.
     var countTextForTests: String { countLabel.stringValue }
+    /// Whether the count occupies any of the bar at all, for tests.
+    var countShownForTests: Bool { !countLabel.isHidden }
     /// The warning glyph's sentence, or nil when it is not shown.
     var countWarningForTests: String? { warningView.isHidden ? nil : warningView.toolTip }
     /// Where the stepper sits in the bar, for the test that the count's width
     /// does not move it.
     var navControlFrameForTests: NSRect { navControl.frame }
+    /// The pattern field's width, for the test that the count's slot is real
+    /// and that the field is what gets it back.
+    var patternFieldWidthForTests: CGFloat { patternCombo.frame.width }
     var navControlEnabledForTests: Bool { navControl.isEnabled }
     var findAllEnabledForTests: Bool { findAllButton.isEnabled }
 
