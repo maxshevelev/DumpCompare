@@ -45,6 +45,13 @@ final class EmptyStateView: NSView {
     /// it. Hidden while the window has no marks.
     private let bookmarkGrid = NSGridView(views: [])
     private let bookmarkScroll = NSScrollView()
+    /// The list's size, sized to its rows every time the list is rebuilt. Kept
+    /// so the constants can be *updated*: activating a fresh pair on each
+    /// rebuild left the old ones active too, and two different fixed heights on
+    /// one scroll view is a constraint conflict on every layout pass after the
+    /// second bookmark.
+    private var bookmarkScrollHeight: NSLayoutConstraint?
+    private var bookmarkScrollWidth: NSLayoutConstraint?
     private let bookmarkHeading = NSTextField(labelWithString: "Bookmarks")
     private var bookmarkSection: NSStackView?
 
@@ -220,10 +227,28 @@ final class EmptyStateView: NSView {
         bookmarkGrid.column(at: 0).xPlacement = .trailing
         bookmarkGrid.layoutSubtreeIfNeeded()
 
-        let wanted = min(bookmarkGrid.fittingSize.height, Self.maxBookmarkListHeight)
-        bookmarkScroll.heightAnchor.constraint(equalToConstant: wanted).isActive = true
-        bookmarkScroll.widthAnchor.constraint(
-            equalToConstant: max(220, bookmarkGrid.fittingSize.width)).isActive = true
+        let wantedHeight = min(bookmarkGrid.fittingSize.height, Self.maxBookmarkListHeight)
+        let wantedWidth = max(220, bookmarkGrid.fittingSize.width)
+        if let height = bookmarkScrollHeight, let width = bookmarkScrollWidth {
+            height.constant = wantedHeight
+            width.constant = wantedWidth
+        } else {
+            let height = bookmarkScroll.heightAnchor.constraint(equalToConstant: wantedHeight)
+            let width = bookmarkScroll.widthAnchor.constraint(equalToConstant: wantedWidth)
+            NSLayoutConstraint.activate([height, width])
+            bookmarkScrollHeight = height
+            bookmarkScrollWidth = width
+        }
+    }
+
+    /// The heights the list's scroll view is pinned to — one, however many
+    /// times the list has been rebuilt (for tests). A scroll view carries a few
+    /// zero-constant heights of its own, so only the sizing ones are counted.
+    var bookmarkListHeightsForTesting: [CGFloat] {
+        bookmarkScroll.constraints
+            .filter { $0.firstAttribute == .height && $0.firstItem === bookmarkScroll
+                        && $0.constant > 0 }
+            .map(\.constant)
     }
 
     /// What the list is showing, row by row (for tests).
