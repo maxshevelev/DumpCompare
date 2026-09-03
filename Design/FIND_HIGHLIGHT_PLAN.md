@@ -404,7 +404,7 @@ picture.
 
 ## What the build changed about this plan
 
-Three things turned out differently, and the code and §11 follow the code:
+Four things turned out differently, and the code and §11 follow the code:
 
 - **No partial sets.** The scan runs to completion before anything moves, and
   the count appears when the set lands. Publishing a set in pieces would have
@@ -419,6 +419,14 @@ Three things turned out differently, and the code and §11 follow the code:
   row there is kilobytes of aggregated content drawn as a grey tone, so a grey
   mark cannot be told from content. The current match is a yellow plate in a
   thin ink frame.
+- **The highlighting ends without the set.** Decision 7 below said the set dies
+  with the bar, and the results panel kept a copy of its own rows to survive
+  that. Two copies is two things to keep in step: an open panel went on listing
+  the previous pattern after the next search, and looked authoritative doing
+  it. Now the pane holds one set that the panel, the dump, the map and the
+  count all read, `Done`/Escape/retyping end only the *showing* of it, and
+  invalidation is the one thing that drops it — taking the panel with it.
+  Picking a row turns the showing back on.
 
 ## Decisions taken
 
@@ -437,10 +445,13 @@ Three things turned out differently, and the code and §11 follow the code:
    selection fill for that range.
 6. **A modified byte keeps its red ink inside the yellow indicator**; everything
    else goes black there.
-7. **The set dies with the pattern, the bar, or Escape** — including while a
-   results panel is open, which keeps its rows without a session behind them.
-   (The plan first had it survive behind an open panel; closing the bar reads as
-   "finished searching", and greys after that claim otherwise.)
+7. **The *highlighting* dies with the pattern, the bar, or Escape** —
+   including while a results panel is open, because closing the bar reads as
+   "finished searching" and greys after that claim otherwise. The **set**
+   survives all three and dies only of invalidation, which is what lets the
+   panel keep listing the search that was actually run. (This decision first
+   said the set itself died; see "What the build changed" above for why it
+   could not.)
 
 Nothing here is open. The first thing Stage 1 should produce is `MatchSet` with
 its tests; the first thing Stage 2 changes in the spec is §11's navigation rule.

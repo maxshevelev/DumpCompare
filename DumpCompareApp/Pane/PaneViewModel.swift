@@ -282,7 +282,10 @@ final class PaneViewModel: HexViewDataSource {
     /// Where every occurrence of the active search pattern is: the set one scan
     /// produced, read by the dump's greys, the find indicator, the count in the
     /// Find bar, the results panel and both minimap modes
-    /// (`Design/FIND_HIGHLIGHT_PLAN.md`). Nil when no search session is active.
+    /// (`Design/FIND_HIGHLIGHT_PLAN.md`). Nil until a search has been run, and
+    /// again once one is invalidated — but *not* when its highlighting merely
+    /// ended: a completed search survives `Done` so the results panel can go on
+    /// listing it (§11, `highlightsMatches`).
     ///
     /// It belongs to the pane that was searched, and to no other: greys in a
     /// file nobody searched would be a plain lie in comparison mode.
@@ -290,19 +293,62 @@ final class PaneViewModel: HexViewDataSource {
 
     /// The match the user is standing on — what the find indicator draws in
     /// yellow, and the "3" in "3 of 128". Nil between activating a search and
-    /// the first Find Next, and whenever the caret has left the matches behind.
+    /// the first Find Next, whenever the caret has left the matches behind, and
+    /// once the highlighting has ended.
     private(set) var currentMatchIndex: Int?
 
+    /// Whether the set is being *shown*: greys in the dump, marks on the map,
+    /// a count in the bar. A completed search outlives its highlighting —
+    /// `Done`, Escape and a pattern being retyped end the showing and keep the
+    /// set, which is what lets the results panel go on listing a search the
+    /// dump has stopped advertising (§11). Only an invalidation drops the set
+    /// itself.
+    private(set) var highlightsMatches = false
+
     /// Fired when the set or the current match changed, so the dump repaints,
-    /// the map re-reads and the Find bar's count refreshes. Not a content
-    /// channel: no byte moved, and nothing here may scroll.
+    /// the map re-reads, the results panel re-reads and the Find bar's count
+    /// refreshes. Not a content channel: no byte moved, and nothing here may
+    /// scroll.
     var onMatchesChanged: (() -> Void)?
 
-    /// Installs a scan's result. `current` is clamped to the set, so a stale
-    /// ordinal from a previous pattern can never point past the new one.
+    /// The set as far as everything that *draws* it is concerned: nil once the
+    /// highlighting ended, even though the set is still there for the results
+    /// panel to list (§11).
+    var highlightedMatchSet: MatchSet? { highlightsMatches ? matchSet : nil }
+
+    /// Installs a scan's result, and shows it: a search was just activated.
+    /// `current` is clamped to the set, so a stale ordinal from a previous
+    /// pattern can never point past the new one.
     func setMatches(_ set: MatchSet?, current: Int? = nil) {
         matchSet = set
         currentMatchIndex = Self.clamped(current, to: set)
+        highlightsMatches = set != nil
+        onMatchesChanged?()
+    }
+
+    /// Shows the set the pane already holds — the greys and the plate come
+    /// back, on `current` when one is named (a row picked out of the results
+    /// panel names one; a step through the set computes its own).
+    ///
+    /// Unconditionally announced, unlike `setCurrentMatch`: the same match can
+    /// be picked twice, and the second pick is the one that has to turn the
+    /// highlighting back on.
+    func highlightMatches(current index: Int? = nil) {
+        guard matchSet != nil else { return }
+        highlightsMatches = true
+        currentMatchIndex = Self.clamped(index ?? currentMatchIndex, to: matchSet)
+        onMatchesChanged?()
+    }
+
+    /// Ends the showing and keeps the set (§11): the dump, the map and the
+    /// count go quiet, while the results panel keeps listing the search that
+    /// was actually run. The indicator's ordinal goes with the greys — nothing
+    /// remembers it, because every way back in (a step, a picked row) says
+    /// which match it wants.
+    func endMatchHighlighting() {
+        guard highlightsMatches || currentMatchIndex != nil else { return }
+        highlightsMatches = false
+        currentMatchIndex = nil
         onMatchesChanged?()
     }
 
@@ -316,11 +362,14 @@ final class PaneViewModel: HexViewDataSource {
         onMatchesChanged?()
     }
 
-    /// Ends the search session: no pattern, no greys, no indicator.
+    /// Drops the set itself: no matches, no greys, no indicator, nothing left
+    /// for the results panel to list. This is invalidation — the offsets
+    /// stopped being true — not the end of a session (§11).
     func clearMatches() {
-        guard matchSet != nil || currentMatchIndex != nil else { return }
+        guard matchSet != nil || currentMatchIndex != nil || highlightsMatches else { return }
         matchSet = nil
         currentMatchIndex = nil
+        highlightsMatches = false
         onMatchesChanged?()
     }
 
@@ -335,7 +384,7 @@ final class PaneViewModel: HexViewDataSource {
     /// set is too large to hold positions for (the greys are withheld then, and
     /// the Find bar says why).
     func matchRanges(intersecting range: Range<UInt64>) -> [Range<UInt64>] {
-        guard let matchSet, matchSet.isHighlightable else { return [] }
+        guard let matchSet = highlightedMatchSet, matchSet.isHighlightable else { return [] }
         return matchSet.matches(intersecting: range)
     }
 

@@ -652,9 +652,11 @@ final class MainViewController: NSViewController {
             self?.hideFindBar()
         }
         // A pattern being typed describes no search yet, so the one that was
-        // running ends — count and greys together (§11).
+        // running stops being shown — count and greys together (§11). Its set
+        // stays: the file has not moved under it, so a results panel listing it
+        // is still telling the truth, until the next search replaces it.
         findBar.onPatternEdited = { [weak self] in
-            self?.activePane.clearMatches()
+            self?.activePane.endMatchHighlighting()
         }
         view.addSubview(findBar)
 
@@ -2163,7 +2165,8 @@ final class MainViewController: NSViewController {
     /// matches — by then the row says all it can say at this scale.
     private static func matchOverlay(for pane: PaneViewModel?, binning: OverviewBinning,
                                      rowCount: Int, extent: UInt64) -> MinimapView.MatchOverlay {
-        guard let pane, pane.isOpen, let set = pane.matchSet, set.isHighlightable else {
+        guard let pane, pane.isOpen, let set = pane.highlightedMatchSet,
+              set.isHighlightable else {
             return .empty
         }
         let perRowMarkLimit = 32
@@ -4840,18 +4843,16 @@ final class MainViewController: NSViewController {
         findBar.isHidden = true
         contentTopToFindBar.isActive = false
         contentTopToView.isActive = true
-        // Nothing survives the bar's dismissal except an open results panel,
-        // and that panel holds its rows itself — the scan that filled it is
-        // long done (§11).
         findTask?.cancel()
         findOperation?.finish()
         // The highlighting ends with the bar, always: Done and Esc mean "I am
         // finished searching", and greys left on the dump after that claim a
-        // search is still running. An open results panel keeps its rows — it is
-        // a list that was asked for, and its offsets are still true — but it no
-        // longer has a session behind it (§11).
+        // search is still running. The *set* survives, so an open results panel
+        // goes on listing the search that was actually run — its offsets are
+        // still true — until an edit invalidates it or a new search replaces it
+        // (§11).
         for pane in [windowModel.pane1, windowModel.pane2] {
-            pane.clearMatches()
+            pane.endMatchHighlighting()
         }
         focusActiveHexView()
     }
@@ -4949,6 +4950,7 @@ final class MainViewController: NSViewController {
         guard set.isHighlightable else {
             // Past the index ceiling the positions were never kept, so the step
             // is a scan — with a wrap, since the count proves matches exist.
+            pane.highlightMatches()
             runCountedSearch(set: set, direction: direction, in: pane)
             return
         }
@@ -4961,7 +4963,10 @@ final class MainViewController: NSViewController {
         }
         guard let range = set.range(at: index) else { return }
         pane.select(range: range)
-        pane.setCurrentMatch(index)
+        // A step is a search being shown again, which it may not have been: the
+        // set outlives its highlighting, so `Done` then Enter steps through the
+        // set the pane still holds and lights it back up (§11).
+        pane.highlightMatches(current: index)
         // A match already on screen moves the highlight, not the page; one off
         // screen is centred. The caret's own rule (§10.4) — and the reason a
         // walk through a cluster of matches no longer jerks the view a row at a
@@ -5061,7 +5066,7 @@ final class MainViewController: NSViewController {
     /// or nothing at all (§11). Driven by every change to the set or the
     /// current match, and by the bar opening.
     private func refreshFindCount() {
-        findBar.show(count: FindCount.reading(of: activePane.matchSet,
+        findBar.show(count: FindCount.reading(of: activePane.highlightedMatchSet,
                                               current: activePane.currentMatchIndex))
     }
 
@@ -5071,7 +5076,8 @@ final class MainViewController: NSViewController {
     ///
     /// An overwrite could in principle be patched in place (`MatchSet.splice`),
     /// which is what the plan's edit stage is for; until then any edit ends the
-    /// session.
+    /// session — and takes an open results panel with it, since the pane's view
+    /// follows the set it is listing (§11).
     private func invalidateMatches(in pane: PaneViewModel?) {
         pane?.clearMatches()
     }
@@ -5125,10 +5131,10 @@ final class MainViewController: NSViewController {
             findBar.setResultsShown(false)
             return
         }
-        let content: SearchResultsViewController.Content = set.isListable
-            ? .matches(set.matches(intersecting: 0..<max(set.extent, 1)))
-            : .tooMany(total: set.total)
-        paneView.showSearchResults(content, patternLength: set.patternLength)
+        // Nothing is handed over: the panel lists the pane's own set, and stays
+        // level with it from then on — a new search rewrites its rows, and an
+        // invalidation takes it down (§11).
+        paneView.showSearchResults()
         findBar.setResultsShown(true)
     }
 

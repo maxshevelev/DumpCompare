@@ -476,9 +476,14 @@ final class FilePaneView: NSView {
             // Picking a row is a jump to that match (§11): it is selected, the
             // find indicator moves onto it — the row and the plate must not
             // disagree about where the user is — and it hops, as a step does.
+            //
+            // It also *turns the highlighting on*, whether or not the bar is
+            // still open: a row picked out of a list is the user pointing at
+            // one occurrence among many, and the greys are what say where the
+            // others are (§11).
             self.viewModel.select(range: range)
             if let index = self.viewModel.matchSet?.index(startingAt: range.lowerBound) {
-                self.viewModel.setCurrentMatch(index)
+                self.viewModel.highlightMatches(current: index)
                 self.bounceFindIndicator()
             }
             // A row picked from a list is a deliberate jump, so it is centred
@@ -628,6 +633,7 @@ final class FilePaneView: NSView {
         // navigation that moved the caret (§11, §10.4).
         viewModel.onMatchesChanged = { [weak self] in
             self?.hexView.needsDisplay = true
+            self?.syncSearchResults()
             self?.onMatchesChanged?()
         }
         // When the companion's selection changed, this pane's mirror frames
@@ -904,15 +910,31 @@ final class FilePaneView: NSView {
     /// What the panel *shows* is its own controller's business, including how a
     /// row reads the pane's live bytes. What is left here is what the pane
     /// arranges: that the panel is on screen at all, and how tall it is (§11).
-    /// Opens the results panel showing `content` (§11). The search's set
-    /// already exists by the time this is called — the scan that built it is the
-    /// one feeding the dump's highlighting — so the panel opens filled rather
-    /// than empty and growing.
-    func showSearchResults(_ content: SearchResultsViewController.Content,
-                           patternLength: Int) {
-        searchResults.show(content, patternLength: patternLength)
+    /// Opens the results panel on the pane's own set (§11). That set already
+    /// exists by the time this is called — the scan that built it is the one
+    /// feeding the dump's highlighting — so the panel opens filled rather than
+    /// empty and growing, and there is nothing to hand it.
+    func showSearchResults() {
+        searchResults.show()
         searchResultsPanelVisible = true
         applySearchResultsHeight()
+    }
+
+    /// Keeps an open results panel level with the pane's set (§11).
+    ///
+    /// One set, one list: a new search replaces the rows, an end of
+    /// highlighting leaves them alone (the search was still run, and its
+    /// offsets are still true), and an invalidation takes the panel down with
+    /// the set — a list of offsets the file no longer has is worse than no
+    /// list.
+    private func syncSearchResults() {
+        guard searchResultsPanelVisible else { return }
+        guard viewModel.matchSet != nil else {
+            onSearchResultsClose?(self)
+            hideSearchResults()
+            return
+        }
+        searchResults.reload()
     }
 
     /// Hides and clears the Search All results panel (the ×, or a structural

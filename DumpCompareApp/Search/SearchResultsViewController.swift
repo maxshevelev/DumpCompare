@@ -33,17 +33,21 @@ import DumpCompareCore
 /// renders and scrolls without materializing every excerpt.
 @MainActor
 final class SearchResultsViewController: NSViewController {
-    /// Fired when the user clicks a result row, with the match's byte range.
-    /// What the panel is showing (§11).
+    /// What the panel is showing (§11) — derived from the pane's set on every
+    /// read, never a copy of it.
     enum Content: Equatable {
-        /// These matches, as rows.
-        case matches([Range<UInt64>])
+        /// The pane's matches, as rows.
+        case matches(total: Int)
         /// Too many to list: the count and the reason instead of rows. A list of
         /// four thousand rows looks exactly like a list of forty until you
         /// scroll to the end, so it would impersonate a tool.
         case tooMany(total: Int)
+        /// Nothing to list: the search being shown found nothing — or the
+        /// panel is hidden, where nobody reads it either way.
+        case empty
     }
 
+    /// Fired when the user clicks a result row, with the match's byte range.
     var onSelect: ((Range<UInt64>) -> Void)?
 
     /// Fired when the user closes the panel (the ×).
@@ -56,30 +60,57 @@ final class SearchResultsViewController: NSViewController {
     let tableView = NSTableView()
     private let scrollView = NSScrollView()
 
-    /// The matches to show, in file order.
-    private var matches: [Range<UInt64>] = []
+    /// Whether the panel is presenting the pane's search. Cleared by `clear()`,
+    /// so a hidden panel lists nothing even where the pane's set outlives it.
+    private var isPresenting = false
+
+    /// The set the rows come from: the pane's own, read live. Not a copy — the
+    /// scan behind the dump's highlighting is the one this lists, and a second
+    /// copy is a second thing to keep in step (§11).
+    private var matchSet: MatchSet? { isPresenting ? pane.matchSet : nil }
+
+    /// The matches the table lists, in file order — none past the listing
+    /// limit, and none for a set whose positions were never kept.
+    private var listedCount: Int {
+        guard let set = matchSet, set.isListable, set.isHighlightable else { return 0 }
+        return set.total
+    }
+
+    /// The match a table row stands for, read out of the set on demand — the
+    /// table asks only for the rows it draws.
+    private func match(atRow row: Int) -> Range<UInt64>? {
+        guard row >= 0, row < listedCount else { return nil }
+        return matchSet?.range(at: row)
+    }
+
+    /// The bytes an excerpt shows, read from the pane's live storage.
+    private func bytes(in window: Range<UInt64>) -> [UInt8] {
+        guard let storage = pane.byteStorage else { return [] }
+        return (try? storage.read(at: window.lowerBound, length: Int(window.count))) ?? []
+    }
+
+    /// The matches the table is listing. For tests: the rows are read from the
+    /// pane's set one at a time, so there is no array to inspect.
+    var listedMatchesForTesting: [Range<UInt64>] {
+        (0..<listedCount).compactMap { match(atRow: $0) }
+    }
+
     /// What the panel is showing — rows, or a count and the reason there are no
     /// rows (§11).
-    private(set) var content: Content = .matches([])
+    private(set) var content: Content = .empty
     /// Shown instead of the table past the listing limit.
     private let messageLabel = NSTextField(labelWithString: "")
-    /// Reads `length` bytes at `offset` from the pane's live storage (clamped
-    /// to EOF) for the row excerpts.
-    private var byteProvider: ((UInt64, Int) -> [UInt8])?
-    /// Decodes the excerpt bytes into the same characters the hex dump shows.
-    private var textDecoder: (any TextDecoder)?
-    /// The pane's file size, for clamping excerpt windows.
-    /// Reads the pane's current file size. A closure, not a snapshot: the panel
-    /// stays open across edits, and a size taken once would clamp the excerpt
-    /// windows (and size the offset column) against a length the file no longer
-    /// has (§11).
-    /// The pattern's length in bytes for the search on show. Every excerpt
+
+    /// The pattern's length in bytes for the search being shown. Every excerpt
     /// covers `2 * excerptPadding + matchLength` bytes, so it fixes the widest
     /// value each column can hold.
-    private var matchLength = 1
+    private var matchLength: Int { matchSet?.patternLength ?? 1 }
 
-    private var fileSizeProvider: (() -> UInt64)?
-    private var fileSize: UInt64 { fileSizeProvider?() ?? 0 }
+    /// The pane's current file size, read live rather than snapshotted: the
+    /// panel stays open across edits, and a size taken once would clamp the
+    /// excerpt windows (and size the offset column) against a length the file
+    /// no longer has (§11).
+    private var fileSize: UInt64 { pane.fileSize }
 
     /// How many leading/trailing bytes an excerpt adds around a match.
     private static let excerptPadding: UInt64 = 8
@@ -247,34 +278,38 @@ final class SearchResultsViewController: NSViewController {
 
     // MARK: - What the panel is showing (§11)
 
-    /// Shows a completed search's results (§11).
+    /// Shows the pane's completed search (§11).
     ///
-    /// There is no streaming any more: the search's set already exists by the
-    /// time the panel opens, because the scan that produced it is the one
-    /// feeding the dump's highlighting (`Design/FIND_HIGHLIGHT_PLAN.md`). Past
-    /// the listing limit the panel says the count and why, instead of listing.
+    /// There is no streaming any more, and nothing to hand in: the set already
+    /// exists by the time the panel opens, because the scan that produced it is
+    /// the one feeding the dump's highlighting
+    /// (`Design/FIND_HIGHLIGHT_PLAN.md`), and it is the pane that holds it.
+    /// Past the listing limit the panel says the count and why, instead of
+    /// listing.
     ///
     /// The row wiring lives here rather than being handed in by the pane's
     /// view: what a row reads is the panel's business, and a panel presented
     /// some other way would need exactly the same answer.
-    func show(_ content: Content, patternLength: Int) {
-        let pane = self.pane
-        let matches: [Range<UInt64>]
-        switch content {
-        case .matches(let found): matches = found
-        case .tooMany: matches = []
-        }
-        configure(
-            matches: matches,
-            byteProvider: { [weak pane] offset, length in
-                guard let storage = pane?.byteStorage else { return [] }
-                return (try? storage.read(at: offset, length: length)) ?? []
-            },
-            textDecoder: pane.textDecoder,
-            fileSize: { [weak pane] in pane?.fileSize ?? 0 },
-            matchLength: patternLength)
-        self.content = content
+    func show() {
+        isPresenting = true
+        reload()
+    }
+
+    /// Re-reads the pane's set: a new search replaced it, or its highlighting
+    /// came and went. The panel and the dump can never be showing two
+    /// different searches, because there is only one set to show (§11).
+    func reload() {
+        guard isPresenting else { return }
+        content = Self.content(of: matchSet)
+        sizeColumnsToContent()
         applyContent()
+    }
+
+    /// What a set reads as: rows, a count and a refusal, or nothing at all.
+    private static func content(of set: MatchSet?) -> Content {
+        guard let set, set.total > 0 else { return .empty }
+        guard set.isListable, set.isHighlightable else { return .tooMany(total: set.total) }
+        return .matches(total: set.total)
     }
 
     private func setUpTable() {
@@ -316,26 +351,6 @@ final class SearchResultsViewController: NSViewController {
 
     // MARK: - Content
 
-    /// Shows `matches` for the current search: sizes the columns, updates the
-    /// header's count and reloads the table. `byteProvider` reads the pane's live
-    /// storage and `textDecoder` decodes the excerpt the same way the dump does.
-    /// `matchLength` is the pattern's length in bytes — it fixes how wide the
-    /// excerpt columns need to be (§11).
-    private func configure(matches: [Range<UInt64>],
-                   byteProvider: @escaping (UInt64, Int) -> [UInt8],
-                   textDecoder: any TextDecoder,
-                   fileSize: @escaping () -> UInt64,
-                   matchLength: Int) {
-        self.matches = matches
-        self.byteProvider = byteProvider
-        self.textDecoder = textDecoder
-        self.fileSizeProvider = fileSize
-        self.matchLength = matchLength
-        sizeColumnsToContent()
-        updateHeader()
-        tableView.reloadData()
-    }
-
     /// Switches between the table and the message, and refreshes the header.
     private func applyContent() {
         switch content {
@@ -345,6 +360,13 @@ final class SearchResultsViewController: NSViewController {
         case .tooMany(let total):
             messageLabel.stringValue = "\(Self.grouped(total)) matches — too many to list. "
                 + "Refine the pattern."
+            messageLabel.isHidden = false
+            scrollView.isHidden = true
+        case .empty:
+            // A search that replaced the panel's rows with nothing says so
+            // where the rows were. An empty table would read as a panel that
+            // failed to load rather than as a pattern that occurs nowhere.
+            messageLabel.stringValue = "No matches."
             messageLabel.isHidden = false
             scrollView.isHidden = true
         }
@@ -388,10 +410,10 @@ final class SearchResultsViewController: NSViewController {
 
     private func updateHeader() {
         switch content {
-        case .matches(let found):
-            headerLabel.stringValue = "Search results (\(Self.grouped(found.count)))"
-        case .tooMany(let total):
+        case .matches(let total), .tooMany(let total):
             headerLabel.stringValue = "Search results (\(Self.grouped(total)))"
+        case .empty:
+            headerLabel.stringValue = "Search results (0)"
         }
     }
 
@@ -403,13 +425,11 @@ final class SearchResultsViewController: NSViewController {
         return formatter.string(from: NSNumber(value: value)) ?? String(value)
     }
 
-    /// Forgets the current results (used when hiding the panel).
+    /// Stops presenting (used when hiding the panel). The pane's set is not
+    /// touched: hiding a list is not the end of the search it listed (§11).
     func clear() {
-        matches = []
-        byteProvider = nil
-        fileSizeProvider = nil
-        textDecoder = nil
-        content = .matches([])
+        isPresenting = false
+        content = .empty
         applyContent()
     }
 
@@ -421,8 +441,8 @@ final class SearchResultsViewController: NSViewController {
         // A real click sets `clickedRow`; fall back to the selection so a
         // programmatic selection (tests, keyboard) reaches the same path.
         let row = tableView.clickedRow >= 0 ? tableView.clickedRow : tableView.selectedRow
-        guard row >= 0, row < matches.count else { return }
-        onSelect?(matches[row])
+        guard let match = match(atRow: row) else { return }
+        onSelect?(match)
     }
 
     // MARK: - Excerpts
@@ -483,12 +503,11 @@ final class SearchResultsViewController: NSViewController {
 
 extension SearchResultsViewController: NSTableViewDataSource, NSTableViewDelegate {
     func numberOfRows(in tableView: NSTableView) -> Int {
-        matches.count
+        listedCount
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-        guard let tableColumn, row < matches.count else { return nil }
-        let match = matches[row]
+        guard let tableColumn, let match = match(atRow: row) else { return nil }
         let identifier = tableColumn.identifier
         let cell = (tableView.makeView(withIdentifier: identifier, owner: self) as? SearchResultCellView)
             ?? SearchResultCellView(identifier: identifier)
@@ -502,14 +521,12 @@ extension SearchResultsViewController: NSTableViewDataSource, NSTableViewDelegat
             cell.attributedText = offsetText(match.lowerBound)
         case ColumnID.hex:
             let (window, matchLocal) = excerptWindow(for: match)
-            let bytes = byteProvider?(window.lowerBound, Int(window.count)) ?? []
+            let bytes = bytes(in: window)
             cell.attributedText = hexExcerpt(bytes: bytes, matchLocal: matchLocal)
         case ColumnID.text:
             let (window, matchLocal) = excerptWindow(for: match)
-            let bytes = byteProvider?(window.lowerBound, Int(window.count)) ?? []
-            if let decoder = textDecoder {
-                cell.attributedText = textExcerpt(bytes: bytes, matchLocal: matchLocal, decoder: decoder)
-            }
+            cell.attributedText = textExcerpt(bytes: bytes(in: window), matchLocal: matchLocal,
+                                              decoder: pane.textDecoder)
         default:
             break
         }

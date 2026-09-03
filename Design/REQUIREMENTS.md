@@ -1114,13 +1114,21 @@ Search navigation:
   direction while the scan was directional and could not know whether anything
   lay behind the caret; the set removed that ignorance, and the wrap removed
   the rule.)
-- The set lives as long as the search: it ends when the pattern changes, when
-  the Find bar closes — by `Done` or Escape, and **whether or not** a results
-  panel is open, because closing the bar means "I am finished searching" and
-  greys left behind would claim otherwise — and when the pane's content changes
-  under it, since after an edit every offset in it would be a guess. An open
-  results panel keeps its rows: it is a list that was asked for, and its
-  offsets are still true; it simply no longer has a session behind it.
+- The **highlighting** and the **set** have different lifetimes, and the
+  difference is what keeps the results panel honest:
+  - The highlighting — the greys, the indicator, the marks on the map, the
+    count in the bar — ends when the pattern in the field changes, and when the
+    Find bar closes by `Done` or Escape, **whether or not** a results panel is
+    open: closing the bar means "I am finished searching", and greys left
+    behind would claim otherwise. It comes back on the next step through the
+    set, and on a row picked out of the results panel.
+  - The set itself outlives that. It is dropped only by **invalidation**: the
+    pane's content changed under it, so every offset in it would be a guess.
+    Then the greys, the count *and* the results panel go together — a list of
+    offsets the file no longer has is worse than no list.
+  - A new search replaces the set, and everything showing it follows in the
+    same move; there is never a moment where the panel lists one search and the
+    dump highlights another.
 
 The results panel:
 
@@ -1130,6 +1138,12 @@ The results panel:
   rows already in place rather than filling as a scan streams in. A pattern
   that has been typed but not yet searched is scanned first, and the panel
   opens on the result.
+- The panel and the highlighting read **one set** — the pane's own — rather
+  than each holding a copy. So an open panel is always level with the search
+  that is current: activating another pattern rewrites its rows and its header,
+  and a search that finds nothing leaves it saying so where the rows were. Two
+  copies would be two things to keep in step, and the one that fell behind
+  would still look authoritative.
 - The Find bar's results control is therefore a **toggle**: it shows the panel,
   and pressing it again hides it. It reads as on while the panel is up, and a
   search that found nothing opens no panel at all — the bar already says
@@ -1139,14 +1153,16 @@ The results panel:
   A list of four thousand rows looks exactly like a list of forty until you
   scroll to the end, so it would impersonate a tool. The count is exact either
   way, because the count is the diagnosis.
-- The panel has its own close control, which hides it and forgets its rows —
+- The panel has its own close control, which hides it and stops it listing —
   the search itself is untouched, since the pattern in the field has not
   changed. Dismissing the Find bar leaves the panel open but ends the
   highlighting (above); a change of window mode closes it, since the pane it
   belongs to is rebuilt.
 - Picking a row jumps to that match: it is selected, centred, and the find
   indicator moves onto it, so the row and the plate cannot disagree about where
-  the user is.
+  the user is. It also **turns the highlighting back on** if it had ended —
+  picking one occurrence out of a list is exactly when the user wants to see
+  where the others are.
 - Excerpts and offsets are read from the pane's live content, so they follow
   edits made while the panel is open.
 - Column widths default to the width of the values they hold, not to fixed

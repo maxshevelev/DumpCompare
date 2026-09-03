@@ -494,7 +494,7 @@ final class MinimapTests: XCTestCase {
         XCTAssertGreaterThan(mapHeight, 100, "premise: the window is tall enough to matter")
 
         let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
-        paneView.showSearchResults(.matches([0..<2]), patternLength: 2)
+        paneView.showSearchResults()
         window.layoutIfNeeded()
         // The panel re-aligns its chrome to the dump in its own `layout()`, and
         // opening the results panel does not resize the panel itself — so ask
@@ -523,7 +523,7 @@ final class MinimapTests: XCTestCase {
         let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
 
         // Panel first, minimap second.
-        paneView.showSearchResults(.matches([0..<2]), patternLength: 2)
+        paneView.showSearchResults()
         window.layoutIfNeeded()
         controller.setMinimapPanelVisible(true, animated: false)
         window.layoutIfNeeded()

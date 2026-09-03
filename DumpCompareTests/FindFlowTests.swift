@@ -392,7 +392,8 @@ final class FindFlowTests: XCTestCase {
     }
 
     /// Typing a new pattern also ends the highlighting the old one earned:
-    /// nothing on screen may describe a pattern that is not in the field.
+    /// nothing on screen may describe a pattern that is not in the field. The
+    /// set itself stays — see `testTypingANewPatternStopsTheGreysAndLeavesThePanel`.
     func testEditingThePatternEndsTheSession() throws {
         let bytes: [UInt8] = [0xAA, 0x00, 0xAA]
         let (controller, window, url) = try makeController(bytes)
@@ -407,7 +408,8 @@ final class FindFlowTests: XCTestCase {
 
         combo.stringValue = "AA 00"
         NotificationCenter.default.post(name: NSControl.textDidChangeNotification, object: combo)
-        XCTAssertNil(pane.matchSet, "the greys belonged to the pattern that was there")
+        XCTAssertFalse(pane.highlightsMatches, "the greys belonged to the pattern that was there")
+        XCTAssertNil(pane.highlightedMatchSet, "so nothing draws them")
     }
 
     /// The count's width is fixed by a template, so a four-figure count does
@@ -491,7 +493,8 @@ final class FindFlowTests: XCTestCase {
     }
 
     /// The session ends with the bar — nothing left on screen claims a search
-    /// is active.
+    /// is active. What ends is the *showing*; the set stays, which is what the
+    /// results panel goes on listing (§11).
     func testClosingTheBarEndsTheSession() throws {
         let bytes: [UInt8] = [0xAA, 0x00, 0xAA]
         let (controller, window, url) = try makeController(bytes)
@@ -506,7 +509,8 @@ final class FindFlowTests: XCTestCase {
 
         let (_, _, done, _) = try barControls(window)
         done.performClick(nil)
-        XCTAssertNil(pane.matchSet)
+        XCTAssertNil(pane.highlightedMatchSet)
+        XCTAssertNil(pane.currentMatchIndex)
 
         // And Escape, which is the other way out of the bar.
         controller.findPattern()
@@ -520,7 +524,7 @@ final class FindFlowTests: XCTestCase {
                                    charactersIgnoringModifiers: "\u{1B}",
                                    isARepeat: false, keyCode: 53)!
         _ = window.performKeyEquivalent(with: esc)
-        XCTAssertTrue(pumpUntil(2) { pane.matchSet == nil },
+        XCTAssertTrue(pumpUntil(2) { !pane.highlightsMatches },
                       "Escape ends the session too")
     }
 
@@ -543,7 +547,7 @@ final class FindFlowTests: XCTestCase {
 
         let (_, _, done, _) = try barControls(window)
         done.performClick(nil)
-        XCTAssertNil(pane.matchSet, "the highlighting goes with the bar")
+        XCTAssertNil(pane.highlightedMatchSet, "the highlighting goes with the bar")
         XCTAssertEqual(panel.tableView.numberOfRows, 2,
                        "the panel keeps the rows it was asked for")
     }
@@ -1114,7 +1118,9 @@ final class FindFlowTests: XCTestCase {
         let view = try runSearchAll("DE AD", in: window)
         XCTAssertEqual(view.tableView.numberOfRows, 2)
         XCTAssertEqual(headerText(of: view), "Search results (2)")
-        XCTAssertEqual(view.content, .matches([0..<2, 3..<5]))
+        XCTAssertEqual(view.content, .matches(total: 2))
+        XCTAssertEqual(view.listedMatchesForTesting, [0..<2, 3..<5],
+                       "and the rows are the set's own matches, read out of it")
     }
 
     func testSearchAllBoldsTheMatchInExcerpts() throws {
@@ -1641,6 +1647,131 @@ final class FindFlowTests: XCTestCase {
         XCTAssertTrue(paneView.searchResultsPanelVisible,
                       "the results panel stays open")
         XCTAssertEqual(view.tableView.numberOfRows, 2, "with its rows intact")
+    }
+
+    /// One set, one list: activating a *different* search rewrites the panel's
+    /// rows rather than leaving the previous search's on screen. The panel and
+    /// the dump read the same set, so they cannot be showing two searches.
+    func testANewSearchRewritesThePanelsRows() throws {
+        let bytes: [UInt8] = [0xDE, 0xAD, 0x00, 0xDE, 0xAD, 0x11, 0x22, 0x11, 0x22, 0x11, 0x22]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let view = try runSearchAll("DE AD", in: window)
+        XCTAssertEqual(view.listedMatchesForTesting, [0..<2, 3..<5], "the premise")
+
+        // A new pattern, searched from the bar while the panel stays open.
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "11 22"
+        try clickFindNext(window)
+
+        XCTAssertTrue(pumpUntil(3) { view.listedMatchesForTesting.count == 3 },
+                      "the panel must follow the search that is now active")
+        XCTAssertEqual(view.listedMatchesForTesting, [5..<7, 7..<9, 9..<11])
+        XCTAssertEqual(headerText(of: view), "Search results (3)",
+                       "header and rows are the same set")
+        XCTAssertTrue(hasCount("1 of 3", in: window), "and so is the bar's count")
+    }
+
+    /// Dismissing the bar ends the *highlighting* and keeps the *set*: the
+    /// search was run, its offsets are still true, and the panel goes on
+    /// listing it until something invalidates it (§11).
+    func testDoneEndsTheHighlightingAndKeepsTheSet() throws {
+        let bytes: [UInt8] = [0xDE, 0xAD, 0x00, 0xDE, 0xAD, 0x00]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let view = try runSearchAll("DE AD", in: window)
+        try clickFindNext(window)
+        let pane = controller.windowModel.pane1
+        XCTAssertTrue(pumpUntil(3) { pane.highlightsMatches && pane.currentMatchIndex == 0 },
+                      "the premise: a search is being shown")
+
+        let (_, _, done, _) = try barControls(window)
+        done.performClick(nil)
+
+        XCTAssertFalse(pane.highlightsMatches, "the dump stops advertising the search")
+        XCTAssertNil(pane.currentMatchIndex, "and the indicator goes with the greys")
+        XCTAssertNil(pane.highlightedMatchSet, "so nothing draws it")
+        XCTAssertNotNil(pane.matchSet, "but the set itself survives")
+        XCTAssertEqual(view.listedMatchesForTesting, [0..<2, 3..<5], "and the panel still lists it")
+    }
+
+    /// Picking a row out of the panel turns the highlighting back on — the
+    /// greys are what say where the *other* occurrences are, and a row picked
+    /// from a list is the user pointing at one of them (§11).
+    func testPickingARowTurnsTheHighlightingBackOn() throws {
+        let bytes: [UInt8] = [0xDE, 0xAD, 0x00, 0xDE, 0xAD, 0x00]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let view = try runSearchAll("DE AD", in: window)
+        let (_, _, done, _) = try barControls(window)
+        done.performClick(nil)
+        let pane = controller.windowModel.pane1
+        XCTAssertFalse(pane.highlightsMatches, "the premise: no highlighting, panel still listing")
+
+        clickResultRow(1, in: view)
+
+        XCTAssertTrue(pane.highlightsMatches, "the greys are back")
+        XCTAssertEqual(pane.currentMatchIndex, 1, "on the row that was picked")
+        XCTAssertEqual(pane.currentMatchRange, 3..<5, "which is where the plate is")
+        XCTAssertEqual(pane.hexSelection().start, 3, "and the match is selected")
+    }
+
+    /// Retyping the pattern ends the highlighting (the field describes no
+    /// search yet) but leaves the panel listing the search that *was* run: the
+    /// file has not moved, so those offsets are still true.
+    func testTypingANewPatternStopsTheGreysAndLeavesThePanel() throws {
+        let bytes: [UInt8] = [0xDE, 0xAD, 0x00, 0xDE, 0xAD, 0x00]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let view = try runSearchAll("DE AD", in: window)
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "DE AD B"
+        NotificationCenter.default.post(name: NSControl.textDidChangeNotification, object: combo)
+
+        let pane = controller.windowModel.pane1
+        XCTAssertFalse(pane.highlightsMatches, "a pattern being typed describes no search")
+        XCTAssertTrue(hasCount("", in: window), "so the count goes too")
+        let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
+        XCTAssertTrue(paneView.searchResultsPanelVisible, "the panel stays")
+        XCTAssertEqual(view.listedMatchesForTesting, [0..<2, 3..<5], "listing what was run")
+    }
+
+    /// An edit is the one thing that voids the results: every offset in the set
+    /// becomes a guess, so the set goes — and the panel goes with it, because a
+    /// list of offsets the file no longer has is worse than no list (§11).
+    func testAnEditTakesThePanelDownWithTheSet() throws {
+        let bytes: [UInt8] = [0xDE, 0xAD, 0x00, 0xDE, 0xAD, 0x00]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        _ = try runSearchAll("DE AD", in: window)
+        let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
+        let bar = try findBar(window)
+        XCTAssertTrue(paneView.searchResultsPanelVisible, "the premise")
+
+        let pane = controller.windowModel.pane1
+        pane.moveCaret(to: 2)
+        try pane.pasteWrite([0xFF])
+
+        XCTAssertNil(pane.matchSet, "the set is void")
+        XCTAssertFalse(paneView.searchResultsPanelVisible, "and the list goes with it")
+        XCTAssertFalse(bar.resultsShownForTests, "the bar's toggle follows")
+    }
+
+    /// Clicks a result row the way the table does — a selection plus the
+    /// table's own action, which is what a real click sends.
+    private func clickResultRow(_ row: Int, in view: SearchResultsViewController) {
+        view.tableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        _ = NSApp.sendAction(view.tableView.action!, to: view.tableView.target, from: view.tableView)
     }
 
     // MARK: - Column widths follow the values (§11)
