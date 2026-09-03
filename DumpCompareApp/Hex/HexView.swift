@@ -1576,17 +1576,40 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// it: the pop grows the bubble by a couple of points, which stays inside
     /// the rows it already spans plus the padding around them.
     private func redrawFindIndicatorRows() {
-        guard let match = dataSource?.hexCurrentMatch() else {
+        guard let rect = indicatorDamageRect() else {
             setNeedsDisplay(bounds)
             return
         }
+        setNeedsDisplay(rect)
+    }
+
+    /// Everything the find indicator can paint over during a hop: the rows its
+    /// match crosses, grown by the plate's own growth at the top of the hop and
+    /// by the furthest its shadow can then reach.
+    ///
+    /// The generous margin is the fix for a real artifact, not caution. The
+    /// plate is drawn during whatever repaint is in flight — often a full one,
+    /// the first time a match is shown after the view has scrolled — so its peak
+    /// shadow lands wherever it reaches, while the frames that follow only
+    /// invalidated the rows plus a couple of points. On macOS 15 that left the
+    /// outer ring of the peak shadow on screen for good: a second, larger
+    /// shadow around the settled plate. Nil when there is no current match.
+    func indicatorDamageRect() -> NSRect? {
+        guard let match = dataSource?.hexCurrentMatch(), match.lowerBound < match.upperBound
+        else { return nil }
         let layout = currentLayout
         let firstRow = Int(match.lowerBound / UInt64(HexLayout.bytesPerRow))
         let lastRow = Int((match.upperBound - 1) / UInt64(HexLayout.bytesPerRow))
-        let top = layout.rowFrame(row: firstRow)
-        let bottom = layout.rowFrame(row: lastRow)
-        setNeedsDisplay(top.union(bottom).insetBy(dx: -Self.mirrorContourPadding * 2,
-                                                  dy: -Self.mirrorContourPadding * 2))
+        let rows = layout.rowFrame(row: firstRow).union(layout.rowFrame(row: lastRow))
+        // At the top of the hop the plate is `indicatorLiftScale` bigger about
+        // its own centre, so each edge moves out by half of that.
+        let growth = Self.indicatorLiftScale / 2
+        let peak = Self.indicatorElevation(atLift: 1)
+        let reach = max(peak.ambient.blur + abs(peak.ambient.offset.width),
+                        peak.key.blur + max(abs(peak.key.offset.width),
+                                            abs(peak.key.offset.height)))
+        return rows.insetBy(dx: -(rows.width * growth + reach + Self.mirrorContourPadding),
+                            dy: -(rows.height * growth + reach + Self.mirrorContourPadding))
     }
 
     /// Fills the selection for one row, leaving out the columns the find

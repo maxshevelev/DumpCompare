@@ -501,6 +501,39 @@ final class FindHighlightTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(HexView.indicatorBounceDuration, 0.5)
     }
 
+    /// The hop's damage covers everything the plate can paint at its peak,
+    /// shadow included.
+    ///
+    /// It has to: the plate is drawn during whatever repaint is in flight —
+    /// often a full one, the first time a match is shown after a scroll — so
+    /// its peak shadow lands wherever it reaches, and a frame that invalidated
+    /// only the rows left the outer ring of that shadow on screen for good
+    /// (macOS 15).
+    func testTheHopsDamageCoversItsPeakShadow() throws {
+        var bytes = [UInt8](repeating: 0x11, count: 48)
+        bytes.replaceSubrange(18..<20, with: [0xAA, 0xBB])
+        let (controller, window) = try makeController(bytes)
+        let view = try hexView(window)
+        try search("AA BB", in: controller, window)
+
+        let layout = view.hexLayout
+        let plate = layout.hexByteFrame(row: 1, column: 2)
+            .union(layout.hexByteFrame(row: 1, column: 3))
+        let damage = try XCTUnwrap(view.indicatorDamageRect())
+
+        // The peak plate: grown about its centre, then its shadow's furthest
+        // reach around that.
+        let peak = HexView.indicatorElevation(atLift: 1)
+        let grown = plate.insetBy(dx: -plate.width * HexView.indicatorLiftScale / 2,
+                                  dy: -plate.height * HexView.indicatorLiftScale / 2)
+        let reach = max(peak.ambient.blur,
+                        peak.key.blur + max(peak.key.offset.width, peak.key.offset.height))
+        let painted = grown.insetBy(dx: -(reach + HexView.mirrorContourPadding),
+                                    dy: -(reach + HexView.mirrorContourPadding))
+        XCTAssertTrue(damage.contains(painted),
+                      "the damage \(damage) must cover everything the peak paints \(painted)")
+    }
+
     /// Every step pops the indicator — including a wrap onto a lone match,
     /// where no index changes and the press would otherwise look swallowed.
     func testEveryStepPopsTheIndicator() throws {
