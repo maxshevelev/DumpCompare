@@ -298,12 +298,44 @@ final class SearchResultsViewController: NSViewController {
     /// Re-reads the pane's set: a new search replaced it, or its highlighting
     /// came and went. The panel and the dump can never be showing two
     /// different searches, because there is only one set to show (§11).
+    ///
+    /// A set that has not changed rebuilds nothing. The pane announces the
+    /// *current match* on the same channel, so a step of the indicator — and a
+    /// row picked here, which moves it — arrives as a reload; reloading the
+    /// table drops its selection, and the row the user just clicked would stop
+    /// being selected at the moment it was chosen.
     func reload() {
         guard isPresenting else { return }
         content = Self.content(of: matchSet)
+        let listing = matchSet.map(Listing.init)
+        guard listing != shownListing else { return }
+        shownListing = listing
         sizeColumnsToContent()
         applyContent()
     }
+
+    /// What the rows are made of: two sets that agree on all of it list the
+    /// same offsets in the same order, so there is nothing to redraw between
+    /// them. The current match is deliberately absent — it moves constantly and
+    /// changes no row.
+    private struct Listing: Equatable {
+        let pattern: SearchPattern
+        let folding: CaseFolding
+        let total: Int
+        let extent: UInt64
+        let listable: Bool
+
+        init(_ set: MatchSet) {
+            pattern = set.pattern
+            folding = set.folding
+            total = set.total
+            extent = set.extent
+            listable = set.isListable && set.isHighlightable
+        }
+    }
+
+    /// The listing the table currently holds, or nil when it holds none.
+    private var shownListing: Listing?
 
     /// What a set reads as: rows, a count and a refusal, or nothing at all.
     private static func content(of set: MatchSet?) -> Content {
@@ -430,6 +462,7 @@ final class SearchResultsViewController: NSViewController {
     func clear() {
         isPresenting = false
         content = .empty
+        shownListing = nil
         applyContent()
     }
 

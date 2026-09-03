@@ -1722,6 +1722,39 @@ final class FindFlowTests: XCTestCase {
         XCTAssertEqual(pane.hexSelection().start, 3, "and the match is selected")
     }
 
+    /// The row the user clicked stays selected. It is the panel's own record of
+    /// where the user is; and picking a row moves the find indicator, which
+    /// comes back to the panel as a reload — one that must not rebuild the
+    /// table and drop the selection it was just given.
+    func testAPickedRowStaysSelected() throws {
+        let bytes: [UInt8] = [0xDE, 0xAD, 0x00, 0xDE, 0xAD, 0x00, 0xDE, 0xAD]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let view = try runSearchAll("DE AD", in: window)
+        clickResultRow(1, in: view)
+
+        XCTAssertEqual(view.tableView.selectedRow, 1, "the picked row is selected")
+        XCTAssertTrue(pumpUntil(1) { view.tableView.selectedRow == 1 },
+                      "and stays selected once the move has settled")
+
+        // A step of the indicator from the bar is the same kind of reload.
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(2) { controller.windowModel.pane1.currentMatchIndex == 2 },
+                      "the premise: the indicator moved on")
+        XCTAssertEqual(view.tableView.selectedRow, 1, "the picked row is still the picked row")
+
+        // A different search does rebuild the table, so the old row cannot stay.
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "00"
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(2) { view.listedMatchesForTesting.count == 2 },
+                      "the panel followed the new search")
+        XCTAssertEqual(view.tableView.selectedRow, -1,
+                       "and a row of the previous search is not selected in it")
+    }
+
     /// Retyping the pattern ends the highlighting (the field describes no
     /// search yet) but leaves the panel listing the search that *was* run: the
     /// file has not moved, so those offsets are still true.
