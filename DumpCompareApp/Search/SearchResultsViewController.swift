@@ -205,6 +205,15 @@ final class SearchResultsViewController: NSViewController {
         // and the table fills the panel; `height >= 0` keeps it from overrunning
         // the bottom edge while collapsed.
         scrollBottom.priority = .defaultHigh
+        // The message's own trailing inset is preferred for the same reason as
+        // the title's below: the panel is a frame-managed pane of the split
+        // view and passes through a zero width — collapsed, and again while a
+        // second pane is being added to a narrow window — where 12 points of
+        // inset on each side do not fit. The leading pin stays required, so the
+        // text keeps its left margin.
+        let messageTrailing = messageLabel.trailingAnchor.constraint(
+            equalTo: panel.trailingAnchor, constant: -12)
+        messageTrailing.priority = .defaultHigh
         // The title's gap to the × is preferred for the same reason: a transient
         // zero-width layout cannot fit both in negative space.
         let titleToButton = headerLabel.trailingAnchor.constraint(
@@ -230,7 +239,7 @@ final class SearchResultsViewController: NSViewController {
             scrollBottom,
 
             messageLabel.leadingAnchor.constraint(equalTo: panel.leadingAnchor, constant: 12),
-            messageLabel.trailingAnchor.constraint(equalTo: panel.trailingAnchor, constant: -12),
+            messageTrailing,
             messageLabel.topAnchor.constraint(equalTo: scrollView.topAnchor, constant: 8),
         ])
         view = panel
