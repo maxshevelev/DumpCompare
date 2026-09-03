@@ -1144,6 +1144,11 @@ The results panel:
   and a search that finds nothing leaves it saying so where the rows were. Two
   copies would be two things to keep in step, and the one that fell behind
   would still look authoritative.
+- The dependency between the two runs **one way**: a row picked in the panel
+  moves the indicator in the dump, and the indicator moving reaches the panel
+  not at all. Only a replaced or dropped *set* rebuilds the list — a stepped
+  plate changes no row, and rebuilding the list is how it would lose the row
+  the user had just picked in it.
 - The Find bar's results control is therefore a **toggle**: it shows the panel,
   and pressing it again hides it. It reads as on while the panel is up, and a
   search that found nothing opens no panel at all — the bar already says

@@ -633,8 +633,15 @@ final class FilePaneView: NSView {
         // navigation that moved the caret (§11, §10.4).
         viewModel.onMatchesChanged = { [weak self] in
             self?.hexView.needsDisplay = true
-            self?.syncSearchResults()
             self?.onMatchesChanged?()
+        }
+        // Only a *new* set changes what the results panel lists, so only that
+        // reaches it. A stepped indicator does not: the table would rebuild and
+        // drop the selection the user's click had just given it, and the
+        // dependency between the two runs one way — the panel moves the
+        // highlighting, never the other way round (§11).
+        viewModel.onMatchSetChanged = { [weak self] in
+            self?.syncSearchResults()
         }
         // When the companion's selection changed, this pane's mirror frames
         // moved — redraw only the rows those frames now cover differently. A
@@ -922,11 +929,11 @@ final class FilePaneView: NSView {
 
     /// Keeps an open results panel level with the pane's set (§11).
     ///
-    /// One set, one list: a new search replaces the rows, an end of
-    /// highlighting leaves them alone (the search was still run, and its
-    /// offsets are still true), and an invalidation takes the panel down with
-    /// the set — a list of offsets the file no longer has is worse than no
-    /// list.
+    /// One set, one list: a new search replaces the rows, and an invalidation
+    /// takes the panel down with the set — a list of offsets the file no longer
+    /// has is worse than no list. An end of highlighting reaches this not at
+    /// all: the search was still run, its offsets are still true, and its rows
+    /// stay exactly as they are.
     private func syncSearchResults() {
         guard searchResultsPanelVisible else { return }
         guard viewModel.matchSet != nil else {

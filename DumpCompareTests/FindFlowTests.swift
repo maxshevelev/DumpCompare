@@ -1722,6 +1722,32 @@ final class FindFlowTests: XCTestCase {
         XCTAssertEqual(pane.hexSelection().start, 3, "and the match is selected")
     }
 
+    /// The two channels the pane offers for a search, and which is which: the
+    /// results panel listens to the set, and nothing else. A stepped indicator
+    /// is an appearance change — it must not reach the table at all, because
+    /// rebuilding the table is how a selection gets dropped.
+    func testOnlyANewSetIsAnnouncedToTheList() {
+        let pane = PaneViewModel()
+        let pattern = SearchPattern(bytes: [0xAA], encoding: .hex)
+        let set = MatchSet(pattern: pattern, folding: .exact, extent: 64, starts: [0, 8, 16])
+        var setChanges = 0
+        var appearanceChanges = 0
+        pane.onMatchSetChanged = { setChanges += 1 }
+        pane.onMatchesChanged = { appearanceChanges += 1 }
+
+        pane.setMatches(set)
+        XCTAssertEqual(setChanges, 1, "a new set is the list's business")
+
+        pane.setCurrentMatch(1)
+        pane.highlightMatches(current: 2)
+        pane.endMatchHighlighting()
+        XCTAssertEqual(setChanges, 1, "the plate moving, and going, is not")
+        XCTAssertEqual(appearanceChanges, 4, "though all of it repaints")
+
+        pane.clearMatches()
+        XCTAssertEqual(setChanges, 2, "and a dropped set is, so the list can go with it")
+    }
+
     /// The row the user clicked stays selected. It is the panel's own record of
     /// where the user is; and picking a row moves the find indicator, which
     /// comes back to the panel as a reload — one that must not rebuild the

@@ -305,11 +305,20 @@ final class PaneViewModel: HexViewDataSource {
     /// itself.
     private(set) var highlightsMatches = false
 
-    /// Fired when the set or the current match changed, so the dump repaints,
-    /// the map re-reads, the results panel re-reads and the Find bar's count
+    /// Fired when anything about the search's *appearance* changed — a new set,
+    /// a dropped one, the highlighting coming or going, the indicator stepping
+    /// — so the dump repaints, the map re-reads and the Find bar's count
     /// refreshes. Not a content channel: no byte moved, and nothing here may
     /// scroll.
     var onMatchesChanged: (() -> Void)?
+
+    /// Fired only when the *set* was replaced or dropped, which is the only
+    /// thing that changes what the results panel lists. Separate from
+    /// `onMatchesChanged` on purpose: the dependency runs one way — a row
+    /// picked in the panel moves the indicator in the dump, and the indicator
+    /// moving must not reach back into the panel, whose table would drop the
+    /// selection the click just gave it (§11).
+    var onMatchSetChanged: (() -> Void)?
 
     /// The set as far as everything that *draws* it is concerned: nil once the
     /// highlighting ended, even though the set is still there for the results
@@ -323,6 +332,7 @@ final class PaneViewModel: HexViewDataSource {
         matchSet = set
         currentMatchIndex = Self.clamped(current, to: set)
         highlightsMatches = set != nil
+        onMatchSetChanged?()
         onMatchesChanged?()
     }
 
@@ -370,6 +380,7 @@ final class PaneViewModel: HexViewDataSource {
         matchSet = nil
         currentMatchIndex = nil
         highlightsMatches = false
+        onMatchSetChanged?()
         onMatchesChanged?()
     }
 
