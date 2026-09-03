@@ -642,14 +642,17 @@ final class FindBarView: NSView, NSComboBoxDelegate {
 
     // MARK: - Display
 
+    /// The encoding popup's label — the same name the history dropdown uses,
+    /// so one encoding reads as one thing wherever it appears.
+    ///
+    /// No "Text — " prefix in front of four of the five: the names carry
+    /// themselves for anyone who reads dumps, and the prefix spent the bar's
+    /// width saying what `UTF-8` already says. `Hex bytes` keeps its noun in
+    /// the popup, where it is the one item that is not a text encoding — the
+    /// shorter `Hex` reads as a display radix rather than as what the pattern
+    /// is made of, which is the distinction the popup exists to make.
     private static func title(for encoding: SearchEncoding) -> String {
-        switch encoding {
-        case .hex: return "Hex bytes"
-        case .ascii: return "Text — ASCII"
-        case .utf8: return "Text — UTF-8"
-        case .utf16LE: return "Text — UTF-16 LE"
-        case .utf16BE: return "Text — UTF-16 BE"
-        }
+        encoding == .hex ? "Hex bytes" : shortTitle(for: encoding)
     }
 
     /// The pattern-combo dropdown label for a history entry: the search text
@@ -661,6 +664,8 @@ final class FindBarView: NSView, NSComboBoxDelegate {
         return "\(entry.pattern) — \(shortTitle(for: entry.encoding))\(suffix)"
     }
 
+    /// The encoding's bare name, for a history entry's label — where it sits
+    /// after the pattern it describes and only has to tell two entries apart.
     private static func shortTitle(for encoding: SearchEncoding) -> String {
         switch encoding {
         case .hex: return "Hex"

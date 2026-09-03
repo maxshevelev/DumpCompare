@@ -675,7 +675,23 @@ final class FindFlowTests: XCTestCase {
         done.performClick(nil)
         controller.findPattern()
         (_, encoding, _, _) = try barControls(window)
-        XCTAssertEqual(encoding.titleOfSelectedItem, "Text — UTF-8")
+        XCTAssertEqual(encoding.titleOfSelectedItem, "UTF-8")
+    }
+
+    /// The encoding popup names the encodings and nothing else. A "Text — "
+    /// prefix on four of the five items spent the bar's width restating what
+    /// `UTF-8` already says to anyone reading a dump; `Hex bytes` keeps its
+    /// noun, being the one item that is not a text encoding.
+    func testTheEncodingPopupNamesEncodingsWithoutAPrefix() throws {
+        let (controller, window, url) = try makeController([0x41])
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let (_, encoding, _, _) = try barControls(window)
+
+        XCTAssertEqual(encoding.itemTitles, ["Hex bytes", "ASCII", "UTF-8", "UTF-16 LE", "UTF-16 BE"])
+        XCTAssertEqual(encoding.itemTitles.count, SearchEncoding.allCases.count,
+                       "one item per encoding, in the enum's order")
     }
 
     /// Picking an older search from the pattern combo's list loads its pattern
@@ -712,7 +728,7 @@ final class FindFlowTests: XCTestCase {
         // The field gets the bare pattern — never the "— encoding" suffix that
         // labels the dropdown item — and the popup carries the encoding.
         XCTAssertEqual(combo.stringValue, "AA BB", "only the pattern must reach the field")
-        XCTAssertEqual(encoding.titleOfSelectedItem, "Text — ASCII")
+        XCTAssertEqual(encoding.titleOfSelectedItem, "ASCII")
         XCTAssertTrue(controller.windowModel.pane1.hexSelection().isEmpty,
                       "picking a recent search must load it, not run it")
 
@@ -730,7 +746,7 @@ final class FindFlowTests: XCTestCase {
         XCTAssertTrue(pickFromHistory(combo, at: asciiIndex, expecting: "ABCD"),
                       "and the ASCII pair after it")
         XCTAssertEqual(combo.stringValue, "ABCD", "the pattern is unchanged between the two")
-        XCTAssertEqual(encoding.titleOfSelectedItem, "Text — ASCII",
+        XCTAssertEqual(encoding.titleOfSelectedItem, "ASCII",
                        "but the encoding follows the pair that was picked")
         XCTAssertTrue(controller.windowModel.pane1.hexSelection().isEmpty,
                       "and still nothing was searched")
@@ -945,7 +961,7 @@ final class FindFlowTests: XCTestCase {
         XCTAssertTrue(pickFromHistory(combo, at: csIndex, expecting: "ABCD"),
                       "the picked search must load into the field")
         XCTAssertEqual(combo.stringValue, "ABCD")
-        XCTAssertEqual(encoding.titleOfSelectedItem, "Text — ASCII")
+        XCTAssertEqual(encoding.titleOfSelectedItem, "ASCII")
         XCTAssertEqual(caseToggle.state, .on,
                        "picking a case-sensitive entry restores the toggle")
         XCTAssertTrue(controller.windowModel.pane1.hexSelection().isEmpty,
