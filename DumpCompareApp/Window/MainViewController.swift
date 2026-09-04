@@ -4968,6 +4968,9 @@ final class MainViewController: NSViewController {
     }
 
     private func hideFindBar() {
+        // A plate reporting a search outlives the bar it was about by four
+        // seconds otherwise (§11).
+        notices.dismiss()
         findBar.isHidden = true
         contentTopToFindBar.isActive = false
         contentTopToView.isActive = true
@@ -5049,6 +5052,8 @@ final class MainViewController: NSViewController {
     private func beginPass(attempts: [SmartSearch.Attempt], direction: SearchDirection,
                            goal: SearchPassGoal, in pane: PaneViewModel) {
         guard let first = attempts.first, let storage = pane.document?.storage else { return }
+        // Whatever a plate is saying is about the search before this one (§11).
+        notices.dismiss()
         cancelFind()
         endIndexing()
         // A session that is looking rather than one that has found: the dump
@@ -5149,6 +5154,7 @@ final class MainViewController: NSViewController {
     /// and the panel opens on the rows as they arrive (§11).
     private func beginIndexing(pattern: SearchPattern, folding: CaseFolding,
                                in pane: PaneViewModel) {
+        notices.dismiss()
         cancelFind()
         // An index covering nothing yet, so the session exists from this
         // instant: a second press finds a search already under way and steps

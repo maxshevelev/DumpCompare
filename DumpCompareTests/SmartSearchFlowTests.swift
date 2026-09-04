@@ -464,6 +464,53 @@ final class SmartSearchFlowTests: XCTestCase {
         XCTAssertLessThan(notice.frame.midY, content.bounds.midY, "and below its middle")
     }
 
+    /// A plate reports a search, so it goes the moment that search stops being
+    /// the current one: activating another pattern takes it away at once
+    /// rather than leaving it to sit out its four seconds over a search that
+    /// has already answered (§11).
+    func testANewSearchTakesTheStalePlateAway() throws {
+        var bytes = [UInt8](repeating: 0xFF, count: 512)
+        bytes.replaceSubrange(64..<68, with: Array("boot".utf8))
+        let (controller, window, _) = try makeController(bytes)
+        defer { cleanup(controller) }
+        // Long enough that only a deliberate dismissal can end it.
+        TransientNoticeView.holdDuration = 5
+        defer { TransientNoticeView.holdDuration = 0.05 }
+
+        controller.findPattern()
+        try search("nowhere", in: window)
+        XCTAssertTrue(pumpUntil(5) { controller.transientNotice != nil }, "the premise")
+
+        let field = try combo(window)
+        field.stringValue = "boot"
+        NotificationCenter.default.post(name: NSControl.textDidChangeNotification, object: field)
+        try findBar(window).pressFindForTests(.forward)
+
+        XCTAssertNil(controller.transientNotice, "the stale answer is gone at once")
+        XCTAssertTrue(pumpUntil(2) { controller.windowModel.pane1.currentMatch == 64..<68 },
+                      "and the new search runs")
+    }
+
+    /// And dismissing the bar takes it with it: the plate is about a search,
+    /// and closing the bar means that search is over (§11).
+    func testClosingTheBarTakesThePlateAway() throws {
+        let (controller, window, _) = try makeController([UInt8](repeating: 0xFF, count: 256))
+        defer { cleanup(controller) }
+        TransientNoticeView.holdDuration = 5
+        defer { TransientNoticeView.holdDuration = 0.05 }
+
+        controller.findPattern()
+        try search("nowhere", in: window)
+        XCTAssertTrue(pumpUntil(5) { controller.transientNotice != nil }, "the premise")
+        let plate = try XCTUnwrap(controller.transientNotice)
+
+        let (_, _, done, _) = try barControls(window)
+        done.performClick(nil)
+
+        XCTAssertNil(controller.transientNotice, "gone with the bar")
+        XCTAssertTrue(pumpUntil(2) { plate.superview == nil }, "and off the window")
+    }
+
     /// It goes on its own, and takes nothing with it: a report, not a dialog.
     func testTheNoticeLeavesOnItsOwn() throws {
         let (controller, window, _) = try makeController([UInt8](repeating: 0xFF, count: 256))

@@ -1141,7 +1141,11 @@ Smart Search:
   Horizontally centred in the window and in its **lower third** — out of the
   way of the bytes being read at the top of it, and of the find bar above them.
   It fades in, holds a few seconds, and leaves. It is a report, not a dialog: a
-  click over it goes to the dump underneath. The bar also reads
+  click over it goes to the dump underneath. And it is a report **about a
+  search**, so it goes the moment that search stops being the current one —
+  activating another pattern, or dismissing the bar, takes it away at once
+  rather than leaving it to sit out its seconds over a question already
+  answered. The bar also reads
   `Not found`, and the results panel `No matches.` — both true of every
   attempt — while the plate is what says which ones they were.
 - The case toggle stays on the bar while Smart Search is on, whatever the popup

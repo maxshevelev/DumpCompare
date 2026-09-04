@@ -198,14 +198,21 @@ final class TransientNoticePresenter {
         show(TransientNoticeView(glyph: symbol))
     }
 
-    func dismiss() {
-        current?.dismiss(animated: false)
+    /// Takes the notice off screen now.
+    ///
+    /// `animated` is false where a plate is being *replaced* — a cross-fade
+    /// between two answers reads as a glitch — and true where the answer has
+    /// simply gone stale, which is a fade the eye follows. Either way the
+    /// presenter forgets it at once, so "is a notice showing?" is answered by
+    /// the intent rather than by the fade.
+    func dismiss(animated: Bool = true) {
+        current?.dismiss(animated: animated)
         current = nil
     }
 
     private func show(_ notice: TransientNoticeView) {
         guard let host else { return }
-        current?.dismiss(animated: false)
+        dismiss(animated: false)
         host.addSubview(notice)
         // A fraction of the height, not a fixed inset: the plate sits in the
         // same place on a short window and a tall one. The multiplier form is
