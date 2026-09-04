@@ -1226,6 +1226,16 @@ Match count (the Find bar):
 - At zero matches the ‹ › stepper and Find All are disabled; editing the
   pattern clears the count and re-enables them, because a pattern being typed
   describes no search yet.
+- The same place carries a **pattern that is not a pattern** — `DE A` in hex, a
+  character the chosen encoding cannot encode — as `Invalid pattern` in red.
+  The count and the complaint answer the same question, what the field
+  describes, so only one of them can be true at a time, and this is the place
+  the eye already goes for that answer. The sentence saying *which* failure it
+  was is the label's tooltip: a bar has room for a verdict, not for a sentence.
+  It outranks the count while it stands, and it stands until the text or the
+  encoding changes — a complaint about hex does not outlive hex.
+- An **empty** field is not a bad pattern but no pattern: nothing is reported
+  where the count goes, and the message goes where `Not found` does.
 - While it is shown its width is fixed from a template, so a climbing number
   never shifts the controls beside it — the stepper does not move between
   `1 of 9` and `128 of 4,096`, nor when the count appears and goes. Digits are

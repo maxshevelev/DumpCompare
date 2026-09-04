@@ -483,6 +483,85 @@ final class FindFlowTests: XCTestCase {
                        "the field has the width back")
     }
 
+    /// A pattern the encoding cannot read is reported where the count goes, in
+    /// red: the count and the complaint answer the same question — what does
+    /// the field describe? — so only one of them can be true, and the place the
+    /// eye already goes for that answer is beside the field (§11).
+    func testAnInvalidPatternIsReportedWhereTheCountGoes() throws {
+        let (controller, window, url) = try makeController([0xDE, 0xAD, 0xDE, 0xAD])
+        defer { cleanup(controller, url) }
+        controller.findPattern()
+        let bar = try findBar(window)
+        let (combo, encoding, _, _) = try barControls(window)
+
+        // A valid search first, so the count is what the error has to replace.
+        combo.stringValue = "DE AD"
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(3) { bar.countTextForTests == "1 of 2" })
+
+        combo.stringValue = "DE A"
+        NotificationCenter.default.post(name: NSControl.textDidChangeNotification, object: combo)
+        XCTAssertEqual(bar.countTextForTests, "", "the count went with the text it counted")
+        try clickFindNext(window)
+
+        XCTAssertEqual(bar.countTextForTests, "Invalid pattern")
+        XCTAssertTrue(bar.countShownForTests, "and it claims its place in the bar")
+        XCTAssertEqual(bar.countColorForTests, .systemRed, "in red")
+        XCTAssertEqual(bar.countTooltipForTests,
+                       "Invalid hex — use pairs like DE AD BE EF.",
+                       "with the whole sentence a bar has no room for as its tooltip")
+        XCTAssertEqual(controller.windowModel.pane1.matchSet?.pattern.bytes, [0xDE, 0xAD],
+                       "and nothing was searched: the set is still the last real pattern's")
+
+        // The same text in an encoding that can read it is not an error.
+        encoding.selectItem(at: SearchEncoding.allCases.firstIndex(of: .ascii)!)
+        encoding.sendAction(encoding.action, to: encoding.target)
+        XCTAssertEqual(bar.countTextForTests, "", "a complaint about hex does not outlive hex")
+        XCTAssertEqual(bar.countColorForTests, .secondaryLabelColor)
+    }
+
+    /// Editing the pattern takes the complaint with it, exactly as it takes the
+    /// count: both were about the text that was there.
+    func testEditingThePatternClearsTheComplaint() throws {
+        let (controller, window, url) = try makeController([0xDE, 0xAD])
+        defer { cleanup(controller, url) }
+        controller.findPattern()
+        let bar = try findBar(window)
+        let (combo, _, _, _) = try barControls(window)
+
+        combo.stringValue = "ZZ"
+        try clickFindNext(window)
+        XCTAssertEqual(bar.countTextForTests, "Invalid pattern", "the premise")
+
+        combo.stringValue = "DE AD"
+        NotificationCenter.default.post(name: NSControl.textDidChangeNotification, object: combo)
+        XCTAssertEqual(bar.countTextForTests, "")
+        XCTAssertFalse(bar.countShownForTests, "and the slot closes up again")
+
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(3) { bar.countTextForTests == "1 of 1" },
+                      "a pattern that parses gets a count in the same place")
+        XCTAssertEqual(bar.countColorForTests, .secondaryLabelColor)
+    }
+
+    /// An empty field is not a bad pattern, it is no pattern: there is nothing
+    /// to say where the count goes, so the message goes where "Not found" does.
+    func testAnEmptyPatternIsNotReportedInTheBar() throws {
+        let (controller, window, url) = try makeController([0xDE, 0xAD])
+        defer { cleanup(controller, url) }
+        controller.findPattern()
+        let bar = try findBar(window)
+        let (combo, _, _, _) = try barControls(window)
+
+        combo.stringValue = ""
+        try clickFindNext(window)
+
+        XCTAssertEqual(bar.countTextForTests, "")
+        XCTAssertFalse(bar.countShownForTests)
+        XCTAssertTrue(pumpUntil(2) { self.hasStatus("Enter a non-empty pattern.", in: window) },
+                      "the pane says it instead")
+    }
+
     /// Past the listing limit the bar carries the reason as a glyph beside the
     /// count — the count is what proves the matches exist, so the explanation
     /// belongs next to it rather than in a message that fades.

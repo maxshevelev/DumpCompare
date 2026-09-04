@@ -330,6 +330,40 @@ final class FindBarView: NSView, NSComboBoxDelegate {
     /// arranged view, so the stepper closes up against the field — the same
     /// move the case toggle makes when the encoding is hex.
     func show(count: FindCount?) {
+        self.count = count
+        applyCountLabel()
+    }
+
+    /// What the field holds is not a pattern at all — `DE A` in hex, a
+    /// character the chosen encoding cannot encode (§11).
+    ///
+    /// Reported in the count's place, in red. The two are answers to the same
+    /// question — what does the field describe? — so only one of them can be
+    /// true at a time, and the one place the eye already goes for that answer
+    /// is beside the field. `detail` says what is wrong in full, as the
+    /// label's tooltip; the label itself has to stay short enough to sit in a
+    /// bar.
+    func show(patternError message: String?, detail: String? = nil) {
+        patternError = message.map { (label: $0, detail: detail ?? $0) }
+        applyCountLabel()
+    }
+
+    private var count: FindCount?
+    private var patternError: (label: String, detail: String)?
+
+    private func applyCountLabel() {
+        // The error outranks the count: a count belongs to a search, and there
+        // is no search for something that is not a pattern.
+        if let patternError {
+            countLabel.stringValue = patternError.label
+            countLabel.textColor = .systemRed
+            countLabel.toolTip = patternError.detail
+            countLabel.isHidden = false
+            warningView.isHidden = true
+            warningView.toolTip = nil
+            return
+        }
+        countLabel.textColor = .secondaryLabelColor
         countLabel.stringValue = count?.text ?? ""
         countLabel.isHidden = count == nil
         countLabel.toolTip = count?.warning
@@ -356,6 +390,11 @@ final class FindBarView: NSView, NSComboBoxDelegate {
 
     /// What the count label reads, for tests.
     var countTextForTests: String { countLabel.stringValue }
+    /// Its colour, for the test that an invalid pattern reads as an error.
+    var countColorForTests: NSColor { countLabel.textColor ?? .labelColor }
+    /// The label's tooltip — the count's withheld reason, or the full sentence
+    /// behind a short "Invalid pattern".
+    var countTooltipForTests: String? { countLabel.toolTip }
     /// Whether the count occupies any of the bar at all, for tests.
     var countShownForTests: Bool { !countLabel.isHidden }
     /// The warning glyph's sentence, or nil when it is not shown.
@@ -449,6 +488,7 @@ final class FindBarView: NSView, NSComboBoxDelegate {
     /// Populates the history list, restores the last search + persisted case
     /// toggle, and focuses the pattern field ready for typing.
     func prepareForShow() {
+        show(patternError: nil)
         if let mostRecent = FindHistoryStore.mostRecent {
             patternCombo.stringValue = mostRecent.pattern
             if let encodingIndex = SearchEncoding.allCases.firstIndex(of: mostRecent.encoding) {
@@ -518,6 +558,9 @@ final class FindBarView: NSView, NSComboBoxDelegate {
     /// screen claims to describe a pattern that is no longer in the field.
     func controlTextDidChange(_ obj: Notification) {
         guard (obj.object as? NSComboBox) === patternCombo else { return }
+        // Whatever the field said a moment ago — a count or a complaint about
+        // it — was about the text that was there (§11).
+        show(patternError: nil)
         show(count: nil)
         onPatternEdited?()
     }
@@ -532,6 +575,9 @@ final class FindBarView: NSView, NSComboBoxDelegate {
 
     @objc private func encodingChanged() {
         updateCaseButtonVisibility()
+        // The same text means something else now — `DE A` is not hex and is
+        // perfectly good ASCII — so a complaint about it no longer stands.
+        show(patternError: nil)
     }
 
     @objc private func caseToggled() {
@@ -597,9 +643,23 @@ final class FindBarView: NSView, NSComboBoxDelegate {
 
     private func parsedPattern() -> SearchPattern? {
         do {
-            return try SearchEngine.parsePattern(patternCombo.stringValue, encoding: currentEncoding())
+            let pattern = try SearchEngine.parsePattern(patternCombo.stringValue,
+                                                        encoding: currentEncoding())
+            show(patternError: nil)
+            return pattern
         } catch {
-            onError?(Self.errorText(for: error))
+            // An empty field is not a bad pattern, it is no pattern — whatever
+            // the parser threw about it (an empty hex string is "invalid hex").
+            // There is nothing to report where the count goes, so it goes to
+            // the owner, which says it the way it says "Not found".
+            guard !patternCombo.stringValue
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                show(patternError: nil)
+                onError?(Self.errorText(for: SearchError.emptyPattern))
+                return nil
+            }
+            show(patternError: Self.errorLabel(for: error),
+                 detail: Self.errorText(for: error))
             return nil
         }
     }
@@ -697,6 +757,11 @@ final class FindBarView: NSView, NSComboBoxDelegate {
         case .utf16BE: return "UTF-16 BE"
         }
     }
+
+    /// The short form shown where the count goes. One wording for every way a
+    /// pattern can fail to be one: the bar has room for a verdict, and the
+    /// sentence that says which failure it was rides along as the tooltip.
+    private static func errorLabel(for error: Error) -> String { "Invalid pattern" }
 
     private static func errorText(for error: Error) -> String {
         if let searchError = error as? SearchError {
