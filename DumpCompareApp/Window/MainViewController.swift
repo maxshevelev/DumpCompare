@@ -5393,43 +5393,6 @@ final class MainViewController: NSViewController {
         findBar.setResultsShown(true)
     }
 
-    /// Shows a transient notice over the window: horizontally centred, a
-    /// third of the way down — where Xcode puts a build's result, because it
-    /// is the same kind of thing (§11).
-    ///
-    /// It belongs to the window rather than to a pane: the answer is about an
-    /// operation the window ran, and in comparison mode it would otherwise
-    /// have to pick a pane to be about.
-    func showNotice(symbol: String, lines: [String]) {
-        present(TransientNoticeView(symbol: symbol, lines: lines))
-    }
-
-    private func present(_ notice: TransientNoticeView) {
-        transientNotice?.dismiss(animated: false)
-        view.addSubview(notice)
-        // A fraction of the height, not a fixed inset: the plate sits where
-        // the eye lands when it looks up from the bytes, on a short window and
-        // a tall one alike. The multiplier form is the only one that can say
-        // that — anchors take constants.
-        let placement = NSLayoutConstraint(item: notice, attribute: .centerY, relatedBy: .equal,
-                                           toItem: view, attribute: .bottom,
-                                           multiplier: Self.noticeVerticalFraction, constant: 0)
-        // On a window too short for the fraction to clear the chrome, the plate
-        // stops rather than climbing off the top. Preferred, so the fraction
-        // wins wherever it fits.
-        let clearsTop = notice.topAnchor.constraint(greaterThanOrEqualTo: view.topAnchor,
-                                                    constant: 12)
-        clearsTop.priority = .defaultHigh
-        NSLayoutConstraint.activate([
-            notice.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            placement,
-            clearsTop,
-            notice.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, constant: -40),
-        ])
-        transientNotice = notice
-        notice.present()
-    }
-
     /// Says that a search came round the end of the file: one large glyph
     /// turning the way the search was going, and nothing to read (§11).
     ///
@@ -5439,22 +5402,25 @@ final class MainViewController: NSViewController {
     /// first one, again" is invisible. Turning back to the top of a file is
     /// what a circular arrow means everywhere else on the platform.
     func showWrapNotice(direction: SearchDirection) {
-        showNotice(glyph: direction == .forward ? "arrow.clockwise" : "arrow.counterclockwise")
+        notices.show(glyph: direction == .forward ? "arrow.clockwise" : "arrow.counterclockwise")
     }
 
-    /// Shows a plate that is one glyph and no text (§11).
-    func showNotice(glyph symbol: String) {
-        present(TransientNoticeView(glyph: symbol))
+    /// Shows a transient notice over the window (§11) — a report about an
+    /// operation the window ran, rather than about the place the user is
+    /// looking. Where it goes and how it comes and goes is the presenter's, so
+    /// every plate of the kind behaves the same.
+    ///
+    /// It belongs to the window rather than to a pane: in comparison mode a
+    /// pane-owned plate would have to pick which pane the answer was about.
+    func showNotice(symbol: String, lines: [String]) {
+        notices.show(symbol: symbol, lines: lines)
     }
 
-    /// The notice currently on screen, if any — replaced rather than stacked,
-    /// so a second answer does not pile up on the first.
-    private(set) var transientNotice: TransientNoticeView?
+    /// The window's notices, one at a time.
+    private(set) lazy var notices = TransientNoticePresenter(host: view)
 
-    /// Where a notice's middle sits, as a fraction of the window's height:
-    /// below the toolbar and the find bar, above the middle of the dump — the
-    /// height Xcode shows a build's result at.
-    static let noticeVerticalFraction: CGFloat = 0.3
+    /// The notice on screen, if any — for tests.
+    var transientNotice: TransientNoticeView? { notices.current }
 
     private func showFindMessage(_ message: String) {
         NSSound.beep()

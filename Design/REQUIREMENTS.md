@@ -1126,9 +1126,10 @@ Smart Search:
     ASCII, UTF-8 — no results.
     …
 
-  Horizontally centred and a third of the way down, where Xcode shows a build's
-  result; it fades in, holds a few seconds, and leaves. It is a report, not a
-  dialog: a click over it goes to the dump underneath. The bar also reads
+  Horizontally centred in the window and in its **lower third** — out of the
+  way of the bytes being read at the top of it, and of the find bar above them.
+  It fades in, holds a few seconds, and leaves. It is a report, not a dialog: a
+  click over it goes to the dump underneath. The bar also reads
   `Not found`, and the results panel `No matches.` — both true of every
   attempt — while the plate is what says which ones they were.
 - The case toggle stays on the bar while Smart Search is on, whatever the popup
@@ -1177,14 +1178,18 @@ Search navigation:
   Previous at the first returns to the last. A single match wraps onto itself,
   and is re-selected and re-revealed rather than ignored — a press that does
   nothing reads as a broken key.
-- A wrap is **shown**: a transient plate over the window (the same frosted plate
-  §11's Smart Search reports on) carrying one large glyph and no text —
+- A wrap is **shown**: a transient plate in the same place and of the same kind
+  as Smart Search's report, carrying one large glyph and no text —
   `arrow.clockwise` going forward, `arrow.counterclockwise` going back. It is
   the one thing about a step the dump cannot show: the plate moves and the page
   moves exactly as they do for the next match in line, so without it "the next
   one" and "the first one, again" look identical. Held for about a second — a
   sign is taken in at a glance — and a click over it belongs to the dump
   underneath.
+- Both plates — and any other of the kind — are shown by one presenter
+  (`TransientNoticePresenter`), which owns where they sit, that they fade in and
+  leave on their own, and that a new one replaces the last rather than piling
+  onto it. Two conventions for the same shape is how they drift apart.
 - Detecting the wrap belongs to the **model**, in the two places a next
   occurrence comes from, each of which handles both directions: a step through a
   finished index (`MatchSet.step`) and a pass of scans

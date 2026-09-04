@@ -155,3 +155,80 @@ final class TransientNoticeView: NSVisualEffectView {
         }
     }
 }
+
+/// Shows transient notices in a view, one at a time (§11).
+///
+/// The one place that decides where a plate of this kind goes, how it arrives
+/// and leaves, and that a new one replaces the last rather than piling onto
+/// it. Every such report — a Smart Search that found nothing, a search that
+/// came round the end of the file — is shown through here, so they cannot
+/// drift apart into two conventions.
+@MainActor
+final class TransientNoticePresenter {
+    /// Where a plate's middle sits, as a fraction of the host's height **up
+    /// from the bottom**: the lower third.
+    ///
+    /// Out of the way of the bytes being read, which are at the top of the
+    /// window where the caret was left, and of the find bar above them — and
+    /// still inside the window rather than at its edge, so it reads as the
+    /// app's own answer and not as a system alert.
+    static let verticalFraction: CGFloat = 1.0 / 3
+    /// How close a plate may come to the host's bottom edge on a window too
+    /// short for the fraction to clear it.
+    static let minimumBottomInset: CGFloat = 12
+    /// How much of the host's width a plate may take.
+    static let horizontalInset: CGFloat = 40
+
+    private weak var host: NSView?
+    /// The plate on screen, if any. Internal so tests can read what it says.
+    private(set) var current: TransientNoticeView?
+
+    init(host: NSView) {
+        self.host = host
+    }
+
+    /// A plate with something to read: a glyph and a few lines.
+    func show(symbol: String, lines: [String]) {
+        show(TransientNoticeView(symbol: symbol, lines: lines))
+    }
+
+    /// A plate that is one large glyph and nothing else — a sign rather than a
+    /// report.
+    func show(glyph symbol: String) {
+        show(TransientNoticeView(glyph: symbol))
+    }
+
+    func dismiss() {
+        current?.dismiss(animated: false)
+        current = nil
+    }
+
+    private func show(_ notice: TransientNoticeView) {
+        guard let host else { return }
+        current?.dismiss(animated: false)
+        host.addSubview(notice)
+        // A fraction of the height, not a fixed inset: the plate sits in the
+        // same place on a short window and a tall one. The multiplier form is
+        // the only one that can say that — anchors take constants — and it
+        // measures from the top, so the lower third is what is left of the
+        // height above it.
+        let placement = NSLayoutConstraint(item: notice, attribute: .centerY, relatedBy: .equal,
+                                           toItem: host, attribute: .bottom,
+                                           multiplier: 1 - Self.verticalFraction, constant: 0)
+        // On a window too short for the fraction to clear the bottom, the plate
+        // stops rather than hanging off it. Preferred, so the fraction wins
+        // wherever it fits.
+        let clearsBottom = notice.bottomAnchor.constraint(
+            lessThanOrEqualTo: host.bottomAnchor, constant: -Self.minimumBottomInset)
+        clearsBottom.priority = .defaultHigh
+        NSLayoutConstraint.activate([
+            notice.centerXAnchor.constraint(equalTo: host.centerXAnchor),
+            placement,
+            clearsBottom,
+            notice.widthAnchor.constraint(lessThanOrEqualTo: host.widthAnchor,
+                                          constant: -Self.horizontalInset),
+        ])
+        current = notice
+        notice.present()
+    }
+}

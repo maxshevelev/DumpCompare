@@ -202,6 +202,88 @@ final class SmartSearchFlowTests: XCTestCase {
         XCTAssertTrue(pumpUntil(2) { (try? self.findBar(window))?.countTextForTests == "1 of 2" })
     }
 
+    /// A hex search, then a text one, in the same session — the reported bug:
+    /// after a Smart Search settled on `Hex bytes`, a string that is plainly in
+    /// the file as ASCII came back not found until the encoding was switched by
+    /// hand. Typing the second pattern is part of the case: it ends the first
+    /// search's highlighting, and the second press must still be a fresh pass
+    /// rather than anything to do with what the popup now says.
+    func testATextSearchAfterAHexSearchStillFindsTheText() throws {
+        var bytes = [UInt8](repeating: 0x41, count: 512)
+        bytes.replaceSubrange(32..<34, with: [0xDE, 0xAD])
+        bytes.replaceSubrange(128..<132, with: Array("boot".utf8))
+        let (controller, window, _) = try makeController(bytes)
+        defer { cleanup(controller) }
+        let pane = controller.windowModel.pane1
+
+        controller.findPattern()
+        try search("DE AD", in: window)
+        XCTAssertTrue(pumpUntil(5) { pane.currentMatch == 32..<34 }, "the hex pattern is found")
+        XCTAssertEqual(try encodingPopup(window).titleOfSelectedItem, "Hex bytes")
+
+        // The user types over it, which ends the first search's highlighting.
+        let field = try combo(window)
+        field.stringValue = "boot"
+        NotificationCenter.default.post(name: NSControl.textDidChangeNotification, object: field)
+        try findBar(window).pressFindForTests(.forward)
+
+        XCTAssertTrue(pumpUntil(5) { pane.currentMatch == 128..<132 },
+                      "the text is in the file as ASCII, so Smart Search must find it")
+        XCTAssertEqual(try encodingPopup(window).titleOfSelectedItem, "ASCII",
+                       "and the popup follows the encoding that found it")
+    }
+
+    /// The same, with a second pattern that *also* reads as hex: `cafe` is four
+    /// hex digits and a word, so the pass tries the bytes first and the text
+    /// after — and the text is what is in the file.
+    func testAHexLikeStringIsFoundAsTextWhenItsBytesAreNotThere() throws {
+        var bytes = [UInt8](repeating: 0x41, count: 512)
+        bytes.replaceSubrange(32..<34, with: [0xDE, 0xAD])
+        bytes.replaceSubrange(200..<204, with: Array("cafe".utf8))
+        let (controller, window, _) = try makeController(bytes)
+        defer { cleanup(controller) }
+        let pane = controller.windowModel.pane1
+
+        controller.findPattern()
+        try search("DE AD", in: window)
+        XCTAssertTrue(pumpUntil(5) { pane.currentMatch == 32..<34 }, "the hex pattern first")
+
+        let field = try combo(window)
+        field.stringValue = "cafe"
+        NotificationCenter.default.post(name: NSControl.textDidChangeNotification, object: field)
+        try findBar(window).pressFindForTests(.forward)
+
+        XCTAssertTrue(pumpUntil(5) { pane.currentMatch == 200..<204 },
+                      "CA FE is nowhere, so the word is what is found")
+        XCTAssertEqual(try encodingPopup(window).titleOfSelectedItem, "ASCII")
+    }
+
+    /// And through the combo's own action, which is what Return in the field
+    /// actually calls — a path with one more way to go wrong: it treats a
+    /// selected dropdown item as a *pick* rather than a search.
+    func testReturnInTheFieldSearchesRatherThanRepickingHistory() throws {
+        var bytes = [UInt8](repeating: 0x41, count: 512)
+        bytes.replaceSubrange(32..<34, with: [0xDE, 0xAD])
+        bytes.replaceSubrange(128..<132, with: Array("boot".utf8))
+        let (controller, window, _) = try makeController(bytes)
+        defer { cleanup(controller) }
+        let pane = controller.windowModel.pane1
+
+        controller.findPattern()
+        let field = try combo(window)
+        field.stringValue = "DE AD"
+        field.sendAction(field.action, to: field.target)   // Return
+        XCTAssertTrue(pumpUntil(5) { pane.currentMatch == 32..<34 }, "the hex pattern")
+
+        field.stringValue = "boot"
+        NotificationCenter.default.post(name: NSControl.textDidChangeNotification, object: field)
+        field.sendAction(field.action, to: field.target)   // Return again
+
+        XCTAssertEqual(field.stringValue, "boot", "the press must not rewrite the field")
+        XCTAssertTrue(pumpUntil(5) { pane.currentMatch == 128..<132 },
+                      "and it must search what is in the field")
+    }
+
     // MARK: - When nothing is found anywhere
 
     /// A pass that comes back empty says so as a plate over the window, naming
@@ -243,9 +325,10 @@ final class SmartSearchFlowTests: XCTestCase {
         XCTAssertEqual(notice.lines.count, 5, "hex, then the text encodings it also tried")
     }
 
-    /// Where the plate sits: horizontally centred in the window, above the
-    /// middle — where Xcode puts a build's result (§11).
-    func testTheNoticeIsCentredAndSitsAboveTheMiddle() throws {
+    /// Where the plate sits: horizontally centred in the window, in the lower
+    /// third — out of the way of the bytes being read at the top of it, and of
+    /// the find bar above them (§11).
+    func testTheNoticeIsCentredAndSitsInTheLowerThird() throws {
         let (controller, window, _) = try makeController([UInt8](repeating: 0xFF, count: 256))
         defer { cleanup(controller) }
 
@@ -259,12 +342,13 @@ final class SmartSearchFlowTests: XCTestCase {
         XCTAssertEqual(notice.frame.midX, content.bounds.midX, accuracy: 0.5,
                        "centred across the window")
         XCTAssertGreaterThan(notice.frame.width, 100, "and sized to its lines")
-        // The view is not flipped, so "above the middle" is a larger y.
+        // The view is not flipped, so a third of the way *up* is a small y.
         XCTAssertEqual(notice.frame.midY,
-                       content.bounds.height * (1 - MainViewController.noticeVerticalFraction),
+                       content.bounds.height * TransientNoticePresenter.verticalFraction,
                        accuracy: 1,
-                       "a third of the way down from the top")
-        XCTAssertLessThan(notice.frame.midY, content.bounds.maxY, "inside the window")
+                       "a third of the height up from the bottom")
+        XCTAssertGreaterThan(notice.frame.minY, content.bounds.minY, "inside the window")
+        XCTAssertLessThan(notice.frame.midY, content.bounds.midY, "and below its middle")
     }
 
     /// It goes on its own, and takes nothing with it: a report, not a dialog.
