@@ -130,6 +130,58 @@ problem: sections are exactly how this should read, and a menu is what can draw
 them. B stays the fallback if the search field turns out to fight the bar's
 layout, and C remains the wrong shape for the reason given.
 
+### 1a. The menu, as settled at the prototype
+
+`Design/pattern-field-prototype.swift` builds the bar twice — today's combo
+above, the search field below — and the shape below is what came out of looking
+at it. Recents first, because that is the list reached most often; each
+section's commands under that section, fenced off by separators; and the two
+lists in one row format, so the eye reads them the same way.
+
+```
+🕐 Recent Queries                                    ← header, `clock`
+   "DE AD BE EF"  Hex bytes
+   "windows"  UTF-16 LE, ignore case
+   "Root"  ASCII, match case
+   ─────────────────
+   Add to Favorites
+   Clear Recents
+   ─────────────────
+★ Favorites                                          ← header, `star.fill`
+   ME FPT: "$FPT"  Hex bytes
+   Vendor S/N table: "SN:"  ASCII, match case
+   Windows loader string: "windows"  UTF-16 LE, ignore case
+   ─────────────────
+   Manage Favorites…
+```
+
+- **A row is `Name: "pattern"  flags`**, and a recent is the same row without
+  the name — nothing typed into the field has one. The pattern is quoted so it
+  cannot be confused with the name or the flags, and it is *not* monospaced:
+  tried, and it read as code in a list of prose.
+- **The flags are grey and a size smaller.** They say how the pattern is
+  searched, not what is searched for, and colour is what separates the two at a
+  glance. Both go after the pattern with no comma before them; a comma there
+  read as another separator competing with the colour.
+- **The case rule is stated either way** — `ignore case` as well as `match
+  case`. It is a fact about the search, not the absence of one, and a reader
+  should not have to know which way the silence went. **Hex says neither**:
+  bytes have no case, the toggle is off the bar there (§11), and "ignore case"
+  beside `41` would claim it matches `61`.
+- **Type sizes**: rows and commands at 12pt against the system menu's 13 —
+  these are a list to scan rather than commands to read one at a time — flags
+  and headers at 11.
+
+Two facts the prototype settled, both of which shape the code:
+
+- **`NSMenuItem.sectionHeader(title:)` takes only a title**, so a header with an
+  icon is built by hand: a disabled item with the symbol as its `image` and the
+  title in 11pt semibold secondary. It reads as a header.
+- **An item with no action is drawn grey.** `NSMenu.autoenablesItems` disables
+  anything without a target and an action, which is why the first prototype
+  came out uniformly dim — worth knowing before concluding anything about
+  colours from a mock.
+
 ### 2. Does an activated library pattern enter the history?
 
 The open question as posed. **No** — and the reason is stronger than "it would
@@ -272,14 +324,40 @@ later without changing what this slice does.
 
 ## What would need deciding before writing any of it
 
-- Whether an `NSSearchField` sits in the bar's stack the way the combo does —
-  same height, same hugging, the count's fixed width undisturbed. This is the
-  one thing that would send the design back to option B, and it is worth
-  building the field alone and looking at it before anything else is written.
-- Whether an entry's name must be unique. Two entries called *FPT* differing
-  only in encoding are legitimate; two identical ones are a mistake the form
-  should probably prevent, and probably by merging rather than refusing.
-- What a pick does when the pattern cannot be parsed *now* — an entry saved
+**Settled at the prototype** (`Design/pattern-field-prototype.swift`): the
+search field sits in the bar's stack exactly as the combo does — same height,
+same baseline, same stretch, the count's fixed width undisturbed — and the
+magnifier's disclosure arrow is the affordance, so nothing is added to the bar.
+The field's clear (⊗) comes with it. What is left:
+
+- **What a pick does.** Today a pick out of the combo's history *fills* the
+  field and stops; the user then presses Return. A favourite is a stronger
+  statement — a named thing chosen deliberately — so it probably fills *and*
+  searches. Whichever way, the two lists should behave the same, and today's
+  fill-only is the behaviour a Find bar user already has.
+- **Escape.** The bar closes on Escape (`doneButton.keyEquivalent`), and a
+  search field treats Escape as "clear the field". Which one wins has to be
+  tried rather than reasoned about, and if the field wins, the bar needs Escape
+  back — closing is what Escape means everywhere else in this app.
+- **A pick sets three things, not one.** The pattern, the encoding *and* the
+  case flag: an entry records `match case` or `ignore case`, and the `Aa`
+  toggle has to follow it or the row is lying. It also sets the Smart Search
+  preference (`preferring:`, §11), which is what makes the named encoding the
+  first attempt.
+- **How long the menu may get.** Ten recents plus twenty favourites plus two
+  headers, three commands and four separators is a long menu. Options: show the
+  first N favourites and leave the rest to the form, or group them once there
+  are enough to need it. Not decidable without a real library to look at.
+- **Order of favourites.** Insertion order, alphabetical, or dragged by hand in
+  the form. Insertion order is the cheapest and the least useful once there are
+  twenty; alphabetical needs no UI.
+- **Uniqueness.** Two entries called *FPT* differing only in encoding are
+  legitimate; two identical ones are a mistake the form should prevent, and
+  probably by merging rather than refusing.
+- **What a pick does when the pattern cannot be parsed *now*** — an entry saved
   under an encoding whose parser has since changed, or hand-edited defaults.
   The bar's `Invalid pattern` (§11) covers it, but the entry should say so in
   the list rather than only when used.
+- **Whether an entry keeps a note.** The row format has no room for one, so a
+  note would live in the tooltip and in the form. Worth having only if the name
+  turns out to be too short to say what a pattern is for.
