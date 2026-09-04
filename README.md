@@ -9,7 +9,7 @@ DumpCompare grew out of bench work on BIOS and EC dumps, so the comparison model
 
 ## Download
 
-[**DumpCompare 0.6.3**](https://github.com/maxshevelev/DumpCompare/releases/latest) — a universal `.dmg` (Apple silicon and Intel), macOS 14 or later.
+[**DumpCompare 0.7**](https://github.com/maxshevelev/DumpCompare/releases/latest) — a universal `.dmg` (Apple silicon and Intel), macOS 14 or later.
 
 The build is ad-hoc signed and not notarized, so Gatekeeper stops the first launch: right-click the app and choose **Open**, or clear the quarantine flag once.
 
@@ -93,8 +93,11 @@ The workflows the app is shaped around:
 
 ### Search
 
-- **Find** (⌘F): query history, an encoding popup (**Hex bytes**, **Text — ASCII**, **UTF-8**, **UTF-16 LE/BE**), a case toggle, and paired ‹ › buttons. Searches run in the background and centre their result.
-- **Search All** lists every occurrence in a panel beside the dump, filling as the scan streams matches in; offsets and excerpts follow later edits.
+- **Find** (⌘F): query history, an encoding popup (**Hex bytes**, **ASCII**, **UTF-8**, **UTF-16 LE/BE**), a case toggle, **Smart Search**, and paired ‹ › buttons. Searches run in the background, with progress and a cancel in the status bar.
+- **Every occurrence at once.** Activating a search greys every match in the dump and marks them on both minimap modes; the one you are standing on is raised on a yellow plate that hops when you step to the next. The bar counts them — `3 of 128`, exact at any size — and ‹ › are then steps through that count rather than fresh scans.
+- **The match comes before the count.** The first occurrence is found by a scan from the caret in about a millisecond on a 16 MB dump; the index of every *other* occurrence fills in behind it, so a pattern as common as `FF` never makes you wait for it. Navigation wraps, and a search that came round the end of the file says so.
+- **Smart Search** (on by default): you know the string, not how the firmware stored it. A pattern that reads as hex bytes is looked for as bytes first and as text after; anything else is tried as ASCII, UTF-8 and UTF-16 LE/BE in turn until something is found — and the encoding that found it is what the popup then shows. Name an encoding yourself, by choosing it or by picking an earlier search out of the history, and that is where the hunt starts. A pass that finds nothing says which encodings it tried.
+- **Search Results** lists every occurrence in a panel beside the dump — the same set the dump highlights, not a second search — with each offset, a hex excerpt and the decoded text, read from the pane's live bytes so they follow later edits. Past a thousand matches it states the count and refuses to list: a list that long is a sign the pattern needs refining, not a tool.
 
 ### Toolbar
 
