@@ -753,6 +753,36 @@ final class FindBarView: NSView, NSSearchFieldDelegate, NSMenuItemValidation {
         return item
     }
 
+    /// Writes `text` into the field without it counting as typing.
+    ///
+    /// The write goes through the live field editor when there is one: an
+    /// active editor ignores `stringValue` until it commits. The caret lands at
+    /// the end, because every caller is replacing the whole text rather than
+    /// editing it.
+    private func setPatternText(_ text: String) {
+        if let editor = patternField.currentEditor() {
+            editor.string = text
+            editor.selectedRange = NSRange(location: (text as NSString).length, length: 0)
+        }
+        patternField.stringValue = text
+    }
+
+    /// Writes a hex pattern back in the form a dump prints it — `deadbeef`
+    /// becomes `DE AD BE EF` (§11).
+    ///
+    /// Only on a search, never while typing: it is the answer to "this is what
+    /// I looked for", and a field that regrouped bytes under the caret would be
+    /// unusable. The text is derived from the bytes, so it says exactly what
+    /// was searched for — and because the history records what the field holds,
+    /// the recents keep the same form. Text encodings are left alone: there the
+    /// field holds the string itself, not a transcription of bytes.
+    private func normalizeHexText(of pattern: SearchPattern) {
+        guard pattern.encoding == .hex else { return }
+        let text = pattern.hexText
+        guard text != patternField.stringValue else { return }
+        setPatternText(text)
+    }
+
     /// Restores first responder to the pattern field after a search run from the
     /// bar, so a subsequent Enter keeps re-searching instead of landing on the
     /// hex view (§11).
@@ -867,6 +897,12 @@ final class FindBarView: NSView, NSSearchFieldDelegate, NSMenuItemValidation {
         press(segment: direction == .backward ? Self.previousSegment : Self.nextSegment)
     }
 
+    /// Presses Find All the way a click does. The button is disabled until a
+    /// search is live, so a test cannot click it into a first search.
+    func pressFindAllForTests() {
+        runSearchAll()
+    }
+
     @objc private func donePressed() {
         onClose?()
     }
@@ -885,6 +921,7 @@ final class FindBarView: NSView, NSSearchFieldDelegate, NSMenuItemValidation {
 
     private func runSearch(_ direction: SearchDirection, recordingHistory: Bool = true) {
         guard let request = searchRequest() else { return }  // reported inside
+        if case .pattern(let pattern, _) = request { normalizeHexText(of: pattern) }
         if recordingHistory { recordChosenEncoding(of: request) }
         onSearch?(request, direction)
     }
@@ -962,6 +999,12 @@ final class FindBarView: NSView, NSSearchFieldDelegate, NSMenuItemValidation {
         // *already* settled on — instead of stepping the index it now has.
         pickedEncoding = encoding
         updateCaseButtonVisibility()
+        // A pass that landed on hex found *bytes*, so the field says so the way
+        // a dump does — before the history records what the field holds (§11).
+        if let pattern = try? SearchEngine.parsePattern(patternField.stringValue,
+                                                        encoding: encoding) {
+            normalizeHexText(of: pattern)
+        }
         record(encoding: encoding)
     }
 
@@ -969,6 +1012,7 @@ final class FindBarView: NSView, NSSearchFieldDelegate, NSMenuItemValidation {
     /// search, but every occurrence is collected instead of moving the caret.
     private func runSearchAll() {
         guard let request = searchRequest() else { return }  // reported inside
+        if case .pattern(let pattern, _) = request { normalizeHexText(of: pattern) }
         recordChosenEncoding(of: request)
         onSearchAll?(request)
     }
@@ -1012,10 +1056,7 @@ final class FindBarView: NSView, NSSearchFieldDelegate, NSMenuItemValidation {
     /// The write goes through the live field editor when there is one: an
     /// active editor ignores `stringValue` until it commits.
     private func apply(_ entry: SearchPatternEntry) {
-        if let editor = patternField.currentEditor() {
-            editor.string = entry.pattern
-        }
-        patternField.stringValue = entry.pattern
+        setPatternText(entry.pattern)
 
         if let index = SearchEncoding.allCases.firstIndex(of: entry.encoding) {
             encodingPopup.selectItem(at: index)

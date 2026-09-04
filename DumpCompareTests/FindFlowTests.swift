@@ -882,10 +882,14 @@ final class FindFlowTests: XCTestCase {
         XCTAssertTrue(pumpUntil(3) { pane.hexSelection().start == 2 },
                       "and a pick runs the search it names")
 
-        // One pattern under two encodings is two rows, each with its own.
+        // One pattern under two encodings is two rows, each with its own. The
+        // hex one is the most recent of the pair, so it is the row picked here
+        // — and a hex search is shown back the way a dump prints its bytes,
+        // which is why the field reads `AB CD` (§11).
         XCTAssertEqual(rows.filter { $0.hasPrefix("\"ABCD\"") }.count, 2)
         XCTAssertTrue(try pickPatternRow(window, startingWith: "\"ABCD\""))
-        XCTAssertEqual(combo.stringValue, "ABCD")
+        XCTAssertEqual(encoding.titleOfSelectedItem, "Hex bytes")
+        XCTAssertEqual(combo.stringValue, "AB CD")
     }
 
     /// The history is capped at 10 entries, most recent first.

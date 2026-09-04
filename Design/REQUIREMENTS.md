@@ -1027,6 +1027,18 @@ Search modes:
      - `DEADBEEF`
      - `DE AD BE EF`
      - `0xDE 0xAD` optional support.
+   - **Shown back in one form.** On a search — never while typing — the field
+     is rewritten as uppercase pairs with one space between them, the way a
+     dump prints bytes: `deadbeef` becomes `DE AD BE EF`. The parser accepts
+     more forms than a dump prints, and the reader's next move is to compare
+     the pattern against the bytes on screen. The text is derived from the
+     *bytes*, so it says exactly what was searched for; the history records
+     what the field holds, so the recents keep the same form. Only on a
+     search, because a field that regrouped bytes under the caret would be
+     unusable — and this includes a Smart Search that lands on hex, which
+     found bytes and says so (§11, Smart Search).
+   - Text encodings are left alone: there the field holds the string being
+     looked for, not a transcription of bytes.
 
 2. Text:
    - ASCII;
