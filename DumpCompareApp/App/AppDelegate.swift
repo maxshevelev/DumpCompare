@@ -41,6 +41,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Apply the stored theme before any window appears, so the first frame
         // is already in the right appearance (§3.2).
         applyTheme()
+        // Drop bookmarks for files that are no longer there (§D9). They can
+        // only fail to resolve, and the store used to keep every one of them
+        // for ever: one machine had 9 434 of them, 14 MB of preferences, nearly
+        // all pointing at temporary files the test suite had deleted.
+        SandboxBookmarkStore.shared.pruneNow()
         // The menu bar belongs to the application, not to a window: it is built
         // once, here, and its commands travel the responder chain to whichever
         // window is key.

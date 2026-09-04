@@ -16,8 +16,7 @@ final class FindFlowTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        isolatedSuiteName = "FindFlowTests-\(UUID().uuidString)"
-        isolatedDefaults = UserDefaults(suiteName: isolatedSuiteName)
+        (isolatedSuiteName, isolatedDefaults) = isolatedDefaults(for: self)
         // Route the find feature's persistence (history + Aa toggle) at the
         // isolated store; restored to .standard in tearDown.
         FindHistoryStore.defaults = isolatedDefaults
@@ -33,7 +32,7 @@ final class FindFlowTests: XCTestCase {
 
     override func tearDown() {
         removeTempFiles()
-        isolatedDefaults.removePersistentDomain(forName: isolatedSuiteName)
+        discardIsolatedDefaults(isolatedSuiteName, isolatedDefaults)
         FindHistoryStore.defaults = .standard
         FindBarView.defaults = .standard
         FilePaneView.defaults = .standard

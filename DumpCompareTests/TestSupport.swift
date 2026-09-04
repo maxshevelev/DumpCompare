@@ -14,6 +14,49 @@ import XCTest
 /// state. An extension is opt-in per call site and cannot break a class that
 /// defines its own helper of the same name — a class's own member wins.
 extension XCTestCase {
+    /// A `UserDefaults` of the test class's own, emptied on the way in and
+    /// **removed**, file and all, on the way out.
+    ///
+    /// Two things this exists for, both learned the hard way:
+    ///
+    /// - `removePersistentDomain(forName:)` empties a suite and leaves its
+    ///   plist on disk. The test host is sandboxed into the *app's* container,
+    ///   so that file lands beside the user's own preferences — and a suite
+    ///   named per test left one behind per test. They reached 53 720 files and
+    ///   220 MB, at which point listing the directory took minutes and the
+    ///   suite's own runs were reading through all of it.
+    /// - One name per class rather than per test keeps it to a single file even
+    ///   if the removal ever fails again, and emptying it here gives each test
+    ///   the clean slate a fresh name did.
+    ///
+    /// Pass `self`; the class's own name is the suite's.
+    func isolatedDefaults(for owner: Any) -> (name: String, store: UserDefaults) {
+        let suite = "\(type(of: owner)).isolated"
+        guard let store = UserDefaults(suiteName: suite) else {
+            fatalError("a suite named \(suite) is always openable")
+        }
+        store.removePersistentDomain(forName: suite)
+        return (suite, store)
+    }
+
+    /// Empties `name`'s domain and deletes the plist `removePersistentDomain`
+    /// leaves behind — see `isolatedDefaults(for:)`.
+    func discardIsolatedDefaults(_ name: String, _ store: UserDefaults) {
+        store.removePersistentDomain(forName: name)
+        // Flush the daemon's copy first: deleting the file under a domain it is
+        // still holding invites it to be written out again.
+        CFPreferencesAppSynchronize(name as CFString)
+        // The host is sandboxed, so `NSHomeDirectory()` is the app container's
+        // Data directory; an unsandboxed run would put it in the real home.
+        // Try both rather than guess which one ran.
+        let homes = [NSHomeDirectory(), NSString("~").expandingTildeInPath]
+        for home in homes {
+            let url = URL(fileURLWithPath: home)
+                .appendingPathComponent("Library/Preferences/\(name).plist")
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
     /// Writes `bytes` to a fresh file in the test host's temporary directory and
     /// deletes it when the test ends.
     ///

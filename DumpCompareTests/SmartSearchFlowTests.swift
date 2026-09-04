@@ -17,8 +17,7 @@ final class SmartSearchFlowTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        isolatedSuiteName = "SmartSearchFlowTests-\(UUID().uuidString)"
-        isolatedDefaults = UserDefaults(suiteName: isolatedSuiteName)
+        (isolatedSuiteName, isolatedDefaults) = isolatedDefaults(for: self)
         FindHistoryStore.defaults = isolatedDefaults
         FindBarView.defaults = isolatedDefaults
         FilePaneView.defaults = isolatedDefaults
@@ -31,7 +30,7 @@ final class SmartSearchFlowTests: XCTestCase {
     override func tearDown() {
         for url in tempFiles { try? FileManager.default.removeItem(at: url) }
         tempFiles = []
-        isolatedDefaults.removePersistentDomain(forName: isolatedSuiteName)
+        discardIsolatedDefaults(isolatedSuiteName, isolatedDefaults)
         FindHistoryStore.defaults = .standard
         FindBarView.defaults = .standard
         FilePaneView.defaults = .standard

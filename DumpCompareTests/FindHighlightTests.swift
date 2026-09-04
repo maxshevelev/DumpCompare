@@ -15,15 +15,14 @@ final class FindHighlightTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        isolatedSuiteName = "FindHighlightTests-\(UUID().uuidString)"
-        isolatedDefaults = UserDefaults(suiteName: isolatedSuiteName)
+        (isolatedSuiteName, isolatedDefaults) = isolatedDefaults(for: self)
         FindHistoryStore.defaults = isolatedDefaults
         FindBarView.defaults = isolatedDefaults
         FilePaneView.defaults = isolatedDefaults
     }
 
     override func tearDown() {
-        isolatedDefaults.removePersistentDomain(forName: isolatedSuiteName)
+        discardIsolatedDefaults(isolatedSuiteName, isolatedDefaults)
         FindHistoryStore.defaults = .standard
         FindBarView.defaults = .standard
         FilePaneView.defaults = .standard
