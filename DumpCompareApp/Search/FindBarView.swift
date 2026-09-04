@@ -573,10 +573,14 @@ final class FindBarView: NSView, NSComboBoxDelegate {
     private func runSearch(_ direction: SearchDirection) {
         guard let pattern = parsedPattern() else { return }  // onError fired inside
         // Remember this search (pattern + encoding + case flag) so the next
-        // open offers it and lists it in the combo's history (§11).
-        FindHistoryStore.record(pattern: patternCombo.stringValue, encoding: pattern.encoding,
-                                caseSensitive: isCaseSensitive)
-        refreshHistoryItems()
+        // open offers it and lists it in the combo's history (§11). The item
+        // list is rebuilt only when the history moved: every press of ‹ ›
+        // records the pair that is already at the front, and reloading a
+        // dropdown nobody opened on each press is work for nothing.
+        if FindHistoryStore.record(pattern: patternCombo.stringValue, encoding: pattern.encoding,
+                                   caseSensitive: isCaseSensitive) {
+            refreshHistoryItems()
+        }
         onSearch?(pattern, direction, isCaseSensitive)
     }
 
@@ -584,9 +588,10 @@ final class FindBarView: NSView, NSComboBoxDelegate {
     /// search, but every occurrence is collected instead of moving the caret.
     private func runSearchAll() {
         guard let pattern = parsedPattern() else { return }  // onError fired inside
-        FindHistoryStore.record(pattern: patternCombo.stringValue, encoding: pattern.encoding,
-                                caseSensitive: isCaseSensitive)
-        refreshHistoryItems()
+        if FindHistoryStore.record(pattern: patternCombo.stringValue, encoding: pattern.encoding,
+                                   caseSensitive: isCaseSensitive) {
+            refreshHistoryItems()
+        }
         onSearchAll?(pattern, isCaseSensitive)
     }
 

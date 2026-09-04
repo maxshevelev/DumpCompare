@@ -902,11 +902,7 @@ final class MainViewController: NSViewController {
                 self?.findBar.setResultsShown(false)
             }
             pane.onMatchesChanged = { [weak self] in
-                self?.refreshFindCount()
-                // The map paints the matches too (§11), and no range describes
-                // a set arriving or going, so its cells are all suspect.
-                self?.minimapView.invalidateCells()
-                self?.syncMinimapMatchOverlays()
+                self?.searchAppearanceChanged()
             }
             // The minimap's single map mirrors this pane: edits rebuild its
             // cells, a moved caret moves the selection overlay, and scrolling
@@ -1045,14 +1041,10 @@ final class MainViewController: NSViewController {
                 self?.findBar.setResultsShown(false)
             }
             pane1View.onMatchesChanged = { [weak self] in
-                self?.refreshFindCount()
-                self?.minimapView.invalidateCells()
-                self?.syncMinimapMatchOverlays()
+                self?.searchAppearanceChanged()
             }
             pane2View.onMatchesChanged = { [weak self] in
-                self?.refreshFindCount()
-                self?.minimapView.invalidateCells()
-                self?.syncMinimapMatchOverlays()
+                self?.searchAppearanceChanged()
             }
 
             activeFilePane = windowModel.activePaneIndex == 0 ? pane1View : pane2View
@@ -1389,6 +1381,9 @@ final class MainViewController: NSViewController {
             updateOverviewAvailability()
             updateMinimapViewports()
             rebuildOverview()
+            // The search's marks were not computed while the panel was closed
+            // (§11).
+            scheduleMinimapMatchSync()
         }
     }
 
@@ -1672,7 +1667,7 @@ final class MainViewController: NSViewController {
                 self.minimapView.setOverviewSummaries(summaries)
                 // The row count the picture was built for is now the panel's,
                 // so the match bits are re-binned to match it (§11).
-                self.syncMinimapMatchOverlays()
+                self.scheduleMinimapMatchSync()
                 self.overviewRebuildsCompleted += 1
             }
         }
@@ -2134,7 +2129,42 @@ final class MainViewController: NSViewController {
     /// same arithmetic the density picture uses, so a match lands on the cell
     /// its bytes land in — and cheap enough to do on the main actor: a couple of
     /// hundred bytes per map, no file read.
-    private func syncMinimapMatchOverlays() {
+    /// Asks for the map's match marks, later.
+    ///
+    /// The map is never on the critical path of a search: showing the match the
+    /// user asked for is the dump's job and the reveal's, and the marks beside
+    /// it are a summary that may as well arrive a frame afterwards. So this
+    /// only schedules — coalescing a burst of presses into one sync — and the
+    /// walk itself runs off the main thread (§11, §19).
+    private func scheduleMinimapMatchSync() {
+        // Nothing on the map is drawn while the panel is closed, so nothing is
+        // computed for it. Showing the panel is what asks
+        // (`minimapPanelVisibilityChanged`), and the forgotten picture makes
+        // that ask rebuild rather than trust what it last saw (§19).
+        guard minimapPanelVisible else {
+            syncedMatchPicture = nil
+            return
+        }
+        guard !minimapMatchSyncScheduled else { return }
+        minimapMatchSyncScheduled = true
+        Task { @MainActor [weak self] in
+            self?.minimapMatchSyncScheduled = false
+            await self?.syncMinimapMatchOverlays()
+        }
+    }
+
+    /// Hands the minimap the search's matches for the overview (§11).
+    ///
+    /// The state is read here, on the actor that owns it; the row walk that
+    /// turns a set into marks is pure arithmetic over `Sendable` values, so it
+    /// runs on a detached task and the result is installed on return. A picture
+    /// that has been overtaken while that ran is dropped: a newer sync is
+    /// already on its way.
+    private func syncMinimapMatchOverlays() async {
+        guard minimapPanelVisible else {
+            syncedMatchPicture = nil
+            return
+        }
         let rowCount = minimapView.overviewRowCount()
         let extent = currentFileSizes().max() ?? 0
         let panes: [PaneViewModel?]
@@ -2148,13 +2178,86 @@ final class MainViewController: NSViewController {
         }
         guard rowCount > 0, extent > 0, !panes.isEmpty else {
             minimapView.setMatchOverlays([])
+            syncedMatchPicture = nil
             return
         }
         let binning = OverviewBinning(extent: extent, rowCount: rowCount)
-        minimapView.setMatchOverlays(panes.map {
-            Self.matchOverlay(for: $0, binning: binning, rowCount: rowCount, extent: extent)
-        })
+        let picture = MatchPicture(rowCount: rowCount, extent: extent,
+                                   sets: panes.map { MatchPicture.Marks($0?.highlightedMatchSet) })
+        if picture == syncedMatchPicture, minimapView.matchOverlays.count == panes.count {
+            // The same occurrences over the same geometry are the same strokes.
+            // Only the plate can have moved, and re-marking one range is the
+            // whole of that — this is the path a press of ‹ › takes, and it
+            // used to walk every row of the map instead (§11).
+            minimapView.setMatchOverlays(zip(minimapView.matchOverlays, panes).map { overlay, pane in
+                var moved = overlay
+                moved.current = Self.currentMatchMarks(pane?.currentMatchRange, binning: binning,
+                                                       rowCount: rowCount)
+                return moved
+            })
+            return
+        }
+        // The sets and the plates as values, so the walk needs nothing from the
+        // main actor.
+        let sets = panes.map { pane -> MatchSet? in
+            guard let pane, pane.isOpen else { return nil }
+            return pane.highlightedMatchSet
+        }
+        let currents = panes.map { $0?.currentMatchRange }
+        let generation = minimapMatchSyncGeneration + 1
+        minimapMatchSyncGeneration = generation
+        matchOverlayWalksForTesting += 1
+        let overlays = await Task.detached(priority: .utility) {
+            zip(sets, currents).map {
+                Self.matchOverlay(for: $0, current: $1, binning: binning,
+                                  rowCount: rowCount, extent: extent)
+            }
+        }.value
+        guard generation == minimapMatchSyncGeneration else { return }
+        syncedMatchPicture = picture
+        minimapView.setMatchOverlays(overlays)
     }
+
+    /// What the overview's match strokes were last computed from: the geometry,
+    /// and each pane's set as far as the strokes can tell two sets apart.
+    ///
+    /// The set is not compared byte for byte — it is compared by the things the
+    /// picture is made of. Two sets with the same pattern, the same folding and
+    /// the same count over the same extent mark the same rows, so there is
+    /// nothing to redo; and while a search is being indexed the count is what
+    /// grows, so a batch still reads as a new picture.
+    private struct MatchPicture: Equatable {
+        struct Marks: Equatable {
+            let pattern: SearchPattern
+            let folding: CaseFolding
+            let total: Int
+
+            init?(_ set: MatchSet?) {
+                guard let set else { return nil }
+                pattern = set.pattern
+                folding = set.folding
+                total = set.total
+            }
+        }
+
+        let rowCount: Int
+        let extent: UInt64
+        let sets: [Marks?]
+    }
+
+    private var syncedMatchPicture: MatchPicture?
+
+    /// Whether a match sync is already queued for the next turn, so a run of
+    /// presses costs one walk rather than one per press.
+    private var minimapMatchSyncScheduled = false
+    /// Which sync is current: a walk that finished after a newer one started
+    /// has nothing to install.
+    private var minimapMatchSyncGeneration = 0
+
+    /// How many times the strokes have actually been walked. The point of the
+    /// picture check above is that this does not climb while the set stands
+    /// still, which is only observable as a count (§11).
+    private(set) var matchOverlayWalksForTesting = 0
 
     /// One map's worth of match bits.
     ///
@@ -2163,17 +2266,14 @@ final class MainViewController: NSViewController {
     /// thousand rows, so per-match work would be the wrong way round. Each row
     /// stops early once every column is marked or after `perRowMarkLimit`
     /// matches — by then the row says all it can say at this scale.
-    private static func matchOverlay(for pane: PaneViewModel?, binning: OverviewBinning,
+    private static func matchOverlay(for set: MatchSet?, current: Range<UInt64>?,
+                                     binning: OverviewBinning,
                                      rowCount: Int, extent: UInt64) -> MinimapView.MatchOverlay {
-        guard let pane, pane.isOpen, let set = pane.highlightedMatchSet,
-              set.isHighlightable else {
-            return .empty
-        }
+        guard let set, set.isHighlightable else { return .empty }
         let perRowMarkLimit = 32
         let rows = 0...(rowCount - 1)
         let reach = UInt64(max(set.patternLength - 1, 0))
         var matched = [UInt16](repeating: 0, count: rowCount)
-        var current = [UInt16](repeating: 0, count: rowCount)
 
         for row in rows {
             let rowStart = binning.start(ofRow: row)
@@ -2193,11 +2293,19 @@ final class MainViewController: NSViewController {
                 index = i + 1 < set.total ? i + 1 : nil
             }
         }
-        if let currentMatch = pane.currentMatchRange {
-            binning.mark(currentMatch, rows: rows, into: &current)
-        }
-        return MinimapView.MatchOverlay(extent: extent, rowCount: rowCount,
-                                        matched: matched, current: current)
+        return MinimapView.MatchOverlay(
+            extent: extent, rowCount: rowCount, matched: matched,
+            current: currentMatchMarks(current, binning: binning, rowCount: rowCount))
+    }
+
+    /// The row bits for the find indicator alone — one range, so this is what a
+    /// step of ‹ › costs on the map.
+    private static func currentMatchMarks(_ range: Range<UInt64>?, binning: OverviewBinning,
+                                          rowCount: Int) -> [UInt16] {
+        var marks = [UInt16](repeating: 0, count: rowCount)
+        guard rowCount > 0, let range else { return marks }
+        binning.mark(range, rows: 0...(rowCount - 1), into: &marks)
+        return marks
     }
 
     /// Hands the minimap the open panes' segment partitions, so the strip beside
@@ -2240,7 +2348,7 @@ final class MainViewController: NSViewController {
         syncMinimapSegments()
         // The overview's match bits are binned over the extent, so a file that
         // grew or shrank re-bins them too (§11).
-        syncMinimapMatchOverlays()
+        scheduleMinimapMatchSync()
         // An insert or a delete can carry the file across the line where the
         // overview stops magnifying it, so the offer follows the size as well as
         // the panel's height (§19.4). The *mode* is deliberately not re-decided
@@ -5065,6 +5173,23 @@ final class MainViewController: NSViewController {
     /// Hands the Find bar the active pane's session: "3 of 128", "Not found",
     /// or nothing at all (§11). Driven by every change to the set or the
     /// current match, and by the bar opening.
+    /// Something about how the search *looks* changed — a set arrived or went,
+    /// the highlighting came or ended, the indicator stepped. The count is
+    /// re-read and the map re-marked; the dump repaints itself, through the
+    /// pane's own view (§11).
+    ///
+    /// Everything here is skipped while the minimap panel is closed: it paints
+    /// nothing, and a press of ‹ › used to invalidate its cells and rebuild its
+    /// overlay regardless.
+    private func searchAppearanceChanged() {
+        refreshFindCount()
+        guard minimapPanelVisible else { return }
+        // No byte range describes a set arriving or a plate moving to another
+        // part of the file, so in detail mode every cell it draws is suspect.
+        minimapView.invalidateCells()
+        scheduleMinimapMatchSync()
+    }
+
     private func refreshFindCount() {
         findBar.show(count: FindCount.reading(of: activePane.highlightedMatchSet,
                                               current: activePane.currentMatchIndex))

@@ -1912,6 +1912,57 @@ final class MinimapTests: XCTestCase {
         XCTAssertTrue(summary.modified.allSatisfy { $0 == 0 }, "nothing was edited")
     }
 
+    /// §11 + §19: the overview's match strokes are the pane's set binned to the
+    /// map's rows, and they arrive *after* the press rather than in it — the map
+    /// is a summary beside the answer, not part of it, so the walk that builds
+    /// it is scheduled and runs off the main thread.
+    func testOverviewMatchMarksFollowTheSetAndThenThePlate() throws {
+        let size = 256 * 1024
+        var bytes = [UInt8](repeating: 0x41, count: size)
+        // Two occurrences, at an eighth and at five eighths of the file.
+        bytes.replaceSubrange((size / 8)..<(size / 8 + 2), with: [0xDE, 0xAD])
+        bytes.replaceSubrange((size * 5 / 8)..<(size * 5 / 8 + 2), with: [0xDE, 0xAD])
+        let (controller, window, panel) = try makeOverviewWindow(bytes)
+        let pane = controller.windowModel.pane1
+        XCTAssertTrue(panel.matchOverlays.allSatisfy { $0.matched.allSatisfy { $0 == 0 } },
+                      "no search, no strokes")
+
+        let set = MatchSet(pattern: SearchPattern(bytes: [0xDE, 0xAD], encoding: .hex),
+                           folding: .exact, extent: UInt64(size),
+                           starts: [UInt64(size / 8), UInt64(size * 5 / 8)])
+        pane.setMatches(set, current: 0)
+
+        XCTAssertTrue(pumpUntil(3) {
+            (panel.matchOverlays.first?.matched.contains { $0 != 0 }) ?? false
+        }, "the strokes land, a turn later")
+        let overlay = try XCTUnwrap(panel.matchOverlays.first)
+        let rows = Double(overlay.rowCount)
+        let struck = overlay.matched.enumerated().filter { $0.element != 0 }.map(\.offset)
+        XCTAssertEqual(struck.count, 2, "one row struck per occurrence")
+        XCTAssertEqual(Double(try XCTUnwrap(struck.min())) / rows, 0.125, accuracy: 0.02)
+        XCTAssertEqual(Double(try XCTUnwrap(struck.max())) / rows, 0.625, accuracy: 0.02)
+        let plated = overlay.current.enumerated().filter { $0.element != 0 }.map(\.offset)
+        XCTAssertEqual(plated, [try XCTUnwrap(struck.min())], "the plate is on the current match")
+
+        // A step moves the plate and nothing else: the strokes are the same
+        // set's, so they are not walked again (§11).
+        let walks = controller.matchOverlayWalksForTesting
+        pane.setCurrentMatch(1)
+        XCTAssertTrue(pumpUntil(3) {
+            (panel.matchOverlays.first?.current.enumerated().filter { $0.element != 0 }
+                .map(\.offset)) == [struck.max()!]
+        }, "the plate moved to the second match")
+        XCTAssertEqual(panel.matchOverlays.first?.matched, overlay.matched,
+                       "and the strokes are untouched")
+        XCTAssertEqual(controller.matchOverlayWalksForTesting, walks,
+                       "not re-walked: the same set over the same rows is the same strokes")
+
+        pane.clearMatches()
+        XCTAssertTrue(pumpUntil(3) {
+            (panel.matchOverlays.first?.matched.allSatisfy { $0 == 0 }) ?? false
+        }, "an invalidated search leaves no strokes")
+    }
+
     /// A typed byte marks its cell, without a whole-file comparison.
     func testOverviewMarksAModifiedByte() throws {
         let (controller, _, panel) = try makeOverviewWindow([UInt8](repeating: 0x41, count: 256 * 1024))

@@ -606,19 +606,30 @@ enum FindHistoryStore {
     /// The `caseSensitive` flag rides along with the pair: re-recording the same
     /// pair with a different flag replaces the entry (latest search wins), and
     /// the flag is what the dropdown's "(CS)" suffix reflects.
-    static func record(pattern: String, encoding: SearchEncoding, caseSensitive: Bool = false) {
+    ///
+    /// Returns whether the list actually changed. Re-running the search that is
+    /// already at the front changes nothing, and that is the common case: every
+    /// press of ‹ › records the same pair, and the caller would otherwise
+    /// rebuild the dropdown's items each time (§11).
+    @discardableResult
+    static func record(pattern: String, encoding: SearchEncoding,
+                       caseSensitive: Bool = false) -> Bool {
         let trimmed = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        var entries = recent.filter { !($0.pattern == trimmed && $0.encoding == encoding) }
+        guard !trimmed.isEmpty else { return false }
+        let before = recent
+        var entries = before.filter { !($0.pattern == trimmed && $0.encoding == encoding) }
         entries.insert(Entry(pattern: trimmed, encoding: encoding, caseSensitive: caseSensitive), at: 0)
+        let capped = Array(entries.prefix(limit))
+        guard capped != before else { return false }
         defaults.set(
-            Array(entries.prefix(limit)).map {
+            capped.map {
                 ["pattern": $0.pattern,
                  "encoding": $0.encoding.rawValue,
                  "caseSensitive": $0.caseSensitive]
             },
             forKey: userDefaultsKey
         )
+        return true
     }
 }
 
