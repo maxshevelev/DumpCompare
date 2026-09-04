@@ -98,13 +98,13 @@ final class FindFlowTests: XCTestCase {
                       "the find bar must be visible")
     }
 
-    /// The bar's controls: (pattern combo, encoding popup, Done, Aa case toggle).
-    /// Navigation is two joined buttons, driven via `clickFindNext` /
+    /// The bar's controls: (pattern field, encoding popup, Done, Aa case
+    /// toggle). Navigation is two joined buttons, driven via `clickFindNext` /
     /// `clickFindPrevious`.
     private func barControls(_ window: NSWindow)
-        throws -> (NSComboBox, NSPopUpButton, NSButton, NSButton) {
+        throws -> (NSSearchField, NSPopUpButton, NSButton, NSButton) {
         let bar = try findBar(window)
-        let combo = try XCTUnwrap(descendants(of: bar, NSComboBox.self).first, "pattern combo")
+        let combo = try XCTUnwrap(descendants(of: bar, NSSearchField.self).first, "pattern field")
         let encoding = try XCTUnwrap(descendants(of: bar, NSPopUpButton.self).first, "encoding popup")
         let buttons = descendants(of: bar, NSButton.self)
         func button(_ label: String) throws -> NSButton {
@@ -113,17 +113,16 @@ final class FindFlowTests: XCTestCase {
         return (combo, encoding, try button("Done"), try button("Case Sensitive"))
     }
 
-    /// Simulates the user picking an item from the combo's popup list. A real
-    /// pick posts `selectionDidChangeNotification` (which the bar observes); the
-    /// combo's action does NOT fire for a popup pick on an editable combo. The
-    /// bar applies the load on the next runloop turn, so pump until the field
-    /// holds the bare pattern and the pick's selection has been cleared.
+    /// Picks a row out of the field's menu, the way a click on it does: the
+    /// row carries its own action, so there is no selection to simulate.
     @discardableResult
-    private func pickFromHistory(_ combo: NSComboBox, at index: Int,
-                                 expecting pattern: String) -> Bool {
-        combo.selectItem(at: index)
-        NotificationCenter.default.post(name: NSComboBox.selectionDidChangeNotification, object: combo)
-        return pumpUntil(2) { combo.indexOfSelectedItem < 0 && combo.stringValue == pattern }
+    private func pickPatternRow(_ window: NSWindow, startingWith prefix: String) throws -> Bool {
+        try findBar(window).pickPatternRowForTests(startingWith: prefix)
+    }
+
+    /// The rows of the field's menu, as they read.
+    private func patternMenuRows(_ window: NSWindow) throws -> [String] {
+        try findBar(window).patternMenuRowsForTests
     }
 
     /// Presses the Find Next (`>`) segment.
@@ -747,14 +746,22 @@ final class FindFlowTests: XCTestCase {
                       "Find must show the find bar")
     }
 
-    /// Done closes the bar; Esc is wired as Done's key equivalent and closes it
-    /// too (§11).
-    func testEscAndDoneCloseTheBar() throws {
+    /// `Done` closes the bar, and Escape does not: it belongs to the pattern
+    /// field, where it closes the field's menu and then clears the field —
+    /// which ends the search, since clearing is a text change (§11,
+    /// `Design/PATTERN_LIBRARY_IDEA.md`).
+    ///
+    /// A find bar that takes Escape as its way out is one with **no clear
+    /// control**; this one has the field's ⊗, so Escape has an obvious job that
+    /// is not closing, and the exits are `Done` and that button.
+    func testDoneClosesTheBarAndEscapeDoesNot() throws {
         let (controller, window, url) = try makeController([0x41, 0x42, 0x43])
         defer { cleanup(controller, url) }
 
         controller.findPattern()
-        _ = try barControls(window)
+        let (field, _, _, _) = try barControls(window)
+        XCTAssertNotNil((field.cell as? NSSearchFieldCell)?.cancelButtonCell,
+                        "the premise: the field carries the clear control Escape is for")
 
         let esc = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
                                    timestamp: 0, windowNumber: window.windowNumber,
@@ -763,15 +770,15 @@ final class FindFlowTests: XCTestCase {
                                    isARepeat: false, keyCode: 53)!
         _ = window.performKeyEquivalent(with: esc)
 
-        XCTAssertTrue(pumpUntil(2) { descendants(of: window.contentView!, FindBarView.self).first?.isHidden == true },
-                      "Esc must close the find bar")
+        XCTAssertFalse(pumpUntil(0.4) {
+            descendants(of: window.contentView!, FindBarView.self).first?.isHidden == true
+        }, "Escape must leave the bar open — it is the field's key, not the bar's")
 
-        // Reopen and close with the Done button.
-        controller.findPattern()
         let (_, _, done, _) = try barControls(window)
         done.performClick(nil)
-        XCTAssertTrue(pumpUntil(2) { descendants(of: window.contentView!, FindBarView.self).first?.isHidden == true },
-                      "Done must close the find bar")
+        XCTAssertTrue(pumpUntil(2) {
+            descendants(of: window.contentView!, FindBarView.self).first?.isHidden == true
+        }, "Done must close the find bar")
     }
 
     // MARK: - History (§11)
@@ -837,62 +844,48 @@ final class FindFlowTests: XCTestCase {
                        "one item per encoding, in the enum's order")
     }
 
-    /// Picking an older search from the pattern combo's list loads its pattern
-    /// and its own encoding into the fields — and must NOT run a search. The
-    /// same pattern saved under two encodings is two distinct labelled items, so
-    /// picking one of them switches the encoding with the pattern unchanged.
-    func testFindRecentDropdownLoadsAPatternAndItsEncodingWithoutSearching() throws {
+    /// Picking an older search out of the field's menu loads its pattern *and*
+    /// its own encoding — and runs it. A row is chosen deliberately, and the
+    /// Return that would follow it never means anything else (§11,
+    /// `Design/PATTERN_LIBRARY_IDEA.md`); until the menu existed, a pick only
+    /// filled the field.
+    func testPickingARecentLoadsItsEncodingAndRunsIt() throws {
         // Seed history: most recent last, so "DE AD" is the default and the
-        // others are the older entries the dropdown will load.
+        // others are the older rows the menu offers.
         FindHistoryStore.record(pattern: "AA BB", encoding: .ascii)
         FindHistoryStore.record(pattern: "ABCD", encoding: .ascii)
         FindHistoryStore.record(pattern: "ABCD", encoding: .hex)
         FindHistoryStore.record(pattern: "DE AD", encoding: .hex)
 
-        // Every seeded search has a match in the file, so a stray search would
-        // leave a selection behind for the assertions below to catch.
         let bytes: [UInt8] = [0xDE, 0xAD,                          // "DE AD" hex
                               0x41, 0x41, 0x20, 0x42, 0x42,        // "AA BB" ASCII
                               0x41, 0x42, 0x43, 0x44,              // "ABCD" ASCII
                               0xAB, 0xCD]                          // "ABCD" hex
         let (controller, window, url) = try makeController(bytes)
         defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
 
         controller.findPattern()
+        try withoutSmartSearch(window)
         let (combo, encoding, _, _) = try barControls(window)
         XCTAssertEqual(combo.stringValue, "DE AD", "most recent search must be the default")
         XCTAssertEqual(encoding.titleOfSelectedItem, "Hex bytes", "with its own encoding")
 
-        let index = combo.indexOfItem(withObjectValue: "AA BB — ASCII")
-        XCTAssertGreaterThanOrEqual(index, 0, "the combo must list the AA BB search")
-        XCTAssertTrue(pickFromHistory(combo, at: index, expecting: "AA BB"),
-                      "the picked search must load into the field")
+        let rows = try patternMenuRows(window)
+        XCTAssertTrue(rows.contains { $0.hasPrefix("\"AA BB\"") }, "the menu lists it: \(rows)")
+        XCTAssertTrue(try pickPatternRow(window, startingWith: "\"AA BB\""))
 
-        // The field gets the bare pattern — never the "— encoding" suffix that
-        // labels the dropdown item — and the popup carries the encoding.
-        XCTAssertEqual(combo.stringValue, "AA BB", "only the pattern must reach the field")
+        // The field gets the bare pattern — never the row's label — the popup
+        // carries the encoding, and the search has run.
+        XCTAssertEqual(combo.stringValue, "AA BB", "only the pattern reaches the field")
         XCTAssertEqual(encoding.titleOfSelectedItem, "ASCII")
-        XCTAssertTrue(controller.windowModel.pane1.hexSelection().isEmpty,
-                      "picking a recent search must load it, not run it")
+        XCTAssertTrue(pumpUntil(3) { pane.hexSelection().start == 2 },
+                      "and a pick runs the search it names")
 
-        // One pattern under two encodings: two distinct items, each restoring
-        // its own encoding.
-        let asciiIndex = combo.indexOfItem(withObjectValue: "ABCD — ASCII")
-        let hexIndex = combo.indexOfItem(withObjectValue: "ABCD — Hex")
-        XCTAssertGreaterThanOrEqual(asciiIndex, 0, "the ASCII pair must be listed")
-        XCTAssertGreaterThanOrEqual(hexIndex, 0, "the Hex pair must be listed")
-        XCTAssertNotEqual(asciiIndex, hexIndex, "the two pairs are distinct items")
-
-        XCTAssertTrue(pickFromHistory(combo, at: hexIndex, expecting: "ABCD"),
-                      "the Hex pair must load into the field")
-        XCTAssertEqual(encoding.titleOfSelectedItem, "Hex bytes")
-        XCTAssertTrue(pickFromHistory(combo, at: asciiIndex, expecting: "ABCD"),
-                      "and the ASCII pair after it")
-        XCTAssertEqual(combo.stringValue, "ABCD", "the pattern is unchanged between the two")
-        XCTAssertEqual(encoding.titleOfSelectedItem, "ASCII",
-                       "but the encoding follows the pair that was picked")
-        XCTAssertTrue(controller.windowModel.pane1.hexSelection().isEmpty,
-                      "and still nothing was searched")
+        // One pattern under two encodings is two rows, each with its own.
+        XCTAssertEqual(rows.filter { $0.hasPrefix("\"ABCD\"") }.count, 2)
+        XCTAssertTrue(try pickPatternRow(window, startingWith: "\"ABCD\""))
+        XCTAssertEqual(combo.stringValue, "ABCD")
     }
 
     /// The history is capped at 10 entries, most recent first.
@@ -1078,12 +1071,13 @@ final class FindFlowTests: XCTestCase {
                       "hex search must match the exact bytes 45 45, not a folded Ee/eE")
     }
 
-    /// The case-sensitive flag is stored with each history entry for text
-    /// encodings, shown as a "(CS)" suffix in the dropdown, and restored into
-    /// the form when the item is picked — while hex never shows it.
-    func testFindHistoryStoresAndRestoresCaseSensitivity() throws {
-        // Seed: an ASCII search recorded case-sensitively, plus a hex one
-        // (always byte-exact — its forced flag must not display a suffix).
+    /// A row states its case rule either way — `match case` as well as
+    /// `ignore case` — because "ignore case" is a fact about the search and not
+    /// the absence of one. Hex states neither: bytes have no case (§11).
+    ///
+    /// A pick restores the rule along with the pattern and the encoding: all
+    /// three, or the row was lying about what it searches.
+    func testARowStatesItsCaseRuleAndAPickRestoresIt() throws {
         FindHistoryStore.record(pattern: "ABCD", encoding: .ascii, caseSensitive: true)
         FindHistoryStore.record(pattern: "4545", encoding: .hex, caseSensitive: true)
 
@@ -1092,24 +1086,19 @@ final class FindFlowTests: XCTestCase {
         defer { cleanup(controller, url) }
 
         controller.findPattern()
+        try withoutSmartSearch(window)
         let (combo, encoding, _, caseToggle) = try barControls(window)
 
-        // The dropdown labels the case-sensitive entry with "(CS)".
-        let csIndex = combo.indexOfItem(withObjectValue: "ABCD — ASCII (CS)")
-        XCTAssertGreaterThanOrEqual(csIndex, 0,
-                                    "a case-sensitive search must show the (CS) suffix")
-        XCTAssertGreaterThanOrEqual(combo.indexOfItem(withObjectValue: "4545 — Hex"), 0,
-                                    "hex is always exact — no (CS) suffix")
+        let rows = try patternMenuRows(window)
+        XCTAssertTrue(rows.contains("\"ABCD\"  ASCII, match case"),
+                      "the case rule is stated: \(rows)")
+        XCTAssertTrue(rows.contains("\"4545\"  Hex bytes"),
+                      "and hex states nothing about case")
 
-        // Pick the case-sensitive entry: the form's toggle follows it.
-        XCTAssertTrue(pickFromHistory(combo, at: csIndex, expecting: "ABCD"),
-                      "the picked search must load into the field")
+        XCTAssertTrue(try pickPatternRow(window, startingWith: "\"ABCD\""))
         XCTAssertEqual(combo.stringValue, "ABCD")
         XCTAssertEqual(encoding.titleOfSelectedItem, "ASCII")
-        XCTAssertEqual(caseToggle.state, .on,
-                       "picking a case-sensitive entry restores the toggle")
-        XCTAssertTrue(controller.windowModel.pane1.hexSelection().isEmpty,
-                      "picking a recent search must load it, not run it")
+        XCTAssertEqual(caseToggle.state, .on, "the toggle follows the row it came from")
     }
 
     /// The persisted toggle survives closing and reopening the bar.

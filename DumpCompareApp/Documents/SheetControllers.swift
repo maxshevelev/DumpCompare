@@ -586,6 +586,12 @@ enum FindHistoryStore {
         return raw.compactMap(Entry.init(stored:))
     }
 
+    /// Forgets every recent search — **Clear Recents** in the Find bar's menu
+    /// (§11). The favourites are a separate list and are not touched.
+    static func clear() {
+        defaults.removeObject(forKey: userDefaultsKey)
+    }
+
     /// The most recent search — the default the sheet offers on open.
     static var mostRecent: Entry? { recent.first }
 

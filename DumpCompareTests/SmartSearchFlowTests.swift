@@ -71,8 +71,8 @@ final class SmartSearchFlowTests: XCTestCase {
             .first { !$0.isHidden })
     }
 
-    private func combo(_ window: NSWindow) throws -> NSComboBox {
-        try XCTUnwrap(descendants(of: try findBar(window), NSComboBox.self).first)
+    private func combo(_ window: NSWindow) throws -> NSSearchField {
+        try XCTUnwrap(descendants(of: try findBar(window), NSSearchField.self).first)
     }
 
     private func encodingPopup(_ window: NSWindow) throws -> NSPopUpButton {
@@ -130,7 +130,7 @@ final class SmartSearchFlowTests: XCTestCase {
     }
 
     private func barControls(_ window: NSWindow)
-        throws -> (NSComboBox, NSPopUpButton, NSButton, NSButton) {
+        throws -> (NSSearchField, NSPopUpButton, NSButton, NSButton) {
         let bar = try findBar(window)
         let buttons = descendants(of: bar, NSButton.self)
         func button(_ label: String) throws -> NSButton {
