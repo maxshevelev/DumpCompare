@@ -193,7 +193,7 @@ final class SettingsWindow: NSWindow {
 
 /// The app's Settings window — a standard toolbar-tabbed preference dialog,
 /// with an Appearance tab (§3.2), a Layout tab (§6), a Comparison tab (§10.3.1),
-/// a Text Decoding tab (§3.4) and a File Types tab (§25). Owned by `MainWindowController`; the App
+/// a Text Decoding tab (§3.4), a Favorites tab (§11) and a File Types tab (§25). Owned by `MainWindowController`; the App
 /// menu's "Settings…" item shows it.
 final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     private let appearanceController = AppearanceSettingsViewController()
@@ -202,6 +202,7 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     private let editingController = EditingSettingsViewController()
     private let textDecodingController = TextDecodingSettingsViewController()
     private let fileTypesController = FileTypesSettingsViewController()
+    private let favoritesController = FavoritePatternsSettingsViewController()
 
     private static let appearanceItemID = NSToolbarItem.Identifier("Appearance")
     private static let layoutItemID = NSToolbarItem.Identifier("Layout")
@@ -209,6 +210,7 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     private static let editingItemID = NSToolbarItem.Identifier("Editing")
     private static let textDecodingItemID = NSToolbarItem.Identifier("TextDecoding")
     private static let fileTypesItemID = NSToolbarItem.Identifier("FileTypes")
+    private static let favoritesItemID = NSToolbarItem.Identifier("Favorites")
 
     init() {
         let window = SettingsWindow(
@@ -255,12 +257,12 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [Self.appearanceItemID, Self.layoutItemID, Self.comparisonItemID, Self.editingItemID,
-         Self.textDecodingItemID, Self.fileTypesItemID]
+         Self.textDecodingItemID, Self.favoritesItemID, Self.fileTypesItemID]
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         [Self.appearanceItemID, Self.layoutItemID, Self.comparisonItemID, Self.editingItemID,
-         Self.textDecodingItemID, Self.fileTypesItemID]
+         Self.textDecodingItemID, Self.favoritesItemID, Self.fileTypesItemID]
     }
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
@@ -293,6 +295,12 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
                                  accessibilityDescription: "Editing")
             item.target = self
             item.action = #selector(editingTabTapped)
+        case Self.favoritesItemID:
+            item.label = "Favorites"
+            item.paletteLabel = "Favorites"
+            item.image = NSImage(systemSymbolName: "star", accessibilityDescription: "Favorites")
+            item.target = self
+            item.action = #selector(favoritesTabTapped)
         case Self.fileTypesItemID:
             item.label = "File Types"
             item.paletteLabel = "File Types"
@@ -357,5 +365,18 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
 
     @objc private func fileTypesTabTapped() {
         selectTab(fileTypesController)
+    }
+
+    @objc private func favoritesTabTapped() {
+        selectTab(favoritesController)
+    }
+
+    /// Opens the window on the Favorites tab — where **Manage Favorites…** in
+    /// the Find bar's menu leads (§11). A named destination rather than "open
+    /// Settings and look for it": the menu item promises a list, so it lands on
+    /// the list.
+    func showFavorites(_ sender: Any?) {
+        selectTab(favoritesController)
+        showWindow(sender)
     }
 }

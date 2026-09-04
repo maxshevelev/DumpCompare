@@ -11,7 +11,7 @@ import DumpCompareCore
 /// - The bar stays open after a search — only the selection moves.
 /// - Picking an item from the pattern's history list loads that search (pattern
 ///   + encoding) but does NOT run it; only Enter, `<` and `>` search.
-final class FindBarView: NSView, NSSearchFieldDelegate {
+final class FindBarView: NSView, NSSearchFieldDelegate, NSMenuItemValidation {
     /// What the field is asking for (§11).
     ///
     /// The bar says which of the two questions it is and nothing more. Where
@@ -781,6 +781,16 @@ final class FindBarView: NSView, NSSearchFieldDelegate {
               let entry = SearchPatternEntry(stored: stored) else { return }
         apply(entry)
         runSearch(.forward, recordingHistory: false)
+    }
+
+    /// With an empty field there is nothing to keep, so the command is dimmed
+    /// rather than absent — the same reading the stepper gives at zero matches
+    /// (§11). Asked at menu-open time, which is the only moment the answer is
+    /// wanted: the field's text moves with every keystroke and the menu is a
+    /// template built far less often.
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        guard menuItem.action == #selector(addToFavorites) else { return true }
+        return !patternField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     /// Keeps what is in the field. The owner asks for a name and stores it —

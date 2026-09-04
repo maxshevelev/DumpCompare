@@ -234,6 +234,26 @@ final class PatternMenuTests: XCTestCase {
         XCTAssertTrue(try shape().contains("Favorites"))
     }
 
+    /// With an empty field there is nothing to keep, so the command is dimmed
+    /// rather than absent — the same reading the stepper gives at zero matches
+    /// (§11). Asked at menu-open time, because the field's text moves with
+    /// every keystroke and the menu is a template built far less often.
+    func testAddToFavoritesIsDeadOnAnEmptyField() throws {
+        bar.prepareForShow()
+        let item = try XCTUnwrap(try menu().items.first { $0.title == "Add to Favorites" })
+
+        bar.setPatternForTests("   ")
+        XCTAssertFalse(bar.validateMenuItem(item), "whitespace is not a pattern")
+
+        bar.setPatternForTests("DE AD")
+        XCTAssertTrue(bar.validateMenuItem(item))
+
+        // And the commands that work on nothing are unaffected.
+        let manage = try XCTUnwrap(try menu().items.first { $0.title == "Manage Favorites…" })
+        bar.setPatternForTests("")
+        XCTAssertTrue(bar.validateMenuItem(manage))
+    }
+
     func testManageFavoritesAsksTheOwnerToOpenTheForm() throws {
         bar.prepareForShow()
         var opened = 0
