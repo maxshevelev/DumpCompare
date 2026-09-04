@@ -2318,11 +2318,12 @@ height in both, which is the whole point of it in a comparison.
   simply not drawn where the file does not reach (§9).
 - Bookmarks are session-only: they live as long as the window, not the file. So
   closing a file and opening it again keeps its marks, which is the case that
-  matters on a bench — the same chip read twice. Opening an *unrelated* file
-  inherits them too; the list is not cleared, because the app cannot tell a
-  re-read from a new dump, and a mark that turns out to be meaningless is cheaper
-  than losing the marks of a re-read. Persisting bookmarks per file is a project
-  feature (§20 opening note), not a session one.
+  matters — the same investigation continued on the same content. Opening an
+  *unrelated* file inherits them too; the list is not cleared, because the app
+  cannot tell a re-opened dump from a new one, and a mark that turns out to be
+  meaningless is cheaper than losing the marks of a dump that was re-opened.
+  Persisting bookmarks per file is a project feature (§20 opening note), not a
+  session one.
 - The mark has no text of its own, so the pane's accessibility value says whether
   the caret's row carries one and what it is called, as it says the caret's
   offset (§15).
