@@ -965,7 +965,7 @@ final class FindBarView: NSView, NSSearchFieldDelegate, NSMenuItemValidation {
     private func runSearch(_ direction: SearchDirection, recordingHistory: Bool = true) {
         guard let request = searchRequest() else { return }  // reported inside
         if case .pattern(let pattern, _) = request { normalizeHexText(of: pattern) }
-        if recordingHistory { recordChosenEncoding(of: request) }
+        noteSearchStarted(recording: recordingHistory)
         onSearch?(request, direction)
     }
 
@@ -1008,23 +1008,40 @@ final class FindBarView: NSView, NSSearchFieldDelegate, NSMenuItemValidation {
              detail: "No encoding in the list can read that pattern.")
     }
 
-    /// Records the search in the field's history — but only when the encoding
-    /// is the user's choice. A Smart Search does not know its own encoding
-    /// yet, so it records when it adopts one (§11).
+    /// What was typed, at the moment a search was started, waiting to be
+    /// remembered (§11).
     ///
-    /// Remembering the pattern + encoding + case flag is what the next open
-    /// offers and what the combo's dropdown lists. The item list is rebuilt
-    /// only when the history moved: every press of ‹ › records the pair that
-    /// is already at the front, and reloading a dropdown nobody opened on each
-    /// press is work for nothing.
-    private func recordChosenEncoding(of request: Request) {
-        guard case .pattern(let pattern, _) = request else { return }
-        record(encoding: pattern.encoding)
+    /// **The history is the searches that found something.** A pattern that
+    /// occurs nowhere is not worth a slot in a list of ten, and the answer to
+    /// "does it occur" is not in when the key is pressed: a Smart Search does
+    /// not even know which encoding it is asking about yet, and the results
+    /// button starts an index that answers later still. So the press keeps what
+    /// was typed here, and the answer decides whether it is written down.
+    ///
+    /// Kept rather than read back off the field when the answer comes, because
+    /// by then the user may be typing the next pattern.
+    private var searchToRecord: (text: String, caseSensitive: Bool)?
+
+    private func noteSearchStarted(recording: Bool) {
+        // A row picked out of the menu records nothing: the history is what was
+        // *typed*, and spending its ten slots on things already kept elsewhere
+        // is the problem the favourites exist to solve (§11).
+        searchToRecord = recording ? (patternField.stringValue, isCaseSensitive) : nil
     }
 
-    private func record(encoding: SearchEncoding) {
-        if FindHistoryStore.record(pattern: patternField.stringValue, encoding: encoding,
-                                   caseSensitive: isCaseSensitive) {
+    /// The search that was started found something, in `encoding` — so it is
+    /// worth offering again (§11).
+    ///
+    /// The pattern, the encoding it was found in and the case flag are what the
+    /// next open offers and what the menu lists. The menu is rebuilt only when
+    /// the history actually moved: a press of ‹ › within a search re-records
+    /// the pair already at the front, and rebuilding a menu nobody opened is
+    /// work for nothing.
+    func recordFoundSearch(encoding: SearchEncoding) {
+        guard let started = searchToRecord else { return }
+        searchToRecord = nil
+        if FindHistoryStore.record(pattern: started.text, encoding: encoding,
+                                   caseSensitive: started.caseSensitive) {
             rebuildPatternMenu()
         }
     }
@@ -1043,12 +1060,13 @@ final class FindBarView: NSView, NSSearchFieldDelegate, NSMenuItemValidation {
         pickedEncoding = encoding
         updateCaseButtonVisibility()
         // A pass that landed on hex found *bytes*, so the field says so the way
-        // a dump does — before the history records what the field holds (§11).
-        if let pattern = try? SearchEngine.parsePattern(patternField.stringValue,
+        // a dump does — and what is remembered says it too (§11).
+        if encoding == .hex,
+           let pattern = try? SearchEngine.parsePattern(patternField.stringValue,
                                                         encoding: encoding) {
             normalizeHexText(of: pattern)
+            searchToRecord?.text = pattern.hexText
         }
-        record(encoding: encoding)
     }
 
     /// Runs a Search All: the same parse + history bookkeeping as a plain
@@ -1056,7 +1074,7 @@ final class FindBarView: NSView, NSSearchFieldDelegate, NSMenuItemValidation {
     private func runSearchAll() {
         guard let request = searchRequest() else { return }  // reported inside
         if case .pattern(let pattern, _) = request { normalizeHexText(of: pattern) }
-        recordChosenEncoding(of: request)
+        noteSearchStarted(recording: true)
         onSearchAll?(request)
     }
 

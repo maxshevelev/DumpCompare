@@ -1302,6 +1302,15 @@ The results panel:
   not at all. Only a replaced or dropped *set* rebuilds the list — a stepped
   plate changes no row, and rebuilding the list is how it would lose the row
   the user had just picked in it.
+- The history holds the searches that **found** something, in both modes. A
+  pattern that occurs nowhere is not worth one of its ten slots, and the answer
+  is not in when the key is pressed: a Smart Search does not yet know which
+  encoding it is asking about, and the results button starts an index that
+  answers later still. So a press keeps what was typed, and the answer decides
+  whether it is written down — the text as the bar shows it back (a hex pattern
+  in the dump's form), under the encoding that found it. It used to depend on
+  the mode: a chosen encoding recorded at the press, a Smart Search only on
+  success, so one question had two answers.
 - The bar **opens** on the last search — the pattern and the encoding it was
   found in, prefilled and selected so typing replaces it. That is what opening
   means, and only that: ⌘F on a bar already on screen focuses the field and

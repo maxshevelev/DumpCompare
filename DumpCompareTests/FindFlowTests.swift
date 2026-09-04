@@ -130,6 +130,21 @@ final class FindFlowTests: XCTestCase {
         try findBar(window).pressFindForTests(.forward)
     }
 
+    /// Types into a field the way a user does: the field editor's text changes
+    /// and the control's `textDidChange` fires. A programmatic `stringValue`
+    /// alone tells the bar nothing, so the count — and with it the stepper and
+    /// Find All — would stay as the previous search left them.
+    private func typePattern(_ text: String, into field: NSTextField) {
+        guard let editor = field.currentEditor() as? NSTextView else {
+            field.stringValue = text
+            field.textDidChange(Notification(name: NSControl.textDidChangeNotification,
+                                             object: field))
+            return
+        }
+        editor.string = text
+        field.textDidChange(Notification(name: NSControl.textDidChangeNotification, object: editor))
+    }
+
     /// Presses the Find Previous (`<`) segment.
     private func clickFindPrevious(_ window: NSWindow) throws {
         try findBar(window).pressFindForTests(.backward)
@@ -817,7 +832,10 @@ final class FindFlowTests: XCTestCase {
         encoding.sendAction(encoding.action, to: encoding.target)
         combo.stringValue = "Hi"
         try clickFindNext(window)
-        XCTAssertTrue(pumpUntil(3) { controller.windowModel.pane1.hexSelection().start == 0 })
+        // The two bytes selected, not merely a caret at 0 — the search has to
+        // have *found* something, since that is when it is recorded (§11).
+        XCTAssertTrue(pumpUntil(3) { controller.windowModel.pane1.hexSelection().count == 2 },
+                      "the search must land on the match")
 
         XCTAssertEqual(FindHistoryStore.mostRecent?.encoding, .utf8)
 
@@ -942,6 +960,79 @@ final class FindFlowTests: XCTestCase {
         let (reopened, encoding, _, _) = try barControls(window)
         XCTAssertEqual(reopened.stringValue, "DE AD")
         XCTAssertEqual(encoding.titleOfSelectedItem, "Hex bytes")
+    }
+
+    /// The history is the searches that **found** something — in both modes.
+    ///
+    /// It used to depend on the mode: with Smart Search off the pattern was
+    /// written down when the key was pressed, because the encoding was already
+    /// the user's choice, so a pattern that occurs nowhere took a slot in a
+    /// list of ten. With Smart Search on the same search recorded nothing,
+    /// there being no encoding to record it under. One question, two answers.
+    func testAFruitlessSearchIsNotRemembered() throws {
+        let (controller, window, url) = try makeController([0xDE, 0xAD, 0x00, 0xDE, 0xAD])
+        defer { cleanup(controller, url) }
+
+        for smart in [true, false] {
+            FindHistoryStore.clear()
+            controller.findPattern()
+            if smart {
+                XCTAssertTrue(try findBar(window).smartSearchOnForTests, "the premise")
+            } else {
+                try withoutSmartSearch(window)
+            }
+            let (combo, encoding, done, _) = try barControls(window)
+            encoding.selectItem(at: SearchEncoding.allCases.firstIndex(of: .ascii)!)
+            encoding.sendAction(encoding.action, to: encoding.target)
+
+            // Nothing in the file reads as this, in any encoding.
+            combo.stringValue = "zzzz"
+            try clickFindNext(window)
+            XCTAssertTrue(pumpUntil(3) { controller.windowModel.pane1.matchSet?.isComplete == true
+                                            || controller.windowModel.pane1.matchSet == nil },
+                          "the pass must finish (smart: \(smart))")
+            XCTAssertTrue(FindHistoryStore.recent.isEmpty,
+                          "a pattern that occurs nowhere is not remembered (smart: \(smart)): "
+                            + "\(FindHistoryStore.recent.map(\.pattern))")
+
+            // And one that does occur is.
+            combo.stringValue = "DE AD"
+            encoding.selectItem(at: SearchEncoding.allCases.firstIndex(of: .hex)!)
+            encoding.sendAction(encoding.action, to: encoding.target)
+            try clickFindNext(window)
+            XCTAssertTrue(pumpUntil(3) { FindHistoryStore.mostRecent?.pattern == "DE AD" },
+                          "a search that found something is remembered (smart: \(smart))")
+            done.performClick(nil)
+        }
+    }
+
+    /// The results button's own index answers for it: it starts a scan without
+    /// a first-hit search, so nothing else is in a position to say whether the
+    /// pattern occurs. A panel that opens on `No matches.` leaves the history
+    /// alone; one that lists rows records the search that made them.
+    ///
+    /// A window each, because the button is a toggle and this is about what it
+    /// remembers, not about opening and closing panels.
+    func testFindAllRemembersOnlyWhatItFound() throws {
+        let fruitless = try makeController([0xDE, 0xAD, 0x00, 0xDE, 0xAD])
+        defer { cleanup(fruitless.0, fruitless.2) }
+        fruitless.0.findPattern()
+        try withoutSmartSearch(fruitless.1)
+        let (combo, _, _, _) = try barControls(fruitless.1)
+        combo.stringValue = "11 22"
+        try findAllButton(fruitless.1).performClick(nil)
+        XCTAssertTrue(pumpUntil(3) { fruitless.0.windowModel.pane1.matchSet?.isComplete == true })
+        XCTAssertTrue(FindHistoryStore.recent.isEmpty,
+                      "the panel says No matches, and that is all it says")
+
+        let found = try makeController([0xDE, 0xAD, 0x00, 0xDE, 0xAD])
+        defer { cleanup(found.0, found.2) }
+        found.0.findPattern()
+        try withoutSmartSearch(found.1)
+        _ = try runSearchAll("DE AD", in: found.1)
+
+        XCTAssertEqual(FindHistoryStore.mostRecent?.pattern, "DE AD")
+        XCTAssertEqual(FindHistoryStore.mostRecent?.encoding, .hex)
     }
 
     /// The history is capped at 10 entries, most recent first.

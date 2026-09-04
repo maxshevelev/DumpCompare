@@ -5158,6 +5158,9 @@ final class MainViewController: NSViewController {
         pane.setMatches(MatchSet(pattern: attempt.pattern, folding: attempt.folding,
                                  extent: pane.fileSize, starts: [], indexedUpTo: 0))
         findBar.adopt(encoding: attempt.encoding)
+        // A match in hand is the strongest answer there is, so the search goes
+        // into the history here (§11).
+        findBar.recordFoundSearch(encoding: attempt.encoding)
         switch goal {
         case .showTheMatch:
             show(match: range, in: pane)
@@ -5197,6 +5200,19 @@ final class MainViewController: NSViewController {
     /// Starts a search's index without going anywhere: what the results button
     /// asks for. Pressing it is not a Find Next, so the caret stays where it is
     /// and the panel opens on the rows as they arrive (§11).
+    /// An index that turned up matches is a search that found something, so it
+    /// is remembered (§11).
+    ///
+    /// This is the results button's own case: with one thing to look for it
+    /// starts an index and no first-hit scan, so nothing else is in a position
+    /// to say the search succeeded. A no-op once the search has been recorded,
+    /// and for a pattern that occurs nowhere it never fires at all — which is
+    /// the point.
+    private func noteIndexFound(_ pattern: SearchPattern, in pane: PaneViewModel) {
+        guard pane.matchSet?.isEmpty == false else { return }
+        findBar.recordFoundSearch(encoding: pattern.encoding)
+    }
+
     private func beginIndexing(pattern: SearchPattern, folding: CaseFolding,
                                in pane: PaneViewModel) {
         notices.dismiss()
@@ -5253,7 +5269,10 @@ final class MainViewController: NSViewController {
                     let snapshot = builder.snapshot(indexedUpTo: batch.scannedUpTo)
                     publishedUpTo = batch.scannedUpTo
                     lastPublish = Date()
-                    await MainActor.run { pane.fillMatches(snapshot, filled: filled) }
+                    await MainActor.run { [weak self] in
+                        pane.fillMatches(snapshot, filled: filled)
+                        self?.noteIndexFound(pattern, in: pane)
+                    }
                 }
             } catch {
                 // A failed read leaves the index where it got to: the search
@@ -5266,6 +5285,7 @@ final class MainViewController: NSViewController {
                 self?.indexTask = nil
                 guard complete, pane.isOpen else { return }
                 pane.fillMatches(builder.finish(), filled: publishedUpTo..<max(publishedUpTo, extent))
+                self?.noteIndexFound(pattern, in: pane)
             }
         }
     }

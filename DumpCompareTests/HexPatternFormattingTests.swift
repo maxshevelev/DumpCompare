@@ -58,14 +58,18 @@ final class HexPatternFormattingTests: XCTestCase {
         XCTAssertEqual(bar.patternTextForTests, "DE AD BE EF")
     }
 
-    /// And the recents keep that form: the history records what the field
-    /// holds, so the next pick puts the same readable text back.
+    /// And the recents keep that form: what is remembered is the search as the
+    /// bar showed it back, so the next pick puts the same readable text in.
+    ///
+    /// The owner answers for the search — the history is the searches that
+    /// found something (§11) — so the answer is what these tests stand in for.
     func testTheRecentsKeepTheDumpsForm() {
         if bar.smartSearchOnForTests { bar.smartButton.performClick(nil) }
         bar.setEncodingForTests(.hex)
         bar.setPatternForTests("0xde 0xad")
 
         bar.pressFindForTests(.forward)
+        bar.recordFoundSearch(encoding: .hex)
 
         XCTAssertEqual(FindHistoryStore.mostRecent?.pattern, "DE AD")
         XCTAssertEqual(FindHistoryStore.mostRecent?.encoding, .hex)
@@ -77,7 +81,9 @@ final class HexPatternFormattingTests: XCTestCase {
         XCTAssertTrue(bar.smartSearchOnForTests, "the premise")
         bar.setPatternForTests("deadbeef")
 
+        bar.pressFindForTests(.forward)
         bar.adopt(encoding: .hex)
+        bar.recordFoundSearch(encoding: .hex)
 
         XCTAssertEqual(bar.patternTextForTests, "DE AD BE EF")
         XCTAssertEqual(FindHistoryStore.mostRecent?.pattern, "DE AD BE EF",
@@ -89,7 +95,9 @@ final class HexPatternFormattingTests: XCTestCase {
     func testATextEncodingLeavesTheFieldAlone() {
         bar.setPatternForTests("root")
 
+        bar.pressFindForTests(.forward)
         bar.adopt(encoding: .ascii)
+        bar.recordFoundSearch(encoding: .ascii)
 
         XCTAssertEqual(bar.patternTextForTests, "root")
         XCTAssertEqual(FindHistoryStore.mostRecent?.pattern, "root")
@@ -113,6 +121,7 @@ final class HexPatternFormattingTests: XCTestCase {
         bar.setPatternForTests("5aa5f00f")
 
         bar.pressFindAllForTests()
+        bar.recordFoundSearch(encoding: .hex)
 
         XCTAssertEqual(bar.patternTextForTests, "5A A5 F0 0F")
         XCTAssertEqual(FindHistoryStore.mostRecent?.pattern, "5A A5 F0 0F")
