@@ -21,7 +21,10 @@ final class FindBarView: NSView, NSComboBoxDelegate {
     /// is to show what came back.
     enum Request: Equatable {
         case pattern(SearchPattern, folding: CaseFolding)
-        case smart(text: String, caseSensitive: Bool)
+        /// `preferring` is the encoding the field's contents came *with*, when
+        /// they came from the history rather than from the keyboard: Smart
+        /// Search tries it first and then falls back to its own order (§11).
+        case smart(text: String, caseSensitive: Bool, preferring: SearchEncoding?)
     }
 
     /// Fired when the user runs a search (Enter, `<` or `>`).
@@ -459,6 +462,9 @@ final class FindBarView: NSView, NSComboBoxDelegate {
     var countTextForTests: String { countLabel.stringValue }
     /// Whether Smart Search reads as on, for tests.
     var smartSearchOnForTests: Bool { isSmartSearchEnabled }
+    /// The encoding a picked entry (or a hand-chosen popup) left behind, for
+    /// tests.
+    var preferredEncodingForTests: SearchEncoding? { pickedEncoding }
     /// Its colour, for the test that an invalid pattern reads as an error.
     var countColorForTests: NSColor { countLabel.textColor ?? .labelColor }
     /// The label's tooltip — the count's withheld reason, or the full sentence
@@ -563,6 +569,10 @@ final class FindBarView: NSView, NSComboBoxDelegate {
             if let encodingIndex = SearchEncoding.allCases.firstIndex(of: mostRecent.encoding) {
                 encodingPopup.selectItem(at: encodingIndex)
             }
+            // The bar opens on the last search — pattern *and* the encoding it
+            // was found in — which is the same pairing a pick out of the list
+            // gives, so a Smart Search of it starts there (§11).
+            pickedEncoding = mostRecent.encoding
         } else {
             patternCombo.stringValue = ""
             encodingPopup.selectItem(at: 0)
@@ -629,6 +639,9 @@ final class FindBarView: NSView, NSComboBoxDelegate {
     /// screen claims to describe a pattern that is no longer in the field.
     func controlTextDidChange(_ obj: Notification) {
         guard (obj.object as? NSComboBox) === patternCombo else { return }
+        // Typed over: whatever encoding a picked entry brought with it is not
+        // about this text (§11).
+        pickedEncoding = nil
         // Whatever the field said a moment ago — a count or a complaint about
         // it — was about the text that was there (§11).
         show(patternError: nil)
@@ -646,6 +659,9 @@ final class FindBarView: NSView, NSComboBoxDelegate {
 
     @objc private func encodingChanged() {
         updateCaseButtonVisibility()
+        // Chosen by hand: with Smart Search off this *is* the search, and with
+        // it on the choice replaces whatever a picked entry brought.
+        pickedEncoding = currentEncoding()
         // The same text means something else now — `DE A` is not hex and is
         // perfectly good ASCII — so a complaint about it no longer stands.
         show(patternError: nil)
@@ -712,8 +728,19 @@ final class FindBarView: NSView, NSComboBoxDelegate {
         // text can be read at all is a question about encodings, and the model
         // answers it — `reportNoUsablePattern()` is how it says no.
         show(patternError: nil)
-        return .smart(text: text, caseSensitive: isCaseSensitive)
+        return .smart(text: text, caseSensitive: isCaseSensitive, preferring: pickedEncoding)
     }
+
+    /// The encoding the field's contents arrived with, when they arrived from
+    /// the history: a picked entry records the pattern *and* the encoding it
+    /// was found in, and that pairing is the user's own knowledge — Smart
+    /// Search tries it before its own guesses (§11).
+    ///
+    /// Cleared by any keystroke in the field: from then on the text is the
+    /// user's and the encoding is the app's to work out. Also cleared when the
+    /// popup is used by hand, which is a statement of its own that the
+    /// non-smart path already acts on.
+    private var pickedEncoding: SearchEncoding?
 
     /// The model found no encoding that can read what is in the field (§11).
     func reportNoUsablePattern() {
@@ -814,6 +841,9 @@ final class FindBarView: NSView, NSComboBoxDelegate {
             encodingPopup.selectItem(at: encodingIndex)
             updateCaseButtonVisibility()
         }
+        // The pick brought an encoding with it, so a Smart Search of this
+        // pattern starts there rather than guessing from scratch (§11).
+        pickedEncoding = entry.encoding
 
         // Restore the search's case-sensitivity (text encodings only): the
         // toggle follows the picked entry and the persisted default is updated

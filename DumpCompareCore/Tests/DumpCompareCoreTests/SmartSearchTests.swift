@@ -101,6 +101,39 @@ final class SmartSearchTests: XCTestCase {
                        [0x20, 0x20, 0x20])
     }
 
+    /// A pattern the user brought an encoding with — one picked out of the
+    /// field's history, where the entry records the pair — is tried in *that*
+    /// encoding first. The pick is a statement about the encoding as much as
+    /// about the pattern, and guessing over it would throw away what the user
+    /// already knows (§11).
+    func testAPreferredEncodingGoesFirst() {
+        let attempts = SmartSearch.attempts(for: "boot", caseSensitive: false,
+                                            preferring: .utf16LE)
+        XCTAssertEqual(attempts.map(\.encoding), [.utf16LE, .ascii, .utf16BE],
+                       "the preferred one first, then the usual order without it")
+        XCTAssertEqual(attempts[0].pattern.bytes, [0x62, 0, 0x6F, 0, 0x6F, 0, 0x74, 0])
+        XCTAssertEqual(attempts[0].encodings, [.utf16LE],
+                       "and it is not named twice for being asked for twice")
+    }
+
+    /// Preferring hex for a pattern that does not read as hex still tries the
+    /// bytes first — the user asked for them — and preferring one that cannot
+    /// read the text at all changes nothing.
+    func testAPreferredEncodingIsTriedEvenAgainstTheHexRule() {
+        let hexFirst = SmartSearch.attempts(for: "beef", caseSensitive: false, preferring: .hex)
+        XCTAssertEqual(hexFirst.first?.encoding, .hex)
+        XCTAssertEqual(hexFirst.first?.pattern.bytes, [0xBE, 0xEF])
+
+        let unreadable = SmartSearch.attempts(for: "ключ", caseSensitive: false,
+                                              preferring: .ascii)
+        XCTAssertEqual(unreadable.map(\.encoding), [.utf8, .utf16LE, .utf16BE],
+                       "ASCII cannot carry it, so there is nothing to try first")
+
+        let notHex = SmartSearch.attempts(for: "boot", caseSensitive: false, preferring: .hex)
+        XCTAssertEqual(notHex.map(\.encoding), [.ascii, .utf16LE, .utf16BE],
+                       "and `boot` is no more hex for having been asked for as hex")
+    }
+
     // MARK: - The pass
 
     /// The pass is the feature, not just the order: each attempt is the two

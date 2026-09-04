@@ -5016,8 +5016,9 @@ final class MainViewController: NSViewController {
         case .pattern(let pattern, let folding):
             return [SmartSearch.Attempt(pattern: pattern, folding: folding,
                                         encodings: [pattern.encoding])]
-        case .smart(let text, let caseSensitive):
-            let attempts = SmartSearch.attempts(for: text, caseSensitive: caseSensitive)
+        case .smart(let text, let caseSensitive, let preferred):
+            let attempts = SmartSearch.attempts(for: text, caseSensitive: caseSensitive,
+                                                preferring: preferred)
             guard !attempts.isEmpty else {
                 findBar.reportNoUsablePattern()
                 return nil

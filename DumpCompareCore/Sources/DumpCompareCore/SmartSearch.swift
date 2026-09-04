@@ -81,17 +81,29 @@ public enum SmartSearch {
     /// What to look for, in the order to look: hex first when the text reads as
     /// hex, then the text encodings.
     ///
+    /// `preferred` goes in front of all of it. It is for a pattern the *user*
+    /// brought an encoding with — one picked out of the field's history, where
+    /// the entry records the pair — because that is a statement about the
+    /// encoding as much as about the pattern, and guessing over it would throw
+    /// away what the user already knows. Typing anything is not such a
+    /// statement, and then this is nil and the order is read off the pattern.
+    ///
     /// Attempts asking the same question are merged, so the file is scanned
     /// once per question rather than once per encoding. An encoding that cannot
     /// encode the text at all is left out — there is nothing to look for — and
     /// a text no encoding can carry yields no attempts, which is the caller's
     /// cue that there is no pattern here rather than a bad one.
-    public static func attempts(for text: String, caseSensitive: Bool) -> [Attempt] {
+    public static func attempts(for text: String, caseSensitive: Bool,
+                                preferring preferred: SearchEncoding? = nil) -> [Attempt] {
         var order: [SearchEncoding] = []
+        if let preferred { order.append(preferred) }
         if looksLikeHexBytes(text) { order.append(.hex) }
         order.append(contentsOf: textOrder)
 
         var attempts: [Attempt] = []
+        // `order` may name an encoding twice — the preferred one, and again in
+        // its usual place. The merge below keeps the first, which is the point
+        // of putting it first.
         for encoding in order {
             guard let pattern = try? SearchEngine.parsePattern(text, encoding: encoding),
                   !pattern.bytes.isEmpty else { continue }
@@ -99,6 +111,9 @@ public enum SmartSearch {
             if let existing = attempts.firstIndex(where: {
                 $0.pattern.bytes == pattern.bytes && $0.folding == folding
             }) {
+                // An encoding already answered for is not answered for twice —
+                // `order` names the preferred one again in its usual place.
+                guard !attempts[existing].encodings.contains(encoding) else { continue }
                 attempts[existing] = Attempt(pattern: attempts[existing].pattern,
                                              folding: attempts[existing].folding,
                                              encodings: attempts[existing].encodings + [encoding])

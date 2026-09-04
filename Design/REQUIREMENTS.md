@@ -1096,6 +1096,18 @@ Smart Search:
   holds bytes, and a string in a dump is in whichever encoding its author
   happened to use — the reader usually knows what they are looking for and not
   how it is written.
+- Where the user has said something about the encoding, that is tried **first**
+  and the guessing follows it:
+  - a pattern **picked out of the field's history** comes with the encoding it
+    was found in — the entry records the pair — and the bar opens on the last
+    search the same way;
+  - the encoding popup **chosen by hand** counts too, which is how a reader who
+    knows the string is ASCII says so without turning Smart Search off.
+
+  Typing or editing the pattern takes that back: the text is the user's again
+  and the encoding is the app's to work out, so the rules below apply from
+  scratch. This is what "the encoding at the moment of activation does not
+  matter" means — the *leftover* value does not, a deliberate one does.
 - The order: if the text reads as **hex bytes** it is looked for as bytes
   first, then as text; otherwise as text only. Text goes ASCII, UTF-8, UTF-16
   LE, UTF-16 BE — most likely first. "Reads as hex bytes" is stricter than what

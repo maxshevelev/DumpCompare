@@ -284,6 +284,87 @@ final class SmartSearchFlowTests: XCTestCase {
                       "and it must search what is in the field")
     }
 
+    // MARK: - What the user already knows (§11)
+
+    /// A pattern picked out of the history comes with an encoding — the entry
+    /// records the pair — and that is a statement about the encoding as much as
+    /// about the pattern. So the first attempt is *that* encoding, even where
+    /// Smart Search's own order would have tried another one first and found
+    /// something.
+    func testAPickedHistoryEntryIsTriedInItsOwnEncodingFirst() throws {
+        var bytes = [UInt8](repeating: 0xFF, count: 512)
+        bytes.replaceSubrange(64..<68, with: Array("boot".utf8))          // ASCII
+        bytes.replaceSubrange(128..<136, with: [0x62, 0, 0x6F, 0, 0x6F, 0, 0x74, 0])  // UTF-16LE
+        let (controller, window, _) = try makeController(bytes)
+        defer { cleanup(controller) }
+        let pane = controller.windowModel.pane1
+        // The pattern was last found as UTF-16 LE.
+        FindHistoryStore.record(pattern: "boot", encoding: .utf16LE)
+
+        controller.findPattern()
+        let bar = try findBar(window)
+        XCTAssertEqual(bar.preferredEncodingForTests, .utf16LE,
+                       "the bar opens on the last search, encoding and all")
+        try findBar(window).pressFindForTests(.forward)
+
+        XCTAssertTrue(pumpUntil(5) { pane.currentMatch == 128..<136 },
+                      "the encoding the user brought is tried before the app's own guesses")
+        XCTAssertEqual(try encodingPopup(window).titleOfSelectedItem, "UTF-16 LE")
+    }
+
+    /// And typing takes that back: the text is the user's again, so the
+    /// encoding is the app's to work out — ASCII, which its order tries first,
+    /// and which is where the string also is.
+    func testTypingForgetsThePickedEncoding() throws {
+        var bytes = [UInt8](repeating: 0xFF, count: 512)
+        bytes.replaceSubrange(64..<68, with: Array("boot".utf8))
+        bytes.replaceSubrange(128..<136, with: [0x62, 0, 0x6F, 0, 0x6F, 0, 0x74, 0])
+        let (controller, window, _) = try makeController(bytes)
+        defer { cleanup(controller) }
+        let pane = controller.windowModel.pane1
+        FindHistoryStore.record(pattern: "boot", encoding: .utf16LE)
+
+        controller.findPattern()
+        let bar = try findBar(window)
+        let field = try combo(window)
+        // Typed over — the same text, which is the sharpest form of the case:
+        // only the *provenance* differs.
+        field.stringValue = "boot"
+        NotificationCenter.default.post(name: NSControl.textDidChangeNotification, object: field)
+        XCTAssertNil(bar.preferredEncodingForTests, "a keystroke takes the pairing back")
+        try findBar(window).pressFindForTests(.forward)
+
+        XCTAssertTrue(pumpUntil(5) { pane.currentMatch == 64..<68 },
+                      "so the default order applies, and ASCII comes first")
+        XCTAssertEqual(try encodingPopup(window).titleOfSelectedItem, "ASCII")
+    }
+
+    /// Choosing the encoding by hand is a statement too — with Smart Search on
+    /// it is what the first attempt uses, which is how a reader who *knows* the
+    /// string is ASCII says so without turning Smart Search off.
+    func testChoosingTheEncodingByHandIsTriedFirst() throws {
+        var bytes = [UInt8](repeating: 0xFF, count: 512)
+        bytes.replaceSubrange(64..<68, with: Array("beef".utf8))
+        bytes.replaceSubrange(200..<202, with: [0xBE, 0xEF])
+        let (controller, window, _) = try makeController(bytes)
+        defer { cleanup(controller) }
+        let pane = controller.windowModel.pane1
+
+        controller.findPattern()
+        let field = try combo(window)
+        field.stringValue = "beef"
+        NotificationCenter.default.post(name: NSControl.textDidChangeNotification, object: field)
+        // `beef` reads as hex, so without a word from the user the bytes win.
+        let popup = try encodingPopup(window)
+        popup.selectItem(at: SearchEncoding.allCases.firstIndex(of: .ascii)!)
+        popup.sendAction(popup.action, to: popup.target)
+        try findBar(window).pressFindForTests(.forward)
+
+        XCTAssertTrue(pumpUntil(5) { pane.currentMatch == 64..<68 },
+                      "the chosen encoding is tried first, so the word wins over the bytes")
+        XCTAssertEqual(try encodingPopup(window).titleOfSelectedItem, "ASCII")
+    }
+
     // MARK: - When nothing is found anywhere
 
     /// A pass that comes back empty says so as a plate over the window, naming
