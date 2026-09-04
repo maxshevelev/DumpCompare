@@ -34,6 +34,29 @@ final class EmptyStateBookmarksTests: XCTestCase {
         XCTAssertEqual(view.bookmarkRowsForTesting.first?.name, "header")
     }
 
+    /// The list is re-sized on every rebuild by *updating* its size, not by
+    /// adding another one. Activating a fresh pair each time left the old pair
+    /// active too, and two different fixed heights on one scroll view is a
+    /// constraint conflict on every layout pass from the second bookmark on.
+    func testRebuildingTheListDoesNotStackUpSizeConstraints() throws {
+        let view = EmptyStateView()
+
+        view.setBookmarks([Bookmark(row: 0x10, name: "one")])
+        XCTAssertEqual(view.bookmarkListHeightsForTesting.count, 1, "one height")
+        let oneRow = try XCTUnwrap(view.bookmarkListHeightsForTesting.first)
+
+        view.setBookmarks([Bookmark(row: 0x10, name: "one"),
+                           Bookmark(row: 0x20, name: "two")])
+        view.setBookmarks([Bookmark(row: 0x10, name: "one"),
+                           Bookmark(row: 0x20, name: "two"),
+                           Bookmark(row: 0x30, name: "three")])
+        XCTAssertEqual(view.bookmarkListHeightsForTesting.count, 1,
+                       "still one after two more rebuilds")
+        let threeRows = try XCTUnwrap(view.bookmarkListHeightsForTesting.first)
+        XCTAssertGreaterThan(threeRows, oneRow, "and it is the one that grew")
+        XCTAssertEqual(view.bookmarkRowsForTesting.count, 3, "and the list is right")
+    }
+
     /// An unnamed mark shows its address and nothing else.
     ///
     /// Everywhere a file is open, an unnamed mark is described by the bytes at

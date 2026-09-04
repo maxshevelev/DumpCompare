@@ -42,6 +42,15 @@ protocol HexViewDataSource: AnyObject {
     /// range rather than a call per row, the same shape as `hexBookmarkedRows`.
     /// Empty when the pane is one piece (no cuts) — there is nothing to tint.
     func hexSegmentSpans(in range: Range<UInt64>) -> [HexSegmentSpan]
+    /// The matches of the active search that overlap `range`, for the dump's
+    /// grey match highlight (§11). A list per range rather than a call per row,
+    /// the same shape as `hexSegmentSpans`; a match starting before the range
+    /// and reaching into it is included. Empty when no search is active, and
+    /// when the set is too large to hold positions for.
+    func hexMatchRanges(in range: Range<UInt64>) -> [Range<UInt64>]
+    /// The current match — what the find indicator marks in yellow — or nil
+    /// when the caret is not on one (§11).
+    func hexCurrentMatch() -> Range<UInt64>?
     /// The bookmark on the row containing `offset`, if any (§20.2). One row, not
     /// a range: this answers the questions about a single row — what the mark's
     /// tooltip says, what VoiceOver reads, whether a right-clicked address
@@ -851,6 +860,21 @@ final class HexView: NSView, NSViewToolTipOwner {
             segmentSpans = dataSource.hexSegmentSpans(in: lower..<upper)
         }
 
+        // The matches in the drawn range, asked once per range like the pieces
+        // above (§11). The set answers with whole matches, including one that
+        // starts above the range and reaches into it.
+        let matchRanges: [Range<UInt64>]
+        if rows.isEmpty {
+            matchRanges = []
+        } else {
+            let lower = UInt64(rows.lowerBound) * UInt64(HexLayout.bytesPerRow)
+            let upper = UInt64(rows.upperBound) * UInt64(HexLayout.bytesPerRow)
+            matchRanges = dataSource.hexMatchRanges(in: lower..<upper)
+        }
+        // The one match the user is standing on, marked in yellow over
+        // everything else (§11).
+        let currentMatch = dataSource.hexCurrentMatch()
+
         // The row whose address carries a right-click menu, if any. A bookmarked
         // row shows that menu through its own mark — outlined instead of filled
         // (§20.4) — because the accent ring lands on top of the fill. A menu
@@ -861,17 +885,31 @@ final class HexView: NSView, NSViewToolTipOwner {
             return layout.byteOffset(row: layout.rowColumn(of: contextMenuOffset).row, column: 0)
         }()
 
-        for row in rows {
-            guard UInt64(row) < rowCount else { break }
-            let rowAddress = layout.byteOffset(row: row, column: 0)
-            drawRow(
-                row: row, layout: layout, fileSize: fileSize,
-                selection: selection, baseline: baseline,
-                drawsOffset: drawsOffset, drawsHex: drawsHex, drawsAscii: drawsAscii,
-                isBookmarked: bookmarkedRows.contains(rowAddress),
-                bookmarkOutlined: rowAddress == contextMenuRowAddress,
-                segmentSpans: segmentSpans
-            )
+        // Two passes over the rows: every row's backgrounds first, then the
+        // find indicator, then every row's glyphs. The indicator is one shape
+        // around the whole match (§11) rather than a piece per row, so it cannot
+        // be drawn inside a row's own turn — and it has to sit over the fills
+        // and under the bytes.
+        for pass in RowPass.allCases {
+            for row in rows {
+                guard UInt64(row) < rowCount else { break }
+                let rowAddress = layout.byteOffset(row: row, column: 0)
+                drawRow(
+                    row: row, layout: layout, fileSize: fileSize,
+                    selection: selection, baseline: baseline,
+                    drawsOffset: drawsOffset, drawsHex: drawsHex, drawsAscii: drawsAscii,
+                    isBookmarked: bookmarkedRows.contains(rowAddress),
+                    bookmarkOutlined: rowAddress == contextMenuRowAddress,
+                    segmentSpans: segmentSpans,
+                    matchRanges: matchRanges,
+                    currentMatch: currentMatch,
+                    pass: pass
+                )
+            }
+            if pass == .backgrounds, let currentMatch {
+                drawFindIndicator(match: currentMatch, layout: layout,
+                                  drawsHex: drawsHex, drawsAscii: drawsAscii)
+            }
         }
 
         // Caret: on the active pane, at the byte the next typed character
@@ -923,10 +961,32 @@ final class HexView: NSView, NSViewToolTipOwner {
                          selection: SelectionModel, baseline: CGFloat,
                          drawsOffset: Bool, drawsHex: Bool, drawsAscii: Bool,
                          isBookmarked: Bool, bookmarkOutlined: Bool,
-                         segmentSpans: [HexSegmentSpan]) {
+                         segmentSpans: [HexSegmentSpan],
+                         matchRanges: [Range<UInt64>],
+                         currentMatch: Range<UInt64>?,
+                         pass: RowPass) {
         let rowStart = layout.byteOffset(row: row, column: 0)
         let rowEnd = rowStart + UInt64(HexLayout.bytesPerRow)
         let rowY = layout.rowFrame(row: row).minY
+        let states = dataSource?.hexByteStates(in: rowStart..<rowEnd) ?? []
+
+        // The part of the current match that falls on this row, as columns —
+        // the bytes whose ink the indicator forces (§11).
+        let indicatorColumns: Range<Int>? = {
+            guard let currentMatch else { return nil }
+            let start = max(currentMatch.lowerBound, rowStart)
+            let end = min(currentMatch.upperBound, rowEnd)
+            guard start < end else { return nil }
+            return Int(start - rowStart)..<Int(end - rowStart)
+        }()
+
+        if pass == .glyphs {
+            drawRowGlyphs(row: row, rowStart: rowStart, rowEnd: rowEnd, rowY: rowY,
+                          states: states, layout: layout, fileSize: fileSize,
+                          baseline: baseline, drawsHex: drawsHex, drawsAscii: drawsAscii,
+                          indicatorColumns: indicatorColumns)
+            return
+        }
 
         // Segment tint: a pale band behind the whole row — from the panel's
         // left edge to the row's right edge, the Offset column included — split
@@ -971,7 +1031,16 @@ final class HexView: NSView, NSViewToolTipOwner {
             }
         }
 
-        let states = dataSource?.hexByteStates(in: rowStart..<rowEnd) ?? []
+        // The grey match highlight: every occurrence of the search pattern,
+        // under the difference fill (§6, §11). Grey yields to orange because
+        // telling two dumps apart is what the app is for — a match buried under
+        // a difference is still reachable, since Find Next brings the indicator
+        // to it and the map marks it.
+        if drawsHex || drawsAscii {
+            drawMatchFills(row: row, rowStart: rowStart, rowEnd: rowEnd,
+                           matches: matchRanges, layout: layout,
+                           drawsHex: drawsHex, drawsAscii: drawsAscii)
+        }
 
         // Backgrounds: EOF cells and the comparison difference stay per-byte;
         // the selection is one continuous fill across the whole selected span
@@ -992,7 +1061,8 @@ final class HexView: NSView, NSViewToolTipOwner {
             }
             drawSelectionFill(row: row, rowStart: rowStart, rowEnd: rowEnd,
                               selection: selection, layout: layout,
-                              drawsHex: drawsHex, drawsAscii: drawsAscii)
+                              drawsHex: drawsHex, drawsAscii: drawsAscii,
+                              skipping: indicatorColumns)
         }
 
         // EOF placeholder styling, per cell: the muted fill and hatch mark the
@@ -1020,31 +1090,48 @@ final class HexView: NSView, NSViewToolTipOwner {
             }
         }
 
-        // Cell content: the hex column and the decoded-text column, each drawn
-        // as one attributed string of colour runs (§ Option B) — a handful of
-        // draw calls per row instead of one per glyph. The hex digits (0-9A-F)
-        // and gap spaces are all exactly `charWidth` wide, so the single string
-        // lands every glyph on the same cell grid the per-glyph draws did. The
-        // decoded-text column is combined only when its characters are
-        // monospaced too; otherwise it falls back to per-cell drawing so a wide
-        // glyph (a substitute font) never drifts its neighbours.
+    }
+
+    /// Which half of a row is being drawn. The row pass runs twice so the find
+    /// indicator — one shape around the whole match — can be drawn over every
+    /// row's fills and under every row's bytes (§11).
+    enum RowPass: CaseIterable {
+        case backgrounds
+        case glyphs
+    }
+
+    /// Cell content: the hex column and the decoded-text column, each drawn as
+    /// one attributed string of colour runs (§ Option B) — a handful of draw
+    /// calls per row instead of one per glyph. The hex digits (0-9A-F) and gap
+    /// spaces are all exactly `charWidth` wide, so the single string lands every
+    /// glyph on the same cell grid the per-glyph draws did. The decoded-text
+    /// column is combined only when its characters are monospaced too;
+    /// otherwise it falls back to per-cell drawing so a wide glyph (a substitute
+    /// font) never drifts its neighbours.
+    private func drawRowGlyphs(row: Int, rowStart: UInt64, rowEnd: UInt64, rowY: CGFloat,
+                               states: [HexByteState], layout: HexLayout, fileSize: UInt64,
+                               baseline: CGFloat, drawsHex: Bool, drawsAscii: Bool,
+                               indicatorColumns: Range<Int>?) {
         if drawsHex {
             let hexString = hexColumnAttributedString(
                 states: states, layout: layout,
                 pendingLowNibbleColumn: pendingLowNibbleColumn(rowStart: rowStart, rowEnd: rowEnd,
-                                                              fileSize: fileSize))
+                                                              fileSize: fileSize),
+                indicatorColumns: indicatorColumns)
             if hexString.length > 0 {
                 hexString.draw(at: NSPoint(x: layout.hexByteX(column: 0), y: rowY + baseline))
             }
         }
         if drawsAscii {
             if asciiColumnIsMonospaced {
-                let asciiString = asciiColumnAttributedString(states: states)
+                let asciiString = asciiColumnAttributedString(states: states,
+                                                              indicatorColumns: indicatorColumns)
                 if asciiString.length > 0 {
                     asciiString.draw(at: NSPoint(x: layout.asciiX(column: 0), y: rowY + baseline))
                 }
             } else {
-                drawAsciiCells(states: states, layout: layout, rowY: rowY, baseline: baseline)
+                drawAsciiCells(states: states, layout: layout, rowY: rowY, baseline: baseline,
+                               indicatorColumns: indicatorColumns)
             }
         }
     }
@@ -1112,13 +1199,16 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// nothing, so the string ends at the first one. Exposed (internal) so tests
     /// can pin the spacing against the layout's own geometry.
     func hexColumnAttributedString(states: [HexByteState], layout: HexLayout,
-                                   pendingLowNibbleColumn: Int? = nil) -> NSAttributedString {
+                                   pendingLowNibbleColumn: Int? = nil,
+                                   indicatorColumns: Range<Int>? = nil) -> NSAttributedString {
         let result = NSMutableAttributedString()
         var currentColor: NSColor?
         var pending = ""
         for column in 0..<HexLayout.bytesPerRow {
             guard column < states.count, !states[column].isEOF else { break }
-            let color = HexTheme.textColor(for: states[column])
+            let color = indicatorColumns?.contains(column) == true
+                ? HexTheme.indicatorTextColor(for: states[column])
+                : HexTheme.textColor(for: states[column])
             if color !== currentColor {
                 appendRun(&pending, to: result, color: currentColor)
                 currentColor = color
@@ -1156,7 +1246,8 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// colour per byte — dimmed for non-displayable placeholders, the byte's
     /// text colour otherwise. Drawn in one call only when every emitted
     /// character is one cell wide (`asciiColumnIsMonospaced`).
-    private func asciiColumnAttributedString(states: [HexByteState]) -> NSAttributedString {
+    private func asciiColumnAttributedString(states: [HexByteState],
+                                             indicatorColumns: Range<Int>? = nil) -> NSAttributedString {
         let result = NSMutableAttributedString()
         var currentColor: NSColor?
         var pending = ""
@@ -1164,9 +1255,11 @@ final class HexView: NSView, NSViewToolTipOwner {
             guard column < states.count, !states[column].isEOF else { break }
             let state = states[column]
             let char = textDecoder.decode(state.byte)
+            let inIndicator = indicatorColumns?.contains(column) == true
             let color = textDecoder.isDisplayable(state.byte)
-                ? HexTheme.textColor(for: state)
-                : HexTheme.mutedTextColor
+                ? (inIndicator ? HexTheme.indicatorTextColor(for: state)
+                               : HexTheme.textColor(for: state))
+                : (inIndicator ? HexTheme.mutedIndicatorInk : HexTheme.mutedTextColor)
             if color !== currentColor {
                 appendRun(&pending, to: result, color: currentColor)
                 currentColor = color
@@ -1181,16 +1274,19 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// decoder can emit is wider than one cell (a glyph missing from the font
     /// falls back to a substitute). Each character draws at its own cell's
     /// origin, so a wide glyph never pushes its neighbours off the grid.
-    private func drawAsciiCells(states: [HexByteState], layout: HexLayout, rowY: CGFloat, baseline: CGFloat) {
+    private func drawAsciiCells(states: [HexByteState], layout: HexLayout, rowY: CGFloat,
+                                baseline: CGFloat, indicatorColumns: Range<Int>? = nil) {
         for column in 0..<HexLayout.bytesPerRow {
             guard column < states.count, !states[column].isEOF else { break }
             let state = states[column]
             let asciiRect = CGRect(x: layout.asciiX(column: column), y: rowY,
                                    width: layout.charWidth, height: layout.rowHeight)
             let char = textDecoder.decode(state.byte)
+            let inIndicator = indicatorColumns?.contains(column) == true
             let color = textDecoder.isDisplayable(state.byte)
-                ? HexTheme.textColor(for: state)
-                : HexTheme.mutedTextColor
+                ? (inIndicator ? HexTheme.indicatorTextColor(for: state)
+                               : HexTheme.textColor(for: state))
+                : (inIndicator ? HexTheme.mutedIndicatorInk : HexTheme.mutedTextColor)
             draw(text: String(char), in: asciiRect, baseline: baseline, color: color)
         }
     }
@@ -1199,9 +1295,334 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// the hex column and one through the ASCII column — no gaps between words
     /// or byte cells, and no gap between the two 8-byte groups (§6). Each half
     /// is drawn only when its column band is being repainted.
+    /// Fills the grey behind every match crossing this row (§11).
+    ///
+    /// One continuous fill per match, exactly like the selection's: a match
+    /// spans its bytes through the word and group gaps, and a match crossing a
+    /// row boundary is drawn as its part of each row.
+    private func drawMatchFills(row: Int, rowStart: UInt64, rowEnd: UInt64,
+                                matches: [Range<UInt64>], layout: HexLayout,
+                                drawsHex: Bool, drawsAscii: Bool) {
+        guard !matches.isEmpty else { return }
+        let rowFrame = layout.rowFrame(row: row)
+        HexTheme.matchFill.setFill()
+        for match in matches {
+            let start = max(match.lowerBound, rowStart)
+            let end = min(match.upperBound, rowEnd)
+            guard start < end else { continue }
+            let firstColumn = Int(start - rowStart)
+            let lastColumn = Int(end - rowStart) - 1
+            if drawsHex {
+                let left = layout.hexByteX(column: firstColumn)
+                let right = layout.hexByteX(column: lastColumn) + layout.hexByteWidth
+                NSBezierPath(rect: CGRect(x: left, y: rowFrame.minY,
+                                          width: right - left, height: layout.rowHeight)).fill()
+            }
+            if drawsAscii {
+                let left = layout.asciiX(column: firstColumn)
+                let right = layout.asciiX(column: lastColumn) + layout.charWidth
+                NSBezierPath(rect: CGRect(x: left, y: rowFrame.minY,
+                                          width: right - left, height: layout.rowHeight)).fill()
+            }
+        }
+    }
+
+    /// Draws the find indicator around the current match (§11): a yellow
+    /// bubble with a hairline border and a shadow below and to the right of it
+    /// — the relief that tells the current match apart from the greys of all the
+    /// others.
+    ///
+    /// The outline is the **selection mirror's** own: `contour(of:layout:region:)`
+    /// and `roundedContourPath` build it, so the indicator stands off the glyphs
+    /// exactly as far as a mirrored selection does (2 pt where a spacer allows
+    /// it, flush where it would land on a neighbouring glyph), rounds by the
+    /// same radius, and traces one staircase around a match that crosses rows
+    /// rather than a pill per row. One algorithm, two users — a frame that
+    /// hugged the glyphs read as a box drawn on the text rather than as
+    /// something the text sits on.
+    ///
+    /// Drawn between the row backgrounds and the glyphs, which is why the row
+    /// pass runs twice (see `RowPass`).
+    private func drawFindIndicator(match: Range<UInt64>, layout: HexLayout,
+                                   drawsHex: Bool, drawsAscii: Bool) {
+        guard let dataSource, match.lowerBound < match.upperBound else { return }
+        let span = SelectionModel(start: match.lowerBound, end: match.upperBound,
+                                  fileSize: dataSource.fileSize)
+        var loops: [[CGPoint]] = []
+        if drawsHex { loops.append(contentsOf: contour(of: span, layout: layout, region: .hex)) }
+        if drawsAscii {
+            loops.append(contentsOf: contour(of: span, layout: layout, region: .ascii))
+        }
+
+        // How high the bubble is off the page right now — 0 at rest, 1 at the
+        // top of the hop. Everything about the lift follows from it.
+        let lift = Self.indicatorLift(atPhase: indicatorBouncePhase())
+        let elevation = Self.indicatorElevation(atLift: lift)
+        for loop in loops where loop.count >= 3 {
+            let path = roundedContourPath(loops: [loop], radius: Self.mirrorContourRadius)
+            if lift > 0 {
+                // The plate grows about its own centre and does not move: it
+                // must stay lined up with the bytes it is highlighting, so the
+                // hop expands it evenly in every direction rather than lifting
+                // it off its row. What says "higher" is the shadow.
+                //
+                // Each column's loop scales about its own centre — scaling the
+                // two together would drag the hex and text plates towards each
+                // other instead of growing them in place.
+                let box = path.bounds
+                var transform = AffineTransform(translationByX: box.midX, byY: box.midY)
+                transform.scale(elevation.scale)
+                transform.translate(x: -box.midX, y: -box.midY)
+                path.transform(using: transform)
+            }
+            // The shadow is drawn from the plate's own geometry rather than by
+            // `NSShadow`, and that is a correctness decision, not a stylistic
+            // one: an `NSShadow` offset is interpreted in whatever coordinate
+            // space the current graphics context happens to be in, and this
+            // view is drawn through two different ones — the window's layer on
+            // screen and a bitmap context under `cacheDisplay` — which
+            // disagreed about which way "down" is. Twice the shadow was
+            // measured going down in a render test while going up on screen.
+            //
+            // Strokes of the same path cannot disagree: they live in the same
+            // space as the plate, where +y is down because row 1 is drawn
+            // below row 0. Each stroke straddles the outline, and the plate's
+            // own fill goes on last and hides every inner half — so what is
+            // left is an outer halo whose reach is the widest stroke.
+            drawIndicatorShadow(around: path, shadow: elevation.ambient)
+            drawIndicatorShadow(around: path, shadow: elevation.key)
+            HexTheme.findIndicatorFill.setFill()
+            path.fill()
+        }
+    }
+
+    // MARK: - The indicator's hop (§11)
+
+    /// The bubble's shadow at rest, in two parts — the recipe a raised surface
+    /// needs, and the reason a single offset shadow read as "bare on the
+    /// top-left": with the blur no wider than the drop, the light side gets
+    /// nothing at all.
+    ///
+    /// - **ambient**: no offset, a soft even halo, so the plate has a faint
+    ///   edge on *every* side and is not cut out of the page.
+    /// - **key**: a short drop down and to the right, which is what gives the
+    ///   bottom-right side its weight.
+    ///
+    /// **Positive height is downward here**, measured rather than assumed: this
+    /// view is flipped and `NSShadow` follows the same space, so a negative
+    /// height casts the shadow *up* (which is how a first attempt got it
+    /// backwards). A render test pins the direction and the weighting.
+    static let indicatorAmbientBlur: CGFloat = 2
+    static let indicatorAmbientAlpha: CGFloat = 0.28
+    /// Short on purpose: the plate is lifted a little way off the page, not
+    /// floating above it, so the drop is about a point either way.
+    static let indicatorShadowOffset = NSSize(width: 1, height: 1.5)
+    static let indicatorShadowBlur: CGFloat = 3
+    static let indicatorShadowAlpha: CGFloat = 0.42
+
+    /// How long the hop lasts. Slow enough to be *seen*: at a quarter of a
+    /// second the jump registered as a flicker, which is worse than nothing —
+    /// the eye reads it as a redraw glitch.
+    static let indicatorBounceDuration: TimeInterval = 0.55
+    /// How much bigger the plate gets, and how much deeper its shadow, at the
+    /// top of the hop. The plate does not move — see `drawFindIndicator`.
+    static let indicatorLiftScale: CGFloat = 0.14
+    /// The key shadow drops and spreads as the bubble climbs; the ambient halo
+    /// widens with it, so the plate keeps its edge on the light side too.
+    static let indicatorLiftShadowDrop: CGFloat = 2
+    static let indicatorLiftShadowSpread: CGFloat = 1
+    static let indicatorLiftShadowBlur: CGFloat = 2.5
+    static let indicatorLiftAmbientBlur: CGFloat = 2
+
+    /// When the current hop started, or nil when nothing is hopping.
+    private var indicatorBounceStarted: TimeInterval?
+    private var indicatorDisplayLink: CADisplayLink?
+    /// Forces the hop's phase, for tests that need a frame of the animation
+    /// rather than a moment of the clock.
+    var indicatorBouncePhaseForTests: CGFloat?
+
+    /// How high off the page the bubble is, `phase` of the way through the hop:
+    /// one clear jump and a small second one, the shape a thing that has been
+    /// dropped has. 0 at both ends, 1 at the top of the first jump.
+    ///
+    /// Pure, so the shape is asserted without a clock.
+    static func indicatorLift(atPhase phase: CGFloat) -> CGFloat {
+        guard phase > 0, phase < 1 else { return 0 }
+        /// One parabolic arc between two phases, peaking at `height`.
+        func arc(from: CGFloat, to: CGFloat, height: CGFloat) -> CGFloat {
+            guard phase >= from, phase <= to else { return 0 }
+            let t = (phase - from) / (to - from)
+            return height * 4 * t * (1 - t)
+        }
+        return max(arc(from: 0, to: 0.62, height: 1),
+                   arc(from: 0.62, to: 1, height: 0.3))
+    }
+
+    /// One shadow of the plate: where it falls, how far it reaches, and how
+    /// dark it is at the plate's edge. Two of these make the plate read as
+    /// raised (see `indicatorAmbientBlur`).
+    struct IndicatorShadow: Equatable {
+        /// Offset in the plate's own space: `height` positive is **down**,
+        /// because row 1 is drawn below row 0.
+        var offset: NSSize
+        /// How far past the plate's outline the shadow reaches.
+        var blur: CGFloat
+        /// Opacity at the plate's edge; it falls off over `blur`.
+        var alpha: CGFloat
+    }
+
+    /// Paints one shadow as concentric strokes of `path`, offset by the
+    /// shadow's own offset: the innermost ring is the darkest and each ring out
+    /// is lighter, which is what makes the edge soft. Drawn before the plate's
+    /// fill, which covers the inner halves.
+    private func drawIndicatorShadow(around path: NSBezierPath, shadow: IndicatorShadow) {
+        guard shadow.blur > 0, shadow.alpha > 0 else { return }
+        let copy = path.copy() as! NSBezierPath
+        if shadow.offset != .zero {
+            copy.transform(using: AffineTransform(translationByX: shadow.offset.width,
+                                                  byY: shadow.offset.height))
+        }
+        // One ring per point of reach, plus a half-point step so a fractional
+        // reach still draws something.
+        let rings = max(Int(shadow.blur.rounded()), 1)
+        for ring in (1...rings).reversed() {
+            let reach = shadow.blur * CGFloat(ring) / CGFloat(rings)
+            // Linear falloff from the edge outwards, and each ring is drawn
+            // over the ones outside it, so the accumulated opacity is highest
+            // against the plate.
+            let alpha = shadow.alpha * (1 - CGFloat(ring - 1) / CGFloat(rings)) / CGFloat(rings)
+            HexTheme.indicatorShadow.withAlphaComponent(alpha).setStroke()
+            copy.lineWidth = reach * 2
+            copy.stroke()
+        }
+    }
+
+    /// What a given lift does to the bubble: its size, how far it rises, and
+    /// the two shadows it casts. Pure and in one place, so "higher means a
+    /// bigger shadow" is a fact about the code rather than about three call
+    /// sites.
+    static func indicatorElevation(atLift lift: CGFloat)
+        -> (scale: CGFloat, ambient: IndicatorShadow, key: IndicatorShadow) {
+        let clamped = min(max(lift, 0), 1)
+        return (scale: 1 + indicatorLiftScale * clamped,
+                ambient: IndicatorShadow(
+                    offset: .zero,
+                    blur: indicatorAmbientBlur + indicatorLiftAmbientBlur * clamped,
+                    alpha: indicatorAmbientAlpha + 0.08 * clamped),
+                // The plate climbs *visually* while its shadow stays on the
+                // page, so the drop between them grows with the height (§11).
+                key: IndicatorShadow(
+                    offset: NSSize(width: indicatorShadowOffset.width
+                                    + indicatorLiftShadowSpread * clamped,
+                                   height: indicatorShadowOffset.height
+                                    + indicatorLiftShadowDrop * clamped),
+                    blur: indicatorShadowBlur + indicatorLiftShadowBlur * clamped,
+                    alpha: indicatorShadowAlpha + 0.15 * clamped))
+    }
+
+    /// Starts the hop — called when the indicator lands on another match.
+    ///
+    /// Driven by the view's own `CADisplayLink` (macOS 14's
+    /// `displayLink(target:selector:)`), which is the platform's frame clock:
+    /// the bubble is painted by `draw(_:)` along with the bytes it sits on, so
+    /// what animates is the redraw, and the rows the indicator covers are the
+    /// only thing invalidated.
+    ///
+    /// Core Animation's own `CASpringAnimation` would be the API for this if the
+    /// bubble were a layer of its own — see `Design/FIND_HIGHLIGHT_PLAN.md` for
+    /// why it is not (a sublayer composites *above* the view's drawing, so the
+    /// bubble would cover the bytes it is supposed to sit under).
+    func bounceFindIndicator() {
+        indicatorBounceStarted = Date().timeIntervalSinceReferenceDate
+        if indicatorDisplayLink == nil {
+            let link = displayLink(target: self, selector: #selector(stepIndicatorBounce))
+            link.add(to: .main, forMode: .common)
+            indicatorDisplayLink = link
+        }
+        redrawFindIndicatorRows()
+    }
+
+    /// A view that has left its window has no frame clock and nothing to
+    /// animate: the hop is dropped rather than left running against a display
+    /// link the window took with it.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { endIndicatorBounce() }
+    }
+
+    @objc private func stepIndicatorBounce() {
+        if indicatorBouncePhase() >= 1 { endIndicatorBounce() }
+        redrawFindIndicatorRows()
+    }
+
+    /// How far through the hop we are, 0...1; 1 when nothing is hopping.
+    private func indicatorBouncePhase() -> CGFloat {
+        if let forced = indicatorBouncePhaseForTests { return forced }
+        guard let started = indicatorBounceStarted else { return 1 }
+        let elapsed = Date().timeIntervalSinceReferenceDate - started
+        return CGFloat(min(max(elapsed / Self.indicatorBounceDuration, 0), 1))
+    }
+
+    private func endIndicatorBounce() {
+        indicatorDisplayLink?.invalidate()
+        indicatorDisplayLink = nil
+        indicatorBounceStarted = nil
+    }
+
+    /// Whether a hop is running, for tests.
+    var isBouncingFindIndicatorForTests: Bool { indicatorBounceStarted != nil }
+
+    /// Repaints the rows the indicator covers — the bounce's damage, and all of
+    /// it: the pop grows the bubble by a couple of points, which stays inside
+    /// the rows it already spans plus the padding around them.
+    private func redrawFindIndicatorRows() {
+        guard let rect = indicatorDamageRect() else {
+            setNeedsDisplay(bounds)
+            return
+        }
+        setNeedsDisplay(rect)
+    }
+
+    /// Everything the find indicator can paint over during a hop: the rows its
+    /// match crosses, grown by the plate's own growth at the top of the hop and
+    /// by the furthest its shadow can then reach.
+    ///
+    /// The generous margin is the fix for a real artifact, not caution. The
+    /// plate is drawn during whatever repaint is in flight — often a full one,
+    /// the first time a match is shown after the view has scrolled — so its peak
+    /// shadow lands wherever it reaches, while the frames that follow only
+    /// invalidated the rows plus a couple of points. On macOS 15 that left the
+    /// outer ring of the peak shadow on screen for good: a second, larger
+    /// shadow around the settled plate. Nil when there is no current match.
+    func indicatorDamageRect() -> NSRect? {
+        guard let match = dataSource?.hexCurrentMatch(), match.lowerBound < match.upperBound
+        else { return nil }
+        let layout = currentLayout
+        let firstRow = Int(match.lowerBound / UInt64(HexLayout.bytesPerRow))
+        let lastRow = Int((match.upperBound - 1) / UInt64(HexLayout.bytesPerRow))
+        let rows = layout.rowFrame(row: firstRow).union(layout.rowFrame(row: lastRow))
+        // At the top of the hop the plate is `indicatorLiftScale` bigger about
+        // its own centre, so each edge moves out by half of that.
+        let growth = Self.indicatorLiftScale / 2
+        let peak = Self.indicatorElevation(atLift: 1)
+        let reach = max(peak.ambient.blur + abs(peak.ambient.offset.width),
+                        peak.key.blur + max(abs(peak.key.offset.width),
+                                            abs(peak.key.offset.height)))
+        return rows.insetBy(dx: -(rows.width * growth + reach + Self.mirrorContourPadding),
+                            dy: -(rows.height * growth + reach + Self.mirrorContourPadding))
+    }
+
+    /// Fills the selection for one row, leaving out the columns the find
+    /// indicator covers (§11).
+    ///
+    /// Find Next selects the match it lands on, so the two coincide — and the
+    /// yellow plate is the statement about that range. Painting the blue under
+    /// it is not only redundant: the plate *rises* during its hop, and the blue
+    /// peeked out from under it like a misdrawn edge.
     private func drawSelectionFill(row: Int, rowStart: UInt64, rowEnd: UInt64,
                                    selection: SelectionModel, layout: HexLayout,
-                                   drawsHex: Bool, drawsAscii: Bool) {
+                                   drawsHex: Bool, drawsAscii: Bool,
+                                   skipping indicatorColumns: Range<Int>? = nil) {
         let selStart = max(selection.start, rowStart)
         let selEnd = min(selection.end, rowEnd)
         guard selStart < selEnd else { return }
@@ -1209,17 +1630,41 @@ final class HexView: NSView, NSViewToolTipOwner {
         let lastColumn = Int(selEnd - rowStart) - 1
         let rowFrame = layout.rowFrame(row: row)
         HexTheme.selectionFill.setFill()
-        if drawsHex {
-            let hexLeft = layout.hexByteX(column: firstColumn)
-            let hexRight = layout.hexByteX(column: lastColumn) + layout.hexByteWidth
-            NSBezierPath(rect: CGRect(x: hexLeft, y: rowFrame.minY,
-                                      width: hexRight - hexLeft, height: layout.rowHeight)).fill()
+
+        // The row's selected columns, minus the indicator's — at most two runs.
+        var runs: [ClosedRange<Int>] = [firstColumn...lastColumn]
+        if let indicatorColumns {
+            runs = runs.flatMap { run -> [ClosedRange<Int>] in
+                let cut = indicatorColumns
+                guard cut.lowerBound <= run.upperBound, cut.upperBound > run.lowerBound else {
+                    return [run]
+                }
+                var parts: [ClosedRange<Int>] = []
+                if run.lowerBound < cut.lowerBound {
+                    parts.append(run.lowerBound...(cut.lowerBound - 1))
+                }
+                if run.upperBound > cut.upperBound - 1 {
+                    parts.append(cut.upperBound...run.upperBound)
+                }
+                return parts
+            }
         }
-        if drawsAscii {
-            let asciiLeft = layout.asciiX(column: firstColumn)
-            let asciiRight = layout.asciiX(column: lastColumn) + layout.charWidth
-            NSBezierPath(rect: CGRect(x: asciiLeft, y: rowFrame.minY,
-                                      width: asciiRight - asciiLeft, height: layout.rowHeight)).fill()
+
+        for run in runs {
+            if drawsHex {
+                let hexLeft = layout.hexByteX(column: run.lowerBound)
+                let hexRight = layout.hexByteX(column: run.upperBound) + layout.hexByteWidth
+                NSBezierPath(rect: CGRect(x: hexLeft, y: rowFrame.minY,
+                                          width: hexRight - hexLeft,
+                                          height: layout.rowHeight)).fill()
+            }
+            if drawsAscii {
+                let asciiLeft = layout.asciiX(column: run.lowerBound)
+                let asciiRight = layout.asciiX(column: run.upperBound) + layout.charWidth
+                NSBezierPath(rect: CGRect(x: asciiLeft, y: rowFrame.minY,
+                                          width: asciiRight - asciiLeft,
+                                          height: layout.rowHeight)).fill()
+            }
         }
     }
 
@@ -1306,10 +1751,8 @@ final class HexView: NSView, NSViewToolTipOwner {
             span = mirrored
         }
         let layout = currentLayout
-        return [
-            contour(of: span, layout: layout, region: .hex),
-            contour(of: span, layout: layout, region: .ascii),
-        ]
+        return contour(of: span, layout: layout, region: .hex)
+            + contour(of: span, layout: layout, region: .ascii)
     }
 
     /// The closed contour of `span` in one column region. The hex column pads
@@ -1318,7 +1761,7 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// neighbor glyph. The single source of contour geometry for both the
     /// opposite-pane mirror and the active pane's cross-column link.
     private func contour(of span: SelectionModel, layout: HexLayout,
-                         region: HexInputRegion) -> [CGPoint] {
+                         region: HexInputRegion) -> [[CGPoint]] {
         switch region {
         case .hex:
             let wordSize = layout.wordSize
@@ -1343,7 +1786,7 @@ final class HexView: NSView, NSViewToolTipOwner {
     private func contour(of selection: SelectionModel, layout: HexLayout,
                          x: @escaping (Int) -> CGFloat, width: CGFloat,
                          padLeft: @escaping (Int) -> Bool,
-                         padRight: @escaping (Int) -> Bool) -> [CGPoint] {
+                         padRight: @escaping (Int) -> Bool) -> [[CGPoint]] {
         let pad = Self.mirrorContourPadding
         // Left edge of a selected column, padded outward when a spacer precedes
         // the cell.
@@ -1366,6 +1809,28 @@ final class HexView: NSView, NSViewToolTipOwner {
                 CGPoint(x: right(lastCol), y: bottomY),
                 CGPoint(x: left(firstCol), y: bottomY),
             ]
+        } else if firstRow + 1 == lastRow, lastCol < firstCol {
+            // Two rows whose parts share no column — a span that starts in the
+            // right of one row and ends in the left of the next. There is no
+            // staircase to trace here: the outline is two separate rectangles,
+            // and joining them produced a line running back across the row
+            // boundary between them, which outlined nothing at all.
+            let firstBottomY = layout.rowFrame(row: firstRow).maxY
+            let lastTopY = layout.rowFrame(row: lastRow).minY
+            return [
+                deduplicated([
+                    CGPoint(x: left(firstCol), y: topY),
+                    CGPoint(x: right(HexLayout.bytesPerRow - 1), y: topY),
+                    CGPoint(x: right(HexLayout.bytesPerRow - 1), y: firstBottomY),
+                    CGPoint(x: left(firstCol), y: firstBottomY),
+                ]),
+                deduplicated([
+                    CGPoint(x: left(0), y: lastTopY),
+                    CGPoint(x: right(lastCol), y: lastTopY),
+                    CGPoint(x: right(lastCol), y: bottomY),
+                    CGPoint(x: left(0), y: bottomY),
+                ]),
+            ]
         } else {
             // Several rows with a partial first/last row: the right edge steps
             // in at the last row and the left edge steps in at the first row.
@@ -1382,7 +1847,7 @@ final class HexView: NSView, NSViewToolTipOwner {
                 CGPoint(x: left(firstCol), y: firstBottomY),
             ]
         }
-        return deduplicated(points)
+        return [deduplicated(points)]
     }
 
     /// Drops vertices that aren't corners, so the polygon stays the minimal
@@ -1446,7 +1911,8 @@ final class HexView: NSView, NSViewToolTipOwner {
         guard offset < fileSize else { return [] }
         let span = SelectionModel(start: offset, end: offset + 1, fileSize: fileSize)
         let region: HexInputRegion = dataSource.hexInputRegion() == .ascii ? .hex : .ascii
-        return contour(of: span, layout: currentLayout, region: region)
+        // A single byte is always one loop.
+        return contour(of: span, layout: currentLayout, region: region).first ?? []
     }
 
     /// Draws the active pane's cross-column link (§3.3).
@@ -1896,6 +2362,32 @@ final class HexView: NSView, NSViewToolTipOwner {
         setNeedsDisplay(layout.rowFrame(row: row))
     }
 
+    /// Redraws the rows a growing search index has just covered — and only
+    /// those, and only when they are on screen.
+    ///
+    /// A scan indexing a sixteen-megabyte dump publishes what it has found a
+    /// window at a time (§11). Most of those windows are nowhere near the rows
+    /// the user is reading: repainting the dump for each of them would spend
+    /// the whole scan redrawing bytes whose greys did not change. Returns
+    /// whether anything was marked dirty, which is what the test asserts.
+    @discardableResult
+    func reloadMatches(in range: Range<UInt64>) -> Bool {
+        guard !range.isEmpty else { return false }
+        let visible = visibleByteRange()
+        // The rows themselves, not the bytes: a match reaching into a row greys
+        // cells on it, so the row is the unit of damage.
+        guard !visible.isEmpty, range.lowerBound < visible.upperBound,
+              visible.lowerBound < range.upperBound else { return false }
+        let layout = currentLayout
+        let bytesPerRow = UInt64(HexLayout.bytesPerRow)
+        let first = Int(max(range.lowerBound, visible.lowerBound) / bytesPerRow)
+        let last = Int((min(range.upperBound, visible.upperBound) - 1) / bytesPerRow)
+        for row in first...last {
+            setNeedsDisplay(layout.rowFrame(row: row))
+        }
+        return true
+    }
+
     /// The single "centre an offset" primitive: scrolls so the row containing
     /// `offset` is at the vertical centre of the visible area (clamped to the
     /// document's edges), so the byte is shown mid-pane rather than at its top
@@ -1992,6 +2484,25 @@ final class HexView: NSView, NSViewToolTipOwner {
         guard abs(originY - clip.bounds.origin.y) > 0.5 else { return }
         clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: originY))
         scroll.reflectScrolledClipView(clip)
+    }
+
+    /// Reveals the current selection the way the caret is revealed by a
+    /// navigation command (§10.4): if it is already fully on screen the view
+    /// does not move at all, and only a selection that is off screen (or half
+    /// off it) is centred.
+    ///
+    /// This is what a step through the search's matches uses (§11): pressing
+    /// Find Next on a match two rows down should move the highlight, not the
+    /// page under it.
+    func revealSelectionCenteredIfNeeded() {
+        guard let dataSource else { return }
+        let selection = dataSource.hexSelection()
+        let first = selection.start
+        let last = selection.isEmpty ? selection.start : selection.end - 1
+        // Both ends, because a match can straddle a row boundary and a match
+        // hanging over the viewport's edge is not "visible".
+        guard !(isRowVisible(containing: first) && isRowVisible(containing: last)) else { return }
+        revealSelectionCentered()
     }
 
     /// Scrolls the current selection (or the caret when there is none) to the
@@ -2750,6 +3261,42 @@ enum HexTheme {
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
             ? NSColor.systemOrange.withAlphaComponent(0.45)
             : NSColor.systemOrange.withAlphaComponent(0.35)
+    }
+
+    /// Every occurrence of the current search pattern (§11): the platform's own
+    /// unfocused-selection grey — what a selection looks like in a view that
+    /// does not have focus, which is exactly the statement being made ("a match,
+    /// but not the one you are standing on"). It is the grey Xcode puts behind
+    /// the other occurrences, and it is opaque, so it covers the segment tint —
+    /// correct per §6, where a byte's state outranks which piece it belongs to.
+    static let matchFill = NSColor.unemphasizedSelectedTextBackgroundColor
+
+    /// The current match — the find indicator (§11). `findHighlightColor` is
+    /// the platform's own: what `NSTextView.showFindIndicator(for:)` flashes,
+    /// and the yellow Xcode marks the current occurrence with. It is pure yellow
+    /// and **the same in both appearances**, which is why the ink over it is
+    /// forced below rather than left to `labelColor`.
+    static let findIndicatorFill = NSColor.findHighlightColor
+    /// The shadow under the bubble — the only thing that makes the yellow read
+    /// as raised, since the platform's own indicator has no outline and a dark
+    /// rim around yellow reads as a box drawn on the text. A fixed black, not a
+    /// semantic colour: it falls on a fixed yellow, so it must not follow the
+    /// appearance.
+    static let indicatorShadow = NSColor.black
+
+    /// Ink for a byte inside the find indicator. Black, per Apple's own
+    /// instruction for `findHighlightColor` — in dark mode `labelColor` would be
+    /// white on yellow. A **modified** byte keeps its red: an unsaved edit is
+    /// data-integrity information, red on yellow still reads as red, and losing
+    /// it because the caret happens to be there would be the worse trade. The
+    /// muted `0x00`/`0xFF` dimming is dropped — 40 % label on yellow is a smear.
+    static let indicatorInk = NSColor.black
+    /// A placeholder character in the decoded-text column, inside the
+    /// indicator: dimmed black rather than dimmed label, for the same reason.
+    static let mutedIndicatorInk = NSColor.black.withAlphaComponent(0.45)
+
+    static func indicatorTextColor(for state: HexByteState) -> NSColor {
+        state.isModified ? modifiedText : indicatorInk
     }
 
     static let selectionFill = NSColor(name: nil) { appearance in

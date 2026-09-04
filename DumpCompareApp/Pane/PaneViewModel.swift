@@ -277,6 +277,185 @@ final class PaneViewModel: HexViewDataSource {
     /// `FilePaneView.bind`.
     var onBookmarksChanged: ((UInt64) -> Void)?
 
+    // MARK: - Find highlighting (§11)
+
+    /// Where every occurrence of the active search pattern is: the set one scan
+    /// produced, read by the dump's greys, the find indicator, the count in the
+    /// Find bar, the results panel and both minimap modes
+    /// (`Design/FIND_HIGHLIGHT_PLAN.md`). Nil until a search has been run, and
+    /// again once one is invalidated — but *not* when its highlighting merely
+    /// ended: a completed search survives `Done` so the results panel can go on
+    /// listing it (§11, `highlightsMatches`).
+    ///
+    /// It belongs to the pane that was searched, and to no other: greys in a
+    /// file nobody searched would be a plain lie in comparison mode.
+    private(set) var matchSet: MatchSet?
+
+    /// The match the user is standing on — what the find indicator draws in
+    /// yellow. Nil between activating a search and the first Find Next,
+    /// whenever the caret has left the matches behind, and once the
+    /// highlighting has ended.
+    ///
+    /// A **range**, not an ordinal. The answer to a search is a match, found by
+    /// a scan from the caret in about a millisecond; which number it is among
+    /// all the others is something only a finished index can say, and the index
+    /// of a common byte takes seconds to build (§11). So the plate never waits
+    /// for one.
+    private(set) var currentMatch: Range<UInt64>?
+
+    /// The find indicator's byte range, or nil when the caret is not on a match.
+    var currentMatchRange: Range<UInt64>? { currentMatch }
+
+    /// Which match the indicator is on, one less than the "3" in "3 of 128" —
+    /// asked of the index, and only of a finished one: an ordinal out of a
+    /// half-built index would climb as the scan ran.
+    ///
+    /// Nil, too, for a match the index does not start on. A scan from the caret
+    /// and a scan from the file's start agree everywhere except inside a run of
+    /// the pattern overlapping itself, where they group the run differently.
+    /// Both are true occurrences, and the one the user was shown keeps the
+    /// plate; it has no ordinal until the next step lands on an indexed match.
+    var currentMatchIndex: Int? {
+        guard let currentMatch, let matchSet, matchSet.isComplete else { return nil }
+        return matchSet.index(startingAt: currentMatch.lowerBound)
+    }
+
+    /// Whether the set is being *shown*: greys in the dump, marks on the map,
+    /// a count in the bar. A completed search outlives its highlighting —
+    /// `Done`, Escape and a pattern being retyped end the showing and keep the
+    /// set, which is what lets the results panel go on listing a search the
+    /// dump has stopped advertising (§11). Only an invalidation drops the set
+    /// itself.
+    private(set) var highlightsMatches = false
+
+    /// Fired when anything about the search's *appearance* changed — a new set,
+    /// a dropped one, the highlighting coming or going, the indicator stepping
+    /// — so the dump repaints, the map re-reads and the Find bar's count
+    /// refreshes. Not a content channel: no byte moved, and nothing here may
+    /// scroll.
+    var onMatchesChanged: (() -> Void)?
+
+    /// Fired only when the *set* was replaced or dropped, which is the only
+    /// thing that changes what the results panel lists. Separate from
+    /// `onMatchesChanged` on purpose: the dependency runs one way — a row
+    /// picked in the panel moves the indicator in the dump, and the indicator
+    /// moving must not reach back into the panel, whose table would drop the
+    /// selection the click just gave it (§11).
+    var onMatchSetChanged: (() -> Void)?
+
+    /// Fired when the running search's index grew, carrying the stretch of file
+    /// it now covers that it did not before. Its own channel because its
+    /// consequences are narrow: the dump repaints that stretch rather than all
+    /// of it, since a scan filling in a file's tail must not repaint the rows
+    /// the user is reading (§11).
+    var onMatchesFilled: ((Range<UInt64>) -> Void)?
+
+    /// The set as far as everything that *draws* it is concerned: nil once the
+    /// highlighting ended, even though the set is still there for the results
+    /// panel to list (§11).
+    var highlightedMatchSet: MatchSet? { highlightsMatches ? matchSet : nil }
+
+    /// Installs a scan's result, and shows it: a search was just activated.
+    /// `current` is read against the set, so a stale ordinal from a previous
+    /// pattern can never point past the new one.
+    func setMatches(_ set: MatchSet?, current: Int? = nil) {
+        matchSet = set
+        currentMatch = current.flatMap { set?.range(at: $0) }
+        highlightsMatches = set != nil
+        onMatchSetChanged?()
+        onMatchesChanged?()
+    }
+
+    /// The same search's index reached further into the file: `filled` is the
+    /// stretch it now covers that it did not before (§11).
+    ///
+    /// Not a new session and not a moved plate — the greys grow, the rows grow,
+    /// the count and the marks follow, and the dump repaints `filled` alone.
+    /// Ignored when the pane has moved on to another search since the scan
+    /// started: a batch from a superseded scan has nothing to say about this
+    /// one.
+    func fillMatches(_ set: MatchSet, filled: Range<UInt64>) {
+        guard let existing = matchSet, existing.pattern == set.pattern,
+              existing.folding == set.folding else { return }
+        matchSet = set
+        onMatchesFilled?(filled)
+    }
+
+    /// Shows the set the pane already holds — the greys and the plate come
+    /// back, on `current` when one is named (a row picked out of the results
+    /// panel names one; a step through the set computes its own).
+    ///
+    /// Unconditionally announced, unlike `setCurrentMatch`: the same match can
+    /// be picked twice, and the second pick is the one that has to turn the
+    /// highlighting back on.
+    func highlightMatches(current index: Int? = nil) {
+        guard let matchSet else { return }
+        highlightsMatches = true
+        if let index { currentMatch = matchSet.range(at: index) }
+        onMatchesChanged?()
+    }
+
+    /// The same, for a match found by a scan rather than picked out of the
+    /// index: what a search does before its index exists, and what the fallback
+    /// scan does for a set too large to hold positions for (§11).
+    func highlightMatches(onMatch range: Range<UInt64>) {
+        guard matchSet != nil else { return }
+        highlightsMatches = true
+        currentMatch = range
+        onMatchesChanged?()
+    }
+
+    /// Ends the showing and keeps the set (§11): the dump, the map and the
+    /// count go quiet, while the results panel keeps listing the search that
+    /// was actually run. The indicator's ordinal goes with the greys — nothing
+    /// remembers it, because every way back in (a step, a picked row) says
+    /// which match it wants.
+    func endMatchHighlighting() {
+        guard highlightsMatches || currentMatch != nil else { return }
+        highlightsMatches = false
+        currentMatch = nil
+        onMatchesChanged?()
+    }
+
+    /// Moves the find indicator. Out-of-range indices clear it rather than
+    /// throwing: navigation asks for "the next one", and past the end there is
+    /// no next one.
+    func setCurrentMatch(_ index: Int?) {
+        let range = index.flatMap { matchSet?.range(at: $0) }
+        guard range != currentMatch else { return }
+        currentMatch = range
+        onMatchesChanged?()
+    }
+
+    /// Drops the set itself: no matches, no greys, no indicator, nothing left
+    /// for the results panel to list. This is invalidation — the offsets
+    /// stopped being true — not the end of a session (§11).
+    func clearMatches() {
+        guard matchSet != nil || currentMatch != nil || highlightsMatches else { return }
+        matchSet = nil
+        currentMatch = nil
+        highlightsMatches = false
+        onMatchSetChanged?()
+        onMatchesChanged?()
+    }
+
+    /// The matches overlapping `range` — what the dump asks for per row range,
+    /// and the map for its window. Empty when there is no session, and when the
+    /// set is too large to hold positions for (the greys are withheld then, and
+    /// the Find bar says why).
+    func matchRanges(intersecting range: Range<UInt64>) -> [Range<UInt64>] {
+        guard let matchSet = highlightedMatchSet, matchSet.isHighlightable else { return [] }
+        return matchSet.matches(intersecting: range)
+    }
+
+    /// Whether this pane's set answers for `pattern` under `folding` — the test
+    /// for "the same search", which decides whether a press of Find Next is an
+    /// index step or a new scan.
+    func hasMatches(for pattern: SearchPattern, folding: CaseFolding) -> Bool {
+        guard let matchSet else { return false }
+        return matchSet.pattern == pattern && matchSet.folding == folding
+    }
+
     /// The active text decoder, rebuilt whenever decoding settings change.
     private(set) var textDecoder: any TextDecoder
 
@@ -357,6 +536,8 @@ final class PaneViewModel: HexViewDataSource {
         resetEditingState()
         // A new file is one piece — itself — named after the file (§21).
         resetSegments(for: doc)
+        // The matches belonged to the file that was here (§11).
+        clearMatches()
         startWatching(url)
         // Opening a new file replaces the storage wholesale, like a revert —
         // the comparison must re-read, even when the mode is unchanged (both
@@ -389,6 +570,7 @@ final class PaneViewModel: HexViewDataSource {
         resetEditingState()
         // A new (empty) file is one piece, named after the (placeholder) file.
         resetSegments(for: doc)
+        clearMatches()
         changeWatcher?.stop()
         changeWatcher = nil
         // A new document replaces the storage wholesale, like a revert — the
@@ -462,6 +644,8 @@ final class PaneViewModel: HexViewDataSource {
         // above keeps the reset's hooks — it only replaces the partition, which
         // is valid unchanged because the two contents have the same size.
         segmentStore.restore(source.segmentStore.snapshot())
+        // The copy is a different document: it was never searched.
+        clearMatches()
         changeWatcher?.stop()
         changeWatcher = nil
         // A new document replaces the storage wholesale, like a revert — the
@@ -484,6 +668,8 @@ final class PaneViewModel: HexViewDataSource {
         resetEditingState()
         // The segments go with the file (§21 edge cases); nothing is persisted.
         segmentStore.reset(size: 0, name: "")
+        // So does the search session: there is nothing left to highlight (§11).
+        clearMatches()
         segmentUndoStack.removeAll()
         segmentRedoStack.removeAll()
         pendingSegmentSnapshot = nil
@@ -537,6 +723,8 @@ final class PaneViewModel: HexViewDataSource {
         // The partition survives the revert, re-based onto the saved size (§21.2)
         // — the cuts and names the user set up are kept, not reset to one piece.
         preserveSegments(for: doc)
+        // The matches do not: a revert replaces the bytes they were found in.
+        clearMatches()
         notify()
         notifyCompanionContentFullyChanged()
     }
@@ -803,6 +991,14 @@ final class PaneViewModel: HexViewDataSource {
     /// for the row's background tint (§21.3). Empty when the pane is one piece
     /// (no cuts): a single colour over a whole file is noise, and the readout
     /// appearing at all is the signal that the dump is partitioned.
+    func hexMatchRanges(in range: Range<UInt64>) -> [Range<UInt64>] {
+        matchRanges(intersecting: range)
+    }
+
+    func hexCurrentMatch() -> Range<UInt64>? {
+        currentMatchRange
+    }
+
     func hexSegmentSpans(in range: Range<UInt64>) -> [HexSegmentSpan] {
         // One partition value per paint job: the whole drawn range tints from a
         // single `current`, so the page cannot split across two boundaries if a

@@ -490,6 +490,12 @@ final class MainViewController: NSViewController {
     /// The active search operation, surfaced in the active pane's status bar
     /// while a search runs (§14.4).
     private var findOperation: BackgroundOperation?
+    /// The background index of every occurrence, and the operation that shows
+    /// its progress. Separate from `findTask` on purpose: a press of ‹ › while
+    /// the index is still building runs its own scan, and cancelling the index
+    /// to do so would mean it never finished (§11).
+    private var indexTask: Task<Void, Never>?
+    private var indexOperation: BackgroundOperation?
     /// The in-flight segment write (Save All / Save Segment, §21.5), surfaced in
     /// the active pane's status bar while it runs, like a search (§14.4).
     private var segmentWriteTask: Task<Void, Never>?
@@ -532,7 +538,6 @@ final class MainViewController: NSViewController {
     /// × must stop that search. Nil once the Search All task ends, so closing a
     /// stale panel (an already-completed search, or the other pane's) never
     /// cancels an unrelated search (§11).
-    private weak var searchAllPane: FilePaneView?
     /// Reacts to the Layout settings tab changing the default direction: an open
     /// comparison re-lays out live, like the Word Size/Appearance settings (§6).
     private var layoutSettingsObserver: NSObjectProtocol?
@@ -644,13 +649,20 @@ final class MainViewController: NSViewController {
             self?.runSearch(pattern: pattern, direction: direction, caseSensitive: caseSensitive)
         }
         findBar.onSearchAll = { [weak self] pattern, caseSensitive in
-            self?.runSearchAll(pattern: pattern, caseSensitive: caseSensitive)
+            self?.toggleSearchResults(pattern: pattern, caseSensitive: caseSensitive)
         }
         findBar.onError = { [weak self] message in
             self?.showFindMessage(message)
         }
         findBar.onClose = { [weak self] in
             self?.hideFindBar()
+        }
+        // A pattern being typed describes no search yet, so the one that was
+        // running stops being shown — count and greys together (§11). Its set
+        // stays: the file has not moved under it, so a results panel listing it
+        // is still telling the truth, until the next search replaces it.
+        findBar.onPatternEdited = { [weak self] in
+            self?.activePane.endMatchHighlighting()
         }
         view.addSubview(findBar)
 
@@ -748,6 +760,12 @@ final class MainViewController: NSViewController {
         minimapView.byteStates = { [weak self] mapIndex, range in
             self?.minimapByteStates(mapIndex: mapIndex, range: range) ?? []
         }
+        minimapView.matchRanges = { [weak self] mapIndex, range in
+            self?.minimapMatchRanges(mapIndex: mapIndex, range: range) ?? []
+        }
+        minimapView.currentMatchRange = { [weak self] mapIndex in
+            self?.minimapCurrentMatch(mapIndex: mapIndex)
+        }
         minimapView.onScrollToOffset = { [weak self] offset in
             self?.scrollPanesToOffset(offset)
         }
@@ -829,14 +847,12 @@ final class MainViewController: NSViewController {
             self?.openSegmentsForm?.reloadSegments()
             self?.syncMinimapSegments()
         }
-        // The panes are about to be rebuilt, so an in-flight Search All would
-        // stream into an orphaned view (and its × would be gone). Stop it here:
-        // `hideFindBar` deliberately leaves a Search All running (§11).
-        if searchAllPane != nil {
-            findTask?.cancel()
-            findOperation?.finish()
-            searchAllPane = nil
-        }
+        // The panes are about to be rebuilt, so a scan in flight would land its
+        // set in a pane that is going away.
+        findTask?.cancel()
+        findOperation?.finish()
+        endIndexing()
+        findBar.setResultsShown(false)
         // Panes are rebuilt on every apply, so the viewport mirrors must start
         // empty and fill in as the new panes report their visible ranges (§19).
         minimapViewports.removeAll()
@@ -888,9 +904,12 @@ final class MainViewController: NSViewController {
             wireBookmarkDoubleClick(pane, for: paneModel)
             // Close button: closing the last file returns to empty mode (§3.5).
             pane.onClose = { [weak self] in self?.closePane(at: 0) }
-            // Closing the Search All panel stops the in-flight search (§11).
-            pane.onSearchResultsClose = { [weak self] pane in
-                self?.cancelSearchAll(from: pane)
+            // The panel closed itself; the bar's toggle follows (§11).
+            pane.onSearchResultsClose = { [weak self] _ in
+                self?.findBar.setResultsShown(false)
+            }
+            pane.onMatchesChanged = { [weak self] in
+                self?.searchAppearanceChanged()
             }
             // The minimap's single map mirrors this pane: edits rebuild its
             // cells, a moved caret moves the selection overlay, and scrolling
@@ -898,10 +917,12 @@ final class MainViewController: NSViewController {
             trackMinimapViewport(for: pane)
             paneModel.onEdit = { [weak self] edit in
                 self?.repaintMinimap(after: edit, mapIndex: 0)
+                self?.invalidateMatches(in: paneModel)
             }
             paneModel.onFullInvalidation = { [weak self] in
                 self?.minimapView.invalidateCells()
                 self?.refreshMinimapMaps()
+                self?.invalidateMatches(in: paneModel)
             }
             // A save moves the on-disk reference, so the map's red cells have to
             // clear even though no byte changed (§19).
@@ -1020,11 +1041,17 @@ final class MainViewController: NSViewController {
             pane1View.onClose = { [weak self] in self?.closePane(at: 0) }
             pane2View.onClose = { [weak self] in self?.closePane(at: 1) }
             // Closing a pane's Search All panel stops that search (§11).
-            pane1View.onSearchResultsClose = { [weak self] pane in
-                self?.cancelSearchAll(from: pane)
+            pane1View.onSearchResultsClose = { [weak self] _ in
+                self?.findBar.setResultsShown(false)
             }
-            pane2View.onSearchResultsClose = { [weak self] pane in
-                self?.cancelSearchAll(from: pane)
+            pane2View.onSearchResultsClose = { [weak self] _ in
+                self?.findBar.setResultsShown(false)
+            }
+            pane1View.onMatchesChanged = { [weak self] in
+                self?.searchAppearanceChanged()
+            }
+            pane2View.onMatchesChanged = { [weak self] in
+                self?.searchAppearanceChanged()
             }
 
             activeFilePane = windowModel.activePaneIndex == 0 ? pane1View : pane2View
@@ -1060,20 +1087,24 @@ final class MainViewController: NSViewController {
         windowModel.pane1.onEdit = { [weak self] edit in
             self?.comparisonCoordinator.record(edit: edit)
             self?.repaintMinimap(after: edit, mapIndex: 0)
+            self?.invalidateMatches(in: self?.windowModel.pane1)
         }
         windowModel.pane2.onEdit = { [weak self] edit in
             self?.comparisonCoordinator.record(edit: edit)
             self?.repaintMinimap(after: edit, mapIndex: 1)
+            self?.invalidateMatches(in: self?.windowModel.pane2)
         }
         windowModel.pane1.onFullInvalidation = { [weak self] in
             self?.comparisonCoordinator.rebuild()
             self?.minimapView.invalidateCells()
             self?.refreshMinimapMaps()
+            self?.invalidateMatches(in: self?.windowModel.pane1)
         }
         windowModel.pane2.onFullInvalidation = { [weak self] in
             self?.comparisonCoordinator.rebuild()
             self?.minimapView.invalidateCells()
             self?.refreshMinimapMaps()
+            self?.invalidateMatches(in: self?.windowModel.pane2)
         }
         // A save clears modified state without changing a byte, so the minimap's
         // red cells have to go even though the bytes stayed put (§19).
@@ -1357,6 +1388,9 @@ final class MainViewController: NSViewController {
             updateOverviewAvailability()
             updateMinimapViewports()
             rebuildOverview()
+            // The search's marks were not computed while the panel was closed
+            // (§11).
+            scheduleMinimapMatchSync()
         }
     }
 
@@ -1439,6 +1473,9 @@ final class MainViewController: NSViewController {
         // Navigation anchors on the active pane's caret — a pane switch can
         // change whether a next/previous block exists (§10.3).
         refreshDiffNavigation()
+        // The count describes the active pane's search, and the search belongs
+        // to the pane that was searched (§11).
+        refreshFindCount()
         // The typing mode is per pane (§7.6), so the toolbar's toggle follows
         // the pane the keys now go to (§24.2).
         revalidateToolbar()
@@ -1635,6 +1672,9 @@ final class MainViewController: NSViewController {
                 self.overviewPassTask = nil
                 guard !Task.isCancelled, self.minimapView.renderMode == .overview else { return }
                 self.minimapView.setOverviewSummaries(summaries)
+                // The row count the picture was built for is now the panel's,
+                // so the match bits are re-binned to match it (§11).
+                self.scheduleMinimapMatchSync()
                 self.overviewRebuildsCompleted += 1
             }
         }
@@ -1864,8 +1904,12 @@ final class MainViewController: NSViewController {
         var different = [UInt16](repeating: 0, count: rows.count)
         guard let storage = source.storage else { return (density, modified, different) }
 
+        // One mapping, shared with the search's match overlay: the two must
+        // land on the same cells or the map contradicts itself (§19.4.2).
+        let binning = OverviewBinning(extent: extent, rowCount: rowCount)
+
         /// The first byte of a row's slice of the file.
-        func start(ofRow row: Int) -> UInt64 { extent * UInt64(row) / UInt64(rowCount) }
+        func start(ofRow row: Int) -> UInt64 { binning.start(ofRow: row) }
 
         /// The cells one byte of a row's slice occupies, when the slice is
         /// thinner than the row's 16 cells: the byte is stretched over the cells
@@ -1878,26 +1922,12 @@ final class MainViewController: NSViewController {
         /// the last an empty byte range: the picture came out a pale field with
         /// the whole file collapsed into a stripe down its right edge (§19.4.2).
         func stretchedColumns(forByteAt index: UInt64, ofSpan span: UInt64) -> ClosedRange<Int> {
-            let effective = max(span, 1)
-            let clamped = min(index, effective - 1)
-            let first = Int(clamped * UInt64(columns) / effective)
-            let last = Int((clamped + 1) * UInt64(columns) / effective) - 1
-            return first...max(first, min(columns - 1, last))
+            binning.stretchedColumns(forByteAt: index, ofSpan: span)
         }
 
         /// The row a byte offset falls in, and the cells it occupies there.
         func cells(of offset: UInt64) -> (row: Int, columns: ClosedRange<Int>)? {
-            guard offset < extent else { return nil }
-            let row = Int(offset * UInt64(rowCount) / extent)
-            guard rows.contains(row) else { return nil }
-            let rowStart = start(ofRow: row)
-            let span = start(ofRow: row + 1) - rowStart
-            guard span >= UInt64(columns) else {
-                let index = offset > rowStart ? offset - rowStart : 0
-                return (row, stretchedColumns(forByteAt: index, ofSpan: span))
-            }
-            let column = Int(min(UInt64(columns - 1), (offset - rowStart) * UInt64(columns) / span))
-            return (row, column...column)
+            binning.cells(of: offset, within: rows)
         }
 
         // The byte range these rows cover, so the passes below read and scan
@@ -2032,28 +2062,7 @@ final class MainViewController: NSViewController {
         for block in source.differences?.blocks(in: windowStart..<windowEnd) ?? []
         where block.kind == .different {
             if shouldCancel() { return nil }
-            let range = block.range
-            let lower = max(range.lowerBound, windowStart)
-            let upper = min(range.upperBound, min(windowEnd, extent))
-            guard lower < upper, let first = cells(of: lower), let last = cells(of: upper - 1)
-            else { continue }
-            if first.row == last.row {
-                let from = min(first.columns.lowerBound, last.columns.lowerBound)
-                let to = max(first.columns.upperBound, last.columns.upperBound)
-                for column in from...to {
-                    different[first.row - rows.lowerBound] |= UInt16(1) << UInt16(column)
-                }
-                continue
-            }
-            for column in first.columns.lowerBound..<columns {
-                different[first.row - rows.lowerBound] |= UInt16(1) << UInt16(column)
-            }
-            if last.row > first.row + 1 {
-                for row in (first.row + 1)..<last.row { different[row - rows.lowerBound] = .max }
-            }
-            for column in 0...last.columns.upperBound {
-                different[last.row - rows.lowerBound] |= UInt16(1) << UInt16(column)
-            }
+            binning.mark(block.range, rows: rows, into: &different)
         }
 
         // A cell past this file's own end holds none of its bytes, so it can
@@ -2102,12 +2111,208 @@ final class MainViewController: NSViewController {
         return pane?.hexByteStates(in: range) ?? []
     }
 
+    /// Feeds the minimap the active search's matches for the rows it is
+    /// showing (§11), from the same set the dump paints from — the map cannot
+    /// disagree with the dump for the same reason its byte states cannot.
+    private func minimapMatchRanges(mapIndex: Int, range: Range<UInt64>) -> [Range<UInt64>] {
+        minimapPane(at: mapIndex)?.matchRanges(intersecting: range) ?? []
+    }
+
+    private func minimapCurrentMatch(mapIndex: Int) -> Range<UInt64>? {
+        minimapPane(at: mapIndex)?.currentMatchRange
+    }
+
     /// Hands the minimap the window's bookmarks (§19.4.3). The store is the one
     /// list both maps mark, so this is a straight copy — which rows a given map
     /// actually shows is the minimap's own geometry to decide, and the names come
     /// along because hovering a mark names it.
     private func syncMinimapBookmarks() {
         minimapView.setBookmarks(windowModel.bookmarkStore.bookmarks)
+    }
+
+    /// Hands the minimap the search's matches for the overview (§11).
+    ///
+    /// Derived from the pane's match set with the overview's own binning — the
+    /// same arithmetic the density picture uses, so a match lands on the cell
+    /// its bytes land in — and cheap enough to do on the main actor: a couple of
+    /// hundred bytes per map, no file read.
+    /// Asks for the map's match marks, later.
+    ///
+    /// The map is never on the critical path of a search: showing the match the
+    /// user asked for is the dump's job and the reveal's, and the marks beside
+    /// it are a summary that may as well arrive a frame afterwards. So this
+    /// only schedules — coalescing a burst of presses into one sync — and the
+    /// walk itself runs off the main thread (§11, §19).
+    private func scheduleMinimapMatchSync() {
+        // Nothing on the map is drawn while the panel is closed, so nothing is
+        // computed for it. Showing the panel is what asks
+        // (`minimapPanelVisibilityChanged`), and the forgotten picture makes
+        // that ask rebuild rather than trust what it last saw (§19).
+        guard minimapPanelVisible else {
+            syncedMatchPicture = nil
+            return
+        }
+        guard !minimapMatchSyncScheduled else { return }
+        minimapMatchSyncScheduled = true
+        Task { @MainActor [weak self] in
+            self?.minimapMatchSyncScheduled = false
+            await self?.syncMinimapMatchOverlays()
+        }
+    }
+
+    /// Hands the minimap the search's matches for the overview (§11).
+    ///
+    /// The state is read here, on the actor that owns it; the row walk that
+    /// turns a set into marks is pure arithmetic over `Sendable` values, so it
+    /// runs on a detached task and the result is installed on return. A picture
+    /// that has been overtaken while that ran is dropped: a newer sync is
+    /// already on its way.
+    private func syncMinimapMatchOverlays() async {
+        guard minimapPanelVisible else {
+            syncedMatchPicture = nil
+            return
+        }
+        let rowCount = minimapView.overviewRowCount()
+        let extent = currentFileSizes().max() ?? 0
+        let panes: [PaneViewModel?]
+        switch mode {
+        case .empty:
+            panes = []
+        case .singleFile:
+            panes = [windowModel.pane1]
+        case .comparison:
+            panes = [windowModel.pane1, windowModel.pane2]
+        }
+        guard rowCount > 0, extent > 0, !panes.isEmpty else {
+            minimapView.setMatchOverlays([])
+            syncedMatchPicture = nil
+            return
+        }
+        let binning = OverviewBinning(extent: extent, rowCount: rowCount)
+        let picture = MatchPicture(rowCount: rowCount, extent: extent,
+                                   sets: panes.map { MatchPicture.Marks($0?.highlightedMatchSet) })
+        if picture == syncedMatchPicture, minimapView.matchOverlays.count == panes.count {
+            // The same occurrences over the same geometry are the same strokes.
+            // Only the plate can have moved, and re-marking one range is the
+            // whole of that — this is the path a press of ‹ › takes, and it
+            // used to walk every row of the map instead (§11).
+            minimapView.setMatchOverlays(zip(minimapView.matchOverlays, panes).map { overlay, pane in
+                var moved = overlay
+                moved.current = Self.currentMatchMarks(pane?.currentMatchRange, binning: binning,
+                                                       rowCount: rowCount)
+                return moved
+            })
+            return
+        }
+        // The sets and the plates as values, so the walk needs nothing from the
+        // main actor.
+        let sets = panes.map { pane -> MatchSet? in
+            guard let pane, pane.isOpen else { return nil }
+            return pane.highlightedMatchSet
+        }
+        let currents = panes.map { $0?.currentMatchRange }
+        let generation = minimapMatchSyncGeneration + 1
+        minimapMatchSyncGeneration = generation
+        matchOverlayWalksForTesting += 1
+        let overlays = await Task.detached(priority: .utility) {
+            zip(sets, currents).map {
+                Self.matchOverlay(for: $0, current: $1, binning: binning,
+                                  rowCount: rowCount, extent: extent)
+            }
+        }.value
+        guard generation == minimapMatchSyncGeneration else { return }
+        syncedMatchPicture = picture
+        minimapView.setMatchOverlays(overlays)
+    }
+
+    /// What the overview's match strokes were last computed from: the geometry,
+    /// and each pane's set as far as the strokes can tell two sets apart.
+    ///
+    /// The set is not compared byte for byte — it is compared by the things the
+    /// picture is made of. Two sets with the same pattern, the same folding and
+    /// the same count over the same extent mark the same rows, so there is
+    /// nothing to redo; and while a search is being indexed the count is what
+    /// grows, so a batch still reads as a new picture.
+    private struct MatchPicture: Equatable {
+        struct Marks: Equatable {
+            let pattern: SearchPattern
+            let folding: CaseFolding
+            let total: Int
+
+            init?(_ set: MatchSet?) {
+                guard let set else { return nil }
+                pattern = set.pattern
+                folding = set.folding
+                total = set.total
+            }
+        }
+
+        let rowCount: Int
+        let extent: UInt64
+        let sets: [Marks?]
+    }
+
+    private var syncedMatchPicture: MatchPicture?
+
+    /// Whether a match sync is already queued for the next turn, so a run of
+    /// presses costs one walk rather than one per press.
+    private var minimapMatchSyncScheduled = false
+    /// Which sync is current: a walk that finished after a newer one started
+    /// has nothing to install.
+    private var minimapMatchSyncGeneration = 0
+
+    /// How many times the strokes have actually been walked. The point of the
+    /// picture check above is that this does not climb while the set stands
+    /// still, which is only observable as a count (§11).
+    private(set) var matchOverlayWalksForTesting = 0
+
+    /// One map's worth of match bits.
+    ///
+    /// Walks the **rows**, not the matches: a two-byte pattern in a dump has
+    /// hundreds of thousands of occurrences and the overview has a couple of
+    /// thousand rows, so per-match work would be the wrong way round. Each row
+    /// stops early once every column is marked or after `perRowMarkLimit`
+    /// matches — by then the row says all it can say at this scale.
+    private static func matchOverlay(for set: MatchSet?, current: Range<UInt64>?,
+                                     binning: OverviewBinning,
+                                     rowCount: Int, extent: UInt64) -> MinimapView.MatchOverlay {
+        guard let set, set.isHighlightable else { return .empty }
+        let perRowMarkLimit = 32
+        let rows = 0...(rowCount - 1)
+        let reach = UInt64(max(set.patternLength - 1, 0))
+        var matched = [UInt16](repeating: 0, count: rowCount)
+
+        for row in rows {
+            let rowStart = binning.start(ofRow: row)
+            let rowEnd = binning.start(ofRow: row + 1)
+            guard rowEnd > rowStart else { continue }
+            // A match starting just above the row can still reach into it.
+            let from = rowStart > reach ? rowStart - reach : 0
+            var index = set.index(atOrAfter: from)
+            var marks = 0
+            while let i = index, marks < perRowMarkLimit, matched[row] != .max {
+                guard let start = set.start(at: i), start < rowEnd else { break }
+                // The whole row range, not this one row: the marking indexes
+                // the bits from the range's start, and the masks are absolute.
+                binning.markHexColumns(start..<start + UInt64(set.patternLength),
+                                       rows: rows, into: &matched)
+                marks += 1
+                index = i + 1 < set.total ? i + 1 : nil
+            }
+        }
+        return MinimapView.MatchOverlay(
+            extent: extent, rowCount: rowCount, matched: matched,
+            current: currentMatchMarks(current, binning: binning, rowCount: rowCount))
+    }
+
+    /// The row bits for the find indicator alone — one range, so this is what a
+    /// step of ‹ › costs on the map.
+    private static func currentMatchMarks(_ range: Range<UInt64>?, binning: OverviewBinning,
+                                          rowCount: Int) -> [UInt16] {
+        var marks = [UInt16](repeating: 0, count: rowCount)
+        guard rowCount > 0, let range else { return marks }
+        binning.markHexColumns(range, rows: 0...(rowCount - 1), into: &marks)
+        return marks
     }
 
     /// Hands the minimap the open panes' segment partitions, so the strip beside
@@ -2148,6 +2353,9 @@ final class MainViewController: NSViewController {
         // partition follows — and a file that opened or closed changes which
         // panes have a partition at all.
         syncMinimapSegments()
+        // The overview's match bits are binned over the extent, so a file that
+        // grew or shrank re-bins them too (§11).
+        scheduleMinimapMatchSync()
         // An insert or a delete can carry the file across the line where the
         // overview stops magnifying it, so the offer follows the size as well as
         // the panel's height (§19.4). The *mode* is deliberately not re-decided
@@ -4741,6 +4949,7 @@ final class MainViewController: NSViewController {
         contentTopToView.isActive = false
         contentTopToFindBar.isActive = true
         findBar.isHidden = false
+        refreshFindCount()
         view.layoutSubtreeIfNeeded()
         findBar.prepareForShow()
     }
@@ -4749,22 +4958,225 @@ final class MainViewController: NSViewController {
         findBar.isHidden = true
         contentTopToFindBar.isActive = false
         contentTopToView.isActive = true
-        // A Search All outlives the bar: its results live in the pane's own
-        // panel, with its own × to stop it, so dismissing the bar must not wipe
-        // them (§11). A single find has nothing to leave behind, so it stops.
-        if searchAllPane == nil {
-            findTask?.cancel()
-            findOperation?.finish()
+        findTask?.cancel()
+        findOperation?.finish()
+        endIndexing()
+        // The highlighting ends with the bar, always: Done and Esc mean "I am
+        // finished searching", and greys left on the dump after that claim a
+        // search is still running. The *set* survives, so an open results panel
+        // goes on listing the search that was actually run — its offsets are
+        // still true — until an edit invalidates it or a new search replaces it
+        // (§11).
+        for pane in [windowModel.pane1, windowModel.pane2] {
+            pane.endMatchHighlighting()
         }
         focusActiveHexView()
     }
 
-    /// Launches a background search from the find bar. A new search cancels any
-    /// in-flight one (rapid < > presses), and the bar stays open — only the
-    /// selection moves (§11). The search runs as a `BackgroundOperation`, so
-    /// its name, progress and (×) appear in the active pane's status bar while
-    /// it runs and it can be cancelled (§14.4).
+    /// A press of Find Next / Find Previous (§11).
+    ///
+    /// The same pattern is not searched twice: a search keeps its index, so
+    /// every later press is a step through it — instant, and the reason a count
+    /// and wrapping are possible at all
+    /// (`Design/FIND_HIGHLIGHT_PLAN.md`). Only a *new* pattern (or an index the
+    /// file's own edits invalidated) costs a scan.
     private func runSearch(pattern: SearchPattern, direction: SearchDirection, caseSensitive: Bool) {
+        let pane = activePane
+        guard pane.isOpen else { return }
+        let folding = CaseFolding(encoding: pattern.encoding, caseSensitive: caseSensitive)
+        if pane.hasMatches(for: pattern, folding: folding) {
+            stepMatch(direction: direction, in: pane)
+            return
+        }
+        beginSearch(pattern: pattern, folding: folding, direction: direction, in: pane)
+    }
+
+    /// Activates a search: the match the user asked for, now; the index of
+    /// every other one, behind it (§11).
+    ///
+    /// The order is the whole point. A scan from the caret finds the first
+    /// occurrence in about a millisecond on a sixteen-megabyte dump, while
+    /// indexing every occurrence of a byte as common as `FF` in the same dump
+    /// takes about four seconds — so the index is not what shows a user their
+    /// match. It is what the count, the results panel, the map and O(1)
+    /// stepping are made of, and all four can arrive late.
+    ///
+    /// The empty index installed first is what makes the session exist from
+    /// this instant: a second press finds a search already under way and steps
+    /// within it instead of starting another.
+    private func beginSearch(pattern: SearchPattern, folding: CaseFolding,
+                             direction: SearchDirection, in pane: PaneViewModel) {
+        // The index first, because it is the slow one and the two scans read
+        // the same storage under its own lock, so they run side by side. It is
+        // also its own task: a press of ‹ › a moment later cancels the
+        // navigation scan, and must not take the index with it.
+        beginIndexing(pattern: pattern, folding: folding, in: pane)
+        findTask = Task { [weak self] in
+            guard let self else { return }
+            var found = await self.performFind(pattern: pattern, folding: folding,
+                                               direction: direction, in: pane)
+            if !found, !Task.isCancelled {
+                // The wrap: the scan started at the caret, so the other side of
+                // the file is where a lone match above it lives (§11).
+                let edge: UInt64 = direction == .forward ? 0 : pane.fileSize
+                found = await self.performFind(pattern: pattern, folding: folding,
+                                               direction: direction, in: pane, from: edge)
+            }
+            guard !Task.isCancelled, pane.isOpen, !found else { return }
+            // The bar says it, and keeps saying it: a pattern that occurs
+            // nowhere is a standing fact about what is in the field, not a
+            // message that fades while the field still holds it (§11).
+            self.handOffFocusAfterFind()
+        }
+    }
+
+    /// Starts a search's index without going anywhere: what the results button
+    /// asks for. Pressing it is not a Find Next, so the caret stays where it is
+    /// and the panel opens on the rows as they arrive (§11).
+    private func beginIndexing(pattern: SearchPattern, folding: CaseFolding,
+                               in pane: PaneViewModel) {
+        findTask?.cancel()
+        findOperation?.finish()
+        // An index covering nothing yet, so the session exists from this
+        // instant: a second press finds a search already under way and steps
+        // within it instead of starting another.
+        pane.setMatches(MatchSet(pattern: pattern, folding: folding,
+                                 extent: pane.fileSize, starts: [], indexedUpTo: 0))
+        startIndexing(pattern: pattern, folding: folding, in: pane)
+    }
+
+    /// Builds the index of every occurrence behind the answer, publishing it as
+    /// it fills (§11).
+    ///
+    /// Each instalment is a stretch of file the scan has covered: the greys for
+    /// it are exact, so the dump can paint them (and repaints only the rows the
+    /// user is actually looking at), the panel lists them, and the map marks
+    /// them. What waits for the end is everything that is about the *whole*
+    /// file — the count, the wrap, an ordinal, and stepping by index.
+    private func startIndexing(pattern: SearchPattern, folding: CaseFolding,
+                               in pane: PaneViewModel) {
+        endIndexing()
+        guard let storage = pane.document?.storage else { return }
+        // The one operation a search shows (§14.4). The first-hit scan runs
+        // without one: it is a millisecond on a dump this side of a gigabyte,
+        // and where it is not, this covers the same ground and reports the same
+        // progress. Cancelling it stops both.
+        let operation = BackgroundOperation(name: "Searching…") { [weak self] in
+            self?.indexTask?.cancel()
+            self?.findTask?.cancel()
+        }
+        indexOperation = operation
+        filePaneView(for: pane)?.beginOperation(operation)
+        let extent = storage.size
+        let chunkSize = Self.searchChunkSize
+        indexTask = Task { [weak self] in
+            let stream = SearchEngine.matchStartsStream(
+                pattern: pattern.bytes, in: storage, folding: folding, chunkSize: chunkSize,
+                shouldCancel: { Task.isCancelled },
+                progress: { operation.report($0) })
+            var builder = MatchSetBuilder(pattern: pattern, folding: folding, extent: extent)
+            var publishedUpTo: UInt64 = 0
+            var lastPublish = Date.distantPast
+            do {
+                for try await batch in stream {
+                    builder.add(batch.starts)
+                    // On a cadence, not per instalment: a common byte yields
+                    // thousands of them, and each publish copies the index's
+                    // representation.
+                    guard Date().timeIntervalSince(lastPublish) >= Self.indexPublishInterval,
+                          batch.scannedUpTo > publishedUpTo else { continue }
+                    let filled = publishedUpTo..<batch.scannedUpTo
+                    let snapshot = builder.snapshot(indexedUpTo: batch.scannedUpTo)
+                    publishedUpTo = batch.scannedUpTo
+                    lastPublish = Date()
+                    await MainActor.run { pane.fillMatches(snapshot, filled: filled) }
+                }
+            } catch {
+                // A failed read leaves the index where it got to: the search
+                // itself already answered, and the greys that landed are true.
+            }
+            let complete = !Task.isCancelled
+            await MainActor.run { [weak self] in
+                operation.finish()
+                self?.indexOperation = nil
+                self?.indexTask = nil
+                guard complete, pane.isOpen else { return }
+                pane.fillMatches(builder.finish(), filled: publishedUpTo..<max(publishedUpTo, extent))
+            }
+        }
+    }
+
+    /// Stops an index in flight — a new search, an edit, a closed bar.
+    private func endIndexing() {
+        indexTask?.cancel()
+        indexTask = nil
+        indexOperation?.finish()
+        indexOperation = nil
+    }
+
+    /// How often a half-built index is published. Often enough that the greys
+    /// follow the scan visibly, rarely enough that the copy each publish costs
+    /// stays a rounding error next to the scan itself.
+    static let indexPublishInterval: TimeInterval = 0.1
+
+    /// Moves to the next or previous match in the pane's set, wrapping at the
+    /// ends.
+    ///
+    /// Wrapping is possible because the set is complete: §11's rule that a
+    /// search never wraps existed because the scan was directional and could not
+    /// know whether anything lay behind the caret. A single match wraps onto
+    /// itself, and is deliberately re-selected and re-centred rather than
+    /// ignored — a press that does nothing reads as a broken key.
+    private func stepMatch(direction: SearchDirection, in pane: PaneViewModel) {
+        guard let set = pane.matchSet else { return }
+        // A half-built index with nothing in it yet is not "no matches": the
+        // scan may not have reached them. Only a finished one may say so.
+        guard set.total > 0 || !set.isComplete else { return }
+        // Find Next starts after the current selection (so it never re-selects
+        // the match just found); Find Previous starts at the selection's start
+        // (so it moves back). With no selection both anchor on the caret.
+        let selection = pane.hexSelection()
+        let from = selection.isEmpty ? pane.caretOffset
+            : direction == .forward ? selection.end : selection.start
+        guard set.isComplete, set.isHighlightable else {
+            // Either the index is still being built, or it is past the ceiling
+            // where positions were never kept. Both step by scanning — with a
+            // wrap, because a scan that finds nothing ahead has the file's
+            // other end to try (§11).
+            pane.highlightMatches()
+            runCountedSearch(set: set, direction: direction, in: pane)
+            return
+        }
+        let index: Int
+        switch direction {
+        case .forward:
+            index = set.index(atOrAfter: from) ?? 0
+        case .backward:
+            index = set.index(before: from) ?? set.total - 1
+        }
+        guard let range = set.range(at: index) else { return }
+        pane.select(range: range)
+        // A step is a search being shown again, which it may not have been: the
+        // set outlives its highlighting, so `Done` then Enter steps through the
+        // set the pane still holds and lights it back up (§11).
+        pane.highlightMatches(current: index)
+        // A match already on screen moves the highlight, not the page; one off
+        // screen is centred. The caret's own rule (§10.4) — and the reason a
+        // walk through a cluster of matches no longer jerks the view a row at a
+        // time.
+        filePaneView(for: pane)?.revealSelectionCenteredIfNeeded()
+        // The pop answers the key press — including when a lone match wraps
+        // onto itself, where no index changed (§11). Started *after* the
+        // reveal, so its first frame is never drawn into a pass a scroll is
+        // still rearranging.
+        filePaneView(for: pane)?.bounceFindIndicator()
+        handOffFocusAfterFind()
+    }
+
+    /// Navigation for a set too large to hold positions for: the directional
+    /// scan, and on failure a second one from the file's edge, which is the wrap.
+    private func runCountedSearch(set: MatchSet, direction: SearchDirection,
+                                  in pane: PaneViewModel) {
         findTask?.cancel()
         findOperation?.finish()
         let operation = BackgroundOperation(name: "Searching…") { [weak self] in
@@ -4774,50 +5186,49 @@ final class MainViewController: NSViewController {
         activeFilePane?.beginOperation(operation)
         findTask = Task { [weak self] in
             guard let self else { return }
-            let found = await self.performFind(pattern: pattern, direction: direction,
-                                               caseSensitive: caseSensitive, operation: operation)
-            operation.finish()
-            guard !Task.isCancelled else { return }
-            if !found {
-                // The scan is directional and does not wrap, so say which way it
-                // looked — "No match found." left the user unable to tell an
-                // empty file from a caret past the last match (§11).
-                self.showFindMessage(direction == .forward
-                    ? "No matches after the cursor."
-                    : "No matches before the cursor.")
+            var found = await self.performFind(pattern: set.pattern, folding: set.folding,
+                                               direction: direction, in: pane,
+                                               operation: operation)
+            if !found, !Task.isCancelled {
+                let edge: UInt64 = direction == .forward ? 0 : pane.fileSize
+                found = await self.performFind(pattern: set.pattern, folding: set.folding,
+                                               direction: direction, in: pane,
+                                               from: edge, operation: operation)
             }
+            operation.finish()
+            guard !Task.isCancelled, !found else { return }
+            self.showFindMessage("Not found.")
         }
     }
 
-    /// Runs a search off the main thread and, on a match, selects it in the
-    /// active pane (§13.8, §14.4, §18 #10). `operation` receives the search's
-    /// progress so the status bar advances as the scan covers the file.
-    private func performFind(pattern: SearchPattern, direction: SearchDirection, caseSensitive: Bool,
-                             operation: BackgroundOperation) async -> Bool {
-        let pane = activePane
+    /// One directional scan of `pane`, selecting and revealing the match it
+    /// finds (§13.8, §14.4, §18 #10). `from` overrides the caret anchor, which
+    /// is how a wrap asks for the file's other end. `operation` receives the
+    /// scan's progress so the status bar advances.
+    private func performFind(pattern: SearchPattern, folding: CaseFolding,
+                             direction: SearchDirection, in pane: PaneViewModel,
+                             from: UInt64? = nil,
+                             operation: BackgroundOperation? = nil) async -> Bool {
         guard pane.isOpen, let storage = pane.document?.storage else { return false }
-        // Find Next starts after the current selection (so it never re-selects
-        // the match just found); Find Previous starts at the selection's start
-        // (so it moves back). With no selection both anchor on the caret.
-        let selection = pane.hexSelection()
-        let from = selection.isEmpty ? pane.caretOffset
-            : direction == .forward ? selection.end : selection.start
+        let anchor: UInt64
+        if let from {
+            anchor = from
+        } else {
+            let selection = pane.hexSelection()
+            anchor = selection.isEmpty ? pane.caretOffset
+                : direction == .forward ? selection.end : selection.start
+        }
         // Read here, on the main actor that owns it, and passed in: reaching for
         // `Self.searchChunkSize` from inside the detached task is an actor
         // crossing (a hard error under the Swift 6 language mode).
         let chunkSize = Self.searchChunkSize
         let background = Task.detached(priority: .userInitiated) {
             do {
-                // The rule, not a flag: hex is always exact, and UTF-16 folds by
-                // code unit rather than by byte (§11).
-                return try SearchEngine.find(pattern: pattern.bytes, in: storage, from: from, direction: direction,
-                                             folding: CaseFolding(encoding: pattern.encoding,
-                                                                  caseSensitive: caseSensitive),
+                return try SearchEngine.find(pattern: pattern.bytes, in: storage, from: anchor,
+                                             direction: direction, folding: folding,
                                              chunkSize: chunkSize,
                                              shouldCancel: { Task.isCancelled },
-                                             progress: { operation.report($0) })
-            } catch is CancellationError {
-                return nil
+                                             progress: { operation?.report($0) })
             } catch {
                 return nil
             }
@@ -4828,159 +5239,112 @@ final class MainViewController: NSViewController {
         )
         guard !Task.isCancelled, let range, pane.isOpen else { return false }
         pane.select(range: range)
-        // Show the match mid-pane: a plain reveal only scrolls the found row to
-        // the nearest edge (bottom after Find Next, top after Find Previous) (§11).
-        activeFilePane?.revealSelectionCentered()
-        // A search launched from the find bar must leave focus in the pattern
-        // field so a subsequent Enter re-searches; only when the bar is hidden
-        // does the search hand focus to the hex view.
+        // The plate goes on the match a scan found, exactly as it goes on one
+        // picked out of the index: the answer looks the same whether or not the
+        // index behind it exists yet (§11).
+        pane.highlightMatches(onMatch: range)
+        filePaneView(for: pane)?.revealSelectionCenteredIfNeeded()
+        filePaneView(for: pane)?.bounceFindIndicator()
+        handOffFocusAfterFind()
+        return true
+    }
+
+    /// A search launched from the find bar leaves focus in the pattern field so
+    /// a subsequent Enter re-searches; only when the bar is hidden does the
+    /// search hand focus to the hex view.
+    private func handOffFocusAfterFind() {
         if findBar.isHidden {
             focusActiveHexView()
         } else {
             findBar.focusPatternField()
         }
-        return true
     }
 
-    /// Launches a Search All from the find bar (§11): the results panel opens
-    /// immediately at its default height, and every occurrence of the pattern is
-    /// found in the background and streamed into the table as the scan runs, so
-    /// the table and its count fill live while a large file is still being
-    /// searched. Runs as a `BackgroundOperation` like a single search, so the
-    /// strip (name + progress + ×) appears in the status bar and it can be
-    /// cancelled (§14.4).
+    /// Hands the Find bar the active pane's session: "3 of 128", "Not found",
+    /// or nothing at all (§11). Driven by every change to the set or the
+    /// current match, and by the bar opening.
+    /// Something about how the search *looks* changed — a set arrived or went,
+    /// the highlighting came or ended, the indicator stepped. The count is
+    /// re-read and the map re-marked; the dump repaints itself, through the
+    /// pane's own view (§11).
     ///
-    /// The pane active when the search started is captured up front so the
-    /// results land in the right hosting view even if the active pane changes
-    /// while scanning. Each search captures a `searchAllGeneration` token and
-    /// checks it against the live one before touching the panel, so a
-    /// superseded search can never clobber the results of a newer one (§11).
-    private func runSearchAll(pattern: SearchPattern, caseSensitive: Bool) {
-        findTask?.cancel()
-        findOperation?.finish()
-        let operation = BackgroundOperation(name: "Finding all…") { [weak self] in
-            self?.findTask?.cancel()
-        }
-        findOperation = operation
+    /// Everything here is skipped while the minimap panel is closed: it paints
+    /// nothing, and a press of ‹ › used to invalidate its cells and rebuild its
+    /// overlay regardless.
+    private func searchAppearanceChanged() {
+        refreshFindCount()
+        guard minimapPanelVisible else { return }
+        // No byte range describes a set arriving or a plate moving to another
+        // part of the file, so in detail mode every cell it draws is suspect.
+        minimapView.invalidateCells()
+        scheduleMinimapMatchSync()
+    }
+
+    private func refreshFindCount() {
+        findBar.show(count: FindCount.reading(of: activePane.highlightedMatchSet,
+                                              current: activePane.currentMatchIndex))
+    }
+
+    /// Drops a pane's match set: the bytes under it moved, so every offset in it
+    /// is a guess. The greys go rather than shift — a grey in the wrong place is
+    /// worse than no grey — and the next press of Find Next scans afresh.
+    ///
+    /// An overwrite could in principle be patched in place (`MatchSet.splice`),
+    /// which is what the plan's edit stage is for; until then any edit ends the
+    /// session — and takes an open results panel with it, since the pane's view
+    /// follows the set it is listing (§11).
+    private func invalidateMatches(in pane: PaneViewModel?) {
+        // An index still being built is being built over bytes that just
+        // moved, so it stops rather than finishing into a file it no longer
+        // describes (§11).
+        endIndexing()
+        pane?.clearMatches()
+    }
+
+    /// The Find bar's results button (§11): shows or hides the pane's results
+    /// panel.
+    ///
+    /// It is no longer a search. Activating a search already started the index
+    /// — the same one that feeds the dump's highlighting — so this presents
+    /// what that index holds, and goes on presenting it as the index fills.
+    /// When the field holds a pattern nothing has looked for yet, the search
+    /// starts here and the panel opens on it.
+    private func toggleSearchResults(pattern: SearchPattern, caseSensitive: Bool) {
         let pane = activePane
-        let paneView = filePaneView(for: pane)
-        searchAllPane = paneView
-        // Open the panel empty before any scanning; matches stream in below.
-        paneView?.showSearchResults(matchLength: pattern.bytes.count)
-        activeFilePane?.beginOperation(operation)
-        searchAllGeneration += 1
-        let generation = searchAllGeneration
-
-        let task = Task { [weak self] in
-            guard let self else { return }
-            do {
-                let count = try await self.streamFindAll(pattern: pattern, caseSensitive: caseSensitive,
-                                                         operation: operation, into: paneView)
-                // The scan completed: settle the header's count (drop the "…"),
-                // or — when there turned out to be more matches than the panel
-                // shows — say the search returned too many results instead of a
-                // final count (§11). The scan is asked for one match beyond the
-                // display cap precisely so this is exact: a file with exactly
-                // `defaultMaxResults` matches used to be labelled "too many".
-                if self.searchAllGeneration == generation, let paneView {
-                    paneView.searchResults.finishSearch(
-                        truncated: count > SearchEngine.defaultMaxResults)
-                }
-            } catch is CancellationError {
-                // The × button, the status-strip stop, or a newer search ended
-                // this one. End it, hiding its panel only when that cannot
-                // clobber a newer search's live results (§11).
-                self.endSearchAllTask(generation: generation, paneView: paneView)
-            } catch {
-                // A scan error (e.g. a storage read failure) aborts the search.
-                self.endSearchAllTask(generation: generation, paneView: paneView)
-            }
-            operation.finish()
-            // This search is over (completed, cancelled, or superseded); a later
-            // close of a results panel must not cancel anything else. Guarded by
-            // the generation like every other write here: a *superseded* search
-            // reaches this line after the newer one has already claimed
-            // `searchAllPane`, and clearing it then would leave the newer
-            // search's panel unable to cancel it (its × checks this pointer).
-            if self.searchAllGeneration == generation {
-                self.searchAllPane = nil
-            }
-        }
-        findTask = task
-    }
-
-    /// Stops the in-flight Search All when the user closes its results panel
-    /// (the ×): cancels the scan and dismisses its status strip. Only acts if
-    /// the closing panel belongs to the current Search All — a stale panel (a
-    /// search that already finished, or the other pane's panel) must not cancel
-    /// an unrelated search.
-    private func cancelSearchAll(from pane: FilePaneView?) {
-        guard searchAllPane === pane else { return }
-        findTask?.cancel()
-        findOperation?.finish()
-    }
-
-    /// Ends a Search All that did not complete (cancelled or errored). When it
-    /// is still the current search, its results panel is hidden (the handle is
-    /// cleared later, at the task's end). When a newer search superseded it,
-    /// the newer search's panel is left alone — but this task's own panel, in a
-    /// different pane, is still collapsed so it is not left behind with a
-    /// forever-hanging "…" count (§11).
-    private func endSearchAllTask(generation: Int, paneView: FilePaneView?) {
-        if searchAllGeneration == generation {
-            paneView?.hideSearchResults()
-        } else if let paneView, paneView !== searchAllPane {
+        guard pane.isOpen, let paneView = filePaneView(for: pane) else { return }
+        if paneView.searchResultsPanelVisible {
             paneView.hideSearchResults()
+            findBar.setResultsShown(false)
+            return
         }
+        // The button also *activates* the pattern in the field: a pattern
+        // typed but not yet searched by Enter or ‹ › is searched here, so the
+        // panel is never a list of the previous pattern's matches (§11).
+        let folding = CaseFolding(encoding: pattern.encoding, caseSensitive: caseSensitive)
+        if !pane.hasMatches(for: pattern, folding: folding) {
+            beginIndexing(pattern: pattern, folding: folding, in: pane)
+        }
+        presentSearchResults(for: pane)
     }
 
-    /// Streams every match of `pattern` from the pane's live storage into the
-    /// given results panel, one row at a time, as the detached scan finds them —
-    /// the first occurrence appears the moment it is found, not when the scan
-    /// completes (§11). `operation` receives the scan's progress so the status
-    /// bar advances. Returns how many matches were delivered (at most
-    /// `SearchEngine.defaultMaxResults`), so the caller can tell a capped scan
-    /// from one that fully completed.
+    /// Opens the pane's results panel on its current set: the matches as rows,
+    /// or — past the listing limit — the count and the reason there are no rows
+    /// (§11).
     ///
-    /// When the surrounding task is cancelled the scan stops and the loop ends;
-    /// this method then rethrows `CancellationError` so the caller can tell a
-    /// cancelled search from a completed one (throws immediately, too, when the
-    /// pane has no storage to scan).
-    private func streamFindAll(pattern: SearchPattern, caseSensitive: Bool,
-                               operation: BackgroundOperation, into paneView: FilePaneView?) async throws -> Int {
-        guard let paneView, let storage = paneView.viewModel.byteStorage else {
-            throw CancellationError()
-        }
-        // One past the display cap: the extra match is never shown, it only
-        // proves there were more, so "too many results" is exact rather than
-        // inferred from hitting the cap.
-        let displayCap = SearchEngine.defaultMaxResults
-        let stream = SearchEngine.findAllStream(
-            pattern: pattern.bytes, in: storage,
-            folding: CaseFolding(encoding: pattern.encoding, caseSensitive: caseSensitive),
-            chunkSize: Self.searchChunkSize,
-            maxResults: displayCap + 1,
-            shouldCancel: { Task.isCancelled },
-            progress: { operation.report($0) }
-        )
-        var count = 0
-        for try await match in stream {
-            count += 1
-            guard count <= displayCap else { break }
-            paneView.searchResults.append([match])
-        }
-        // Distinguish a finished scan from a cancelled one: on this platform a
-        // cancelled task's `next()` can return nil (a normal end) instead of
-        // throwing, so check explicitly — a cancelled Search All must hide its
-        // panel, not leave partial results with a settled count.
-        if Task.isCancelled {
-            throw CancellationError()
-        }
-        return count
+    /// The button opens the panel, whatever the search has to say. One still
+    /// running opens on what it has and fills as the index does; one that found
+    /// nothing opens saying so, where the rows would have been. Refusing to
+    /// open would leave the press with no effect at all, which reads as a
+    /// broken button.
+    private func presentSearchResults(for pane: PaneViewModel) {
+        guard let paneView = filePaneView(for: pane), pane.matchSet != nil else { return }
+        // Nothing is handed over: the panel lists the pane's own set, and stays
+        // level with it from then on — a new search rewrites its rows, and an
+        // invalidation takes it down (§11).
+        paneView.showSearchResults()
+        findBar.setResultsShown(true)
     }
 
-    /// Beeps and flashes `message` in the active pane's status bar (used for
-    /// parse errors and empty search results from the Find bar, §11).
     private func showFindMessage(_ message: String) {
         NSSound.beep()
         activeFilePane?.showTransientMessage(message)

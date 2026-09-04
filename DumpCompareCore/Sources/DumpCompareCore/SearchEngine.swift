@@ -197,6 +197,24 @@ public enum SearchEngine {
     /// byte in a large file must not scan for, or report, millions of rows.
     public static let defaultMaxResults = 1000
 
+    /// One instalment of an index being built: the matches found since the last
+    /// one, and how far the scan has got.
+    ///
+    /// The offset is what makes a half-built index usable. Every match below it
+    /// has been reported, so the dump can grey what is known while the rest of
+    /// the file is still being scanned, and only the things that need the whole
+    /// file — the total, the wrap, an ordinal — wait for the end (§11).
+    public struct MatchBatch: Sendable, Equatable {
+        public let starts: [UInt64]
+        /// Half-open: matches at or above this offset are not known yet.
+        public let scannedUpTo: UInt64
+
+        public init(starts: [UInt64], scannedUpTo: UInt64) {
+            self.starts = starts
+            self.scannedUpTo = scannedUpTo
+        }
+    }
+
     /// Streaming variant of `findAll`: yields every non-overlapping match as the
     /// scan finds it — one `Range` per occurrence, in file order, delivered the
     /// moment it is found, so a results table can grow a row at a time while a
@@ -248,6 +266,88 @@ public enum SearchEngine {
                         continuation.yield(match)
                         found += 1
                         if found >= maxResults { capped = true }
+                    }
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    /// How many matches the highlighting scan delivers at a time. A batch is a
+    /// delivery cost, not a limit: `findAllStream` yields one match per hop onto
+    /// the consumer, which is right for a table growing a row at a time and
+    /// wrong for the million matches a single-byte pattern has.
+    public static let defaultBatchSize = 4096
+
+    /// Streams **every** match of `pattern`, in file order, as batches of match
+    /// starts — the scan that fills a `MatchSet`
+    /// (`Design/FIND_HIGHLIGHT_PLAN.md`).
+    ///
+    /// Deliberately uncapped, unlike `findAllStream`: the count this feeds is
+    /// the Find bar's diagnosis of the pattern, and a capped count would make
+    /// 1001 and 3 000 000 look alike. What is bounded is the *index* built from
+    /// it, which `MatchSet` handles by choosing its representation.
+    ///
+    /// A start is all that travels, because every match is the pattern's length.
+    /// Matching is the same non-overlapping walk `findAll` performs — the scan
+    /// resumes past each match's end — so the highlight, the results panel and
+    /// Find Next cannot disagree about what counts as a match.
+    ///
+    /// Progress and cancellation behave exactly as in `findAllStream`: the scan
+    /// runs on a detached task, reports `progress` per chunk, and stops promptly
+    /// when the consuming task is cancelled or the stream is abandoned.
+    public static func matchStartsStream(
+        pattern: [UInt8],
+        in storage: ByteStorage,
+        folding: CaseFolding = .exact,
+        chunkSize: Int = defaultChunkSize,
+        batchSize: Int = defaultBatchSize,
+        shouldCancel: @escaping @Sendable () -> Bool = { Task.isCancelled },
+        progress: @escaping @Sendable (Double) -> Void = { _ in }
+    ) -> AsyncThrowingStream<MatchBatch, any Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task.detached(priority: .userInitiated) {
+                do {
+                    guard !pattern.isEmpty else { throw SearchError.emptyPattern }
+                    let patternLength = UInt64(pattern.count)
+                    let size = storage.size
+                    guard patternLength <= size else {
+                        continuation.finish()
+                        return
+                    }
+                    var patternBytes = pattern
+                    Self.foldInPlace(&patternBytes, using: folding)
+                    let patternData = Data(patternBytes)
+                    var batch: [UInt64] = []
+                    batch.reserveCapacity(min(batchSize, 1024))
+                    try scanAll(
+                        pattern: patternData, patternLength: patternLength, storage: storage,
+                        size: size, folding: folding, chunkSize: chunkSize,
+                        shouldCancel: shouldCancel, progress: progress,
+                        // Every window boundary is an instalment, even an empty
+                        // one: a stretch of file with no match in it is still
+                        // news — it is a stretch the consumer now knows about.
+                        windowFinished: { covered in
+                            continuation.yield(MatchBatch(starts: batch, scannedUpTo: covered))
+                            batch.removeAll(keepingCapacity: true)
+                        }
+                    ) { match in
+                        batch.append(match.lowerBound)
+                        if batch.count >= batchSize {
+                            // Mid-window: every match starting below this
+                            // one's end has been reported, and none above.
+                            continuation.yield(MatchBatch(starts: batch,
+                                                          scannedUpTo: match.upperBound))
+                            batch.removeAll(keepingCapacity: true)
+                        }
+                    }
+                    if !batch.isEmpty {
+                        continuation.yield(MatchBatch(starts: batch, scannedUpTo: size))
                     }
                     continuation.finish()
                 } catch is CancellationError {
@@ -507,6 +607,7 @@ public enum SearchEngine {
         folding: CaseFolding, chunkSize: Int,
         shouldCancel: () -> Bool, progress: (Double) -> Void,
         shouldStop: () -> Bool = { false },
+        windowFinished: (UInt64) -> Void = { _ in },
         matchFound: (Range<UInt64>) -> Void
     ) throws {
         let windowLength = UInt64(chunkSize) + patternLength - 1
@@ -552,6 +653,9 @@ public enum SearchEngine {
             cursor += UInt64(chunkSize)
             processed += UInt64(bytes.count)
             if size > 0 { progress(min(Double(processed) / Double(size), 1)) }
+            // Every start below the new cursor has been looked for, so this is
+            // how much of the file an index built from here covers.
+            windowFinished(min(cursor, size))
         }
         // A scan stopped by the match cap covered only part of the file, so it
         // must not report 100% — the caller keeps the partial progress instead.

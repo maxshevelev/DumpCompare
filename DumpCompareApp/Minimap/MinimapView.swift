@@ -83,7 +83,6 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         var isModified: Bool
         /// The byte differs from the companion file.
         var isDifferent: Bool
-
         static let insignificant = CellState(isSignificant: false, isModified: false, isDifferent: false)
         static let significant = CellState(isSignificant: true, isModified: false, isDifferent: false)
 
@@ -138,6 +137,26 @@ final class MinimapView: NSView, NSViewToolTipOwner {
 
         static let empty = OverviewSummary(extent: 0, rowCount: 0, density: [],
                                           modified: [], different: [])
+    }
+
+    /// The search's matches as the overview draws them (§11): a bit per column
+    /// per row, the same shape as `OverviewSummary`'s `modified` and
+    /// `different` masks, so the stretch rule for a file smaller than one byte
+    /// per row comes along for free (§19.4.2).
+    ///
+    /// A value of its own rather than a field of the summary, because its
+    /// lifetime is different: the summary is invalidated by *bytes*, this by
+    /// the *pattern*, and a new search must not trigger a density rebuild.
+    struct MatchOverlay: Equatable {
+        /// The extent the rows are binned over — the same one the summary uses.
+        let extent: UInt64
+        let rowCount: Int
+        /// Per row, a bit per column holding at least one match.
+        var matched: [UInt16]
+        /// The same for the current match alone — the one the dump plates.
+        var current: [UInt16]
+
+        static let empty = MatchOverlay(extent: 0, rowCount: 0, matched: [], current: [])
     }
 
     /// How dark the overview draws its content. Deliberately short of full ink:
@@ -253,6 +272,19 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// one: it blinked (§19.9).
     private(set) var overviewBinsAreStale = false
 
+    /// One overlay per map, or empty when no search is running (§11).
+    private(set) var matchOverlays: [MatchOverlay] = []
+
+    /// Hands the panel the search's matches for the overview. Cheap enough to
+    /// hand over whole: it is a couple of hundred bytes per map, derived from
+    /// the match set rather than read from the file.
+    func setMatchOverlays(_ overlays: [MatchOverlay]) {
+        guard overlays != matchOverlays else { return }
+        matchOverlays = overlays
+        guard renderMode == .overview else { return }
+        invalidateAll()
+    }
+
     /// Fired when the number of overview rows the panel can show changes — a
     /// resize, a layout flip, or a switch into overview — so the controller can
     /// recompute the summary at the new density.
@@ -268,6 +300,14 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// map. Called from `draw` for the visible rows only — the map stores no
     /// cells, so this is the whole data path.
     var byteStates: ((_ mapIndex: Int, _ range: Range<UInt64>) -> [HexByteState])?
+
+    /// The active search's matches inside a range of one map's file, pulled per
+    /// repaint like the byte states — the map reads the same set the dump does,
+    /// so the two cannot disagree about where the matches are (§11).
+    var matchRanges: ((_ mapIndex: Int, _ range: Range<UInt64>) -> [Range<UInt64>])?
+    /// The current match in one map's file, if any — what the dump marks with
+    /// the find indicator.
+    var currentMatchRange: ((_ mapIndex: Int) -> Range<UInt64>?)?
 
     /// Asks for the panes to scroll so that `offset`'s hex row sits at the top
     /// of the pane — the minimap's drag and wheel both go through it. The panes
@@ -1111,8 +1151,11 @@ final class MinimapView: NSView, NSViewToolTipOwner {
             // rect that excludes them cost 30 ms of the main thread (§19.9).
             guard content.intersects(dirtyRect) else { continue }
             switch renderMode {
-            case .detail: drawCells(forMapAt: index, in: content, dirtyRect: dirtyRect)
-            case .overview: drawOverviewRows(forMapAt: index, in: content, dirtyRect: dirtyRect)
+            case .detail:
+                drawCells(forMapAt: index, in: content, dirtyRect: dirtyRect)
+                drawDetailMatches(forMapAt: index, in: content, dirtyRect: dirtyRect)
+            case .overview:
+                drawOverviewRows(forMapAt: index, in: content, dirtyRect: dirtyRect)
             }
         }
         // The strip is a legend beside the content; the viewport band runs edge
@@ -1493,6 +1536,90 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// the two overlap often, and the red is the signal the user just created —
     /// the difference is still legible in the neighbouring cells of the same
     /// region. In detail mode both show at once, which is where that matters.
+    /// The search's marks on the **detail** map (§11), in the same language the
+    /// overview uses: a stroke of solid ink over each match's cells, and the
+    /// current match as a horizontal plate — the find indicator's yellow inside
+    /// a thin ink frame — drawn over every stroke.
+    ///
+    /// Drawn from the match ranges rather than per cell, for the same reason as
+    /// on the overview: a mark is a *shape over* the bytes, not a state of each
+    /// one, and the plate has to end up on top of marks belonging to other rows.
+    private func drawDetailMatches(forMapAt index: Int, in area: NSRect, dirtyRect: NSRect) {
+        guard renderMode == .detail, area.width > 0, area.height > 0 else { return }
+        let bars = detailMatchBars(forMapAt: index, in: area)
+        guard !bars.matches.isEmpty || bars.current != nil else { return }
+        let ink = (HexTheme.byteText.usingColorSpace(.deviceRGB) ?? HexTheme.byteText)
+        ink.setFill()
+        for bar in bars.matches where bar.intersects(dirtyRect) {
+            bar.fill()
+        }
+        guard let plate = bars.current, plate.intersects(dirtyRect) else { return }
+        (HexTheme.findIndicatorFill.usingColorSpace(.deviceRGB)
+            ?? HexTheme.findIndicatorFill).setFill()
+        plate.fill()
+        ink.setStroke()
+        let frame = NSBezierPath(rect: plate.insetBy(dx: 0.5, dy: 0.5))
+        frame.lineWidth = 1
+        frame.stroke()
+    }
+
+    /// Where the detail map's match marks go: one rect per match (per row it
+    /// crosses), and the current match's plate. Internal so a test can assert
+    /// the geometry without reading pixels.
+    func detailMatchBars(forMapAt index: Int, in area: NSRect)
+        -> (matches: [NSRect], current: NSRect?) {
+        guard renderMode == .detail, maps.indices.contains(index) else { return ([], nil) }
+        let window = windowByteRange(forMapAt: index)
+        guard !window.isEmpty else { return ([], nil) }
+        let (origins, cellWidth) = byteColumnLayout(contentWidth: area.width)
+        guard cellWidth > 0, !origins.isEmpty else { return ([], nil) }
+
+        /// The rect covering a match's bytes on one row of the map.
+        func bar(from first: UInt64, to last: UInt64, height: CGFloat,
+                 rise: CGFloat) -> NSRect? {
+            let row = Int((first - window.lowerBound) / Self.bytesPerRow)
+            let firstColumn = Int((first - window.lowerBound) % Self.bytesPerRow)
+            let lastColumn = Int((last - window.lowerBound) % Self.bytesPerRow)
+            guard origins.indices.contains(firstColumn), origins.indices.contains(lastColumn)
+            else { return nil }
+            let left = area.minX + origins[firstColumn]
+            let right = area.minX + origins[lastColumn] + cellWidth
+            let y = area.minY + CGFloat(row) * Self.rowStep - rise
+            return NSRect(x: left, y: y, width: max(right - left, 1), height: height)
+        }
+
+        /// A match, split at the map's row boundaries.
+        func bars(for match: Range<UInt64>, height: CGFloat, rise: CGFloat) -> [NSRect] {
+            let from = max(match.lowerBound, window.lowerBound)
+            let to = min(match.upperBound, window.upperBound)
+            guard from < to else { return [] }
+            var result: [NSRect] = []
+            var cursor = from
+            while cursor < to {
+                let rowEnd = (cursor / Self.bytesPerRow + 1) * Self.bytesPerRow
+                let last = min(to, rowEnd) - 1
+                if let rect = bar(from: cursor, to: last, height: height, rise: rise) {
+                    result.append(rect)
+                }
+                cursor = last + 1
+            }
+            return result
+        }
+
+        let matches = (matchRanges?(index, window) ?? [])
+            .flatMap { bars(for: $0, height: Self.detailMatchHeight, rise: 0) }
+        // The plate is deliberately bigger than a stroke in both directions: it
+        // is the one mark that has to be found rather than noticed, and its
+        // frame needs room to read as a frame. Grown about the stroke's own
+        // band, so it stays on its row.
+        let plateHeight = Self.detailCurrentMatchHeight
+        let rise = (plateHeight - Self.detailMatchHeight) / 2
+        let current = currentMatchRange?(index)
+            .flatMap { bars(for: $0, height: plateHeight, rise: rise).first }
+            .map { $0.insetBy(dx: -Self.detailCurrentMatchPadding, dy: 0) }
+        return (matches, current)
+    }
+
     private func drawOverviewRows(forMapAt index: Int, in area: NSRect, dirtyRect: NSRect) {
         guard area.width > 0, area.height > 0,
               let summary = overviewSummary(forMapAt: index) else { return }
@@ -1508,18 +1635,164 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         // it is drawn directly: stretching it 1:1 would be the same pixels, and
         // building the stand-in image costs 20 ms — per keystroke, since an edit
         // invalidates the cache (§19.9).
-        if geometryIsSettling || summary.rowCount != overviewRowCount() {
-            drawOverviewStandIn(forMapAt: index, in: area)
-            return
-        }
+        let panelRows = overviewRowCount()
+        let settling = geometryIsSettling || summary.rowCount != panelRows
         let cells = overviewColumnLayout(in: area)
-        guard !cells.isEmpty else { return }
-        let first = max(0, Int(floor((dirtyRect.minY - area.minY) / rowHeight)))
-        let last = min(summary.rowCount - 1, Int(floor((dirtyRect.maxY - area.minY) / rowHeight)))
-        guard last >= first else { return }
-        drawOverviewCells(summary, fileSize: maps.indices.contains(index) ? maps[index].fileSize : 0,
-                          rows: first...last, top: area.minY, cells: cells, rowHeight: rowHeight)
+        if settling {
+            drawOverviewStandIn(forMapAt: index, in: area)
+        } else {
+            guard !cells.isEmpty else { return }
+            let first = max(0, Int(floor((dirtyRect.minY - area.minY) / rowHeight)))
+            let last = min(summary.rowCount - 1,
+                           Int(floor((dirtyRect.maxY - area.minY) / rowHeight)))
+            guard last >= first else { return }
+            drawOverviewCells(summary,
+                              fileSize: maps.indices.contains(index) ? maps[index].fileSize : 0,
+                              rows: first...last, top: area.minY, cells: cells,
+                              rowHeight: rowHeight)
+        }
+        // The search's marks go on in both cases, including over the stand-in:
+        // they are binned for the panel's *current* row count rather than
+        // derived from the stretched picture, and a mark that disappears while
+        // the panel settles reads as a bug rather than as a transient (§11).
+        guard !cells.isEmpty, panelRows > 0 else { return }
+        let firstMarked = max(0, Int(floor((dirtyRect.minY - area.minY) / rowHeight)))
+        let lastMarked = min(panelRows - 1,
+                             Int(floor((dirtyRect.maxY - area.minY) / rowHeight)))
+        guard lastMarked >= firstMarked else { return }
+        drawOverviewMatches(forMapAt: index, rows: firstMarked...lastMarked, top: area.minY,
+                            cells: cells, rowHeight: rowHeight, expecting: panelRows)
     }
+
+    /// Marks the search's matches over the overview's density picture (§11).
+    ///
+    /// Precision is not the point here — a row is kilobytes — so a match is a
+    /// **stroke**: solid ink, a couple of pixels tall and at least
+    /// `overviewMatchWidth` wide, over the cells its bytes fall in. What matters
+    /// is that something was found around here and that it reads at a glance,
+    /// which a grey tint could not do against a grey density picture.
+    ///
+    /// The current match is a plate instead: the find indicator's yellow inside
+    /// a thin ink frame — "you are here", in the one hue reserved for search.
+    private func drawOverviewMatches(forMapAt index: Int, rows: ClosedRange<Int>,
+                                     top: CGFloat, cells: [(x: CGFloat, width: CGFloat)],
+                                     rowHeight: CGFloat, expecting rowCount: Int) {
+        let bars = Self.overviewMatchBars(overlay: matchOverlays.indices.contains(index)
+                                            ? matchOverlays[index] : nil,
+                                          rows: rows, top: top, cells: cells,
+                                          rowHeight: rowHeight, expecting: rowCount)
+        let ink = (HexTheme.byteText.usingColorSpace(.deviceRGB) ?? HexTheme.byteText)
+        let currentInk = (HexTheme.findIndicatorFill.usingColorSpace(.deviceRGB)
+                          ?? HexTheme.findIndicatorFill)
+        // Two passes, because a row here is about a pixel tall while the marks
+        // are a few: a stroke drawn for a later row would otherwise land on top
+        // of the current match's plate, and the plate has to be the topmost
+        // thing on the map (§11).
+        ink.setFill()
+        for box in bars.matches { box.fill() }
+        if let box = bars.current {
+            currentInk.setFill()
+            box.fill()
+            ink.setStroke()
+            let frame = NSBezierPath(rect: box.insetBy(dx: 0.5, dy: 0.5))
+            frame.lineWidth = 1
+            frame.stroke()
+        }
+    }
+
+    /// Where the overview's match marks go: a stroke per marked row, and the
+    /// current match's plate. Pure geometry, so a test can assert that the
+    /// plate lands on the cell the match's byte falls in — the map and the dump
+    /// must not disagree about where the user is (§11).
+    static func overviewMatchBars(overlay: MatchOverlay?, rows: ClosedRange<Int>,
+                                  top: CGFloat, cells: [(x: CGFloat, width: CGFloat)],
+                                  rowHeight: CGFloat, expecting rowCount: Int)
+        -> (matches: [NSRect], current: NSRect?) {
+        guard let overlay, let firstCell = cells.first, let lastCell = cells.last,
+              // An overlay binned for a different row count would put its marks
+              // on the wrong rows; it is rebuilt the moment the count settles.
+              overlay.rowCount == rowCount, rowCount > 0 else { return ([], nil) }
+        let columns = Int(bytesPerRow)
+        let mapRight = lastCell.x + lastCell.width
+
+        /// The mark for a row's mask: the marked cells' span, widened to a
+        /// readable minimum and kept inside the map.
+        func mark(for mask: UInt16, y: CGFloat, height: CGFloat) -> NSRect? {
+            guard mask != 0 else { return nil }
+            var first = columns
+            var last = -1
+            for column in 0..<min(columns, cells.count)
+            where mask & (UInt16(1) << UInt16(column)) != 0 {
+                first = min(first, column)
+                last = max(last, column)
+            }
+            guard last >= first else { return nil }
+            let left = cells[first].x
+            let right = cells[last].x + cells[last].width
+            var width = right - left
+            var x = left
+            if width < overviewMatchWidth {
+                width = overviewMatchWidth
+                x = max(firstCell.x, min(left, mapRight - width))
+            }
+            return NSRect(x: x, y: y, width: width, height: height)
+        }
+
+        var strokes: [NSRect] = []
+        for row in rows {
+            guard overlay.matched.indices.contains(row) else { break }
+            guard overlay.matched[row] != 0 else { continue }
+            if let box = mark(for: overlay.matched[row], y: top + CGFloat(row) * rowHeight,
+                              height: overviewMatchHeight) {
+                strokes.append(box)
+            }
+        }
+        let currentHeight = overviewCurrentMatchHeight
+        let inset = (currentHeight - overviewMatchHeight) / 2
+        var plate: NSRect?
+        for row in rows {
+            guard overlay.current.indices.contains(row) else { break }
+            guard overlay.current[row] != 0 else { continue }
+            plate = mark(for: overlay.current[row],
+                         y: top + CGFloat(row) * rowHeight - inset, height: currentHeight)
+            if plate != nil { break }
+        }
+        return (strokes, plate)
+    }
+
+    /// The overview's 16 column origins for a content region, for tests.
+    func overviewColumnLayoutForTesting(in area: NSRect) -> [(x: CGFloat, width: CGFloat)] {
+        overviewColumnLayout(in: area)
+    }
+
+    /// The overview's match marks for this panel's own geometry, for tests.
+    func overviewMatchBars(forMapAt index: Int, in area: NSRect)
+        -> (matches: [NSRect], current: NSRect?) {
+        let rowCount = overviewRowCount()
+        guard rowCount > 0, matchOverlays.indices.contains(index) else { return ([], nil) }
+        return Self.overviewMatchBars(overlay: matchOverlays[index], rows: 0...(rowCount - 1),
+                                      top: area.minY, cells: overviewColumnLayout(in: area),
+                                      rowHeight: overviewRowHeight, expecting: rowCount)
+    }
+
+    /// A match's stroke on the **detail** map. Deliberately taller than a byte
+    /// cell — and so a point past the row step — because at this scale a mark
+    /// the size of the content it marks does not read as a mark.
+    static let detailMatchHeight: CGFloat = 4
+    /// The current match's plate there: taller and wider than a stroke on every
+    /// side, because it is the mark that has to be found rather than noticed.
+    static let detailCurrentMatchHeight: CGFloat = 8
+    static let detailCurrentMatchPadding: CGFloat = 2
+
+    /// A match's stroke on the overview: a couple of pixels tall, and wide
+    /// enough to be seen when its bytes fall in a single cell.
+    static let overviewMatchHeight: CGFloat = 2
+    static let overviewMatchWidth: CGFloat = 7
+    /// The current match's plate: a horizontal rectangle, 2 pt of yellow inside
+    /// a 1 pt frame. It carries "you are here" alone — there is no margin
+    /// marker — so it is taller than a match's stroke, but only just: a tall
+    /// plate reads as a block on the map rather than as a position in it.
+    static let overviewCurrentMatchHeight: CGFloat = 4
 
     /// Draws one map's cells into the current context: `rows` of `summary`, the
     /// first of them starting at `top`, each `rowHeight` tall, with the columns

@@ -345,11 +345,78 @@ Visual states:
      modified, or selected in its byte cells, and the arrow is drawn on top of
      the Offset column without disturbing them.
 
+7. Search match (§11):
+   - while a search is active, **every** occurrence of the pattern is filled in
+     the platform's unfocused-selection grey — what a selection looks like in a
+     view without focus, which is the statement being made: a match, but not
+     the one you are standing on.
+   - both columns, hex and decoded text, as one continuous fill per match
+     through the word and group gaps; a match crossing a row boundary is filled
+     on both rows.
+   - it is the lowest of the state fills: a byte that is both matched and
+     different reads as **different**, because telling two dumps apart is what
+     the app is for. A match hidden under a difference is still reachable — the
+     navigation lands on it and the minimap marks it.
+
+8. The current match — the find indicator (§11):
+   - the match the caret is standing on is drawn as a raised yellow bubble in
+     the platform's find-indicator colour, over every other fill, so it reads
+     as lifted off the page rather than as another background. Both columns.
+   - its outline is the **mirrored selection's own** (§3.3): the same contour
+     builder, so it stands the same 2 pt off the glyphs wherever a spacer allows
+     it, rounds by the same radius, and traces one staircase around a match that
+     crosses rows. A frame that hugged the glyphs read as a box drawn on the
+     text instead of something the text sits on.
+   - a span that starts in the right of one row and ends in the left of the
+     next shares no column between the two, and is outlined as **two separate
+     rectangles**. Tracing it as one staircase joined the parts with a line
+     running back along the row boundary, which outlined nothing. This is a
+     rule of the contour builder, so it holds for the mirrored selection too.
+   - it carries **no outline**: a soft shadow is what makes it read as raised,
+     and a dark rim around yellow reads instead as a box drawn on the text.
+     (The platform's own find indicator has none either.)
+   - the shadow is **two shadows**, which is what a raised surface needs: an
+     ambient halo with no offset, so the plate has a soft edge on *every* side
+     and is not cut out of the page, and a short key drop down and to the
+     right, which gives that side the weight. One offset shadow was tried first
+     and left the top-left edge bare — with the blur no wider than the drop, the
+     light side gets nothing at all.
+   - it is drawn from the plate's **own geometry** — concentric strokes of the
+     same outline — and not with `NSShadow`. That is a correctness rule, not a
+     style: an `NSShadow` offset is interpreted in whatever space the current
+     graphics context is in, and this view is painted through more than one, so
+     the shadow fell downward in a render test while falling upward on screen.
+     Strokes of the plate's own path cannot disagree with the plate.
+   - it stays short: a long shadow reads as a drop-shadow effect rather than as
+     a small thing lifted a little way off the page.
+   - the **selection is not painted under the plate**. Find Next selects the
+     match it lands on, so the two coincide, and the plate is the statement
+     about that range; the blue also peeked out from under the plate as it
+     rose.
+   - each step of Find Next / Find Previous makes it **hop**: it comes off the
+     page and settles back, once clearly and once smaller, over about half a
+     second. The plate grows about its **own centre** and does not move — it
+     must stay lined up with the bytes it is highlighting, so it expands evenly
+     in every direction; what says "higher" is the shadow growing wider, softer
+     and deeper, not a jump upwards. The animation must be slow enough to see;
+     a quarter of a second reads as a redraw glitch. A wrap onto a lone match
+     hops too, or the press would look swallowed.
+   - the ink over it is forced **black**, because that colour is the same in
+     both appearances (the platform's own instruction). A modified byte keeps
+     its red — an unsaved edit outranks the convention — and the muted
+     `0x00`/`0xFF` dimming is dropped there, since a dimmed label on yellow is
+     a smear.
+   - it is opaque, so a differing byte inside the current match does not show
+     its difference for as long as the indicator sits on it. That is deliberate:
+     the user navigated there on purpose, at most a few bytes are covered, and
+     the companion pane still shows the same offset as a difference.
+
 The layering, bottom to top, for a byte cell: the segment tint (§21.3), then the
-difference fill (1), the selection fill (4), and the text — modified bytes red
-(2), muted `0x00`/`0xFF` grey, the caret over everything. A state covers the
-tint, which is correct: what a byte *is* outranks which piece it belongs to, and
-the piece stays readable in the gaps and the rows either side.
+match fill (7), the difference fill (1), the selection fill (4), the find
+indicator (8), and the text — modified bytes red (2), muted `0x00`/`0xFF` grey,
+the caret over everything. A
+state covers the tint, which is correct: what a byte *is* outranks which piece it
+belongs to, and the piece stays readable in the gaps and the rows either side.
 
 =====================================================================
 7. EDITING MODEL
@@ -1021,30 +1088,111 @@ Case-insensitive matching:
 
 Search navigation:
 
+- Activating a search does two things, in this order: it **shows the match**,
+  and it **starts the index** of every occurrence.
+  - The match comes from one scan starting at the caret, which stops at the
+    first hit — about a millisecond on a sixteen-megabyte dump. Nothing waits
+    for anything else before the user sees it.
+  - The index is built in the background from the file's start, and published
+    as it fills: each instalment covers a stretch of file, so the greys, the
+    rows in the results panel and the marks on the map arrive in file order
+    while the scan runs. The dump repaints an instalment only where it overlaps
+    the rows on screen.
+  - The index is what makes Find Next and Find Previous **steps** rather than
+    scans, and it is what the count, the wrap and an ordinal are made of. All
+    of that waits for the whole file; showing a match does not. Indexing every
+    occurrence of a byte as common as `FF` in a sixteen-megabyte dump takes
+    about four seconds, and the search must not.
+  - Only a new pattern (or an index the file's own edits invalidated) costs a
+    scan. While the file and the pattern stand still the index stands still
+    with them, and a press is O(1).
+- A press of ‹ › before the index is finished — and for an index too large to
+  hold positions for — is answered by a directional scan, wrapping at the
+  file's edge. Navigation never waits for the index.
 - Find Next.
 - Find Previous.
 - When a match is found:
   - move cursor to match start;
   - select the matched byte range;
   - synchronize the other pane in comparison mode;
-  - ensure match is visible.
-- If no match is found, show a status message. The scan is directional and
-  does not wrap, so the message must say which way it looked — otherwise a
-  caret past the last match is indistinguishable from a file with no match at
-  all.
+  - ensure match is visible — but **only scroll if it is not already**. A match
+    inside the viewport moves the highlight and leaves the page where it is; one
+    off screen (or hanging over an edge) is centred. This is the caret's own
+    reveal rule (§10.4), and without it a walk through a cluster of matches
+    re-centres the view on every press.
+- Navigation **wraps**: Find Next at the last match returns to the first, Find
+  Previous at the first returns to the last. A single match wraps onto itself,
+  and is re-selected and re-revealed rather than ignored — a press that does
+  nothing reads as a broken key.
+- If the pattern occurs nowhere, show a status message saying exactly that. It
+  must **not** be directional: the scan covered the whole file, so "nothing
+  after the cursor" would understate what it found out. (The message named the
+  direction while the scan was directional and could not know whether anything
+  lay behind the caret; the set removed that ignorance, and the wrap removed
+  the rule.)
+- The **highlighting** and the **set** have different lifetimes, and the
+  difference is what keeps the results panel honest:
+  - The highlighting — the greys, the indicator, the marks on the map, the
+    count in the bar — ends when the pattern in the field changes, and when the
+    Find bar closes by `Done` or Escape, **whether or not** a results panel is
+    open: closing the bar means "I am finished searching", and greys left
+    behind would claim otherwise. It comes back on the next step through the
+    set, and on a row picked out of the results panel.
+  - The set itself outlives that. It is dropped only by **invalidation**: the
+    pane's content changed under it, so every offset in it would be a guess.
+    Then the greys, the count *and* the results panel go together — a list of
+    offsets the file no longer has is worse than no list.
+  - A new search replaces the set, and everything showing it follows in the
+    same move; there is never a moment where the panel lists one search and the
+    dump highlights another.
 
-Search All (results panel):
+The results panel:
 
-- Every occurrence is listed in a panel belonging to the pane that was
-  searched, filling as the scan streams matches in rather than at the end.
-- The panel caps how many results it lists. The header must distinguish a
-  search that filled the cap exactly (a complete result) from one that had
-  more matches than the cap (reported as too many results).
-- The panel has its own close control, which stops the scan behind it.
-  Dismissing the Find bar must not close the panel or cancel its scan; a
-  change of window mode must, since the pane it belongs to is rebuilt.
-- Starting another Search All supersedes the previous one: the older scan must
-  not touch the newer one's panel, nor disable its close control.
+- Every occurrence of the current pattern is listed in a panel belonging to the
+  pane that was searched. It is **not** a search of its own: the scan that
+  built the pane's match set is the one behind it, so the panel opens with its
+  rows already in place rather than filling as a scan streams in. A pattern
+  that has been typed but not yet searched is scanned first, and the panel
+  opens on the result.
+- The panel and the highlighting read **one set** — the pane's own — rather
+  than each holding a copy. So an open panel is always level with the search
+  that is current: activating another pattern rewrites its rows and its header,
+  and a search that finds nothing leaves it saying so where the rows were. Two
+  copies would be two things to keep in step, and the one that fell behind
+  would still look authoritative.
+- The dependency between the two runs **one way**: a row picked in the panel
+  moves the indicator in the dump, and the indicator moving reaches the panel
+  not at all. Only a replaced or dropped *set* rebuilds the list — a stepped
+  plate changes no row, and rebuilding the list is how it would lose the row
+  the user had just picked in it.
+- The Find bar's results control is therefore a **toggle**: it shows the panel,
+  and pressing it again hides it. It reads as on while the panel is up. It
+  **opens the panel whatever the search has to say** — a press with no visible
+  effect reads as a broken button — so a pattern that occurs nowhere opens a
+  panel saying `No matches.` where the rows would have been, and a search still
+  being indexed opens on what it has and fills as the index does. While it
+  fills, the header says so (`Search results (128, searching…)`) rather than
+  presenting a count that will grow.
+- The control also **activates the pattern in the field**: a pattern typed but
+  not yet searched by Enter or ‹ › is searched by pressing it. The panel and
+  the dump read one set, so the press is what makes that set the new pattern's
+  — the panel is never a list of the previous pattern's matches. It is not a
+  Find Next, though: the caret stays where it is.
+- Past the listing limit the panel lists **nothing**: it shows the exact count
+  and what to do about it ("… matches — too many to list. Refine the pattern.").
+  A list of four thousand rows looks exactly like a list of forty until you
+  scroll to the end, so it would impersonate a tool. The count is exact either
+  way, because the count is the diagnosis.
+- The panel has its own close control, which hides it and stops it listing —
+  the search itself is untouched, since the pattern in the field has not
+  changed. Dismissing the Find bar leaves the panel open but ends the
+  highlighting (above); a change of window mode closes it, since the pane it
+  belongs to is rebuilt.
+- Picking a row jumps to that match: it is selected, centred, and the find
+  indicator moves onto it, so the row and the plate cannot disagree about where
+  the user is. It also **turns the highlighting back on** if it had ended —
+  picking one occurrence out of a list is exactly when the user wants to see
+  where the others are.
 - Excerpts and offsets are read from the pane's live content, so they follow
   edits made while the panel is open.
 - Column widths default to the width of the values they hold, not to fixed
@@ -1053,10 +1201,48 @@ Search All (results panel):
   computed from template strings rather than measured per row. A total wider
   than the panel scrolls horizontally.
 
-Optional but recommended:
+Match count (the Find bar):
 
-- highlight matches in visible region;
-- show match count if it can be computed efficiently.
+- The bar shows how many matches the search found and where in them the user
+  is: `3 of 128`. The number is **exact at any size** — it is the app's
+  diagnosis of the pattern, and `> 1000` is not a diagnosis, since 1001 and
+  3 000 000 call for different actions.
+- The count waits for the whole file. A number out of a half-built index would
+  climb while the user read it, and `3 of 4 812` would quietly mean "of 4 812
+  so far"; the bar is where the app's diagnosis of a pattern goes, so it says
+  nothing until the index is complete. What says the work is still running is
+  the status bar's own operation, with its progress and its (×) (§14.4).
+- A pattern that occurs nowhere reads `Not found` there, and while nothing has
+  been searched the bar shows nothing at all — and shows it by **leaving**:
+  the count is a region that comes and goes with the search, not a slot held
+  open by its own template. There is nothing to count before a search and
+  nothing after one is invalidated, and an empty reserved gap beside the
+  pattern field reads as a control that failed to draw. The width it gives up
+  goes to the pattern field, which is the one control on the bar that grows.
+- Past the listing limit, and in the rare case where the matches cannot be
+  highlighted, a warning glyph beside the count carries the reason as its
+  tooltip. The reason belongs next to the count, which is what proves the
+  matches exist.
+- At zero matches the ‹ › stepper and Find All are disabled; editing the
+  pattern clears the count and re-enables them, because a pattern being typed
+  describes no search yet.
+- The same place carries a **pattern that is not a pattern** — `DE A` in hex, a
+  character the chosen encoding cannot encode — as `Invalid pattern` in red.
+  The count and the complaint answer the same question, what the field
+  describes, so only one of them can be true at a time, and this is the place
+  the eye already goes for that answer. The sentence saying *which* failure it
+  was is the label's tooltip: a bar has room for a verdict, not for a sentence.
+  It outranks the count while it stands, and it stands until the text or the
+  encoding changes — a complaint about hex does not outlive hex.
+- An **empty** field is not a bad pattern but no pattern: nothing is reported
+  where the count goes, and the message goes where `Not found` does.
+- While it is shown its width is fixed from a template, so a climbing number
+  never shifts the controls beside it — the stepper does not move between
+  `1 of 9` and `128 of 4,096`, nor when the count appears and goes. Digits are
+  grouped in the reader's region format.
+
+Highlighting matches in the dump and on the minimap: see
+`Design/FIND_HIGHLIGHT_PLAN.md` (in progress).
 
 =====================================================================
 12. CLIPBOARD, COPY, PASTE
@@ -1504,6 +1690,15 @@ text.
   the modified colour, significant bytes in ink, a 0x00/0xFF fill muted.
   The difference background must remain visible behind an opaque byte.
 - The selection is drawn as a translucent overlay on top of the cells.
+- While a search is running, the matches are marked the same way as in overview
+  (§11): a **stroke of solid ink** over each match's cells — a byte-cell tall,
+  continuous across the cells it covers, and split at the map's row boundaries
+  — and the current match as a **plate**, the find indicator's yellow inside a
+  thin ink frame, drawn over every stroke and deliberately bigger than a stroke
+  on every side, because it is the mark that has to be found rather than
+  noticed. Not the dump's grey-and-yellow pair: the map draws a
+  byte as a cell of ink, so a background behind one byte says nothing at this
+  size, while a bar over several does.
 - Byte state must come from the same per-byte source the panes paint from,
   so the map cannot disagree with the dump beside it.
 
@@ -1574,6 +1769,38 @@ resolution is used and nothing is spent on gaps.
   the bins change (a resize), when the bytes change, and when the comparison
   index changes — difference marks come from that index rather than from
   re-reading both files.
+
+Search matches in overview:
+
+- Precision is not the point at this scale — a row is kilobytes — so a match is
+  a **stroke of solid ink**: a couple of pixels tall, over the cells its bytes
+  fall in, and widened to a readable minimum when they fall in a single cell.
+  What matters is that something was found around here.
+- The dump's match grey is not used here: a row is aggregated content drawn as
+  a grey *tone*, so a grey mark cannot be told from content. Ink can.
+- The current match is a **plate** instead: a horizontal rectangle, 2 pt of the
+  find indicator's yellow inside a thin ink frame, so "you are here" reads apart
+  from "something is here". It carries that job alone — there is no margin
+  marker for it — and it is drawn **over every stroke**, not just the ones on
+  its own row: a row here is about a pixel tall while the marks are a few, so
+  a neighbouring match would otherwise be painted on top of it.
+- **Horizontally a mark takes the dump's own column**: `offset % 16`, the
+  column the byte is drawn in, not the fraction of the row's span it falls at.
+  A row of the overview is kilobytes, so its 16 cells are slices of that span —
+  which is right for the density picture underneath and wrong for a mark the
+  eye lines up with the dump: a match on the first byte of its dump row must
+  sit at the left of the map's row, whatever fraction of the kilobytes that
+  byte sits at. The detail map already reads this way (§19.4.1), so the two
+  modes now agree. *Vertically* the row is still the byte's binned row, which
+  is the only thing a row of the overview can mean.
+- The marks are computed from the match set, not from the file, so a new search
+  costs no density rebuild: the picture is invalidated by bytes, these marks by
+  the pattern. They are also computed **off the search's critical path** — a
+  scheduled pass on a background task, coalescing a run of ‹ › presses — and
+  not at all while the panel is closed. The strokes are remembered by what they
+  are made of (the geometry, and the pattern, folding and count of each pane's
+  set), so a step of the indicator re-marks one range for the plate rather than
+  walking every row again.
 
 19.4.3 Bookmarks in the margin
 

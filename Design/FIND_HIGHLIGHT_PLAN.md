@@ -28,16 +28,38 @@ than inventing ours:
   **the same in both appearances** — Apple's documentation says to use it with
   black text, and that constraint is real (see *Ink over the indicator*).
 
-The relief is drawn, not free: a rounded rect (radius ≈ 3 pt) inset half a point
-inside the cell run, filled yellow, with a hairline `black @ 0.25` border and a
-1 pt shadow below. That is what makes the yellow read as a raised bubble rather
-than a flat fill. `showFindIndicator` cannot be reused: it is an `NSTextView`
-animation over text storage, and it flashes and dies where we need a state that
-holds until the next Find Next.
+**The relief is drawn, and its outline is not ours.** The bubble's shape comes
+from the *mirrored selection's* contour builder (§3.3) — the same padding away
+from the glyphs, the same corner radius, one staircase around a match that
+crosses rows. One algorithm, two users. It carries no border: a soft shadow
+below and to the right is what says "raised", and a dark rim around yellow reads
+as a box drawn on the text. Both columns, both states.
 
-The shape spans the match's bytes *within one row*, like the selection fill:
-rounded at the ends that are the match's real ends, square where it continues
-onto the next row. Both the hex column and the decoded-text column, both states.
+**Why not the SDK's own indicator.** `NSTextView.showFindIndicator(for:)` draws
+exactly this bubble — it is what TextEdit and Xcode get for free — but it takes
+a *text range* in an `NSTextView`'s storage, so a custom hex view cannot ask for
+it, and it flashes and dies where we need a state that holds until the next Find
+Next.
+
+**Why not Core Animation for the hop.** `CASpringAnimation` on a layer's
+`transform.scale` and shadow properties is the platform's own way to animate
+this — but it animates a *layer*, and a sublayer composites **above** its view's
+own drawing. The bubble has to sit under the bytes it highlights, so it belongs
+in `draw(_:)`, and a layer would cover them. What is taken from the platform is
+its frame clock: `NSView.displayLink(target:selector:)` (macOS 14) drives the
+hop, not a `Timer`.
+
+The hop itself is one idea — height — with three consequences: the plate grows
+about its own centre (never moving off the bytes it marks), and its shadow grows
+wider, softer and deeper. Half a second, one clear jump and a small second one.
+A quarter of a second was tried and reads as a redraw glitch rather than as
+movement.
+
+The shadow is drawn from the plate's own geometry — concentric strokes of the
+same outline — rather than with `NSShadow`, and that is a correctness decision:
+an `NSShadow` offset is interpreted in whatever space the current graphics
+context is in, and this view is painted through more than one, which had the
+shadow falling downward in a render test while falling upward on screen.
 
 ## One scan is the source of everything
 
@@ -198,16 +220,16 @@ Its states, and nothing else:
 | When | Shows |
 | --- | --- |
 | bar just opened, nothing searched yet | *(empty — the bar stays quiet)* |
-| scanning, no current match yet | `128…` |
-| scanning, standing on a match | `3 of 128…` |
-| scan complete | `3 of 128` |
-| complete, pattern occurs nowhere | `Not found` |
-| complete, past the listing limit | `3 of 4 812` + a warning glyph |
-| complete, past the technical limit (huge images only) | `3 of 2 481 903` + the glyph |
+| a set, nothing stepped to yet | `128` |
+| standing on a match | `3 of 128` |
+| pattern occurs nowhere | `Not found` |
+| past the listing limit | `3 of 4 812` + a warning glyph |
+| past the technical limit (huge images only) | `2 481 903` + the glyph |
 
-- The **ellipsis** is the only indication that the number is still climbing; the
-  scan's progress and its × already live in the pane's status bar (§14.4), and
-  duplicating them on the bar would be noise.
+- **Nothing appears while the scan runs.** An earlier draft had the count climb
+  behind an ellipsis; publishing a set in pieces would mean copying it per
+  batch, and the scan's progress and its × already live in the pane's status
+  bar (§14.4). So the label speaks when the set lands — 3 ms on a 16 MB dump.
 - **`Not found`** replaces today's transient "No matches after the cursor." for
   the case where there are none at all — a persistent statement instead of a
   message that fades while the field still holds the pattern that failed.
@@ -353,7 +375,8 @@ must not disagree about what was searched.
 
 ## Stages
 
-Each ends with the app working and useful.
+**All seven are built** (branch `find-highlight`). Each ended with the app
+working and useful; what each one actually settled is in its commit.
 
 1. **`MatchSet` and the scan that fills it** (5–7 h). The pure type with both
    representations and the rank table behind `ordinal(of:)`, the scan wiring (one
@@ -379,6 +402,46 @@ Each ends with the app working and useful.
 makes search instant and counted without drawing anything new; 4–7 are the
 picture.
 
+## What the build changed about this plan
+
+Five things turned out differently, and the code and §11 follow the code:
+
+- **No partial sets** — *reversed by the point above.* The reasoning here was
+  that publishing a set in pieces would mean copying it per batch, and that a
+  press of Find Next had always waited for a scan. Both were true and neither
+  mattered: a set is published on a 100 ms cadence rather than per batch, and
+  what it costs to copy is the *representation* — a bitmap of one bit per byte
+  once matches are dense, so 2 MB for a 16 MB dump however many matches there
+  are. What the note missed is that the wait it accepted was ~3 ms for a rare
+  pattern and four seconds for a common one.
+- **The shadow under the find indicator is drawn from the plate's own
+  geometry**, not with `NSShadow`, whose offset is interpreted in whatever
+  coordinate space the current graphics context is in — and this view is painted
+  through more than one, which had the shadow falling downward in a render test
+  while falling upward on screen.
+- **The overview marks matches with ink strokes**, not with the dump's grey: a
+  row there is kilobytes of aggregated content drawn as a grey tone, so a grey
+  mark cannot be told from content. The current match is a yellow plate in a
+  thin ink frame.
+- **The index is not what shows a user their match.** The plan had one scan
+  per activated pattern, and everything — including the match itself — waiting
+  for it. Measured on 16 MB of `0xFF` searching `FF`, release build: the
+  directional scan that finds the first occurrence takes **1.1 ms**, and
+  indexing all 16 777 216 of them takes **3 979 ms**. So the order is now: scan
+  from the caret, show the match, and index behind it, publishing the index as
+  it fills. Navigation is answered by a scan until the index is complete and by
+  an index step after — and the count, the wrap and the ordinal, which are the
+  things that need the whole file, are the only things that wait for it. The
+  plan's "no partial sets" note below is what this replaces.
+- **The highlighting ends without the set.** Decision 7 below said the set dies
+  with the bar, and the results panel kept a copy of its own rows to survive
+  that. Two copies is two things to keep in step: an open panel went on listing
+  the previous pattern after the next search, and looked authoritative doing
+  it. Now the pane holds one set that the panel, the dump, the map and the
+  count all read, `Done`/Escape/retyping end only the *showing* of it, and
+  invalidation is the one thing that drops it — taking the panel with it.
+  Picking a row turns the showing back on.
+
 ## Decisions taken
 
 1. **One scan per activated pattern is the single source** for greys, indicator,
@@ -396,8 +459,13 @@ picture.
    selection fill for that range.
 6. **A modified byte keeps its red ink inside the yellow indicator**; everything
    else goes black there.
-7. **The set dies with the pattern, the bar, or Escape** — but survives the bar's
-   close while a results panel for the same pattern is open.
+7. **The *highlighting* dies with the pattern, the bar, or Escape** —
+   including while a results panel is open, because closing the bar reads as
+   "finished searching" and greys after that claim otherwise. The **set**
+   survives all three and dies only of invalidation, which is what lets the
+   panel keep listing the search that was actually run. (This decision first
+   said the set itself died; see "What the build changed" above for why it
+   could not.)
 
 Nothing here is open. The first thing Stage 1 should produce is `MatchSet` with
 its tests; the first thing Stage 2 changes in the spec is §11's navigation rule.
