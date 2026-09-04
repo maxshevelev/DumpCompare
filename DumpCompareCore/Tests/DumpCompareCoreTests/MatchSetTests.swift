@@ -227,4 +227,27 @@ final class MatchSetTests: XCTestCase {
         XCTAssertFalse(counted.splice([0x10], replacing: 0..<0x100))
         XCTAssertEqual(counted.total, 9_000, "a refused splice changes nothing")
     }
+    /// The two ways of naming a match must agree: the index the navigation asks
+    /// for at an offset, and the offset the map asks for at that index. A dense
+    /// bitmap is where a rank/select mismatch shows, and it showed as a mark
+    /// one row above where its match was.
+    func testTheIndexAtAnOffsetPointsAtTheMatchThere() {
+        let pattern = SearchPattern(bytes: [0xFF], encoding: .hex)
+        let dense = MatchSet(pattern: pattern, folding: .exact, extent: 4096,
+                             starts: (0..<4096).map { $0 })
+        for offset in [UInt64(0), 1, 63, 64, 65, 1000, 4095] {
+            let index = dense.index(atOrAfter: offset)
+            XCTAssertEqual(index.flatMap { dense.start(at: $0) }, offset,
+                           "at \(offset) the index must name the match at \(offset)")
+        }
+
+        // And with gaps, where "at or after" has to skip.
+        let sparse = MatchSet(pattern: pattern, folding: .exact, extent: 4096,
+                              starts: [0, 100, 4000])
+        XCTAssertEqual(sparse.index(atOrAfter: 1).flatMap { sparse.start(at: $0) }, 100)
+        XCTAssertEqual(sparse.index(atOrAfter: 100).flatMap { sparse.start(at: $0) }, 100)
+        XCTAssertEqual(sparse.index(atOrAfter: 101).flatMap { sparse.start(at: $0) }, 4000)
+        XCTAssertNil(sparse.index(atOrAfter: 4001))
+    }
+
 }

@@ -2292,10 +2292,10 @@ final class MainViewController: NSViewController {
             var marks = 0
             while let i = index, marks < perRowMarkLimit, matched[row] != .max {
                 guard let start = set.start(at: i), start < rowEnd else { break }
-                // The whole row range, not this one row: `mark` indexes the
-                // bits from the range's start, and the masks are absolute.
-                binning.mark(start..<start + UInt64(set.patternLength), rows: rows,
-                             into: &matched)
+                // The whole row range, not this one row: the marking indexes
+                // the bits from the range's start, and the masks are absolute.
+                binning.markHexColumns(start..<start + UInt64(set.patternLength),
+                                       rows: rows, into: &matched)
                 marks += 1
                 index = i + 1 < set.total ? i + 1 : nil
             }
@@ -2311,7 +2311,7 @@ final class MainViewController: NSViewController {
                                           rowCount: Int) -> [UInt16] {
         var marks = [UInt16](repeating: 0, count: rowCount)
         guard rowCount > 0, let range else { return marks }
-        binning.mark(range, rows: 0...(rowCount - 1), into: &marks)
+        binning.markHexColumns(range, rows: 0...(rowCount - 1), into: &marks)
         return marks
     }
 

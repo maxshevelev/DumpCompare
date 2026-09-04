@@ -1677,16 +1677,42 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     private func drawOverviewMatches(forMapAt index: Int, rows: ClosedRange<Int>,
                                      top: CGFloat, cells: [(x: CGFloat, width: CGFloat)],
                                      rowHeight: CGFloat, expecting rowCount: Int) {
-        guard matchOverlays.indices.contains(index), let firstCell = cells.first,
-              let lastCell = cells.last else { return }
-        let overlay = matchOverlays[index]
-        // An overlay binned for a different row count would put its marks on the
-        // wrong rows; it is rebuilt the moment the panel's count settles.
-        guard overlay.rowCount == rowCount, rowCount > 0 else { return }
-        let columns = Int(Self.bytesPerRow)
+        let bars = Self.overviewMatchBars(overlay: matchOverlays.indices.contains(index)
+                                            ? matchOverlays[index] : nil,
+                                          rows: rows, top: top, cells: cells,
+                                          rowHeight: rowHeight, expecting: rowCount)
         let ink = (HexTheme.byteText.usingColorSpace(.deviceRGB) ?? HexTheme.byteText)
         let currentInk = (HexTheme.findIndicatorFill.usingColorSpace(.deviceRGB)
                           ?? HexTheme.findIndicatorFill)
+        // Two passes, because a row here is about a pixel tall while the marks
+        // are a few: a stroke drawn for a later row would otherwise land on top
+        // of the current match's plate, and the plate has to be the topmost
+        // thing on the map (§11).
+        ink.setFill()
+        for box in bars.matches { box.fill() }
+        if let box = bars.current {
+            currentInk.setFill()
+            box.fill()
+            ink.setStroke()
+            let frame = NSBezierPath(rect: box.insetBy(dx: 0.5, dy: 0.5))
+            frame.lineWidth = 1
+            frame.stroke()
+        }
+    }
+
+    /// Where the overview's match marks go: a stroke per marked row, and the
+    /// current match's plate. Pure geometry, so a test can assert that the
+    /// plate lands on the cell the match's byte falls in — the map and the dump
+    /// must not disagree about where the user is (§11).
+    static func overviewMatchBars(overlay: MatchOverlay?, rows: ClosedRange<Int>,
+                                  top: CGFloat, cells: [(x: CGFloat, width: CGFloat)],
+                                  rowHeight: CGFloat, expecting rowCount: Int)
+        -> (matches: [NSRect], current: NSRect?) {
+        guard let overlay, let firstCell = cells.first, let lastCell = cells.last,
+              // An overlay binned for a different row count would put its marks
+              // on the wrong rows; it is rebuilt the moment the count settles.
+              overlay.rowCount == rowCount, rowCount > 0 else { return ([], nil) }
+        let columns = Int(bytesPerRow)
         let mapRight = lastCell.x + lastCell.width
 
         /// The mark for a row's mask: the marked cells' span, widened to a
@@ -1705,43 +1731,48 @@ final class MinimapView: NSView, NSViewToolTipOwner {
             let right = cells[last].x + cells[last].width
             var width = right - left
             var x = left
-            if width < Self.overviewMatchWidth {
-                width = Self.overviewMatchWidth
+            if width < overviewMatchWidth {
+                width = overviewMatchWidth
                 x = max(firstCell.x, min(left, mapRight - width))
             }
             return NSRect(x: x, y: y, width: width, height: height)
         }
 
-        // Two passes, because a row here is about a pixel tall while the marks
-        // are a few: a stroke drawn for a later row would otherwise land on top
-        // of the current match's plate, and the plate has to be the topmost
-        // thing on the map (§11).
-        ink.setFill()
+        var strokes: [NSRect] = []
         for row in rows {
             guard overlay.matched.indices.contains(row) else { break }
             guard overlay.matched[row] != 0 else { continue }
             if let box = mark(for: overlay.matched[row], y: top + CGFloat(row) * rowHeight,
-                              height: Self.overviewMatchHeight) {
-                box.fill()
+                              height: overviewMatchHeight) {
+                strokes.append(box)
             }
         }
-        // The current match's plate: a horizontal rectangle centred on its row,
-        // yellow inside a thin ink frame.
-        let currentHeight = Self.overviewCurrentMatchHeight
-        let inset = (currentHeight - Self.overviewMatchHeight) / 2
+        let currentHeight = overviewCurrentMatchHeight
+        let inset = (currentHeight - overviewMatchHeight) / 2
+        var plate: NSRect?
         for row in rows {
             guard overlay.current.indices.contains(row) else { break }
             guard overlay.current[row] != 0 else { continue }
-            guard let box = mark(for: overlay.current[row],
-                                 y: top + CGFloat(row) * rowHeight - inset,
-                                 height: currentHeight) else { continue }
-            currentInk.setFill()
-            box.fill()
-            ink.setStroke()
-            let frame = NSBezierPath(rect: box.insetBy(dx: 0.5, dy: 0.5))
-            frame.lineWidth = 1
-            frame.stroke()
+            plate = mark(for: overlay.current[row],
+                         y: top + CGFloat(row) * rowHeight - inset, height: currentHeight)
+            if plate != nil { break }
         }
+        return (strokes, plate)
+    }
+
+    /// The overview's 16 column origins for a content region, for tests.
+    func overviewColumnLayoutForTesting(in area: NSRect) -> [(x: CGFloat, width: CGFloat)] {
+        overviewColumnLayout(in: area)
+    }
+
+    /// The overview's match marks for this panel's own geometry, for tests.
+    func overviewMatchBars(forMapAt index: Int, in area: NSRect)
+        -> (matches: [NSRect], current: NSRect?) {
+        let rowCount = overviewRowCount()
+        guard rowCount > 0, matchOverlays.indices.contains(index) else { return ([], nil) }
+        return Self.overviewMatchBars(overlay: matchOverlays[index], rows: 0...(rowCount - 1),
+                                      top: area.minY, cells: overviewColumnLayout(in: area),
+                                      rowHeight: overviewRowHeight, expecting: rowCount)
     }
 
     /// A match's stroke on the **detail** map. Deliberately taller than a byte

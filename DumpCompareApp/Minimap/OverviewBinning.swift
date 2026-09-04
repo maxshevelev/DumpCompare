@@ -59,6 +59,50 @@ struct OverviewBinning {
         return (row, column...column)
     }
 
+    /// Sets the bit of the **hex dump's** column for every byte of `range`, for
+    /// the rows in `rows`: `offset % 16`, the column the byte is drawn in.
+    ///
+    /// Deliberately not this row's own bins, which is what `mark` uses. A row
+    /// of the overview is kilobytes, so its 16 cells are slices of that span —
+    /// right for a density picture, and meaningless for a mark the eye is meant
+    /// to line up with the dump. A match on the first byte of its dump row must
+    /// sit at the left of the map's row, wherever in the row's kilobytes that
+    /// byte happens to fall; otherwise the map and the dump disagree about
+    /// where the user is, which is the one thing the find indicator exists to
+    /// say (§11). It is also what the detail map already does, so the two modes
+    /// now read the same way (§19.4.1).
+    ///
+    /// A stretch covering a whole dump row's worth of bytes fills the row's
+    /// cells, since every column holds one of its bytes.
+    func markHexColumns(_ range: Range<UInt64>, rows: ClosedRange<Int>,
+                        into bits: inout [UInt16]) {
+        guard rowCount > 0, extent > 0 else { return }
+        let columns = UInt64(Self.columns)
+        let lower = min(range.lowerBound, extent)
+        let upper = min(range.upperBound, extent)
+        guard lower < upper else { return }
+        var offset = lower
+        while offset < upper {
+            let row = Int(offset * UInt64(rowCount) / extent)
+            // A range can cross the map's rows; each of them takes the columns
+            // of its own bytes.
+            let limit = min(upper, max(start(ofRow: row + 1), offset + 1))
+            let index = row - rows.lowerBound
+            if rows.contains(row), bits.indices.contains(index) {
+                if limit - offset >= columns {
+                    bits[index] = .max
+                } else {
+                    var byte = offset
+                    while byte < limit {
+                        bits[index] |= UInt16(1) << UInt16(byte % columns)
+                        byte += 1
+                    }
+                }
+            }
+            offset = limit
+        }
+    }
+
     /// Sets the bit of every cell a byte range touches, for the rows in `rows`.
     /// `bits` holds one `UInt16` per row of `rows`, indexed from its start —
     /// the shape `OverviewSummary`'s `modified` and `different` masks use, and

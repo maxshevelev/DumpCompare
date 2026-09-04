@@ -1774,11 +1774,23 @@ Search matches in overview:
   marker for it — and it is drawn **over every stroke**, not just the ones on
   its own row: a row here is about a pixel tall while the marks are a few, so
   a neighbouring match would otherwise be painted on top of it.
-- The bits are binned by the same arithmetic as the density picture, so a match
-  lands on the cell its bytes land in — including the stretch regime above. They
-  are computed from the match set, not from the file, and a new search therefore
+- **Horizontally a mark takes the dump's own column**: `offset % 16`, the
+  column the byte is drawn in, not the fraction of the row's span it falls at.
+  A row of the overview is kilobytes, so its 16 cells are slices of that span —
+  which is right for the density picture underneath and wrong for a mark the
+  eye lines up with the dump: a match on the first byte of its dump row must
+  sit at the left of the map's row, whatever fraction of the kilobytes that
+  byte sits at. The detail map already reads this way (§19.4.1), so the two
+  modes now agree. *Vertically* the row is still the byte's binned row, which
+  is the only thing a row of the overview can mean.
+- The marks are computed from the match set, not from the file, so a new search
   costs no density rebuild: the picture is invalidated by bytes, these marks by
-  the pattern.
+  the pattern. They are also computed **off the search's critical path** — a
+  scheduled pass on a background task, coalescing a run of ‹ › presses — and
+  not at all while the panel is closed. The strokes are remembered by what they
+  are made of (the geometry, and the pattern, folding and count of each pane's
+  set), so a step of the indicator re-marks one range for the plate rather than
+  walking every row again.
 
 19.4.3 Bookmarks in the margin
 
