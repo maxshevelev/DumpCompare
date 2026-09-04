@@ -1349,6 +1349,76 @@ Match count (the Find bar):
   `1 of 9` and `128 of 4,096`, nor when the count appears and goes. Digits are
   grouped in the reader's region format.
 
+The pattern field's menu — recents and favourites
+(`Design/PATTERN_LIBRARY_IDEA.md`):
+
+- The pattern field is a **search field**, and everything the user has searched
+  for hangs off its own menu: **Recent Queries**, what the app remembers, and
+  **Favorites**, what the user keeps. A menu is the platform's vocabulary for a
+  named list, and the same place Xcode puts its recents and **Clear Recents**.
+- A **favourite is a recent with a name**, and nothing else. One stored shape,
+  one row format, one pick, one validation — and "keep this one" is naming a
+  recent rather than composing a new thing. The two lists differ in the two
+  ways that matter: the history is a cache, capped and evicted by the next
+  search, while the favourites are curated — nothing is evicted and the order
+  is the user's.
+- A row states everything it searches with, because a row that hides one of
+  them is lying about what picking it does: `Name: "pattern"  encoding, case
+  rule` for a favourite, the same without the name for a recent. The flags are
+  grey and a size down — they say *how* the pattern is searched, not what is
+  searched for. Hex states no case rule: bytes have none.
+- Each list appears only when it has rows, with its header (a clock, a filled
+  star) and the command that acts on it. An empty section header is a promise
+  of nothing.
+- **Picking a row** loads all three — pattern, encoding, case rule — and runs
+  the search: a row is chosen deliberately, and the Return that would follow it
+  never means anything else. The encoding it names is where a Smart Search
+  starts (above). It records **nothing** in the history: the history is what was
+  *typed*, and spending its slots on things already kept elsewhere is the
+  problem favourites exist to solve.
+- A pattern its own encoding can no longer read — the one way there is a
+  hand-edited store — is marked with a warning glyph and stays pickable. The
+  pick puts the text in the field, and from there it is the text the user
+  would have typed: reported as `Invalid pattern` where the count goes when
+  that encoding *is* the search, and searched as text when Smart Search is on.
+- **Add to Favorites** keeps what the field describes: the pattern, the
+  encoding the popup names — after a Smart Search, the one that *worked* — and
+  the case rule. It asks for a **name** in a small sheet, focused and empty,
+  with what is being kept stated above it and not editable there; editing
+  belongs in the form. With an empty field the command is dimmed, like the
+  stepper at zero matches. The same search is not kept twice under two names:
+  the sheet says which name it is already kept under, and the same pattern
+  under another encoding or case rule is a different search and is kept.
+- **Clear Recents** empties the history and nothing else. **Manage
+  Favorites…** opens Settings on the Favorites tab — the item promises a list,
+  so it lands on the list.
+- Escape belongs to the **field**: the first press closes the menu, the next
+  clears the field, and clearing cancels the search that was running (a field
+  with a clear (⊗) button has no other reading). The bar therefore closes by
+  **Done**, not by Escape.
+
+The Favorites tab (Settings, beside File Types):
+
+- The list is edited where app-wide state the user curates is edited. A table:
+  name, pattern, encoding, match case — edited in place, applied live like
+  every other tab in that window, so there is nothing to confirm and nothing to
+  lose.
+- **Nothing unsearchable is stored.** A pattern is committed through the same
+  `SearchEngine.parsePattern` call the Find bar makes; when it throws, the cell
+  goes back to what it held and the reason is said under the table. An encoding
+  the pattern cannot survive is refused the same way, so an entry never becomes
+  unsearchable behind the user's back.
+- A **new row is a draft** until it has a pattern: `+` puts a row in the table,
+  not in the store, because an entry that searches for nothing is not a search.
+  Leaving the tab abandons an unfinished row, and a change made elsewhere — a
+  pattern kept from a Find bar while the tab is open — is taken up unless a
+  draft is being filled in.
+- **The order is the user's**, so rows are dragged; the Find bar's menu lists
+  them in that order. There is no sorting rule to remember.
+- Match case is dead for hex, for the same reason the bar's own toggle leaves
+  the bar: bytes have no case, and a control showing "off" beside an exact
+  search is the one state the app must never be in.
+
 Highlighting matches in the dump and on the minimap: see
 `Design/FIND_HIGHLIGHT_PLAN.md` (in progress).
 
