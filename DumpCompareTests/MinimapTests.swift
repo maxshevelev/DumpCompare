@@ -20,8 +20,7 @@ final class MinimapTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        isolatedSuiteName = "MinimapTests-\(UUID().uuidString)"
-        isolatedDefaults = UserDefaults(suiteName: isolatedSuiteName)
+        (isolatedSuiteName, isolatedDefaults) = isolatedDefaults(for: self)
         // Route the minimap's width persistence at the isolated store; restored
         // to .standard in tearDown.
         MainViewController.minimapDefaults = isolatedDefaults
@@ -38,7 +37,7 @@ final class MinimapTests: XCTestCase {
         if let savedLayoutIsVertical {
             LayoutSettings.set(isVertical: savedLayoutIsVertical)
         }
-        isolatedDefaults.removePersistentDomain(forName: isolatedSuiteName)
+        discardIsolatedDefaults(isolatedSuiteName, isolatedDefaults)
         MainViewController.minimapDefaults = .standard
         isolatedDefaults = nil
         super.tearDown()

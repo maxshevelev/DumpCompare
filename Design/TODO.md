@@ -225,6 +225,12 @@ before.
 
 ## Done
 
+- **Smart Search** — the encoding as a result rather than an instruction: with
+  the toggle on (the default), a pattern is looked for as hex when it reads as
+  hex and then as text, ASCII through UTF-16 BE, until something is found; the
+  winner goes into the popup and the history. The pass, the order and the wrap
+  live in the model (`SmartSearch` in the Core package); a pass that finds
+  nothing says so on a frosted plate over the window, naming what it tried.
 - **Find highlighting** — `Design/FIND_HIGHLIGHT_PLAN.md`, seven stages on the
   `find-highlight` branch. One scan per activated pattern is the single source:
   Find Next became an index step (and wraps), the Find bar counts ("3 of 128"),

@@ -16,14 +16,13 @@ final class GoToBookmarksTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        isolatedSuiteName = "GoToBookmarksTests-\(UUID().uuidString)"
-        isolatedDefaults = UserDefaults(suiteName: isolatedSuiteName)
+        (isolatedSuiteName, isolatedDefaults) = isolatedDefaults(for: self)
         GoToHistoryStore.defaults = isolatedDefaults
     }
 
     override func tearDown() {
         removeTempFiles()
-        isolatedDefaults.removePersistentDomain(forName: isolatedSuiteName)
+        discardIsolatedDefaults(isolatedSuiteName, isolatedDefaults)
         GoToHistoryStore.defaults = .standard
         isolatedDefaults = nil
         for window in windows { window.orderOut(nil) }

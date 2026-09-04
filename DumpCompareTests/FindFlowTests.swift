@@ -16,8 +16,7 @@ final class FindFlowTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        isolatedSuiteName = "FindFlowTests-\(UUID().uuidString)"
-        isolatedDefaults = UserDefaults(suiteName: isolatedSuiteName)
+        (isolatedSuiteName, isolatedDefaults) = isolatedDefaults(for: self)
         // Route the find feature's persistence (history + Aa toggle) at the
         // isolated store; restored to .standard in tearDown.
         FindHistoryStore.defaults = isolatedDefaults
@@ -33,7 +32,7 @@ final class FindFlowTests: XCTestCase {
 
     override func tearDown() {
         removeTempFiles()
-        isolatedDefaults.removePersistentDomain(forName: isolatedSuiteName)
+        discardIsolatedDefaults(isolatedSuiteName, isolatedDefaults)
         FindHistoryStore.defaults = .standard
         FindBarView.defaults = .standard
         FilePaneView.defaults = .standard
@@ -81,6 +80,16 @@ final class FindFlowTests: XCTestCase {
     private func cleanup(_ controller: MainViewController, _ url: URL) {
         controller.windowModel.pane1.close()
         try? FileManager.default.removeItem(at: url)
+    }
+
+    /// Turns Smart Search off, for a test about the encoding the *user* chose:
+    /// with it on the popup is a result rather than an instruction, which is
+    /// its own set of tests (§11).
+    private func withoutSmartSearch(_ window: NSWindow) throws {
+        let bar = try findBar(window)
+        guard bar.smartSearchOnForTests else { return }
+        bar.smartButton.performClick(nil)
+        XCTAssertFalse(bar.smartSearchOnForTests, "the premise: the chosen encoding is the search")
     }
 
     /// The visible find bar in the window.
@@ -491,6 +500,7 @@ final class FindFlowTests: XCTestCase {
         let (controller, window, url) = try makeController([0xDE, 0xAD, 0xDE, 0xAD])
         defer { cleanup(controller, url) }
         controller.findPattern()
+        try withoutSmartSearch(window)
         let bar = try findBar(window)
         let (combo, encoding, _, _) = try barControls(window)
 
@@ -526,6 +536,7 @@ final class FindFlowTests: XCTestCase {
         let (controller, window, url) = try makeController([0xDE, 0xAD])
         defer { cleanup(controller, url) }
         controller.findPattern()
+        try withoutSmartSearch(window)
         let bar = try findBar(window)
         let (combo, _, _, _) = try barControls(window)
 
@@ -793,6 +804,7 @@ final class FindFlowTests: XCTestCase {
         defer { cleanup(controller, url) }
 
         controller.findPattern()
+        try withoutSmartSearch(window)
         var (combo, encoding, done, _) = try barControls(window)
         encoding.selectItem(at: SearchEncoding.allCases.firstIndex(of: .utf8)!)
         encoding.sendAction(encoding.action, to: encoding.target)
@@ -1019,6 +1031,7 @@ final class FindFlowTests: XCTestCase {
         defer { cleanup(controller, url) }
 
         controller.findPattern()
+        try withoutSmartSearch(window)
         let (combo, encoding, _, caseToggle) = try barControls(window)
         encoding.selectItem(at: SearchEncoding.allCases.firstIndex(of: .utf8)!)
         encoding.sendAction(encoding.action, to: encoding.target)
@@ -1368,6 +1381,7 @@ final class FindFlowTests: XCTestCase {
         defer { cleanup(controller, url) }
 
         controller.findPattern()
+        try withoutSmartSearch(window)
         let (combo, _, _, _) = try barControls(window)
         combo.stringValue = "FF FF FF"
         try findAllButton(window).performClick(nil)
@@ -1382,6 +1396,164 @@ final class FindFlowTests: XCTestCase {
         let message = try XCTUnwrap(descendants(of: view.view, NSTextField.self)
             .first { $0.stringValue == "No matches." })
         XCTAssertFalse(message.isHidden, "it says so where the rows would have been")
+    }
+
+    /// A press of ‹ › on a search that is already indexed must **step**: no
+    /// scan, no progress bar, and the greys stay where they are. A pass would
+    /// drop the finished index for a placeholder — the flicker of every match
+    /// going out and coming back — and that is the regression this pins.
+    func testASecondPressStepsAndDoesNotRescan() throws {
+        let bytes: [UInt8] = [0xDE, 0xAD, 0x00, 0xDE, 0xAD, 0x00, 0xDE, 0xAD]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+
+        controller.findPattern()
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "DE AD"
+        try clickFindNext(window)
+        XCTAssertTrue(indexed(window), "the premise: a finished index")
+        XCTAssertTrue(pumpUntil(2) { pane.currentMatch == 0..<2 })
+        let set = try XCTUnwrap(pane.matchSet)
+        XCTAssertEqual(set.total, 3)
+
+        try clickFindNext(window)
+
+        XCTAssertEqual(pane.currentMatch, 3..<5, "the step lands at once, with no scan")
+        XCTAssertEqual(pane.matchSet?.total, 3, "on the same index")
+        XCTAssertTrue(try XCTUnwrap(pane.matchSet).isComplete,
+                      "which is still finished — a rescan would have replaced it")
+        XCTAssertEqual(pane.currentMatchIndex, 1, "and the count knows which one")
+    }
+
+    /// And a press while the index is still building steps too, out of the part
+    /// of the file the index has covered — without dropping the index, putting
+    /// the greys out, or starting a scan. Every one of those was the regression:
+    /// a pass on each press meant a common pattern in a big dump never finished
+    /// indexing, and every ‹ › looked like a fresh search.
+    func testAPressMidIndexStepsWithinWhatIsCovered() throws {
+        let bytes: [UInt8] = [0xDE, 0xAD, 0x00, 0xDE, 0xAD, 0x00, 0xDE, 0xAD, 0x00, 0x00]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+        controller.findPattern()
+
+        // A half-built index: two matches found, the file covered to byte 6.
+        let pattern = SearchPattern(bytes: [0xDE, 0xAD], encoding: .hex)
+        let half = MatchSet(pattern: pattern, folding: .exact, extent: pane.fileSize,
+                            starts: [0, 3], indexedUpTo: 6)
+        pane.setMatches(half, current: 0)
+        // Standing on the first match, as a search leaves the user.
+        pane.select(range: 0..<2)
+        XCTAssertFalse(try XCTUnwrap(pane.matchSet).isComplete, "the premise")
+
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "DE AD"
+        try clickFindNext(window)
+
+        XCTAssertEqual(pane.currentMatch, 3..<5,
+                       "the next match is inside what the index covers, so it is a step")
+        XCTAssertEqual(pane.matchSet?.indexedUpTo, 6, "the half-built index is untouched")
+        XCTAssertEqual(pane.matchSet?.total, 2, "and still holds what it had found")
+        XCTAssertNil(controller.transientNotice, "no wrap, and nothing to report")
+    }
+
+    /// And when the index cannot answer — nothing ahead in the part it has
+    /// covered — the press is a *scan*, which must leave the search alone: the
+    /// half-built index keeps filling, the greys stay, and only the plate
+    /// moves. Sending this through a search's activation instead was the
+    /// regression: it replaced the session (every match blinking out) and
+    /// cancelled the index on every press.
+    func testAScannedStepLeavesTheSearchAlone() throws {
+        var bytes = [UInt8](repeating: 0x41, count: 256)
+        bytes.replaceSubrange(0..<2, with: [0xDE, 0xAD])
+        bytes.replaceSubrange(128..<130, with: [0xDE, 0xAD])
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+        controller.findPattern()
+
+        // Covered to byte 8, so the match at 128 is not in the index yet.
+        let pattern = SearchPattern(bytes: [0xDE, 0xAD], encoding: .hex)
+        pane.setMatches(MatchSet(pattern: pattern, folding: .exact, extent: pane.fileSize,
+                                 starts: [0], indexedUpTo: 8),
+                        current: 0)
+        pane.select(range: 0..<2)
+
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "DE AD"
+        try clickFindNext(window)
+
+        XCTAssertTrue(pumpUntil(3) { pane.currentMatch == 128..<130 },
+                      "the scan finds what the index has not reached")
+        XCTAssertEqual(pane.matchSet?.indexedUpTo, 8, "and the index is left as it was")
+        XCTAssertEqual(pane.matchSet?.total, 1)
+        XCTAssertEqual(pane.matchSet?.pattern.bytes, [0xDE, 0xAD], "still the same search")
+    }
+
+    // MARK: - Coming round the end of the file (§11)
+
+    /// Wrapping is the one thing about a step the dump cannot show: the plate
+    /// moves and the page moves exactly as they do for the next match in line.
+    /// So a step that came round the end says so — a circular arrow turning the
+    /// way the search was going.
+    func testAStepThatWrapsSaysSo() throws {
+        let bytes: [UInt8] = [0xDE, 0xAD, 0x00, 0xDE, 0xAD, 0x00]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+        TransientNoticeView.glyphHoldDuration = 0.05
+        defer { TransientNoticeView.glyphHoldDuration = 0.9 }
+
+        controller.findPattern()
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "DE AD"
+        try clickFindNext(window)
+        XCTAssertTrue(indexed(window))
+        XCTAssertTrue(pumpUntil(2) { pane.currentMatch == 0..<2 }, "the first match")
+        XCTAssertNil(controller.transientNotice, "nothing to say about a plain step")
+
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(2) { pane.currentMatch == 3..<5 }, "the second, still no wrap")
+        XCTAssertNil(controller.transientNotice)
+
+        // Past the last one: back to the first, which is news.
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(2) { pane.currentMatch == 0..<2 }, "round to the first")
+        let forward = try XCTUnwrap(controller.transientNotice, "a wrap is said")
+        XCTAssertTrue(forward.lines.isEmpty, "with no text — it is a sign, not a report")
+        XCTAssertEqual(forward.accessibilityLabel(), "arrow.clockwise",
+                       "turning the way the search was going")
+        XCTAssertTrue(pumpUntil(2) { forward.superview == nil }, "and it leaves on its own")
+
+        // And backwards, off the front of the file.
+        try clickFindPrevious(window)
+        XCTAssertTrue(pumpUntil(2) { pane.currentMatch == 3..<5 }, "round to the last")
+        let backward = try XCTUnwrap(controller.transientNotice)
+        XCTAssertEqual(backward.accessibilityLabel(), "arrow.counterclockwise")
+    }
+
+    /// The search that *starts* a session wraps too — its scan begins at the
+    /// caret, so a lone match above it is only found by coming round — and it
+    /// is the same news.
+    func testAnActivationThatHasToWrapSaysSo() throws {
+        var bytes = [UInt8](repeating: 0x41, count: 4096)
+        bytes.replaceSubrange(0..<2, with: [0xDE, 0xAD])
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+        TransientNoticeView.glyphHoldDuration = 0.05
+        defer { TransientNoticeView.glyphHoldDuration = 0.9 }
+        pane.moveCaret(to: 2048)
+
+        controller.findPattern()
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "DE AD"
+        try clickFindNext(window)
+
+        XCTAssertTrue(pumpUntil(3) { pane.currentMatch == 0..<2 },
+                      "the only match is behind the caret")
+        XCTAssertEqual(controller.transientNotice?.accessibilityLabel(), "arrow.clockwise")
     }
 
     // MARK: - The answer comes before the index (§11)
@@ -1781,6 +1953,7 @@ final class FindFlowTests: XCTestCase {
         let (controller, window, url) = try makeController(bytes)
         defer { cleanup(controller, url) }
         controller.findPattern()
+        try withoutSmartSearch(window)
         let (_, encoding, _, caseToggle) = try barControls(window)
         XCTAssertEqual(caseToggle.state, .off, "case-insensitive must be the default")
 

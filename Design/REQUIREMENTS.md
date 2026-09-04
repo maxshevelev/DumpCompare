@@ -1086,6 +1086,94 @@ Case-insensitive matching:
   UTF-16 one ~50 ms for the candidate walk. A debug build is an order of magnitude
   slower on all of them and says nothing about what the app ships.
 
+Smart Search:
+
+- A toggle on the bar beside the encoding popup (the `wand.and.sparkles` glyph,
+  in the same two states as the case toggle: accent and semibold when on, quiet
+  grey when off). **On by default**, and remembered.
+- With it on, the encoding in the popup at the moment a search is activated
+  **does not matter**: it becomes a *result* rather than an instruction. A dump
+  holds bytes, and a string in a dump is in whichever encoding its author
+  happened to use — the reader usually knows what they are looking for and not
+  how it is written.
+- Where the user has said something about the encoding, that is tried **first**
+  and the guessing follows it:
+  - a pattern **picked out of the field's history** comes with the encoding it
+    was found in — the entry records the pair — and the bar opens on the last
+    search the same way;
+  - the encoding popup **chosen by hand** counts too, which is how a reader who
+    knows the string is ASCII says so without turning Smart Search off — and it
+    **outranks the search already running**: a string that occurs both as ASCII
+    and as UTF-16 LE is found as ASCII first, and switching the popup to
+    UTF-16 LE then means "find the UTF-16 one", not "the next ASCII one",
+    however well indexed the ASCII search is. Naming the encoding a search is
+    *already* in is no reason to start it again: that press is a step, like any
+    other.
+
+  Typing or editing the pattern takes that back: the text is the user's again
+  and the encoding is the app's to work out, so the rules below apply from
+  scratch. This is what "the encoding at the moment of activation does not
+  matter" means — the *leftover* value does not, a deliberate one does.
+- The order: if the text reads as **hex bytes** it is looked for as bytes
+  first, then as text; otherwise as text only. Text goes ASCII, UTF-8, UTF-16
+  LE, UTF-16 BE — most likely first. "Reads as hex bytes" is stricter than what
+  the hex parser accepts: an even run of hex digits (`DEADBEEF`) or those digits
+  in pairs (`DE AD BE EF`), which is how every hex dump prints them; `DEAD BEEF`
+  is text.
+- Each encoding gets the two scans a plain search runs — from the caret, then
+  from the file's other end — so "this encoding finds nothing" means nothing
+  *anywhere*, and only then does the next encoding get a turn.
+- Encodings that ask the **same question** are one scan: `abc` as ASCII and as
+  UTF-8 is the same three bytes compared the same way, and scanning a dump twice
+  for them would be twice the wait for one answer. The attempt answers for both,
+  and reports as both.
+- On a match: the winning encoding is **put in the popup** — naming an
+  encoding says where to *start*, and the popup then says what actually worked,
+  so the reader is never left guessing which encoding the match is in. It
+  replaces a named one as the standing choice too, which is what makes the next
+  press a step through the index this search built rather than another pass
+  from an encoding already ruled out. The pattern is **recorded in the
+  history** paired with it, and everything else proceeds as a
+  plain search does — the plate, the reveal, and the index of every other
+  occurrence of *that* encoding's pattern.
+- The pass can be long — several scans of the file — so it is one background
+  operation in the status bar, with its progress and its (×), like any search
+  (§14.4). A second press while it runs is not a second pass: the one running is
+  already the answer to it.
+- A pass that finds nothing **anywhere** is reported as a transient plate over
+  the window: rounded, frosted, a glyph and one line per question asked, naming
+  every encoding that question stood for.
+
+    Smart search.
+    Hex bytes — no results.
+    ASCII, UTF-8 — no results.
+    …
+
+  Horizontally centred in the window and in its **lower third** — out of the
+  way of the bytes being read at the top of it, and of the find bar above them.
+  It fades in, holds a few seconds, and leaves. It is a report, not a dialog: a
+  click over it goes to the dump underneath. And it is a report **about a
+  search**, so it goes the moment that search stops being the current one —
+  activating another pattern, or dismissing the bar, takes it away at once
+  rather than leaving it to sit out its seconds over a question already
+  answered. The bar also reads
+  `Not found`, and the results panel `No matches.` — both true of every
+  attempt — while the plate is what says which ones they were.
+- The case toggle stays on the bar while Smart Search is on, whatever the popup
+  says: the pass will try the text encodings, so case is a live question even
+  under `Hex bytes`. And it is the toggle alone that answers it there — §11's
+  rule that a non-foldable encoding forces exact matching is about the encoding
+  *a search runs in*, and with Smart Search on the popup names a result rather
+  than the search. Each attempt folds by its own encoding, hex exactly by
+  `CaseFolding`'s own rule. Reading the popup for it made a search for `root`
+  straight after a hex search come back empty on a dump that plainly holds
+  `Root`: the popup still said `Hex bytes`, so every text attempt was built
+  case-sensitive and folded nothing.
+- The whole of *what to try, in what order, and the pass that tries it* is the
+  model's (`SmartSearch` in the Core package), which is why it is tested without
+  a window. The bar hands over the text and the case flag and shows what came
+  back; the window's controller puts the answer on screen.
+
 Search navigation:
 
 - Activating a search does two things, in this order: it **shows the match**,
@@ -1124,6 +1212,26 @@ Search navigation:
   Previous at the first returns to the last. A single match wraps onto itself,
   and is re-selected and re-revealed rather than ignored — a press that does
   nothing reads as a broken key.
+- A wrap is **shown**: a transient plate in the same place and of the same kind
+  as Smart Search's report, carrying one large glyph and no text —
+  `arrow.clockwise` going forward, `arrow.counterclockwise` going back. It is
+  the one thing about a step the dump cannot show: the plate moves and the page
+  moves exactly as they do for the next match in line, so without it "the next
+  one" and "the first one, again" look identical. Held for about a second — a
+  sign is taken in at a glance — and a click over it belongs to the dump
+  underneath.
+- Both plates — and any other of the kind — are shown by one presenter
+  (`TransientNoticePresenter`), which owns where they sit, that they fade in and
+  leave on their own, and that a new one replaces the last rather than piling
+  onto it. Two conventions for the same shape is how they drift apart.
+- Detecting the wrap belongs to the **model**, in the two places a next
+  occurrence comes from, each of which handles both directions: a step through a
+  finished index (`MatchSet.step`) and a pass of scans
+  (`SmartSearch.firstMatch`, which is also what a plain search's two scans are
+  — one attempt). Each reports whether it had to come round the end, and the
+  window's controller shows the plate. Working it out in the view would mean
+  working it out once per direction per mechanism, which is how it was first
+  written and why it is written down here.
 - If the pattern occurs nowhere, show a status message saying exactly that. It
   must **not** be directional: the scan covered the whole file, so "nothing
   after the cursor" would understate what it found out. (The message named the
