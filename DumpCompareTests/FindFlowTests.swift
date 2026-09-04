@@ -161,9 +161,9 @@ final class FindFlowTests: XCTestCase {
     /// Presses the results button for `pattern` and waits for the panel to open
     /// on the search's result.
     ///
-    /// The panel no longer opens empty and fills: the scan that feeds the dump's
-    /// highlighting is the one behind it, so the panel appears with its rows
-    /// already in place (§11).
+    /// The panel opens at once, on the index the search is still building, and
+    /// fills as that index does (§11) — so a test that wants the finished list
+    /// waits for the index rather than for the panel.
     @discardableResult
     private func runSearchAll(_ pattern: String, in window: NSWindow) throws -> SearchResultsViewController {
         let (combo, _, _, _) = try barControls(window)
@@ -172,7 +172,18 @@ final class FindFlowTests: XCTestCase {
         let view = try resultsView(window)
         XCTAssertTrue(pumpUntil(5) { view.view.frame.height > 1 },
                       "the results button must open the panel")
+        XCTAssertTrue(indexed(window), "and the index behind it must land")
         return view
+    }
+
+    /// Waits for the active pane's search index to cover the whole file — what
+    /// the count, the wrap and a finished results list all need (§11).
+    @discardableResult
+    private func indexed(_ window: NSWindow, timeout: TimeInterval = 5) -> Bool {
+        guard let controller = window.contentViewController as? MainViewController else {
+            return false
+        }
+        return pumpUntil(timeout) { controller.windowModel.activePane.matchSet?.isComplete == true }
     }
 
     // MARK: - Flow
@@ -1270,9 +1281,10 @@ final class FindFlowTests: XCTestCase {
         XCTAssertEqual(controller.windowModel.pane1.hexSelection().end, 6)
     }
 
-    /// A Search All with no occurrences shows an empty panel with "(0)" — the
-    /// panel always reports the count.
-    func testTheResultsButtonOpensNothingWhenThereAreNoMatches() throws {
+    /// The button opens the panel, whatever the search finds: a press with no
+    /// visible effect reads as a broken button. A pattern that occurs nowhere
+    /// says so where the rows would have been (§11).
+    func testTheResultsButtonOpensThePanelEvenWithNoMatches() throws {
         let (controller, window, url) = try makeController([0x41, 0x42, 0x43])
         defer { cleanup(controller, url) }
 
@@ -1283,9 +1295,127 @@ final class FindFlowTests: XCTestCase {
         XCTAssertTrue(pumpUntil(3) { self.hasCount("Not found", in: window) })
 
         let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
-        XCTAssertFalse(paneView.searchResultsPanelVisible,
-                       "an empty result opens no panel — the bar already says Not found")
-        XCTAssertFalse(try findBar(window).resultsShownForTests)
+        XCTAssertTrue(paneView.searchResultsPanelVisible, "the panel opens")
+        XCTAssertTrue(try findBar(window).resultsShownForTests, "and the toggle reads as on")
+        let view = try resultsView(window)
+        XCTAssertEqual(view.content, .empty)
+        XCTAssertEqual(view.tableView.numberOfRows, 0)
+        let message = try XCTUnwrap(descendants(of: view.view, NSTextField.self)
+            .first { $0.stringValue == "No matches." })
+        XCTAssertFalse(message.isHidden, "it says so where the rows would have been")
+    }
+
+    // MARK: - The answer comes before the index (§11)
+
+    /// The point of the whole arrangement: the match the user asked for is on
+    /// screen long before every other occurrence has been found.
+    ///
+    /// A scan from the caret reads one chunk and stops; the index reads the
+    /// file. On sixteen megabytes that is about a millisecond against a couple
+    /// of hundred, so the selection is asserted *while the index is still
+    /// running* — which is exactly the state the old code could not be in,
+    /// because it waited for the index before moving anything.
+    func testTheFirstMatchLandsWhileTheIndexIsStillRunning() throws {
+        var bytes = [UInt8](repeating: 0x41, count: 16 << 20)
+        bytes.replaceSubrange(0..<4, with: [0xDE, 0xAD, 0xBE, 0xEF])
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+
+        controller.findPattern()
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "DE AD BE EF"
+        try clickFindNext(window)
+
+        XCTAssertTrue(pumpUntil(5) { pane.currentMatch != nil }, "the match is shown")
+        XCTAssertEqual(pane.currentMatch, 0..<4)
+        XCTAssertEqual(pane.hexSelection().start, 0, "and selected")
+        let set = try XCTUnwrap(pane.matchSet)
+        XCTAssertFalse(set.isComplete,
+                       "while the index of the other occurrences is still being built")
+        XCTAssertTrue(hasCount("", in: window),
+                      "and the bar shows no count yet: a partial one would climb as it was read")
+
+        XCTAssertTrue(indexed(window), "the index lands behind the answer")
+        XCTAssertTrue(pumpUntil(2) { self.hasCount("1 of 1", in: window) },
+                      "and the count appears then, exact")
+    }
+
+    /// A press of ‹ › while the index is still building is answered by a scan
+    /// rather than refused: navigation never waits for the index (§11).
+    func testSteppingWorksWhileTheIndexIsStillBuilding() throws {
+        var bytes = [UInt8](repeating: 0x41, count: 8 << 20)
+        bytes.replaceSubrange(0..<2, with: [0xDE, 0xAD])
+        bytes.replaceSubrange(64..<66, with: [0xDE, 0xAD])
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+
+        controller.findPattern()
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "DE AD"
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(5) { pane.currentMatch == 0..<2 }, "the first match")
+
+        // The second press, still mid-index.
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(5) { pane.currentMatch == 64..<66 },
+                      "the next match, found by a scan the index did not have to finish for")
+        XCTAssertTrue(indexed(window))
+        XCTAssertTrue(pumpUntil(2) { self.hasCount("2 of 2", in: window) },
+                      "and once the index lands the plate knows which one it is on")
+    }
+
+    /// While the index is filling, the panel says so rather than reporting a
+    /// count that will grow — and lists what has been found so far (§11).
+    func testThePanelSaysItIsStillSearchingWhileTheIndexFills() throws {
+        let (controller, window, url) = try makeController([0xDE, 0xAD, 0x00, 0xDE, 0xAD])
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+        controller.findPattern()
+        let view = try runSearchAll("DE AD", in: window)
+        XCTAssertEqual(view.content, .matches(total: 2), "the premise: a finished search")
+
+        let pattern = SearchPattern(bytes: [0xDE, 0xAD], encoding: .hex)
+        // A half-built index: nothing found in the stretch covered so far.
+        pane.setMatches(MatchSet(pattern: pattern, folding: .exact, extent: pane.fileSize,
+                                 starts: [], indexedUpTo: 0))
+        XCTAssertEqual(view.content, .searching, "not \"no matches\" — the scan has not looked yet")
+        XCTAssertEqual(headerText(of: view), "Search results (searching…)")
+
+        // The first occurrence, with the file's tail still to go.
+        pane.setMatches(MatchSet(pattern: pattern, folding: .exact, extent: pane.fileSize,
+                                 starts: [0], indexedUpTo: 2))
+        XCTAssertEqual(view.content, .matches(total: 1))
+        XCTAssertEqual(headerText(of: view), "Search results (1, searching…)",
+                       "a count that is still growing says so")
+        XCTAssertEqual(view.listedMatchesForTesting, [0..<2], "and lists what is in hand")
+    }
+
+    /// The button also activates the pattern in the field. Typing a new pattern
+    /// and pressing it must not list the previous pattern's matches — the panel
+    /// and the dump read one set, so the press is what makes that set the new
+    /// pattern's (§11).
+    func testTheResultsButtonSearchesAPatternNothingHasSearchedYet() throws {
+        let bytes: [UInt8] = [0xDE, 0xAD, 0x00, 0xDE, 0xAD, 0x11, 0x22, 0x11, 0x22, 0x11, 0x22]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let view = try runSearchAll("DE AD", in: window)
+        XCTAssertEqual(view.listedMatchesForTesting, [0..<2, 3..<5], "the premise")
+
+        // A new pattern typed into the field, and the panel closed and reopened
+        // on it — no Enter, no ‹ › in between.
+        let (combo, _, _, _) = try barControls(window)
+        try findAllButton(window).performClick(nil)
+        combo.stringValue = "11 22"
+        NotificationCenter.default.post(name: NSControl.textDidChangeNotification, object: combo)
+        try findAllButton(window).performClick(nil)
+
+        XCTAssertTrue(indexed(window), "the press searched the new pattern")
+        XCTAssertEqual(view.listedMatchesForTesting, [5..<7, 7..<9, 9..<11])
+        XCTAssertEqual(controller.windowModel.pane1.matchSet?.pattern.bytes, [0x11, 0x22])
     }
 
     /// Closing the panel forgets its rows, and leaves the search itself alone:

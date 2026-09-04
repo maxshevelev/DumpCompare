@@ -292,10 +292,33 @@ final class PaneViewModel: HexViewDataSource {
     private(set) var matchSet: MatchSet?
 
     /// The match the user is standing on — what the find indicator draws in
-    /// yellow, and the "3" in "3 of 128". Nil between activating a search and
-    /// the first Find Next, whenever the caret has left the matches behind, and
-    /// once the highlighting has ended.
-    private(set) var currentMatchIndex: Int?
+    /// yellow. Nil between activating a search and the first Find Next,
+    /// whenever the caret has left the matches behind, and once the
+    /// highlighting has ended.
+    ///
+    /// A **range**, not an ordinal. The answer to a search is a match, found by
+    /// a scan from the caret in about a millisecond; which number it is among
+    /// all the others is something only a finished index can say, and the index
+    /// of a common byte takes seconds to build (§11). So the plate never waits
+    /// for one.
+    private(set) var currentMatch: Range<UInt64>?
+
+    /// The find indicator's byte range, or nil when the caret is not on a match.
+    var currentMatchRange: Range<UInt64>? { currentMatch }
+
+    /// Which match the indicator is on, one less than the "3" in "3 of 128" —
+    /// asked of the index, and only of a finished one: an ordinal out of a
+    /// half-built index would climb as the scan ran.
+    ///
+    /// Nil, too, for a match the index does not start on. A scan from the caret
+    /// and a scan from the file's start agree everywhere except inside a run of
+    /// the pattern overlapping itself, where they group the run differently.
+    /// Both are true occurrences, and the one the user was shown keeps the
+    /// plate; it has no ordinal until the next step lands on an indexed match.
+    var currentMatchIndex: Int? {
+        guard let currentMatch, let matchSet, matchSet.isComplete else { return nil }
+        return matchSet.index(startingAt: currentMatch.lowerBound)
+    }
 
     /// Whether the set is being *shown*: greys in the dump, marks on the map,
     /// a count in the bar. A completed search outlives its highlighting —
@@ -320,20 +343,42 @@ final class PaneViewModel: HexViewDataSource {
     /// selection the click just gave it (§11).
     var onMatchSetChanged: (() -> Void)?
 
+    /// Fired when the running search's index grew, carrying the stretch of file
+    /// it now covers that it did not before. Its own channel because its
+    /// consequences are narrow: the dump repaints that stretch rather than all
+    /// of it, since a scan filling in a file's tail must not repaint the rows
+    /// the user is reading (§11).
+    var onMatchesFilled: ((Range<UInt64>) -> Void)?
+
     /// The set as far as everything that *draws* it is concerned: nil once the
     /// highlighting ended, even though the set is still there for the results
     /// panel to list (§11).
     var highlightedMatchSet: MatchSet? { highlightsMatches ? matchSet : nil }
 
     /// Installs a scan's result, and shows it: a search was just activated.
-    /// `current` is clamped to the set, so a stale ordinal from a previous
+    /// `current` is read against the set, so a stale ordinal from a previous
     /// pattern can never point past the new one.
     func setMatches(_ set: MatchSet?, current: Int? = nil) {
         matchSet = set
-        currentMatchIndex = Self.clamped(current, to: set)
+        currentMatch = current.flatMap { set?.range(at: $0) }
         highlightsMatches = set != nil
         onMatchSetChanged?()
         onMatchesChanged?()
+    }
+
+    /// The same search's index reached further into the file: `filled` is the
+    /// stretch it now covers that it did not before (§11).
+    ///
+    /// Not a new session and not a moved plate — the greys grow, the rows grow,
+    /// the count and the marks follow, and the dump repaints `filled` alone.
+    /// Ignored when the pane has moved on to another search since the scan
+    /// started: a batch from a superseded scan has nothing to say about this
+    /// one.
+    func fillMatches(_ set: MatchSet, filled: Range<UInt64>) {
+        guard let existing = matchSet, existing.pattern == set.pattern,
+              existing.folding == set.folding else { return }
+        matchSet = set
+        onMatchesFilled?(filled)
     }
 
     /// Shows the set the pane already holds — the greys and the plate come
@@ -344,9 +389,19 @@ final class PaneViewModel: HexViewDataSource {
     /// be picked twice, and the second pick is the one that has to turn the
     /// highlighting back on.
     func highlightMatches(current index: Int? = nil) {
+        guard let matchSet else { return }
+        highlightsMatches = true
+        if let index { currentMatch = matchSet.range(at: index) }
+        onMatchesChanged?()
+    }
+
+    /// The same, for a match found by a scan rather than picked out of the
+    /// index: what a search does before its index exists, and what the fallback
+    /// scan does for a set too large to hold positions for (§11).
+    func highlightMatches(onMatch range: Range<UInt64>) {
         guard matchSet != nil else { return }
         highlightsMatches = true
-        currentMatchIndex = Self.clamped(index ?? currentMatchIndex, to: matchSet)
+        currentMatch = range
         onMatchesChanged?()
     }
 
@@ -356,9 +411,9 @@ final class PaneViewModel: HexViewDataSource {
     /// remembers it, because every way back in (a step, a picked row) says
     /// which match it wants.
     func endMatchHighlighting() {
-        guard highlightsMatches || currentMatchIndex != nil else { return }
+        guard highlightsMatches || currentMatch != nil else { return }
         highlightsMatches = false
-        currentMatchIndex = nil
+        currentMatch = nil
         onMatchesChanged?()
     }
 
@@ -366,9 +421,9 @@ final class PaneViewModel: HexViewDataSource {
     /// throwing: navigation asks for "the next one", and past the end there is
     /// no next one.
     func setCurrentMatch(_ index: Int?) {
-        let clamped = Self.clamped(index, to: matchSet)
-        guard clamped != currentMatchIndex else { return }
-        currentMatchIndex = clamped
+        let range = index.flatMap { matchSet?.range(at: $0) }
+        guard range != currentMatch else { return }
+        currentMatch = range
         onMatchesChanged?()
     }
 
@@ -376,18 +431,12 @@ final class PaneViewModel: HexViewDataSource {
     /// for the results panel to list. This is invalidation — the offsets
     /// stopped being true — not the end of a session (§11).
     func clearMatches() {
-        guard matchSet != nil || currentMatchIndex != nil || highlightsMatches else { return }
+        guard matchSet != nil || currentMatch != nil || highlightsMatches else { return }
         matchSet = nil
-        currentMatchIndex = nil
+        currentMatch = nil
         highlightsMatches = false
         onMatchSetChanged?()
         onMatchesChanged?()
-    }
-
-    /// The find indicator's byte range, or nil when the caret is not on a match.
-    var currentMatchRange: Range<UInt64>? {
-        guard let index = currentMatchIndex else { return nil }
-        return matchSet?.range(at: index)
     }
 
     /// The matches overlapping `range` — what the dump asks for per row range,
@@ -405,11 +454,6 @@ final class PaneViewModel: HexViewDataSource {
     func hasMatches(for pattern: SearchPattern, folding: CaseFolding) -> Bool {
         guard let matchSet else { return false }
         return matchSet.pattern == pattern && matchSet.folding == folding
-    }
-
-    private static func clamped(_ index: Int?, to set: MatchSet?) -> Int? {
-        guard let index, let set, index >= 0, index < set.total else { return nil }
-        return index
     }
 
     /// The active text decoder, rebuilt whenever decoding settings change.

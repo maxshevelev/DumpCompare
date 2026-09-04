@@ -340,7 +340,7 @@ final class SearchEngineTests: XCTestCase {
 
         var starts: [UInt64] = []
         for try await batch in SearchEngine.matchStartsStream(pattern: [0xDE, 0xAD], in: storage) {
-            starts.append(contentsOf: batch)
+            starts.append(contentsOf: batch.starts)
         }
         XCTAssertEqual(starts, expected)
     }
@@ -352,7 +352,7 @@ final class SearchEngineTests: XCTestCase {
         var batches: [[UInt64]] = []
         for try await batch in SearchEngine.matchStartsStream(pattern: [0xAA], in: storage,
                                                              batchSize: 4) {
-            batches.append(batch)
+            batches.append(batch.starts)
         }
         XCTAssertEqual(batches, [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9]])
     }
@@ -365,7 +365,7 @@ final class SearchEngineTests: XCTestCase {
         let storage = ArrayStorage([UInt8](repeating: 0xAA, count: count))
         var total = 0
         for try await batch in SearchEngine.matchStartsStream(pattern: [0xAA], in: storage) {
-            total += batch.count
+            total += batch.starts.count
         }
         XCTAssertEqual(total, count, "every occurrence is counted, however many there are")
     }
@@ -381,13 +381,63 @@ final class SearchEngineTests: XCTestCase {
 
         var builder = MatchSetBuilder(pattern: pattern, folding: .exact, extent: storage.size)
         for try await batch in SearchEngine.matchStartsStream(pattern: pattern.bytes, in: storage) {
-            builder.add(batch)
+            builder.add(batch.starts)
         }
         let set = builder.finish()
         XCTAssertEqual(set.total, placed.count)
         XCTAssertEqual(set.matches(intersecting: 0..<storage.size),
                        placed.map { UInt64($0)..<UInt64($0) + 1 })
         XCTAssertEqual(set.index(atOrAfter: 18), 2, "the ordinal the Find bar shows")
+    }
+
+    /// Each instalment says how far the scan has got, and that is what makes a
+    /// half-built index usable: every match below the offset is in hand, so the
+    /// dump can grey that stretch while the rest is still being scanned (§11).
+    func testMatchStartsStreamReportsHowFarItHasScanned() async throws {
+        // Four windows of four bytes, a match in the first and the last.
+        var bytes = [UInt8](repeating: 0x00, count: 16)
+        bytes[1] = 0xFF
+        bytes[14] = 0xFF
+        let storage = ArrayStorage(bytes)
+
+        var covered: [UInt64] = []
+        var starts: [UInt64] = []
+        for try await batch in SearchEngine.matchStartsStream(pattern: [0xFF], in: storage,
+                                                              chunkSize: 4) {
+            covered.append(batch.scannedUpTo)
+            starts.append(contentsOf: batch.starts)
+        }
+        XCTAssertEqual(starts, [1, 14])
+        XCTAssertEqual(covered, [4, 8, 12, 16],
+                       "a window at a time, including the windows with nothing in them")
+        XCTAssertEqual(covered.last, storage.size, "and the last one covers the file")
+    }
+
+    /// A set built from part of a scan says so, and the greys read it: what has
+    /// been covered is exact, and the total is only "so far".
+    func testAPartialSetKnowsItIsPartial() async throws {
+        let storage = ArrayStorage([UInt8](repeating: 0xAA, count: 16))
+        let pattern = SearchPattern(bytes: [0xAA], encoding: .hex)
+        var builder = MatchSetBuilder(pattern: pattern, folding: .exact, extent: storage.size)
+        var partial: MatchSet?
+
+        for try await batch in SearchEngine.matchStartsStream(pattern: pattern.bytes, in: storage,
+                                                              chunkSize: 4) {
+            builder.add(batch.starts)
+            if partial == nil { partial = builder.snapshot(indexedUpTo: batch.scannedUpTo) }
+        }
+        let half = try XCTUnwrap(partial)
+        XCTAssertFalse(half.isComplete, "four of sixteen bytes is not the file")
+        XCTAssertEqual(half.indexedUpTo, 4)
+        XCTAssertEqual(half.total, 4, "the matches in what was covered")
+        XCTAssertEqual(half.matches(intersecting: 0..<4), [0..<1, 1..<2, 2..<3, 3..<4],
+                       "and they are exact — a snapshot is not an estimate")
+        XCTAssertEqual(half.index(atOrAfter: 2), 2, "with the index still answering")
+
+        let whole = builder.finish()
+        XCTAssertTrue(whole.isComplete)
+        XCTAssertEqual(whole.indexedUpTo, storage.size)
+        XCTAssertEqual(whole.total, 16)
     }
 
     func testMatchStartsStreamEmptyPatternThrows() async {
@@ -422,7 +472,7 @@ final class SearchEngineTests: XCTestCase {
 
         var starts: [UInt64] = []
         do {
-            for try await batch in stream { starts.append(contentsOf: batch) }
+            for try await batch in stream { starts.append(contentsOf: batch.starts) }
         } catch {
             XCTFail("a shouldCancel stop must finish the stream normally, got \(error)")
         }

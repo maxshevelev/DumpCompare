@@ -42,27 +42,44 @@ public struct MatchSet: Equatable, Sendable {
     public private(set) var total: Int
     public private(set) var storage: Storage
 
+    /// How much of the file the scan behind this set has covered, half-open:
+    /// every match below it is in here, and nothing is yet known above it.
+    ///
+    /// A set is published while it is still being built, because the index is
+    /// not what shows a user their match — a scan from the caret does that in
+    /// about a millisecond, while indexing sixteen million occurrences takes
+    /// seconds (`Design/FIND_HIGHLIGHT_PLAN.md`). So the greys, the rows and
+    /// the marks arrive in file order as the scan advances, and the things that
+    /// need the *whole* file — the total, the wrap, an ordinal — wait for
+    /// `isComplete`.
+    public private(set) var indexedUpTo: UInt64
+
+    /// Whether the scan reached the end of the file. Only then is `total` the
+    /// number of occurrences, rather than the number found so far.
+    public var isComplete: Bool { indexedUpTo >= extent }
+
     /// The ceiling on the index itself, not on the number of matches: 32 MB,
     /// which a bitmap reaches at an extent of 256 MB. Below that nothing
     /// degrades however common the pattern is.
     public static let maxIndexBytes = 32 << 20
 
     public init(pattern: SearchPattern, folding: CaseFolding, extent: UInt64,
-                total: Int, storage: Storage) {
+                total: Int, storage: Storage, indexedUpTo: UInt64? = nil) {
         self.pattern = pattern
         self.folding = folding
         self.extent = extent
         self.total = total
         self.storage = storage
+        self.indexedUpTo = indexedUpTo ?? extent
     }
 
     /// Direct form for tests and callers holding starts already: picks the
     /// representation the builder would have picked.
     public init(pattern: SearchPattern, folding: CaseFolding, extent: UInt64,
-                starts: [UInt64]) {
+                starts: [UInt64], indexedUpTo: UInt64? = nil) {
         var builder = MatchSetBuilder(pattern: pattern, folding: folding, extent: extent)
         builder.add(starts)
-        self = builder.finish()
+        self = builder.snapshot(indexedUpTo: indexedUpTo ?? extent)
     }
 
     public var patternLength: Int { max(pattern.bytes.count, 1) }
@@ -434,12 +451,24 @@ public struct MatchSetBuilder {
     }
 
     public func finish() -> MatchSet {
+        snapshot(indexedUpTo: extent)
+    }
+
+    /// The set as it stands, covering the file up to `indexedUpTo` — what a
+    /// still-running scan publishes so the dump can grey what is known while
+    /// the rest is still being found (§11).
+    ///
+    /// Cheap enough to do on a cadence: the copy is the representation, which
+    /// is bounded by the smaller of the bitmap (one bit per byte) and the list
+    /// of starts, and sealing the ranks is a pass over the bitmap's blocks.
+    public func snapshot(indexedUpTo: UInt64) -> MatchSet {
         var sealed = storage
         if case .bitmap(var bitmap) = sealed {
             bitmap.sealRanks()
             sealed = .bitmap(bitmap)
         }
         return MatchSet(pattern: pattern, folding: folding, extent: extent,
-                        total: total, storage: sealed)
+                        total: total, storage: sealed,
+                        indexedUpTo: min(indexedUpTo, extent))
     }
 }

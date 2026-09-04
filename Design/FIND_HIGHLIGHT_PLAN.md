@@ -404,12 +404,16 @@ picture.
 
 ## What the build changed about this plan
 
-Four things turned out differently, and the code and §11 follow the code:
+Five things turned out differently, and the code and §11 follow the code:
 
-- **No partial sets.** The scan runs to completion before anything moves, and
-  the count appears when the set lands. Publishing a set in pieces would have
-  meant copying it per batch, and a press of Find Next has always waited for a
-  scan.
+- **No partial sets** — *reversed by the point above.* The reasoning here was
+  that publishing a set in pieces would mean copying it per batch, and that a
+  press of Find Next had always waited for a scan. Both were true and neither
+  mattered: a set is published on a 100 ms cadence rather than per batch, and
+  what it costs to copy is the *representation* — a bitmap of one bit per byte
+  once matches are dense, so 2 MB for a 16 MB dump however many matches there
+  are. What the note missed is that the wait it accepted was ~3 ms for a rare
+  pattern and four seconds for a common one.
 - **The shadow under the find indicator is drawn from the plate's own
   geometry**, not with `NSShadow`, whose offset is interpreted in whatever
   coordinate space the current graphics context is in — and this view is painted
@@ -419,6 +423,16 @@ Four things turned out differently, and the code and §11 follow the code:
   row there is kilobytes of aggregated content drawn as a grey tone, so a grey
   mark cannot be told from content. The current match is a yellow plate in a
   thin ink frame.
+- **The index is not what shows a user their match.** The plan had one scan
+  per activated pattern, and everything — including the match itself — waiting
+  for it. Measured on 16 MB of `0xFF` searching `FF`, release build: the
+  directional scan that finds the first occurrence takes **1.1 ms**, and
+  indexing all 16 777 216 of them takes **3 979 ms**. So the order is now: scan
+  from the caret, show the match, and index behind it, publishing the index as
+  it fills. Navigation is answered by a scan until the index is complete and by
+  an index step after — and the count, the wrap and the ordinal, which are the
+  things that need the whole file, are the only things that wait for it. The
+  plan's "no partial sets" note below is what this replaces.
 - **The highlighting ends without the set.** Decision 7 below said the set dies
   with the bar, and the results panel kept a copy of its own rows to survive
   that. Two copies is two things to keep in step: an open panel went on listing

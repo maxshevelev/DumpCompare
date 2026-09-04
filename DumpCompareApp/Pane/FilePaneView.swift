@@ -635,6 +635,17 @@ final class FilePaneView: NSView {
             self?.hexView.needsDisplay = true
             self?.onMatchesChanged?()
         }
+        // The running search's index reached further into the file: the greys
+        // for that stretch are known now. Only that stretch repaints, and only
+        // if the user is looking at it — the rest of the scan's instalments
+        // cost the dump nothing (§11).
+        viewModel.onMatchesFilled = { [weak self] range in
+            guard let self else { return }
+            self.hexView.reloadMatches(in: range)
+            // The list grew, and so did the count and the map's strokes.
+            self.syncSearchResults()
+            self.onMatchesChanged?()
+        }
         // Only a *new* set changes what the results panel lists, so only that
         // reaches it. A stepped indicator does not: the table would rebuild and
         // drop the selection the user's click had just given it, and the

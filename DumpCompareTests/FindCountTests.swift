@@ -73,4 +73,22 @@ final class FindCountTests: XCTestCase {
         XCTAssertEqual(reading?.warning,
                        "Too many matches to highlight — navigation and the map still cover all of them.")
     }
+    /// A half-built index has no count to report: the number would climb while
+    /// the user read it, and "3 of 4 812" would quietly mean "of 4 812 so
+    /// far". What says the work is still running is the status bar's own
+    /// operation (§11).
+    func testAnIndexStillBeingBuiltHasNoReading() {
+        let pattern = SearchPattern(bytes: [0xAA], encoding: .hex)
+        let partial = MatchSet(pattern: pattern, folding: .exact, extent: 1024,
+                               starts: [0, 8, 16], indexedUpTo: 32)
+        XCTAssertFalse(partial.isComplete, "the premise")
+        XCTAssertNil(FindCount.reading(of: partial, current: 0))
+
+        let whole = MatchSet(pattern: pattern, folding: .exact, extent: 1024,
+                             starts: [0, 8, 16])
+        let reading = try? XCTUnwrap(FindCount.reading(of: whole, current: 0))
+        XCTAssertEqual(reading?.total, 3, "the finished index reports, and reports exactly")
+        XCTAssertEqual(reading?.text, "1 of 3")
+    }
+
 }

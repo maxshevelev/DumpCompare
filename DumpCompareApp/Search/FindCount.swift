@@ -20,10 +20,16 @@ struct FindCount: Equatable {
     /// Whether the dump and the map can grey them.
     let isHighlightable: Bool
 
-    /// The bar's reading of a pane's session, or nil when there is no session
-    /// and the bar stays quiet.
+    /// The bar's reading of a pane's session, or nil when there is nothing it
+    /// can say yet — no session, or one whose index is still being built.
+    ///
+    /// A count out of a half-built index would climb while the user read it,
+    /// and "3 of 4 812" would mean "of 4 812 so far". The bar is where the
+    /// app's diagnosis of a pattern goes, so it waits for the whole file; what
+    /// says the work is still running is the status bar's own operation, which
+    /// carries its progress (§11, §14.4).
     static func reading(of set: MatchSet?, current: Int?) -> FindCount? {
-        guard let set else { return nil }
+        guard let set, set.isComplete else { return nil }
         return FindCount(total: set.total,
                          ordinal: current.map { $0 + 1 },
                          isListable: set.isListable,

@@ -63,8 +63,11 @@ final class FindHighlightTests: XCTestCase {
         let combo = try XCTUnwrap(descendants(of: bar, NSComboBox.self).first)
         combo.stringValue = pattern
         bar.pressFindForTests(.forward)
-        XCTAssertTrue(pumpUntil(3) { controller.windowModel.pane1.matchSet != nil },
-                      "the scan must land a set")
+        // The match itself lands in a millisecond; the *index* behind it takes
+        // as long as the file is big (§11). These tests are about what the dump
+        // draws once the whole picture is known, so they wait for the index.
+        XCTAssertTrue(pumpUntil(3) { controller.windowModel.pane1.matchSet?.isComplete == true },
+                      "the scan must land a complete set")
         window.layoutIfNeeded()
     }
 
@@ -550,6 +553,27 @@ final class FindHighlightTests: XCTestCase {
         bar.pressFindForTests(.forward)
         XCTAssertTrue(view.isBouncingFindIndicatorForTests,
                       "a wrap onto the only match pops too")
+    }
+
+    /// A scan filling in a file's tail must not repaint the rows the user is
+    /// reading. The dump takes an instalment as damage only where it overlaps
+    /// what is on screen, so most of a long index costs it nothing (§11).
+    func testAFilledStretchRepaintsOnlyWhatIsOnScreen() throws {
+        let (controller, window) = try makeController([UInt8](repeating: 0x41, count: 64 << 10))
+        let view = try hexView(window)
+        window.layoutIfNeeded()
+        let visible = view.visibleByteRange()
+        XCTAssertFalse(visible.isEmpty, "the premise: some rows are on screen")
+        XCTAssertLessThan(visible.upperBound, controller.windowModel.pane1.fileSize,
+                          "and some are not")
+
+        XCTAssertTrue(view.reloadMatches(in: visible), "a stretch on screen is damage")
+        XCTAssertTrue(view.reloadMatches(in: 0..<(visible.lowerBound + 1)),
+                      "so is one that reaches into it")
+        XCTAssertFalse(view.reloadMatches(in: visible.upperBound..<(visible.upperBound + 4096)),
+                       "a stretch past the last visible row is not")
+        XCTAssertFalse(view.reloadMatches(in: visible.lowerBound..<visible.lowerBound),
+                       "and an empty stretch is nothing at all")
     }
 
     /// Ink over the yellow is forced black — Apple's own instruction for

@@ -1088,11 +1088,27 @@ Case-insensitive matching:
 
 Search navigation:
 
-- Activating a search scans the whole file **once** and keeps the result — the
-  set of every occurrence (`Design/FIND_HIGHLIGHT_PLAN.md`). Find Next and Find
-  Previous are steps through that set, not fresh scans, so only a new pattern
-  costs a scan. A set too large to hold positions for falls back to a
-  directional scan per press.
+- Activating a search does two things, in this order: it **shows the match**,
+  and it **starts the index** of every occurrence.
+  - The match comes from one scan starting at the caret, which stops at the
+    first hit — about a millisecond on a sixteen-megabyte dump. Nothing waits
+    for anything else before the user sees it.
+  - The index is built in the background from the file's start, and published
+    as it fills: each instalment covers a stretch of file, so the greys, the
+    rows in the results panel and the marks on the map arrive in file order
+    while the scan runs. The dump repaints an instalment only where it overlaps
+    the rows on screen.
+  - The index is what makes Find Next and Find Previous **steps** rather than
+    scans, and it is what the count, the wrap and an ordinal are made of. All
+    of that waits for the whole file; showing a match does not. Indexing every
+    occurrence of a byte as common as `FF` in a sixteen-megabyte dump takes
+    about four seconds, and the search must not.
+  - Only a new pattern (or an index the file's own edits invalidated) costs a
+    scan. While the file and the pattern stand still the index stands still
+    with them, and a press is O(1).
+- A press of ‹ › before the index is finished — and for an index too large to
+  hold positions for — is answered by a directional scan, wrapping at the
+  file's edge. Navigation never waits for the index.
 - Find Next.
 - Find Previous.
 - When a match is found:
@@ -1150,9 +1166,18 @@ The results panel:
   plate changes no row, and rebuilding the list is how it would lose the row
   the user had just picked in it.
 - The Find bar's results control is therefore a **toggle**: it shows the panel,
-  and pressing it again hides it. It reads as on while the panel is up, and a
-  search that found nothing opens no panel at all — the bar already says
-  `Not found`.
+  and pressing it again hides it. It reads as on while the panel is up. It
+  **opens the panel whatever the search has to say** — a press with no visible
+  effect reads as a broken button — so a pattern that occurs nowhere opens a
+  panel saying `No matches.` where the rows would have been, and a search still
+  being indexed opens on what it has and fills as the index does. While it
+  fills, the header says so (`Search results (128, searching…)`) rather than
+  presenting a count that will grow.
+- The control also **activates the pattern in the field**: a pattern typed but
+  not yet searched by Enter or ‹ › is searched by pressing it. The panel and
+  the dump read one set, so the press is what makes that set the new pattern's
+  — the panel is never a list of the previous pattern's matches. It is not a
+  Find Next, though: the caret stays where it is.
 - Past the listing limit the panel lists **nothing**: it shows the exact count
   and what to do about it ("… matches — too many to list. Refine the pattern.").
   A list of four thousand rows looks exactly like a list of forty until you
@@ -1182,6 +1207,11 @@ Match count (the Find bar):
   is: `3 of 128`. The number is **exact at any size** — it is the app's
   diagnosis of the pattern, and `> 1000` is not a diagnosis, since 1001 and
   3 000 000 call for different actions.
+- The count waits for the whole file. A number out of a half-built index would
+  climb while the user read it, and `3 of 4 812` would quietly mean "of 4 812
+  so far"; the bar is where the app's diagnosis of a pattern goes, so it says
+  nothing until the index is complete. What says the work is still running is
+  the status bar's own operation, with its progress and its (×) (§14.4).
 - A pattern that occurs nowhere reads `Not found` there, and while nothing has
   been searched the bar shows nothing at all — and shows it by **leaving**:
   the count is a region that comes and goes with the search, not a slot held

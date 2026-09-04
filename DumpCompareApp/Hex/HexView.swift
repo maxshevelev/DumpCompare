@@ -2362,6 +2362,32 @@ final class HexView: NSView, NSViewToolTipOwner {
         setNeedsDisplay(layout.rowFrame(row: row))
     }
 
+    /// Redraws the rows a growing search index has just covered — and only
+    /// those, and only when they are on screen.
+    ///
+    /// A scan indexing a sixteen-megabyte dump publishes what it has found a
+    /// window at a time (§11). Most of those windows are nowhere near the rows
+    /// the user is reading: repainting the dump for each of them would spend
+    /// the whole scan redrawing bytes whose greys did not change. Returns
+    /// whether anything was marked dirty, which is what the test asserts.
+    @discardableResult
+    func reloadMatches(in range: Range<UInt64>) -> Bool {
+        guard !range.isEmpty else { return false }
+        let visible = visibleByteRange()
+        // The rows themselves, not the bytes: a match reaching into a row greys
+        // cells on it, so the row is the unit of damage.
+        guard !visible.isEmpty, range.lowerBound < visible.upperBound,
+              visible.lowerBound < range.upperBound else { return false }
+        let layout = currentLayout
+        let bytesPerRow = UInt64(HexLayout.bytesPerRow)
+        let first = Int(max(range.lowerBound, visible.lowerBound) / bytesPerRow)
+        let last = Int((min(range.upperBound, visible.upperBound) - 1) / bytesPerRow)
+        for row in first...last {
+            setNeedsDisplay(layout.rowFrame(row: row))
+        }
+        return true
+    }
+
     /// The single "centre an offset" primitive: scrolls so the row containing
     /// `offset` is at the vertical centre of the visible area (clamped to the
     /// document's edges), so the byte is shown mid-pane rather than at its top

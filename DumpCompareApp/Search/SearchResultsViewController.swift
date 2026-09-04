@@ -42,6 +42,10 @@ final class SearchResultsViewController: NSViewController {
         /// four thousand rows looks exactly like a list of forty until you
         /// scroll to the end, so it would impersonate a tool.
         case tooMany(total: Int)
+        /// The scan is still running and has found nothing so far. Distinct
+        /// from `empty`: "no matches" is a verdict, and a search that has read
+        /// a tenth of the file has not reached one.
+        case searching
         /// Nothing to list: the search being shown found nothing — or the
         /// panel is hidden, where nobody reads it either way.
         case empty
@@ -313,7 +317,8 @@ final class SearchResultsViewController: NSViewController {
 
     /// What a set reads as: rows, a count and a refusal, or nothing at all.
     private static func content(of set: MatchSet?) -> Content {
-        guard let set, set.total > 0 else { return .empty }
+        guard let set else { return .empty }
+        guard set.total > 0 else { return set.isComplete ? .empty : .searching }
         guard set.isListable, set.isHighlightable else { return .tooMany(total: set.total) }
         return .matches(total: set.total)
     }
@@ -375,6 +380,10 @@ final class SearchResultsViewController: NSViewController {
             messageLabel.stringValue = "No matches."
             messageLabel.isHidden = false
             scrollView.isHidden = true
+        case .searching:
+            messageLabel.stringValue = "Searching…"
+            messageLabel.isHidden = false
+            scrollView.isHidden = true
         }
         updateHeader()
         tableView.reloadData()
@@ -415,9 +424,15 @@ final class SearchResultsViewController: NSViewController {
     }
 
     private func updateHeader() {
+        // While the index is still filling the count is "so far", and the
+        // header says so rather than presenting a number that will grow (§11).
+        let searching = !(matchSet?.isComplete ?? true)
         switch content {
         case .matches(let total), .tooMany(let total):
-            headerLabel.stringValue = "Search results (\(Self.grouped(total)))"
+            let count = searching ? "\(Self.grouped(total)), searching…" : Self.grouped(total)
+            headerLabel.stringValue = "Search results (\(count))"
+        case .searching:
+            headerLabel.stringValue = "Search results (searching…)"
         case .empty:
             headerLabel.stringValue = "Search results (0)"
         }
