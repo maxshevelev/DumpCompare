@@ -496,6 +496,20 @@ final class MainViewController: NSViewController {
     /// to do so would mean it never finished (§11).
     private var indexTask: Task<Void, Never>?
     private var indexOperation: BackgroundOperation?
+    /// The attempts a Smart Search is working through, while it is (§11). A
+    /// second press of Enter during a pass has nothing to add: the pass *is*
+    /// the answer to it, and starting another would only cancel this one.
+    private var smartPassInFlight: [SmartSearch.Attempt]?
+
+    /// Stops whatever find is in flight — a navigation scan or a Smart Search
+    /// pass — and takes its operation off the status bar.
+    private func cancelFind() {
+        findTask?.cancel()
+        findTask = nil
+        findOperation?.finish()
+        findOperation = nil
+        smartPassInFlight = nil
+    }
     /// The in-flight segment write (Save All / Save Segment, §21.5), surfaced in
     /// the active pane's status bar while it runs, like a search (§14.4).
     private var segmentWriteTask: Task<Void, Never>?
@@ -645,11 +659,11 @@ final class MainViewController: NSViewController {
 
         findBar.translatesAutoresizingMaskIntoConstraints = false
         findBar.isHidden = true  // shown by Cmd+F (§11)
-        findBar.onSearch = { [weak self] pattern, direction, caseSensitive in
-            self?.runSearch(pattern: pattern, direction: direction, caseSensitive: caseSensitive)
+        findBar.onSearch = { [weak self] request, direction in
+            self?.runSearch(request, direction: direction)
         }
-        findBar.onSearchAll = { [weak self] pattern, caseSensitive in
-            self?.toggleSearchResults(pattern: pattern, caseSensitive: caseSensitive)
+        findBar.onSearchAll = { [weak self] request in
+            self?.toggleSearchResults(request)
         }
         findBar.onError = { [weak self] message in
             self?.showFindMessage(message)
@@ -849,8 +863,7 @@ final class MainViewController: NSViewController {
         }
         // The panes are about to be rebuilt, so a scan in flight would land its
         // set in a pane that is going away.
-        findTask?.cancel()
-        findOperation?.finish()
+        cancelFind()
         endIndexing()
         findBar.setResultsShown(false)
         // Panes are rebuilt on every apply, so the viewport mirrors must start
@@ -4958,8 +4971,7 @@ final class MainViewController: NSViewController {
         findBar.isHidden = true
         contentTopToFindBar.isActive = false
         contentTopToView.isActive = true
-        findTask?.cancel()
-        findOperation?.finish()
+        cancelFind()
         endIndexing()
         // The highlighting ends with the bar, always: Done and Esc mean "I am
         // finished searching", and greys left on the dump after that claim a
@@ -4980,15 +4992,163 @@ final class MainViewController: NSViewController {
     /// and wrapping are possible at all
     /// (`Design/FIND_HIGHLIGHT_PLAN.md`). Only a *new* pattern (or an index the
     /// file's own edits invalidated) costs a scan.
-    private func runSearch(pattern: SearchPattern, direction: SearchDirection, caseSensitive: Bool) {
+    private func runSearch(_ request: FindBarView.Request, direction: SearchDirection) {
         let pane = activePane
         guard pane.isOpen else { return }
-        let folding = CaseFolding(encoding: pattern.encoding, caseSensitive: caseSensitive)
-        if pane.hasMatches(for: pattern, folding: folding) {
-            stepMatch(direction: direction, in: pane)
-            return
+        switch request {
+        case .pattern(let pattern, let folding):
+            if pane.hasMatches(for: pattern, folding: folding) {
+                stepMatch(direction: direction, in: pane)
+                return
+            }
+            beginSearch(pattern: pattern, folding: folding, direction: direction, in: pane)
+        case .smart(let text, let caseSensitive):
+            guard let attempts = smartAttempts(for: text, caseSensitive: caseSensitive) else {
+                return
+            }
+            // A pass already looking for exactly this is the answer to this
+            // press; and a search already indexed here steps rather than
+            // scanning, including the one a pass settled on (the popup names
+            // it, so its attempt is usually not the first).
+            guard smartPassInFlight != attempts else { return }
+            if attempts.contains(where: { pane.hasMatches(for: $0.pattern, folding: $0.folding) }) {
+                stepMatch(direction: direction, in: pane)
+                return
+            }
+            guard attempts.count > 1 else {
+                beginSearch(pattern: attempts[0].pattern, folding: attempts[0].folding,
+                            direction: direction, in: pane)
+                findBar.adopt(encoding: attempts[0].encoding)
+                return
+            }
+            beginSmartSearch(attempts: attempts, direction: direction, goal: .showTheMatch,
+                             in: pane)
         }
-        beginSearch(pattern: pattern, folding: folding, direction: direction, in: pane)
+    }
+
+    /// What Smart Search will try for this text, or nil when it can try
+    /// nothing — which the bar reports where the count goes (§11).
+    private func smartAttempts(for text: String, caseSensitive: Bool)
+        -> [SmartSearch.Attempt]? {
+        let attempts = SmartSearch.attempts(for: text, caseSensitive: caseSensitive)
+        guard !attempts.isEmpty else {
+            findBar.reportNoUsablePattern()
+            return nil
+        }
+        return attempts
+    }
+
+    /// What a Smart Search does once it knows which encoding to use.
+    private enum SmartSearchGoal {
+        /// A press of Enter or ‹ ›: put the user on the match.
+        case showTheMatch
+        /// A press of the results button: list them, and leave the caret alone.
+        case listTheMatches
+    }
+
+    /// Tries the encodings in turn until one of them finds something (§11).
+    ///
+    /// The reader knows what they are looking for and not how it is stored, so
+    /// the encoding is a result here rather than an instruction: each attempt
+    /// is one scan from the caret and, failing that, one from the file's other
+    /// end — the same two a plain search runs — and the first attempt that
+    /// finds anything becomes the search. Nothing is adopted until then: the
+    /// pane holds no session while the pass runs, so nothing on screen claims
+    /// a search that may turn out not to exist.
+    ///
+    /// The whole pass is one operation in the status bar, with its progress and
+    /// its (×): a wrong guess about an encoding costs a scan of the file, and
+    /// several of them are a wait worth being able to stop (§14.4).
+    private func beginSmartSearch(attempts: [SmartSearch.Attempt], direction: SearchDirection,
+                                  goal: SmartSearchGoal, in pane: PaneViewModel) {
+        cancelFind()
+        endIndexing()
+        // A session that is looking rather than one that has found: the dump
+        // greys nothing, the bar counts nothing, and the results panel says
+        // "searching" instead of going on listing the pattern before this one.
+        // It stands in the first attempt's name until an attempt wins.
+        pane.setMatches(MatchSet(pattern: attempts[0].pattern, folding: attempts[0].folding,
+                                 extent: pane.fileSize, starts: [], indexedUpTo: 0))
+        let operation = BackgroundOperation(name: "Searching…") { [weak self] in
+            self?.cancelFind()
+        }
+        findOperation = operation
+        smartPassInFlight = attempts
+        filePaneView(for: pane)?.beginOperation(operation)
+        guard let storage = pane.document?.storage else { return }
+        let anchor = searchAnchor(in: pane, direction: direction)
+        let chunkSize = Self.searchChunkSize
+        findTask = Task { [weak self] in
+            guard let self else { return }
+            // The pass itself belongs to the model (`SmartSearch.firstMatch`):
+            // the order, the wrap and the progress accounting are what it
+            // knows. What is left here is what to do with its answer.
+            let scan = Task.detached(priority: .userInitiated) {
+                try? SmartSearch.firstMatch(among: attempts, in: storage, from: anchor,
+                                            direction: direction, chunkSize: chunkSize,
+                                            shouldCancel: { Task.isCancelled },
+                                            progress: { operation.report($0) })
+            }
+            let outcome = await withTaskCancellationHandler(
+                operation: { await scan.value },
+                onCancel: { scan.cancel() }
+            )
+            operation.finish()
+            self.smartPassInFlight = nil
+            guard !Task.isCancelled, pane.isOpen else { return }
+            if case .found(let attempt, let range) = outcome {
+                self.adopt(attempt: attempt, folding: attempt.folding, foundAt: range,
+                           goal: goal, in: pane)
+                return
+            }
+            // A finished search that found nothing, in the last encoding tried:
+            // the bar says `Not found` and the panel `No matches.`, which are
+            // both true of every attempt, and the plate below says which ones
+            // they were.
+            if let last = attempts.last {
+                pane.setMatches(MatchSet(pattern: last.pattern, folding: last.folding,
+                                         extent: pane.fileSize, starts: []))
+                // The button opens the panel whatever the search has to say
+                // (§11) — here, that every encoding came back empty.
+                if goal == .listTheMatches { self.presentSearchResults(for: pane) }
+            }
+            // Every encoding, and none of them: said as a plate over the dump,
+            // naming what was tried, because the answer is about the pass and
+            // not about any one of its scans (§11).
+            self.showNotice(symbol: "wand.and.sparkles",
+                            lines: ["Smart search."]
+                                + attempts.map { "\($0.label) — no results." })
+            self.handOffFocusAfterFind()
+        }
+    }
+
+    /// Where a search starts from: the caret, or the edge of the selection it
+    /// would otherwise find again (§11).
+    private func searchAnchor(in pane: PaneViewModel, direction: SearchDirection) -> UInt64 {
+        let selection = pane.hexSelection()
+        return selection.isEmpty ? pane.caretOffset
+            : direction == .forward ? selection.end : selection.start
+    }
+
+    /// Makes the attempt that found something *the* search: the session is its
+    /// pattern's from here on, the bar's popup says which encoding it was, and
+    /// the index of every other occurrence starts behind it (§11).
+    private func adopt(attempt: SmartSearch.Attempt, folding: CaseFolding,
+                       foundAt range: Range<UInt64>, goal: SmartSearchGoal,
+                       in pane: PaneViewModel) {
+        pane.setMatches(MatchSet(pattern: attempt.pattern, folding: folding,
+                                 extent: pane.fileSize, starts: [], indexedUpTo: 0))
+        findBar.adopt(encoding: attempt.pattern.encoding)
+        switch goal {
+        case .showTheMatch:
+            show(match: range, in: pane)
+        case .listTheMatches:
+            // The results button is not a Find Next: the caret stays where it
+            // is, and the panel opens on the index as it fills (§11).
+            presentSearchResults(for: pane)
+        }
+        startIndexing(pattern: attempt.pattern, folding: folding, in: pane)
+        handOffFocusAfterFind()
     }
 
     /// Activates a search: the match the user asked for, now; the index of
@@ -5035,8 +5195,7 @@ final class MainViewController: NSViewController {
     /// and the panel opens on the rows as they arrive (§11).
     private func beginIndexing(pattern: SearchPattern, folding: CaseFolding,
                                in pane: PaneViewModel) {
-        findTask?.cancel()
-        findOperation?.finish()
+        cancelFind()
         // An index covering nothing yet, so the session exists from this
         // instant: a second press finds a search already under way and steps
         // within it instead of starting another.
@@ -5177,8 +5336,7 @@ final class MainViewController: NSViewController {
     /// scan, and on failure a second one from the file's edge, which is the wrap.
     private func runCountedSearch(set: MatchSet, direction: SearchDirection,
                                   in pane: PaneViewModel) {
-        findTask?.cancel()
-        findOperation?.finish()
+        cancelFind()
         let operation = BackgroundOperation(name: "Searching…") { [weak self] in
             self?.findTask?.cancel()
         }
@@ -5209,7 +5367,26 @@ final class MainViewController: NSViewController {
                              direction: SearchDirection, in pane: PaneViewModel,
                              from: UInt64? = nil,
                              operation: BackgroundOperation? = nil) async -> Bool {
-        guard pane.isOpen, let storage = pane.document?.storage else { return false }
+        let range = await firstMatch(of: pattern, folding: folding, direction: direction,
+                                     in: pane, from: from,
+                                     progress: { operation?.report($0) })
+        guard !Task.isCancelled, let range, pane.isOpen else { return false }
+        show(match: range, in: pane)
+        handOffFocusAfterFind()
+        return true
+    }
+
+    /// One directional scan, and nothing else: the range it found, or nil.
+    ///
+    /// Separate from what a find *does* with it because Smart Search asks the
+    /// same question of one encoding after another and only the winner gets to
+    /// move anything (§11).
+    private func firstMatch(of pattern: SearchPattern, folding: CaseFolding,
+                            direction: SearchDirection, in pane: PaneViewModel,
+                            from: UInt64? = nil,
+                            progress: @escaping @Sendable (Double) -> Void = { _ in })
+        async -> Range<UInt64>? {
+        guard pane.isOpen, let storage = pane.document?.storage else { return nil }
         let anchor: UInt64
         if let from {
             anchor = from
@@ -5228,25 +5405,25 @@ final class MainViewController: NSViewController {
                                              direction: direction, folding: folding,
                                              chunkSize: chunkSize,
                                              shouldCancel: { Task.isCancelled },
-                                             progress: { operation?.report($0) })
+                                             progress: progress)
             } catch {
                 return nil
             }
         }
-        let range = await withTaskCancellationHandler(
+        return await withTaskCancellationHandler(
             operation: { await background.value },
             onCancel: { background.cancel() }
         )
-        guard !Task.isCancelled, let range, pane.isOpen else { return false }
+    }
+
+    /// Puts the user on a match a scan found: selected, revealed, and under the
+    /// plate — the answer looks the same whether or not the index behind it
+    /// exists yet (§11).
+    private func show(match range: Range<UInt64>, in pane: PaneViewModel) {
         pane.select(range: range)
-        // The plate goes on the match a scan found, exactly as it goes on one
-        // picked out of the index: the answer looks the same whether or not the
-        // index behind it exists yet (§11).
         pane.highlightMatches(onMatch: range)
         filePaneView(for: pane)?.revealSelectionCenteredIfNeeded()
         filePaneView(for: pane)?.bounceFindIndicator()
-        handOffFocusAfterFind()
-        return true
     }
 
     /// A search launched from the find bar leaves focus in the pattern field so
@@ -5309,7 +5486,7 @@ final class MainViewController: NSViewController {
     /// what that index holds, and goes on presenting it as the index fills.
     /// When the field holds a pattern nothing has looked for yet, the search
     /// starts here and the panel opens on it.
-    private func toggleSearchResults(pattern: SearchPattern, caseSensitive: Bool) {
+    private func toggleSearchResults(_ request: FindBarView.Request) {
         let pane = activePane
         guard pane.isOpen, let paneView = filePaneView(for: pane) else { return }
         if paneView.searchResultsPanelVisible {
@@ -5320,11 +5497,33 @@ final class MainViewController: NSViewController {
         // The button also *activates* the pattern in the field: a pattern
         // typed but not yet searched by Enter or ‹ › is searched here, so the
         // panel is never a list of the previous pattern's matches (§11).
-        let folding = CaseFolding(encoding: pattern.encoding, caseSensitive: caseSensitive)
-        if !pane.hasMatches(for: pattern, folding: folding) {
-            beginIndexing(pattern: pattern, folding: folding, in: pane)
+        switch request {
+        case .pattern(let pattern, let folding):
+            if !pane.hasMatches(for: pattern, folding: folding) {
+                beginIndexing(pattern: pattern, folding: folding, in: pane)
+            }
+            presentSearchResults(for: pane)
+        case .smart(let text, let caseSensitive):
+            guard let attempts = smartAttempts(for: text, caseSensitive: caseSensitive) else {
+                return
+            }
+            if attempts.contains(where: { pane.hasMatches(for: $0.pattern, folding: $0.folding) }) {
+                presentSearchResults(for: pane)
+                return
+            }
+            guard attempts.count > 1 else {
+                beginIndexing(pattern: attempts[0].pattern, folding: attempts[0].folding,
+                              in: pane)
+                findBar.adopt(encoding: attempts[0].encoding)
+                presentSearchResults(for: pane)
+                return
+            }
+            // Which encoding to list is the same question Smart Search answers
+            // for a jump, so it is answered the same way — and the panel opens
+            // on the encoding that turned out to occur (§11).
+            beginSmartSearch(attempts: attempts, direction: .forward, goal: .listTheMatches,
+                             in: pane)
         }
-        presentSearchResults(for: pane)
     }
 
     /// Opens the pane's results panel on its current set: the matches as rows,
@@ -5344,6 +5543,49 @@ final class MainViewController: NSViewController {
         paneView.showSearchResults()
         findBar.setResultsShown(true)
     }
+
+    /// Shows a transient notice over the window: horizontally centred, a
+    /// third of the way down — where Xcode puts a build's result, because it
+    /// is the same kind of thing (§11).
+    ///
+    /// It belongs to the window rather than to a pane: the answer is about an
+    /// operation the window ran, and in comparison mode it would otherwise
+    /// have to pick a pane to be about.
+    func showNotice(symbol: String, lines: [String]) {
+        transientNotice?.dismiss(animated: false)
+        let notice = TransientNoticeView(symbol: symbol, lines: lines)
+        view.addSubview(notice)
+        // A fraction of the height, not a fixed inset: the plate sits where
+        // the eye lands when it looks up from the bytes, on a short window and
+        // a tall one alike. The multiplier form is the only one that can say
+        // that — anchors take constants.
+        let placement = NSLayoutConstraint(item: notice, attribute: .centerY, relatedBy: .equal,
+                                           toItem: view, attribute: .bottom,
+                                           multiplier: Self.noticeVerticalFraction, constant: 0)
+        // On a window too short for the fraction to clear the chrome, the plate
+        // stops rather than climbing off the top. Preferred, so the fraction
+        // wins wherever it fits.
+        let clearsTop = notice.topAnchor.constraint(greaterThanOrEqualTo: view.topAnchor,
+                                                    constant: 12)
+        clearsTop.priority = .defaultHigh
+        NSLayoutConstraint.activate([
+            notice.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            placement,
+            clearsTop,
+            notice.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, constant: -40),
+        ])
+        transientNotice = notice
+        notice.present()
+    }
+
+    /// The notice currently on screen, if any — replaced rather than stacked,
+    /// so a second answer does not pile up on the first.
+    private(set) var transientNotice: TransientNoticeView?
+
+    /// Where a notice's middle sits, as a fraction of the window's height:
+    /// below the toolbar and the find bar, above the middle of the dump — the
+    /// height Xcode shows a build's result at.
+    static let noticeVerticalFraction: CGFloat = 0.3
 
     private func showFindMessage(_ message: String) {
         NSSound.beep()

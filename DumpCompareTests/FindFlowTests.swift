@@ -83,6 +83,16 @@ final class FindFlowTests: XCTestCase {
         try? FileManager.default.removeItem(at: url)
     }
 
+    /// Turns Smart Search off, for a test about the encoding the *user* chose:
+    /// with it on the popup is a result rather than an instruction, which is
+    /// its own set of tests (§11).
+    private func withoutSmartSearch(_ window: NSWindow) throws {
+        let bar = try findBar(window)
+        guard bar.smartSearchOnForTests else { return }
+        bar.smartButton.performClick(nil)
+        XCTAssertFalse(bar.smartSearchOnForTests, "the premise: the chosen encoding is the search")
+    }
+
     /// The visible find bar in the window.
     private func findBar(_ window: NSWindow) throws -> FindBarView {
         try XCTUnwrap(descendants(of: window.contentView!, FindBarView.self).first { !$0.isHidden },
@@ -491,6 +501,7 @@ final class FindFlowTests: XCTestCase {
         let (controller, window, url) = try makeController([0xDE, 0xAD, 0xDE, 0xAD])
         defer { cleanup(controller, url) }
         controller.findPattern()
+        try withoutSmartSearch(window)
         let bar = try findBar(window)
         let (combo, encoding, _, _) = try barControls(window)
 
@@ -526,6 +537,7 @@ final class FindFlowTests: XCTestCase {
         let (controller, window, url) = try makeController([0xDE, 0xAD])
         defer { cleanup(controller, url) }
         controller.findPattern()
+        try withoutSmartSearch(window)
         let bar = try findBar(window)
         let (combo, _, _, _) = try barControls(window)
 
@@ -793,6 +805,7 @@ final class FindFlowTests: XCTestCase {
         defer { cleanup(controller, url) }
 
         controller.findPattern()
+        try withoutSmartSearch(window)
         var (combo, encoding, done, _) = try barControls(window)
         encoding.selectItem(at: SearchEncoding.allCases.firstIndex(of: .utf8)!)
         encoding.sendAction(encoding.action, to: encoding.target)
@@ -1019,6 +1032,7 @@ final class FindFlowTests: XCTestCase {
         defer { cleanup(controller, url) }
 
         controller.findPattern()
+        try withoutSmartSearch(window)
         let (combo, encoding, _, caseToggle) = try barControls(window)
         encoding.selectItem(at: SearchEncoding.allCases.firstIndex(of: .utf8)!)
         encoding.sendAction(encoding.action, to: encoding.target)
@@ -1368,6 +1382,7 @@ final class FindFlowTests: XCTestCase {
         defer { cleanup(controller, url) }
 
         controller.findPattern()
+        try withoutSmartSearch(window)
         let (combo, _, _, _) = try barControls(window)
         combo.stringValue = "FF FF FF"
         try findAllButton(window).performClick(nil)
@@ -1781,6 +1796,7 @@ final class FindFlowTests: XCTestCase {
         let (controller, window, url) = try makeController(bytes)
         defer { cleanup(controller, url) }
         controller.findPattern()
+        try withoutSmartSearch(window)
         let (_, encoding, _, caseToggle) = try barControls(window)
         XCTAssertEqual(caseToggle.state, .off, "case-insensitive must be the default")
 
