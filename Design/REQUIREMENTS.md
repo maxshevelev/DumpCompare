@@ -316,6 +316,14 @@ Display rules:
   Settings window follows them. An open Search Results panel follows too: its
   values are drawn in the dump's font, so its row pitch and its column widths
   are re-derived from the new size (§11);
+- **any** of the three — the size, the family, the row-height factor — re-lays
+  the dump out without moving the content the user is looking at: the row at
+  the middle of the viewport is still there afterwards. In comparison mode that
+  holds for both panes, and they stay locked to each other (§9). The two rules
+  meet in the locked scrolling: pixels only stand for content while the panes
+  are measured the same way, which they are not for the span of a change, so
+  the lock waits for both to re-lay out instead of copying a pixel position
+  that points at different bytes;
 - support Dark Mode;
 - ensure sufficient contrast and accessibility.
 

@@ -241,6 +241,20 @@ final class ComparisonView: NSView {
         isSynchronizingScroll = true
         defer { isSynchronizingScroll = false }
 
+        // The panes are locked because they show the same offsets at the same
+        // row (§9), so pixels only stand for content while the two are measured
+        // the same way. They are not for the span of an appearance change: the
+        // panes re-lay out one at a time (§3.2) and each re-lay-out scrolls its
+        // own pane, which is what this sync hears. Crossing that gap hands the
+        // other pane a position that points at different bytes — and that pane
+        // then re-centres on where it now is and syncs back, so both walk away
+        // from where the user was, the further down the file the further away.
+        //
+        // Waiting costs nothing: each pane restores its own centre from an
+        // offset it captured before its metrics changed, and the one that
+        // finishes last syncs the pair back into lock-step.
+        guard rowPitch(of: scroller) == rowPitch(of: other) else { return }
+
         var origin = scroller.contentView.bounds.origin
         // Clamp to the other pane's scrollable extent so a shorter file can't be
         // scrolled into blank space (§9: shorter pane shows EOF/missing area).
@@ -250,6 +264,11 @@ final class ComparisonView: NSView {
 
         other.contentView.scroll(to: origin)
         other.reflectScrolledClipView(other.contentView)
+    }
+
+    /// A pane's row pitch — what says whether the two are measured the same way.
+    private func rowPitch(of scrollView: NSScrollView) -> CGFloat {
+        (scrollView.documentView as? HexView)?.hexLayout.rowHeight ?? 0
     }
 
     /// On the first layout, arm scroll sync and align the second pane to the
