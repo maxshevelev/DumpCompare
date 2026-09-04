@@ -190,9 +190,11 @@ pattern is *for* — it only knows the pattern and its encoding.
 
 **How.** Taken apart in **`Design/PATTERN_LIBRARY_IDEA.md`** — not a plan. The
 short version: the valuable half is the *name*, not the storage; the deciding
-question is where the library appears in the Find bar, and the answer is a menu
-button of its own rather than a second section inside the pattern combo, whose
-flat list cannot say that a kept pattern is not a recent search. An activated
+question is where the library appears in the Find bar, and the answer is the
+shape Xcode's find field has — an `NSSearchField` whose `searchMenuTemplate`
+drops a real menu with **Favorites** and **Recent Queries** as sections, which
+also deletes the combo's selection-notification path along the way. An
+activated
 library pattern does **not** enter the history — the history records what was
 typed — and an entry's encoding is the user's statement, so a search that finds
 the pattern in another encoding does not rewrite it. Almost everything it needs

@@ -85,11 +85,50 @@ to the top and are never evicted; unnamed ones age out. One list, one store,
   cap has to become "ten *unnamed*", which is a rule the user has to hold in
   their head.
 
-**Recommendation: B**, with the combo's list left exactly as it is. The user's
-own instinct was A, and it is the cheaper-looking option, but the cost lands in
-the wrong place: `NSComboBox`'s flat list is the weakest surface in the bar
-already, and the feature's whole value is that a library entry is *not* a
-recent search. A menu says that by existing.
+**Option D — one field, and the list is a *menu*.** Option A's shape without
+`NSComboBox`: replace the pattern field with an `NSSearchField` and hang the
+list off its `searchMenuTemplate`. That is the control Xcode's find field is —
+the magnifier grows a disclosure arrow, and what drops down is a real menu with
+real sections: **Favorites**, then **Recent Queries**, then **Clear Recents**.
+
+Verified against AppKit rather than assumed:
+
+- `NSSearchField.searchMenuTemplate` takes an `NSMenu`. AppKit will splice its
+  own recents into items tagged `recentsTitleMenuItemTag` (1000),
+  `recentsMenuItemTag` (1001), `clearRecentsMenuItemTag` (1002) and
+  `noRecentsMenuItemTag` (1003) — but those recents are plain strings, and ours
+  carry an encoding and a case flag, so the app keeps building the recent items
+  itself out of `FindHistoryStore` and skips the splicing. The tags are worth
+  knowing about and not worth using here.
+- `NSMenuItem.sectionHeader(title:)` (macOS 14, which is the floor) gives a real
+  header rather than a disabled row pretending to be one.
+- `NSSearchField` is an `NSTextField` subclass, so `controlTextDidChange`, the
+  Return action, the focus handling and the count's layout all stay as they are.
+
+What it buys beyond the sections:
+
+- **The affordance is already on the bar.** The menu opens from the magnifier
+  inside the field, so the library needs no control of its own — which is the
+  "the bar is getting crowded" problem, answered by not adding anything.
+- **It deletes the worst code in the bar.** A menu item has a target and an
+  action; there is no selected index, nothing to deselect, and no
+  `selectionDidChangeNotification` arriving in the middle of the combo's own
+  selection handling — the reason `patternSelectionChanged` has to defer to the
+  next runloop turn today, with a comment explaining that touching the
+  selection there corrupts in-flight state. That whole path goes.
+- The field's clear (⊗) button comes free, and one label format no longer has
+  to serve both lists: a favourite shows its **name**, a recent shows
+  `pattern — Encoding (CS)`.
+
+What it costs: swapping the control (the bar builds it in one place), rebuilding
+the template when either list changes (cheap, and the same trigger the combo's
+`refreshHistoryItems` already has), and losing the combo's inline list
+completion — which is already off (`completes = false`).
+
+**Recommendation: D.** The instinct behind A was right and the control was the
+problem: sections are exactly how this should read, and a menu is what can draw
+them. B stays the fallback if the search field turns out to fight the bar's
+layout, and C remains the wrong shape for the reason given.
 
 ### 2. Does an activated library pattern enter the history?
 
@@ -183,11 +222,10 @@ the primary way an entry is created is **from the field**:
   the user can have meant.
 - Empty field, no command: it is disabled, like the stepper is at zero matches.
 
-Where the command lives is the one open detail, and it follows the answer to
-question 1: an item at the bottom of the library menu is the natural home
-(**Add to Library…**, **Manage Library…**), and if the bar turns out too
-crowded for a second glyph the same command belongs in the pattern field's
-contextual menu, where "do something with what I typed" already reads.
+Where the command lives follows the answer to question 1: an item under the
+field's own menu, below the two lists (**Add to Library…**, **Manage
+Library…**), which is where Xcode puts **Insert Pattern** and **Clear
+Recents** — the same place, for the same reason.
 
 ## Where the library is edited
 
@@ -220,8 +258,10 @@ the first slice:
 
 1. The store, with a name, and no cap.
 2. The Settings tab: add, remove, edit, validate.
-3. The bar's menu button: the entries, then **Add to Library…** and **Manage
-   Library…**. Picking one fills the field, names the encoding, and searches.
+3. The field's menu: **Favorites** (the library, by name), **Recent Queries**
+   (the history, as now), then **Add to Library…**, **Manage Library…** and
+   **Clear Recents**. Picking an entry fills the field, names the encoding, and
+   searches.
 4. **Add to Library…** from the field, with the encoding that worked — without
    this the library starts empty and stays empty.
 5. The history rule: a pick records nothing; only typing records.
@@ -232,10 +272,10 @@ later without changing what this slice does.
 
 ## What would need deciding before writing any of it
 
-- The glyph, and whether the bar has room for it beside `Find`, the field, the
-  encoding popup, the wand, `Aa`, the count, ‹ ›, results and Done. It is
-  getting crowded; if something has to give, the honest candidate is moving
-  **Add to Library…** into the pattern field's contextual menu.
+- Whether an `NSSearchField` sits in the bar's stack the way the combo does —
+  same height, same hugging, the count's fixed width undisturbed. This is the
+  one thing that would send the design back to option B, and it is worth
+  building the field alone and looking at it before anything else is written.
 - Whether an entry's name must be unique. Two entries called *FPT* differing
   only in encoding are legitimate; two identical ones are a mistake the form
   should probably prevent, and probably by merging rather than refusing.
