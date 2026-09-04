@@ -1102,7 +1102,13 @@ Smart Search:
     was found in — the entry records the pair — and the bar opens on the last
     search the same way;
   - the encoding popup **chosen by hand** counts too, which is how a reader who
-    knows the string is ASCII says so without turning Smart Search off.
+    knows the string is ASCII says so without turning Smart Search off — and it
+    **outranks the search already running**: a string that occurs both as ASCII
+    and as UTF-16 LE is found as ASCII first, and switching the popup to
+    UTF-16 LE then means "find the UTF-16 one", not "the next ASCII one",
+    however well indexed the ASCII search is. Naming the encoding a search is
+    *already* in is no reason to start it again: that press is a step, like any
+    other.
 
   Typing or editing the pattern takes that back: the text is the user's again
   and the encoding is the app's to work out, so the rules below apply from

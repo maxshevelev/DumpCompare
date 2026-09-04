@@ -5004,11 +5004,28 @@ final class MainViewController: NSViewController {
         // A search already running here is stepped rather than started again —
         // including the one a Smart Search settled on, whose attempt is
         // usually not the first (the popup names it).
-        if attempts.contains(where: { pane.hasMatches(for: $0.pattern, folding: $0.folding) }) {
+        if steppable(attempts, of: request)
+            .contains(where: { pane.hasMatches(for: $0.pattern, folding: $0.folding) }) {
             stepMatch(direction: direction, in: pane)
             return
         }
         beginPass(attempts: attempts, direction: direction, goal: .showTheMatch, in: pane)
+    }
+
+    /// Which of the attempts a press may *step* through rather than scan for:
+    /// all of them, or — where the user has named an encoding — only that one.
+    ///
+    /// Switching the popup to UTF-16 while standing on an ASCII match means
+    /// "find this as UTF-16", not "the next ASCII one". A session in another
+    /// encoding is no answer to a press that named this one, however well
+    /// indexed it is (§11).
+    private func steppable(_ attempts: [SmartSearch.Attempt],
+                           of request: FindBarView.Request) -> [SmartSearch.Attempt] {
+        guard case .smart(_, _, let preferred) = request, let preferred,
+              let first = attempts.first, first.encoding == preferred else {
+            return attempts
+        }
+        return [first]
     }
 
     /// What the field is asking for, as things to look for: one attempt for a
@@ -5422,7 +5439,10 @@ final class MainViewController: NSViewController {
         // typed but not yet searched by Enter or ‹ › is searched here, so the
         // panel is never a list of the previous pattern's matches (§11).
         guard let attempts = attempts(for: request) else { return }
-        if attempts.contains(where: { pane.hasMatches(for: $0.pattern, folding: $0.folding) }) {
+        // The same rule as a press of ‹ ›: a named encoding is what to list,
+        // even where another one's index is the one already in hand (§11).
+        if steppable(attempts, of: request)
+            .contains(where: { pane.hasMatches(for: $0.pattern, folding: $0.folding) }) {
             presentSearchResults(for: pane)
             return
         }

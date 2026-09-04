@@ -397,6 +397,64 @@ final class SmartSearchFlowTests: XCTestCase {
         XCTAssertNil(controller.transientNotice, "and nothing reports a failure")
     }
 
+    /// The reported case: `windows` is in the dump as ASCII *and* as UTF-16 LE.
+    /// Having found the ASCII one, switching the popup to UTF-16 LE and
+    /// pressing must look for the UTF-16 copy — the named encoding is the first
+    /// attempt, and a well-indexed session in another encoding is no answer to
+    /// a press that named this one (§11).
+    func testANamedEncodingOutranksTheSearchAlreadyRunning() throws {
+        var bytes = [UInt8](repeating: 0xFF, count: 4096)
+        bytes.replaceSubrange(64..<71, with: Array("windows".utf8))
+        let wide = Array("windows".data(using: .utf16LittleEndian)!)
+        bytes.replaceSubrange(512..<(512 + wide.count), with: wide)
+        let (controller, window, _) = try makeController(bytes)
+        defer { cleanup(controller) }
+        let pane = controller.windowModel.pane1
+
+        controller.findPattern()
+        try search("windows", in: window)
+        XCTAssertTrue(pumpUntil(5) { pane.currentMatch == 64..<71 }, "the ASCII copy first")
+        XCTAssertEqual(try encodingPopup(window).titleOfSelectedItem, "ASCII")
+        XCTAssertTrue(pumpUntil(3) { pane.matchSet?.isComplete == true },
+                      "and that search is indexed, which is what used to win")
+
+        let popup = try encodingPopup(window)
+        popup.selectItem(at: SearchEncoding.allCases.firstIndex(of: .utf16LE)!)
+        popup.sendAction(popup.action, to: popup.target)
+        try findBar(window).pressFindForTests(.forward)
+
+        XCTAssertTrue(pumpUntil(5) { pane.currentMatch == 512..<(512 + UInt64(wide.count)) },
+                      "the press looks for the encoding the user named")
+        XCTAssertEqual(try encodingPopup(window).titleOfSelectedItem, "UTF-16 LE")
+        XCTAssertEqual(pane.matchSet?.pattern.encoding, .utf16LE,
+                       "and the session is that encoding's from here on")
+    }
+
+    /// Naming the encoding the search is *already* in is not a reason to start
+    /// it again: that press is a step, as any other press of ‹ › would be.
+    func testNamingTheEncodingItAlreadyUsesStillSteps() throws {
+        var bytes = [UInt8](repeating: 0xFF, count: 4096)
+        bytes.replaceSubrange(64..<71, with: Array("windows".utf8))
+        bytes.replaceSubrange(128..<135, with: Array("windows".utf8))
+        let (controller, window, _) = try makeController(bytes)
+        defer { cleanup(controller) }
+        let pane = controller.windowModel.pane1
+
+        controller.findPattern()
+        try search("windows", in: window)
+        XCTAssertTrue(pumpUntil(5) { pane.currentMatch == 64..<71 })
+        XCTAssertTrue(pumpUntil(3) { pane.matchSet?.isComplete == true })
+
+        let popup = try encodingPopup(window)
+        popup.selectItem(at: SearchEncoding.allCases.firstIndex(of: .ascii)!)
+        popup.sendAction(popup.action, to: popup.target)
+        try findBar(window).pressFindForTests(.forward)
+
+        XCTAssertEqual(pane.currentMatch, 128..<135, "a step, not a fresh search")
+        XCTAssertEqual(pane.matchSet?.total, 2, "on the index it already had")
+        XCTAssertTrue(try XCTUnwrap(pane.matchSet).isComplete)
+    }
+
     // MARK: - When nothing is found anywhere
 
     /// A pass that comes back empty says so as a plate over the window, naming
