@@ -158,6 +158,53 @@ final class ZoomTests: XCTestCase {
 
     // MARK: - The dump follows
 
+    /// An open results panel is the other half of the same search, so it
+    /// follows too: the values' font, the row pitch that has to hold them, and
+    /// the column widths measured in that font (§11, §3.2).
+    func testAnOpenResultsPanelFollowsTheZoom() throws {
+        let url = try tempFile([UInt8](repeating: 0xAB, count: 64))
+        defer { try? FileManager.default.removeItem(at: url) }
+        let pane = PaneViewModel()
+        try pane.open(url: url)
+        let pattern = try SearchEngine.parsePattern("AB", encoding: .hex)
+        let set = MatchSet(pattern: pattern, folding: .exact, extent: pane.fileSize,
+                           starts: Array(0..<8).map(UInt64.init))
+        pane.setMatches(set, current: 0)
+
+        let panel = SearchResultsViewController(pane: pane)
+        _ = panel.view
+        panel.show()
+        let table = try XCTUnwrap(descendants(of: panel.view, NSTableView.self).first)
+        XCTAssertGreaterThan(table.numberOfRows, 0, "the premise: the panel lists rows")
+
+        func valueFontSize() throws -> CGFloat {
+            let cell = try XCTUnwrap(table.view(atColumn: 0, row: 0, makeIfNecessary: true)
+                as? SearchResultCellView)
+            let attributes = cell.attributedText.attributes(at: 0, effectiveRange: nil)
+            return try XCTUnwrap(attributes[.font] as? NSFont).pointSize
+        }
+
+        let size = try valueFontSize()
+        let pitch = table.rowHeight
+        let width = table.tableColumns[0].width
+        XCTAssertEqual(size, AppearanceSettings.fontSize, accuracy: 0.0001,
+                       "the values are drawn in the dump's font")
+
+        delegate.increaseHexFontSize(nil)
+
+        XCTAssertEqual(try valueFontSize(), size + 1, accuracy: 0.0001)
+        XCTAssertGreaterThan(table.rowHeight, pitch, "a bigger font needs a taller row")
+        XCTAssertGreaterThan(table.tableColumns[0].width, width,
+                             "and a wider column to hold the same value")
+
+        delegate.decreaseHexFontSize(nil)
+        delegate.decreaseHexFontSize(nil)
+
+        XCTAssertEqual(try valueFontSize(), size - 1, accuracy: 0.0001)
+        XCTAssertLessThan(table.rowHeight, pitch)
+        XCTAssertLessThan(table.tableColumns[0].width, width)
+    }
+
     /// The point of the feature: an open dump re-lays out on the zoom, the way
     /// it does for the Appearance tab — same notification, same path.
     func testAnOpenDumpFollowsTheZoom() throws {

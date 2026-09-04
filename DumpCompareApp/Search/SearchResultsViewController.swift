@@ -131,6 +131,31 @@ final class SearchResultsViewController: NSViewController {
     private var regularFont: NSFont { AppearanceSettings.font() }
     private var boldFont: NSFont { AppearanceSettings.boldFont() }
 
+    /// A row's height for the value font — the dump's natural row (its
+    /// ascender→descender box padded by 4 pt), so a zoomed dump and its
+    /// results list keep the same pitch (§3.2).
+    ///
+    /// Without the dump's row-height factor, which is compaction of a grid the
+    /// eye scans by position: a table row holds one label, centred, and
+    /// squeezing it to 0.65 of the font's own line box would clip descenders
+    /// for nothing gained.
+    private static func rowHeight(for font: NSFont) -> CGFloat {
+        ceil(font.ascender - font.descender) + 4
+    }
+
+    /// Re-derives everything measured in the value font after an Appearance
+    /// change — Zoom In / Zoom Out included (§3.2).
+    ///
+    /// Three things move together, and all three have to: the row pitch (a
+    /// bigger font in a 20 pt row is a clipped font), the column widths (they
+    /// are template strings measured in the font), and the rows themselves,
+    /// whose attributed strings carry the old font until they are rebuilt.
+    private func applyAppearance() {
+        tableView.rowHeight = Self.rowHeight(for: regularFont)
+        sizeColumnsToContent()
+        tableView.reloadData()
+    }
+
     private enum ColumnID {
         static let offset = NSUserInterfaceItemIdentifier("offset")
         static let hex = NSUserInterfaceItemIdentifier("hex")
@@ -151,9 +176,19 @@ final class SearchResultsViewController: NSViewController {
     /// excerpt (§11).
     private let pane: PaneViewModel
 
+    /// Kept so the panel stops listening when it goes away; the notification
+    /// centre holds the block, not the panel.
+    private var appearanceObserver: NSObjectProtocol?
+
     init(pane: PaneViewModel) {
         self.pane = pane
         super.init(nibName: nil, bundle: nil)
+    }
+
+    deinit {
+        if let appearanceObserver {
+            NotificationCenter.default.removeObserver(appearanceObserver)
+        }
     }
 
     @available(*, unavailable)
@@ -210,6 +245,16 @@ final class SearchResultsViewController: NSViewController {
         closeButton.translatesAutoresizingMaskIntoConstraints = false
 
         setUpTable()
+
+        // The panel reads as part of the same document as the dump, so it
+        // follows the same setting (§3.2). Live rather than only on the next
+        // search: the panel stays open, and a zoom with it open would
+        // otherwise leave the two halves of one search in two font sizes.
+        appearanceObserver = NotificationCenter.default.addObserver(
+            forName: AppearanceSettings.didChangeNotification, object: nil, queue: nil
+        ) { [weak self] _ in
+            self?.applyAppearance()
+        }
 
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.hasVerticalScroller = true
@@ -346,7 +391,7 @@ final class SearchResultsViewController: NSViewController {
 
         tableView.delegate = self
         tableView.dataSource = self
-        tableView.rowHeight = 20
+        tableView.rowHeight = Self.rowHeight(for: regularFont)
         tableView.usesAlternatingRowBackgroundColors = true
         tableView.allowsMultipleSelection = false
         tableView.allowsEmptySelection = true

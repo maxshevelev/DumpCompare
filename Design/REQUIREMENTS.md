@@ -313,7 +313,9 @@ Display rules:
   range the Settings stepper offers, dimmed at either end. They change that one
   app-wide setting rather than a per-window zoom — a dump zoomed in one window
   and not in another would be a second, invisible preference — and an open
-  Settings window follows them;
+  Settings window follows them. An open Search Results panel follows too: its
+  values are drawn in the dump's font, so its row pitch and its column widths
+  are re-derived from the new size (§11);
 - support Dark Mode;
 - ensure sufficient contrast and accessibility.
 
