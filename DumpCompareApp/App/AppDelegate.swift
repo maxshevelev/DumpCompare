@@ -1,7 +1,7 @@
 import Cocoa
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// Every open comparison window, in the order they were made. The app owns
     /// its windows rather than being one window's owner: ⇧⌘N adds one, closing
     /// one drops it, and a file handed to the app has to be routed to one of
@@ -169,6 +169,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func showSettings(_ sender: Any?) {
         settingsWindowController.showWindow(sender)
+    }
+
+    /// Zoom In / Zoom Out (§3.2): one step of the hex font size, applied live
+    /// to every open window the way the Appearance tab applies it.
+    ///
+    /// The commands belong to the app, not to a window: the font size is one
+    /// app-wide setting, and zooming in one window while another kept its own
+    /// size would be a second, invisible preference. Distinctive selector
+    /// names because these dispatch through the responder chain to whoever
+    /// answers first, and `zoomIn:` is a name several AppKit views use.
+    @objc func increaseHexFontSize(_ sender: Any?) {
+        AppearanceSettings.zoom(by: AppearanceSettings.fontSizeStep)
+    }
+
+    @objc func decreaseHexFontSize(_ sender: Any?) {
+        AppearanceSettings.zoom(by: -AppearanceSettings.fontSizeStep)
+    }
+
+    /// At either end of the size range there is nothing to do, so the item
+    /// dims — the pressed shortcut beeps instead of silently doing nothing.
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        switch menuItem.action {
+        case #selector(increaseHexFontSize(_:)):
+            return AppearanceSettings.canZoom(by: AppearanceSettings.fontSizeStep)
+        case #selector(decreaseHexFontSize(_:)):
+            return AppearanceSettings.canZoom(by: -AppearanceSettings.fontSizeStep)
+        default:
+            return true
+        }
     }
 
     /// Opens Settings on the Favorites tab — **Manage Favorites…** in the Find

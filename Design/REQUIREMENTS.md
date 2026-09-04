@@ -307,6 +307,13 @@ Display rules:
 - printable ASCII bytes 0x20–0x7E are shown as characters;
 - non-printable bytes are shown as “.”;
 - use a monospaced font;
+- the font family, its size and the row-height factor are Appearance settings,
+  applied live to every open dump. The size also has **Zoom In (⌘=)** and
+  **Zoom Out (⌘−)** in the View menu: one point per press, inside the same
+  range the Settings stepper offers, dimmed at either end. They change that one
+  app-wide setting rather than a per-window zoom — a dump zoomed in one window
+  and not in another would be a second, invisible preference — and an open
+  Settings window follows them;
 - support Dark Mode;
 - ensure sufficient contrast and accessibility.
 

@@ -122,6 +122,19 @@ enum MainMenu {
         wordSizeItem.submenu = wordSizeMenu
         viewMenu.addItem(wordSizeItem)
 
+        // Zoom (§3.2): the hex font size, one point at a time, on the shortcuts
+        // every document app uses for it. It is the same app-wide setting the
+        // Appearance tab holds — the menu is the fast way to it, not a second
+        // preference — so the items go to the app delegate rather than to a
+        // controller: a window cannot have a size of its own.
+        viewMenu.addItem(.separator())
+        viewMenu.addItem(withTitle: "Zoom In",
+                         action: #selector(AppDelegate.increaseHexFontSize(_:)),
+                         keyEquivalent: "=")
+        viewMenu.addItem(withTitle: "Zoom Out",
+                         action: #selector(AppDelegate.decreaseHexFontSize(_:)),
+                         keyEquivalent: "-")
+
         viewMenu.addItem(.separator())
         viewMenu.addItem(withTitle: "Enter Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
         if let fullScreenItem = viewMenu.items.last {

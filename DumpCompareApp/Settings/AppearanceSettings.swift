@@ -30,6 +30,10 @@ enum AppearanceSettings {
     static let defaultFontSize: CGFloat = 13
     /// The range the Settings stepper offers.
     static let fontSizeRange: ClosedRange<CGFloat> = 9...24
+    /// What one Zoom In / Zoom Out moves the size by (§3.2) — the same point
+    /// the Settings stepper steps, so the two controls agree about what a step
+    /// is and the menu never lands between the stepper's values.
+    static let fontSizeStep: CGFloat = 1
 
     /// The configured font family; empty means the system monospaced font.
     static var fontFamily: String {
@@ -59,6 +63,29 @@ enum AppearanceSettings {
         UserDefaults.standard.set(rowHeightScale, forKey: rowHeightScaleKey)
         UserDefaults.standard.set(fontSize, forKey: fontSizeKey)
         NotificationCenter.default.post(name: didChangeNotification, object: nil)
+    }
+
+    /// Moves the hex font size by `step` points, clamped to `fontSizeRange` —
+    /// Zoom In and Zoom Out (§3.2). Everything else about the appearance is
+    /// left as it stands.
+    ///
+    /// Returns false when the size did not move, which is the whole answer at
+    /// either end of the range: the menu items dim there rather than repeating
+    /// a change that cannot happen.
+    @discardableResult
+    static func zoom(by step: CGFloat) -> Bool {
+        let current = fontSize
+        let clamped = min(max(current + step, fontSizeRange.lowerBound), fontSizeRange.upperBound)
+        guard clamped != current else { return false }
+        set(fontFamily: fontFamily, rowHeightScale: rowHeightScale, fontSize: clamped)
+        return true
+    }
+
+    /// Whether a zoom of `step` would change anything — what the menu asks
+    /// before it draws the item enabled.
+    static func canZoom(by step: CGFloat) -> Bool {
+        let clamped = min(max(fontSize + step, fontSizeRange.lowerBound), fontSizeRange.upperBound)
+        return clamped != fontSize
     }
 
     /// Restores the built-in defaults and notifies (used by tests, and by the

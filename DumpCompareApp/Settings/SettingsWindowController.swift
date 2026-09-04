@@ -115,6 +115,28 @@ final class AppearanceSettingsViewController: NSViewController {
         syncControls()
     }
 
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        // Zoom In / Zoom Out change the same size this tab shows (§3.2), and
+        // they can be pressed while the window is open — so the controls
+        // follow the setting rather than only their own clicks.
+        appearanceObserver = NotificationCenter.default.addObserver(
+            forName: AppearanceSettings.didChangeNotification, object: nil, queue: nil
+        ) { [weak self] _ in
+            self?.syncControls()
+        }
+    }
+
+    override func viewWillDisappear() {
+        super.viewWillDisappear()
+        if let appearanceObserver {
+            NotificationCenter.default.removeObserver(appearanceObserver)
+            self.appearanceObserver = nil
+        }
+    }
+
+    private var appearanceObserver: NSObjectProtocol?
+
     /// Loads the current settings into the controls.
     private func syncControls() {
         fontPopup.removeAllItems()
