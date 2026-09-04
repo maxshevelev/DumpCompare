@@ -874,7 +874,6 @@ final class MainViewController: NSViewController {
         // set in a pane that is going away.
         cancelFind()
         endIndexing()
-        findBar.setResultsShown(false)
         // Panes are rebuilt on every apply, so the viewport mirrors must start
         // empty and fill in as the new panes report their visible ranges (§19).
         minimapViewports.removeAll()
@@ -928,7 +927,7 @@ final class MainViewController: NSViewController {
             pane.onClose = { [weak self] in self?.closePane(at: 0) }
             // The panel closed itself; the bar's toggle follows (§11).
             pane.onSearchResultsClose = { [weak self] _ in
-                self?.findBar.setResultsShown(false)
+                self?.syncFindBarToActivePane()
             }
             pane.onMatchesChanged = { [weak self] in
                 self?.searchAppearanceChanged()
@@ -1062,12 +1061,15 @@ final class MainViewController: NSViewController {
             }
             pane1View.onClose = { [weak self] in self?.closePane(at: 0) }
             pane2View.onClose = { [weak self] in self?.closePane(at: 1) }
-            // Closing a pane's Search All panel stops that search (§11).
+            // Closing a pane's Search All panel stops that search (§11). The
+            // bar's toggle is re-read rather than turned off: in comparison
+            // mode the panel that closed may be the *other* pane's, and the
+            // button describes the active one.
             pane1View.onSearchResultsClose = { [weak self] _ in
-                self?.findBar.setResultsShown(false)
+                self?.syncFindBarToActivePane()
             }
             pane2View.onSearchResultsClose = { [weak self] _ in
-                self?.findBar.setResultsShown(false)
+                self?.syncFindBarToActivePane()
             }
             pane1View.onMatchesChanged = { [weak self] in
                 self?.searchAppearanceChanged()
@@ -1098,6 +1100,10 @@ final class MainViewController: NSViewController {
         // set here too; with panes open this is the first of many, and the pane
         // views keep it current from then on.
         updateWindowTitle()
+        // The panes were just rebuilt — new views, no results panels, and
+        // possibly another active pane — so the bar is re-read rather than
+        // left describing the panes that went away (§11).
+        syncFindBarToActivePane()
     }
 
     /// Wires companion panes and coordinator callbacks for comparison mode.
@@ -1497,7 +1503,7 @@ final class MainViewController: NSViewController {
         refreshDiffNavigation()
         // The count describes the active pane's search, and the search belongs
         // to the pane that was searched (§11).
-        refreshFindCount()
+        syncFindBarToActivePane()
         // The typing mode is per pane (§7.6), so the toolbar's toggle follows
         // the pane the keys now go to (§24.2).
         revalidateToolbar()
@@ -4971,7 +4977,7 @@ final class MainViewController: NSViewController {
         contentTopToView.isActive = false
         contentTopToFindBar.isActive = true
         findBar.isHidden = false
-        refreshFindCount()
+        syncFindBarToActivePane()
         view.layoutSubtreeIfNeeded()
         findBar.prepareForShow()
     }
@@ -5399,7 +5405,7 @@ final class MainViewController: NSViewController {
     /// nothing, and a press of ‹ › used to invalidate its cells and rebuild its
     /// overlay regardless.
     private func searchAppearanceChanged() {
-        refreshFindCount()
+        syncFindBarToActivePane()
         guard minimapPanelVisible else { return }
         // No byte range describes a set arriving or a plate moving to another
         // part of the file, so in detail mode every cell it draws is suspect.
@@ -5407,9 +5413,26 @@ final class MainViewController: NSViewController {
         scheduleMinimapMatchSync()
     }
 
-    private func refreshFindCount() {
-        findBar.show(count: FindCount.reading(of: activePane.highlightedMatchSet,
-                                              current: activePane.currentMatchIndex))
+    /// Points the Find bar at the active pane (§11).
+    ///
+    /// The bar is one strip serving whichever pane is in front, so everything
+    /// on it that describes a search — the count, and whether that pane's
+    /// results panel is up — is read off that pane, here, in one place. Called
+    /// wherever the active pane changes, wherever its search changes, and when
+    /// the bar opens; every reading is derived on the spot rather than
+    /// remembered, so there is no second copy to fall behind.
+    ///
+    /// That is what the results button had done: it kept whatever the last
+    /// press had set, so moving to a pane whose list was already up left the
+    /// bar offering to *show* what was on screen — and pressing it closed the
+    /// list. A per-reading refresher would have fixed that one button and left
+    /// the next reading to be forgotten in the same places.
+    private func syncFindBarToActivePane() {
+        let pane = activePane
+        findBar.apply(FindBarView.PaneContext(
+            count: FindCount.reading(of: pane.highlightedMatchSet,
+                                     current: pane.currentMatchIndex),
+            resultsShown: filePaneView(for: pane)?.searchResultsPanelVisible == true))
     }
 
     /// Drops a pane's match set: the bytes under it moved, so every offset in it
@@ -5441,7 +5464,7 @@ final class MainViewController: NSViewController {
         guard pane.isOpen, let paneView = filePaneView(for: pane) else { return }
         if paneView.searchResultsPanelVisible {
             paneView.hideSearchResults()
-            findBar.setResultsShown(false)
+            syncFindBarToActivePane()
             return
         }
         // The button also *activates* the pattern in the field: a pattern
@@ -5484,7 +5507,7 @@ final class MainViewController: NSViewController {
         // level with it from then on — a new search rewrites its rows, and an
         // invalidation takes it down (§11).
         paneView.showSearchResults()
-        findBar.setResultsShown(true)
+        syncFindBarToActivePane()
     }
 
     /// Says that a search came round the end of the file: one large glyph

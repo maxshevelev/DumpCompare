@@ -474,10 +474,39 @@ final class FindBarView: NSView, NSSearchFieldDelegate, NSMenuItemValidation {
         findAllButton.isEnabled = live
     }
 
+    /// What the bar reads off the pane it describes (§11).
+    ///
+    /// The bar is one strip serving whichever pane is in front, and everything
+    /// on it that describes a *search* describes that pane's search — in
+    /// comparison mode the two panes have their own sets and their own results
+    /// panels. So those readings travel together as one context, handed over
+    /// whenever the active pane changes or its search does. A reading that
+    /// arrives later becomes a field here, rather than another call the
+    /// controller has to remember in each of the places a pane can change —
+    /// which is how the results button came to keep the previous pane's state.
+    ///
+    /// What is *not* here: the pattern, the encoding, the case rule and Smart
+    /// Search. Those are the user's standing choices, app-wide by design, and
+    /// they do not change because another pane came forward.
+    struct PaneContext: Equatable {
+        /// The count region's reading: "3 of 128", "Not found", or nothing at
+        /// all while no search of that pane's has come back.
+        var count: FindCount?
+        /// Whether that pane's results panel is on screen — what makes the
+        /// results button read as on, since it is a toggle over that panel.
+        var resultsShown: Bool
+    }
+
+    /// Points the bar at a pane, by handing it everything it reads off one.
+    func apply(_ context: PaneContext) {
+        show(count: context.count)
+        setResultsShown(context.resultsShown)
+    }
+
     /// Reflects whether the pane's results panel is open: the button is a
     /// toggle now, not a search (§11). Accent while the panel is up, the bar's
     /// quiet grey otherwise — the same "on" language the case toggle uses.
-    func setResultsShown(_ shown: Bool) {
+    private func setResultsShown(_ shown: Bool) {
         resultsShown = shown
         findAllButton.contentTintColor = shown ? .controlAccentColor : .secondaryLabelColor
         findAllButton.toolTip = shown ? "Hide Search Results" : "Show Search Results"

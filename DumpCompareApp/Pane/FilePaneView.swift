@@ -466,10 +466,12 @@ final class FilePaneView: NSView {
         // revealed with the user's stored height on a Search All.
         searchResults.onClose = { [weak self] in
             guard let self else { return }
-            // Stop the owner's in-flight search first, then hide and forget the
-            // results — a closed panel must not keep receiving matches (§11).
-            self.onSearchResultsClose?(self)
+            // Hidden first, then announced: the owner reads this pane to decide
+            // what its chrome says — the Find bar's results toggle is a reading
+            // of `searchResultsPanelVisible` (§11) — so the announcement has to
+            // arrive with the panel already gone, not about to be.
             self.hideSearchResults()
+            self.onSearchResultsClose?(self)
         }
         searchResults.onSelect = { [weak self] range in
             guard let self else { return }
@@ -948,8 +950,8 @@ final class FilePaneView: NSView {
     private func syncSearchResults() {
         guard searchResultsPanelVisible else { return }
         guard viewModel.matchSet != nil else {
-            onSearchResultsClose?(self)
             hideSearchResults()
+            onSearchResultsClose?(self)
             return
         }
         searchResults.reload()

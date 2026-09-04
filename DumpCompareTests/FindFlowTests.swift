@@ -2283,7 +2283,10 @@ final class FindFlowTests: XCTestCase {
         let view = try runSearchAll("DE AD BE EF", in: window)
         XCTAssertEqual(view.tableView.numberOfRows, 1)
 
-        let font = AppearanceSettings.font(size: 13)
+        // The panel measures its templates in the value font as it stands —
+        // which Zoom In / Zoom Out move (§3.2) — so the expectation is
+        // measured in the same font rather than in a pinned size.
+        let font = AppearanceSettings.font()
         func width(_ text: String) -> CGFloat {
             ceil((text as NSString).size(withAttributes: [.font: font]).width)
         }

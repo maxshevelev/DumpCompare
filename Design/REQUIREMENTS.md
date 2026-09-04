@@ -1294,6 +1294,15 @@ The results panel:
   not at all. Only a replaced or dropped *set* rebuilds the list — a stepped
   plate changes no row, and rebuilding the list is how it would lose the row
   the user had just picked in it.
+- The Find bar **reads the active pane**. It is one strip serving whichever
+  pane is in front, so everything on it that describes a search — the count,
+  the stepper's enablement, whether the results panel is up — is that pane's,
+  re-read when the active pane changes and derived from the pane rather than
+  remembered from the last press. In comparison mode the two panes have their
+  own sets and their own panels, and a bar still describing the other one would
+  offer to show a list already on screen. What is *not* pane-scoped: the
+  pattern, the encoding, the case rule and Smart Search — the user's standing
+  choices, which do not change because another pane came forward.
 - The Find bar's results control is therefore a **toggle**: it shows the panel,
   and pressing it again hides it. It reads as on while the panel is up. It
   **opens the panel whatever the search has to say** — a press with no visible
