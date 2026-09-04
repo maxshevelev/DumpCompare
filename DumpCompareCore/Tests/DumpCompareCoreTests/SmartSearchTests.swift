@@ -116,11 +116,12 @@ final class SmartSearchTests: XCTestCase {
 
         let outcome = try SmartSearch.firstMatch(among: attempts, in: storage, from: 0)
 
-        guard case .found(let attempt, let range) = outcome else {
+        guard case .found(let attempt, let range, let wrapped) = outcome else {
             return XCTFail("the string is in the file, in one of the encodings")
         }
         XCTAssertEqual(attempt.encoding, .utf16LE)
         XCTAssertEqual(range, 16..<24)
+        XCTAssertFalse(wrapped, "found ahead of the anchor")
     }
 
     /// A match behind the anchor is still a match: each attempt wraps before
@@ -134,8 +135,9 @@ final class SmartSearchTests: XCTestCase {
 
         let outcome = try SmartSearch.firstMatch(among: attempts, in: storage, from: 40)
 
-        XCTAssertEqual(outcome, .found(attempt: attempts[0], range: 4..<8),
-                       "ASCII finds it behind the anchor rather than losing to UTF-16")
+        XCTAssertEqual(outcome, .found(attempt: attempts[0], range: 4..<8, wrapped: true),
+                       "ASCII finds it behind the anchor rather than losing to UTF-16, "
+                           + "and says that it had to wrap for it")
     }
 
     /// Nothing in any encoding is its own answer, and the caller needs the list

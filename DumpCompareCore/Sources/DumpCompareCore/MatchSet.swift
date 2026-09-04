@@ -132,6 +132,42 @@ public struct MatchSet: Equatable, Sendable {
         return result
     }
 
+    /// One step through the set: the next match from `offset`, wrapping at the
+    /// ends, and whether it had to wrap to find one.
+    ///
+    /// Both directions, and the wrap, belong here rather than to a caller. A
+    /// step past the last match is the first match again — the *set* is what
+    /// knows that is what happened, and a view that had to work it out from a
+    /// nil would work it out twice, once per direction (§11).
+    ///
+    /// Nil when there is nothing to step to: an empty set, or one that kept
+    /// only a count and so cannot point at a match.
+    public func step(_ direction: SearchDirection, from offset: UInt64) -> Step? {
+        guard total > 0, isHighlightable else { return nil }
+        let found: Int?
+        switch direction {
+        case .forward: found = index(atOrAfter: offset)
+        case .backward: found = index(before: offset)
+        }
+        let target = found ?? (direction == .forward ? 0 : total - 1)
+        guard let range = range(at: target) else { return nil }
+        return Step(index: target, range: range, wrapped: found == nil)
+    }
+
+    public struct Step: Equatable, Sendable {
+        public let index: Int
+        public let range: Range<UInt64>
+        /// True when the step came round the end of the file: a single match
+        /// steps onto itself, which is a wrap too.
+        public let wrapped: Bool
+
+        public init(index: Int, range: Range<UInt64>, wrapped: Bool) {
+            self.index = index
+            self.range = range
+            self.wrapped = wrapped
+        }
+    }
+
     /// The `index`-th match's start, or nil when the index is out of the set or
     /// the set is only counted.
     public func start(at index: Int) -> UInt64? {

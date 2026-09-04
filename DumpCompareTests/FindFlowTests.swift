@@ -1399,6 +1399,71 @@ final class FindFlowTests: XCTestCase {
         XCTAssertFalse(message.isHidden, "it says so where the rows would have been")
     }
 
+    // MARK: - Coming round the end of the file (§11)
+
+    /// Wrapping is the one thing about a step the dump cannot show: the plate
+    /// moves and the page moves exactly as they do for the next match in line.
+    /// So a step that came round the end says so — a circular arrow turning the
+    /// way the search was going.
+    func testAStepThatWrapsSaysSo() throws {
+        let bytes: [UInt8] = [0xDE, 0xAD, 0x00, 0xDE, 0xAD, 0x00]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+        TransientNoticeView.glyphHoldDuration = 0.05
+        defer { TransientNoticeView.glyphHoldDuration = 0.9 }
+
+        controller.findPattern()
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "DE AD"
+        try clickFindNext(window)
+        XCTAssertTrue(indexed(window))
+        XCTAssertTrue(pumpUntil(2) { pane.currentMatch == 0..<2 }, "the first match")
+        XCTAssertNil(controller.transientNotice, "nothing to say about a plain step")
+
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(2) { pane.currentMatch == 3..<5 }, "the second, still no wrap")
+        XCTAssertNil(controller.transientNotice)
+
+        // Past the last one: back to the first, which is news.
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(2) { pane.currentMatch == 0..<2 }, "round to the first")
+        let forward = try XCTUnwrap(controller.transientNotice, "a wrap is said")
+        XCTAssertTrue(forward.lines.isEmpty, "with no text — it is a sign, not a report")
+        XCTAssertEqual(forward.accessibilityLabel(), "arrow.clockwise",
+                       "turning the way the search was going")
+        XCTAssertTrue(pumpUntil(2) { forward.superview == nil }, "and it leaves on its own")
+
+        // And backwards, off the front of the file.
+        try clickFindPrevious(window)
+        XCTAssertTrue(pumpUntil(2) { pane.currentMatch == 3..<5 }, "round to the last")
+        let backward = try XCTUnwrap(controller.transientNotice)
+        XCTAssertEqual(backward.accessibilityLabel(), "arrow.counterclockwise")
+    }
+
+    /// The search that *starts* a session wraps too — its scan begins at the
+    /// caret, so a lone match above it is only found by coming round — and it
+    /// is the same news.
+    func testAnActivationThatHasToWrapSaysSo() throws {
+        var bytes = [UInt8](repeating: 0x41, count: 4096)
+        bytes.replaceSubrange(0..<2, with: [0xDE, 0xAD])
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+        TransientNoticeView.glyphHoldDuration = 0.05
+        defer { TransientNoticeView.glyphHoldDuration = 0.9 }
+        pane.moveCaret(to: 2048)
+
+        controller.findPattern()
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "DE AD"
+        try clickFindNext(window)
+
+        XCTAssertTrue(pumpUntil(3) { pane.currentMatch == 0..<2 },
+                      "the only match is behind the caret")
+        XCTAssertEqual(controller.transientNotice?.accessibilityLabel(), "arrow.clockwise")
+    }
+
     // MARK: - The answer comes before the index (§11)
 
     /// The point of the whole arrangement: the match the user asked for is on

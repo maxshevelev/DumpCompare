@@ -1177,6 +1177,22 @@ Search navigation:
   Previous at the first returns to the last. A single match wraps onto itself,
   and is re-selected and re-revealed rather than ignored — a press that does
   nothing reads as a broken key.
+- A wrap is **shown**: a transient plate over the window (the same frosted plate
+  §11's Smart Search reports on) carrying one large glyph and no text —
+  `arrow.clockwise` going forward, `arrow.counterclockwise` going back. It is
+  the one thing about a step the dump cannot show: the plate moves and the page
+  moves exactly as they do for the next match in line, so without it "the next
+  one" and "the first one, again" look identical. Held for about a second — a
+  sign is taken in at a glance — and a click over it belongs to the dump
+  underneath.
+- Detecting the wrap belongs to the **model**, in the two places a next
+  occurrence comes from, each of which handles both directions: a step through a
+  finished index (`MatchSet.step`) and a pass of scans
+  (`SmartSearch.firstMatch`, which is also what a plain search's two scans are
+  — one attempt). Each reports whether it had to come round the end, and the
+  window's controller shows the plate. Working it out in the view would mean
+  working it out once per direction per mechanism, which is how it was first
+  written and why it is written down here.
 - If the pattern occurs nowhere, show a status message saying exactly that. It
   must **not** be directional: the scan covered the whole file, so "nothing
   after the cursor" would understate what it found out. (The message named the

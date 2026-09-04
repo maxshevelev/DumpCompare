@@ -15,14 +15,21 @@ import Cocoa
 /// so a click on the dump underneath goes to the dump and the notice is never
 /// something to dismiss.
 final class TransientNoticeView: NSVisualEffectView {
-    /// How long the plate holds before it fades. A `var` so a test can shorten
-    /// it instead of sleeping through it.
+    /// How long a plate with something to read holds before it fades. A `var`
+    /// so a test can shorten it instead of sleeping through it.
     static var holdDuration: TimeInterval = 4
+    /// How long a plate that is only a glyph holds. Shorter, because it is
+    /// taken in at a glance and there is nothing to read: a wrap says "you are
+    /// back at the top", and by the time it is understood it has done its job.
+    static var glyphHoldDuration: TimeInterval = 0.9
     static let fadeInDuration: TimeInterval = 0.15
     static let fadeOutDuration: TimeInterval = 0.3
     /// The plate's own metrics.
     static let cornerRadius: CGFloat = 14
     static let symbolPointSize: CGFloat = 28
+    /// The glyph on a plate that is nothing but the glyph — big enough to read
+    /// as a sign rather than as an icon beside missing text.
+    static let glyphPointSize: CGFloat = 44
 
     private let symbolView = NSImageView()
     private let textStack = NSStackView()
@@ -30,6 +37,12 @@ final class TransientNoticeView: NSVisualEffectView {
 
     /// What the plate says, for tests.
     private(set) var lines: [String] = []
+
+    /// A plate that is one large glyph and nothing else — a sign rather than a
+    /// report (§11: a search that wrapped).
+    convenience init(glyph symbol: String) {
+        self.init(symbol: symbol, lines: [])
+    }
 
     init(symbol: String, lines: [String]) {
         super.init(frame: .zero)
@@ -48,7 +61,8 @@ final class TransientNoticeView: NSVisualEffectView {
 
         symbolView.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
         symbolView.symbolConfiguration = NSImage.SymbolConfiguration(
-            pointSize: Self.symbolPointSize, weight: .regular)
+            pointSize: lines.isEmpty ? Self.glyphPointSize : Self.symbolPointSize,
+            weight: .regular)
         symbolView.contentTintColor = .labelColor
         symbolView.translatesAutoresizingMaskIntoConstraints = false
 
@@ -70,18 +84,33 @@ final class TransientNoticeView: NSVisualEffectView {
         }
 
         addSubview(symbolView)
-        addSubview(textStack)
-        NSLayoutConstraint.activate([
-            symbolView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
-            symbolView.centerYAnchor.constraint(equalTo: centerYAnchor),
+        if lines.isEmpty {
+            // Nothing to sit beside: the glyph is the plate, padded evenly so
+            // it comes out square.
+            let inset: CGFloat = 22
+            NSLayoutConstraint.activate([
+                symbolView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: inset),
+                symbolView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -inset),
+                symbolView.topAnchor.constraint(equalTo: topAnchor, constant: inset),
+                symbolView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -inset),
+            ])
+        } else {
+            addSubview(textStack)
+            NSLayoutConstraint.activate([
+                symbolView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),
+                symbolView.centerYAnchor.constraint(equalTo: centerYAnchor),
 
-            textStack.leadingAnchor.constraint(equalTo: symbolView.trailingAnchor, constant: 14),
-            textStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20),
-            textStack.topAnchor.constraint(equalTo: topAnchor, constant: 14),
-            textStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -14),
-        ])
+                textStack.leadingAnchor.constraint(equalTo: symbolView.trailingAnchor,
+                                                   constant: 14),
+                textStack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -20),
+                textStack.topAnchor.constraint(equalTo: topAnchor, constant: 14),
+                textStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -14),
+            ])
+        }
         setAccessibilityRole(.staticText)
-        setAccessibilityLabel(lines.joined(separator: " "))
+        // A glyph-only plate still has to say something to a reader who cannot
+        // see it, and what it says is the thing it stands for.
+        setAccessibilityLabel(lines.isEmpty ? symbol : lines.joined(separator: " "))
     }
 
     @available(*, unavailable)
@@ -95,7 +124,8 @@ final class TransientNoticeView: NSVisualEffectView {
 
     /// Fades in, holds, and fades out — then removes itself, so nothing owns
     /// it but the window it was shown in.
-    func present() {
+    func present(holdingFor hold: TimeInterval? = nil) {
+        let duration = hold ?? (lines.isEmpty ? Self.glyphHoldDuration : Self.holdDuration)
         let reduced = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         if reduced {
             alphaValue = 1
@@ -107,7 +137,7 @@ final class TransientNoticeView: NSVisualEffectView {
         }
         let dismiss = DispatchWorkItem { [weak self] in self?.dismiss(animated: !reduced) }
         dismissWorkItem = dismiss
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.holdDuration, execute: dismiss)
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: dismiss)
     }
 
     func dismiss(animated: Bool) {

@@ -250,4 +250,55 @@ final class MatchSetTests: XCTestCase {
         XCTAssertNil(sparse.index(atOrAfter: 4001))
     }
 
+    // MARK: - Stepping
+
+    /// A step is the model's, both ways, and it says when it came round the
+    /// end: the dump cannot show a wrap — the plate moves and the page moves
+    /// exactly as they do for the next match in line (§11).
+    func testAStepSaysWhenItWrapped() throws {
+        let pattern = SearchPattern(bytes: [0xAA], encoding: .hex)
+        let set = MatchSet(pattern: pattern, folding: .exact, extent: 64, starts: [8, 16, 32])
+
+        let first = try XCTUnwrap(set.step(.forward, from: 0))
+        XCTAssertEqual(first.index, 0)
+        XCTAssertEqual(first.range, 8..<9)
+        XCTAssertFalse(first.wrapped)
+
+        XCTAssertEqual(set.step(.forward, from: 9)?.index, 1, "the next one along")
+        XCTAssertEqual(set.step(.forward, from: 33)?.index, 0, "past the last is the first")
+        XCTAssertEqual(set.step(.forward, from: 33)?.wrapped, true, "and it says so")
+
+        XCTAssertEqual(set.step(.backward, from: 32)?.index, 1, "the one before")
+        XCTAssertEqual(set.step(.backward, from: 8)?.index, 2, "before the first is the last")
+        XCTAssertEqual(set.step(.backward, from: 8)?.wrapped, true)
+        XCTAssertEqual(set.step(.backward, from: 32)?.wrapped, false)
+    }
+
+    /// A lone match steps onto itself — and that is a wrap: a press that does
+    /// nothing at all reads as a broken key, so it re-lands and says why.
+    func testALoneMatchWrapsOntoItself() throws {
+        let pattern = SearchPattern(bytes: [0xAA], encoding: .hex)
+        let set = MatchSet(pattern: pattern, folding: .exact, extent: 64, starts: [16])
+
+        let forward = try XCTUnwrap(set.step(.forward, from: 20))
+        XCTAssertEqual(forward.range, 16..<17)
+        XCTAssertTrue(forward.wrapped)
+
+        let backward = try XCTUnwrap(set.step(.backward, from: 16))
+        XCTAssertEqual(backward.range, 16..<17)
+        XCTAssertTrue(backward.wrapped)
+    }
+
+    /// Nothing to step to: an empty set, and one that kept only a count and so
+    /// cannot point at a match.
+    func testThereIsNoStepWhereThereIsNothingToStepTo() {
+        let pattern = SearchPattern(bytes: [0xAA], encoding: .hex)
+        let empty = MatchSet(pattern: pattern, folding: .exact, extent: 64, starts: [])
+        XCTAssertNil(empty.step(.forward, from: 0))
+
+        let counted = MatchSet(pattern: pattern, folding: .exact, extent: 1 << 20,
+                               total: 500_000, storage: .counted)
+        XCTAssertNil(counted.step(.forward, from: 0), "a count cannot be stepped through")
+    }
+
 }

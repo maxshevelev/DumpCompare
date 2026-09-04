@@ -44,8 +44,10 @@ public enum SmartSearch {
     /// What a pass came back with.
     public enum Outcome: Equatable, Sendable {
         /// This attempt found this range, and every attempt before it found
-        /// nothing.
-        case found(attempt: Attempt, range: Range<UInt64>)
+        /// nothing. `wrapped` when the range came from the scan that started
+        /// at the file's edge rather than the one that started at the anchor —
+        /// something only the pass can know, and worth saying (§11).
+        case found(attempt: Attempt, range: Range<UInt64>, wrapped: Bool)
         /// Every attempt was tried and none of them found anything.
         case nothing
     }
@@ -107,6 +109,22 @@ public enum SmartSearch {
         return attempts
     }
 
+    /// A pass of one: the two scans a plain search runs, with the wrap, and the
+    /// same answer shape. A search of a chosen encoding is this — nothing about
+    /// the pass cares how many attempts it was given.
+    public static func firstMatch(
+        of attempt: Attempt,
+        in storage: ByteStorage,
+        from anchor: UInt64,
+        direction: SearchDirection = .forward,
+        chunkSize: Int = SearchEngine.defaultChunkSize,
+        shouldCancel: () -> Bool = { false },
+        progress: (Double) -> Void = { _ in }
+    ) throws -> Outcome {
+        try firstMatch(among: [attempt], in: storage, from: anchor, direction: direction,
+                       chunkSize: chunkSize, shouldCancel: shouldCancel, progress: progress)
+    }
+
     /// Runs the attempts in order until one of them finds something.
     ///
     /// Each attempt is the two scans a plain search runs: one from `anchor` in
@@ -140,11 +158,11 @@ public enum SmartSearch {
                                       progress: { progress((base + half + $0 / 2) / total) })
             }
             if let range = try scan(from: anchor, half: 0) {
-                return .found(attempt: attempt, range: range)
+                return .found(attempt: attempt, range: range, wrapped: false)
             }
             let edge: UInt64 = direction == .forward ? 0 : storage.size
             if let range = try scan(from: edge, half: 0.5) {
-                return .found(attempt: attempt, range: range)
+                return .found(attempt: attempt, range: range, wrapped: true)
             }
             progress((base + 1) / total)
         }
