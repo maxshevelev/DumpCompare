@@ -174,33 +174,6 @@ no navigation stack — and it counts what the current shape costs: 5484 lines a
 It proposes nothing. If it is ever acted on, the questions it ends with are what
 would have to be decided first.
 
-### A library of named patterns
-
-**What.** Patterns you keep, each with a name that says what it is for — *ME
-FPT*, *Aptio capsule header*, *Vendor S/N table* — with their encoding and case
-flag, edited in a Settings tab and reachable from the Find bar as easily as the
-history is. A pattern typed into the field can be kept with one command, which
-is how the library actually fills up.
-
-**Why.** The same few byte sequences are searched for over and over on a bench,
-and the only place the app remembers a pattern today is the find history: ten
-entries, most-recent-first, evicted by whatever was typed last. A useful pattern
-is lost to an afternoon of one-off searches, and the history cannot say what a
-pattern is *for* — it only knows the pattern and its encoding.
-
-**How.** Taken apart in **`Design/PATTERN_LIBRARY_IDEA.md`** — not a plan. The
-short version: the valuable half is the *name*, not the storage; the deciding
-question is where the library appears in the Find bar, and the answer is the
-shape Xcode's find field has — an `NSSearchField` whose `searchMenuTemplate`
-drops a real menu with **Favorites** and **Recent Queries** as sections, which
-also deletes the combo's selection-notification path along the way. An
-activated
-library pattern does **not** enter the history — the history records what was
-typed — and an entry's encoding is the user's statement, so a search that finds
-the pattern in another encoding does not rewrite it. Almost everything it needs
-exists: the history's store shape, the File Types tab's table, the bar's own
-parser and the `preferring:` path Smart Search already carries.
-
 ### Zones — named intervals of a dump
 
 **What.** A zone is a named half-open range, living beside bookmarks: they mark
@@ -252,6 +225,18 @@ before.
 
 ## Done
 
+- **A library of named patterns** — `Design/PATTERN_LIBRARY_IDEA.md`, on the
+  `pattern-favorites` branch. The pattern field became an `NSSearchField`
+  whose menu carries both lists — **Recent Queries** and **Favorites** — where
+  a favourite is a recent with a name and nothing else: one stored shape, one
+  row format, one pick. A row states its pattern, its encoding and its case
+  rule, because a row that hides one is lying about what picking it does; a
+  pick loads all three, searches, and records nothing in the history. **Add to
+  Favorites** keeps what the field describes and asks only for a name, and the
+  Favorites tab in Settings edits the list — nothing unsearchable is stored, a
+  new row is a draft until it has a pattern, and the order is the user's, so
+  rows are dragged. Escape now belongs to the field (menu, then clear), so the
+  bar closes by Done.
 - **Smart Search** — the encoding as a result rather than an instruction: with
   the toggle on (the default), a pattern is looked for as hex when it reads as
   hex and then as text, ASCII through UTF-16 BE, until something is found, and

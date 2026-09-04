@@ -59,7 +59,7 @@ final class FindHighlightTests: XCTestCase {
                         _ window: NSWindow) throws {
         controller.findPattern()
         let bar = try descendant(FindBarView.self, of: window.contentView!)
-        let combo = try XCTUnwrap(descendants(of: bar, NSComboBox.self).first)
+        let combo = try XCTUnwrap(descendants(of: bar, NSSearchField.self).first)
         combo.stringValue = pattern
         bar.pressFindForTests(.forward)
         // The match itself lands in a millisecond; the *index* behind it takes

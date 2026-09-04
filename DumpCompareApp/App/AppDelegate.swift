@@ -171,6 +171,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindowController.showWindow(sender)
     }
 
+    /// Opens Settings on the Favorites tab — **Manage Favorites…** in the Find
+    /// bar's search menu (§11).
+    func showFavoritePatternSettings() {
+        settingsWindowController.showFavorites(nil)
+    }
+
     /// Maps the stored theme onto `NSApp.appearance`: nil for system (follow the
     /// OS), an explicit appearance for light/dark.
     private func applyTheme() {

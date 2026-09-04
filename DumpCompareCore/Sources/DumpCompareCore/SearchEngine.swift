@@ -73,6 +73,18 @@ public struct SearchPattern: Equatable, Sendable {
         self.bytes = bytes
         self.encoding = encoding
     }
+
+    /// The bytes written the way a hex dump writes them: uppercase pairs, one
+    /// space between them (§11).
+    ///
+    /// The parser accepts more forms than a dump prints — `deadbeef`,
+    /// `DE AD BE EF`, `0xDE 0xAD` — so this is the one form to show back: the
+    /// text a reader can compare, byte for byte, against the dump beside it.
+    /// It is derived from the *bytes*, so whatever the user typed comes back
+    /// meaning exactly what was searched for.
+    public var hexText: String {
+        bytes.map { String(format: "%02X", $0) }.joined(separator: " ")
+    }
 }
 
 /// Finds a byte sequence in a `ByteStorage` (§11).

@@ -572,14 +572,10 @@ enum FindHistoryStore {
     /// (which would otherwise pick up and pollute the user's own searches §11).
     static var defaults: UserDefaults = .standard
 
-    struct Entry: Equatable {
-        let pattern: String
-        let encoding: SearchEncoding
-        /// Whether the search was run case-sensitively. Meaningful only for text
-        /// encodings — hex is always byte-exact, so its recorded flag (true)
-        /// never shows in the dropdown and is never restored.
-        let caseSensitive: Bool
-    }
+    /// A recent search is `SearchPatternEntry` with no name — a favourite is
+    /// the same thing named, and one type serves both lists in the bar's menu
+    /// (§11, `Design/PATTERN_LIBRARY_IDEA.md`).
+    typealias Entry = SearchPatternEntry
 
     /// The saved searches, most recent first.
     static var recent: [Entry] {
@@ -587,13 +583,13 @@ enum FindHistoryStore {
         // [[String: Any]] (a [[String: String]] cast would fail and wipe the
         // whole history).
         guard let raw = defaults.array(forKey: userDefaultsKey) as? [[String: Any]] else { return [] }
-        return raw.compactMap { dict in
-            guard let pattern = dict["pattern"] as? String,
-                  let encodingName = dict["encoding"] as? String,
-                  let encoding = SearchEncoding(rawValue: encodingName) else { return nil }
-            return Entry(pattern: pattern, encoding: encoding,
-                         caseSensitive: dict["caseSensitive"] as? Bool ?? false)
-        }
+        return raw.compactMap(Entry.init(stored:))
+    }
+
+    /// Forgets every recent search — **Clear Recents** in the Find bar's menu
+    /// (§11). The favourites are a separate list and are not touched.
+    static func clear() {
+        defaults.removeObject(forKey: userDefaultsKey)
     }
 
     /// The most recent search — the default the sheet offers on open.
@@ -621,14 +617,7 @@ enum FindHistoryStore {
         entries.insert(Entry(pattern: trimmed, encoding: encoding, caseSensitive: caseSensitive), at: 0)
         let capped = Array(entries.prefix(limit))
         guard capped != before else { return false }
-        defaults.set(
-            capped.map {
-                ["pattern": $0.pattern,
-                 "encoding": $0.encoding.rawValue,
-                 "caseSensitive": $0.caseSensitive]
-            },
-            forKey: userDefaultsKey
-        )
+        defaults.set(capped.map(\.storedValue), forKey: userDefaultsKey)
         return true
     }
 }

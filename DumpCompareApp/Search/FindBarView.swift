@@ -11,7 +11,7 @@ import DumpCompareCore
 /// - The bar stays open after a search — only the selection moves.
 /// - Picking an item from the pattern's history list loads that search (pattern
 ///   + encoding) but does NOT run it; only Enter, `<` and `>` search.
-final class FindBarView: NSView, NSComboBoxDelegate {
+final class FindBarView: NSView, NSSearchFieldDelegate, NSMenuItemValidation {
     /// What the field is asking for (§11).
     ///
     /// The bar says which of the two questions it is and nothing more. Where
@@ -32,6 +32,14 @@ final class FindBarView: NSView, NSComboBoxDelegate {
     /// Fired when the pattern fails to parse (shown as a transient status; no
     /// search is run).
     var onError: ((String) -> Void)?
+    /// Fired by **Add to Favorites** with what the field describes. The owner
+    /// asks for a name and stores it: a sheet belongs to a window, not to a
+    /// bar (§11).
+    var onAddToFavorites: ((SearchPatternEntry) -> Void)?
+
+    /// Fired by **Manage Favorites…** — the owner opens the form.
+    var onManageFavorites: (() -> Void)?
+
     /// Fired when the user closes the bar (Done or Esc).
     var onClose: (() -> Void)?
     /// Fired when the user runs Search All (§11): the same request.
@@ -44,6 +52,11 @@ final class FindBarView: NSView, NSComboBoxDelegate {
     /// The point size every icon control on the bar draws its symbol at, so the
     /// chevrons, the list glyph and the "Aa" line up (§11).
     static let iconPointSize: CGFloat = 13
+    /// The pattern menu's type sizes: rows and commands a size below the
+    /// system menu's 13pt — these are a list to scan rather than commands to
+    /// read one at a time — and the flags a size below that again (§11).
+    static let menuRowSize: CGFloat = 12
+    static let menuFlagSize: CGFloat = 11
 
     /// UserDefaults key for the persisted case-sensitive toggle.
     static let caseSensitiveKey = "FindCaseSensitive"
@@ -57,7 +70,12 @@ final class FindBarView: NSView, NSComboBoxDelegate {
     /// (§11).
     static var defaults: UserDefaults = .standard
 
-    private let patternCombo = NSComboBox()
+    /// The pattern field: a search field, whose magnifier drops the menu with
+    /// the two lists (§11, `Design/PATTERN_LIBRARY_IDEA.md`). A combo box until
+    /// the library needed sections — a combo's list is flat, and a header in it
+    /// is a selectable row pretending not to be. The field also brings the ⊗
+    /// that gives Escape a job other than closing the bar.
+    private let patternField = NSSearchField()
     private let encodingPopup = NSPopUpButton()
     /// The "Aa" case toggle. Internal so a test can read the control itself: the
     /// bug this guards against was in its appearance, not in the flag it feeds.
@@ -154,7 +172,7 @@ final class FindBarView: NSView, NSComboBoxDelegate {
         let findLabel = NSTextField(labelWithString: "Find")
         findLabel.font = .systemFont(ofSize: 13, weight: .semibold)
 
-        setUpPatternCombo()
+        setUpPatternField()
         setUpEncodingPopup()
         setUpCaseButton()
         setUpSmartButton()
@@ -172,7 +190,7 @@ final class FindBarView: NSView, NSComboBoxDelegate {
         stack.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.addArrangedSubview(findLabel)
-        stack.addArrangedSubview(patternCombo)
+        stack.addArrangedSubview(patternField)
         stack.addArrangedSubview(encodingPopup)
         // Next to the encoding, because that is what it takes over: with it on,
         // the popup stops being the question and becomes the answer (§11).
@@ -201,7 +219,7 @@ final class FindBarView: NSView, NSComboBoxDelegate {
             // The pattern is the only control that grows; the rest keep their
             // intrinsic width. The stack's .fill distribution hands all extra
             // horizontal space to the view with the lowest hugging priority.
-            patternCombo.widthAnchor.constraint(greaterThanOrEqualToConstant: 120),
+            patternField.widthAnchor.constraint(greaterThanOrEqualToConstant: 120),
         ])
 
         // Height of the nav block tracks the Aa case toggle — the bar's other
@@ -219,8 +237,8 @@ final class FindBarView: NSView, NSComboBoxDelegate {
             view.setContentHuggingPriority(.defaultHigh, for: .horizontal)
             view.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
         }
-        patternCombo.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        patternCombo.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        patternField.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        patternField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     }
 
     /// Layer colors are resolved once when they are assigned: the
@@ -238,24 +256,24 @@ final class FindBarView: NSView, NSComboBoxDelegate {
         }
     }
 
-    private func setUpPatternCombo() {
-        patternCombo.isEditable = true
-        patternCombo.completes = false
-        patternCombo.setAccessibilityLabel("Find")
-        patternCombo.target = self
-        patternCombo.action = #selector(patternComboAction)
+    private func setUpPatternField() {
+        patternField.setAccessibilityLabel("Find")
+        patternField.target = self
+        patternField.action = #selector(patternFieldAction)
+        // Return searches; typing does not. A search is a scan of the file,
+        // and one per keystroke is not what was asked for.
+        patternField.sendsWholeSearchString = true
+        patternField.sendsSearchStringImmediately = false
         // Editing the pattern ends the search it no longer describes: the count
         // and the highlighting belong to what is in the field (§11).
-        patternCombo.delegate = self
-        // An editable combo only reliably sends its action on Return: picking an
-        // item from the popup posts `selectionDidChangeNotification` instead (§11).
-        // That's the hook that loads the picked entry into the form.
+        patternField.delegate = self
+        // The menu is a *template*: the field copies it on every click, so it
+        // has to be rebuilt whenever either list changes — a search records a
+        // recent, the form edits the favourites.
         NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(patternSelectionChanged),
-            name: NSComboBox.selectionDidChangeNotification,
-            object: patternCombo
-        )
+            self, selector: #selector(rebuildPatternMenu),
+            name: FavoritePatternStore.didChangeNotification, object: nil)
+        rebuildPatternMenu()
     }
 
     deinit {
@@ -470,6 +488,46 @@ final class FindBarView: NSView, NSComboBoxDelegate {
 
     /// What the count label reads, for tests.
     var countTextForTests: String { countLabel.stringValue }
+    /// The field's menu, for tests: what the two lists hold, and what picking
+    /// a row does.
+    var patternMenuForTests: NSMenu? { patternField.searchMenuTemplate }
+    /// Picks the menu row whose title starts with `prefix` — a favourite's
+    /// name, or a recent's quoted pattern. Returns false when no row does.
+    @discardableResult
+    func pickPatternRowForTests(startingWith prefix: String) -> Bool {
+        guard let item = patternMenuForTests?.items.first(where: {
+            $0.representedObject != nil && ($0.attributedTitle?.string ?? $0.title)
+                .hasPrefix(prefix)
+        }), let action = item.action else { return false }
+        NSApp.sendAction(action, to: item.target, from: item)
+        return true
+    }
+    /// The rows of the field's menu as they read, for the test that the two
+    /// lists are one format apart.
+    var patternMenuRowsForTests: [String] {
+        (patternMenuForTests?.items ?? []).map { $0.attributedTitle?.string ?? $0.title }
+    }
+    /// Picks the menu's command with this title — the two lists' rows are
+    /// picked by `pickPatternRowForTests`.
+    @discardableResult
+    func pickCommandForTests(_ title: String) -> Bool {
+        guard let item = patternMenuForTests?.items.first(where: {
+            $0.representedObject == nil && ($0.attributedTitle?.string ?? $0.title) == title
+        }), let action = item.action else { return false }
+        NSApp.sendAction(action, to: item.target, from: item)
+        return true
+    }
+    /// What the field holds, and what the popup names — for tests that assert
+    /// a pick loaded all three.
+    var patternTextForTests: String { patternField.stringValue }
+    var encodingForTests: SearchEncoding { currentEncoding() }
+    func setPatternForTests(_ text: String) { patternField.stringValue = text }
+    func setEncodingForTests(_ encoding: SearchEncoding) {
+        guard let index = SearchEncoding.allCases.firstIndex(of: encoding) else { return }
+        encodingPopup.selectItem(at: index)
+        encodingChanged()
+    }
+
     /// Whether Smart Search reads as on, for tests.
     var smartSearchOnForTests: Bool { isSmartSearchEnabled }
     /// The encoding a picked entry (or a hand-chosen popup) left behind, for
@@ -489,7 +547,7 @@ final class FindBarView: NSView, NSComboBoxDelegate {
     var navControlFrameForTests: NSRect { navControl.frame }
     /// The pattern field's width, for the test that the count's slot is real
     /// and that the field is what gets it back.
-    var patternFieldWidthForTests: CGFloat { patternCombo.frame.width }
+    var patternFieldWidthForTests: CGFloat { patternField.frame.width }
     var navControlEnabledForTests: Bool { navControl.isEnabled }
     var findAllEnabledForTests: Bool { findAllButton.isEnabled }
 
@@ -545,9 +603,13 @@ final class FindBarView: NSView, NSComboBoxDelegate {
         doneButton.target = self
         doneButton.action = #selector(donePressed)
         doneButton.setAccessibilityLabel("Done")
-        // Esc closes the bar (§11): wiring Esc as the button's key equivalent
-        // makes AppKit route it here from anywhere in the window.
-        doneButton.keyEquivalent = "\u{1B}"
+        // Escape is *not* wired here any more. It belongs to the pattern
+        // field: the first press closes the field's menu, the second clears
+        // the field — which ends the search, since clearing is a text change
+        // (§11). A find bar that takes Escape as its way out is one with no
+        // clear control; this one has the field's ⊗, so Escape has an obvious
+        // job that is not closing, and `Done` and the ⊗ are the exits
+        // (`Design/PATTERN_LIBRARY_IDEA.md`).
     }
 
     // MARK: - Test seams
@@ -575,7 +637,7 @@ final class FindBarView: NSView, NSComboBoxDelegate {
     func prepareForShow() {
         show(patternError: nil)
         if let mostRecent = FindHistoryStore.mostRecent {
-            patternCombo.stringValue = mostRecent.pattern
+            patternField.stringValue = mostRecent.pattern
             if let encodingIndex = SearchEncoding.allCases.firstIndex(of: mostRecent.encoding) {
                 encodingPopup.selectItem(at: encodingIndex)
             }
@@ -584,7 +646,7 @@ final class FindBarView: NSView, NSComboBoxDelegate {
             // gives, so a Smart Search of it starts there (§11).
             pickedEncoding = mostRecent.encoding
         } else {
-            patternCombo.stringValue = ""
+            patternField.stringValue = ""
             encodingPopup.selectItem(at: 0)
         }
         smartButton.state = Self.storedSmartSearch ? .on : .off
@@ -592,63 +654,209 @@ final class FindBarView: NSView, NSComboBoxDelegate {
         caseButton.state = (Self.defaults.object(forKey: Self.caseSensitiveKey) as? Bool ?? false) ? .on : .off
         syncCaseButtonAppearance()
         updateCaseButtonVisibility()
-        refreshHistoryItems()
+        rebuildPatternMenu()
         // Focus the field and select the prefilled text so typing replaces it.
         if window != nil {
-            patternCombo.selectText(nil)
+            patternField.selectText(nil)
         }
     }
 
-    private func refreshHistoryItems() {
-        let text = patternCombo.stringValue
-        patternCombo.removeAllItems()
-        patternCombo.addItems(withObjectValues: FindHistoryStore.recent.map(Self.historyTitle(for:)))
-        patternCombo.stringValue = text
-        deselectPatternCombo()
+    /// Rebuilds the field's menu: the two lists and the commands that belong to
+    /// each (§11, `Design/PATTERN_LIBRARY_IDEA.md`).
+    ///
+    /// A *template*: `NSSearchField` copies it on every click, so the menu is
+    /// rebuilt whenever a list changes rather than mutated in place.
+    @objc private func rebuildPatternMenu() {
+        let menu = NSMenu()
+        let recents = FindHistoryStore.recent
+        if !recents.isEmpty {
+            menu.addItem(Self.menuHeader("Recent Queries", symbol: "clock"))
+            for entry in recents { menu.addItem(patternItem(for: entry)) }
+            menu.addItem(.separator())
+        }
+        menu.addItem(command("Add to Favorites", #selector(addToFavorites)))
+        if !recents.isEmpty {
+            menu.addItem(command("Clear Recents", #selector(clearRecents)))
+        }
+        let favorites = FavoritePatternStore.favorites
+        if !favorites.isEmpty {
+            menu.addItem(.separator())
+            menu.addItem(Self.menuHeader("Favorites", symbol: "star.fill"))
+            for entry in favorites { menu.addItem(patternItem(for: entry)) }
+        }
+        menu.addItem(.separator())
+        menu.addItem(command("Manage Favorites…", #selector(manageFavorites)))
+        patternField.searchMenuTemplate = menu
     }
 
-    /// Clears the combo's selection so a later Return in the field isn't
-    /// mistaken for a pick. `selectItem(at: -1)` crashes (it indexes the item
-    /// array at -1) and `deselectItem(at:)` only accepts a valid index, so
-    /// deselect exactly the current selection when there is one.
-    private func deselectPatternCombo() {
-        if patternCombo.indexOfSelectedItem >= 0 {
-            patternCombo.deselectItem(at: patternCombo.indexOfSelectedItem)
+    /// A section header carrying an icon. Built by hand because
+    /// `NSMenuItem.sectionHeader(title:)` takes only a title — a disabled item
+    /// with the symbol as its image reads as a header just as well.
+    private static func menuHeader(_ title: String, symbol: String) -> NSMenuItem {
+        let item = NSMenuItem()
+        item.isEnabled = false
+        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: menuFlagSize, weight: .semibold))
+        item.attributedTitle = NSAttributedString(
+            string: title,
+            attributes: [.font: NSFont.systemFont(ofSize: menuFlagSize, weight: .semibold),
+                         .foregroundColor: NSColor.secondaryLabelColor])
+        return item
+    }
+
+    /// One row of either list: `Name: "pattern"  flags` for a favourite,
+    /// `"pattern"  flags` for a recent — one renderer, because a favourite is a
+    /// recent with a name (§11).
+    ///
+    /// The flags are grey and a size down: they say how the pattern is
+    /// searched, not what is searched for. The case rule is stated either way,
+    /// because "ignore case" is a fact and not the absence of one — except for
+    /// hex, where bytes have no case and there is nothing to state.
+    private func patternItem(for entry: SearchPatternEntry) -> NSMenuItem {
+        let item = command(entry.name.isEmpty ? entry.pattern : entry.name,
+                           #selector(patternPicked(_:)))
+        item.representedObject = entry.storedValue
+        let row: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: Self.menuRowSize),
+        ]
+        let title = NSMutableAttributedString()
+        if !entry.name.isEmpty {
+            title.append(NSAttributedString(string: "\(entry.name): ", attributes: row))
         }
+        title.append(NSAttributedString(string: "\"\(entry.pattern)\"", attributes: row))
+        let flags = entry.encoding == .hex
+            ? entry.encoding.displayName
+            : "\(entry.encoding.displayName), "
+                + (entry.caseSensitive ? "match case" : "ignore case")
+        title.append(NSAttributedString(
+            string: "  \(flags)",
+            attributes: [.font: NSFont.systemFont(ofSize: Self.menuFlagSize),
+                         .foregroundColor: NSColor.secondaryLabelColor]))
+        item.attributedTitle = title
+        if !entry.isUsable {
+            // A pattern that no longer parses can only have been hand-edited
+            // into the store. It stays pickable — the pick puts it in the field
+            // and the bar says what is wrong with it (§11) — and says so here.
+            item.image = NSImage(systemSymbolName: "exclamationmark.triangle",
+                                 accessibilityDescription: "Invalid pattern")
+        }
+        return item
+    }
+
+    /// A menu row with a target and an action. Without both, `autoenablesItems`
+    /// draws it dimmed.
+    private func command(_ title: String, _ action: Selector) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        item.attributedTitle = NSAttributedString(
+            string: title, attributes: [.font: NSFont.systemFont(ofSize: Self.menuRowSize)])
+        return item
+    }
+
+    /// Writes `text` into the field without it counting as typing.
+    ///
+    /// The write goes through the live field editor when there is one: an
+    /// active editor ignores `stringValue` until it commits. The caret lands at
+    /// the end, because every caller is replacing the whole text rather than
+    /// editing it.
+    private func setPatternText(_ text: String) {
+        if let editor = patternField.currentEditor() {
+            editor.string = text
+            editor.selectedRange = NSRange(location: (text as NSString).length, length: 0)
+        }
+        patternField.stringValue = text
+    }
+
+    /// Writes a hex pattern back in the form a dump prints it — `deadbeef`
+    /// becomes `DE AD BE EF` (§11).
+    ///
+    /// Only on a search, never while typing: it is the answer to "this is what
+    /// I looked for", and a field that regrouped bytes under the caret would be
+    /// unusable. The text is derived from the bytes, so it says exactly what
+    /// was searched for — and because the history records what the field holds,
+    /// the recents keep the same form. Text encodings are left alone: there the
+    /// field holds the string itself, not a transcription of bytes.
+    private func normalizeHexText(of pattern: SearchPattern) {
+        guard pattern.encoding == .hex else { return }
+        let text = pattern.hexText
+        guard text != patternField.stringValue else { return }
+        setPatternText(text)
     }
 
     /// Restores first responder to the pattern field after a search run from the
     /// bar, so a subsequent Enter keeps re-searching instead of landing on the
     /// hex view (§11).
     func focusPatternField() {
-        window?.makeFirstResponder(patternCombo)
+        window?.makeFirstResponder(patternField)
     }
 
     // MARK: - Actions
 
-    /// The combo's action fires on Return (submit). A picked history item is
-    /// handled by `patternSelectionChanged` (the popup pick does not fire the
-    /// action on an editable combo), so by the time the action runs the pick has
-    /// already deselected itself and the field holds the bare pattern (§11).
-    @objc private func patternComboAction() {
-        if patternCombo.indexOfSelectedItem >= 0 {
-            selectHistoryItem(at: patternCombo.indexOfSelectedItem)
-            return
-        }
+    /// The field's action fires on Return, which is a search. Nothing else
+    /// reaches it: what used to arrive here as a picked list item is now a
+    /// menu item with its own action (§11).
+    @objc private func patternFieldAction() {
         runSearch(.forward)
     }
 
-    /// The popup selection changed — the user picked a history item. The
-    /// notification fires in the MIDDLE of the combo's own selection handling,
-    /// so touching the selection or text here corrupts that in-flight state
-    /// (e.g. `selectItem(at:)` re-entrantly posting the notification crashes on
-    /// an index-out-of-bounds). Defer the load to the next runloop turn, when
-    /// the combo has settled.
+    /// A row of either list was picked: it fills the field — pattern, encoding
+    /// and case rule — and runs the search. An entry is chosen deliberately,
+    /// and the Return that would follow it never means anything else (§11).
+    ///
+    /// It records nothing in the history: the history is what was *typed*, and
+    /// spending its ten slots on things already kept elsewhere is the problem
+    /// the favourites exist to solve.
+    @objc private func patternPicked(_ sender: NSMenuItem) {
+        guard let stored = sender.representedObject as? [String: Any],
+              let entry = SearchPatternEntry(stored: stored) else { return }
+        apply(entry)
+        runSearch(.forward, recordingHistory: false)
+    }
+
+    /// With an empty field there is nothing to keep, so the command is dimmed
+    /// rather than absent — the same reading the stepper gives at zero matches
+    /// (§11). Asked at menu-open time, which is the only moment the answer is
+    /// wanted: the field's text moves with every keystroke and the menu is a
+    /// template built far less often.
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        guard menuItem.action == #selector(addToFavorites) else { return true }
+        return !patternField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Keeps what is in the field. The owner asks for a name and stores it —
+    /// the bar has the pattern, the encoding and the case rule, and nothing
+    /// else about a sheet (§11).
+    @objc private func addToFavorites() {
+        onAddToFavorites?(entryForField())
+    }
+
+    @objc private func clearRecents() {
+        FindHistoryStore.clear()
+        rebuildPatternMenu()
+    }
+
+    @objc private func manageFavorites() {
+        onManageFavorites?()
+    }
+
+    /// What the field currently describes, as an entry: what "keep this one"
+    /// keeps, and what the owner checks against the favourites already there.
+    /// The encoding is the popup's, which after a Smart Search is the one that
+    /// *worked* (§11).
+    func entryForField() -> SearchPatternEntry {
+        SearchPatternEntry(pattern: patternField.stringValue,
+                           encoding: currentEncoding(),
+                           caseSensitive: isCaseSensitive)
+    }
+
     /// Typing in the pattern field ends the search that was running: the count
     /// clears, and the controller drops the pane's matches, so nothing on
     /// screen claims to describe a pattern that is no longer in the field.
+    ///
+    /// Clearing the field — by Escape, or by the ⊗ — arrives here too, which is
+    /// how "Escape cancels the current search" needs no rule of its own (§11).
     func controlTextDidChange(_ obj: Notification) {
-        guard (obj.object as? NSComboBox) === patternCombo else { return }
+        guard (obj.object as? NSTextField) === patternField else { return }
         // Typed over: whatever encoding a picked entry brought with it is not
         // about this text (§11).
         pickedEncoding = nil
@@ -657,14 +865,6 @@ final class FindBarView: NSView, NSComboBoxDelegate {
         show(patternError: nil)
         show(count: nil)
         onPatternEdited?()
-    }
-
-    @objc private func patternSelectionChanged() {
-        let index = patternCombo.indexOfSelectedItem
-        guard index >= 0 else { return }
-        DispatchQueue.main.async { [weak self] in
-            self?.selectHistoryItem(at: index)
-        }
     }
 
     @objc private func encodingChanged() {
@@ -697,6 +897,12 @@ final class FindBarView: NSView, NSComboBoxDelegate {
         press(segment: direction == .backward ? Self.previousSegment : Self.nextSegment)
     }
 
+    /// Presses Find All the way a click does. The button is disabled until a
+    /// search is live, so a test cannot click it into a first search.
+    func pressFindAllForTests() {
+        runSearchAll()
+    }
+
     @objc private func donePressed() {
         onClose?()
     }
@@ -713,9 +919,10 @@ final class FindBarView: NSView, NSComboBoxDelegate {
 
     // MARK: - Search
 
-    private func runSearch(_ direction: SearchDirection) {
+    private func runSearch(_ direction: SearchDirection, recordingHistory: Bool = true) {
         guard let request = searchRequest() else { return }  // reported inside
-        recordChosenEncoding(of: request)
+        if case .pattern(let pattern, _) = request { normalizeHexText(of: pattern) }
+        if recordingHistory { recordChosenEncoding(of: request) }
         onSearch?(request, direction)
     }
 
@@ -729,7 +936,7 @@ final class FindBarView: NSView, NSComboBoxDelegate {
                             folding: CaseFolding(encoding: pattern.encoding,
                                                  caseSensitive: isCaseSensitive))
         }
-        let text = patternCombo.stringValue
+        let text = patternField.stringValue
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             onError?(Self.errorText(for: SearchError.emptyPattern))
             return nil
@@ -773,9 +980,9 @@ final class FindBarView: NSView, NSComboBoxDelegate {
     }
 
     private func record(encoding: SearchEncoding) {
-        if FindHistoryStore.record(pattern: patternCombo.stringValue, encoding: encoding,
+        if FindHistoryStore.record(pattern: patternField.stringValue, encoding: encoding,
                                    caseSensitive: isCaseSensitive) {
-            refreshHistoryItems()
+            rebuildPatternMenu()
         }
     }
 
@@ -792,6 +999,12 @@ final class FindBarView: NSView, NSComboBoxDelegate {
         // *already* settled on — instead of stepping the index it now has.
         pickedEncoding = encoding
         updateCaseButtonVisibility()
+        // A pass that landed on hex found *bytes*, so the field says so the way
+        // a dump does — before the history records what the field holds (§11).
+        if let pattern = try? SearchEngine.parsePattern(patternField.stringValue,
+                                                        encoding: encoding) {
+            normalizeHexText(of: pattern)
+        }
         record(encoding: encoding)
     }
 
@@ -799,13 +1012,14 @@ final class FindBarView: NSView, NSComboBoxDelegate {
     /// search, but every occurrence is collected instead of moving the caret.
     private func runSearchAll() {
         guard let request = searchRequest() else { return }  // reported inside
+        if case .pattern(let pattern, _) = request { normalizeHexText(of: pattern) }
         recordChosenEncoding(of: request)
         onSearchAll?(request)
     }
 
     private func parsedPattern() -> SearchPattern? {
         do {
-            let pattern = try SearchEngine.parsePattern(patternCombo.stringValue,
+            let pattern = try SearchEngine.parsePattern(patternField.stringValue,
                                                         encoding: currentEncoding())
             show(patternError: nil)
             return pattern
@@ -814,7 +1028,7 @@ final class FindBarView: NSView, NSComboBoxDelegate {
             // the parser threw about it (an empty hex string is "invalid hex").
             // There is nothing to report where the count goes, so it goes to
             // the owner, which says it the way it says "Not found".
-            guard !patternCombo.stringValue
+            guard !patternField.stringValue
                 .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 show(patternError: nil)
                 onError?(Self.errorText(for: SearchError.emptyPattern))
@@ -836,38 +1050,29 @@ final class FindBarView: NSView, NSComboBoxDelegate {
     /// "pattern — encoding", so the same pattern under two encodings shows as
     /// two items; the field keeps just the pattern while the popup carries the
     /// encoding.
-    private func selectHistoryItem(at index: Int) {
-        let entries = FindHistoryStore.recent
-        guard index >= 0, index < entries.count else { return }
-        let entry = entries[index]
+    /// Loads a picked entry into the bar: the pattern, the encoding, and the
+    /// case rule — all three, or the row was lying about what it searches (§11).
+    ///
+    /// The write goes through the live field editor when there is one: an
+    /// active editor ignores `stringValue` until it commits.
+    private func apply(_ entry: SearchPatternEntry) {
+        setPatternText(entry.pattern)
 
-        // The dropdown labels each item "pattern — encoding", so a pick fills
-        // the field with that whole label. Rewrite the field to hold just the
-        // pattern, and route the encoding to its popup. The write must go
-        // through the live field editor when there is one — an active editor
-        // ignores `stringValue` until it commits (§11).
-        deselectPatternCombo()
-        if let editor = patternCombo.currentEditor() {
-            editor.string = entry.pattern
+        if let index = SearchEncoding.allCases.firstIndex(of: entry.encoding) {
+            encodingPopup.selectItem(at: index)
         }
-        patternCombo.stringValue = entry.pattern
-
-        if let encodingIndex = SearchEncoding.allCases.firstIndex(of: entry.encoding) {
-            encodingPopup.selectItem(at: encodingIndex)
-            updateCaseButtonVisibility()
-        }
-        // The pick brought an encoding with it, so a Smart Search of this
-        // pattern starts there rather than guessing from scratch (§11).
+        // The pick names an encoding, so it is where a Smart Search starts
+        // (§11) — the same statement choosing the popup by hand makes.
         pickedEncoding = entry.encoding
-
-        // Restore the search's case-sensitivity (text encodings only): the
-        // toggle follows the picked entry and the persisted default is updated
-        // so a later reopen keeps the same state. Hex is always byte-exact —
-        // its flag is recorded true but never shown or restored (§11).
+        // Hex is always byte-exact: its flag is recorded but never shown or
+        // restored (§11).
         if entry.encoding != .hex {
             caseButton.state = entry.caseSensitive ? .on : .off
             Self.defaults.set(entry.caseSensitive, forKey: Self.caseSensitiveKey)
         }
+        syncCaseButtonAppearance()
+        updateCaseButtonVisibility()
+        show(patternError: nil)
     }
 
     /// Shows or hides the case toggle for the current encoding (§11).
@@ -903,22 +1108,6 @@ final class FindBarView: NSView, NSComboBoxDelegate {
     /// is made of, which is the distinction the popup exists to make.
     private static func title(for encoding: SearchEncoding) -> String {
         encoding.displayName
-    }
-
-    /// The pattern-combo dropdown label for a history entry: the search text
-    /// plus its encoding, so "abcd" as ASCII and "abcd" as hex read as two
-    /// distinct items. A "(CS)" suffix marks a case-sensitive search; hex is
-    /// always byte-exact, so its recorded flag (true) never shows here (§11).
-    private static func historyTitle(for entry: FindHistoryStore.Entry) -> String {
-        let suffix = (entry.caseSensitive && entry.encoding != .hex) ? " (CS)" : ""
-        return "\(entry.pattern) — \(shortTitle(for: entry.encoding))\(suffix)"
-    }
-
-    /// The encoding's bare name, for a history entry's label — where it sits
-    /// after the pattern it describes and only has to tell two entries apart,
-    /// so hex is just "Hex" there.
-    private static func shortTitle(for encoding: SearchEncoding) -> String {
-        encoding == .hex ? "Hex" : encoding.displayName
     }
 
     /// The short form shown where the count goes. One wording for every way a

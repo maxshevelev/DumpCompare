@@ -678,6 +678,15 @@ final class MainViewController: NSViewController {
         findBar.onPatternEdited = { [weak self] in
             self?.activePane.endMatchHighlighting()
         }
+        // Keeping a pattern needs the one thing the bar has not got — a name —
+        // so the bar hands over what the field describes and a sheet asks for
+        // the rest (§11).
+        findBar.onAddToFavorites = { [weak self] entry in
+            self?.askToKeepPattern(entry)
+        }
+        findBar.onManageFavorites = {
+            (NSApp.delegate as? AppDelegate)?.showFavoritePatternSettings()
+        }
         view.addSubview(findBar)
 
         contentContainer.translatesAutoresizingMaskIntoConstraints = false
@@ -5510,6 +5519,20 @@ final class MainViewController: NSViewController {
     private func showFindMessage(_ message: String) {
         NSSound.beep()
         activeFilePane?.showTransientMessage(message)
+    }
+
+    /// Keeps the pattern in the Find bar under a name (§11).
+    ///
+    /// The sheet does the asking and the checking — including the one refusal
+    /// that matters, the same search kept twice — so what is left here is the
+    /// keeping itself and saying it happened, in the same plate the searches
+    /// answer in.
+    private func askToKeepPattern(_ entry: SearchPatternEntry) {
+        let sheet = NamePatternSheetController(entry: entry) { [weak self] kept in
+            guard FavoritePatternStore.add(kept) else { return }
+            self?.showNotice(symbol: "star.fill", lines: ["Added to Favorites", kept.name])
+        }
+        presentAsSheet(sheet)
     }
 
     // MARK: - Test mode

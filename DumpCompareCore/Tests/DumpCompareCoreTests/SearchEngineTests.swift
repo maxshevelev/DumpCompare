@@ -788,3 +788,32 @@ extension SearchEngineTests {
         XCTAssertEqual(hits, [0..<6, 6..<12, 12..<18], "all three, one per spelling")
     }
 }
+
+/// §11: the one form a hex pattern is shown back in — the form a dump prints,
+/// so the text in the field can be compared against the bytes beside it.
+final class HexPatternTextTests: XCTestCase {
+    func testTheBytesComeBackAsUppercasePairs() throws {
+        let pattern = try SearchEngine.parsePattern("deadbeef", encoding: .hex)
+        XCTAssertEqual(pattern.hexText, "DE AD BE EF")
+    }
+
+    /// Every form the parser accepts leads to the same text, because the text
+    /// is derived from the bytes rather than from what was typed.
+    func testEveryAcceptedFormLeadsToTheSameText() throws {
+        for typed in ["DEADBEEF", "de ad be ef", "DE AD BE EF", "0xDE 0xAD 0xBE 0xEF"] {
+            let pattern = try SearchEngine.parsePattern(typed, encoding: .hex)
+            XCTAssertEqual(pattern.hexText, "DE AD BE EF", "typed as \(typed)")
+        }
+    }
+
+    func testASingleByteHasNoSeparator() throws {
+        XCTAssertEqual(try SearchEngine.parsePattern("0xff", encoding: .hex).hexText, "FF")
+    }
+
+    /// A text pattern's bytes can be written this way too — the property is
+    /// about the bytes — but nothing shows them so: the field holds the string
+    /// the user is looking for, not its encoding.
+    func testTextBytesCanAlsoBeWrittenOut() throws {
+        XCTAssertEqual(try SearchEngine.parsePattern("AB", encoding: .ascii).hexText, "41 42")
+    }
+}
