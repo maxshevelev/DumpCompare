@@ -174,6 +174,31 @@ no navigation stack — and it counts what the current shape costs: 5484 lines a
 It proposes nothing. If it is ever acted on, the questions it ends with are what
 would have to be decided first.
 
+### A library of named patterns
+
+**What.** Patterns you keep, each with a name that says what it is for — *ME
+FPT*, *Aptio capsule header*, *Vendor S/N table* — with their encoding and case
+flag, edited in a Settings tab and reachable from the Find bar as easily as the
+history is. A pattern typed into the field can be kept with one command, which
+is how the library actually fills up.
+
+**Why.** The same few byte sequences are searched for over and over on a bench,
+and the only place the app remembers a pattern today is the find history: ten
+entries, most-recent-first, evicted by whatever was typed last. A useful pattern
+is lost to an afternoon of one-off searches, and the history cannot say what a
+pattern is *for* — it only knows the pattern and its encoding.
+
+**How.** Taken apart in **`Design/PATTERN_LIBRARY_IDEA.md`** — not a plan. The
+short version: the valuable half is the *name*, not the storage; the deciding
+question is where the library appears in the Find bar, and the answer is a menu
+button of its own rather than a second section inside the pattern combo, whose
+flat list cannot say that a kept pattern is not a recent search. An activated
+library pattern does **not** enter the history — the history records what was
+typed — and an entry's encoding is the user's statement, so a search that finds
+the pattern in another encoding does not rewrite it. Almost everything it needs
+exists: the history's store shape, the File Types tab's table, the bar's own
+parser and the `preferring:` path Smart Search already carries.
+
 ### Zones — named intervals of a dump
 
 **What.** A zone is a named half-open range, living beside bookmarks: they mark
