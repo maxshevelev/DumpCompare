@@ -1146,7 +1146,14 @@ Smart Search:
   attempt — while the plate is what says which ones they were.
 - The case toggle stays on the bar while Smart Search is on, whatever the popup
   says: the pass will try the text encodings, so case is a live question even
-  under `Hex bytes`.
+  under `Hex bytes`. And it is the toggle alone that answers it there — §11's
+  rule that a non-foldable encoding forces exact matching is about the encoding
+  *a search runs in*, and with Smart Search on the popup names a result rather
+  than the search. Each attempt folds by its own encoding, hex exactly by
+  `CaseFolding`'s own rule. Reading the popup for it made a search for `root`
+  straight after a hex search come back empty on a dump that plainly holds
+  `Root`: the popup still said `Hex bytes`, so every text attempt was built
+  case-sensitive and folded nothing.
 - The whole of *what to try, in what order, and the pass that tries it* is the
   model's (`SmartSearch` in the Core package), which is why it is tested without
   a window. The bar hands over the text and the case flag and shows what came

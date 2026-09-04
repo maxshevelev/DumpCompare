@@ -365,6 +365,38 @@ final class SmartSearchFlowTests: XCTestCase {
         XCTAssertEqual(try encodingPopup(window).titleOfSelectedItem, "ASCII")
     }
 
+    /// The reported case, with the shape of the file it was reported on: a
+    /// 16 MB dump holding `FF 33` early and the word `Root` — capital R, and no
+    /// lowercase `root` anywhere. Searching `FF 33` adopts hex; typing `root`
+    /// must then find `Root`, because the case toggle is off and ASCII folds
+    /// letters.
+    func testTheReportedSequenceOnADumpsShape() throws {
+        var bytes = [UInt8](repeating: 0xFF, count: 16 << 20)
+        bytes.replaceSubrange(0x2eae3..<0x2eae5, with: [0xFF, 0x33])
+        bytes.replaceSubrange(0x66a144..<0x66a148, with: Array("Root".utf8))
+        let (controller, window, _) = try makeController(bytes)
+        defer { cleanup(controller) }
+        let pane = controller.windowModel.pane1
+
+        controller.findPattern()
+        let bar = try findBar(window)
+        XCTAssertFalse(bar.caseButton.state == .on, "the premise: case-insensitive")
+        try search("FF 33", in: window)
+        XCTAssertTrue(pumpUntil(5) { pane.currentMatch == 0x2eae3..<0x2eae5 },
+                      "the hex pattern is found")
+        XCTAssertEqual(try encodingPopup(window).titleOfSelectedItem, "Hex bytes")
+
+        let field = try combo(window)
+        field.stringValue = "root"
+        NotificationCenter.default.post(name: NSControl.textDidChangeNotification, object: field)
+        try findBar(window).pressFindForTests(.forward)
+
+        XCTAssertTrue(pumpUntil(5) { pane.currentMatch == 0x66a144..<0x66a148 },
+                      "`root` folds onto `Root`, so Smart Search must find it")
+        XCTAssertEqual(try encodingPopup(window).titleOfSelectedItem, "ASCII")
+        XCTAssertNil(controller.transientNotice, "and nothing reports a failure")
+    }
+
     // MARK: - When nothing is found anywhere
 
     /// A pass that comes back empty says so as a plate over the window, naming

@@ -99,7 +99,17 @@ final class FindBarView: NSView, NSComboBoxDelegate {
     /// rest this is always true, because the toggle's remembered state (off by
     /// default = case-insensitive, like TextEdit) would otherwise leak in and
     /// fold bytes that must not fold (§11).
+    ///
+    /// That override is about the encoding *this search runs in* — so with
+    /// Smart Search on it must not be applied here at all. The popup then
+    /// names a result rather than the search, and each attempt derives its own
+    /// folding from its own encoding (`CaseFolding(encoding:caseSensitive:)`
+    /// forces hex exact by itself). Reading the popup here is what made a
+    /// search for `root` right after a hex search come back empty on a dump
+    /// that plainly holds `Root`: the popup still said `Hex bytes`, so every
+    /// text attempt was built case-*sensitive* and folded nothing.
     var isCaseSensitive: Bool {
+        guard !isSmartSearchEnabled else { return caseButton.state == .on }
         guard Self.supportsCaseFolding(currentEncoding()) else { return true }
         return caseButton.state == .on
     }
