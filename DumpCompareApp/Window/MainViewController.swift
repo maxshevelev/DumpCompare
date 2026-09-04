@@ -4973,13 +4973,26 @@ final class MainViewController: NSViewController {
         showFindBar()
     }
 
+    /// ⌘F (§11). On a bar that is already open it focuses the field and selects
+    /// what is in it — it does **not** prefill.
+    ///
+    /// Prefilling from the history belongs to *opening* the bar. Doing it on
+    /// every ⌘F threw away the pattern the user had come back to fix: a search
+    /// that found nothing records nothing (there is no encoding to record it
+    /// under), so "the last search" was an older, successful one, and it
+    /// replaced what was in the field.
     private func showFindBar() {
+        let wasHidden = findBar.isHidden
         contentTopToView.isActive = false
         contentTopToFindBar.isActive = true
         findBar.isHidden = false
         syncFindBarToActivePane()
         view.layoutSubtreeIfNeeded()
-        findBar.prepareForShow()
+        if wasHidden {
+            findBar.prepareForShow()
+        } else {
+            findBar.focusForEditing()
+        }
     }
 
     private func hideFindBar() {

@@ -812,6 +812,20 @@ final class FindBarView: NSView, NSSearchFieldDelegate, NSMenuItemValidation {
         setPatternText(text)
     }
 
+    /// ⌘F on a bar that is already open: the field takes focus and its text is
+    /// selected, so typing replaces it — and nothing is rewritten (§11).
+    ///
+    /// The bar prefills from the history when it *opens*, which is the right
+    /// reading of "the bar opens on the last search" and the wrong one for a
+    /// bar already on screen: the user pressed ⌘F to correct the pattern in
+    /// front of them, and a pattern that found nothing is not in the history to
+    /// be prefilled from — nothing was found, so no encoding was adopted, so
+    /// nothing was recorded.
+    func focusForEditing() {
+        window?.makeFirstResponder(patternField)
+        patternField.selectText(nil)
+    }
+
     /// Restores first responder to the pattern field after a search run from the
     /// bar, so a subsequent Enter keeps re-searching instead of landing on the
     /// hex view (§11).

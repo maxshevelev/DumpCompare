@@ -1302,6 +1302,14 @@ The results panel:
   not at all. Only a replaced or dropped *set* rebuilds the list — a stepped
   plate changes no row, and rebuilding the list is how it would lose the row
   the user had just picked in it.
+- The bar **opens** on the last search — the pattern and the encoding it was
+  found in, prefilled and selected so typing replaces it. That is what opening
+  means, and only that: ⌘F on a bar already on screen focuses the field and
+  selects what is in it, and rewrites nothing. The user pressed it to correct
+  the pattern in front of them, and a search that found nothing is not in the
+  history to be prefilled from — nothing was found, so no encoding was adopted,
+  so nothing was recorded — so re-prefilling would replace the failed pattern
+  with an older, successful one at exactly the moment it was being fixed.
 - The Find bar **reads the active pane**. It is one strip serving whichever
   pane is in front, so everything on it that describes a search — the count,
   the stepper's enablement, whether the results panel is up — is that pane's,

@@ -892,6 +892,58 @@ final class FindFlowTests: XCTestCase {
         XCTAssertEqual(combo.stringValue, "AB CD")
     }
 
+    /// ⌘F on a bar that is already open focuses the field and selects what is
+    /// in it — it does not prefill (§11).
+    ///
+    /// The bug: a Smart Search that found nothing records nothing, because no
+    /// encoding was adopted to record it under. So the pattern the user came
+    /// back to correct was replaced by the last *successful* search, out of the
+    /// history, at the moment they pressed ⌘F to correct it.
+    func testCmdFOnAnOpenBarKeepsWhatIsInTheField() throws {
+        FindHistoryStore.record(pattern: "DE AD", encoding: .hex)
+        let (controller, window, url) = try makeController([0xDE, 0xAD, 0x00])
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let (combo, _, _, _) = try barControls(window)
+        XCTAssertEqual(combo.stringValue, "DE AD", "the premise: the bar opens on the last search")
+
+        // A Smart Search for something the file does not hold, in any encoding.
+        combo.stringValue = "zzzz"
+        try findBar(window).pressFindForTests(.forward)
+        XCTAssertTrue(pumpUntil(3) { controller.windowModel.pane1.matchSet?.isEmpty ?? true })
+        XCTAssertNil(FindHistoryStore.recent.first { $0.pattern == "zzzz" },
+                     "nothing was found, so nothing was recorded")
+
+        // ⌘F again, to correct that pattern.
+        controller.findPattern()
+
+        XCTAssertEqual(combo.stringValue, "zzzz",
+                       "the pattern being corrected must survive the press")
+        XCTAssertTrue(window.firstResponder === combo
+                        || window.firstResponder === combo.currentEditor(),
+                      "and the field takes focus, so typing replaces it")
+    }
+
+    /// Closing the bar and opening it again *does* prefill: that is the bar
+    /// opening on the last search, which is what a fresh ⌘F means (§11).
+    func testReopeningTheBarStillPrefillsTheLastSearch() throws {
+        FindHistoryStore.record(pattern: "DE AD", encoding: .hex)
+        let (controller, window, url) = try makeController([0xDE, 0xAD, 0x00])
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        let (combo, _, done, _) = try barControls(window)
+        combo.stringValue = "zzzz"
+        done.performClick(nil)
+
+        controller.findPattern()
+
+        let (reopened, encoding, _, _) = try barControls(window)
+        XCTAssertEqual(reopened.stringValue, "DE AD")
+        XCTAssertEqual(encoding.titleOfSelectedItem, "Hex bytes")
+    }
+
     /// The history is capped at 10 entries, most recent first.
     func testFindHistoryCapsAtTen() throws {
         for i in 0..<12 {
