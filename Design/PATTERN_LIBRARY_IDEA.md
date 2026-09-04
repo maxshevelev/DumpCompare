@@ -210,15 +210,21 @@ news about the *file*, not about the entry.
 
 The minimum that is still useful:
 
+A favourite is a **recent with a name** — the same three fields the history
+already keeps, plus the one thing a typed search has not got:
+
 ```swift
 struct SearchPatternEntry {
     var name: String          // "ME FPT", the thing the menu shows
     var pattern: String       // the text as typed, not bytes
     var encoding: SearchEncoding
     var caseSensitive: Bool   // meaningless for hex, as everywhere (§11)
-    var note: String          // optional, one line, for the tooltip
 }
 ```
+
+which is `FindHistoryStore.Entry` with a `name`. That is worth more than the
+tidiness of it: one row renderer for both lists, one pick handler, one
+validation — and "keep this one" is naming a recent.
 
 Deliberately **not** in the first slice:
 
@@ -230,6 +236,9 @@ Deliberately **not** in the first slice:
   form, re-parseable by `SearchEngine.parsePattern`, and honest about what the
   user wrote. Storing bytes would make `DE AD` and `DEAD` the same entry, which
   is right for the search and wrong for the list.
+- **A note or description.** The row has no room for one, so it would live in
+  a tooltip and the form; the name is what a pattern is called, and if a name
+  cannot say what a pattern is for, a longer name can.
 - **Regex or wildcards.** A separate feature with its own engine work; a
   library of exact patterns does not need it and is not blocked by it.
 - **Per-file libraries.** A pattern is knowledge about a *class* of dumps, not
@@ -308,8 +317,8 @@ the first slice:
 
 ## The slice worth building first
 
-1. The store, with a name, and no cap.
-2. The Settings tab: add, remove, edit, validate.
+1. The store: a history entry plus a name, no cap, order as held.
+2. The Settings tab: add, remove, edit, validate, and reorder by dragging.
 3. The field's menu: **Favorites** (the library, by name), **Recent Queries**
    (the history, as now), then **Add to Library…**, **Manage Library…** and
    **Clear Recents**. Picking an entry fills the field, names the encoding, and
@@ -322,42 +331,54 @@ That is a complete feature — a pattern can be kept, named, found and used —
 and everything deferred above (groups, export, seeding, regex) can be added
 later without changing what this slice does.
 
-## What would need deciding before writing any of it
+## Decisions taken
 
 **Settled at the prototype** (`Design/pattern-field-prototype.swift`): the
 search field sits in the bar's stack exactly as the combo does — same height,
 same baseline, same stretch, the count's fixed width undisturbed — and the
 magnifier's disclosure arrow is the affordance, so nothing is added to the bar.
-The field's clear (⊗) comes with it. What is left:
+The field's clear (⊗) comes with it.
 
-- **What a pick does.** Today a pick out of the combo's history *fills* the
-  field and stops; the user then presses Return. A favourite is a stronger
-  statement — a named thing chosen deliberately — so it probably fills *and*
-  searches. Whichever way, the two lists should behave the same, and today's
-  fill-only is the behaviour a Find bar user already has.
-- **Escape.** The bar closes on Escape (`doneButton.keyEquivalent`), and a
-  search field treats Escape as "clear the field". Which one wins has to be
-  tried rather than reasoned about, and if the field wins, the bar needs Escape
-  back — closing is what Escape means everywhere else in this app.
-- **A pick sets three things, not one.** The pattern, the encoding *and* the
-  case flag: an entry records `match case` or `ignore case`, and the `Aa`
-  toggle has to follow it or the row is lying. It also sets the Smart Search
-  preference (`preferring:`, §11), which is what makes the named encoding the
-  first attempt.
-- **How long the menu may get.** Ten recents plus twenty favourites plus two
-  headers, three commands and four separators is a long menu. Options: show the
-  first N favourites and leave the rest to the form, or group them once there
-  are enough to need it. Not decidable without a real library to look at.
-- **Order of favourites.** Insertion order, alphabetical, or dragged by hand in
-  the form. Insertion order is the cheapest and the least useful once there are
-  twenty; alphabetical needs no UI.
-- **Uniqueness.** Two entries called *FPT* differing only in encoding are
-  legitimate; two identical ones are a mistake the form should prevent, and
-  probably by merging rather than refusing.
-- **What a pick does when the pattern cannot be parsed *now*** — an entry saved
-  under an encoding whose parser has since changed, or hand-edited defaults.
-  The bar's `Invalid pattern` (§11) covers it, but the entry should say so in
-  the list rather than only when used.
-- **Whether an entry keeps a note.** The row format has no room for one, so a
-  note would live in the tooltip and in the form. Worth having only if the name
-  turns out to be too short to say what a pattern is for.
+**Settled by decision:**
+
+1. **A pick fills the field and runs the search**, from either list. This is a
+   change to what the history does today, where a pick fills and stops and the
+   user presses Return — and the change is the right way round: a list entry is
+   chosen deliberately, and the press that follows it never means anything else.
+2. **Escape belongs to the field, and the bar is closed by `Done`.** The first
+   Escape closes the menu; the second clears the field.
+   *This one costs something and is worth writing down:* §11 currently has
+   Escape closing the bar, which is what Escape does in every other find bar on
+   the platform (Safari, TextEdit, Xcode), and what the existing tests assert.
+   Trading it for "clear the field" buys the field's own idiom and the ⊗'s
+   keyboard equivalent, and the exits become `Done` and the ⊗. §11 and
+   `hideFindBar`'s Escape path change with it, and so does the rule that the
+   highlighting ends "by `Done` or Escape".
+3. **A pick sets three things**: the pattern, the encoding, and the case flag —
+   an entry records `match case` or `ignore case`, and the `Aa` toggle follows
+   it or the row is lying. The encoding also becomes Smart Search's stated
+   preference (`preferring:`, §11), which makes it the first attempt.
+4. **The menu shows everything there is**, as far as the screen allows;
+   `NSMenu` scrolls past that. If a real library outgrows it, that is the point
+   at which to decide between a cap and groups — not before.
+5. **Natural order, and the user's.** Favourites appear in the order the list
+   holds them, and the list is reordered by dragging rows in the form. No
+   sorting rule to remember, and the order a bench keeps them in is knowledge
+   too.
+6. **Recents stay unique**, and a repeat moves its entry to the top — which is
+   what `FindHistoryStore.record` already does, keyed by (pattern, encoding).
+7. **An entry cannot stop parsing**, because what it can hold is what the
+   parser accepts and the parser is code, not data. If one ever does — a
+   hand-edited plist, a format change — the text goes into the field as it
+   stands and the bar reports the error the way it reports any other
+   (`Invalid pattern`, §11), which needs no new UI.
+8. **No note field. A favourite is a recent with a name** — the same pattern,
+   encoding and case flag, plus the one thing a typed search has not got. That
+   is worth more than the tidiness: one row renderer, one pick handler, one
+   validation, and a favourite can be built from a recent by naming it.
+
+Nothing above is open. What is left is the building, in the order the slice
+above gives: the store (a history entry plus a name), the form (a table with
+drag reordering, add, remove, validate), the field and its menu, and the four
+rules — a pick fills and searches, a pick sets three things, the history
+records only what was typed, and Escape belongs to the field.
