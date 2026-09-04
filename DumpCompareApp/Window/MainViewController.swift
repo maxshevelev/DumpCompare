@@ -5231,30 +5231,38 @@ final class MainViewController: NSViewController {
     /// stays a rounding error next to the scan itself.
     static let indexPublishInterval: TimeInterval = 0.1
 
-    /// Moves to the next or previous match in the pane's index (§11).
+    /// Moves to the next or previous match (§11).
     ///
-    /// The step is `MatchSet.step`: both directions and the wrap are its, and a
-    /// single match steps onto itself rather than being ignored — a press that
-    /// does nothing reads as a broken key. What is left here is putting the
-    /// user there.
+    /// Answered from the **index** wherever the index can answer: that is a
+    /// rank/select step, so it is instant, it leaves the greys and the count
+    /// alone, and it costs the file nothing. `MatchSet.step` owns both
+    /// directions and the wrap.
     ///
-    /// An index that cannot answer — still being built, or past the ceiling
-    /// where positions were never kept — sends the press to a scan instead,
-    /// which is the same pass a new search runs.
+    /// A half-built index answers for the part of the file it has covered —
+    /// every match below `indexedUpTo` is exact — so stepping through the
+    /// beginning of a big dump works while the rest of it is still being
+    /// indexed. Only a step it *cannot* answer is scanned for: nothing found
+    /// ahead in what is covered, or a set past the ceiling where positions
+    /// were never kept.
     private func stepMatch(direction: SearchDirection, in pane: PaneViewModel) {
         guard let set = pane.matchSet else { return }
-        guard set.isComplete, set.isHighlightable else {
-            // A finished search that found nothing has nothing to step to, and
-            // says so already; anything else is scanned for.
-            guard !set.isComplete || set.total > 0 else { return }
-            beginPass(attempts: [SmartSearch.Attempt(pattern: set.pattern,
-                                                     folding: set.folding,
-                                                     encodings: [set.pattern.encoding])],
-                      direction: direction, goal: .showTheMatch, in: pane)
+        let anchor = searchAnchor(in: pane, direction: direction)
+        if set.isHighlightable, let step = set.step(direction, from: anchor),
+           // A wrap is only true when the index is finished: while it is still
+           // filling, "nothing ahead" may mean "not found yet".
+           !step.wrapped || set.isComplete {
+            land(step, direction: direction, in: pane)
             return
         }
-        guard let step = set.step(direction, from: searchAnchor(in: pane, direction: direction))
-        else { return }
+        // A finished index with nothing in it has nothing to step to, and the
+        // bar already says so.
+        guard !set.isComplete || !set.isHighlightable else { return }
+        scanForStep(in: pane, direction: direction)
+    }
+
+    /// Puts the user on a step the index answered.
+    private func land(_ step: MatchSet.Step, direction: SearchDirection,
+                      in pane: PaneViewModel) {
         pane.select(range: step.range)
         // A step is a search being shown again, which it may not have been: the
         // set outlives its highlighting, so `Done` then Enter steps through the
@@ -5275,6 +5283,56 @@ final class MainViewController: NSViewController {
         if step.wrapped { showWrapNotice(direction: direction) }
         handOffFocusAfterFind()
     }
+
+    /// A step the index could not answer: one scan for the search's own
+    /// pattern, wrapping, and nothing else touched (§11).
+    ///
+    /// Deliberately *not* a pass. A pass activates a search: it replaces the
+    /// session with one that is still looking, which puts every grey out and
+    /// back, and it stops the index being built. Navigating inside a search
+    /// that already exists must do neither — the index still filling behind
+    /// this press is the same search's, and killing it on every ‹ › meant a
+    /// common pattern in a large dump never finished indexing and every press
+    /// looked like a fresh search.
+    private func scanForStep(in pane: PaneViewModel, direction: SearchDirection) {
+        guard let set = pane.matchSet, let storage = pane.document?.storage else { return }
+        let attempt = SmartSearch.Attempt(pattern: set.pattern, folding: set.folding,
+                                          encodings: [set.pattern.encoding])
+        // Only the navigation task: `endIndexing()` is not called here, and
+        // that is the point.
+        cancelFind()
+        let operation = BackgroundOperation(name: "Searching…") { [weak self] in
+            self?.cancelFind()
+        }
+        findOperation = operation
+        filePaneView(for: pane)?.beginOperation(operation)
+        let anchor = searchAnchor(in: pane, direction: direction)
+        let chunkSize = Self.searchChunkSize
+        findTask = Task { [weak self] in
+            guard let self else { return }
+            let scan = Task.detached(priority: .userInitiated) {
+                try? SmartSearch.firstMatch(of: attempt, in: storage, from: anchor,
+                                            direction: direction, chunkSize: chunkSize,
+                                            shouldCancel: { Task.isCancelled },
+                                            progress: { operation.report($0) })
+            }
+            let outcome = await withTaskCancellationHandler(
+                operation: { await scan.value },
+                onCancel: { scan.cancel() }
+            )
+            operation.finish()
+            guard !Task.isCancelled, pane.isOpen else { return }
+            guard case .found(_, let range, let wrapped) = outcome else {
+                self.showFindMessage("Not found.")
+                return
+            }
+            self.show(match: range, in: pane)
+            if wrapped { self.showWrapNotice(direction: direction) }
+            self.handOffFocusAfterFind()
+        }
+    }
+
+
     /// Puts the user on a match a scan found: selected, revealed, and under the
     /// plate — the answer looks the same whether or not the index behind it
     /// exists yet (§11).

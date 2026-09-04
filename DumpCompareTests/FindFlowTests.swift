@@ -1398,6 +1398,99 @@ final class FindFlowTests: XCTestCase {
         XCTAssertFalse(message.isHidden, "it says so where the rows would have been")
     }
 
+    /// A press of ‹ › on a search that is already indexed must **step**: no
+    /// scan, no progress bar, and the greys stay where they are. A pass would
+    /// drop the finished index for a placeholder — the flicker of every match
+    /// going out and coming back — and that is the regression this pins.
+    func testASecondPressStepsAndDoesNotRescan() throws {
+        let bytes: [UInt8] = [0xDE, 0xAD, 0x00, 0xDE, 0xAD, 0x00, 0xDE, 0xAD]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+
+        controller.findPattern()
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "DE AD"
+        try clickFindNext(window)
+        XCTAssertTrue(indexed(window), "the premise: a finished index")
+        XCTAssertTrue(pumpUntil(2) { pane.currentMatch == 0..<2 })
+        let set = try XCTUnwrap(pane.matchSet)
+        XCTAssertEqual(set.total, 3)
+
+        try clickFindNext(window)
+
+        XCTAssertEqual(pane.currentMatch, 3..<5, "the step lands at once, with no scan")
+        XCTAssertEqual(pane.matchSet?.total, 3, "on the same index")
+        XCTAssertTrue(try XCTUnwrap(pane.matchSet).isComplete,
+                      "which is still finished — a rescan would have replaced it")
+        XCTAssertEqual(pane.currentMatchIndex, 1, "and the count knows which one")
+    }
+
+    /// And a press while the index is still building steps too, out of the part
+    /// of the file the index has covered — without dropping the index, putting
+    /// the greys out, or starting a scan. Every one of those was the regression:
+    /// a pass on each press meant a common pattern in a big dump never finished
+    /// indexing, and every ‹ › looked like a fresh search.
+    func testAPressMidIndexStepsWithinWhatIsCovered() throws {
+        let bytes: [UInt8] = [0xDE, 0xAD, 0x00, 0xDE, 0xAD, 0x00, 0xDE, 0xAD, 0x00, 0x00]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+        controller.findPattern()
+
+        // A half-built index: two matches found, the file covered to byte 6.
+        let pattern = SearchPattern(bytes: [0xDE, 0xAD], encoding: .hex)
+        let half = MatchSet(pattern: pattern, folding: .exact, extent: pane.fileSize,
+                            starts: [0, 3], indexedUpTo: 6)
+        pane.setMatches(half, current: 0)
+        // Standing on the first match, as a search leaves the user.
+        pane.select(range: 0..<2)
+        XCTAssertFalse(try XCTUnwrap(pane.matchSet).isComplete, "the premise")
+
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "DE AD"
+        try clickFindNext(window)
+
+        XCTAssertEqual(pane.currentMatch, 3..<5,
+                       "the next match is inside what the index covers, so it is a step")
+        XCTAssertEqual(pane.matchSet?.indexedUpTo, 6, "the half-built index is untouched")
+        XCTAssertEqual(pane.matchSet?.total, 2, "and still holds what it had found")
+        XCTAssertNil(controller.transientNotice, "no wrap, and nothing to report")
+    }
+
+    /// And when the index cannot answer — nothing ahead in the part it has
+    /// covered — the press is a *scan*, which must leave the search alone: the
+    /// half-built index keeps filling, the greys stay, and only the plate
+    /// moves. Sending this through a search's activation instead was the
+    /// regression: it replaced the session (every match blinking out) and
+    /// cancelled the index on every press.
+    func testAScannedStepLeavesTheSearchAlone() throws {
+        var bytes = [UInt8](repeating: 0x41, count: 256)
+        bytes.replaceSubrange(0..<2, with: [0xDE, 0xAD])
+        bytes.replaceSubrange(128..<130, with: [0xDE, 0xAD])
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+        controller.findPattern()
+
+        // Covered to byte 8, so the match at 128 is not in the index yet.
+        let pattern = SearchPattern(bytes: [0xDE, 0xAD], encoding: .hex)
+        pane.setMatches(MatchSet(pattern: pattern, folding: .exact, extent: pane.fileSize,
+                                 starts: [0], indexedUpTo: 8),
+                        current: 0)
+        pane.select(range: 0..<2)
+
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "DE AD"
+        try clickFindNext(window)
+
+        XCTAssertTrue(pumpUntil(3) { pane.currentMatch == 128..<130 },
+                      "the scan finds what the index has not reached")
+        XCTAssertEqual(pane.matchSet?.indexedUpTo, 8, "and the index is left as it was")
+        XCTAssertEqual(pane.matchSet?.total, 1)
+        XCTAssertEqual(pane.matchSet?.pattern.bytes, [0xDE, 0xAD], "still the same search")
+    }
+
     // MARK: - Coming round the end of the file (§11)
 
     /// Wrapping is the one thing about a step the dump cannot show: the plate
