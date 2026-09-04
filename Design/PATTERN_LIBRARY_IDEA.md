@@ -346,14 +346,27 @@ The field's clear (⊗) comes with it.
    user presses Return — and the change is the right way round: a list entry is
    chosen deliberately, and the press that follows it never means anything else.
 2. **Escape belongs to the field, and the bar is closed by `Done`.** The first
-   Escape closes the menu; the second clears the field.
-   *This one costs something and is worth writing down:* §11 currently has
-   Escape closing the bar, which is what Escape does in every other find bar on
-   the platform (Safari, TextEdit, Xcode), and what the existing tests assert.
-   Trading it for "clear the field" buys the field's own idiom and the ⊗'s
-   keyboard equivalent, and the exits become `Done` and the ⊗. §11 and
-   `hideFindBar`'s Escape path change with it, and so does the rule that the
-   highlighting ends "by `Done` or Escape".
+   Escape closes the menu; the second clears the field **and ends the search
+   with it** — no greys, no count, no indicator. The bar stays.
+
+   The reasoning settles what looked like a trade-off. A find bar that closes
+   on Escape is a find bar with **no clear control**: Safari's, TextEdit's and
+   Xcode's take Escape as their only way out because there is nothing else for
+   it to mean there. This one has the search field's own ⊗, so Escape has an
+   obvious job that is *not* closing, and taking it for that job costs nothing
+   — the exits become `Done` and the ⊗, and Escape becomes the ⊗'s keyboard
+   equivalent, which is what it is everywhere a field has one.
+
+   It falls out of machinery that already exists: clearing the field is a text
+   change, and a text change already ends the session (`onPatternEdited` →
+   `endMatchHighlighting`, §11). So Escape needs no rule of its own beyond
+   "clear the field" — the set still survives for the results panel until an
+   edit invalidates it, exactly as it does when the user selects the text and
+   deletes it.
+
+   What changes with it: §11's "the highlighting ends when the bar closes — by
+   `Done` or Escape" becomes `Done`, and `hideFindBar`'s Escape path and the
+   tests asserting it go.
 3. **A pick sets three things**: the pattern, the encoding, and the case flag —
    an entry records `match case` or `ignore case`, and the `Aa` toggle follows
    it or the row is lying. The encoding also becomes Smart Search's stated
