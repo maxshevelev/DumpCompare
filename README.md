@@ -21,14 +21,12 @@ xattr -dr com.apple.quarantine /Applications/DumpCompare.app
 
 The workflows the app is shaped around:
 
-- **Two reads of the same chip.** Read it twice, open both dumps, look at the summary: `0 differing` means the read is trustworthy. Anything else is a contact problem — a clip, a socket, a hot chip — not a firmware finding, and you learn it before you start diagnosing the board.
 - **A dump against a known-good donor.** Differing bytes are filled orange; ⌘⌥→ / ⌘⌥← walk the differing regions and centre each one, so scrolling 16 MB by hand is not part of the job.
 - **Finding the region that matters.** The overview minimap draws the whole chip in one column, shaded by how much real content each slice holds: erased `0xFF` blocks stay pale, code and tables read dense. A blanked, truncated or corrupted region shows up as the wrong texture at the wrong place — before you know its offset.
 - **Keeping your place in it.** ⌘D marks the caret's row and offers it a name; the mark is a purple arrow in the Offset column and in the minimap's margin, so the header, the table and the region under investigation stay findable while you work between them.
 - **Patching by hand.** ⌘L to the offset, type the hex digits, the changed bytes turn red until saved. Confirmations guard the operations that shift data.
 - **Two chips, one image.** Plenty of boards split the BIOS region across two SPI flashes. Read both, **File ▸ Append File…** to join them in order, work on the whole image as one dump — compare, search, patch — then **Save All as Separate Files…** to split it back at the same seam and flash each half.
 - **More than one comparison at a time.** A board rarely gives you one question. ⌘T opens another tab — its own two panes, its own bookmarks, its own comparison — so the donor pair stays open while you look at the second chip, and ⌃Tab goes back.
-- **Verifying a write-back.** Re-read the chip and compare the new dump against the file you flashed; the difference count is the pass/fail.
 - **Chip-sized files, not toy files.** Files are read in chunks and never loaded whole, so a 16 MB SPI dump — or a 1 GB image — opens immediately and stays within a low double-digit megabyte working set.
 
 ## Features
@@ -57,7 +55,7 @@ The workflows the app is shaped around:
 - A marked row's address stands on a **purple arrow** in the Offset column, and a smaller one appears in the minimap's margin in both of its modes — a marked region is findable without opening anything. Hovering a mark on the map says `ADDRESS: name`; a click near one lands exactly on the bookmark.
 - **Drag a mark to another row.** A dump gets read before it is understood, and a mark often belongs a few rows from where it was put; dragging beats remaking it, which would lose the name. One row holds one bookmark, so a mark dragged onto an occupied row jumps past it or stops before it.
 - The list shows every mark by address, and **describes an unnamed one by what is at it** — the row's bytes as the dump writes them, read from the pane you are working in. Return jumps, a double click opens the editor, ⌫ removes.
-- Bookmarks are absolute offsets, so one list serves both panes and marks the same height in both. They live as long as the window, not the file: closing a dump and opening it again — the same chip read twice — keeps its marks.
+- Bookmarks are absolute offsets, so one list serves both panes and marks the same height in both. They live as long as the window, not the file: closing a dump and opening it again keeps its marks.
 
 ### Minimap
 
