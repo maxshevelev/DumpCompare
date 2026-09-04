@@ -455,6 +455,50 @@ final class SmartSearchFlowTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(pane.matchSet).isComplete)
     }
 
+    /// Naming an encoding is where the search *starts*, not where it ends: a
+    /// pattern named as UTF-16 BE and found as UTF-16 LE must leave the popup
+    /// reading UTF-16 LE. Otherwise the popup says what was guessed at rather
+    /// than what worked, and the reader is left guessing which encoding the
+    /// match is in (§11).
+    func testTheAdoptedEncodingReplacesTheNamedOne() throws {
+        var bytes = [UInt8](repeating: 0xFF, count: 4096)
+        let wide = Array("windows".data(using: .utf16LittleEndian)!)
+        bytes.replaceSubrange(512..<(512 + wide.count), with: wide)
+        bytes.replaceSubrange(1024..<(1024 + wide.count), with: wide)
+        let (controller, window, _) = try makeController(bytes)
+        defer { cleanup(controller) }
+        let pane = controller.windowModel.pane1
+
+        controller.findPattern()
+        let field = try combo(window)
+        field.stringValue = "windows"
+        NotificationCenter.default.post(name: NSControl.textDidChangeNotification, object: field)
+        let popup = try encodingPopup(window)
+        popup.selectItem(at: SearchEncoding.allCases.firstIndex(of: .utf16BE)!)
+        popup.sendAction(popup.action, to: popup.target)
+        XCTAssertEqual(try findBar(window).preferredEncodingForTests, .utf16BE, "the premise")
+
+        try findBar(window).pressFindForTests(.forward)
+
+        XCTAssertTrue(pumpUntil(5) { pane.currentMatch == 512..<(512 + UInt64(wide.count)) },
+                      "found as UTF-16 LE, which the named BE is not")
+        XCTAssertEqual(try encodingPopup(window).titleOfSelectedItem, "UTF-16 LE",
+                       "the popup says what worked, not what was asked for")
+        XCTAssertEqual(try findBar(window).preferredEncodingForTests, .utf16LE,
+                       "and the next press starts from what worked")
+
+        // Which makes that next press a step through the index this search
+        // just built, rather than another pass from the encoding that was only
+        // ever asked for.
+        XCTAssertTrue(pumpUntil(3) { pane.matchSet?.isComplete == true })
+        try findBar(window).pressFindForTests(.forward)
+        XCTAssertEqual(pane.currentMatch, 1024..<(1024 + UInt64(wide.count)),
+                       "the second occurrence, by a step")
+        XCTAssertTrue(try XCTUnwrap(pane.matchSet).isComplete,
+                      "on the index it already had — a pass would have replaced it")
+        XCTAssertEqual(pane.matchSet?.total, 2)
+    }
+
     // MARK: - When nothing is found anywhere
 
     /// A pass that comes back empty says so as a plate over the window, naming

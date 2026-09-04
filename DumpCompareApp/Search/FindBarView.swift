@@ -786,6 +786,11 @@ final class FindBarView: NSView, NSComboBoxDelegate {
         if let index = SearchEncoding.allCases.firstIndex(of: encoding) {
             encodingPopup.selectItem(at: index)
         }
+        // What worked replaces what was asked for. Leaving the asked-for one
+        // standing meant the next press started another pass from it — trying
+        // UTF-16 BE and ASCII again before landing on the LE the search had
+        // *already* settled on — instead of stepping the index it now has.
+        pickedEncoding = encoding
         updateCaseButtonVisibility()
         record(encoding: encoding)
     }

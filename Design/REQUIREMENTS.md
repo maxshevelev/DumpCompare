@@ -1127,8 +1127,13 @@ Smart Search:
   UTF-8 is the same three bytes compared the same way, and scanning a dump twice
   for them would be twice the wait for one answer. The attempt answers for both,
   and reports as both.
-- On a match: the winning encoding is **put in the popup**, the pattern is
-  **recorded in the history** paired with it, and everything else proceeds as a
+- On a match: the winning encoding is **put in the popup** — naming an
+  encoding says where to *start*, and the popup then says what actually worked,
+  so the reader is never left guessing which encoding the match is in. It
+  replaces a named one as the standing choice too, which is what makes the next
+  press a step through the index this search built rather than another pass
+  from an encoding already ruled out. The pattern is **recorded in the
+  history** paired with it, and everything else proceeds as a
   plain search does — the plate, the reveal, and the index of every other
   occurrence of *that* encoding's pattern.
 - The pass can be long — several scans of the file — so it is one background
