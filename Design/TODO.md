@@ -116,6 +116,56 @@ clears the forward stack.
 
 ## Later
 
+### Carrying the pattern favourites between machines
+
+**What.** The named patterns (§11) follow the person rather than the machine:
+kept on the desk Mac, there on the laptop beside the programmer. Two halves,
+usable separately — a library *file* the user chooses (export, import, or keep
+the library there), and iCloud key-value sync for the case where nobody should
+have to choose anything.
+
+**Why.** The favourites are the first thing in the app that is knowledge rather
+than a preference — `ME FPT`, `Aptio capsule header`, the marker worked out on a
+Tuesday. Everything else in `UserDefaults` is about one screen and belongs to one
+machine. Re-typing a library on the second machine is how a library stops being
+used.
+
+**How.** Taken apart in **`Design/FAVORITES_SYNC_IDEA.md`**, and staged in
+**`Design/FAVORITES_SYNC_PLAN.md`** (seven stages, 27–36 h; the first four are
+invisible and leave the library file-backed and better tested than today). The
+short version: the choice is decided by the signature, not by the API. The app is
+ad-hoc signed (`CODE_SIGN_IDENTITY: "-"`, no Team ID), and every iCloud mechanism
+needs a Developer Program team, a registered container, an embedded provisioning
+profile and Developer ID signing — without which the entitlement is simply not
+honoured. So the file option comes first: it works with today's signature and
+today's sandbox (`SandboxBookmarkStore` already keeps security-scoped bookmarks,
+`FileChangeWatcher` already watches a file), and it answers "put my patterns
+under version control" and "send me yours", which no iCloud option answers.
+`NSUbiquitousKeyValueStore` is the right second step if the app ever gains a
+team: the list is already an array of dictionaries under one key, and its limits
+are three orders of magnitude away.
+
+The one real model change is shared by both: a favourite needs an **id** of its
+own. Identity-by-content is right for "do not keep the same search twice" and
+wrong for syncing — a rename reads as a delete plus an add, and a union
+resurrects whatever either side deleted. A UUID per entry, a tombstone for
+deletions, and a sort key so two machines cannot fight over the order. Reading
+stays backwards compatible: a row without an id gets one when it is read.
+
+The bulk of the work is the merge, and it cannot be skipped: a synced file is
+not a lock, so two machines *will* write inside the sync window, and clients
+resolve that by keeping a version and filing the other away — or by keeping the
+last writer and losing the rest. So: a three-way merge against the last agreed
+state (the copy in the container is the base), per-entry `modifiedAt` and
+tombstones, a version vector per write to tell a concurrent edit from a later
+one, and a resolver sheet for the cases a rule must not decide — the same entry
+changed differently on both sides, or edited here and deleted there. Nothing is
+written until those are answered. All of it is testable without a window or a
+network, which is where this app keeps its confidence.
+
+The running app mostly already fits: `didChangeNotification` is the one channel
+every reader uses, and the Favorites tab already protects a row being edited.
+
 ### Split the minimap into layers
 
 **What.** `MinimapView.swift` is ~2500 lines and grows with every feature that
