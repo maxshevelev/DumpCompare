@@ -12,10 +12,10 @@ import Foundation
 ///
 /// One file, written atomically, because two files would let a crash leave a
 /// base from one round beside a truth from another.
-public struct FavoritesDocument: Equatable, Sendable, Codable {
+public struct SyncDocument<Item: SyncedItem>: Equatable, Sendable, Codable {
     public var format: Int
     /// What this machine believes.
-    public var local: PatternLibrary
+    public var local: SyncedCollection<Item>
     /// The last state agreed with each of the other machines, by the name of
     /// the file it writes.
     ///
@@ -23,11 +23,11 @@ public struct FavoritesDocument: Equatable, Sendable, Codable {
     /// last agreed with the laptop says nothing about what it last agreed with
     /// the desk. A single base was the shape of a single shared file, and a
     /// single shared file is what two machines cannot both write.
-    public var bases: [String: PatternLibrary]
+    public var bases: [String: SyncedCollection<Item>]
 
-    public init(local: PatternLibrary = PatternLibrary(),
-                bases: [String: PatternLibrary] = [:],
-                format: Int = PatternLibrary.currentFormat) {
+    public init(local: SyncedCollection<Item> = SyncedCollection<Item>(),
+                bases: [String: SyncedCollection<Item>] = [:],
+                format: Int = SyncedCollection<Item>.currentFormat) {
         self.format = format
         self.local = local
         self.bases = bases
@@ -39,9 +39,9 @@ public struct FavoritesDocument: Equatable, Sendable, Codable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        format = try container.decodeIfPresent(Int.self, forKey: .format) ?? PatternLibrary.currentFormat
-        local = try container.decode(PatternLibrary.self, forKey: .local)
-        bases = try container.decodeIfPresent([String: PatternLibrary].self, forKey: .bases) ?? [:]
+        format = try container.decodeIfPresent(Int.self, forKey: .format) ?? SyncedCollection<Item>.currentFormat
+        local = try container.decode(SyncedCollection<Item>.self, forKey: .local)
+        bases = try container.decodeIfPresent([String: SyncedCollection<Item>].self, forKey: .bases) ?? [:]
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -54,7 +54,7 @@ public struct FavoritesDocument: Equatable, Sendable, Codable {
     // MARK: - The file
 
     public func fileContents() throws -> Data {
-        try PatternLibrary.encoder().encode(self)
+        try SyncedCollection<Item>.encoder().encode(self)
     }
 
     /// Reads the file back.
@@ -64,11 +64,11 @@ public struct FavoritesDocument: Equatable, Sendable, Codable {
     /// truth, with nothing agreed yet. Older files stay readable, which is the
     /// same promise the library itself makes.
     public init(fileContents data: Data) throws {
-        let decoder = PatternLibrary.decoder()
-        if let document = try? decoder.decode(FavoritesDocument.self, from: data) {
+        let decoder = SyncedCollection<Item>.decoder()
+        if let document = try? decoder.decode(Self.self, from: data) {
             self = document
             return
         }
-        self.init(local: try PatternLibrary(fileContents: data))
+        self.init(local: try SyncedCollection<Item>(fileContents: data))
     }
 }

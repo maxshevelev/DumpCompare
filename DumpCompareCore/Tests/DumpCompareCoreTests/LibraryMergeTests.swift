@@ -344,8 +344,8 @@ final class LibraryMergeTests: XCTestCase {
         let outcome = LibraryMerge.merge(base: base, ours: mine, theirs: theirs)
 
         XCTAssertEqual(outcome.conflicts.count, 1)
-        guard case let .sameSearchTwoNames(ours, theirs) = outcome.conflicts[0] else {
-            return XCTFail("expected sameSearchTwoNames, got \(outcome.conflicts[0])")
+        guard case let .duplicate(ours, theirs) = outcome.conflicts[0] else {
+            return XCTFail("expected duplicate, got \(outcome.conflicts[0])")
         }
         XCTAssertEqual(ours.name, "Capsule header")
         XCTAssertEqual(theirs.name, "Aptio capsule")

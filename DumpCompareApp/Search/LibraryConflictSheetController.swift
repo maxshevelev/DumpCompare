@@ -129,25 +129,19 @@ final class LibraryConflictSheetController: SheetViewController {
     /// What the row is about: the entry, by the name this machine has for it.
     private func pattern(of conflict: LibraryConflict) -> String {
         switch conflict {
-        case .bothEdited(let entry, _), .sameSearchTwoNames(let entry, _),
+        case .bothEdited(let entry, _), .duplicate(let entry, _),
              .editedAndDeleted(let entry, _, _):
-            return entry.name.isEmpty ? entry.pattern : entry.name
+            return entry.label
         }
     }
 
-    /// What one side says, in full — the name *and* the pattern.
-    ///
-    /// A name alone is not enough: the two sides often disagree about the
-    /// pattern under the same name, and a row reading "Test for ASCII" against
-    /// "Test for ASCII" asks the user to choose between two identical things.
-    private func describe(_ entry: SearchPatternEntry) -> String {
-        let name = entry.name.isEmpty ? "" : "\(entry.name): "
-        return "\(name)\"\(entry.pattern)\"  \(entry.encoding.displayName)"
-    }
+    /// What one side says, in full. How an item reads is the view's business
+    /// and lives with the naming (`SyncPresentable`).
+    private func describe(_ entry: SearchPatternEntry) -> String { entry.summary }
 
     private func ourSide(of conflict: LibraryConflict) -> String {
         switch conflict {
-        case .bothEdited(let ours, _), .sameSearchTwoNames(let ours, _):
+        case .bothEdited(let ours, _), .duplicate(let ours, _):
             return describe(ours)
         case .editedAndDeleted(let entry, _, let deletedHere):
             return deletedHere ? "Deleted here" : "\(describe(entry)) — changed here"
@@ -156,7 +150,7 @@ final class LibraryConflictSheetController: SheetViewController {
 
     private func theirSide(of conflict: LibraryConflict) -> String {
         switch conflict {
-        case .bothEdited(_, let theirs), .sameSearchTwoNames(_, let theirs):
+        case .bothEdited(_, let theirs), .duplicate(_, let theirs):
             return describe(theirs)
         case .editedAndDeleted(let entry, let deletedBy, let deletedHere):
             if deletedHere { return "\(describe(entry)) — changed on another Mac" }
@@ -167,7 +161,7 @@ final class LibraryConflictSheetController: SheetViewController {
     /// "Keep both" means two entries, which is only an answer where the two are
     /// genuinely different searches — §11 keeps one search once.
     private func allowsKeepingBoth(_ conflict: LibraryConflict) -> Bool {
-        if case .sameSearchTwoNames = conflict { return false }
+        if case .duplicate = conflict { return false }
         if case .editedAndDeleted = conflict { return false }
         return true
     }

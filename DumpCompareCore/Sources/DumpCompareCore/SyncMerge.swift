@@ -6,9 +6,9 @@ import Foundation
 /// keeping a base is that most differences are one side changing something the
 /// other did not touch. What is left is genuinely two people saying different
 /// things about the same entry, and that is a question, not a rule.
-public enum LibraryConflict: Equatable, Sendable {
+public enum SyncConflict<Item: SyncedItem>: Equatable, Sendable {
     /// The same entry, changed differently on both sides.
-    case bothEdited(ours: SearchPatternEntry, theirs: SearchPatternEntry)
+    case bothEdited(ours: Item, theirs: Item)
     /// Changed on one machine, deleted on the other — the classic, and the one
     /// where a rule either loses an edit or resurrects something deliberately
     /// removed.
@@ -20,16 +20,16 @@ public enum LibraryConflict: Equatable, Sendable {
     /// question, and counters that cover the other machine's version are how an
     /// answer travels — so the deletion would arrive there as somebody's answer
     /// and take the edit with it.
-    case editedAndDeleted(entry: SearchPatternEntry, deletedBy: String, deletedHere: Bool)
+    case editedAndDeleted(entry: Item, deletedBy: String, deletedHere: Bool)
     /// Both sides kept the same search, under different names. One entry has to
     /// go (§11 keeps one search once), and which name it carries is not the
     /// app's to choose.
-    case sameSearchTwoNames(ours: SearchPatternEntry, theirs: SearchPatternEntry)
+    case duplicate(ours: Item, theirs: Item)
 
     /// The entry the question is about, on this machine's side.
     public var id: UUID {
         switch self {
-        case .bothEdited(let ours, _), .sameSearchTwoNames(let ours, _):
+        case .bothEdited(let ours, _), .duplicate(let ours, _):
             return ours.id
         case .editedAndDeleted(let entry, _, _):
             return entry.id
@@ -38,7 +38,7 @@ public enum LibraryConflict: Equatable, Sendable {
 }
 
 /// Which side of a conflict the user kept.
-public enum LibraryResolution: Equatable, Sendable {
+public enum SyncResolution: Equatable, Sendable {
     case keepOurs
     case keepTheirs
     /// Both, as two entries. Only offered where they are genuinely different
@@ -55,22 +55,20 @@ public enum LibraryResolution: Equatable, Sendable {
 /// through here, and the base — the last state both sides agreed on — is what
 /// turns "these two lists differ" into "this side changed that field", which is
 /// the difference between one question and twenty.
-public enum LibraryMerge {
-    /// How long a deletion is remembered. Long enough for a machine that was
-    /// off for a holiday to hear about it; short enough that the file does not
-    /// grow forever. Getting it wrong resurrects a pattern.
-    public static let tombstoneLifetime: TimeInterval = 30 * 24 * 3600
+public enum SyncMerge<Item: SyncedItem> {
+    /// How long a deletion is remembered (`Sync.tombstoneLifetime`).
+    public static var tombstoneLifetime: TimeInterval { Sync.tombstoneLifetime }
 
     public struct Outcome: Equatable, Sendable {
         /// The merged library — usable as it stands. Where a conflict was
         /// found this machine's version is kept, so the app has something true
         /// to show while the question is unanswered.
-        public var library: PatternLibrary
+        public var library: SyncedCollection<Item>
         /// What the user has to answer. Empty means the merge is complete and
         /// may be written.
-        public var conflicts: [LibraryConflict]
+        public var conflicts: [SyncConflict<Item>]
 
-        public init(library: PatternLibrary, conflicts: [LibraryConflict]) {
+        public init(library: SyncedCollection<Item>, conflicts: [SyncConflict<Item>]) {
             self.library = library
             self.conflicts = conflicts
         }
@@ -85,8 +83,8 @@ public enum LibraryMerge {
     /// whose vector says nothing: a copy a sync client left beside the file is
     /// a lineage of its own, and its empty vector is a lack of information
     /// rather than evidence of having seen nothing.
-    public static func merge(base: PatternLibrary?, ours: PatternLibrary,
-                             theirs: PatternLibrary, assumeConcurrent: Bool = false,
+    public static func merge(base: SyncedCollection<Item>?, ours: SyncedCollection<Item>,
+                             theirs: SyncedCollection<Item>, assumeConcurrent: Bool = false,
                              now: Date = Date()) -> Outcome {
         // Nothing concurrent about it: one side has seen everything the other
         // wrote, so the version that has seen more simply wins. This is the
@@ -100,8 +98,8 @@ public enum LibraryMerge {
             }
         }
 
-        var conflicts: [LibraryConflict] = []
-        var merged = PatternLibrary(format: max(ours.format, theirs.format))
+        var conflicts: [SyncConflict<Item>] = []
+        var merged = SyncedCollection<Item>(format: max(ours.format, theirs.format))
         merged.vector = ours.vector.merged(with: theirs.vector)
         merged.tombstones = mergedTombstones(ours: ours, theirs: theirs)
 
@@ -118,7 +116,7 @@ public enum LibraryMerge {
         var order = ours.entries.map(\.id)
         order.append(contentsOf: theirs.entries.map(\.id).filter { oursByID[$0] == nil })
 
-        var kept: [SearchPatternEntry] = []
+        var kept: [Item] = []
         for id in order {
             let base = baseByID[id]
             switch (oursByID[id], theirsByID[id]) {
@@ -196,18 +194,18 @@ public enum LibraryMerge {
     /// Applies the user's answers to a merge that had questions, giving a
     /// library that can be written.
     public static func resolve(_ outcome: Outcome,
-                               with answers: [UUID: LibraryResolution],
-                               now: Date = Date()) -> PatternLibrary {
+                               with answers: [UUID: SyncResolution],
+                               now: Date = Date()) -> SyncedCollection<Item> {
         var library = outcome.library
         for conflict in outcome.conflicts {
             guard let answer = answers[conflict.id] else { continue }
             switch (conflict, answer) {
             case let (.bothEdited(_, theirs), .keepTheirs),
-                 let (.sameSearchTwoNames(_, theirs), .keepTheirs):
+                 let (.duplicate(_, theirs), .keepTheirs):
                 library.entries.removeAll { $0.id == conflict.id || $0.id == theirs.id }
                 library.entries.append(theirs)
             case let (.bothEdited(_, theirs), .keepBoth),
-                 let (.sameSearchTwoNames(_, theirs), .keepBoth):
+                 let (.duplicate(_, theirs), .keepBoth):
                 if !library.entries.contains(where: { $0.id == theirs.id }) {
                     library.entries.append(theirs)
                 }
@@ -217,7 +215,7 @@ public enum LibraryMerge {
                 // and the deletion is recorded properly.
                 library.entries.removeAll { $0.id == entry.id }
                 if !library.tombstones.contains(where: { $0.id == entry.id }) {
-                    library.tombstones.append(PatternLibrary.Tombstone(id: entry.id,
+                    library.tombstones.append(SyncTombstone(id: entry.id,
                                                                        device: entry.device))
                 }
             case let (.editedAndDeleted(entry, _, _), .keepTheirs):
@@ -251,7 +249,7 @@ public enum LibraryMerge {
     /// the note, and the note outlives an entry last touched before it. Keeping
     /// something is a change to the library made at the moment it is decided,
     /// so saying so is both true and what makes the decision stick.
-    private static func revived(_ entry: SearchPatternEntry, at now: Date) -> SearchPatternEntry {
+    private static func revived(_ entry: Item, at now: Date) -> Item {
         var kept = entry
         kept.modifiedAt = now
         return kept
@@ -268,21 +266,21 @@ public enum LibraryMerge {
     /// deleting whatever anyone ever revived. The two events are a person's
     /// deliberate actions minutes apart, which is well outside the skew between
     /// two Macs.
-    private static func outlives(_ entry: SearchPatternEntry,
-                                 _ tombstone: PatternLibrary.Tombstone) -> Bool {
+    private static func outlives(_ entry: Item,
+                                 _ tombstone: SyncTombstone) -> Bool {
         entry.modifiedAt > tombstone.deletedAt
     }
 
-    private static func index(_ entries: [SearchPatternEntry]) -> [UUID: SearchPatternEntry] {
+    private static func index(_ entries: [Item]) -> [UUID: Item] {
         Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
-    private static func tombstonesByID(_ library: PatternLibrary) -> [UUID: PatternLibrary.Tombstone] {
+    private static func tombstonesByID(_ library: SyncedCollection<Item>) -> [UUID: SyncTombstone] {
         Dictionary(library.tombstones.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
-    private static func mergedTombstones(ours: PatternLibrary,
-                                         theirs: PatternLibrary) -> [PatternLibrary.Tombstone] {
+    private static func mergedTombstones(ours: SyncedCollection<Item>,
+                                         theirs: SyncedCollection<Item>) -> [SyncTombstone] {
         var all = tombstonesByID(ours)
         for (id, tombstone) in tombstonesByID(theirs) {
             if let existing = all[id], existing.deletedAt >= tombstone.deletedAt { continue }
@@ -293,36 +291,40 @@ public enum LibraryMerge {
 
     /// An entry says what this machine says, and sits where the file says: the
     /// file's order leads, so nobody's reordering is undone by the other's.
-    private static func preferringOrder(of theirs: SearchPatternEntry,
-                                        content: SearchPatternEntry) -> SearchPatternEntry {
+    private static func preferringOrder(of theirs: Item,
+                                        content: Item) -> Item {
         var result = content
         result.sortKey = theirs.sortKey
         return result
     }
 
-    /// One search is kept once (§11). Where both sides added it under one name,
-    /// the copy that stays is decided by a rule both machines compute the same
-    /// way — the smaller id — so the two do not each keep the other's.
-    private static func deduplicate(_ entries: [SearchPatternEntry],
-                                    ours: [UUID: SearchPatternEntry],
-                                    theirs: [UUID: SearchPatternEntry])
-    -> ([SearchPatternEntry], [LibraryConflict]) {
-        var kept: [SearchPatternEntry] = []
-        var conflicts: [LibraryConflict] = []
+    /// What a collection refuses to hold twice is held once — one search, one
+    /// entry (§11), for collections that say so (`SyncedItem.isDuplicate`).
+    ///
+    /// Where both sides added the same thing and say the same about it, the
+    /// copy that stays is decided by a rule both machines compute the same way
+    /// — the smaller id — so the two do not each keep the other's. Where they
+    /// say something different about it, that is the user's to settle.
+    private static func deduplicate(_ entries: [Item],
+                                    ours: [UUID: Item],
+                                    theirs: [UUID: Item])
+    -> ([Item], [SyncConflict<Item>]) {
+        var kept: [Item] = []
+        var conflicts: [SyncConflict<Item>] = []
         for entry in entries {
-            guard let twin = kept.firstIndex(where: { $0.isSameSearch(as: entry) }) else {
+            guard let twin = kept.firstIndex(where: { $0.isDuplicate(of: entry) }) else {
                 kept.append(entry)
                 continue
             }
             let existing = kept[twin]
-            if existing.name == entry.name {
+            if existing == entry {
                 if entry.id.uuidString < existing.id.uuidString { kept[twin] = entry }
                 continue
             }
-            // Two names for one search: whose name is the user's to say.
+            // One thing, said two ways: which way is the user's to say.
             let mine = ours[existing.id] != nil ? existing : entry
             let yours = ours[existing.id] != nil ? entry : existing
-            conflicts.append(.sameSearchTwoNames(ours: mine, theirs: yours))
+            conflicts.append(.duplicate(ours: mine, theirs: yours))
             kept[twin] = mine
         }
         return (kept, conflicts)
@@ -330,15 +332,15 @@ public enum LibraryMerge {
 
     /// The file's order leads; entries only this machine has are appended after
     /// everything the file places.
-    private static func ordered(_ entries: [SearchPatternEntry],
-                                theirs: [UUID: SearchPatternEntry]) -> [SearchPatternEntry] {
+    private static func ordered(_ entries: [Item],
+                                theirs: [UUID: Item]) -> [Item] {
         let placed = entries.compactMap { theirs[$0.id] != nil ? $0 : nil }
         let highest = placed.map(\.sortKey).max() ?? 0
         var next = highest
         return entries.map { entry in
             guard theirs[entry.id] == nil, entry.sortKey <= highest else { return entry }
             var moved = entry
-            next += PatternLibrary.sortKeyStep
+            next += SyncedCollection<Item>.sortKeyStep
             moved.sortKey = next
             return moved
         }
@@ -347,7 +349,7 @@ public enum LibraryMerge {
     /// Drops deletions that contradict the result, and those old enough that
     /// every machine has had a chance to see them. A tombstone kept forever is a file that grows forever; one dropped
     /// too early is a pattern that comes back.
-    private static func pruned(_ library: PatternLibrary, now: Date) -> PatternLibrary {
+    private static func pruned(_ library: SyncedCollection<Item>, now: Date) -> SyncedCollection<Item> {
         var result = library
         // An entry that is here and a note saying it was deleted cannot both be
         // true. The keeping won — either because only one side deleted it and
