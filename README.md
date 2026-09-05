@@ -9,7 +9,7 @@ DumpCompare grew out of bench work on BIOS and EC dumps, so the comparison model
 
 ## Download
 
-[**DumpCompare 0.7**](https://github.com/maxshevelev/DumpCompare/releases/latest) — a universal `.dmg` (Apple silicon and Intel), macOS 14 or later.
+[**DumpCompare 0.7.1**](https://github.com/maxshevelev/DumpCompare/releases/latest) — a universal `.dmg` (Apple silicon and Intel), macOS 14 or later.
 
 The build is ad-hoc signed and not notarized, so Gatekeeper stops the first launch: right-click the app and choose **Open**, or clear the quarantine flag once.
 
@@ -69,6 +69,7 @@ The workflows the app is shaped around:
 - 16 bytes per row in two 8-byte groups; **View > Word Size** regroups them into 1/2/4/8-byte words. Three columns — address, hex, decoded text — under a pinned header.
 - `0x00`/`0xFF` bytes are muted so significant data reads with more contrast; cells past EOF carry hatching, so the end of a file is readable without colour.
 - Navigation like a text editor: arrows, Home/End, Page Up/Down, direct hex typing, and editing in the decoded-text column.
+- **Zoom** (⌘= / ⌘−) steps the hex font one point at a time, applied live to every open dump and to an open Search Results panel. It is the same setting the Appearance tab holds — the menu is a fast way to it, not a second preference — and the viewport keeps its place in the file across the change, as it does when the font or the row height changes.
 
 ### Editing
 
@@ -95,7 +96,16 @@ The workflows the app is shaped around:
 - **Every occurrence at once.** Activating a search greys every match in the dump and marks them on both minimap modes; the one you are standing on is raised on a yellow plate that hops when you step to the next. The bar counts them — `3 of 128`, exact at any size — and ‹ › are then steps through that count rather than fresh scans.
 - **The match comes before the count.** The first occurrence is found by a scan from the caret in about a millisecond on a 16 MB dump; the index of every *other* occurrence fills in behind it, so a pattern as common as `FF` never makes you wait for it. Navigation wraps, and a search that came round the end of the file says so.
 - **Smart Search** (on by default): you know the string, not how the firmware stored it. A pattern that reads as hex bytes is looked for as bytes first and as text after; anything else is tried as ASCII, UTF-8 and UTF-16 LE/BE in turn until something is found — and the encoding that found it is what the popup then shows. Name an encoding yourself, by choosing it or by picking an earlier search out of the history, and that is where the hunt starts. A pass that finds nothing says which encodings it tried.
+- **Patterns you keep.** The pattern field's menu holds two lists: **Recent Queries**, what you searched for lately, and **Favorites**, the ones you named — a favourite *is* a recent with a name, so keeping one asks for the name and nothing else. Choosing one searches with the encoding it was kept under, so `windows` kept as UTF-16 LE comes back as UTF-16 LE. Only searches that found something enter the history, and a hex pattern is shown back the way a dump prints it: `DE AD BE EF`.
 - **Search Results** lists every occurrence in a panel beside the dump — the same set the dump highlights, not a second search — with each offset, a hex excerpt and the decoded text, read from the pane's live bytes so they follow later edits. Past a thousand matches it states the count and refuses to list: a list that long is a sign the pattern needs refining, not a tool.
+
+### The pattern library
+
+- **Settings ▸ Favorites** is where the kept patterns are edited — the name, the pattern, the encoding, the case rule, in the table itself — with the order yours to drag. One search is kept once, whatever it is called, and a pattern the encoding cannot read is refused where it is typed rather than at the next search.
+- **The library can live in a folder your Mac syncs.** Point **Move…** at one — iCloud Drive, Google Drive, Dropbox all work the same way, because the app asks for the folder rather than for an entitlement — and the patterns are on your other machines. Choosing a folder that already holds a library is joining it: twelve patterns on one Mac and three on the other make fifteen.
+- **One file per machine.** Each Mac writes exactly one file there and reads everyone else's, so no file has two writers and a sync provider never has to choose between two versions of one. What it holds is merged rather than overwritten: entries carry an identity, so a rename is a rename; deletions travel as deletions; a line removed from the file by hand comes back, because absence with nothing to say it was deleted is not evidence.
+- **What a rule must not decide is asked.** The same entry changed differently on both machines, one edited here and deleted there, one search kept under two names: the tab says how many questions there are, and a sheet puts them one to a row with both sides in full. Both machines are asked, and an answer on one settles the other. Nothing else makes the library read-only.
+- The library is JSON on purpose — `Application Support/DumpCompare/Favorites.json` — so it can be read, diffed and edited; a pattern typed into it with a text editor arrives like one made on another Mac.
 
 ### Toolbar
 
@@ -114,7 +124,7 @@ The workflows the app is shaped around:
 ### Large files, and the rest
 
 - Files are read through a bounded chunk cache and never loaded whole; edits are a piece list over the file as opened, so an inserted byte costs nothing measurable on a 32 MB dump. Diff and search index incrementally in the background, with progress and a cancel button in the status bar.
-- **⌘,** opens a standard settings window: the monospaced font, its size and the row density, the theme (follow the system, or force light or dark), the grouping distance for diff navigation, and the text decoding table (Windows-1252 by default) with a live grid of all 256 byte values.
+- **⌘,** opens a standard settings window: the monospaced font, its size and the row density, the theme (follow the system, or force light or dark), the grouping distance for diff navigation, the text decoding table (Windows-1252 by default) with a live grid of all 256 byte values, the file types the app opens, and the pattern library.
 - External changes on disk are detected and offer a reload, keeping local edits; closing a dirty file prompts the standard Save / Don't Save / Cancel. Security-scoped bookmarks keep file access across launches.
 - Light and dark themes, all colours dynamic; state is carried by colour *and* form (EOF hatching, outline contours), so it survives a theme switch and colour blindness. Accessibility labels on the grid and document state, frame autosave, **Window > Zoom** to fit the content exactly.
 
@@ -166,11 +176,15 @@ one:
 git config core.hooksPath Scripts/git-hooks
 ```
 
-A universal release build, the way the `.dmg` is made:
+A universal release build, the way the `.dmg` is made. The signing is forced
+back to ad-hoc for it: a build signed with a personal Apple Development identity
+carries that person's name and team inside the binary, which is not what to hand
+to strangers.
 
 ```sh
 xcodebuild build -project DumpCompare.xcodeproj -scheme DumpCompare \
-  -configuration Release ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO
+  -configuration Release ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO \
+  CODE_SIGN_IDENTITY="-" CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=""
 ```
 
 The app icon — a black flash package on a transparent ground, five leads above and below, `A5` beside a `FF` marked as a difference — is generated rather than drawn by hand: `Design/AppIcon.swift` renders the 1024 pt master and `Design/render-appicon.sh` slices it into the asset catalog.
@@ -178,12 +192,19 @@ The app icon — a black flash package on a transparent ground, five leads above
 ## Tests
 
 ```sh
-# Core (model/storage logic) — no AppKit required
-swift test --package-path DumpCompareCore
+# the Core package, then the app suite in groups, one group at a time
+Scripts/run-tests.sh
 
-# App (view-models, open placement, file watchers)
-xcodebuild test -project DumpCompare.xcodeproj -scheme DumpCompare -destination 'platform=macOS'
+# only the classes a change touches
+Scripts/run-tests.sh -o "Library|Search"
 ```
+
+Ninety-five test classes in one `xcodebuild test` is a single process holding a
+real window-server session for twenty minutes, and the tests that wait on a
+window, an animation or a panel are the ones that give up when the Mac is busy.
+The script cuts them into groups and runs one group at a time, tearing the test
+host down in between. Never run two of them at once: they share one UI session,
+and what that produces reads exactly like a real bug.
 
 ## Architecture
 
