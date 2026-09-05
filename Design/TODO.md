@@ -235,13 +235,19 @@ before.
   patterns vanishing without a question. A cheap guard exists if it is ever
   wanted: a marker in the container saying which process holds the library, and
   a second copy that reads it works without publishing.
-- **`FindFlowTests.testFindCentersMatchInView` fails only in a full run** — on
-  its own, and with its own suite, it passes; in the whole suite the centred row
-  lands 4 pt out. Something another suite leaves behind (an appearance setting
-  is the obvious suspect, since 4 pt is a fraction of a row) reaches it through
-  a global. Worth finding rather than loosening the tolerance: a test that
-  depends on what ran before it is a test that will lie about something else
-  later.
+- **A handful of tests pass alone and fail in a full run.** Seen so far:
+  `FindFlowTests.testFindCentersMatchInView` (the centred row lands 4 pt out),
+  `FindHighlightTests.testEveryStepPopsTheIndicator` (the bounce does not end),
+  `JoinTests.testAppendJoinsTheBytesAfterTheContent` (the open panel is not
+  there). Each passes on its own and with its own suite; each has failed once
+  in a whole-suite run — never the same one twice, and one of those runs took
+  seven times as long as the others, which says the machine was busy. So the
+  suspects are two: something a previous suite leaves in a global (4 pt is a
+  fraction of a row, so an appearance setting), and tests that wait on a real
+  window, a real animation or a real panel and give up too early under load.
+  Both are worth finding rather than papering over with a longer timeout: a
+  test that depends on what ran before it, or on how fast the Mac is, will lie
+  about something else later.
 
 ---
 
