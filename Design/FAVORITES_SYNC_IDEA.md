@@ -92,7 +92,7 @@ small.
 
 Two locations, and they answer different questions.
 
-**The app's own copy: the container.** `Application Support/DumpCompare/Patterns.json`,
+**The app's own copy: the container.** `Application Support/DumpCompare/Favorites.json`,
 reached the ordinary way — `FileManager.default.url(for: .applicationSupportDirectory,
 in: .userDomainMask)`, which inside a sandboxed app already resolves to
 `~/Library/Containers/dev.maxik.DumpCompare/Data/Library/Application Support`.

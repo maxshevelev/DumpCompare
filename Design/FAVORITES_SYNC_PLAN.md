@@ -77,7 +77,7 @@ patterns. The app reads and draws the local file; the shared file is how two
 machines tell each other what they know.
 
 ```
-Containers/…/Application Support/DumpCompare/Library.json    ← the truth: what the UI reads,
+Containers/…/Application Support/DumpCompare/Favorites.json  ← the truth: what the UI reads,
                                                                 with the base it was last agreed at
 iCloud Drive/DumpCompare Patterns.json                       ← the medium (only once moved)
 UserDefaults: the bookmark, this machine's device id, the migration flag
@@ -102,6 +102,15 @@ beside a truth from another. So: **one file, two sections, written atomically**.
 `base` is absent until the library is moved out — with no other writer there is
 nothing to have agreed with.
 
+**The names say what is inside.** `Favorites.json` holds the favourites and
+nothing else — not the recents, which are a per-machine cache, and not the
+appearance or the file types, which stay in `UserDefaults`. A file called
+`Library.json` would promise more than it holds, and something the app syncs
+later should get a file of its own rather than be folded into this one. The
+shared copy is `DumpCompare Patterns.json` instead: it is the one a stranger
+sees, in a folder among other people's files, where the app's own word for the
+feature says nothing and the content has to.
+
 **The sync loop, both directions.** A local change writes `local`, then tries to
 publish: merge `base`, `local` and the shared file, write the result there, set
 `base` to it. An external change to the shared file runs the same merge. A
@@ -115,7 +124,7 @@ while the file was away are one more concurrent writer, which is the case the
 merge is for. Read-only stays only for an unresolved *conflict*, where the
 question is the user's to answer.
 
-**Use This Mac** drops the bookmark and the `base` section; `Library.json`
+**Use This Mac** drops the bookmark and the `base` section; `Favorites.json`
 carries on as it always did.
 
 ## The merge, precisely
@@ -169,7 +178,7 @@ Each ends with the app working and the suite green.
    written by today's build mints them. Still stored in `UserDefaults`, nothing
    visible, 25 existing tests unchanged.
 2. **The library becomes a file** (4–5 h). `PatternLibrary` + JSON codec;
-   `Application Support/DumpCompare/Library.json` in the container becomes the
+   `Application Support/DumpCompare/Favorites.json` in the container becomes the
    truth the app reads and writes; one-time migration off the `FindFavorites`
    key; a corrupt or unreadable file keeps the last good copy and says so rather
    than presenting an empty list.
