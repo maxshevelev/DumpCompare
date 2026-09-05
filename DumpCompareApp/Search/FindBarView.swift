@@ -714,8 +714,30 @@ final class FindBarView: NSView, NSSearchFieldDelegate, NSMenuItemValidation {
             for entry in favorites { menu.addItem(patternItem(for: entry)) }
         }
         menu.addItem(.separator())
-        menu.addItem(command("Manage Favorites…", #selector(manageFavorites)))
+        menu.addItem(manageItem())
         patternField.searchMenuTemplate = menu
+    }
+
+    /// **Manage Favorites…**, carrying whatever is wrong with the library.
+    ///
+    /// A conflict that only the Settings window mentions is a silent state:
+    /// the library stops syncing and stops being editable, and the Find bar —
+    /// the place the user actually is — says nothing about it. So the row says
+    /// it, in red, in the same words the tab uses (§11).
+    private func manageItem() -> NSMenuItem {
+        let item = command("Manage Favorites…", #selector(manageFavorites))
+        guard let problem = FavoritePatternStore.syncProblem else { return item }
+        let title = NSMutableAttributedString(
+            string: "Manage Favorites…",
+            attributes: [.font: NSFont.systemFont(ofSize: Self.menuRowSize)])
+        title.append(NSAttributedString(
+            string: "  \(problem)",
+            attributes: [.font: NSFont.systemFont(ofSize: Self.menuFlagSize),
+                         .foregroundColor: NSColor.systemRed]))
+        item.attributedTitle = title
+        item.image = NSImage(systemSymbolName: "exclamationmark.triangle",
+                             accessibilityDescription: problem)
+        return item
     }
 
     /// A section header carrying an icon. Built by hand because

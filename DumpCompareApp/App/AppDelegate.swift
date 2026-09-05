@@ -46,6 +46,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // for ever: one machine had 9 434 of them, 14 MB of preferences, nearly
         // all pointing at temporary files the test suite had deleted.
         SandboxBookmarkStore.shared.pruneNow()
+        // The pattern library reads itself and, when it is published to a
+        // shared file, merges what is there and starts watching it (§11). At
+        // launch rather than on first use: a Mac that has not opened the Find
+        // bar is still a Mac whose library should be current.
+        //
+        // Never under XCTest. The test host *is* this app, with this app's
+        // container and this app's preferences, so starting the library there
+        // merges and republishes the developer's own — into their own synced
+        // folder, from a process that is about to swap the store's defaults
+        // out from under it. A suite must not touch the library it is not
+        // testing.
+        if !MainViewController.isRunningTests {
+            FavoritePatternStore.start()
+        }
         // The menu bar belongs to the application, not to a window: it is built
         // once, here, and its commands travel the responder chain to whichever
         // window is key.
@@ -165,6 +179,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         } else {
             pendingOpenURLs.append(contentsOf: urls)
         }
+    }
+
+    /// Coming forward is when to catch up with the shared library: a Mac hears
+    /// nothing while it sleeps, and a file watcher cannot report what it did
+    /// not see (§11).
+    func applicationDidBecomeActive(_ notification: Notification) {
+        guard !MainViewController.isRunningTests else { return }
+        FavoritePatternStore.start()
     }
 
     @objc func showSettings(_ sender: Any?) {

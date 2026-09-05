@@ -11,17 +11,20 @@ import XCTest
 final class FavoritePatternsSettingsTests: XCTestCase {
     private var suiteName = ""
     private var store: UserDefaults!
+    private var favoritesFile: URL!
     private var tab: FavoritePatternsSettingsViewController!
 
     override func setUp() {
         super.setUp()
         (suiteName, store) = isolatedDefaults(for: self)
         FavoritePatternStore.defaults = store
+        favoritesFile = isolatedFavoritesFile(for: self)
     }
 
     override func tearDown() {
         tab = nil
         FavoritePatternStore.defaults = .standard
+        discardIsolatedFavoritesFile(favoritesFile)
         discardIsolatedDefaults(suiteName, store)
         store = nil
         super.tearDown()
@@ -192,6 +195,61 @@ final class FavoritePatternsSettingsTests: XCTestCase {
         XCTAssertFalse(tab.removeButton.isEnabled)
         tab.table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         XCTAssertTrue(tab.removeButton.isEnabled)
+    }
+
+    // MARK: - A syncing library must not take the row away
+
+    /// A library that syncs announces itself often — every publish, every
+    /// arrival, every time the app comes forward. An announcement that carries
+    /// no change must leave the table alone: rebuilding it drops the selection
+    /// and ends the edit in progress, which is what made a published library
+    /// impossible to edit on the other Mac.
+    func testAnAnnouncementThatChangesNothingKeepsTheSelection() {
+        keep("first", "11")
+        keep("second", "22")
+        openTab()
+        tab.table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+
+        NotificationCenter.default.post(name: FavoritePatternStore.didChangeNotification,
+                                        object: nil)
+        tab.reload()
+
+        XCTAssertEqual(tab.table.selectedRow, 1, "the row the user picked is still theirs")
+    }
+
+    /// And one that carries a change does show it.
+    func testAChangeIsShown() {
+        keep("first", "11")
+        openTab()
+        XCTAssertEqual(tab.rows.map(\.name), ["first"], "the premise")
+
+        keep("arrived from another Mac", "22")
+
+        XCTAssertEqual(tab.rows.map(\.name), ["first", "arrived from another Mac"])
+        XCTAssertEqual(tab.table.numberOfRows, 2)
+    }
+
+    /// A rename that arrives while the user is typing waits for them to finish:
+    /// the word is not taken out from under them mid-edit.
+    func testAChangeArrivingMidEditIsAppliedWhenTheEditEnds() throws {
+        keep("first", "11")
+        keep("second", "22")
+        openTab()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView?.addSubview(tab.view)
+        window.makeKeyAndOrderFront(nil)
+        window.layoutIfNeeded()
+        let field = try XCTUnwrap(tab.fieldForTests(row: 0, name: true))
+        XCTAssertTrue(window.makeFirstResponder(field), "the premise: the cell takes focus")
+        XCTAssertNotNil(field.currentEditor(), "and is being typed into")
+
+        keep("arrived mid-edit", "33")
+        XCTAssertEqual(tab.table.numberOfRows, 2, "the table waited")
+
+        tab.typeForTests("renamed here", row: 0, name: true)
+
+        XCTAssertEqual(tab.rows.map(\.name), ["renamed here", "second", "arrived mid-edit"])
     }
 
     // MARK: - The order is the user's

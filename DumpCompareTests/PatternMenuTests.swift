@@ -12,6 +12,7 @@ import XCTest
 final class PatternMenuTests: XCTestCase {
     private var suiteName = ""
     private var store: UserDefaults!
+    private var favoritesFile: URL!
     private var bar: FindBarView!
     private var window: NSWindow!
     private var searched: [FindBarView.Request] = []
@@ -22,6 +23,7 @@ final class PatternMenuTests: XCTestCase {
         FindBarView.defaults = store
         FindHistoryStore.defaults = store
         FavoritePatternStore.defaults = store
+        favoritesFile = isolatedFavoritesFile(for: self)
 
         bar = FindBarView()
         bar.onSearch = { [weak self] request, _ in self?.searched.append(request) }
@@ -39,6 +41,7 @@ final class PatternMenuTests: XCTestCase {
         FindBarView.defaults = .standard
         FindHistoryStore.defaults = .standard
         FavoritePatternStore.defaults = .standard
+        discardIsolatedFavoritesFile(favoritesFile)
         discardIsolatedDefaults(suiteName, store)
         store = nil
         super.tearDown()

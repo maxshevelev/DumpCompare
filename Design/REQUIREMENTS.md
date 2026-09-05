@@ -1474,6 +1474,255 @@ The Favorites tab (Settings, beside File Types):
   the bar: bytes have no case, and a control showing "off" beside an exact
   search is the one state the app must never be in.
 
+Where the library lives, and carrying it between machines
+(`Design/FAVORITES_SYNC_PLAN.md`):
+
+- The favourites are a **file**, not a preference:
+  `Application Support/DumpCompare/Favorites.json` inside the app's container,
+  which a sandboxed app may write without asking anyone. The key they were
+  first kept under migrates on the first launch that finds it and is then
+  gone — two stores on one machine is the syncing problem indoors. The file
+  holds the favourites and nothing else, which is why it is not called
+  `Library.json`: a name must not promise more than a file holds. The recents,
+  the appearance and the file types stay in `UserDefaults`.
+- **Move…** in the Favorites tab points the app at a **folder** — a folder the
+  user's Mac syncs — and the files inside it are the app's to name
+  (`DumpCompare Patterns (A93F1C0D22B7).json`). It opens on iCloud Drive when
+  they have it.
+  Any folder a sync client watches works the same way — iCloud Drive, Google
+  Drive, Dropbox — because the sandbox lets the app in on the strength of the
+  user having pointed at it, not on where it is. **Keep on This Mac** brings
+  the library back into the app's own storage and leaves the folder's copy
+  where it is. Its title is the state it produces, in the same words the line
+  above it uses for that state.
+- There is **one command for both cases**: choosing a folder that already holds
+  a library is the same act as choosing an empty one — point the app at a
+  folder, and what is in it decides whether anything is asked. A separate
+  "join an existing library" command would be a second name for one thing.
+- **One file per machine.** Each Mac writes exactly one file in that folder,
+  named after a hash of its own id, and never touches another's; it reads every library file
+  there and merges each into its own. Nothing in the folder has two writers, so
+  the sync provider never has to choose between two versions of one file — a
+  choice it makes silently, and made wrongly: measured with the network pulled
+  on one Mac and both edited, iCloud kept one version and discarded the other
+  *without leaving a conflicted copy*, so there was nothing for the app to fold
+  in and nothing to ask the user about. No app-level rule survives a version
+  that never arrives. A library file is a machine's own file and nothing else:
+  a `DumpCompare Patterns.json` with no machine in its name is not read, not
+  written and not removed, like anything else in the folder that is not one of
+  these.
+- A machine's id comes from the **hardware** — the Mac's platform UUID —
+  because everything the syncing does with a machine's name breaks if that name
+  moves: a laptop takes a new *hostname* from whatever network it joins, and
+  anyone can change one whenever they like. A file named after a name that
+  moves is a machine that starts writing a second file and abandons the first.
+  The id is hashed into the filename rather than written into it: the folder is
+  shared, and a hash names the file just as well while saying nothing about the
+  Mac. **Which** Mac wrote a file is inside the file, for the person reading the
+  folder, where a rename is a changed line rather than a new file — and it is
+  not part of what a library *says*, so two copies that differ only in it need
+  no writing. An id already stored is never replaced, since an id that changed
+  would leave a machine's own past looking like a stranger's.
+- The **local file is the truth and the folder is the medium**. The app reads
+  and draws the local one, always: a drive can be unmounted, a file can still be
+  downloading, another machine can be writing its own, and none of that may stop
+  the Find bar's menu from listing patterns. The folder is how the machines tell
+  each other what they know, and an unreachable one changes nothing beyond the
+  line saying when the library was last published.
+- The local file carries a **base per machine** beside the truth — the last
+  state agreed with that machine's file — in one file written atomically. They
+  are different roles: keep only the truth and a merge loses its ancestor and
+  degrades to last-writer-wins; keep them in two files and a crash leaves them
+  from different rounds. One base each, because what this Mac last agreed with
+  the laptop says nothing about what it last agreed with the desk.
+- **A race is a question on both machines, and an answer on one settles the
+  other.** A machine that is asking still publishes its own file — the file is
+  its own belief, not a half-merged list, and the other Mac cannot be asked
+  about a version it was never shown. What carries the answer is the counters: a
+  machine folds another's counters into its own only when it has *accepted* that
+  version, which is what answering does, so a file whose counters cover
+  everything this machine wrote was written by a machine that saw this one's
+  version and decided — and this machine takes it, question and all.
+- **Counters that missed this machine's version settle nothing.** A machine that
+  is merely asking never folds the other's counters in, so it cannot claim by
+  accident to have seen a version it has not accepted; and a file written
+  without having seen this one's version has decided nothing. Taking it would
+  answer the user's question for them by discarding their side, which from
+  outside looks like a conflict resolving itself moments later in the other
+  machine's favour.
+- **A base is only a base while the file descends from it.** This machine
+  records what it published as the state agreed with the other — normally true,
+  and false exactly when the file diverges behind the cloud's back: one Mac
+  offline, both writing, the provider later keeping one version. The base then
+  holds an edit the file never carried, "I have not changed since the base"
+  reads as "only they changed it", and this machine's work is replaced without
+  a word. So the base is used only when the file's version has seen everything
+  it had; otherwise the two have no common past and every difference is a
+  question.
+- **A synced folder is not a lock.** Between one machine's write and the other
+  seeing it there are seconds to minutes, and in that window the other is
+  editing a stale copy. So every publish reads every file in the folder and
+  merges each one three ways against its base: additions from both sides are kept, a
+  change only one side made is that side's, a deletion carrying a tombstone
+  travels, and the file's order leads. Absence *without* a tombstone is not a
+  deletion — a line removed from the file by hand comes back, which is the safe
+  way round. An entry **kept against a deletion** is stamped as changed at the
+  moment it is kept, and where a base can say nothing about an entry the later
+  of the note and the entry wins: the machine that deleted it still carries the
+  note, and without this the answer was undone by the very next merge with that
+  machine. It is the one place a clock decides anything, it decides only
+  between two things with no common past, and the two are a person's deliberate
+  actions minutes apart. Entries carry an id, a time, the machine that wrote them and a
+  place in the order; each written version carries a count per machine, because
+  timestamps cannot tell a later edit from a concurrent one and two Macs'
+  clocks disagree by more than a sync takes.
+- What is wrong with the library is said **where the user is**, not only in
+  Settings: the Find bar's menu carries it on the **Manage Favorites…** row, in
+  red — `Manage Favorites…  1 conflicting change`. A library that has stopped
+  syncing and stopped being editable while the app says nothing about it
+  anywhere the user looks is a silent state, and the bar is where they are. The
+  menu says the state and no more; the tab, which is where it can be answered,
+  says what follows from it. One wording underlies both, since a problem met
+  under two names is two problems as far as anyone can tell.
+- There is **one library object**, and it is held before it does anything.
+  Merging announces what it brings back, an announcement is what makes the app
+  read the library, and reading the library is what builds it — so an
+  initialiser that syncs re-enters itself and leaves a second object with its
+  own idea of what is agreed and what is still a question. That is how a table
+  could show the other machine's version while the line above it still asked
+  which version to keep.
+- Read-only means **not editable**, not dead: a row can still be selected and
+  read, which is how the user decides what to answer. The line saying so is
+  **red** — it asks for something only they can settle, and in the secondary
+  grey of the rest of the line it read as furniture.
+- **Answering means the other version was seen.** The answer is published with
+  the file's own counters folded into this machine's, because otherwise the
+  next merge finds the same two versions disagreeing and asks again — and
+  keeping *this* machine's version would never publish at all, while keeping
+  the file's would, since that result needs no counters to be accepted. A
+  library that has been on three machines makes it plain: the file carries a
+  counter this machine can never catch up on, so "newer" is not something local
+  edits can achieve.
+- A question that has **answered itself** clears on the next sync: the other
+  machine may adopt this one's version while the sheet is still unopened, and a
+  library wedged read-only until someone answers a question that no longer
+  exists is a library nobody can edit and nothing can publish. What an
+  outstanding question stops is the *write*, not the merge.
+- The resolver **closes itself** when what it is asking about is no longer what
+  is outstanding — the questions answered on the other Mac, or joined by new
+  ones — and the tab says which of the two happened. An answer given there
+  settles the same disagreement here, so a sheet left standing would offer a
+  choice about something already decided and its Apply would find nothing to
+  apply; and a sheet that vanishes without a word is a mystery.
+- The resolver says what each side holds **in full** — the name and the pattern
+  — since the two often disagree about the pattern under one name, and a row
+  reading "Test for ASCII" against "Test for ASCII" asks the user to choose
+  between two identical things.
+- Three things are never decided for the user: the same entry changed
+  differently on both sides, one edited on one machine and deleted on the
+  other — asked on **both**, since a machine that keeps its deletion without
+  asking has decided for the other one, and its silence then travels as an
+  answer — and one search kept under two names. They are said in the tab — `2 conflicting changes` —
+  and answered in a sheet with a row each, because a conflict arrives when the
+  sync client delivers, which may be mid-search. The library is **read-only
+  until the question is answered** — nothing may be added or edited — and that
+  is the only thing that makes it read-only. What is not held back is this
+  machine's own file: it goes on saying what this machine believes, which is how
+  the other Mac comes to be asked about the same disagreement.
+- A file **edited by hand** is a first-class case, since JSON was chosen so a
+  library could be read and edited: an entry typed into it arrives like one made
+  on another Mac. It carries no evidence of having been written — nothing bumps
+  its counters — so whenever the bytes differ from the last agreed state while
+  the counters do not, the difference is treated as a concurrent write. A line
+  *deleted* by hand still comes back: absence without a tombstone is not a
+  deletion.
+- **Nothing a sync client leaves behind is touched** — not read, not folded in,
+  not removed. A `… 2.json`, a `… (conflicted copy).json`, an iCloud conflict
+  version: the app used to absorb them and take them away, because one file with
+  two writers left it no choice but to take part in the provider's conflicts.
+  With one file per machine there are none to take part in, and a file a
+  provider could not decide about is the user's to look at. What counts as a
+  library file is exactly the app's own naming — one bracketed label, with no
+  brackets inside it — and a file the user named themselves is theirs.
+- Pointing at a folder that already holds a library is the one moment two
+  libraries meet, so it asks: **merge** (the default — twelve patterns on one
+  Mac and three on the other should make fifteen), take the folder's patterns,
+  or keep only this Mac's, which is the only destructive answer and is
+  confirmed. The two decided answers are carried out with **tombstones**, not by
+  writing over anybody's file: this machine writes only its own, and a deletion
+  the other machines will honour is the honest way to say "that list is not the
+  one we are keeping". An empty folder asks nothing.
+- A move leaves the old file behind, holding a copy nothing will update again,
+  so the user is **asked once** whether to move it to the Trash — and "keep" is
+  the default. The Trash rather than a deletion: it is the user's file, in the
+  user's folder, and one that turns out to have been wanted is then a drag away.
+  A removal that cannot happen is **said**, where a message survives the refresh
+  that follows it — a file that stayed put must not look like one that went. Removing a file in a synced folder removes it on the other machines
+  too, and one of them may be publishing there; a file left behind can only
+  confuse someone later, which is why the question is asked at all. Nothing is
+  offered when the move could not publish: the old file is then the only copy
+  there is.
+- **A sync with nothing to say writes nothing, and asks for nothing.** The
+  library is written and compared in one canonical form — entries in the order
+  they are *shown*, which the sort keys decide rather than the array — because
+  two machines merging the same facts hold them in different array orders, each
+  putting its own first, and without a canonical form each rewrites the file in
+  its own order for ever. The provider is asked for the file only when this
+  machine does not have the current version: asking every minute is a cloud
+  client kept busy every minute, which looks like syncing that never ends even
+  when nothing is written. Writing an identical library
+  still touches the file, and a touched file in a synced folder is an upload —
+  which is a download on the other machine, which wakes its merge, which writes
+  back. Two machines then sync each other in a circle for ever and nothing ever
+  arrives; a cloud client showing endless activity is what that looks like from
+  outside. This machine's file in the folder is written only when it would say
+  something different — other patterns, or counters that cover less than this
+  machine has seen, which is what carries an answer — and its local file only
+  when the document changed. The counters only ever join, so this settles: once
+  every file carries the join, none of them has anything left to add.
+- **The app asks for changes rather than waiting to be told.** A file watcher
+  hears about writes to the disk, and a cloud provider does not write the disk
+  when another machine changes its file: it fetches the new version when
+  something asks for it, which is why a change used to arrive only after the
+  file had been opened in the Finder. So the app registers an
+  `NSFilePresenter` for the folder and for every library file in it — this app
+  saying it is interested, which is what puts it in the coordination the
+  provider already takes part in — and polls slowly besides, for the providers
+  that announce nothing. The *folder* is watched as well as the files, because
+  a machine publishing for the first time adds a file, which no file watcher
+  would ever hear about.
+- The library **starts with the app**, not on first use: it is read, and — when
+  it is published — merged with every file in the folder and watched, at launch
+  and whenever the app comes forward. A Mac that has not opened the Find bar is
+  still a Mac whose library should be current, and one that was asleep heard
+  nothing while it slept: a file watcher cannot report what it did not see.
+- Asking for a folder is the whole of the permission story: a sandboxed app is
+  granted what the user pointed at, and a grant on a *file* dies with that file
+  — every atomic write replaces it, this Mac's and every other's. A folder grant
+  survives all of it, and covers the other machines' files *beside* this one's,
+  which the app has to read. So the system asks once, at the moment the folder
+  is chosen, and not at every launch.
+- A security-scoped bookmark is bound to the app's **code identity**, and an
+  ad-hoc signed build has a new one every time it is built. So every rebuild
+  throws away every grant the user has given, and the app must say so rather
+  than fail quietly: "macOS is no longer letting the app write there; choose
+  the folder again with Move…". A stable signing identity is what ends that —
+  the same thing iCloud proper needs (`Design/FAVORITES_SYNC_IDEA.md`).
+- The folder is kept as a **security-scoped bookmark**, refreshed after each
+  publish; a refresh that fails leaves the bookmark that is there, since
+  throwing away a working permission is the worse of the two mistakes. The path
+  is the last resort, and reaching a protected folder by path is what makes the
+  system ask again. A library published to a *file* by an earlier build carries
+  over to the folder it was in.
+- A file that is there and **cannot be read** — most often one iCloud has not
+  finished downloading — is never taken for an empty one. Nothing is published
+  into it, the download is asked for, and the tab says to try again: writing
+  over something unread is how a library is lost.
+- The location is shown as a **path**, with the home folder as `~`. With
+  Desktop & Documents in iCloud, `~/Documents` *is* iCloud Drive's Documents
+  folder, so a file name and its folder cannot say which of two libraries the
+  app is writing to.
+
 Highlighting matches in the dump and on the minimap: see
 `Design/FIND_HIGHLIGHT_PLAN.md` (in progress).
 

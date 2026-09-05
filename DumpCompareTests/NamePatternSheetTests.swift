@@ -8,15 +8,18 @@ import XCTest
 final class NamePatternSheetTests: XCTestCase {
     private var suiteName = ""
     private var store: UserDefaults!
+    private var favoritesFile: URL!
 
     override func setUp() {
         super.setUp()
         (suiteName, store) = isolatedDefaults(for: self)
         FavoritePatternStore.defaults = store
+        favoritesFile = isolatedFavoritesFile(for: self)
     }
 
     override func tearDown() {
         FavoritePatternStore.defaults = .standard
+        discardIsolatedFavoritesFile(favoritesFile)
         discardIsolatedDefaults(suiteName, store)
         store = nil
         super.tearDown()

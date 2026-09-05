@@ -116,56 +116,6 @@ clears the forward stack.
 
 ## Later
 
-### Carrying the pattern favourites between machines
-
-**What.** The named patterns (§11) follow the person rather than the machine:
-kept on the desk Mac, there on the laptop beside the programmer. Two halves,
-usable separately — a library *file* the user chooses (export, import, or keep
-the library there), and iCloud key-value sync for the case where nobody should
-have to choose anything.
-
-**Why.** The favourites are the first thing in the app that is knowledge rather
-than a preference — `ME FPT`, `Aptio capsule header`, the marker worked out on a
-Tuesday. Everything else in `UserDefaults` is about one screen and belongs to one
-machine. Re-typing a library on the second machine is how a library stops being
-used.
-
-**How.** Taken apart in **`Design/FAVORITES_SYNC_IDEA.md`**, and staged in
-**`Design/FAVORITES_SYNC_PLAN.md`** (seven stages, 27–36 h; the first four are
-invisible and leave the library file-backed and better tested than today). The
-short version: the choice is decided by the signature, not by the API. The app is
-ad-hoc signed (`CODE_SIGN_IDENTITY: "-"`, no Team ID), and every iCloud mechanism
-needs a Developer Program team, a registered container, an embedded provisioning
-profile and Developer ID signing — without which the entitlement is simply not
-honoured. So the file option comes first: it works with today's signature and
-today's sandbox (`SandboxBookmarkStore` already keeps security-scoped bookmarks,
-`FileChangeWatcher` already watches a file), and it answers "put my patterns
-under version control" and "send me yours", which no iCloud option answers.
-`NSUbiquitousKeyValueStore` is the right second step if the app ever gains a
-team: the list is already an array of dictionaries under one key, and its limits
-are three orders of magnitude away.
-
-The one real model change is shared by both: a favourite needs an **id** of its
-own. Identity-by-content is right for "do not keep the same search twice" and
-wrong for syncing — a rename reads as a delete plus an add, and a union
-resurrects whatever either side deleted. A UUID per entry, a tombstone for
-deletions, and a sort key so two machines cannot fight over the order. Reading
-stays backwards compatible: a row without an id gets one when it is read.
-
-The bulk of the work is the merge, and it cannot be skipped: a synced file is
-not a lock, so two machines *will* write inside the sync window, and clients
-resolve that by keeping a version and filing the other away — or by keeping the
-last writer and losing the rest. So: a three-way merge against the last agreed
-state (the copy in the container is the base), per-entry `modifiedAt` and
-tombstones, a version vector per write to tell a concurrent edit from a later
-one, and a resolver sheet for the cases a rule must not decide — the same entry
-changed differently on both sides, or edited here and deleted there. Nothing is
-written until those are answered. All of it is testable without a window or a
-network, which is where this app keeps its confidence.
-
-The running app mostly already fits: `didChangeNotification` is the one channel
-every reader uses, and the Favorites tab already protects a row being edited.
-
 ### Split the minimap into layers
 
 **What.** `MinimapView.swift` is ~2500 lines and grows with every feature that
@@ -271,10 +221,49 @@ file the user saves deliberately or a window state the app restores by itself �
 and that decides nearly everything else. Worth doing when the need is real, not
 before.
 
+## Technical debt
+
+- **Two copies of the app on one Mac share everything that says which machine
+  it is** — the build in `/Applications` and the one Xcode runs have the same
+  bundle id, so the same container, the same `Favorites.json` and the same
+  `LibraryDeviceIdentity`. Run both at once and the folder is back to one file
+  with two writers, inside a single machine: the writes are serialised by the
+  coordinator, but the *counters* are not — both processes increment the same
+  key, so two different libraries can carry the same version and each merge
+  will believe the other has seen it. Nothing loses data in ordinary use, since
+  nobody runs two copies; it is a trap on a test bench, and it looks like
+  patterns vanishing without a question. A cheap guard exists if it is ever
+  wanted: a marker in the container saying which process holds the library, and
+  a second copy that reads it works without publishing.
+- **`FindFlowTests.testFindCentersMatchInView` fails only in a full run** — on
+  its own, and with its own suite, it passes; in the whole suite the centred row
+  lands 4 pt out. Something another suite leaves behind (an appearance setting
+  is the obvious suspect, since 4 pt is a fraction of a row) reaches it through
+  a global. Worth finding rather than loosening the tolerance: a test that
+  depends on what ran before it is a test that will lie about something else
+  later.
+
 ---
 
 ## Done
 
+- **Carrying the pattern favourites between machines** —
+  `Design/FAVORITES_SYNC_IDEA.md` and `Design/FAVORITES_SYNC_PLAN.md`, eight
+  stages on the `favorites-sync` branch. The library became a file in the app's
+  container, movable to any folder a sync client watches — iCloud Drive, Google
+  Drive, Dropbox — which needs no entitlement of its own. The local file is the
+  truth and the folder the medium: the app never draws from a file another
+  machine may be writing. **One file per machine** — each Mac writes only its
+  own and reads everyone else's — because a file with two writers makes the sync
+  provider the judge of who wins, and it was measured deciding silently and
+  wrongly. Every publish merges each file three ways against the last state
+  agreed with it, with ids, tombstones and a version vector, because a synced
+  folder is not a lock and the two machines *will* write inside the window. What
+  a rule must not decide — the same entry changed differently on both sides,
+  edited here and deleted there, one search under two names — is asked in a
+  sheet, on **both** machines, and an answer on one settles the other. Nothing in the folder that is not a
+  machine's own file is touched. The whole merge is tested without a
+  window or a network.
 - **A library of named patterns** — `Design/PATTERN_LIBRARY_IDEA.md`, on the
   `pattern-favorites` branch. The pattern field became an `NSSearchField`
   whose menu carries both lists — **Recent Queries** and **Favorites** — where

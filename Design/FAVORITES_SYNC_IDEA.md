@@ -151,7 +151,7 @@ it:
 
 ```
 Library:  This Mac (Application Support)          [ Move…]
-Library:  iCloud Drive / DumpCompare Patterns.json [ Move…] [ Use This Mac ]
+Library folder: ~/…/iCloud Drive   [ Move…] [ Keep on This Mac ]
 ```
 
 **Move…** is an `NSSavePanel` named `DumpCompare Patterns.json`, opening on
@@ -194,7 +194,7 @@ number of ways two lists can diverge down while the merge is being built, and
 once the three-way merge below exists there is no reason to forbid the edits —
 they are one more concurrent writer, which is the case the merge is for anyway.
 
-**Use This Mac** moves it back: copy the current contents into the container,
+**Keep on This Mac** moves it back: copy the current contents into the container,
 forget the bookmark, stop watching.
 
 What stays in `UserDefaults` is the bookmark, this machine's device id and the

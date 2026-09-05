@@ -617,7 +617,7 @@ enum FindHistoryStore {
         entries.insert(Entry(pattern: trimmed, encoding: encoding, caseSensitive: caseSensitive), at: 0)
         let capped = Array(entries.prefix(limit))
         guard capped != before else { return false }
-        defaults.set(capped.map(\.storedValue), forKey: userDefaultsKey)
+        defaults.set(capped.map(\.recentValue), forKey: userDefaultsKey)
         return true
     }
 }

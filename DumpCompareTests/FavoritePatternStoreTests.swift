@@ -11,16 +11,19 @@ import XCTest
 final class FavoritePatternStoreTests: XCTestCase {
     private var suiteName = ""
     private var store: UserDefaults!
+    private var favoritesFile: URL!
 
     override func setUp() {
         super.setUp()
         (suiteName, store) = isolatedDefaults(for: self)
         FavoritePatternStore.defaults = store
+        favoritesFile = isolatedFavoritesFile(for: self)
         FindHistoryStore.defaults = store
     }
 
     override func tearDown() {
         FavoritePatternStore.defaults = .standard
+        discardIsolatedFavoritesFile(favoritesFile)
         FindHistoryStore.defaults = .standard
         discardIsolatedDefaults(suiteName, store)
         store = nil
@@ -64,8 +67,12 @@ final class FavoritePatternStoreTests: XCTestCase {
         XCTAssertEqual(rows[0]["pattern"] as? String, "DE AD")
     }
 
-    /// A row that is not an entry — a hand-edited plist, an encoding this build
+    /// A row that is not an entry — a hand-edited store, an encoding this build
     /// no longer has — is dropped rather than crashing or emptying the list.
+    ///
+    /// Written through the key the library used to live under, which is now the
+    /// migration path (`FavoritesFileTests`): the rule is the same either way,
+    /// and it is the entry type's.
     func testAnUnreadableRowIsSkipped() {
         store.set([["pattern": "DE AD", "encoding": "hex"],
                    ["pattern": "no encoding here"],

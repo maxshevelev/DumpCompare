@@ -125,11 +125,45 @@ The workflows the app is shaped around:
 
 ## Build
 
-Project files are generated with [XcodeGen](https://github.com/yonaskolb/XcodeGen) from `project.yml`; after adding source files, run `xcodegen generate`:
+The Xcode project is **generated**, not committed: the repository keeps
+`project.yml` and [XcodeGen](https://github.com/yonaskolb/XcodeGen) makes
+`DumpCompare.xcodeproj` from it. Run it after cloning, and again after adding a
+source file:
 
 ```sh
 xcodegen generate
 xcodebuild build -project DumpCompare.xcodeproj -scheme DumpCompare -destination 'platform=macOS'
+```
+
+### Signing
+
+The app builds and runs ad-hoc signed, and that is enough for everything except
+one thing: a folder the app is given access to — where the pattern library is
+kept, if it is kept in a synced one — stops being accessible after the next
+build. macOS binds that permission to the app's code identity, and an ad-hoc
+identity is the binary's own hash, so every build is a different app as far as
+the permission is concerned.
+
+Signing with your own Apple Development identity fixes it. Put your team in
+`Signing.local.xcconfig`, which git ignores:
+
+```sh
+# the certificate's OU field is your team
+security find-certificate -a -c "Apple Development" -p | openssl x509 -noout -subject
+```
+
+```
+DEVELOPMENT_TEAM = <your team>
+CODE_SIGN_STYLE = Automatic
+CODE_SIGN_IDENTITY = Apple Development
+```
+
+A team belongs to a person, so it never enters the repository. To keep it that
+way by construction rather than by care, install the hook that refuses to commit
+one:
+
+```sh
+git config core.hooksPath Scripts/git-hooks
 ```
 
 A universal release build, the way the `.dmg` is made:

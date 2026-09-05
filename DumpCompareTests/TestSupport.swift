@@ -140,6 +140,23 @@ extension XCTestCase {
     }
 }
 
+/// A temporary favourites file, so a test never reads or writes the user's own
+/// library (`Design/FAVORITES_SYNC_PLAN.md`). Paired with
+/// `discardIsolatedFavoritesFile`.
+func isolatedFavoritesFile(for owner: Any) -> URL {
+    let name = String(describing: type(of: owner))
+    let url = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("DumpCompareTests-\(name)-\(UUID().uuidString)")
+        .appendingPathComponent("Favorites.json")
+    FavoritesFile.url = url
+    return url
+}
+
+func discardIsolatedFavoritesFile(_ url: URL) {
+    try? FileManager.default.removeItem(at: url.deletingLastPathComponent())
+    FavoritesFile.url = FavoritesFile.defaultURL()
+}
+
 /// A window a test can put views in and be sure it will not be released under
 /// ARC while the test still holds it — the crash that headless AppKit tests hit
 /// when a window closes itself.
