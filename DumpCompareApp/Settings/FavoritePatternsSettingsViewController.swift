@@ -136,7 +136,7 @@ final class FavoritePatternsSettingsViewController: NSViewController,
             // on one line. Wider than the others because four columns have to
             // fit — the tab bar keeps its own width, and the window follows the
             // tab that is showing.
-            root.widthAnchor.constraint(equalToConstant: 540),
+            root.widthAnchor.constraint(equalToConstant: Self.tabWidth),
         ])
         view = root
 
@@ -156,6 +156,28 @@ final class FavoritePatternsSettingsViewController: NSViewController,
         reload()
     }
 
+    /// The pattern takes whatever the other three leave.
+    ///
+    /// The other columns hold things of known width — a name, one of five
+    /// encodings, a checkbox — and the pattern is the one with something to
+    /// say: sixteen bytes of hex is a long line, and every point it does not
+    /// get is a point of it the user has to scroll to read. Fitted rather than
+    /// autoresized, because AppKit's own column autoresizing left the table
+    /// short of its own width by exactly the room this is about.
+    private func fitThePatternColumn() {
+        guard let table, let clip = table.enclosingScrollView?.contentView,
+              let header = table.headerView, !table.tableColumns.isEmpty else { return }
+        // `sizeToFit` is what knows the rest: the inset style draws every
+        // column wider than its `width` — some 15 pt each, plus a leading inset
+        // — so adding the widths up says 478 where the last column actually
+        // ends at 551, and Match Case was cut off in a table 498 wide. Asking
+        // the table to fit itself accounts for all of that; the widths above
+        // decide who gets what is left, and only the pattern grows.
+        let end = header.headerRect(ofColumn: table.tableColumns.count - 1).maxX
+        guard abs(end - clip.bounds.width) > 0.5 else { return }
+        table.sizeToFit()
+    }
+
     private func makeTable() -> NSView {
         let table = NSTableView()
         table.dataSource = self
@@ -166,28 +188,50 @@ final class FavoritePatternsSettingsViewController: NSViewController,
         table.style = .inset
         table.allowsMultipleSelection = false
 
-        func column(_ id: NSUserInterfaceItemIdentifier, _ title: String, width: CGFloat) -> NSTableColumn {
+        func column(_ id: NSUserInterfaceItemIdentifier, _ title: String, width: CGFloat,
+                    grows: Bool = false) -> NSTableColumn {
             let column = NSTableColumn(identifier: id)
             column.title = title
             column.width = width
+            column.minWidth = grows ? 90 : width
+            column.maxWidth = grows ? 10_000 : width
+            // Only the pattern takes the slack: `sizeToFit` shares what is left
+            // among the columns that say they resize, and the other three hold
+            // things of known width — a name, one of five encodings, a
+            // checkbox.
+            column.resizingMask = grows ? [.autoresizingMask, .userResizingMask] : []
             return column
         }
-        table.addTableColumn(column(ColumnID.name, "Name", width: 140))
-        table.addTableColumn(column(ColumnID.pattern, "Pattern", width: 160))
-        table.addTableColumn(column(ColumnID.encoding, "Encoding", width: 120))
-        table.addTableColumn(column(ColumnID.caseRule, "Match Case", width: 70))
+        let fixed = Self.nameWidth + Self.encodingWidth + Self.caseWidth
+        table.addTableColumn(column(ColumnID.name, "Name", width: Self.nameWidth))
+        table.addTableColumn(column(ColumnID.pattern, "Pattern",
+                                    width: max(90, Self.columnsWidth - fixed), grows: true))
+        table.addTableColumn(column(ColumnID.encoding, "Encoding", width: Self.encodingWidth))
+        table.addTableColumn(column(ColumnID.caseRule, "Match Case", width: Self.caseWidth))
+        // The pattern is fitted by hand in `viewDidLayout`: AppKit's own column
+        // autoresizing left 83 pt of the table empty on the right, which is the
+        // width the pattern was supposed to be given.
+        table.columnAutoresizingStyle = .noColumnAutoresizing
         self.table = table
 
         // The order is the user's, so it is dragged (§11).
         table.registerForDraggedTypes([Self.rowDragType])
         table.setDraggingSourceOperationMask(.move, forLocal: true)
 
-        let scrollView = NSScrollView()
+        let scrollView = FittedTableScrollView()
         scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
         scrollView.borderType = .bezelBorder
         scrollView.documentView = table
         tableHeight = scrollView.heightAnchor.constraint(equalToConstant: Self.height(forRows: 4))
         tableHeight.isActive = true
+
+        // Refitted in the scroll view's own layout pass, synchronously and
+        // wherever it is used: `viewDidLayout` runs only while this controller
+        // is part of a window's controller hierarchy, and a notification about
+        // the clip view arrives after the frame anyone is looking at has
+        // already been drawn.
+        scrollView.onLayout = { [weak self] in self?.fitThePatternColumn() }
         return scrollView
     }
 
@@ -551,6 +595,46 @@ final class FavoritePatternsSettingsViewController: NSViewController,
         case .alertThirdButtonReturn: return .replaceTheFile
         default: return nil
         }
+    }
+
+    // MARK: - How wide each column is
+
+    /// The tab's own width, which every column has to fit inside.
+    static let tabWidth: CGFloat = 540
+    /// What the table loses to the form's margins, its bezel and the inset
+    /// style's own padding before a column can use any of it. A starting point
+    /// only: what the columns end up with is measured (`fitThePatternColumn`).
+    private static let tableChrome: CGFloat = 2 * 20 + 2 + 70
+    /// What there is to share between the columns.
+    static var columnsWidth: CGFloat { tabWidth - tableChrome }
+
+    /// A name is short — "Capsule header", "ME FPT" — and the pattern is not:
+    /// sixteen bytes of hex is a long line, and every point the name does not
+    /// need is a point of it the user would otherwise scroll to read.
+    static let nameWidth: CGFloat = 110
+
+    /// As wide as the encodings actually are, and not a character more.
+    ///
+    /// The names are five short strings — `Hex bytes`, `UTF-16 LE` — and a
+    /// column sized for something longer takes that width from the *pattern*,
+    /// which is the column with something to say: a pattern can be sixteen
+    /// bytes of hex, and it is what the row is about.
+    static var encodingWidth: CGFloat {
+        let font = NSFont.systemFont(ofSize: 12)
+        let widest = SearchEncoding.allCases
+            .map { ($0.displayName as NSString).size(withAttributes: [.font: font]).width }
+            .max() ?? 0
+        // The popup's disclosure arrow and the cell's own inset, which the
+        // string knows nothing about.
+        return ceil(max(widest + 26, headerWidth(of: "Encoding")))
+    }
+
+    /// The checkbox is 16 pt wide; what has to fit is the *header*.
+    static var caseWidth: CGFloat { ceil(headerWidth(of: "Match Case")) }
+
+    private static func headerWidth(of title: String) -> CGFloat {
+        let font = NSFont.systemFont(ofSize: 11)
+        return (title as NSString).size(withAttributes: [.font: font]).width + 12
     }
 
     private static func height(forRows count: Int) -> CGFloat {
@@ -950,5 +1034,20 @@ final class FavoritePatternsSettingsViewController: NSViewController,
     /// row goes through.
     func dropForTests(from: Int, above to: Int) {
         move(from: from, above: to)
+    }
+}
+
+
+/// A scroll view that tells its owner when it has laid out.
+///
+/// The pattern column is fitted to what shows it, and the moment to do that is
+/// the layout pass of the view doing the showing — synchronous, and the same
+/// wherever the table is put.
+private final class FittedTableScrollView: NSScrollView {
+    var onLayout: (() -> Void)?
+
+    override func layout() {
+        super.layout()
+        onLayout?()
     }
 }

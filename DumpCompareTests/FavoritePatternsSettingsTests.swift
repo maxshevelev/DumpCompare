@@ -62,6 +62,55 @@ final class FavoritePatternsSettingsTests: XCTestCase {
 
     /// Hex is byte-exact whatever the flag holds, so there is nothing to tick —
     /// the same reason the bar's own toggle leaves the bar (§11).
+    // MARK: - How wide the columns are
+
+    /// The table fits the tab it is in. A column past the edge is a horizontal
+    /// scroller under a form with room to spare, and a row you have to scroll
+    /// sideways to finish reading.
+    func testTheTableFitsWithoutScrollingSideways() throws {
+        let tab = FavoritePatternsSettingsViewController()
+        _ = tab.view
+        tab.view.layoutSubtreeIfNeeded()
+
+        let clip = try XCTUnwrap(tab.table.enclosingScrollView?.contentView)
+        let header = try XCTUnwrap(tab.table.headerView)
+        // Where the last column actually *ends*, which is not the sum of the
+        // widths: the inset style draws each column wider than its `width`.
+        let end = header.headerRect(ofColumn: tab.table.tableColumns.count - 1).maxX
+
+        XCTAssertLessThanOrEqual(end, clip.bounds.width,
+                                 "the last column has to end inside what shows it")
+        // And the table itself: setting a column's width grows the table by the
+        // same amount rather than refitting it, so the columns can fit while
+        // the table hangs past the edge — which scrolls just the same.
+        XCTAssertLessThanOrEqual(tab.table.frame.width, clip.bounds.width)
+        XCTAssertEqual(tab.table.enclosingScrollView?.hasHorizontalScroller, false)
+    }
+
+    /// The Encoding column is as wide as the encodings, and no wider: what it
+    /// holds is five short strings, and every point it takes beyond them is a
+    /// point taken from the pattern.
+    func testEncodingIsAsWideAsItsValuesAndThePatternTakesTheRest() throws {
+        let tab = FavoritePatternsSettingsViewController()
+        _ = tab.view
+        tab.view.layoutSubtreeIfNeeded()
+
+        let byID = Dictionary(uniqueKeysWithValues: tab.table.tableColumns.map {
+            ($0.identifier.rawValue, $0.width)
+        })
+        let encoding = try XCTUnwrap(byID["favoriteEncoding"])
+        let pattern = try XCTUnwrap(byID["favoritePattern"])
+
+        let font = NSFont.systemFont(ofSize: 12)
+        let widest = SearchEncoding.allCases
+            .map { ($0.displayName as NSString).size(withAttributes: [.font: font]).width }
+            .max() ?? 0
+        XCTAssertGreaterThan(encoding, widest, "every name has to be readable")
+        XCTAssertLessThan(encoding, widest + 40, "and nothing beyond the popup's own chrome")
+        XCTAssertGreaterThan(pattern, encoding,
+                             "the pattern is what the row is about, so it gets the room")
+    }
+
     func testTheCaseBoxIsDeadForHexAndLiveForText() throws {
         keep("bytes", "DE AD", .hex)
         keep("text", "root", .ascii, caseSensitive: true)
