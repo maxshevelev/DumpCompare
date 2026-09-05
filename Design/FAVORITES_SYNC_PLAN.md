@@ -67,14 +67,41 @@ reorder on one machine does not renumber every entry and collide with the other.
 Tombstones make "you deleted it" distinguishable from "you never had it"; they
 are dropped after a month, which is longer than any sync client takes.
 
-Three copies exist and each has a job:
+### Which files exist, and when
 
-- **the store** — the file the app reads and writes (in the container, or where
-  the user moved it);
-- **the base** — the last state both sides agreed on, kept in the container.
-  Without it every differing field looks like a conflict;
-- **`UserDefaults`** — nothing but the bookmark, the device id, and the migrated
-  flag.
+The patterns live in exactly one file at a time. There is no copy in
+`UserDefaults`: the `FindFavorites` key migrates once, at first launch after
+stage 2, and is then removed. What stays in the plist is the bookmark to the
+chosen file, this machine's device id, and the migration flag — no patterns.
+
+**Default, library on this Mac** — one file:
+
+```
+Containers/…/Application Support/DumpCompare/Patterns.json   ← the store
+UserDefaults: device id, migrated flag
+```
+
+Nothing else can write it, so there is nothing to merge against and no base to
+keep.
+
+**After Move… to a synced folder** — two, with different jobs:
+
+```
+iCloud Drive/DumpCompare Patterns.json                       ← the store
+Containers/…/Application Support/DumpCompare/Base.json       ← the last agreed state
+UserDefaults: bookmark, device id, migrated flag
+```
+
+`Base.json` is not a second library and is never read as one. It is the common
+ancestor the three-way merge needs — without it, every field that differs looks
+like a conflict and the user is asked about all of them. It is rewritten on
+every successful read or write of the store, and it doubles as what the app
+falls back to when the store is unreachable. The name is deliberately not
+`Patterns.json`: a file called that, sitting in the container next to a library
+the user moved out, would read as a stale copy of it.
+
+**Use This Mac** reverses it: the store's contents are written back to
+`Patterns.json`, `Base.json` and the bookmark are dropped.
 
 ## The merge, precisely
 
