@@ -1477,6 +1477,17 @@ The Favorites tab (Settings, beside File Types):
 Where the library lives, and carrying it between machines
 (`Design/FAVORITES_SYNC_PLAN.md`):
 
+- **None of the syncing is about patterns**, and the code says so: an item
+  needs an identity of its own, a place in the order, when it changed and which
+  machine changed it, and the merge does the rest (`SyncedItem`,
+  `SyncedCollection`, `SyncMerge`, `SyncDocument`, `FolderSync`, `SyncFolder`).
+  The pattern library is one *kind* of synced collection; the next thing that
+  wants to be on every Mac — bookmarks, segments — is a conformance and a name
+  for its files, not a second copy of the machinery. Two copies of it would be
+  two sets of rules that come to disagree, which is the same failure as two
+  writers on one file, one layer up. The tests carry a second collection of
+  their own for exactly this reason: a claim about generality that nothing
+  exercises is a claim.
 - The favourites are a **file**, not a preference:
   `Application Support/DumpCompare/Favorites.json` inside the app's container,
   which a sandboxed app may write without asking anyone. The key they were

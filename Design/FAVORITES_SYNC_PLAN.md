@@ -309,6 +309,38 @@ The old rule — "a standing question is never answered by counters" — was the
 single shared file's, where counters could travel without the content they
 belonged to. Here they cannot.
 
+## Stage 9: the machinery is generic
+
+Nothing above is about patterns. An item needs an identity, a place in the
+order, a time and a machine; a collection is those items with their deletions
+and a count of writes per machine; the merge and the folder do the rest. So
+that is what the code says now:
+
+| Generic | The pattern library's name for it |
+| --- | --- |
+| `SyncedItem` | `SearchPatternEntry` |
+| `SyncedCollection<Item>` | `PatternLibrary` |
+| `SyncMerge<Item>` / `SyncConflict<Item>` | `LibraryMerge` / `LibraryConflict` |
+| `SyncDocument<Item>` | `FavoritesDocument` |
+| `FolderSync<Kind>` / `SyncFolder<Kind>` | `LibrarySync` / `LibraryLocation` |
+
+A `SyncedCollectionKind` is what a collection has to say about itself: what its
+files are called, and where its folder is remembered. Bookmarks or segments,
+when they want the same treatment, are a conformance rather than another six
+hundred lines — and two copies of these rules would be two sets of rules that
+drift, which is the failure this whole design exists to avoid, one layer up.
+
+Two things stayed behind. The constants live in a plain `Sync` namespace,
+because a generic type cannot hold a stored static. And how an item *reads* in
+a question — "name: “pattern”" — is the view's business (`SyncPresentable`),
+beside `SearchEncoding.displayName` rather than in the model.
+
+`DumpCompareTests/GenericSyncTests` carries a second collection of its own — a
+note is a line of text — and runs the whole machinery over it: two machines
+exchanging, a deletion travelling, a race asked on both and settled by one
+answer, and two collections sharing one folder without seeing each other. A
+claim about generality that nothing exercises is a claim.
+
 ## What the signature had to do with it
 
 The library stopped syncing after every rebuild, and nothing about the library

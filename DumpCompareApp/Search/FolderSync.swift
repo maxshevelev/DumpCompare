@@ -21,9 +21,16 @@ import DumpCompareCore
 /// which is the only correct answer, and it is asked on both machines because
 /// both can see both files.
 ///
-/// One instance per library, so a test can make two of them over one folder and
-/// be two machines.
-final class LibrarySync {
+/// One instance per collection, so a test can make two of them over one folder
+/// and be two machines.
+///
+/// Generic in the *kind* of collection (`SyncedCollectionKind`): none of this
+/// is about patterns. A folder, a file per machine, a three-way merge and a
+/// question the user answers are what anything the app wants on every Mac will
+/// need, and writing it twice is how two of them come to disagree.
+final class FolderSync<Kind: SyncedCollectionKind> {
+    typealias Item = Kind.Item
+    typealias Folder = SyncFolder<Kind>
     /// This machine's file — the truth, and the bases beside it.
     let localURL: URL
     /// The file *this machine* writes in the shared folder, or nil while the
@@ -72,7 +79,7 @@ final class LibrarySync {
     /// read-only — nothing new may be added or edited until the user has
     /// answered (§11). This machine's file goes on saying what this machine
     /// believes, so the other Mac is asked about the same disagreement.
-    private(set) var conflicts: [LibraryConflict] = []
+    private(set) var conflicts: [SyncConflict<Item>] = []
 
     /// True when the user answered and the answer did not take — the merge
     /// straight after it asked again, because another machine's file had moved
@@ -88,9 +95,9 @@ final class LibrarySync {
     /// When the library and the folder were last agreed.
     private(set) var lastPublished: Date?
 
-    private var document: FavoritesDocument
+    private var document: SyncDocument<Item>
     /// What is on disk, so a save that would write the same bytes is skipped.
-    private var savedDocument: FavoritesDocument?
+    private var savedDocument: SyncDocument<Item>?
     private var watcher: FileChangeWatcher?
     private var localWatcher: FileChangeWatcher?
     /// One per file being watched: the folder, so a machine writing for the
@@ -104,7 +111,10 @@ final class LibrarySync {
     /// promptly, and this is for the providers that do not announce one. Cheap
     /// — a few kilobytes read and, almost always, a merge that finds nothing to
     /// do. A `var` so tests need not wait a minute.
-    static var pollInterval: TimeInterval = 60
+    static var pollInterval: TimeInterval {
+        get { FolderSyncSettings.pollInterval }
+        set { FolderSyncSettings.pollInterval = newValue }
+    }
 
     /// Reads this machine's file and nothing else.
     ///
@@ -121,7 +131,7 @@ final class LibrarySync {
         self.localURL = localURL
         self.sharedURL = sharedURL
         self.device = device
-        document = FavoritesDocument()
+        document = SyncDocument<Item>()
         loadLocal()
         watchLocal()
     }
@@ -143,7 +153,7 @@ final class LibrarySync {
 
     /// Bumped whenever the merging rules change in a way that matters between
     /// machines — what to quote when two Macs disagree about a library.
-    static let rulesVersion = "2026-09-06a"
+    static var rulesVersion: String { FolderSyncSettings.rulesVersion }
 
     deinit {
         watcher?.stop()
@@ -155,16 +165,16 @@ final class LibrarySync {
     // MARK: - The library
 
     /// What this machine believes — what the app reads and draws.
-    var library: PatternLibrary { document.local }
+    var library: SyncedCollection<Item> { document.local }
 
     /// The state last agreed with each machine's file, by that file's name.
-    var bases: [String: PatternLibrary] { document.bases }
+    var bases: [String: SyncedCollection<Item>] { document.bases }
 
     /// Records a change made here, and publishes it.
     ///
     /// Refused while a conflict is unanswered: editing a list the user has been
     /// asked about is the one way this design can lose a pattern.
-    func save(_ library: PatternLibrary) {
+    func save(_ library: SyncedCollection<Item>) {
         guard conflicts.isEmpty else { return }
         var written = library
         written.vector.increment(for: device)
@@ -186,15 +196,15 @@ final class LibrarySync {
     /// So each version a question was about becomes the base for that file, and
     /// its counters are merged into ours: from here on this machine has seen
     /// everything those versions knew, and the result is simply newer.
-    func resolve(_ answers: [UUID: LibraryResolution]) {
+    func resolve(_ answers: [UUID: SyncResolution]) {
         NSLog("DumpCompare library: answering %d question(s) with %@",
               conflicts.count, String(describing: answers.values.map { "\($0)" }))
         guard !conflicts.isEmpty else {
             NSLog("DumpCompare library: nothing to answer — the questions had already gone")
             return
         }
-        let outcome = LibraryMerge.Outcome(library: document.local, conflicts: conflicts)
-        var resolved = LibraryMerge.resolve(outcome, with: answers)
+        let outcome = SyncMerge<Item>.Outcome(library: document.local, conflicts: conflicts)
+        var resolved = SyncMerge<Item>.resolve(outcome, with: answers)
         // What the answers are *about*: the versions in the folder, read afresh
         // rather than remembered, so an answer given after a relaunch — or
         // after a file moved on — still counts as having seen it.
@@ -222,7 +232,7 @@ final class LibrarySync {
 
     /// The versions the outstanding questions are about, by file — what
     /// answering them means this machine has seen.
-    private var conflictedWith: [String: PatternLibrary] = [:]
+    private var conflictedWith: [String: SyncedCollection<Item>] = [:]
 
     // MARK: - Joining a folder that already holds patterns
 
@@ -247,7 +257,7 @@ final class LibrarySync {
     /// deletion the other machines will honour is the honest way to say "that
     /// list is not the one we are keeping".
     func publish(to folder: URL, adopting: Adoption) {
-        let ourFile = LibraryLocation.file(in: folder, device: device)
+        let ourFile = Folder.file(in: folder, device: device)
         switch adopting {
         case .merge:
             // No bases: this machine has never agreed anything with these
@@ -263,7 +273,7 @@ final class LibrarySync {
                 mine.tombstones.append(.init(id: entry.id, device: device))
             }
             mine.entries = mine.entries.filter { keep.contains($0.id) }
-            var taken = LibraryMerge.merge(base: nil, ours: mine, theirs: theirs,
+            var taken = SyncMerge<Item>.merge(base: nil, ours: mine, theirs: theirs,
                                            assumeConcurrent: true).library
             taken.vector.increment(for: device)
             document.local = taken
@@ -288,12 +298,12 @@ final class LibrarySync {
 
     /// Everything the folder's files say, merged into one library — what a
     /// machine joining the folder is joining.
-    private func folderLibrary(in folder: URL, excluding ourFile: URL?) -> PatternLibrary {
-        var library = PatternLibrary()
-        for url in LibraryLocation.libraryFiles(in: folder)
+    private func folderLibrary(in folder: URL, excluding ourFile: URL?) -> SyncedCollection<Item> {
+        var library = SyncedCollection<Item>()
+        for url in Folder.libraryFiles(in: folder)
         where url.lastPathComponent != ourFile?.lastPathComponent {
             guard let theirs = try? readShared(at: url) else { continue }
-            library = LibraryMerge.merge(base: nil, ours: library, theirs: theirs,
+            library = SyncMerge<Item>.merge(base: nil, ours: library, theirs: theirs,
                                          assumeConcurrent: true).library
         }
         return library
@@ -316,17 +326,17 @@ final class LibrarySync {
 
     /// Reads the folder the way joining it would.
     func inspectShared(in folder: URL) -> SharedFileState {
-        let files = LibraryLocation.libraryFiles(in: folder)
+        let files = Folder.libraryFiles(in: folder)
             .filter { $0.lastPathComponent != sharedURL?.lastPathComponent }
         guard !files.isEmpty else { return .empty }
-        var library = PatternLibrary()
+        var library = SyncedCollection<Item>()
         var read = false
         for url in files {
             // A file in iCloud Drive may be a placeholder the machine has not
             // downloaded yet; asking for it is the difference between "empty
             // library" and "wait a moment".
             guard let theirs = try? readShared(at: url) else { continue }
-            library = LibraryMerge.merge(base: nil, ours: library, theirs: theirs,
+            library = SyncMerge<Item>.merge(base: nil, ours: library, theirs: theirs,
                                          assumeConcurrent: true).library
             read = true
         }
@@ -344,13 +354,13 @@ final class LibrarySync {
         let before = document.local.ordered
         let hadConflicts = !conflicts.isEmpty
         var problems: [Error] = []
-        var raised: [LibraryConflict] = []
-        var asked: [String: PatternLibrary] = [:]
+        var raised: [SyncConflict<Item>] = []
+        var asked: [String: SyncedCollection<Item>] = [:]
 
         // This machine's own file is read like any other. Nothing else writes
         // it, so a difference can only be a hand edit or a copy restored from a
         // backup — both of which are things somebody meant.
-        for url in LibraryLocation.libraryFiles(in: ourURL.deletingLastPathComponent()) {
+        for url in Folder.libraryFiles(in: ourURL.deletingLastPathComponent()) {
             do {
                 try absorb(url, raising: &raised, asking: &asked)
             } catch {
@@ -429,10 +439,10 @@ final class LibrarySync {
     }
 
     /// Merges one machine's file into this machine's library.
-    private func absorb(_ url: URL, raising raised: inout [LibraryConflict],
-                        asking asked: inout [String: PatternLibrary]) throws {
+    private func absorb(_ url: URL, raising raised: inout [SyncConflict<Item>],
+                        asking asked: inout [String: SyncedCollection<Item>]) throws {
         let name = url.lastPathComponent
-        var theirs = PatternLibrary()
+        var theirs = SyncedCollection<Item>()
         var thrown: Error?
         var coordinationError: NSError?
         // Coordinated as this app's presenter, so our own writes do not come
@@ -477,7 +487,7 @@ final class LibrarySync {
         // *asking* never folds the other's counters into its own, so it can
         // never claim to have seen a version it has not accepted.
         let ourVersionBefore = document.local.vector
-        let outcome = LibraryMerge.merge(base: base, ours: document.local, theirs: theirs,
+        let outcome = SyncMerge<Item>.merge(base: base, ours: document.local, theirs: theirs,
                                          assumeConcurrent: editedOutsideTheApp)
         document.local = outcome.library
         guard outcome.isResolved else {
@@ -505,14 +515,16 @@ final class LibrarySync {
         document.bases[name] = theirs
     }
 
-    /// What this Mac is called, for the person who opens the folder. A `var`
-    /// so a test can be a differently-named machine.
-    static var thisMachine = Host.current().localizedName ?? ""
+    /// What this Mac is called, for the person who opens the folder.
+    static var thisMachine: String {
+        get { FolderSyncSettings.thisMachine }
+        set { FolderSyncSettings.thisMachine = newValue }
+    }
 
     /// One line's worth of a library, for the log.
-    static func describe(_ entries: [SearchPatternEntry]?) -> String {
+    static func describe(_ entries: [Item]?) -> String {
         guard let entries else { return "—" }
-        return "[" + entries.map { "\($0.name)/\($0.pattern)/\($0.id.uuidString.prefix(8))" }
+        return "[" + entries.map { "\($0.label)/\($0.id.uuidString.prefix(8))" }
             .joined(separator: ", ") + "]"
     }
 
@@ -524,7 +536,7 @@ final class LibrarySync {
 
     /// Announces only what a reader would notice: the patterns as they are
     /// listed, or a question appearing or going away.
-    private func announceIfChanged(from before: [SearchPatternEntry], hadConflicts: Bool) {
+    private func announceIfChanged(from before: [Item], hadConflicts: Bool) {
         guard document.local.ordered != before || hadConflicts != !conflicts.isEmpty else { return }
         onChange?()
     }
@@ -542,10 +554,10 @@ final class LibrarySync {
         try? FileManager.default.startDownloadingUbiquitousItem(at: url)
     }
 
-    private func readShared(at url: URL) throws -> PatternLibrary {
-        guard FileManager.default.fileExists(atPath: url.path) else { return PatternLibrary() }
+    private func readShared(at url: URL) throws -> SyncedCollection<Item> {
+        guard FileManager.default.fileExists(atPath: url.path) else { return SyncedCollection<Item>() }
         do {
-            return try PatternLibrary(fileContents: Data(contentsOf: url))
+            return try SyncedCollection<Item>(fileContents: Data(contentsOf: url))
         } catch {
             // Not downloaded yet is the common one, and it is temporary: ask
             // for the file and let the error stand this time round. Throwing is
@@ -555,7 +567,7 @@ final class LibrarySync {
         }
     }
 
-    private func writeShared(_ library: PatternLibrary, to url: URL) throws {
+    private func writeShared(_ library: SyncedCollection<Item>, to url: URL) throws {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
                                                 withIntermediateDirectories: true)
         // Stamped on the way out, every time: a merge can bring another
@@ -604,7 +616,7 @@ final class LibrarySync {
         poll?.invalidate()
         let timer = Timer(timeInterval: Self.pollInterval, repeats: true) { [weak self] _ in
             guard let self, let folder = self.sharedFolder else { return }
-            for url in LibraryLocation.libraryFiles(in: folder) { self.materialiseIfNeeded(url) }
+            for url in Folder.libraryFiles(in: folder) { self.materialiseIfNeeded(url) }
             self.sync()
         }
         // Common modes, so it keeps ticking while a menu is open or a sheet is
@@ -625,7 +637,7 @@ final class LibrarySync {
     private func presentEveryFile() {
         guard let folder = sharedFolder else { return }
         var wanted = Set([folder])
-        wanted.formUnion(LibraryLocation.libraryFiles(in: folder))
+        wanted.formUnion(Folder.libraryFiles(in: folder))
         for (url, presenter) in presenters where !wanted.contains(url) {
             presenter.stop()
             presenters[url] = nil
@@ -645,7 +657,7 @@ final class LibrarySync {
     private func loadLocal() {
         do {
             guard FileManager.default.fileExists(atPath: localURL.path) else { return }
-            document = try FavoritesDocument(fileContents: Data(contentsOf: localURL))
+            document = try SyncDocument<Item>(fileContents: Data(contentsOf: localURL))
             savedDocument = document
             loadError = nil
         } catch {
@@ -717,3 +729,27 @@ final class LibrarySync {
         sync()
     }
 }
+
+
+/// What every `FolderSync` works to, whatever it carries.
+///
+/// Beside the class rather than in it: a generic type cannot hold a stored
+/// static, and none of these depend on what is being synced.
+enum FolderSyncSettings {
+    /// How often a folder is asked about when nothing has said it changed. A
+    /// backstop, not the mechanism — the presenters carry a change promptly,
+    /// and this is for the providers that announce nothing. A `var` so tests
+    /// need not wait a minute.
+    static var pollInterval: TimeInterval = 60
+
+    /// Bumped whenever the merging rules change in a way that matters between
+    /// machines — what to quote when two Macs disagree.
+    static let rulesVersion = "2026-09-06a"
+
+    /// What this Mac is called, for the person who opens the folder. A `var` so
+    /// a test can be a differently-named machine.
+    static var thisMachine = Host.current().localizedName ?? ""
+}
+
+/// The pattern library's own loop, under the name the app has always used.
+typealias LibrarySync = FolderSync<PatternLibraryKind>

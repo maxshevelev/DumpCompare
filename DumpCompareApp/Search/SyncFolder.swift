@@ -1,6 +1,7 @@
 import Foundation
+import DumpCompareCore
 
-/// The folder the pattern library is published to, remembered across launches
+/// The folder a synced collection is published to, remembered across launches
 /// (`Design/FAVORITES_SYNC_PLAN.md`).
 ///
 /// **A folder, not a file.** A sandboxed app is granted what the user pointed
@@ -12,25 +13,29 @@ import Foundation
 ///
 /// So the user chooses a folder their Mac syncs, and the files inside it are
 /// the app's to name.
-enum LibraryLocation {
-    static let folderBookmarkKey = "LibraryFolderBookmark"
-    static let folderPathKey = "LibraryFolderPath"
+///
+/// Generic in the *kind* of collection, because none of this is about patterns:
+/// a folder, a name for each machine's file in it, and a bookmark that outlives
+/// a launch are what anything the app syncs will need (`SyncedCollectionKind`).
+enum SyncFolder<Kind: SyncedCollectionKind> {
+    static var folderBookmarkKey: String { Kind.folderBookmarkKey }
+    static var folderPathKey: String { Kind.folderPathKey }
 
     /// The keys the location was kept under when it was a file. Read once, to
     /// carry an install that predates the folder over to it.
-    static let legacyBookmarkKey = "LibraryPublishedBookmark"
-    static let legacyPathKey = "LibraryPublishedPath"
+    static var legacyBookmarkKey: String { Kind.legacyBookmarkKey }
+    static var legacyPathKey: String { Kind.legacyPathKey }
 
-    /// The domain the location lives in — the store's, so a test that isolates
-    /// one isolates both.
-    static var defaults: UserDefaults { FavoritePatternStore.defaults }
+    /// The domain the location lives in — the owning store's, so a test that
+    /// isolates one isolates both.
+    static var defaults: UserDefaults { Kind.defaults }
 
     /// What every library file in the folder is called, before the part that
     /// says which machine wrote it. It is the name a stranger sees, in a folder
     /// among other people's files, where the app's own word for the feature
     /// says nothing and the content has to.
-    static let fileStem = "DumpCompare Patterns"
-    static let fileExtension = "json"
+    static var fileStem: String { Kind.fileStem }
+    static var fileExtension: String { SyncFolderAccess.fileExtension }
 
     /// **One file per machine.** Each Mac writes its own and reads everyone
     /// else's; no file ever has two writers, so there is nothing for a sync
@@ -85,7 +90,7 @@ enum LibraryLocation {
     }
 
     /// How long a machine's stamp is, in characters (`DeviceIdentity.digest`).
-    static let stampLength = 12
+    static var stampLength: Int { SyncFolderAccess.stampLength }
 
     /// The folder the library is published to, with access already taken.
     /// Nil when the library is kept to this Mac.
@@ -105,7 +110,10 @@ enum LibraryLocation {
     /// grant the user has given, and the only way back is to point at the
     /// folder again. A stable signing identity is what ends that, and it is
     /// the same thing iCloud proper needs (`Design/FAVORITES_SYNC_IDEA.md`).
-    private(set) static var hasAccess = false
+    static var hasAccess: Bool {
+        get { SyncFolderAccess.granted[Kind.fileStem] ?? false }
+        set { SyncFolderAccess.granted[Kind.fileStem] = newValue }
+    }
 
     private static func resolveFolder() -> URL? {
         if let data = defaults.data(forKey: folderBookmarkKey) {
@@ -190,4 +198,19 @@ enum LibraryLocation {
         if FileManager.default.fileExists(atPath: iCloud.path) { return iCloud }
         return home.appendingPathComponent("Documents")
     }
+}
+
+
+/// Which folders this run has a live grant for, by collection.
+///
+/// Beside `SyncFolder` rather than in it: a generic type cannot hold a stored
+/// static, and this is state about the running app rather than about a kind.
+enum SyncFolderAccess {
+    static var granted: [String: Bool] = [:]
+
+    /// What every one of these files is called, after the machine's stamp.
+    static let fileExtension = "json"
+
+    /// How long a machine's stamp is, in characters (`DeviceIdentity.digest`).
+    static let stampLength = 12
 }
