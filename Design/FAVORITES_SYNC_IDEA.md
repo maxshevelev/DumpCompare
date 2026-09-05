@@ -102,10 +102,13 @@ that is not a document. The subfolder is not redundant: that directory already
 holds folders the system puts there (`AddressBook`, `CrashReporter`, `iCloud`),
 and ours should sit together.
 
-This copy is **the store** — the file the app reads at launch and writes on every
+This copy is **the truth** — the file the app reads at launch and writes on every
 change — rather than a mirror of `UserDefaults`. Two stores on one machine means
 a merge between them, which is the same problem as syncing, indoors and for no
-reason. The existing `FindFavorites` key migrates once and is then ignored.
+reason. The existing `FindFavorites` key migrates once and is then ignored. A
+file in a synced folder never takes that role: it is the *medium* two machines
+exchange state through, and it can be unmounted, half-downloaded or busy while
+the Find bar still has to list patterns (`FAVORITES_SYNC_PLAN.md`).
 
 **The user's copy: wherever they say.** An `NSSavePanel` for "keep my library
 here", a security-scoped bookmark to come back to it — both entitlements are
@@ -157,12 +160,12 @@ way and needs nothing extra from us: iCloud Drive, and — since macOS 12.3 —
 Google Drive and Dropbox, which mount under `~/Library/CloudStorage/`. The
 sandbox lets us in because the user pointed at it, not because of where it is.
 
-**A move transfers authority, not a copy.** From then on the chosen file *is*
-the store: read at launch, written on every change, watched for changes the way
-an open dump is (`FileChangeWatcher`), so a rename made on the laptop reaches
-this machine's Find bar menus through `didChangeNotification` like any local
-edit. The container file stays behind as a last-known-good copy, not as a second
-library.
+**A move starts publishing, it does not hand the library over.** From then on
+every local change is merged into the chosen file and every change to that file
+is merged back — watched the way an open dump is (`FileChangeWatcher`), so a
+rename made on the laptop reaches this machine's Find bar menus through
+`didChangeNotification` like any local edit. What the app *reads* stays the
+local file, which is the only one always there.
 
 **Pointing at a file that already has patterns** — which is what setting up the
 second machine *is* — is the one moment two libraries meet, and it must not
@@ -194,8 +197,8 @@ they are one more concurrent writer, which is the case the merge is for anyway.
 **Use This Mac** moves it back: copy the current contents into the container,
 forget the bookmark, stop watching.
 
-What stays in `UserDefaults` is the bookmark and nothing else — the patterns
-themselves live in whichever file is the store.
+What stays in `UserDefaults` is the bookmark, this machine's device id and the
+migration flag — no patterns.
 
 ## Conflicts are the ordinary case
 
