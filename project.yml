@@ -16,6 +16,9 @@ targets:
   DumpCompare:
     type: application
     platform: macOS
+    configFiles:
+      Debug: Signing.xcconfig
+      Release: Signing.xcconfig
     sources:
       - path: DumpCompareApp
     dependencies:
@@ -94,14 +97,18 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_VERSION: "5.9"
         MACOSX_DEPLOYMENT_TARGET: "14.0"
-        # Local development signing (no Apple Developer team needed).
-        # Switch to Automatic + a team before distribution.
-        CODE_SIGN_STYLE: Manual
-        CODE_SIGN_IDENTITY: "-"
+        # Signing comes from `Signing.xcconfig`, which reads the team from a
+        # local file git does not track: an account's team is personal, and the
+        # repository has no business knowing whose machine built the app.
+        # Without that file the build falls back to ad-hoc signing — it runs,
+        # but a folder the user grants stops surviving rebuilds (§11).
 
   DumpCompareTests:
     type: bundle.unit-test
     platform: macOS
+    configFiles:
+      Debug: Signing.xcconfig
+      Release: Signing.xcconfig
     sources:
       - path: DumpCompareTests
     dependencies:
@@ -114,11 +121,9 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: "5.9"
         MACOSX_DEPLOYMENT_TARGET: "14.0"
-        # Match the app's local ad-hoc signing so the test bundle is actually
-        # signed; the host app's codesign validates its embedded xctest plugin
-        # and fails ("code object is not signed at all") if it is not.
-        CODE_SIGN_STYLE: Manual
-        CODE_SIGN_IDENTITY: "-"
+        # Signed the same way as the host, from the same file: the host app's
+        # codesign validates its embedded xctest plugin and fails ("code object
+        # is not signed at all") if the bundle is signed differently.
 
 schemes:
   DumpCompare:

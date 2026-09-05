@@ -8,7 +8,16 @@ build/
 xcuserdata/
 *.xcuserstate
 *.xcscmblueprint
-DumpCompare.xcodeproj/xcshareddata/xcschemes/DumpCompare.xcscheme
+
+# The project is generated from project.yml by XcodeGen, so the repository
+# keeps the description and not the result: `xcodegen generate` after cloning,
+# and after adding a file. Keeping it out also keeps out what Xcode writes into
+# it — the signing team it resolves, which belongs to a person rather than to
+# the project.
+DumpCompare.xcodeproj/
 
 # macOS
 .DS_Store
+
+# The developer's own signing team — personal, and not the repository's business.
+Signing.local.xcconfig

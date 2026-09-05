@@ -1,0 +1,57 @@
+#!/bin/sh
+#
+# Keeps one person's signing details out of the repository.
+#
+# The team an Apple Development identity belongs to is personal, and it has no
+# business in a shared history: `Signing.xcconfig` reads it from a
+# `Signing.local.xcconfig` that git ignores (§11,
+# `Design/FAVORITES_SYNC_PLAN.md`). Two things can undo that quietly —
+# XcodeGen writing a team into the generated project, and Xcode writing one
+# back into the .pbxproj when it resolves automatic signing — so this looks at
+# what is *staged*, which is the last moment anything can be caught.
+#
+# Install (once per clone):
+#
+#     git config core.hooksPath Scripts/git-hooks
+#
+set -eu
+
+fail() {
+    printf '\n%s\n\n' "$1" >&2
+    printf 'Nothing was committed. Fix it and try again:\n' >&2
+    printf '  • a team belongs in Signing.local.xcconfig, which git ignores\n' >&2
+    printf '  • unstage what should not go: git restore --staged <file>\n' >&2
+    printf '  • regenerate the project without it: xcodegen generate\n\n' >&2
+    exit 1
+}
+
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+[ -n "$staged" ] || exit 0
+
+# The local file itself, however it got staged.
+echo "$staged" | grep -qx 'Signing.local.xcconfig' \
+    && fail 'Signing.local.xcconfig is being committed — it holds this machine'"'"'s team.'
+
+for file in $staged; do
+    [ -f "$file" ] || continue
+    # A ten-character team, as Apple writes them, in any of the three spellings
+    # a project can carry. The example in Signing.xcconfig is a comment, and
+    # comments are not what this is looking for.
+    hit=$(git show ":$file" 2>/dev/null \
+        | grep -nE '^[^#/]*(DEVELOPMENT_TEAM|DevelopmentTeam)[[:space:]]*=[[:space:]]*"?[A-Z0-9]{10}"?' \
+        | head -3 || true)
+    [ -z "$hit" ] || fail "$file carries a signing team:
+$hit"
+
+    # The certificate's own name carries the account it was issued to. What is
+    # refused is a *name*: the plan quotes the designated requirement with the
+    # owner elided ("Apple Development: … (…)"), and an elision names nobody, so
+    # the part before the bracket has to hold a letter or a digit to count.
+    hit=$(git show ":$file" 2>/dev/null \
+        | grep -nE 'Apple (Development|Distribution|Development Team ID): [^(]*[A-Za-z0-9][^(]*\(' \
+        | head -3 || true)
+    [ -z "$hit" ] || fail "$file names a signing certificate, which names its owner:
+$hit"
+done
+
+exit 0
