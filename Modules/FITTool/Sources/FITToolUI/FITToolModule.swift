@@ -113,7 +113,7 @@ struct FITParkedState: ToolSessionState {
             snapshot = try host.snapshot()
         } catch {
             show(.empty)
-            controller.say("Could not read the file: \(error)")
+            fail("Could not read the file: \(error)")
             return
         }
 
@@ -125,7 +125,11 @@ struct FITParkedState: ToolSessionState {
             progress.finish()
             guard let self, self.generation == generation else { return }
             self.show(FITPresenter.display(report, focus: self.focus))
-            self.controller.say(FITToolSession.advice(for: report))
+            if self.noticeAnswersTheUser {
+                self.noticeAnswersTheUser = false
+            } else {
+                self.controller.say(FITToolSession.advice(for: report))
+            }
             self.onDisplay?(self.display)
         }
     }
@@ -155,6 +159,26 @@ struct FITParkedState: ToolSessionState {
         if errors == 0 { return "Every rule in the specification checks out." }
         return "\(errors) " + (errors == 1 ? "problem" : "problems")
             + " — double-click one to go there."
+    }
+
+    /// Whether the line under the buttons is one this session put there in
+    /// answer to something the user did.
+    ///
+    /// Every edit is followed by a re-read, and the re-read has something to
+    /// say too — so without this the answer to "did that work?" is wiped by
+    /// "every rule checks out" a few milliseconds later, and nobody ever sees
+    /// it. It survives exactly one parse: the one its own edit caused.
+    private var noticeAnswersTheUser = false
+
+    /// Something the user asked for did not happen. Red, and audible.
+    private func fail(_ text: String, inTheForm: Bool = false) {
+        FITToolSession.alert()
+        noticeAnswersTheUser = true
+        if inTheForm, let form {
+            form.say(text, asProblem: true)
+        } else {
+            controller.say(text, asProblem: true)
+        }
     }
 
     private func show(_ display: FITDisplay) {
@@ -201,6 +225,14 @@ struct FITParkedState: ToolSessionState {
         show(display.focusing(zoneID: id))
     }
 
+    /// How a refusal asks for attention. The panel is a narrow strip beside a
+    /// dump the user is reading, and a line that appears in it silently is a
+    /// line nobody sees.
+    ///
+    /// Swappable, because a test suite that beeps is a test suite people run
+    /// with the volume down.
+    public static var alert: @MainActor () -> Void = { NSSound.beep() }
+
     /// Where a copy goes. Swappable so the app's tests do not walk off with
     /// whatever the person running them had on their clipboard.
     public static var pasteboard: NSPasteboard = .general
@@ -244,7 +276,7 @@ struct FITParkedState: ToolSessionState {
                 form?.show(entries)
                 self?.onCatalogueLoaded?(entries)
             } catch {
-                form?.say(error.localizedDescription)
+                self?.fail(error.localizedDescription, inTheForm: true)
                 self?.onCatalogueLoaded?([])
             }
         }
@@ -265,7 +297,7 @@ struct FITParkedState: ToolSessionState {
                 self?.closeForm()
                 self?.addMicrocode(bytes, describedAs: "CPUID \(entry.cpuidText)")
             } catch {
-                self?.form?.say(error.localizedDescription)
+                self?.fail(error.localizedDescription, inTheForm: true)
             }
         }
     }
@@ -290,11 +322,11 @@ struct FITParkedState: ToolSessionState {
     /// place in a test suite.
     public func addMicrocode(_ component: [UInt8], describedAs description: String) {
         guard !host.isReadOnly else {
-            controller.say("This file is open read-only.")
+            fail("This file is open read-only.")
             return
         }
         guard let snapshot = try? host.snapshot() else {
-            controller.say("Could not read the file.")
+            fail("Could not read the file.")
             return
         }
         let progress = host.beginProgress("Adding microcode", onCancel: nil)
@@ -304,7 +336,7 @@ struct FITParkedState: ToolSessionState {
             guard let self else { return }
             switch prepared {
             case .failure(let problem):
-                self.controller.say(problem.message)
+                self.fail(problem.message)
             case .success(let (transaction, outcome)):
                 self.apply(transaction,
                            saying: FITToolSession.note(for: outcome, describedAs: description))
@@ -316,11 +348,11 @@ struct FITParkedState: ToolSessionState {
     /// erasing it is the riskier half of step 5.
     public func removeEntry(at index: Int) {
         guard !host.isReadOnly else {
-            controller.say("This file is open read-only.")
+            fail("This file is open read-only.")
             return
         }
         guard let snapshot = try? host.snapshot() else {
-            controller.say("Could not read the file.")
+            fail("Could not read the file.")
             return
         }
         let progress = host.beginProgress("Removing entry", onCancel: nil)
@@ -330,7 +362,7 @@ struct FITParkedState: ToolSessionState {
             guard let self else { return }
             switch prepared {
             case .failure(let problem):
-                self.controller.say(problem.message)
+                self.fail(problem.message)
             case .success(let (transaction, outcome)):
                 self.apply(transaction, saying: FITToolSession.note(for: outcome))
             }
@@ -340,9 +372,10 @@ struct FITParkedState: ToolSessionState {
     private func apply(_ transaction: ToolTransaction, saying note: String) {
         do {
             try host.apply(transaction)
+            noticeAnswersTheUser = true
             controller.say(note + " ⌘Z takes it back.")
         } catch {
-            controller.say("Could not write: \(error)")
+            fail("Could not write: \(error)")
         }
     }
 
@@ -428,9 +461,10 @@ struct FITParkedState: ToolSessionState {
         guard let transaction = display.checksumFix else { return }
         do {
             try host.apply(transaction)
+            noticeAnswersTheUser = true
             controller.say("Checksum written. ⌘Z takes it back.")
         } catch {
-            controller.say("Could not write: \(error)")
+            fail("Could not write: \(error)")
         }
     }
 }

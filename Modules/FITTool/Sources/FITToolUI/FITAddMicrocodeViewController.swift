@@ -156,9 +156,12 @@ import FITTool
         narrow()
     }
 
-    /// A line at the bottom: what is happening, or what went wrong.
-    func say(_ text: String, busy: Bool = false) {
+    /// A line at the bottom: what is happening, or what went wrong. What went
+    /// wrong is red — the sheet is where the user is looking, and a grey line
+    /// under a list they are reading goes unread.
+    func say(_ text: String, busy: Bool = false, asProblem: Bool = false) {
         statusLabel.stringValue = text
+        statusLabel.textColor = asProblem ? .systemRed : .secondaryLabelColor
         if busy { progress.startAnimation(nil) } else { progress.stopAnimation(nil) }
     }
 

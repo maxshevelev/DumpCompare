@@ -16,6 +16,8 @@ final class FITToolFlowTests: XCTestCase {
     private var controller: MainViewController?
     private var window: NSWindow?
     private var defaultsName: String?
+    /// How many times a refusal asked for attention.
+    private var beeps = 0
 
     override func setUp() {
         super.setUp()
@@ -26,6 +28,10 @@ final class FITToolFlowTests: XCTestCase {
         // Nothing in this suite touches the network: a test that reaches
         // github.com is a test that fails on a train.
         FITToolSession.microcodeSource = FakeMicrocodeSource()
+        // A test suite that beeps is a test suite people run with the volume
+        // down.
+        beeps = 0
+        FITToolSession.alert = { [self] in beeps += 1 }
     }
 
     override func tearDown() {
@@ -35,6 +41,7 @@ final class FITToolFlowTests: XCTestCase {
         ToolController.defaults = .standard
         ToolController.changeDelay = 0.15
         FITToolSession.microcodeSource = CPUMicrocodesRepository()
+        FITToolSession.alert = { NSSound.beep() }
         controller = nil
         window = nil
         files = []
@@ -267,6 +274,38 @@ final class FITToolFlowTests: XCTestCase {
 
         table.selectRowIndexes([1], byExtendingSelection: false)   // 906EA, not in it
         XCTAssertEqual(add.title, "Add")
+    }
+
+    /// A refusal is the one line in this panel the user has to read — they
+    /// pressed something and it did not happen — so it is red, and it is
+    /// audible. The panel is a narrow strip beside a dump they are reading.
+    func testARefusalIsRedAndAudible() throws {
+        let controller = try open(FITTestImage.make())
+
+        try session().addMicrocode([UInt8](repeating: 0x5A, count: 0x100), describedAs: "junk")
+        try waitUntilTheNoticeSettles()
+
+        XCTAssertEqual(beeps, 1)
+        let panel = try XCTUnwrap(controller.tools.panel)
+        let notice = try XCTUnwrap(descendants(of: panel, NSTextField.self).first {
+            $0.stringValue.contains("does not start with an Intel microcode header")
+        })
+        XCTAssertEqual(notice.textColor, .systemRed)
+    }
+
+    /// And a note about what did happen is neither.
+    func testWhatWentRightIsQuiet() throws {
+        let controller = try open(FITTestImage.make(checksum: 0xCC))
+
+        try button("Fix Checksum").performClick(nil)
+        try waitForParse()
+
+        XCTAssertEqual(beeps, 0)
+        let panel = try XCTUnwrap(controller.tools.panel)
+        let notice = try XCTUnwrap(descendants(of: panel, NSTextField.self).first {
+            $0.stringValue.hasPrefix("Checksum written")
+        })
+        XCTAssertEqual(notice.textColor, .secondaryLabelColor)
     }
 
     /// A file that is not microcode is refused before anything is written.

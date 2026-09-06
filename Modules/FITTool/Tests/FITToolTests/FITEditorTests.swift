@@ -197,13 +197,16 @@ final class FITEditorTests: XCTestCase {
         // bytes in it.
         let used = UEFINode(kind: .padding, name: "Padding", range: 0x2180..<0x2600)
         let free = UEFINode(kind: .freeSpace, name: "Free space", range: 0x2600..<0x3000)
-        let volume = UEFINode(
-            kind: .volume, name: "FFSv2",
+        // A region rather than a volume: inside a volume only the space
+        // directly behind the element is usable at all, which is a different
+        // rule and has a test of its own.
+        let region = UEFINode(
+            kind: .region, name: "BIOS region",
             header: 0x1700..<0x1800, body: 0x1800..<0x3000,
             children: [element, used, free]
         )
         let parsed = UEFIImage(
-            size: UInt64(bytes.count), roots: [volume], addressDiff: 0xFFFF_0000
+            size: UInt64(bytes.count), roots: [region], addressDiff: 0xFFFF_0000
         )
 
         let found = try placement(bytes, size: 0x200, image: parsed).get()
@@ -468,9 +471,9 @@ final class FITEditorTests: XCTestCase {
         )
 
         guard case .failure(let problem) = outcome else { return XCTFail("expected a refusal") }
-        // 0x300: the replacement is 0x300 longer than what it replaces, and the
-        // component behind it has to move by the same amount.
-        XCTAssertEqual(problem, .theRunCannotGrow(needed: 0x300))
+        // What is asked for is the shortfall past the element's end — the room
+        // that would have to be freed — not the whole amount the run grew by.
+        XCTAssertEqual(problem, .theRunCannotGrow(needed: 0x200))
     }
 
     /// And by what is actually free: bytes belonging to something else are not

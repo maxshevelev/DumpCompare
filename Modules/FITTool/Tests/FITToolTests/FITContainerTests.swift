@@ -10,6 +10,7 @@ import UEFIFormat
 /// right is part of the same edit — a file whose checksum is half-fixed is
 /// worse than one that was never touched.
 final class FITContainerTests: XCTestCase {
+    private let otherFileGUID = FFS.otherFileGUID
     private let firstMicrocode: UInt64 = 0x4060
     private let secondMicrocode: UInt64 = 0x4160
 
@@ -172,23 +173,106 @@ final class FITContainerTests: XCTestCase {
         XCTAssertTrue(after.problems.isEmpty, "\(after.problems.map(\.message))")
         XCTAssertTrue(checksumProblems(in: edited).isEmpty,
                       "\(parse(edited).diagnostics.map(\.message))")
+
+        // The file grew to cover it, so the component is inside a structure
+        // rather than loose in the volume's free space — and the free space
+        // shrank by exactly as much, without anything having to record it.
+        let tree = parse(edited)
+        let file = try XCTUnwrap(tree.innermostNode(containing: outcome.range.lowerBound))
+        XCTAssertEqual(file.kind, .file)
+        XCTAssertEqual(file.range.upperBound, outcome.range.upperBound)
+        let free = try XCTUnwrap(tree.allNodes.first { $0.kind == .freeSpace })
+        XCTAssertEqual(free.range.lowerBound, outcome.range.upperBound)
+        XCTAssertFalse(tree.allNodes.contains { $0.kind == .nonUEFIData },
+                       "nothing is left loose in the volume")
     }
 
-    /// The file bounds the run: a replacement that would push the last
-    /// microcode past the end of the file it lives in is refused, whatever is
-    /// erased beyond it.
-    func testTheFileBoundsHowFarTheRunCanGrow() throws {
+    /// With another file behind it there is nothing to grow into, and the free
+    /// space beyond that neighbour is not somewhere to drop a component: the
+    /// volume's own walk would meet it as a file that is not one. So the
+    /// addition is refused rather than leaving a volume full of nonsense.
+    func testAFileWithSomethingBehindItIsNotGrown() throws {
+        let run = TestFIT.microcode(signature: 0x0008_06EA, totalSize: 0x100)
+            + TestFIT.microcode(signature: 0x0009_06EA, totalSize: 0x100)
+        let neighbour = FFS.file(body: [UInt8](repeating: 0x5A, count: 0x100), guid: otherFileGUID)
+        let bytes = TestFIT.image(
+            rows: [
+                TestFIT.Row(FIT.microcodeType, target: firstMicrocode),
+                TestFIT.Row(FIT.microcodeType, target: secondMicrocode)
+            ],
+            contents: [0x4000: FFS.volume(holding: FFS.file(body: run) + neighbour)]
+        )
+        let parsed = parse(bytes)
+        let table = try XCTUnwrap(FITReader.read(ImageReader(bytes), image: parsed).table)
+        let fileEnd = try XCTUnwrap(
+            parsed.innermostNode(containing: secondMicrocode)?.range.upperBound
+        )
+
+        let outcome = FITEditor.addOrReplaceMicrocode(
+            TestFIT.microcode(signature: 0x000A_0671, totalSize: 0x100),
+            in: table, image: parsed, reader: ImageReader(bytes), addressDiff: 0xFFFF_0000
+        )
+
+        guard case .failure(let problem) = outcome else {
+            return XCTFail("expected a refusal rather than a loose component")
+        }
+        guard case .noRoomForTheComponent = problem else {
+            return XCTFail("expected no room, got \(problem)")
+        }
+        XCTAssertEqual(fileEnd, secondMicrocode + 0x100, "precondition: the file has no slack")
+    }
+
+    /// A replacement that outgrows the file grows the file, when the volume's
+    /// free space is right behind it — the same move an addition makes, for the
+    /// same reason: the run belongs inside a structure.
+    func testAReplacementThatOutgrowsTheFileGrowsIt() throws {
         let bytes = image()
         let parsed = parse(bytes)
         let table = try XCTUnwrap(FITReader.read(ImageReader(bytes), image: parsed).table)
-        let huge = TestFIT.microcode(signature: 0x0008_06EA, totalSize: 0x400)
+        let fileEnd = try XCTUnwrap(parsed.innermostNode(containing: firstMicrocode)?.range.upperBound)
+        let bigger = TestFIT.microcode(signature: 0x0008_06EA, totalSize: 0x400)
+
+        let (transaction, outcome) = try FITEditor.addOrReplaceMicrocode(
+            bigger, in: table, image: parsed, reader: ImageReader(bytes), addressDiff: 0xFFFF_0000
+        ).get()
+        let edited = try applying(transaction, to: bytes)
+        let tree = parse(edited)
+
+        XCTAssertEqual(outcome.moved, 1)
+        let grown = try XCTUnwrap(tree.innermostNode(containing: firstMicrocode))
+        XCTAssertEqual(grown.kind, .file)
+        XCTAssertGreaterThan(grown.range.upperBound, fileEnd)
+        XCTAssertTrue(checksumProblems(in: edited).isEmpty, "\(tree.diagnostics.map(\.message))")
+        XCTAssertFalse(tree.allNodes.contains { $0.kind == .nonUEFIData })
+        let after = FITReader.read(ImageReader(edited), image: tree)
+        XCTAssertTrue(after.problems.isEmpty, "\(after.problems.map(\.message))")
+    }
+
+    /// And where the file cannot grow — another file directly behind it — the
+    /// replacement is refused rather than written through the neighbour.
+    func testAReplacementIsRefusedWhereTheFileCannotGrow() throws {
+        let run = TestFIT.microcode(signature: 0x0008_06EA, totalSize: 0x100)
+            + TestFIT.microcode(signature: 0x0009_06EA, totalSize: 0x100)
+        let neighbour = FFS.file(body: [UInt8](repeating: 0x5A, count: 0x100), guid: otherFileGUID)
+        let bytes = TestFIT.image(
+            rows: [
+                TestFIT.Row(FIT.microcodeType, target: firstMicrocode),
+                TestFIT.Row(FIT.microcodeType, target: secondMicrocode)
+            ],
+            contents: [0x4000: FFS.volume(holding: FFS.file(body: run) + neighbour)]
+        )
+        let parsed = parse(bytes)
+        let table = try XCTUnwrap(FITReader.read(ImageReader(bytes), image: parsed).table)
+        let bigger = TestFIT.microcode(signature: 0x0008_06EA, totalSize: 0x200)
 
         let outcome = FITEditor.addOrReplaceMicrocode(
-            huge, in: table, image: parsed, reader: ImageReader(bytes), addressDiff: 0xFFFF_0000
+            bigger, in: table, image: parsed, reader: ImageReader(bytes), addressDiff: 0xFFFF_0000
         )
 
         guard case .failure(let problem) = outcome else { return XCTFail("expected a refusal") }
-        XCTAssertEqual(problem, .theRunCannotGrow(needed: 0x300))
+        guard case .theRunCannotGrow = problem else {
+            return XCTFail("expected the run not to fit, got \(problem)")
+        }
     }
 }
 
@@ -196,12 +280,15 @@ final class FITContainerTests: XCTestCase {
 private enum FFS {
     static let volumeGUID = "8C8CE578-8A3D-4F1C-9935-896185C32DD3"
     static let fileGUID = "AABBCCDD-1122-3344-5566-778899AABBCC"
+    static let otherFileGUID = "11223344-5566-7788-99AA-BBCCDDEEFF00"
 
     /// A raw FFS file with a real body checksum, so an edit to its body has
     /// something to invalidate.
-    static func file(body: [UInt8], checksummed: Bool = true) -> [UInt8] {
+    static func file(
+        body: [UInt8], checksummed: Bool = true, guid: String = fileGUID
+    ) -> [UInt8] {
         var writer = BinaryWriter()
-        writer.guid(EFIGUID(fileGUID)!)
+        writer.guid(EFIGUID(guid)!)
         writer.u8(0)                          // header checksum, below
         // With the attribute set the field is a sum of the body; without it,
         // the fixed value a Revision 2 volume uses (§5.4).

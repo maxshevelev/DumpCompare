@@ -210,9 +210,14 @@ import FITTool
     }
 
     /// A line under the buttons — what happened, or what to do next. The panel
-    /// has no room for an alert and nothing here is worth one.
-    func say(_ text: String) {
+    /// has no room for an alert sheet and nothing here is worth one.
+    ///
+    /// A refusal is red, because it is the one kind of line the user has to
+    /// read: they pressed something and it did not happen. Everything else is
+    /// a note about what did.
+    func say(_ text: String, asProblem: Bool = false) {
         noticeLabel.stringValue = text
+        noticeLabel.textColor = asProblem ? .systemRed : .secondaryLabelColor
     }
 
     // MARK: - Actions

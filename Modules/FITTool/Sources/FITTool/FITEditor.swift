@@ -255,6 +255,15 @@ public enum FITEditor {
         for ancestor in chain[..<elementIndex].reversed() {
             for child in ancestor.children
             where child.range.lowerBound >= below.range.upperBound && isSpare(child, reader) {
+                // Inside a volume, only the space *directly* behind the element
+                // is usable. A component dropped anywhere else in a volume's
+                // free space is met by that volume's own walk as a file that is
+                // not one (§5.8) — the tree afterwards is full of nonsense. What
+                // is adjacent can be taken into the file instead, which is what
+                // `fileGrowth` does.
+                if ancestor.kind == .volume, child.range.lowerBound != below.range.upperBound {
+                    continue
+                }
                 areas.append((child.range, child.name))
             }
             below = ancestor
@@ -314,6 +323,7 @@ public enum FITEditor {
             return .failure(problem)
         case .success(let plan):
             var writes = [plan.write]
+            if let growth = plan.growth { writes.append(growth.write) }
             if !plan.moves.isEmpty {
                 // Only when something moved: a transaction that writes the
                 // table back unchanged is a step in the undo history that
@@ -332,7 +342,7 @@ public enum FITEditor {
             return .success((
                 withContainerRepairs(
                     ToolTransaction(name: "Replace Microcode", writes: writes),
-                    image: image, reader: reader
+                    image: image, reader: reader, grownFile: plan.growth?.grown
                 ),
                 FITEditOutcome(
                     kind: .replaced,
@@ -386,8 +396,22 @@ public enum FITEditor {
         }
         return addMicrocode(bytes, at: placement, to: table, in: reader).map { transaction in
             let index = (table.rows.lastIndex { $0.entry.type == FIT.microcodeType } ?? 0) + 1
+            var transaction = transaction
+            // A component placed behind the file the run lives in belongs
+            // inside it, not loose in the volume's free space.
+            let growth = fileGrowth(
+                toCover: placement.range.upperBound,
+                around: table.rows.compactMap { row -> UInt64? in
+                    guard case .microcode(let header) = row.target else { return nil }
+                    return header.offset
+                }.max() ?? placement.range.lowerBound,
+                image: image, reader: reader
+            )
+            if let growth { transaction.writes.append(growth.write) }
             return (
-                withContainerRepairs(transaction, image: image, reader: reader),
+                withContainerRepairs(
+                    transaction, image: image, reader: reader, grownFile: growth?.grown
+                ),
                 FITEditOutcome(
                     kind: .added, range: placement.range, entryIndex: index, replaced: nil
                 )
@@ -493,6 +517,7 @@ public enum FITEditor {
                 moved = plan.moves.count
                 erased = plan.erased
                 writes.append(plan.write)
+                if let growth = plan.growth { writes.append(growth.write) }
                 for move in plan.moves {
                     writeAddress(move.newOffset + addressDiff, into: &rows[move.rowIndex])
                 }
@@ -523,6 +548,70 @@ public enum FITEditor {
         var write: ToolTransaction.Write
         var moves: [(rowIndex: Int, newOffset: UInt64)]
         var erased: Range<UInt64>?
+        /// The file the run lives in, grown to cover a run that got longer.
+        var growth: (write: ToolTransaction.Write, grown: UEFINode)?
+    }
+
+    /// The file the run lives in, grown to cover `end`.
+    ///
+    /// A component placed behind that file would otherwise sit loose in the
+    /// volume's free space, where the volume's own walk meets it as bytes
+    /// nobody claimed — which is what UEFITool draws as "non-UEFI data" and
+    /// what a rebuild would not know to keep. Growing the file puts it inside a
+    /// structure, and the volume's free space shrinks by exactly as much
+    /// without anything having to record it: free space is whatever the walk
+    /// finds erased after the last file (§5.8).
+    ///
+    /// Only into space that belongs to nothing: the bytes between the file's
+    /// end and `end` have to be the volume's free space or erased padding, and
+    /// erased. Anything else there — another file, most of all — and the file
+    /// stays the size it is.
+    private static func fileGrowth(
+        toCover end: UInt64,
+        around offset: UInt64,
+        image: UEFIImage?,
+        reader: ImageReader
+    ) -> (write: ToolTransaction.Write, grown: UEFINode)? {
+        guard let image else { return nil }
+        let chain = image.nodes(containing: offset)
+        guard let file = chain.last(where: { $0.kind == .file }),
+              end > file.range.upperBound
+        else { return nil }
+
+        // Everything from the file's end to `end` must belong to nothing.
+        guard let parent = chain.last(where: { $0.children.contains { $0.id == file.id } })
+                ?? chain.dropLast().last
+        else { return nil }
+        var covered = file.range.upperBound
+        for child in parent.children where child.range.lowerBound >= file.range.upperBound {
+            guard child.range.lowerBound == covered, isSpare(child, reader) else { break }
+            covered = child.range.upperBound
+        }
+        guard covered >= end, reader.isFilled(file.range.upperBound..<end, with: 0xFF) else {
+            return nil
+        }
+
+        let size = end - file.header.lowerBound
+        guard var header = reader.bytes(file.header) else { return nil }
+        // An FFSv3 large file's header is 0x20 bytes where a plain one is 0x18
+        // (§5.1), and the size it uses is the 64-bit field behind the base.
+        if header.count >= 0x20 {
+            // FFSv3 keeps a large file's size in a field of its own (§5.2).
+            for index in 0..<8 {
+                header[0x18 + index] = UInt8(truncatingIfNeeded: size >> (8 * index))
+            }
+        } else {
+            guard size <= 0xFF_FFFF else { return nil }
+            for index in 0..<3 {
+                header[0x14 + index] = UInt8(truncatingIfNeeded: size >> (8 * index))
+            }
+        }
+
+        var grown = file
+        grown.body = file.body.lowerBound..<end
+        // The checksums that go with the new size are the container repair's,
+        // computed over the image as this transaction will leave it.
+        return (ToolTransaction.Write(offset: file.header.lowerBound, bytes: header), grown)
     }
 
     /// The checksums a change breaks on its way out, recomputed and folded into
@@ -540,7 +629,8 @@ public enum FITEditor {
     private static func withContainerRepairs(
         _ transaction: ToolTransaction,
         image: UEFIImage?,
-        reader: ImageReader
+        reader: ImageReader,
+        grownFile: UEFINode? = nil
     ) -> ToolTransaction {
         guard let image else { return transaction }
         let after = ImageReader(OverlayByteSource(
@@ -554,14 +644,32 @@ public enum FITEditor {
         var done: Set<NodeID> = []
         for write in transaction.writes {
             let chain = image.nodes(containing: write.offset)
-            guard let file = chain.last(where: { $0.kind == .file }), !done.contains(file.id)
+            guard var file = chain.last(where: { $0.kind == .file }), !done.contains(file.id)
             else { continue }
             done.insert(file.id)
+            // A file that grew is checked over its new extent, not the one the
+            // parse found.
+            if let grownFile, grownFile.id == file.id { file = grownFile }
             let revision = chain.last { $0.kind == .volume }?.subtype ?? 2
             for repair in UEFIChecksums.repairs(for: file, volumeRevision: revision, in: after) {
-                repaired.writes.append(
-                    ToolTransaction.Write(offset: repair.offset, bytes: repair.bytes)
-                )
+                let range = repair.offset..<(repair.offset + UInt64(repair.bytes.count))
+                if let index = repaired.writes.firstIndex(where: {
+                    $0.offset <= range.lowerBound
+                        && range.upperBound <= $0.offset + UInt64($0.bytes.count)
+                }) {
+                    // The repair falls inside a write this transaction is
+                    // already making — a file header that grew, most of all —
+                    // so it is patched into that write rather than added beside
+                    // it, which a transaction refuses as overlapping.
+                    let at = Int(range.lowerBound - repaired.writes[index].offset)
+                    repaired.writes[index].bytes.replaceSubrange(
+                        at..<(at + repair.bytes.count), with: repair.bytes
+                    )
+                } else {
+                    repaired.writes.append(
+                        ToolTransaction.Write(offset: repair.offset, bytes: repair.bytes)
+                    )
+                }
             }
         }
         return repaired
@@ -618,20 +726,30 @@ public enum FITEditor {
         }
 
         let oldEnd = accepted.last?.header.range.upperBound ?? removed.range.upperBound
+        var growth: (write: ToolTransaction.Write, grown: UEFINode)?
         if next > oldEnd {
-            // The run grew. What it grew into has to be free, and inside the
-            // element that holds it.
+            // The run grew. What it grew into has to be free and erased, and
+            // inside the element that holds it — or, where the element is a
+            // file with free space directly behind it, the file grows to cover
+            // the difference and the run stays inside a structure.
             let area = spareArea(around: start, image: image, reader: reader).range
-            guard next <= area.upperBound, next <= reader.count,
-                  reader.isFilled(oldEnd..<next, with: 0xFF)
-            else { return .failure(.theRunCannotGrow(needed: next - oldEnd)) }
+            guard next <= reader.count, reader.isFilled(oldEnd..<next, with: 0xFF) else {
+                return .failure(.theRunCannotGrow(needed: next - oldEnd))
+            }
+            if next > area.upperBound {
+                guard let found = fileGrowth(
+                    toCover: next, around: start, image: image, reader: reader
+                ) else { return .failure(.theRunCannotGrow(needed: next - area.upperBound)) }
+                growth = found
+            }
         } else if oldEnd > next {
             payload += [UInt8](repeating: 0xFF, count: Int(oldEnd - next))
         }
         return .success(Relayout(
             write: ToolTransaction.Write(offset: start, bytes: payload),
             moves: moves,
-            erased: oldEnd > next ? next..<oldEnd : nil
+            erased: oldEnd > next ? next..<oldEnd : nil,
+            growth: growth
         ))
     }
 
