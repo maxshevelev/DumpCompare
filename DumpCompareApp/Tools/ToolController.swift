@@ -106,8 +106,18 @@ import ToolModuleKit
     /// dump for a tool-module that is no longer open.
     func publish(_ map: ZoneMap, from host: PaneToolHost) {
         guard host === self.host else { return }
+        let previousFocus = zones.focus
         zones = map.normalized(contentSize: host.contentSize)
         boundPane?.setZones(zones)
+        // A zone the tool-module has just put in focus is a zone the user is
+        // being shown, so the dump goes to it — the scroll only, and only when
+        // it is not on screen already. Every tool-module gets this rather than
+        // each remembering to ask, and a republish that focuses the same zone
+        // scrolls nothing.
+        guard let focus = zones.focus, focus != previousFocus,
+              let zone = zones.zones.first(where: { $0.id == focus }),
+              let pane = boundPane else { return }
+        owner?.showZoneStartForTool(zone.range.lowerBound, in: pane)
     }
 
     // MARK: - What happens to the session

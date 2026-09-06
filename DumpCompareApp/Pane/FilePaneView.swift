@@ -710,6 +710,19 @@ final class FilePaneView: NSView {
         hexView.revealOffsetCentered(offset)
     }
 
+    /// Centres the row containing `offset` only if it is not on screen already.
+    ///
+    /// What "show me this" means when the user has not asked to go anywhere:
+    /// something off screen is brought to the middle, and something already in
+    /// front of them is left exactly where it is — a scroll that moves the rows
+    /// under a reader who can already see them is worse than no scroll at all.
+    /// The same rule the bookmark popover uses to make sure it has something to
+    /// point at (§20.3).
+    func revealOffsetIfOffScreen(_ offset: UInt64) {
+        guard !hexView.visibleByteRange().contains(offset) else { return }
+        hexView.revealOffsetCentered(offset)
+    }
+
     /// Scrolls the hex view so the row containing `offset` sits at the top of the
     /// visible area. Driven by the minimap's viewport drag and wheel (§19).
     func scrollRowToTop(containing offset: UInt64) {

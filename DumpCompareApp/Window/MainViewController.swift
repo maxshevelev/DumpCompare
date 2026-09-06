@@ -1579,6 +1579,18 @@ final class MainViewController: NSViewController {
         filePaneView(for: pane)?.revealOffsetCentered(range.lowerBound)
     }
 
+    /// Brings the start of the zone a tool-module has just focused into view:
+    /// the scroll alone, and only when it is not on screen already.
+    ///
+    /// The caret and the selection are left where they are, deliberately.
+    /// Picking a row in a tool-module's list is looking, not going — and the
+    /// user may well be part-way through something in the dump. Going is the
+    /// tool-module's own `reveal`, which centres and can select.
+    func showZoneStartForTool(_ offset: UInt64, in pane: PaneViewModel) {
+        guard pane.isOpen else { return }
+        filePaneView(for: pane)?.revealOffsetIfOffScreen(offset)
+    }
+
     /// The published zone map changed. Stage 5 draws it; for now this is the
     /// one place that has to learn about it.
     func toolZonesChanged() {}

@@ -168,3 +168,124 @@ final class ToolZonesTests: XCTestCase {
         XCTAssertGreaterThan(HexView.zoneFocusedAlpha, HexView.zoneAlpha)
     }
 }
+
+/// Following a tool-module's focus with the dump
+/// (`Design/TOOL_MODULES_PLAN.md`).
+@MainActor
+final class ToolZoneFocusTests: XCTestCase {
+    private var files: [URL] = []
+    private var controller: MainViewController?
+    private var defaultsName: String?
+
+    override func setUp() {
+        super.setUp()
+        installToolStubs()
+        let isolated = isolatedDefaults(for: self)
+        defaultsName = isolated.name
+        ToolController.defaults = isolated.store
+        ToolController.changeDelay = 0
+    }
+
+    override func tearDown() {
+        controller?.windowModel.pane1.close()
+        for file in files { try? FileManager.default.removeItem(at: file) }
+        if let defaultsName { discardIsolatedDefaults(defaultsName, ToolController.defaults) }
+        ToolController.defaults = .standard
+        ToolController.changeDelay = 0.15
+        controller = nil
+        files = []
+        super.tearDown()
+    }
+
+    /// A file long enough that a zone can be well past the bottom of the window.
+    private func makeHost() throws -> (any ToolHost, MainViewController, NSWindow) {
+        let url = try tempFile([UInt8](repeating: 0xAA, count: 0x4000))
+        files.append(url)
+        let controller = MainViewController()
+        self.controller = controller
+        let window = makeTestWindow(width: 1000, height: 500)
+        window.contentViewController = controller
+        window.setContentSize(NSSize(width: 1000, height: 500))
+        try controller.windowModel.pane1.open(url: url)
+        controller.apply(mode: .singleFile)
+        window.layoutIfNeeded()
+        controller.tools.activate(StubToolA.identifier, animated: false)
+        window.layoutIfNeeded()
+        return (try XCTUnwrap(StubToolA.log.session).host, controller, window)
+    }
+
+    private func hexView(_ window: NSWindow) throws -> HexView {
+        try XCTUnwrap(descendants(of: window.contentView!, HexView.self).first)
+    }
+
+    func testFocusingAZoneOffScreenBringsItsStartIntoView() throws {
+        let (host, controller, window) = try makeHost()
+        let hexView = try hexView(window)
+        XCTAssertFalse(hexView.visibleByteRange().contains(0x3000), "precondition: far below")
+
+        host.publish(ZoneMap(zones: [Zone(id: "far", name: "Far", range: 0x3000..<0x3010)],
+                             focus: "far"))
+        window.layoutIfNeeded()
+
+        XCTAssertTrue(hexView.visibleByteRange().contains(0x3000),
+                      "the zone's start is on screen")
+        XCTAssertEqual(controller.windowModel.pane1.caretOffset, 0,
+                       "looking is not going: the caret stays put")
+        XCTAssertEqual(controller.windowModel.pane1.status.selectionLength, 0)
+    }
+
+    /// A scroll that moves the rows under a reader who can already see them is
+    /// worse than no scroll at all.
+    func testFocusingAZoneAlreadyOnScreenScrollsNothing() throws {
+        let (host, _, window) = try makeHost()
+        let hexView = try hexView(window)
+        // Away from the file's start, so centring would visibly move the rows:
+        // at the top the scroll is already clamped and a centre would be a
+        // no-op for reasons that have nothing to do with the rule.
+        hexView.scrollRowToTop(containing: 0x1000)
+        window.layoutIfNeeded()
+        let before = hexView.visibleByteRange()
+        let nearTheBottom = before.upperBound - 0x20
+        XCTAssertTrue(before.contains(nearTheBottom), "precondition: on screen, low down")
+
+        host.publish(ZoneMap(zones: [Zone(id: "near", name: "Near",
+                                          range: nearTheBottom..<(nearTheBottom + 0x10))],
+                             focus: "near"))
+        window.layoutIfNeeded()
+
+        XCTAssertEqual(hexView.visibleByteRange(), before)
+    }
+
+    /// A republish that focuses the same zone is not a new place to be shown.
+    func testRepublishingTheSameFocusDoesNotScrollAgain() throws {
+        let (host, _, window) = try makeHost()
+        let hexView = try hexView(window)
+        host.publish(ZoneMap(zones: [Zone(id: "far", name: "Far", range: 0x3000..<0x3010)],
+                             focus: "far"))
+        window.layoutIfNeeded()
+        let afterFirst = hexView.visibleByteRange()
+        hexView.scrollRowToTop(containing: 0)
+        window.layoutIfNeeded()
+        let scrolledAway = hexView.visibleByteRange()
+
+        host.publish(ZoneMap(zones: [Zone(id: "far", name: "Far", range: 0x3000..<0x3010)],
+                             focus: "far"))
+        window.layoutIfNeeded()
+
+        XCTAssertNotEqual(scrolledAway, afterFirst, "precondition: the user scrolled away")
+        XCTAssertEqual(hexView.visibleByteRange(), scrolledAway,
+                       "the same focus republished leaves the scroll alone")
+    }
+
+    /// A map with nothing focused is not a place to go.
+    func testAMapWithNoFocusScrollsNothing() throws {
+        let (host, _, window) = try makeHost()
+        let hexView = try hexView(window)
+        let before = hexView.visibleByteRange()
+
+        host.publish(ZoneMap(zones: [Zone(id: "far", name: "Far", range: 0x3000..<0x3010)]))
+        window.layoutIfNeeded()
+
+        XCTAssertEqual(hexView.visibleByteRange(), before)
+    }
+}
