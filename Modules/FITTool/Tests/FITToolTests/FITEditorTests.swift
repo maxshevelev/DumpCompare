@@ -340,17 +340,54 @@ final class FITEditorTests: XCTestCase {
         XCTAssertEqual(after.range.count, 3 * 16)
     }
 
+    /// And with something behind the table and no slot to eat, the refusal says
+    /// what is in the way rather than only that there is no slot.
     func testATableWithNoRoomAfterItCannotGrow() throws {
         let bytes = image(contents: [0x1020: [0x11, 0x22, 0x33, 0x44]])
         let found = try placement(bytes).get()
+        let node = UEFINode(kind: .file, name: "PEIM", header: 0x1020..<0x1038, body: 0x1038..<0x1100)
+        let parsed = UEFIImage(size: UInt64(bytes.count), roots: [node], addressDiff: 0xFFFF_0000)
 
-        XCTAssertEqual(
-            FITEditor.addMicrocode(
-                TestFIT.microcode(totalSize: 0x100), at: found,
-                to: try table(bytes), in: ImageReader(bytes)
-            ),
-            .failure(.theTableCannotGrow)
+        let outcome = FITEditor.addMicrocode(
+            TestFIT.microcode(totalSize: 0x100), at: found,
+            to: try table(bytes), image: parsed, in: ImageReader(bytes)
         )
+
+        guard case .failure(.theTableCannotGrow(let after)) = outcome else {
+            return XCTFail("expected the table not to fit, got \(outcome)")
+        }
+        XCTAssertEqual(after, "inside PEIM at 0x1020")
+
+        // Padding with something written in it is not room either, whatever
+        // the tree calls it.
+        let used = UEFINode(kind: .padding, name: "Padding", range: 0x1020..<0x1100)
+        XCTAssertFalse(used.isErased)
+        let withPadding = UEFIImage(
+            size: UInt64(bytes.count), roots: [used], addressDiff: 0xFFFF_0000
+        )
+        guard case .failure(.theTableCannotGrow(let behind)) = FITEditor.addMicrocode(
+            TestFIT.microcode(totalSize: 0x100), at: found,
+            to: try table(bytes), image: withPadding, in: ImageReader(bytes)
+        ) else { return XCTFail("expected the table not to fit") }
+        XCTAssertEqual(behind, "inside Padding at 0x1020")
+    }
+
+    /// A volume erased with `0x00` leaves free space that is not `0xFF` (§3.5),
+    /// and the tree is what says those bytes were never written to.
+    func testFreeSpaceThatIsNotErasedWithFFIsStillRoom() throws {
+        var bytes = image()
+        bytes.replaceSubrange(0x1020..<0x1100, with: [UInt8](repeating: 0x00, count: 0xE0))
+        var free = UEFINode(kind: .freeSpace, name: "Free space", range: 0x1020..<0x1100)
+        free.isErased = true
+        let parsed = UEFIImage(size: UInt64(bytes.count), roots: [free], addressDiff: 0xFFFF_0000)
+        let found = try placement(bytes).get()
+
+        let transaction = try FITEditor.addMicrocode(
+            TestFIT.microcode(totalSize: 0x100), at: found,
+            to: try table(bytes), image: parsed, in: ImageReader(bytes)
+        ).get()
+
+        XCTAssertEqual(try table(try applying(transaction, to: bytes)).header?.size, 3)
     }
 
     // MARK: - Replacing

@@ -21,8 +21,9 @@ public enum FITEditProblem: Equatable, Sendable, Error {
     /// the user with nowhere to go.
     case noRoomForTheComponent(needed: UInt64, largestFree: UInt64, inside: String)
     /// The table has no empty slot and the bytes after it are not free, so it
-    /// cannot grow (§9.1).
-    case theTableCannotGrow
+    /// cannot grow (§9.1). Carries what is in the way, because "no empty slot"
+    /// on its own leaves nobody anywhere to go.
+    case theTableCannotGrow(after: String)
     /// A bigger component would push the run past the end of whatever holds it.
     case theRunCannotGrow(needed: UInt64)
     /// The header is not an entry to be removed (§10).
@@ -46,8 +47,10 @@ public enum FITEditProblem: Equatable, Sendable, Error {
                 + " bytes. The most that is free after the last microcode is 0x"
                 + String(largestFree, radix: 16, uppercase: true) + ", in " + inside + "."
 
-        case .theTableCannotGrow:
-            return "The table has no empty slot, and the bytes after it are not free."
+        case .theTableCannotGrow(let after):
+            return "The table has no empty slot, and the sixteen bytes after it are not free —"
+                + " they are " + after + "."
+
         case .theRunCannotGrow(let needed):
             return "That microcode needs 0x" + String(needed, radix: 16, uppercase: true)
                 + " more bytes than the run it would go in has free."
@@ -355,6 +358,43 @@ public enum FITEditor {
         }
     }
 
+    /// Whether the sixteen bytes behind the table are anybody's.
+    ///
+    /// Erased is the plain case, but a byte is not the only evidence: a volume
+    /// erased with `0x00` (§3.5) leaves free space that is not `0xFF`, and the
+    /// tree knows which nodes were never written to. Where the answer is no,
+    /// what is there is named — "no empty slot" on its own leaves nobody
+    /// anywhere to go.
+    private static func roomAfterTheTable(
+        _ table: FITTable,
+        image: UEFIImage?,
+        reader: ImageReader
+    ) -> RoomAfterTheTable {
+        let end = table.range.upperBound
+        let needed = end..<(end + FITEntry.size)
+        guard reader.has(needed) else { return .taken("past the end of the image") }
+        if reader.isFilled(needed, with: 0xFF) { return .free }
+
+        guard let image, let node = image.nodes(containing: end).last else {
+            return .taken("bytes belonging to nothing this tool can name")
+        }
+        switch node.kind {
+        case .freeSpace, .padding, .nonUEFIData:
+            guard node.isErased, node.range.upperBound >= needed.upperBound else { break }
+            // Never written to, whatever the erase byte of its volume is.
+            return .free
+        default:
+            break
+        }
+        return .taken("inside \(node.name) at 0x"
+            + String(node.range.lowerBound, radix: 16, uppercase: true))
+    }
+
+    private enum RoomAfterTheTable {
+        case free
+        case taken(String)
+    }
+
     /// The row whose component is for this processor.
     ///
     /// One CPUID can have several rows, one per platform mask, and they are not
@@ -394,7 +434,8 @@ public enum FITEditor {
         case .success(let found): placement = found
         case .failure(let problem): return .failure(problem)
         }
-        return addMicrocode(bytes, at: placement, to: table, in: reader).map { transaction in
+        return addMicrocode(bytes, at: placement, to: table, image: image, in: reader)
+            .map { transaction in
             let index = (table.rows.lastIndex { $0.entry.type == FIT.microcodeType } ?? 0) + 1
             var transaction = transaction
             // A component placed behind the file the run lives in belongs
@@ -425,6 +466,7 @@ public enum FITEditor {
         _ component: [UInt8],
         at placement: FITPlacement,
         to table: FITTable,
+        image: UEFIImage? = nil,
         in reader: ImageReader
     ) -> Result<ToolTransaction, FITEditProblem> {
         guard var rows = rowBytes(of: table, in: reader) else { return .failure(.noSuchEntry) }
@@ -433,24 +475,22 @@ public enum FITEditor {
         // Rows do not decrease in type (§3), so a microcode row goes after the
         // last one there is.
         let insertion = (rows.lastIndex { type(of: $0) == FIT.microcodeType } ?? 0) + 1
-        let end = table.range.upperBound
-        if end + FITEntry.size <= reader.count,
-           reader.isFilled(end..<(end + FITEntry.size), with: 0xFF) {
+        switch roomAfterTheTable(table, image: image, reader: reader) {
+        case .free:
             // The table grows by a row and the header's count goes up with it
             // (§9.2 step 6), which needs the sixteen bytes after the table to
             // be free.
             rows.insert(row, at: insertion)
-        } else if let slot = rows.indices.first(where: {
-            $0 >= insertion && type(of: rows[$0]) == FIT.emptyType
-        }) {
+        case .taken(let what):
+            guard let slot = rows.indices.first(where: {
+                $0 >= insertion && type(of: rows[$0]) == FIT.emptyType
+            }) else { return .failure(.theTableCannotGrow(after: what)) }
             // Nowhere to grow into, so an empty slot is eaten instead (§9.4).
             // The table keeps its length and the count stays as it was — the
             // fallback rather than the first choice, because a slot in the
             // middle of the run is not where a reader expects the spare room.
             rows.remove(at: slot)
             rows.insert(row, at: insertion)
-        } else {
-            return .failure(.theTableCannotGrow)
         }
 
         return .success(ToolTransaction(
