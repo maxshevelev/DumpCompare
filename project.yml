@@ -15,6 +15,8 @@ packages:
     path: ToolModuleKit
   ZoneSketch:
     path: Modules/ZoneSketch
+  FITTool:
+    path: Modules/FITTool
 
 targets:
   DumpCompare:
@@ -36,6 +38,8 @@ targets:
       # what puts them in the binary.
       - package: ZoneSketch
         product: ZoneSketchUI
+      - package: FITTool
+        product: FITToolUI
     entitlements:
       path: DumpCompareApp/DumpCompare.entitlements
       properties:

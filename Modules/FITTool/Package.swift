@@ -22,13 +22,20 @@ let package = Package(
         .macOS(.v14)
     ],
     products: [
-        .library(name: "FITTool", targets: ["FITTool"])
+        .library(name: "FITToolUI", targets: ["FITToolUI"])
     ],
     dependencies: [
+        .package(path: "../../ToolModuleKit"),
         .package(path: "../../UEFIFormat")
     ],
     targets: [
         .target(name: "FITTool", dependencies: [
+            .product(name: "ToolModuleKit", package: "ToolModuleKit"),
+            .product(name: "UEFIFormat", package: "UEFIFormat")
+        ]),
+        .target(name: "FITToolUI", dependencies: [
+            "FITTool",
+            .product(name: "ToolModuleKit", package: "ToolModuleKit"),
             .product(name: "UEFIFormat", package: "UEFIFormat")
         ]),
         .testTarget(name: "FITToolTests", dependencies: ["FITTool"])
