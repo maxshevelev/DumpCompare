@@ -422,21 +422,40 @@ apply is absent instead of greyed. Columns are fixed and narrow and the table
 scrolls sideways — squeezing the one column with something to say into whatever
 is left is how it ends up reading "Microco…".
 
-**Three edits, each one step.** The header's checksum when it does not add up
-(§11's second defect, one byte); adding a microcode entry (§9.2); and taking one
-out (§10). Each lands as a single `ToolTransaction` — for an addition that is
-the component, the row, the rows shifted around it, the header's count and the
-checksum — because half of that written is an image that does not boot.
+**Four edits, each one step.** The header's checksum when it does not add up
+(§11's second defect, one byte); adding a microcode entry (§9.2); replacing one;
+and taking one out (§10). Each lands as a single `ToolTransaction` — for an
+addition that is the component, the row, the rows shifted around it, the
+header's count and the checksum — because half of that written is an image that
+does not boot.
+
+The three that touch microcode all do the same thing to it, which is what a
+microcode run is: **one contiguous block that stays tight**. Adding puts the
+body in the free space after the last component, adds a row, and the header's
+count goes up with it; an empty `0x7F` slot is eaten only when there is nothing
+free after the table to grow into. Removing takes the body out and closes the
+run up — what follows moves into the space, the rows that name those components
+are repointed, and what the move frees at the end is erased. Replacing is the
+same operation with something in the hole rather than nothing, so a replacement
+of a different size shifts the run behind it; where the sizes match nothing
+moves, nothing in the table changes, and the edit is one write.
+
+Two bounds hold all three together. A component only moves if everything between
+it and the one before it is erased, so nothing outside the run can be written
+over. And a run that has to grow is bounded by the element that holds it —
+padding, region, volume — so a bigger replacement is refused rather than pushed
+through the end of its container.
 
 Adding opens a form on the collection at `github.com/platomav/CPUMicrocodes`,
 which encodes the processor, the revision and the date into every file name:
-thousands of microcodes are searchable without downloading one of them. The
-vendor popup — AMD, Freescale, Intel, VIA, a directory each — opens on Intel,
-the only kind a FIT can name, and picking one lists everything that vendor has;
-the search field is how a CPUID is found in a list that long. `Choose File…` is
-the way in without a network, and for microcode the collection does not have.
-The app gained `com.apple.security.network.client` for this and for nothing
-else.
+thousands of microcodes are searchable without downloading one of them. Intel
+only — a FIT names no other kind, so the other three directories are read to
+tell them apart and never offered. The list opens on everything Intel has and
+the search field is how a CPUID is found in a list that long; a CPUID the table
+already names is offered as **Replace** rather than added a second time.
+`Choose File…` is the way in without a network, and for microcode the collection
+does not have. The app gained `com.apple.security.network.client` for this and
+for nothing else.
 
 What the tool cannot check is Boot Guard: the protected ranges are in structures
 `UEFIFormat` does not read yet, and a component written inside one stops the
