@@ -163,6 +163,54 @@ final class FITEditorTests: XCTestCase {
         XCTAssertEqual(try placement(bytes, image: parsed).get().range, 0x2100..<0x2200)
     }
 
+    /// The search walks out of the element the run is in and takes the free
+    /// space it finds on the way — but not past the flash region, which §9.2
+    /// forbids a component to cross. Free space in the next region along is
+    /// somebody else's.
+    func testTheSearchStopsAtTheRegionBoundary() throws {
+        let bytes = image()
+        let padding = UEFINode(kind: .padding, name: "Padding", range: 0x1800..<0x2180)
+        let region = UEFINode(
+            kind: .region, name: "BIOS region",
+            header: 0x1000..<0x1000, body: 0x1000..<0x3000, children: [padding]
+        )
+        let elsewhere = UEFINode(kind: .freeSpace, name: "Free space", range: 0x3000..<0x8000)
+        let parsed = UEFIImage(
+            size: UInt64(bytes.count), roots: [region, elsewhere], addressDiff: 0xFFFF_0000
+        )
+
+        guard case .failure(let problem) = try placement(bytes, image: parsed) else {
+            return XCTFail("expected a refusal: the free space is in another region")
+        }
+        guard case .noRoomForTheComponent(_, _, let inside) = problem else {
+            return XCTFail("expected no room")
+        }
+        XCTAssertEqual(inside, "Padding at 0x1800–0x2180")
+    }
+
+    /// Padding with something in it is not spare, whatever it is called.
+    func testPaddingThatIsNotErasedIsNotRoom() throws {
+        var bytes = image()
+        bytes.replaceSubrange(0x2200..<0x2210, with: [UInt8](repeating: 0x5A, count: 0x10))
+        let element = UEFINode(kind: .padding, name: "Padding", range: 0x1800..<0x2180)
+        // Big enough to hold the component twice over, and not spare: there are
+        // bytes in it.
+        let used = UEFINode(kind: .padding, name: "Padding", range: 0x2180..<0x2600)
+        let free = UEFINode(kind: .freeSpace, name: "Free space", range: 0x2600..<0x3000)
+        let volume = UEFINode(
+            kind: .volume, name: "FFSv2",
+            header: 0x1700..<0x1800, body: 0x1800..<0x3000,
+            children: [element, used, free]
+        )
+        let parsed = UEFIImage(
+            size: UInt64(bytes.count), roots: [volume], addressDiff: 0xFFFF_0000
+        )
+
+        let found = try placement(bytes, size: 0x200, image: parsed).get()
+
+        XCTAssertEqual(found.range, 0x2600..<0x2800, "the free space, not the padding in use")
+    }
+
     // MARK: - Adding
 
     /// The whole edit is one transaction: the component and the table it is

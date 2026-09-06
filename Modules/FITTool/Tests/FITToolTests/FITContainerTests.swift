@@ -136,6 +136,44 @@ final class FITContainerTests: XCTestCase {
                       "\(parse(edited).diagnostics.map(\.message))")
     }
 
+    /// The shape a real board has: a raw FFS file holding the microcode run
+    /// with no slack left in it, and the volume's own free space directly
+    /// behind that file. A new microcode goes into the free space — it is
+    /// erased, nothing has claimed it, and it is where a bench reaches.
+    func testANewMicrocodeGoesIntoTheVolumesFreeSpace() throws {
+        let run = TestFIT.microcode(signature: 0x0008_06EA, totalSize: 0x100)
+            + TestFIT.microcode(signature: 0x0009_06EA, totalSize: 0x100)
+        let bytes = TestFIT.image(
+            rows: [
+                TestFIT.Row(FIT.microcodeType, target: firstMicrocode),
+                TestFIT.Row(FIT.microcodeType, target: secondMicrocode)
+            ],
+            contents: [0x4000: FFS.volume(holding: FFS.file(body: run))]
+        )
+        let parsed = parse(bytes)
+        let table = try XCTUnwrap(FITReader.read(ImageReader(bytes), image: parsed).table)
+        // The file ends right behind the second microcode, so there is nothing
+        // free inside it at all.
+        XCTAssertEqual(parsed.innermostNode(containing: secondMicrocode)?.range.upperBound,
+                       secondMicrocode + 0x100)
+
+        let (transaction, outcome) = try FITEditor.addOrReplaceMicrocode(
+            TestFIT.microcode(signature: 0x000A_0671, totalSize: 0x300),
+            in: table, image: parsed, reader: ImageReader(bytes), addressDiff: 0xFFFF_0000
+        ).get()
+        let edited = try applying(transaction, to: bytes)
+        let after = FITReader.read(ImageReader(edited), image: parse(edited))
+
+        XCTAssertEqual(outcome.kind, .added)
+        XCTAssertEqual(outcome.range.lowerBound, secondMicrocode + 0x100,
+                       "the free space starts where the file ends")
+        XCTAssertEqual(outcome.range.lowerBound % 16, 0)
+        XCTAssertEqual(after.table?.entries.count, 3)
+        XCTAssertTrue(after.problems.isEmpty, "\(after.problems.map(\.message))")
+        XCTAssertTrue(checksumProblems(in: edited).isEmpty,
+                      "\(parse(edited).diagnostics.map(\.message))")
+    }
+
     /// The file bounds the run: a replacement that would push the last
     /// microcode past the end of the file it lives in is refused, whatever is
     /// erased beyond it.

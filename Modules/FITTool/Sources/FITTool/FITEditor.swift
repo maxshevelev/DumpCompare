@@ -161,57 +161,115 @@ public enum FITEditor {
         guard let last = components.max(by: { $0.upperBound < $1.upperBound }) else {
             return .failure(.noMicrocodeToFollow)
         }
-        let area = spareArea(around: last.lowerBound, image: image, reader: reader)
-        guard let start = alignUp(last.upperBound, to: 16) else {
-            return .failure(noRoom(0, area))
+        let areas = placementAreas(after: last, image: image, reader: reader)
+        guard let start = alignUp(last.upperBound, to: 16), let first = areas.first else {
+            return .failure(noRoom(0, (last, "the run")))
         }
 
-        // The element the existing microcode sits in bounds the search: a
-        // component that ran past it would land in another structure, or in
-        // another flash region.
-        var candidate = start
         var largest: UInt64 = 0
-        while candidate + size <= area.range.upperBound {
-            if reader.isFilled(candidate..<(candidate + size), with: 0xFF) {
-                return .success(FITPlacement(
-                    range: candidate..<(candidate + size),
-                    address: candidate + addressDiff
-                ))
+        var roomiest = first
+        for area in areas {
+            // The first area is the element the run is in, and there the search
+            // starts where the run ends rather than where the element does.
+            var candidate = max(start, alignUp(area.range.lowerBound, to: 16) ?? .max)
+            var free: UInt64 = 0
+            while candidate + size <= area.range.upperBound {
+                if reader.isFilled(candidate..<(candidate + size), with: 0xFF) {
+                    return .success(FITPlacement(
+                        range: candidate..<(candidate + size),
+                        address: candidate + addressDiff
+                    ))
+                }
+                guard let used = reader.firstOffset(
+                    in: candidate..<min(candidate + size, area.range.upperBound),
+                    notEqualTo: 0xFF
+                ), let next = alignUp(used + 1, to: 16) else { break }
+                free = max(free, used - candidate)
+                candidate = next
             }
-            guard let used = reader.firstOffset(
-                in: candidate..<min(candidate + size, area.range.upperBound), notEqualTo: 0xFF
-            ), let next = alignUp(used + 1, to: 16) else { break }
-            largest = max(largest, used - candidate)
-            candidate = next
+            // What is left at the end of an area is a run too, and usually the
+            // biggest — a refusal is only useful if it names the best that was
+            // on offer.
+            if area.range.upperBound > candidate,
+               reader.isFilled(candidate..<area.range.upperBound, with: 0xFF) {
+                free = max(free, area.range.upperBound - candidate)
+            }
+            if free > largest {
+                largest = free
+                roomiest = area
+            }
         }
-        // What was left at the end is a run too, and usually the biggest one —
-        // the message is only useful if it names the best that was on offer.
-        if area.range.upperBound > candidate,
-           reader.isFilled(candidate..<area.range.upperBound, with: 0xFF) {
-            largest = max(largest, area.range.upperBound - candidate)
-        }
-        return .failure(noRoom(largest, area))
+        return .failure(noRoom(largest, roomiest))
     }
 
-    /// What bounds the search: the node the last microcode lives in, or the
-    /// rest of the file when there is no tree to say. Named, because a refusal
-    /// that cannot say where it looked is a refusal nobody can act on.
+    /// The element the run lives in: the innermost node that is *space* rather
+    /// than a structure. A microcode component's own node is a structure, so
+    /// what holds the run is whatever contains it — and where nothing does,
+    /// which is what a microcode found by the raw scan of a plain image looks
+    /// like, the rest of the file does.
+    ///
+    /// This is what bounds a run that has to *grow in place*: pushing the last
+    /// component past the end of its file or its region would put it inside the
+    /// next structure along.
     private static func spareArea(
         around offset: UInt64,
         image: UEFIImage?,
         reader: ImageReader
     ) -> (range: Range<UInt64>, name: String) {
         guard let image else { return (offset..<reader.count, "the rest of the file") }
-        // The innermost node that is *space* rather than a structure. A
-        // microcode component's own node is a structure, so what bounds the run
-        // is whatever holds it — and where nothing does, which is what a
-        // microcode found by the raw scan of a plain image looks like, the rest
-        // of the file does.
         let chain = image.nodes(containing: offset)
         for node in chain.reversed() where node.kind != .microcode {
             return (node.range, node.name)
         }
         return (offset..<reader.count, "the rest of the file")
+    }
+
+    /// Everywhere a *new* component may go, nearest first.
+    ///
+    /// The element holding the run comes first — right after the last
+    /// microcode is where the next one belongs (§9.2 step 1). But a run whose
+    /// file has no slack left is the ordinary case, and the volume's own free
+    /// space usually sits directly behind that file: erased, claimed by
+    /// nothing, and what a bench reaches for. So the search walks out through
+    /// the containers, taking their free space and erased padding as it goes.
+    ///
+    /// It cannot cross out of the flash region, which §9.2 forbids, and needs
+    /// no check for it: the walk only ever climbs the chain of nodes that
+    /// *contain* the run, so the furthest out it can reach is the outermost of
+    /// them — which in an Intel image is the region itself. Free space in
+    /// another region is somebody else's, and is never even looked at.
+    private static func placementAreas(
+        after component: Range<UInt64>,
+        image: UEFIImage?,
+        reader: ImageReader
+    ) -> [(range: Range<UInt64>, name: String)] {
+        let element = spareArea(around: component.lowerBound, image: image, reader: reader)
+        guard let image else { return [element] }
+        let chain = image.nodes(containing: component.lowerBound)
+        guard let elementIndex = chain.lastIndex(where: { $0.kind != .microcode }) else {
+            return [element]
+        }
+
+        var areas = [element]
+        var below = chain[elementIndex]
+        for ancestor in chain[..<elementIndex].reversed() {
+            for child in ancestor.children
+            where child.range.lowerBound >= below.range.upperBound && isSpare(child, reader) {
+                areas.append((child.range, child.name))
+            }
+            below = ancestor
+        }
+        return areas
+    }
+
+    /// Space nothing has claimed, and nothing has been written into.
+    private static func isSpare(_ node: UEFINode, _ reader: ImageReader) -> Bool {
+        switch node.kind {
+        case .freeSpace, .padding, .nonUEFIData:
+            return node.children.isEmpty && reader.isFilled(node.range, with: 0xFF)
+        default:
+            return false
+        }
     }
 
     /// Adds a microcode, or replaces the one already there for its CPUID.
