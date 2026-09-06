@@ -50,10 +50,35 @@ final class Parser {
     }
 
     func run() -> UEFIImage {
-        let roots = reader.count == 0
-            ? []
-            : scanRawArea(reader.all, emptyByte: Parser.defaultEmptyByte, depth: 0)
+        let roots = reader.count == 0 ? [] : parseTopLevel(reader.all, depth: 0)
         return UEFIImage(size: reader.count, roots: roots, diagnostics: diagnostics)
+    }
+
+    /// What kind of thing this is (§1): an update capsule, a full flash dump
+    /// with an Intel descriptor, or — the common case for a dump off a chip —
+    /// bytes to be searched for anything recognisable.
+    ///
+    /// Called again for a capsule's body, because what is inside an envelope is
+    /// one of the same three things.
+    func parseTopLevel(_ range: Range<UInt64>, depth: Int) -> [UEFINode] {
+        guard depth < limits.maxDepth else {
+            note(.recursionLimit, at: range.lowerBound)
+            return []
+        }
+        if let capsule = parseCapsule(at: range.lowerBound, limit: range.upperBound, depth: depth) {
+            return [capsule] + padding(
+                from: capsule.range.upperBound,
+                to: range.upperBound,
+                emptyByte: Parser.defaultEmptyByte
+            )
+        }
+        // The signature is checked at `0x10` as well as at `0x00`: the first
+        // sixteen bytes are a reserved vector, `0xFF` on x86 and a real ARM
+        // reset vector on some ARM images (§1).
+        if hasDescriptorSignature(at: range.lowerBound) {
+            return parseIntelImage(range, depth: depth)
+        }
+        return scanRawArea(range, emptyByte: Parser.defaultEmptyByte, depth: depth)
     }
 
     // MARK: - Raw areas
@@ -116,6 +141,8 @@ final class Parser {
         case FV.signature:
             guard offset >= range.lowerBound + FV.signatureOffset else { return nil }
             return parseVolume(at: offset - FV.signatureOffset, limit: range.upperBound, depth: depth)
+        case Microcode.headerType:
+            return parseMicrocode(at: offset, limit: range.upperBound)
         default:
             return nil
         }

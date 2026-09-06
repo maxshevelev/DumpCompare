@@ -50,13 +50,16 @@ public struct UEFIDiagnostic: Equatable, Sendable {
         case recursionLimit
         /// No Volume Top File, so no addresses, so no second pass (§5.7).
         case noVolumeTopFile
+        /// Two flash regions covering the same bytes: a descriptor nobody can
+        /// trust (§2.2).
+        case overlappingRegions
 
         public var severity: Severity {
             switch self {
             case .truncated, .zeroSize, .recursionLimit:
                 return .error
             case .checksumMismatch, .sizeMismatch, .unknownFileSystem,
-                 .unknownType, .noVolumeTopFile:
+                 .unknownType, .noVolumeTopFile, .overlappingRegions:
                 return .warning
             }
         }
@@ -93,6 +96,8 @@ public struct UEFIDiagnostic: Equatable, Sendable {
             return "nesting is too deep to be an image"
         case .noVolumeTopFile:
             return "no volume top file, so absolute addresses are unknown"
+        case .overlappingRegions:
+            return "this flash region overlaps the one before it"
         }
     }
 

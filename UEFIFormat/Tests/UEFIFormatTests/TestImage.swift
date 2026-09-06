@@ -232,6 +232,124 @@ enum TestImage {
         return volume.bytes
     }
 
+    /// An Intel microcode image, its dword checksum correct unless a test
+    /// breaks it (§7.1).
+    static func microcode(
+        signature: UInt32 = 0x0003_06A9,
+        revision: UInt32 = 0x1F,
+        year: UInt16 = 0x2019,
+        month: UInt8 = 0x07,
+        day: UInt8 = 0x15,
+        dataSize: UInt32 = 0x40,
+        totalSize: UInt32? = nil,
+        headerType: UInt32 = 1,
+        loaderRevision: UInt32 = 1,
+        checksum: UInt32? = nil
+    ) -> [UInt8] {
+        let total = totalSize ?? (UInt32(Microcode.headerSize) + dataSize)
+        var writer = BinaryWriter()
+        writer.u32(headerType)
+        writer.u32(revision)
+        writer.u16(year)
+        writer.u8(day)
+        writer.u8(month)
+        writer.u32(signature)
+        writer.u32(0)                   // checksum, filled in below
+        writer.u32(loaderRevision)
+        writer.u32(1)                   // PlatformIds
+        writer.u32(dataSize)
+        writer.u32(total)
+        writer.u32(0)                   // MetadataSize
+        writer.u32(0)                   // UpdateRevisionMin
+        writer.u32(0)                   // Reserved
+        var bytes = writer.bytes
+        bytes += [UInt8](repeating: 0x5A, count: max(0, Int(total) - bytes.count))
+
+        let sum = Checksums.sum32(of: 0..<UInt64(bytes.count), in: ImageReader(bytes)) ?? 0
+        let stored = checksum ?? (0 &- sum)
+        for index in 0..<4 { bytes[0x10 + index] = UInt8(truncatingIfNeeded: stored >> (8 * index)) }
+        return bytes
+    }
+
+    /// An Intel flash descriptor: `0x1000` bytes, the signature at `0x10`, and
+    /// a region section at `RegionBase << 4`.
+    static func descriptor(
+        regions: [(type: FlashRegionType, range: Range<UInt64>)],
+        regionBase: UInt32 = 0x04,
+        version1: Bool = false
+    ) -> [UInt8] {
+        var bytes = [UInt8](repeating: 0xFF, count: Int(Descriptor.size))
+        func put(_ value: UInt32, at offset: Int) {
+            for index in 0..<4 { bytes[offset + index] = UInt8(truncatingIfNeeded: value >> (8 * index)) }
+        }
+        func put(_ value: UInt16, at offset: Int) {
+            bytes[offset] = UInt8(truncatingIfNeeded: value)
+            bytes[offset + 1] = UInt8(truncatingIfNeeded: value >> 8)
+        }
+        put(Descriptor.signature, at: 0x10)
+        put(regionBase << 16, at: Int(Descriptor.mapOffset))
+        put(version1 ? Descriptor.reservedVersion : 0x0020_0000, at: Int(Descriptor.versionOffset))
+
+        let section = Int(regionBase) << 4
+        for type in FlashRegionType.allCases {
+            let entry = section + type.rawValue * 4
+            guard entry + 4 <= bytes.count else { break }
+            guard let region = regions.first(where: { $0.type == type }) else {
+                put(UInt16(0), at: entry)          // limit zero: the region is absent
+                put(UInt16(0), at: entry + 2)
+                continue
+            }
+            put(UInt16(region.range.lowerBound >> 12), at: entry)
+            put(UInt16((region.range.upperBound - 1) >> 12), at: entry + 2)
+        }
+        return bytes
+    }
+
+    /// A full flash dump: a descriptor and the contents of the regions it maps.
+    static func intelImage(
+        size: UInt64,
+        regions: [(type: FlashRegionType, range: Range<UInt64>)],
+        contents: [FlashRegionType: [UInt8]] = [:],
+        version1: Bool = false,
+        regionBase: UInt32 = 0x04
+    ) -> [UInt8] {
+        var bytes = [UInt8](repeating: 0xFF, count: Int(size))
+        let descriptor = self.descriptor(regions: regions, regionBase: regionBase, version1: version1)
+        bytes.replaceSubrange(0..<descriptor.count, with: descriptor)
+        for (type, content) in contents {
+            guard let region = regions.first(where: { $0.type == type }) else { continue }
+            let start = Int(region.range.lowerBound)
+            bytes.replaceSubrange(start..<(start + content.count), with: content)
+        }
+        return bytes
+    }
+
+    /// A capsule wrapping an image.
+    static func capsule(
+        guid: EFIGUID = KnownGUIDs.guid("3B6686BD-0D76-4030-B70E-B5519E2FC5A0"),
+        headerSize: UInt32 = 0x20,
+        imageSize: UInt32? = nil,
+        romImageOffset: UInt16? = nil,
+        body: [UInt8],
+        trailing: UInt64 = 0
+    ) -> [UInt8] {
+        var writer = BinaryWriter()
+        writer.guid(guid)
+        writer.u32(headerSize)
+        writer.u32(0)                                        // Flags
+        writer.u32(imageSize ?? (headerSize + UInt32(body.count)))
+        if let romImageOffset {
+            writer.u16(romImageOffset)
+            writer.u16(0)                                    // RomLayoutOffset
+        }
+        // A signed capsule's image starts after the certificate, which is what
+        // `RomImageOffset` measures — not after the header.
+        writer.pad(to: UInt64(romImageOffset ?? UInt16(headerSize)), with: 0xFF)
+        writer.raw(body)
+        writer.fill(trailing, with: 0xFF)
+        return writer.bytes
+    }
+
     /// A volume with nothing before or after it.
     static func image(padding before: UInt64 = 0, _ volume: [UInt8], after: UInt64 = 0) -> [UInt8] {
         [UInt8](repeating: 0xFF, count: Int(before)) + volume
