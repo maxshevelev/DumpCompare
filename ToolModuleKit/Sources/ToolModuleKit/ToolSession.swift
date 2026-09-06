@@ -26,9 +26,54 @@ import AppKit
     func contentChanged(_ change: ToolContentChange)
 
     /// The session is over — the user picked another tool-module or None, the
-    /// file closed, the pane left, or the tab did. Nothing about it is kept.
+    /// file closed, the pane left, or the tab did.
     func stop()
+
+    /// What this session wants handed back if the user returns to this
+    /// tool-module on this file, or nil to start afresh every time.
+    ///
+    /// Read as the session ends and before `stop()`, so a session that lets go
+    /// of its model in `stop()` still hands back something whole. The host
+    /// keeps it in a box it cannot see into and gives it back to the next
+    /// session of the same tool-module on the same pane — which is what makes
+    /// the panel switchable rather than a thing you lose your place in.
+    ///
+    /// *What* is worth keeping is the tool-module's judgement, and the same
+    /// judgement as for zones: park what is cheap and re-derive what is not. A
+    /// selection, an expanded row, a half-typed field are worth a few bytes; a
+    /// parsed tree of ten thousand nodes is worth parsing again, and parking
+    /// one per tool-module per tab is how an app comes to hold four copies of
+    /// an image it is not showing.
+    ///
+    /// It is a *hint*, never a truth: the file can be edited while a
+    /// tool-module is parked — by hand, by another tool-module — so a restored
+    /// state describes bytes that may have moved or gone. Restore what
+    /// survives re-reading and drop the rest.
+    var parkedState: (any ToolSessionState)? { get }
+
+    /// Hands back what an earlier session of this tool-module parked, before
+    /// `start()` and before the view is on screen. A state of another
+    /// tool-module's type — from a build where this one meant something else —
+    /// is for the session to refuse rather than for the host to police.
+    func restore(_ state: any ToolSessionState)
 }
+
+public extension ToolSession {
+    /// The default is to keep nothing, which is right for a tool-module whose
+    /// panel is a function of the file and holds no decision of the user's.
+    var parkedState: (any ToolSessionState)? { nil }
+    func restore(_ state: any ToolSessionState) {}
+}
+
+/// A tool-module's own state, kept by the host while that tool-module is not
+/// the one on screen (`ToolSession.parkedState`).
+///
+/// Deliberately empty: the host stores it, hands it back, and never looks
+/// inside — the same rule as everywhere else on this seam, where the
+/// tool-module decides what crosses it. `Sendable` because what belongs here is
+/// a value; a live object with a view or a host in it is a session, and a
+/// session is what just ended.
+public protocol ToolSessionState: Sendable {}
 
 /// Why what the session read is no longer what the file holds.
 public enum ToolContentChange: Equatable, Sendable {

@@ -45,6 +45,28 @@ import ToolModuleKit
 
     private var host: PaneToolHost?
 
+    /// The identifier of the session that is *running*, which is not always
+    /// `activeIdentifier`: the choice is assigned before the old session ends,
+    /// and the state that ends up parked belongs to the old one.
+    private var runningIdentifier: String?
+
+    /// What each tool-module left behind when it stopped being the one on
+    /// screen, so switching the panel between two of them is switching rather
+    /// than starting over (`Design/TOOL_MODULES_PLAN.md`).
+    ///
+    /// The box is opaque — the host stores what a session hands it and never
+    /// looks inside. What it does police is *whose* file the state describes:
+    /// it is kept against the pane the session was bound to, and dropped when
+    /// that pane's content is replaced or the pane goes, because a parked
+    /// selection in a file that has been reverted is a selection in a file that
+    /// no longer exists.
+    private var parked: [String: ParkedSession] = [:]
+
+    private struct ParkedSession {
+        let state: any ToolSessionState
+        weak var pane: PaneViewModel?
+    }
+
     /// What the session last asked the dump to show. Drawn in stage 5; kept
     /// here from the start because it is the session's state, not the view's.
     private(set) var zones: ZoneMap = .empty
@@ -68,9 +90,15 @@ import ToolModuleKit
         guard let owner else { return }
         let host = PaneToolHost(pane: pane, owner: owner, tools: self)
         let session = module.makeSession(host: host)
+        // Consumed rather than copied: from here the session owns it, and what
+        // comes back next time is whatever this session decides to leave.
+        if let parked = parked.removeValue(forKey: module.identifier), parked.pane === pane {
+            session.restore(parked.state)
+        }
         self.host = host
         self.session = session
         boundPane = pane
+        runningIdentifier = module.identifier
         zones = .empty
         panel.setTitle(module.title, fileName: pane.status.fileName)
         panel.setContent(session.viewController.view)
@@ -84,6 +112,15 @@ import ToolModuleKit
         deliveryTask?.cancel()
         deliveryTask = nil
         pendingChange = nil
+        // Before `stop()`, so a session that lets go of its model there still
+        // hands back something whole. A file that is closing parks nothing —
+        // not by a check here, but because the close drops it again a moment
+        // later, which is one rule instead of two saying the same thing.
+        if let identifier = runningIdentifier, let pane = boundPane,
+           let state = session?.parkedState {
+            parked[identifier] = ParkedSession(state: state, pane: pane)
+        }
+        runningIdentifier = nil
         session?.stop()
         if let controller = session?.viewController {
             controller.view.removeFromSuperview()
@@ -142,6 +179,10 @@ import ToolModuleKit
     /// The content was replaced under the session: a revert, a change made
     /// outside the app, a file joined on.
     func paneReloaded(_ pane: PaneViewModel) {
+        // Whatever any tool-module parked against this pane described the file
+        // as it was. The running one is told and re-reads; the parked ones have
+        // no way to hear it, so they go.
+        discardParkedState(for: pane)
         guard pane === boundPane else { return }
         schedule(.reloaded)
     }
@@ -149,16 +190,30 @@ import ToolModuleKit
     /// The bound file was closed: there is nothing left for the tool-module to
     /// work on, so the session ends and the panel closes.
     func paneClosed(_ pane: PaneViewModel) {
-        guard pane === boundPane else { return }
-        activate(nil)
+        if pane === boundPane { activate(nil) }
+        discardParkedState(for: pane)
     }
 
     /// The bound pane left this tab. The session belongs to the window — the
     /// same side of the line as bookmarks (§20) — so it stays behind and ends,
     /// and the destination keeps whatever it had.
     func paneLeft(_ pane: PaneViewModel) {
-        guard pane === boundPane else { return }
-        activate(nil)
+        if pane === boundPane { activate(nil) }
+        discardParkedState(for: pane)
+    }
+
+    /// Forgets what every tool-module parked against `pane`, and prunes what
+    /// was parked against panes that have since gone. Called after the session
+    /// has ended rather than before, so the one that is stopping cannot park
+    /// the state we are here to drop.
+    private func discardParkedState(for pane: PaneViewModel) {
+        parked = parked.filter { $0.value.pane != nil && $0.value.pane !== pane }
+    }
+
+    /// Which tool-modules have something parked, for a test that would
+    /// otherwise have to reopen a file to find out.
+    var parkedModuleIdentifiers: Set<String> {
+        Set(parked.filter { $0.value.pane != nil }.keys)
     }
 
     /// Holds `change` briefly, merging it with whatever was already waiting,

@@ -127,6 +127,29 @@ final class ZoneSketchFlowTests: XCTestCase {
         XCTAssertFalse(pane.status.canUndo)
     }
 
+    /// Switching the panel away and back is switching, not starting over: the
+    /// zones the user drew by hand are the one thing this tool-module must not
+    /// lose to a menu click, and the numbering carries on rather than starting
+    /// at one again.
+    func testTheSketchIsStillThereAfterSwitchingAwayAndBack() throws {
+        let controller = try open()
+        controller.windowModel.pane1.select(range: 0x40..<0x60)
+        try button("Add from Selection").performClick(nil)
+
+        controller.tools.activate(nil, animated: false)
+        controller.tools.activate(ZoneSketchModule.identifier, animated: false)
+        window?.layoutIfNeeded()
+
+        XCTAssertEqual(controller.windowModel.pane1.zones.zones.map(\.name), ["Zone 1"])
+        XCTAssertEqual(controller.windowModel.pane1.zones.zones.first?.range, 0x40..<0x60)
+        XCTAssertEqual(try table().numberOfRows, 1)
+
+        controller.windowModel.pane1.select(range: 0x80..<0x90)
+        try button("Add from Selection").performClick(nil)
+
+        XCTAssertEqual(controller.windowModel.pane1.zones.zones.map(\.name), ["Zone 1", "Zone 2"])
+    }
+
     /// Closing the module takes its map with it, whatever the module is.
     func testClosingTheModuleClearsTheMap() throws {
         let controller = try open()

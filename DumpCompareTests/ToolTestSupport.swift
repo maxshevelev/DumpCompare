@@ -16,6 +16,8 @@ final class ToolStubLog {
     var started = 0
     var stopped = 0
     var changes: [ToolContentChange] = []
+    /// The notes of the states handed back to this stub's sessions, in order.
+    var restored: [String] = []
     /// The last session the stub built, for a test that wants to drive it.
     weak var session: StubToolSession?
 
@@ -23,8 +25,14 @@ final class ToolStubLog {
         started = 0
         stopped = 0
         changes = []
+        restored = []
         session = nil
     }
+}
+
+/// A stub's parked state: one note, so a test can tell whose it was.
+struct StubToolState: ToolSessionState, Equatable {
+    var note: String
 }
 
 @MainActor final class StubToolSession: ToolSession {
@@ -53,6 +61,17 @@ final class ToolStubLog {
 
     func contentChanged(_ change: ToolContentChange) { log.changes.append(change) }
     func stop() { log.stopped += 1 }
+
+    /// What this session will hand back when it ends. Nil — the default for a
+    /// tool-module that keeps nothing — until a test sets it.
+    var stateToPark: (any ToolSessionState)?
+
+    var parkedState: (any ToolSessionState)? { stateToPark }
+
+    func restore(_ state: any ToolSessionState) {
+        guard let state = state as? StubToolState else { return }
+        log.restored.append(state.note)
+    }
 }
 
 enum StubToolA: ToolModule {

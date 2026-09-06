@@ -146,6 +146,20 @@ final class SeamTests: XCTestCase {
         XCTAssertEqual(host.bytes[0], 0x01)
     }
 
+    /// A tool-module whose panel is a function of the file keeps nothing, and
+    /// gets that without writing a line — which is what keeps the two members
+    /// off the list of things every tool-module has to think about.
+    @MainActor func testASessionKeepsNothingUnlessItSaysSo() {
+        let session = StubModule.makeSession(host: StubHost(bytes: [1, 2, 3, 4]))
+
+        XCTAssertNil(session.parkedState)
+        session.restore(StubState(note: "ignored"))
+
+        XCTAssertNil(session.parkedState, "and a restore it did not ask for changes nothing")
+    }
+
+    private struct StubState: ToolSessionState { var note: String }
+
     /// The half-open convenience on top of the reader's offset-and-length form.
     @MainActor func testTheReaderRefusesAReadPastTheEnd() throws {
         let frozen = try StubHost(bytes: [1, 2, 3, 4]).snapshot()

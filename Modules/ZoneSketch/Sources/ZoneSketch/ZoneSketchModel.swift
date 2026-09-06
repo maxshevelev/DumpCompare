@@ -7,7 +7,7 @@ import ToolModuleKit
 /// asks it questions. That is the shape every tool-module is meant to have —
 /// what can be decided without a window is decided here, and tested in a
 /// second rather than through one (`Design/TOOL_MODULES_PLAN.md`).
-public struct ZoneSketchModel: Equatable {
+public struct ZoneSketchModel: Equatable, Sendable {
     /// In the order they were made, which is the order the list shows. The
     /// published map is sorted for drawing; this is the user's own order.
     public private(set) var zones: [Zone] = []
@@ -88,3 +88,9 @@ public struct ZoneSketchModel: Equatable {
         String(format: "%llX – %llX", range.lowerBound, range.upperBound - 1)
     }
 }
+
+/// The sketch is the whole of what this tool-module knows, so parking its state
+/// is parking the model — nothing is re-derived, because nothing was derived.
+/// A tool-module with a parse behind it would park much less than this
+/// (`ToolSession.parkedState`).
+extension ZoneSketchModel: ToolSessionState {}

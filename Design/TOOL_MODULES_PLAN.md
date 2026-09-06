@@ -35,6 +35,7 @@ Settled before writing this, and the reasoning belongs with each.
 | **Applicability** | the host treats every tool-module as applicable to every file. "There is no FIT here" is a sentence the tool-module says in its own panel, not a greyed-out menu item that explains nothing. |
 | **Settings** | none, and no reserved namespace. Adding one later is cheaper than carrying an unused hook. |
 | **Restore** | the active tool-module does not survive a relaunch. The app restores no session state today. |
+| **Parked state** | switching the panel to another tool-module and back is *switching*, not starting over. A session hands back an opaque `ToolSessionState` as it ends and the next session of that tool-module on that pane gets it. The tool-module decides what is in it — the same rule as for zones — and the host stores a box it cannot see into. |
 
 ## The packages
 
@@ -44,9 +45,8 @@ session vends a view controller; every value type in it is AppKit-free, so a
 pure logic target can depend on it without dragging a window in.
 
 **`UEFIFormat`** — the domain model of a UEFI image: the tree of
-`Design/UEFI/UEFI_IMAGE_FORMAT.md`, both parsing passes, and the FIT table of
-`Design/UEFI/FIT_TABLE_FORMAT.md`. **Not a tool-module** — no UI, not in the
-Tools menu. Several tool-modules stand on it: one showing the structure with
+`Design/UEFI/UEFI_IMAGE_FORMAT.md` and both parsing passes. **Not a
+tool-module** — no UI, not in the Tools menu. Several tool-modules stand on it: one showing the structure with
 export and body replacement, one working the FIT table. Pure Swift, no AppKit,
 no dependency on `DumpCompareCore` or `ToolModuleKit`: it takes bytes through
 its own minimal reader protocol, so it runs in `swift test` over fixture files.
@@ -54,14 +54,26 @@ its own minimal reader protocol, so it runs in `swift test` over fixture files.
 Two things belong to it rather than to the tool-modules that use it:
 
 - **The second pass.** `addressDiff` is computed from the Volume Top File, so
-  FIT cannot be found without the tree. Parsing the table therefore lives here;
-  what the FIT tool-module owns is the *editing* — where a microcode may be
-  placed, the ordering by type, the header count, the checksum, the validator.
+  no address in the image means anything without the tree. What the library
+  owes anyone reading FIT is exactly that: `addressDiff`, `offset(forAddress:)`,
+  the reset vector, and the Intel microcode header check the raw-area scan
+  needs anyway (§4). **The FIT table itself is not here** — it is not part of
+  the tree, it is found by a pointer at `size − 0x40`, and its entries,
+  checksum, type ordering and edit rules are rules of the table rather than of
+  the image. They belong to the FIT tool-module, which gets the addresses from
+  here rather than reinventing them.
 - **The checksum cascade.** Replacing a node's body pulls a chain upwards: the
   FFS file header's checksum8, the volume's `UsedSpace` and Apple CRC32, and
   the FIT if it points inside. Left to the tool-modules, the second one
   reimplements it differently. The library answers "after this replacement,
   write these fields with these values".
+
+**Decompression is out of v1.** Tiano, LZMA, Brotli, GZip and Zlib are five
+decompressors, and the project takes no third-party dependencies. A compressed
+section is a leaf: named by its algorithm, its body left opaque, `compressed`
+set on it. That is also what keeps every node in the tree a *range of the file*
+rather than a buffer — the model holds no bytes, so a 32 MiB image parses into
+a few thousand nodes and an editor writing to a node writes to the file.
 
 **`Modules/<Name>`** — one package per tool-module, two targets: `<Name>` (pure)
 and `<Name>UI` (the view controller and the `ToolModule` conformance).
@@ -83,7 +95,16 @@ public protocol ToolModule {
     func start()
     func contentChanged(_ change: ToolContentChange)
     func stop()
+
+    /// What to hand back if the user returns to this tool-module on this file.
+    /// Both default to keeping nothing.
+    var parkedState: (any ToolSessionState)? { get }
+    func restore(_ state: any ToolSessionState)
 }
+
+/// A tool-module's own state, held by the host while that tool-module is not
+/// the one on screen. Empty on purpose: the host stores it and never looks in.
+public protocol ToolSessionState: Sendable {}
 
 public enum ToolContentChange: Equatable {
     case edited(Range<UInt64>, sizeDelta: Int64)   // from the pane's DiffEdit
@@ -220,15 +241,38 @@ search results.
 |---|---|
 | an edit lands in the bound pane | `contentChanged(.edited(range, sizeDelta:))`, debounced; the tool-module decides whether to re-read |
 | undo / redo | the same, as an edit |
-| revert, external change, join | `contentChanged(.reloaded)` |
+| revert, external change, join | `contentChanged(.reloaded)`, and everything parked against that pane is forgotten — the running tool-module is told and re-reads, a parked one has no way to hear it |
 | the file is saved | nothing — the content did not change |
-| the bound file closes | `stop()`, the session ends, the panel closes |
+| another tool-module or None is picked | the running session's `parkedState` is taken, then `stop()`. Coming back to it hands the state to a fresh session, before `start()` |
+| the bound file closes | `stop()`, the session ends, the panel closes, and everything parked against that pane is forgotten |
 | the two panes are swapped | nothing: same window, same pane |
 | the bound pane is moved into another tab | `stop()`. The session belongs to the window, the way bookmarks do (§20) — the destination keeps whatever it had open |
 | the bound pane is torn off into a new tab | the module is activated again for it there, and parses afresh. The new tab starts with nothing, which is why the tear-off copies the window's bookmarks too |
 | the bound pane is copied (Option-drag) | nothing: the original stays where it is, and the copy arrives with no module |
 | the tab closes | `stop()` |
 | the app quits | `stop()`; nothing is persisted |
+
+### What is parked, and what it is worth
+
+The state is a **hint, not a truth**. While a tool-module is parked the file can
+be edited — by hand, by another tool-module — so a restored state describes
+bytes that may have moved or gone. A session restores what survives re-reading
+and drops the rest; the host helps only by dropping the box outright when the
+content is *replaced* (revert, external change, join) or the pane goes, since
+after that nothing in it could be checked against anything.
+
+*What* to keep is the tool-module's judgement, and the same judgement as for
+zones: park what is cheap and re-derive what is not. A selection, an expanded
+row, a half-typed field are worth a few bytes. A parsed tree of ten thousand
+nodes is worth parsing again — one parked per tool-module per tab is how an app
+comes to hold four copies of an image it is not showing. Zone Sketch is the
+exception that proves the rule: its model *is* its knowledge, nothing was
+derived, so it parks the whole thing.
+
+Where it is *not* kept: in the tool-module. A static box inside the package
+would be shared by every window and every tab and would never die. The host
+keys it by tool-module and pane, which is what makes "switch back" mean this
+file rather than some file.
 
 A session is bound to the pane it was opened for. Clicking the other pane does
 not re-target it: what the panel's header names is where its writes go, and a

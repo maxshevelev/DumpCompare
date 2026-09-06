@@ -57,6 +57,17 @@ public enum ZoneSketchModule: ToolModule {
 
     public func stop() {}
 
+    /// The zones outlive the panel being switched away from: the user drew
+    /// them, and losing hand-made work to a menu click is the one thing a
+    /// sketch must not do. The names go with them — `made` is part of the
+    /// model — so coming back does not start numbering at one again.
+    public var parkedState: (any ToolSessionState)? { model }
+
+    public func restore(_ state: any ToolSessionState) {
+        guard let model = state as? ZoneSketchModel else { return }
+        self.model = model
+    }
+
     // MARK: - What the buttons do
 
     private func addFromSelection() {
