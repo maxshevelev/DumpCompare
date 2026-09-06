@@ -49,10 +49,12 @@ struct BinaryWriter {
 enum TestImage {
     static let driverGUID = KnownGUIDs.guid("11111111-2222-3333-4444-555555555555")
 
-    /// An FFS file, checksums correct unless a test asks otherwise.
+    /// An FFS file, checksums correct unless a test asks otherwise. Raw by
+    /// default, because a raw file's body is the bytes it says it is — every
+    /// other type's body is read as sections, which is a different test.
     static func file(
         guid: EFIGUID = driverGUID,
-        type: UInt8 = 0x07,
+        type: UInt8 = FFS.rawType,
         attributes: UInt8 = 0,
         state: UInt8 = 0xF8,
         body: [UInt8],
@@ -105,6 +107,77 @@ enum TestImage {
         let sum = Checksums.sum8(bytes) &- bytes[0x10] &- bytes[0x11] &- bytes[0x17]
         bytes[0x10] = 0 &- sum
         return bytes + body
+    }
+
+    /// A section: a three-byte size, a type, whatever the type puts in front
+    /// of the body, and the body.
+    static func section(
+        type: UInt8,
+        body: [UInt8],
+        extra: [UInt8] = [],
+        size: UInt32? = nil,
+        extendedSize: Bool = false
+    ) -> [UInt8] {
+        var writer = BinaryWriter()
+        let total = UInt32(4 + (extendedSize ? 4 : 0) + extra.count + body.count)
+        if extendedSize {
+            writer.u24(Section.extendedSizeMarker)
+            writer.u8(type)
+            writer.u32(size ?? total)
+        } else {
+            writer.u24(size ?? total)
+            writer.u8(type)
+        }
+        writer.raw(extra)
+        writer.raw(body)
+        return writer.bytes
+    }
+
+    /// A compression section, whose header says how big the body gets and how
+    /// it was squeezed (§6.2).
+    static func compressionSection(algorithm: UInt8, body: [UInt8]) -> [UInt8] {
+        var extra = BinaryWriter()
+        extra.u32(UInt32(body.count) * 3)
+        extra.u8(algorithm)
+        return section(type: Section.compression, body: body, extra: extra.bytes)
+    }
+
+    /// A GUID-defined section. `dataOffset` is from the start of the section,
+    /// so a vendor header between the structure and the data just moves it
+    /// along (§6.3).
+    static func guidedSection(
+        guid: EFIGUID,
+        body: [UInt8],
+        vendorHeader: [UInt8] = []
+    ) -> [UInt8] {
+        var extra = BinaryWriter()
+        extra.guid(guid)
+        extra.u16(UInt16(4 + Section.guidDefinedHeaderSize) + UInt16(vendorHeader.count))
+        extra.u16(0)                                  // Attributes
+        extra.raw(vendorHeader)
+        return section(type: Section.guidDefined, body: body, extra: extra.bytes)
+    }
+
+    /// A name section: UCS-2 with a terminating zero.
+    static func nameSection(_ text: String) -> [UInt8] {
+        var writer = BinaryWriter()
+        for unit in Array(text.utf16) { writer.u16(unit) }
+        writer.u16(0)
+        return section(type: Section.userInterface, body: writer.bytes)
+    }
+
+    /// A file whose body is a run of sections, four-byte aligned.
+    static func sectionedFile(
+        guid: EFIGUID = driverGUID,
+        type: UInt8 = 0x07,
+        sections: [[UInt8]]
+    ) -> [UInt8] {
+        var body = BinaryWriter()
+        for section in sections {
+            body.pad(to: alignUp(body.count, to: 4)!, with: 0xFF)
+            body.raw(section)
+        }
+        return file(guid: guid, type: type, body: body.bytes)
     }
 
     /// A volume, its files laid out eight-byte aligned, the rest erased.

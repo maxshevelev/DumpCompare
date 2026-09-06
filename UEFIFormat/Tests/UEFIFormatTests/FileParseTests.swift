@@ -27,7 +27,7 @@ final class FileParseTests: XCTestCase {
     /// The header is `0x18` bytes and the body is the rest — the split every
     /// consumer of this tree reads a structure out of.
     func testAFileIsAHeaderAndABody() {
-        let file = volume([TestImage.file(body: [1, 2, 3, 4])]).children[0]
+        let file = volume([TestImage.file(type: 0x07, body: [1, 2, 3, 4])]).children[0]
 
         XCTAssertEqual(file.header, 0x48..<0x60)
         XCTAssertEqual(file.body, 0x60..<0x64)

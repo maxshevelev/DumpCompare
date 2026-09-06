@@ -68,6 +68,30 @@ public enum KnownGUIDs {
         guid("DE3E049C-A218-4891-8658-5FC0FA84C788"): "AMD microcode"
     ]
 
+    /// What a GUID-defined section's GUID says about its body (§6.3).
+    ///
+    /// `transformsBody` is the only part the parser acts on: a body that has
+    /// been compressed or signed is not a run of sections any more, so it is
+    /// kept whole. CRC32 is the interesting exception — it only checks the
+    /// data, so what is inside is still there to read.
+    public static func guidedSection(_ guid: EFIGUID) -> (name: String, transformsBody: Bool)? {
+        guidedSections[guid]
+    }
+
+    private static let guidedSections: [EFIGUID: (name: String, transformsBody: Bool)] = [
+        guid("FC1BCDB0-7D31-49AA-936A-A4600D9DD083"): ("CRC32", false),
+        guid("A31280AD-481E-41B6-95E8-127F4C984779"): ("Tiano", true),
+        guid("EE4E5898-3914-4259-9D6E-DC7BD79403CF"): ("LZMA", true),
+        guid("0ED85E23-F253-413F-A03C-901987B04397"): ("LZMA (HP)", true),
+        guid("BD9921EA-ED91-404A-8B2F-B4D724747C8C"): ("LZMA (Microsoft)", true),
+        guid("D42AE6BD-1352-4BFB-909A-CA72A6EAE889"): ("LZMA with x86 filter", true),
+        guid("1D301FE9-BE79-4353-91C2-D23BC959AE0C"): ("GZip", true),
+        guid("CE3233F5-2CD6-4D87-9152-4A238BB6D1C4"): ("Zlib (AMD)", true),
+        guid("991EFAC0-E260-416B-A4B8-3B153072B804"): ("Zlib (AMD, second)", true),
+        guid("3D532050-5CDA-4FD0-879E-0F7F630D5AFB"): ("Brotli", true),
+        guid("0F9D89E8-9259-4F76-A5AF-0C89E34023DF"): ("Signed contents", true)
+    ]
+
     /// A GUID from a specification, which is a constant and not input: a
     /// mistyped table entry is a programming error worth failing on rather than
     /// a value worth carrying as nil.

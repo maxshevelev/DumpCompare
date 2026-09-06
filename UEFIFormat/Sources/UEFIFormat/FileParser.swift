@@ -21,6 +21,15 @@ enum FFS {
     static let fixedChecksum2: UInt8 = 0xAA   // revision 2
 
     static let padType: UInt8 = 0xF0
+    static let rawType: UInt8 = 0x01
+    /// In the file's *state* byte, not its attributes (§5.5).
+    static let erasePolarity: UInt8 = 0x80
+
+    /// Every file's body is a run of sections except these two, which are the
+    /// bytes they say they are (§6).
+    static func hasSections(_ type: UInt8) -> Bool {
+        type != rawType && type != padType
+    }
 }
 
 extension Parser {
@@ -45,7 +54,8 @@ extension Parser {
               let bodyChecksum = reader.uint8(at: offset + 0x11),
               let type = reader.uint8(at: offset + 0x12),
               let attributes = reader.uint8(at: offset + 0x13),
-              let shortSize = reader.uint24(at: offset + 0x14)
+              let shortSize = reader.uint24(at: offset + 0x14),
+              let state = reader.uint8(at: offset + 0x17)
         else {
             note(.truncated(.fileHeader), at: offset)
             return nil
@@ -98,17 +108,46 @@ extension Parser {
             note(.unknownType(.fileHeader, type), at: offset + 0x12)
         }
 
+        // A file's erase polarity is its own, taken from its state byte rather
+        // than from the volume, so that a volume holding files written under
+        // both polarities still reads (§5.5).
+        let emptyByte: UInt8 = state & FFS.erasePolarity != 0 ? 0xFF : 0x00
+        var children: [UEFINode] = []
+        if FFS.hasSections(type), !body.isEmpty {
+            children = walkSections(
+                body, ffsVersion: ffsVersion, emptyByte: emptyByte, depth: depth + 1
+            )
+        }
+
         let node = UEFINode(
             kind: .file,
             subtype: type,
-            name: KnownGUIDs.name(of: name) ?? FFS.typeName(type),
+            name: KnownGUIDs.name(of: name) ?? userInterfaceName(in: children)
+                ?? FFS.typeName(type),
             guid: name,
             header: offset..<(offset + headerSize),
             body: body,
             tail: tail,
-            isFixed: attributes & FFS.fixed != 0
+            isFixed: attributes & FFS.fixed != 0,
+            children: children
         )
         return ParsedFile(node: node, size: end - offset)
+    }
+
+    /// The name a person gave the file, if one of its sections carries one.
+    /// Worth going looking for: it is the only readable name most files have,
+    /// and without it a volume is three hundred rows of GUIDs.
+    private func userInterfaceName(in sections: [UEFINode]) -> String? {
+        for section in sections where section.kind == .section {
+            if section.subtype == Section.userInterface,
+               let text = ucs2String(in: section.body) {
+                return text
+            }
+            if let nested = userInterfaceName(in: section.children) {
+                return nested
+            }
+        }
+        return nil
     }
 
     /// §5.2, where the header's own size depends on a bit whose meaning depends
