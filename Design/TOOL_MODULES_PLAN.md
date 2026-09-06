@@ -221,13 +221,24 @@ The published map is *what the dump draws* — the tool-module's own list, tree
 and diagnostics are its panel's business and the host never sees them.
 
 Drawing follows the segment tint's shape exactly: a `hexZoneSpans(in:)` on the
-data source, resolved per row. It is drawn as an **outlined region** rather than
-another tint — the byte cell's layering is full (§6: segment tint, match fill,
-difference fill, selection fill, find indicator) and a sixth fill would fight
-the five below it. The contour machinery exists: `drawContours` already outlines
-the mirrored selection across rows and columns. The focused zone is stroked at
-full strength and the rest faintly — a map of a dozen regions all drawn as
-loudly as each other is a cage over the bytes. The names stay in the panel: a
+data source, resolved per row. A zone is an **outlined region**: the byte cell's
+layering is full (§6: segment tint, match fill, difference fill, selection fill,
+find indicator), and outlining is how a region is marked without taking a sixth
+fill away from the five that say what a byte *is*. The contour machinery exists:
+`drawContours` already outlines the mirrored selection across rows and columns.
+
+The **focused** zone, and only it, is also washed with a tenth-strength tint of
+the same hue — the one region being worked on is worth seeing the extent of at a
+glance. Washing the rest would stack pale teal on pale teal wherever zones nest,
+until the dump read as a colour rather than as bytes. The wash goes down between
+the two row passes: over the five background layers and under the glyphs, so it
+never hides a byte and never vanishes under an opaque segment tint. It is drawn
+from the outline's own path, so the two cannot disagree.
+
+The focused zone is stroked at full strength and double width, the rest at half
+width and half strength — a map of a dozen regions all drawn as loudly as each
+other is a cage over the bytes, but an unfocused line still has to read as a
+line. The names stay in the panel: a
 label floating over the dump is a placement problem (which row, which side, what
 happens when two zones start on one row) for something the list beside it
 already answers.

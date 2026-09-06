@@ -920,9 +920,15 @@ final class HexView: NSView, NSViewToolTipOwner {
                     pass: pass
                 )
             }
-            if pass == .backgrounds, let currentMatch {
-                drawFindIndicator(match: currentMatch, layout: layout,
-                                  drawsHex: drawsHex, drawsAscii: drawsAscii)
+            if pass == .backgrounds {
+                // The zone wash goes over the backgrounds and under the bytes —
+                // and under the find indicator, which is a plate of its own that
+                // nothing should tint.
+                drawZoneFills(layout: layout, fileSize: fileSize, rows: rows)
+                if let currentMatch {
+                    drawFindIndicator(match: currentMatch, layout: layout,
+                                      drawsHex: drawsHex, drawsAscii: drawsAscii)
+                }
             }
         }
 
@@ -943,11 +949,11 @@ final class HexView: NSView, NSViewToolTipOwner {
             drawCrossColumnLink()
         }
 
-        // Zones, outlined rather than filled: the byte cell's five background
-        // layers are spoken for (§6), and a sixth fill would fight all of them.
-        // Drawn once for the whole visible range rather than per row, the way
-        // the mirror contour is, since a zone is one shape however many rows it
-        // covers.
+        // The zones' outlines, over everything: the wash inside them went down
+        // between the two row passes, but the line that says where a zone ends
+        // belongs on top, where nothing can bury it. Drawn once for the whole
+        // visible range rather than per row, the way the mirror contour is,
+        // since a zone is one shape however many rows it covers.
         drawZoneContours(layout: layout, fileSize: fileSize, rows: rows)
 
         // Mirror the opposite pane: a selection is traced with one closed
@@ -2069,13 +2075,56 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// bytes, and the tool-module has already said which one the user is
     /// looking at.
     private func drawZoneContours(layout: HexLayout, fileSize: UInt64, rows: Range<Int>) {
-        guard let dataSource, !rows.isEmpty, fileSize > 0 else { return }
+        for zone in zoneShapes(layout: layout, fileSize: fileSize, rows: rows) {
+            HexTheme.zoneFrame
+                .withAlphaComponent(zone.isFocused ? Self.zoneFocusedAlpha : Self.zoneAlpha)
+                .setStroke()
+            zone.path.lineWidth = zone.isFocused
+                ? Self.mirrorContourLineWidth
+                : Self.mirrorContourLineWidth / 2
+            zone.path.stroke()
+        }
+    }
+
+    /// The wash inside the focused zone, in the outline's own hue.
+    ///
+    /// Only the focused one is filled. A map is a dozen regions and they nest;
+    /// washing all of them would stack pale teal on pale teal until the dump
+    /// read as a colour rather than as bytes, and the whole point of the wash
+    /// is that exactly one region is the one being worked on. The rest say
+    /// where they are with their outline.
+    ///
+    /// Drawn between the two row passes: over the five background layers (§6)
+    /// and under the bytes. Beneath them it would vanish wherever a segment
+    /// tint is — those are opaque — and over the glyphs it would dull the one
+    /// thing the window is for. Between the two, the region reads as one at a
+    /// glance and every byte still reads.
+    ///
+    /// It is kept very light on purpose: the layers below say what a byte *is*
+    /// — different, matched, selected — and a zone says only where it lives.
+    /// The shape is the outline's own path, so the two can never disagree.
+    private func drawZoneFills(layout: HexLayout, fileSize: UInt64, rows: Range<Int>) {
+        for zone in zoneShapes(layout: layout, fileSize: fileSize, rows: rows)
+        where zone.isFocused {
+            HexTheme.zoneFrame.withAlphaComponent(Self.zoneFillAlpha).setFill()
+            zone.path.fill()
+        }
+    }
+
+    /// One rounded path per visible zone, hex and ASCII together, faint first —
+    /// so a focused zone's outline is never crossed by a neighbour's, since
+    /// zones nest and the inner one is usually the focus.
+    private func zoneShapes(
+        layout: HexLayout,
+        fileSize: UInt64,
+        rows: Range<Int>
+    ) -> [(path: NSBezierPath, isFocused: Bool)] {
+        guard let dataSource, !rows.isEmpty, fileSize > 0 else { return [] }
         let lower = UInt64(rows.lowerBound) * UInt64(HexLayout.bytesPerRow)
         let upper = UInt64(rows.upperBound) * UInt64(HexLayout.bytesPerRow)
         let zones = dataSource.hexZoneSpans(in: lower..<upper)
-        guard !zones.isEmpty else { return }
-        // Faint first, so the focused zone's outline is never crossed by a
-        // neighbour's — zones nest, and the inner one is usually the focus.
+        guard !zones.isEmpty else { return [] }
+        var shapes: [(path: NSBezierPath, isFocused: Bool)] = []
         for zone in zones.sorted(by: { !$0.isFocused && $1.isFocused }) {
             let end = min(zone.range.upperBound, fileSize)
             guard zone.range.lowerBound < end else { continue }
@@ -2083,20 +2132,23 @@ final class HexView: NSView, NSViewToolTipOwner {
             let loops = contour(of: span, layout: layout, region: .hex)
                 + contour(of: span, layout: layout, region: .ascii)
             guard !loops.isEmpty else { continue }
-            HexTheme.zoneFrame
-                .withAlphaComponent(zone.isFocused ? Self.zoneFocusedAlpha : Self.zoneAlpha)
-                .setStroke()
-            let path = roundedContourPath(loops: loops, radius: Self.mirrorContourRadius)
-            path.lineWidth = zone.isFocused
-                ? Self.mirrorContourLineWidth
-                : Self.mirrorContourLineWidth / 2
-            path.stroke()
+            shapes.append((roundedContourPath(loops: loops, radius: Self.mirrorContourRadius),
+                           zone.isFocused))
         }
+        return shapes
     }
 
     /// How strongly a published zone's outline is drawn, and the focused one.
-    static let zoneAlpha: CGFloat = 0.35
+    /// The unfocused line still has to be a line — at a third it read as a
+    /// smudge against the bytes — so the two are told apart by the focused
+    /// one's double width as much as by its strength.
+    static let zoneAlpha: CGFloat = 0.5
     static let zoneFocusedAlpha: CGFloat = 0.9
+
+    /// And how lightly the focused zone is washed: a tenth, which is enough to
+    /// see a region's extent and far too little to compete with a difference or
+    /// a selection showing through it.
+    static let zoneFillAlpha: CGFloat = 0.10
 
     private func drawMirrorContour() {
         drawContours(mirrorContours())
@@ -3384,18 +3436,7 @@ enum HexTheme {
     /// accent already means "this is where you are" — the caret's link, the
     /// mirror of the other pane — and a zone is something the file *has*, not
     /// something the user is doing.
-    ///
-    /// The hue is `.systemTeal`'s, kept exactly; what changes is the weight.
-    /// That colour is already at saturation 1, so a richer outline is not a
-    /// saturation move — on white paper a *bright* cyan is what reads as a
-    /// wash, and dropping the brightness is what gives the line its density.
-    /// On dark paper the move is the other way: a deep teal on near-black is
-    /// just a dark line, so there the brightness goes up instead.
-    static let zoneFrame = NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            ? NSColor(srgbRed: 0.000, green: 0.865, blue: 0.920, alpha: 1)  // h 0.510, s 1, b 0.92
-            : NSColor(srgbRed: 0.000, green: 0.602, blue: 0.640, alpha: 1)  // h 0.510, s 1, b 0.64
-    }
+    static let zoneFrame = NSColor.systemTeal
 
     /// The six segment tints, cycled by label (§21.3): S0 light green, S1 light
     /// pink, S2 pale blue, S3 pale yellow, S4 lavender, S5 peach. A small set of

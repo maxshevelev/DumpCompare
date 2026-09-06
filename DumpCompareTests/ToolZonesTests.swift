@@ -167,6 +167,43 @@ final class ToolZonesTests: XCTestCase {
     func testTheFocusedZoneIsStrokedMoreStronglyThanTheRest() throws {
         XCTAssertGreaterThan(HexView.zoneFocusedAlpha, HexView.zoneAlpha)
     }
+
+    /// The wash marks the one region being worked on. The others say where they
+    /// are with an outline: a dozen washes, nested, would stack pale teal on
+    /// pale teal until the dump read as a colour rather than as bytes.
+    func testOnlyTheFocusedZoneIsWashed() throws {
+        let (controller, window) = try makeController()
+        let host = try host(controller)
+        let hexView = try hexView(window)
+        hexView.displayIfNeeded()
+        let before = try render(hexView)
+
+        host.publish(ZoneMap(zones: [
+            Zone(id: "outer", name: "Outer", range: 0x00..<0x90),
+            Zone(id: "inner", name: "Inner", range: 0x30..<0x60)
+        ], focus: "inner"))
+        hexView.displayIfNeeded()
+        let after = try render(hexView)
+
+        let layout = hexView.hexLayout
+        XCTAssertGreaterThan(
+            changedPixels(before, after, in: interior(layout, row: 4), of: hexView), 200,
+            "the focused zone's middle row is washed"
+        )
+        XCTAssertEqual(
+            changedPixels(before, after, in: interior(layout, row: 7), of: hexView), 0,
+            "a row well inside an unfocused zone keeps its paper"
+        )
+    }
+
+    /// A band across the middle of a row's hex cells, clear of the outline that
+    /// runs down either side of a zone — so what it measures is the fill.
+    private func interior(_ layout: HexLayout, row: Int) -> NSRect {
+        let first = layout.hexByteFrame(row: row, column: 2)
+        let last = layout.hexByteFrame(row: row, column: 13)
+        return NSRect(x: first.minX, y: first.minY + 2,
+                      width: last.maxX - first.minX, height: first.height - 4)
+    }
 }
 
 /// Following a tool-module's focus with the dump
