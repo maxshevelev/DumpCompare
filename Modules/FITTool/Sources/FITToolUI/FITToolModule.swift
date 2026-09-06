@@ -52,7 +52,7 @@ struct FITParkedState: ToolSessionState {
     public init(host: any ToolHost) {
         self.host = host
         controller.onSelect = { [weak self] index in self?.select(index) }
-        controller.onGoToTarget = { [weak self] index in self?.goToTarget(of: index) }
+        controller.onGoToTarget = { [weak self] index in self?.goToOffset(of: index) }
         controller.onCopyCPUID = { [weak self] index in self?.copyCPUID(of: index) }
         controller.onGoToProblem = { [weak self] index in self?.goToProblem(index) }
         controller.onFixChecksum = { [weak self] in self?.fixChecksum() }
@@ -147,22 +147,30 @@ struct FITParkedState: ToolSessionState {
         show(display.focusing(index))
     }
 
-    /// Where the row points, which is the question a FIT row exists to answer.
+    /// Where the row leads: what it points at, or — for the header and for an
+    /// empty slot — the row's own bytes in the table. Every row has an offset,
+    /// so every row goes somewhere.
+    ///
+    /// The zone is brought to the front and the dump is taken there, but
+    /// nothing is *selected*: an active outline says "this is what you asked
+    /// for" without touching a selection the user may be part-way through.
+    ///
     /// Public because neither a double-click nor a right-click can be
     /// simulated — `clickedRow` is -1 unless a real mouse put it there — so
     /// this is the level the app's tests drive.
-    public func goToTarget(of index: Int) {
-        guard let row = display.rows.first(where: { $0.index == index }),
-              let target = row.targetRange
-        else {
-            controller.say("That entry does not point anywhere in this file.")
-            return
-        }
-        // The component comes into focus, not the row that names it: going to
-        // an offset is going to what is there.
+    public func goToOffset(of index: Int) {
+        guard let row = display.rows.first(where: { $0.index == index }) else { return }
         focus = index
         show(display.focusingTarget(of: index))
-        host.reveal(target, select: true)
+        host.reveal(row.offsetToGoTo..<(row.offsetToGoTo + 1), select: false)
+    }
+
+    /// The user picked one of our zones in the dump. The bytes are already
+    /// selected; what is left is to bring the row it stands for to the front,
+    /// which is the half only this side knows how to do.
+    public func zoneSelected(_ id: Zone.ID) {
+        focus = FITPresenter.rowIndex(ofZone: id)
+        show(display.focusing(zoneID: id))
     }
 
     /// Where a copy goes. Swappable so the app's tests do not walk off with

@@ -29,6 +29,19 @@ import AppKit
     /// file closed, the pane left, or the tab did.
     func stop()
 
+    /// The user picked one of this session's zones in the dump — from the hex
+    /// view's own menu, where a right-click inside a zone offers it by name.
+    ///
+    /// The host has already selected the bytes; what this is for is the other
+    /// half, which only the tool-module can do: bring the thing that zone
+    /// stands for to the front of its panel. A FIT tool selects the row, a
+    /// structure browser reveals the node. A module that has nothing to say
+    /// about it says nothing, and the selection in the dump still happened.
+    ///
+    /// This is the one direction the seam did not have: everything else here
+    /// goes from the tool-module outwards.
+    func zoneSelected(_ id: Zone.ID)
+
     /// What this session wants handed back if the user returns to this
     /// tool-module on this file, or nil to start afresh every time.
     ///
@@ -63,6 +76,9 @@ public extension ToolSession {
     /// panel is a function of the file and holds no decision of the user's.
     var parkedState: (any ToolSessionState)? { nil }
     func restore(_ state: any ToolSessionState) {}
+    /// The default is to ignore it: the bytes are selected either way, and a
+    /// panel with nothing to point at should not have to say so.
+    func zoneSelected(_ id: Zone.ID) {}
 }
 
 /// A tool-module's own state, kept by the host while that tool-module is not

@@ -18,6 +18,8 @@ final class ToolStubLog {
     var changes: [ToolContentChange] = []
     /// The notes of the states handed back to this stub's sessions, in order.
     var restored: [String] = []
+    /// The zones the user picked in the dump, in order.
+    var selectedZones: [Zone.ID] = []
     /// The last session the stub built, for a test that wants to drive it.
     weak var session: StubToolSession?
 
@@ -26,6 +28,7 @@ final class ToolStubLog {
         stopped = 0
         changes = []
         restored = []
+        selectedZones = []
         session = nil
     }
 }
@@ -61,6 +64,7 @@ struct StubToolState: ToolSessionState, Equatable {
 
     func contentChanged(_ change: ToolContentChange) { log.changes.append(change) }
     func stop() { log.stopped += 1 }
+    func zoneSelected(_ id: Zone.ID) { log.selectedZones.append(id) }
 
     /// What this session will hand back when it ends. Nil — the default for a
     /// tool-module that keeps nothing — until a test sets it.

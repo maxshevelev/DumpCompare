@@ -437,9 +437,14 @@ tool-module needs the same ten lines, they move to a shared package.
 
 ## Open questions
 
-- **Does a click on a zone in the dump reach the tool-module?** Selecting the
-  row in its panel would be the obvious answer, and the API for it is one
-  method. Left out of v1 because nothing yet has a panel to select in.
+- ~~**Does a click on a zone in the dump reach the tool-module?**~~ Answered
+  once there was a panel worth selecting in. A right-click inside a zone offers
+  it by name — a submenu when zones nest, innermost first, since the smallest
+  one under the pointer is what is being aimed at. Picking it selects the bytes,
+  which is the host's own doing, and calls `ToolSession.zoneSelected(_:)`, which
+  is the half only the tool-module can do: the FIT panel selects the row, and a
+  module with nothing to say about it says nothing. It is the one direction the
+  seam did not have — everything else goes from the tool-module outwards.
 - **Two tool-modules wanting the same parse.** The structure browser and the FIT
   editor would each parse the same image, twice, if both could be open — they
   cannot, one at a time per tab, so this is only a question if that rule ever

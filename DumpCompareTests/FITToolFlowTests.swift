@@ -140,19 +140,22 @@ final class FITToolFlowTests: XCTestCase {
         XCTAssertEqual(controller.windowModel.pane1.zones.focus, "fit.row.1")
     }
 
-    /// A row exists to point somewhere, and going there selects the component
-    /// and puts *it* in focus — not the row that names it.
-    func testGoingToARowsOffsetSelectsTheComponentAndFocusesIt() throws {
+    /// A row exists to point somewhere, and going there puts the component in
+    /// focus — not the row that names it.
+    func testGoingToARowsOffsetFocusesTheComponentWithoutSelectingIt() throws {
         let controller = try open(FITTestImage.make())
 
         // Neither a double-click nor a right-click can be simulated —
         // `clickedRow` is -1 unless a real mouse put it there — so this drives
         // what both of them call.
-        try session().goToTarget(of: 1)
+        try session().goToOffset(of: 1)
 
-        let selection = try XCTUnwrap(controller.windowModel.pane1.hexSelection())
-        XCTAssertEqual(selection.start..<selection.end, 0x2000..<0x2100)
+        // The outline says "this is what you asked for"; nothing is selected,
+        // because the user may be part-way through a selection of their own.
+        XCTAssertTrue(controller.windowModel.pane1.hexSelection().isEmpty)
         XCTAssertEqual(controller.windowModel.pane1.zones.focus, "fit.target.1")
+        XCTAssertEqual(controller.windowModel.pane1.caretOffset, 0x2000)
+        XCTAssertEqual(try session().display.rows.first { $0.index == 1 }?.index, 1)
     }
 
     /// Every microcode in the table is outlined in the dump from the moment it
@@ -163,6 +166,24 @@ final class FITToolFlowTests: XCTestCase {
 
         XCTAssertEqual(zones.first { $0.id == "fit.target.1" }?.name, "CPUID 806EA")
         XCTAssertEqual(zones.first { $0.id == "fit.target.1" }?.range, 0x2000..<0x2100)
+    }
+
+    /// The trip back: picking a microcode's zone in the dump brings its row to
+    /// the front of the panel. The bytes are selected by the host; the row is
+    /// the half only the tool-module can do.
+    func testPickingAZoneInTheDumpSelectsItsRow() throws {
+        let controller = try open(FITTestImage.make())
+        let pane = controller.windowModel.pane1
+        let menu = controller.makeOffsetMenu(for: pane, offset: 0x2000)
+        let item = try XCTUnwrap(menu.items.first { $0.title.hasPrefix("Select Zone") })
+
+        XCTAssertEqual(item.title, "Select Zone “CPUID 806EA”")
+        controller.selectZone(item)
+
+        XCTAssertEqual(pane.zones.focus, "fit.target.1")
+        XCTAssertEqual(try entriesTable().selectedRow, 1)
+        let selection = pane.hexSelection()
+        XCTAssertEqual(selection.start..<selection.end, 0x2000..<0x2100)
     }
 
     /// What the right-button menu's first item does.

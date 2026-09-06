@@ -4073,6 +4073,7 @@ final class MainViewController: NSViewController {
                                   keyEquivalent: "")
         select.target = self
         select.representedObject = OffsetContextTarget(pane: pane, offset: offset)
+        addZoneMenuItems(to: menu, for: pane, offset: offset)
         // The segment block (§21.3): the commands that shape the file's
         // partition, set off from the address-scoped commands above and the
         // bookmark commands below by their own separators.
@@ -4081,6 +4082,44 @@ final class MainViewController: NSViewController {
         menu.addItem(.separator())
         addBookmarkMenuItems(to: menu, for: pane, offset: offset)
         return menu
+    }
+
+    /// The zone block: a right-click inside a zone a tool-module published
+    /// offers that zone by name (`Design/TOOL_MODULES_PLAN.md`). Nothing at all
+    /// where there are no zones — which is most files, most of the time.
+    ///
+    /// Zones nest, so a byte is often inside several: the FIT table, the row in
+    /// it, the microcode a row points at. All of them are offered, innermost
+    /// first, because the smallest zone under the pointer is the one being
+    /// aimed at.
+    private func addZoneMenuItems(to menu: NSMenu, for pane: PaneViewModel, offset: UInt64) {
+        let zones = pane.zones.zones(containing: offset).reversed().map { $0 }
+        guard !zones.isEmpty else { return }
+        menu.addItem(.separator())
+
+        func item(_ title: String, _ zone: Zone) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: #selector(selectZone(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = ZoneContextTarget(pane: pane, zone: zone)
+            return item
+        }
+        guard zones.count > 1 else {
+            menu.addItem(item("Select Zone “\(zones[0].name)”", zones[0]))
+            return
+        }
+        let parent = menu.addItem(withTitle: "Select Zone", action: nil, keyEquivalent: "")
+        let submenu = NSMenu(title: "Select Zone")
+        for zone in zones { submenu.addItem(item(zone.name, zone)) }
+        parent.submenu = submenu
+    }
+
+    /// Selects a zone's bytes, and tells the tool-module that published it —
+    /// the panel is where the zone means something, and the row it stands for
+    /// should come to the front there.
+    @objc func selectZone(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? ZoneContextTarget else { return }
+        target.pane.select(range: target.zone.range)
+        tools.zoneSelected(target.zone.id, in: target.pane)
     }
 
     /// The segment block of the offset context menu (§21.3): *Split Here at «address»* opens
@@ -6411,6 +6450,17 @@ private func pasteboardBytes() throws -> [UInt8] {
 
 /// Boxes the pane and clicked offset carried by a "Select Block from Here at «address»"
 /// menu item — `NSMenuItem.representedObject` can't hold a tuple (§10.2).
+/// What a zone menu item carries: the pane it was opened in, and the zone.
+private final class ZoneContextTarget: NSObject {
+    let pane: PaneViewModel
+    let zone: Zone
+
+    init(pane: PaneViewModel, zone: Zone) {
+        self.pane = pane
+        self.zone = zone
+    }
+}
+
 private final class OffsetContextTarget: NSObject {
     let pane: PaneViewModel
     let offset: UInt64

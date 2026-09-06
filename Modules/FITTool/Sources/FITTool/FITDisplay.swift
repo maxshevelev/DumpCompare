@@ -21,14 +21,27 @@ public struct FITDisplayRow: Equatable, Sendable {
     public var hasProblem: Bool
     /// The zone for the row itself — sixteen bytes of the table.
     public var zoneID: String
+    /// Those sixteen bytes.
+    public var rowRange: Range<UInt64>
     /// Where the row points, when it points into the image.
     public var targetRange: Range<UInt64>?
 
-    /// What the right-button menu offers here.
+    /// Where "go to the offset" leads: what the row points at, or — for the
+    /// header and for an empty slot, which point nowhere — the row itself.
+    /// Every row has an offset, so every row has somewhere to go.
+    public var offsetToGoTo: UInt64 { (targetRange ?? rowRange).lowerBound }
+
+    /// The zone that "go to the offset" brings to the front.
+    public var zoneToFocus: String {
+        targetRange == nil ? zoneID : FITPresenter.targetZoneID(index)
+    }
+
+    /// What the right-button menu offers here. Every row offers its offset; a
+    /// row that leads to microcode offers the CPUID as well.
     public var commands: [FITRowCommand] {
         var commands: [FITRowCommand] = []
         if let cpuidText { commands.append(.copyCPUID(cpuidText)) }
-        if let targetRange { commands.append(.goToOffset(targetRange.lowerBound)) }
+        commands.append(.goToOffset(offsetToGoTo))
         return commands
     }
 }
@@ -79,10 +92,11 @@ public struct FITDisplay: Equatable, Sendable {
         focusing(zoneID: index.map(FITPresenter.rowZoneID))
     }
 
-    /// The same display with the *target* of a row in focus — what "go to the
-    /// offset" means: the component, not the row that names it.
+    /// The same display with what "go to the offset" leads to in focus: the
+    /// component a row points at, or the row itself where it points nowhere.
     public func focusingTarget(of index: Int) -> FITDisplay {
-        focusing(zoneID: FITPresenter.targetZoneID(index))
+        guard let row = rows.first(where: { $0.index == index }) else { return self }
+        return focusing(zoneID: row.zoneToFocus)
     }
 
     public func focusing(zoneID: String?) -> FITDisplay {
@@ -98,6 +112,16 @@ public enum FITPresenter {
 
     public static func rowZoneID(_ index: Int) -> String { "fit.row.\(index)" }
     public static func targetZoneID(_ index: Int) -> String { "fit.target.\(index)" }
+
+    /// Which row a zone id belongs to, for the trip back: the user picks a zone
+    /// in the dump and the panel has to select the row it came from. Nil for
+    /// the table and the pointer, which stand for no row in particular.
+    public static func rowIndex(ofZone id: String) -> Int? {
+        for prefix in ["fit.row.", "fit.target."] where id.hasPrefix(prefix) {
+            return Int(id.dropFirst(prefix.count))
+        }
+        return nil
+    }
 
     /// What to show for a report. `focus` is the row the user has selected.
     public static func display(_ report: FITReport, focus: Int? = nil) -> FITDisplay {
@@ -121,6 +145,7 @@ public enum FITPresenter {
                 cpuidText: cpuidText(of: row),
                 hasProblem: problemRows.contains(row.entry.index),
                 zoneID: rowZoneID(row.entry.index),
+                rowRange: row.entry.offset..<(row.entry.offset + FITEntry.size),
                 targetRange: targetRange(of: row)
             )
         }

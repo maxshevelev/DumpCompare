@@ -57,6 +57,13 @@ public enum ZoneSketchModule: ToolModule {
 
     public func stop() {}
 
+    /// The user picked one of the sketched zones in the dump. Selecting the row
+    /// is the whole of what this tool can add to that — but it is the thing
+    /// that makes the panel and the dump feel like one surface rather than two.
+    public func zoneSelected(_ id: Zone.ID) {
+        focus(id)
+    }
+
     /// The zones outlive the panel being switched away from: the user drew
     /// them, and losing hand-made work to a menu click is the one thing a
     /// sketch must not do. The names go with them — `made` is part of the

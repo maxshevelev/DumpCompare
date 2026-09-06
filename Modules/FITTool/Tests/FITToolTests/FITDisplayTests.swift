@@ -199,20 +199,41 @@ final class FITDisplayTests: XCTestCase {
     /// What is on offer is decided here and not in the view, and an item that
     /// does not apply to the row is absent rather than greyed.
     func testAMicrocodeRowOffersItsCpuidAndItsOffset() {
-        let rows = display([microcodeRow, TestFIT.Row(FIT.emptyType, address: 0)]).rows
+        let rows = display([microcodeRow]).rows
 
         XCTAssertEqual(rows[1].commands, [.copyCPUID("806EA"), .goToOffset(microcode)])
         XCTAssertEqual(rows[1].commands.map(\.title), ["Copy CPUID", "Go to Offset"])
-        XCTAssertTrue(rows[0].commands.isEmpty)       // the header points nowhere
-        XCTAssertTrue(rows[2].commands.isEmpty)       // and neither does an empty slot
+    }
+
+    /// A row that points nowhere — the header, an empty slot — still has an
+    /// offset of its own, so it still goes somewhere: to its own sixteen bytes
+    /// in the table.
+    func testARowThatPointsNowhereGoesToItself() {
+        let rows = display([microcodeRow, TestFIT.Row(FIT.emptyType, address: 0)]).rows
+
+        XCTAssertEqual(rows[0].commands, [.goToOffset(0x1000)])
+        XCTAssertEqual(rows[2].commands, [.goToOffset(0x1020)])
+        XCTAssertEqual(rows[0].zoneToFocus, "fit.row.0")
+        XCTAssertEqual(rows[2].zoneToFocus, "fit.row.2")
     }
 
     /// A row that leads somewhere without leading to microcode can still be
-    /// gone to.
+    /// gone to, and it is the component that comes into focus.
     func testARowWithNoCpuidStillOffersItsOffset() {
         let rows = display([TestFIT.Row(FIT.startupACMType, target: 0x3000)]).rows
 
         XCTAssertEqual(rows[1].commands, [.goToOffset(0x3000)])
+        XCTAssertEqual(rows[1].zoneToFocus, "fit.target.1")
+    }
+
+    /// The trip back: the user picks a zone in the dump, and the panel has to
+    /// know which row it came from.
+    func testAZoneIdSaysWhichRowItCameFrom() {
+        XCTAssertEqual(FITPresenter.rowIndex(ofZone: "fit.row.3"), 3)
+        XCTAssertEqual(FITPresenter.rowIndex(ofZone: "fit.target.12"), 12)
+        XCTAssertNil(FITPresenter.rowIndex(ofZone: FITPresenter.tableZoneID))
+        XCTAssertNil(FITPresenter.rowIndex(ofZone: FITPresenter.pointerZoneID))
+        XCTAssertNil(FITPresenter.rowIndex(ofZone: "fit.row.x"))
     }
 
     // MARK: - The one repair

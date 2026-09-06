@@ -157,6 +157,17 @@ import ToolModuleKit
         owner?.showZoneStartForTool(zone.range.lowerBound, in: pane)
     }
 
+    /// The user picked a zone in the dump. The bytes are the host's to select;
+    /// this is the other half — telling the tool-module, which is the only side
+    /// that knows what the zone stands for.
+    ///
+    /// Only for the pane the session is bound to: a zone map belongs to one
+    /// pane, and a right-click in the other one is about somebody else's bytes.
+    func zoneSelected(_ id: Zone.ID, in pane: PaneViewModel) {
+        guard let session, pane === boundPane else { return }
+        session.zoneSelected(id)
+    }
+
     // MARK: - What happens to the session
 
     /// An edit landed in some pane. The session hears about it only for its own

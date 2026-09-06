@@ -204,6 +204,78 @@ final class ToolZonesTests: XCTestCase {
         return NSRect(x: first.minX, y: first.minY + 2,
                       width: last.maxX - first.minX, height: first.height - 4)
     }
+
+    // MARK: - Picking a zone in the dump
+
+    /// A right-click inside a zone offers that zone by name — the one way the
+    /// user has of reaching a tool-module's map from the dump itself.
+    func testARightClickInsideAZoneOffersItByName() throws {
+        let (controller, _) = try makeController()
+        let host = try host(controller)
+        host.publish(ZoneMap(zones: [Zone(id: "fv", name: "FFSv2", range: 0x100..<0x200)]))
+
+        let menu = controller.makeOffsetMenu(for: controller.windowModel.pane1, offset: 0x180)
+
+        XCTAssertTrue(menu.items.contains { $0.title == "Select Zone “FFSv2”" })
+    }
+
+    /// Most files have no zones at all, and a menu should say nothing about
+    /// what is not there.
+    func testARightClickOutsideEveryZoneOffersNothing() throws {
+        let (controller, _) = try makeController()
+        let host = try host(controller)
+        host.publish(ZoneMap(zones: [Zone(id: "fv", name: "FFSv2", range: 0x100..<0x200)]))
+
+        let menu = controller.makeOffsetMenu(for: controller.windowModel.pane1, offset: 0x300)
+
+        XCTAssertFalse(menu.items.contains { $0.title.hasPrefix("Select Zone") })
+    }
+
+    /// Zones nest — a table, a row in it, what the row points at — so a byte is
+    /// often inside several. All of them are offered, innermost first, because
+    /// the smallest one under the pointer is what is being aimed at.
+    func testOverlappingZonesBecomeASubmenuInnermostFirst() throws {
+        let (controller, _) = try makeController()
+        let host = try host(controller)
+        host.publish(ZoneMap(zones: [
+            Zone(id: "table", name: "FIT table", range: 0x100..<0x200),
+            Zone(id: "row", name: "#1 Microcode", range: 0x110..<0x120)
+        ]))
+
+        let menu = controller.makeOffsetMenu(for: controller.windowModel.pane1, offset: 0x118)
+        let parent = try XCTUnwrap(menu.items.first { $0.title == "Select Zone" })
+
+        XCTAssertEqual(parent.submenu?.items.map(\.title), ["#1 Microcode", "FIT table"])
+    }
+
+    /// Picking one selects its bytes — that is the host's own doing — and tells
+    /// the tool-module, which is the only side that knows what the zone stands
+    /// for.
+    func testPickingAZoneSelectsItsBytesAndTellsTheModule() throws {
+        let (controller, _) = try makeController()
+        let host = try host(controller)
+        host.publish(ZoneMap(zones: [Zone(id: "fv", name: "FFSv2", range: 0x100..<0x200)]))
+        let menu = controller.makeOffsetMenu(for: controller.windowModel.pane1, offset: 0x180)
+        let item = try XCTUnwrap(menu.items.first { $0.title == "Select Zone “FFSv2”" })
+
+        controller.selectZone(item)
+
+        let selection = controller.windowModel.pane1.hexSelection()
+        XCTAssertEqual(selection.start..<selection.end, 0x100..<0x200)
+        XCTAssertEqual(StubToolA.log.selectedZones, ["fv"])
+    }
+
+    /// A zone map belongs to the pane its session was bound to, so a right
+    /// click in the other pane is about somebody else's bytes.
+    func testAZoneOfTheOtherPaneReachesNoModule() throws {
+        let (controller, _) = try makeController()
+        let host = try host(controller)
+        host.publish(ZoneMap(zones: [Zone(id: "fv", name: "FFSv2", range: 0x100..<0x200)]))
+
+        controller.tools.zoneSelected("fv", in: controller.windowModel.pane2)
+
+        XCTAssertTrue(StubToolA.log.selectedZones.isEmpty)
+    }
 }
 
 /// Following a tool-module's focus with the dump
