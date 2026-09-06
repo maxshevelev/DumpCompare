@@ -34,6 +34,9 @@ final class MainWindowController: NSWindowController {
     private(set) var insertModeItem: NSToolbarItem?
     private(set) var wordSizeItem: NSToolbarItem?
     private(set) var paneLayoutItem: NSToolbarItem?
+    /// The Tools pull-down (Design/TOOL_MODULES_PLAN.md): the wrench, and the
+    /// name of the tool-module the tab is on.
+    private(set) var toolsItem: NSToolbarItem?
 
     /// The name this window's frame is saved under, or nil for a window that
     /// does not save one.
@@ -336,6 +339,53 @@ final class MainWindowController: NSWindowController {
         return item
     }
 
+    /// The Tools pull-down: the wrench, and beside it the name of the
+    /// tool-module this tab is on — "None" until one is picked
+    /// (`Design/TOOL_MODULES_PLAN.md`).
+    ///
+    /// A view-backed pull-down for the reason the word-size control is one: the
+    /// toolbar is icon-only, so it draws no label, and a wrench alone would say
+    /// that tool-modules exist without saying which one is running. The name is
+    /// the whole point of the item — the panel below can be scrolled away or
+    /// closed while a session is still bound to a pane.
+    ///
+    /// The menu is `MainMenu.makeToolsMenu()`, the same builder the menu bar
+    /// uses, so the two can never offer different lists. A pull-down shows its
+    /// FIRST item rather than a selection, so a title row is inserted at the
+    /// top and the rest are the choices; the title is refreshed in validation,
+    /// where the checkmarks are set too.
+    private func makeToolsItem() -> NSToolbarItem {
+        let item = ControlToolbarItem(itemIdentifier: .tools)
+        let button = NSPopUpButton(frame: .zero, pullsDown: true)
+        button.bezelStyle = .toolbar
+        let menu = MainMenu.makeToolsMenu()
+        for row in menu.items { row.target = mainViewController }
+        let title = NSMenuItem(title: MainWindowController.noToolTitle, action: nil, keyEquivalent: "")
+        title.image = NSImage(systemSymbolName: "wrench.and.screwdriver",
+                              accessibilityDescription: "Tools")
+        menu.insertItem(title, at: 0)
+        button.menu = menu
+        button.sizeToFit()
+        button.setAccessibilityLabel("Tools")
+        item.view = button
+        item.label = "Tools"
+        item.paletteLabel = "Tools"
+        item.toolTip = "The tool-module this tab is working with"
+        item.target = mainViewController
+        item.action = #selector(MainViewController.activateTool(_:))
+        return item
+    }
+
+    /// What the pull-down says when no tool-module is running: nothing.
+    ///
+    /// The name is worth its width only while there is a name to say. At rest
+    /// the item is the wrench and its chevron, like every other icon in this
+    /// toolbar — and the whole toolbar has to fit the width the window opens at
+    /// (§24.4), which a permanent "Tools" beside the wrench does not leave room
+    /// for. When a tool-module does start, the window has just grown by the
+    /// panel's width, so the room for its name arrives with it.
+    static let noToolTitle = ""
+
     /// The pane-layout toggle (§24.3). The icon and the tooltip name the
     /// arrangement the click will produce, and both are refreshed on every
     /// validation pass — the values here are only the ones it starts with.
@@ -377,6 +427,8 @@ extension NSToolbarItem.Identifier {
     static let wordSize = NSToolbarItem.Identifier("WordSize")
     /// The side-by-side ⇄ stacked pane-arrangement toggle (§3.3).
     static let paneLayout = NSToolbarItem.Identifier("PaneLayout")
+    /// The Tools pull-down (Design/TOOL_MODULES_PLAN.md).
+    static let tools = NSToolbarItem.Identifier("Tools")
 }
 
 /// A toolbar item whose content is a control of our own. AppKit's own
@@ -397,7 +449,7 @@ extension MainWindowController: NSToolbarDelegate {
         // The flexible space must be listed as allowed too, or AppKit drops it
         // from the default items and the diff block ends up on the LEFT edge.
         [.flexibleSpace, .space,
-         .goTo, .find, .segments, .insertMode, .wordSize,
+         .tools, .goTo, .find, .segments, .insertMode, .wordSize,
          .diffNavigation, .filesIdentical, .paneLayout, .toggleMinimap]
     }
 
@@ -410,7 +462,12 @@ extension MainWindowController: NSToolbarDelegate {
         // AppKit draws a single background platter around adjacent items, and a
         // view-backed spacer joins its neighbour's platter — a wide capsule
         // with the icon shoved against its edge.
-        [.goTo, .find, .segments, .space, .insertMode, .wordSize,
+        // Tools comes first, on the edge its panel opens from, and a fixed
+        // space separates it from the commands: it is the one control here
+        // that changes what the window CONTAINS rather than what it does to
+        // the dump.
+        [.tools, .space,
+         .goTo, .find, .segments, .space, .insertMode, .wordSize,
          .flexibleSpace, .diffNavigation, .space, .paneLayout, .space, .toggleMinimap]
     }
 
@@ -455,6 +512,11 @@ extension MainWindowController: NSToolbarDelegate {
                                                action: #selector(MainViewController.showSegments))
             }
             return segmentsItem
+        case .tools:
+            if toolsItem == nil {
+                toolsItem = makeToolsItem()
+            }
+            return toolsItem
         case .insertMode:
             if insertModeItem == nil {
                 insertModeItem = makeInsertModeItem()

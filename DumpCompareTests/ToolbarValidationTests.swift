@@ -83,7 +83,8 @@ final class ToolbarValidationTests: XCTestCase {
         // And in its place: the plaque's slot, right after the flexible space
         // (§24).
         XCTAssertEqual(window.toolbar?.items.map(\.itemIdentifier),
-                       [.goTo, .find, .segments, .space, .insertMode, .wordSize,
+                       [.tools, .space,
+                        .goTo, .find, .segments, .space, .insertMode, .wordSize,
                         .flexibleSpace, .diffNavigation, .space, .paneLayout, .space, .toggleMinimap])
 
         controller.windowModel.pane2.close()
@@ -175,7 +176,8 @@ final class ToolbarValidationTests: XCTestCase {
                       "identical files: the badge replaces the arrows")
         // And it takes the block's slot.
         XCTAssertEqual(window.toolbar?.items.map(\.itemIdentifier),
-                       [.goTo, .find, .segments, .space, .insertMode, .wordSize,
+                       [.tools, .space,
+                        .goTo, .find, .segments, .space, .insertMode, .wordSize,
                         .flexibleSpace, .filesIdentical, .space, .paneLayout, .space, .toggleMinimap])
 
         // The badge reads as "Files are identical" to assistive tech. The item is

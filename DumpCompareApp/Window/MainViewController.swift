@@ -6034,6 +6034,20 @@ extension MainViewController: NSToolbarItemValidation {
             // bar says OVR/INS either way (§24.2).
             (item.view as? NSButton)?.state = activePane.isInsertMode ? .on : .off
             return true
+        case #selector(activateTool(_:)):
+            // The pull-down's first row is what it displays, so the name of the
+            // tool-module in force is written there rather than selected
+            // (Design/TOOL_MODULES_PLAN.md). Re-sized when it changes: the
+            // toolbar lays a view-backed item out at the view's own width.
+            if let button = item.view as? NSPopUpButton, let title = button.menu?.items.first {
+                let name = tools.activeModule?.title ?? MainWindowController.noToolTitle
+                if title.title != name {
+                    title.title = name
+                    button.sizeToFit()
+                    button.invalidateIntrinsicContentSize()
+                }
+            }
+            return activePane.isOpen
         case #selector(setWordSize(_:)):
             // The button names the size in force, the way the View > Word Size
             // items carry the radio check (§6). Always enabled: a view setting,
