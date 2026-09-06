@@ -1,0 +1,26 @@
+// Code signing, without anybody's account details in the repository.
+//
+// A security-scoped bookmark — the permission the user gives when they point
+// the app at a folder — is bound to the app's *code identity*. Ad-hoc signing
+// has no certificate, so that identity is the binary's own hash and every
+// rebuild throws the permission away (§11, `Design/FAVORITES_SYNC_PLAN.md`).
+// Signing with a real identity is what makes a granted folder stay granted.
+//
+// The team that identity belongs to is personal, so it is not kept here. Put it
+// in `Signing.local.xcconfig`, which git ignores:
+//
+//     DEVELOPMENT_TEAM = <your team>
+//
+// Find it with:
+//
+//     security find-certificate -a -c "Apple Development" -p | openssl x509 -noout -subject
+//
+// — the team is the `OU` field. Without the file the app falls back to ad-hoc
+// signing, which builds and runs; only the folder permission stops surviving
+// rebuilds.
+#include? "Signing.local.xcconfig"
+
+CODE_SIGN_STYLE = $(CODE_SIGN_STYLE_$(DEVELOPMENT_TEAM:default=none))
+CODE_SIGN_STYLE_none = Manual
+CODE_SIGN_IDENTITY = $(CODE_SIGN_IDENTITY_$(DEVELOPMENT_TEAM:default=none))
+CODE_SIGN_IDENTITY_none = -
