@@ -56,6 +56,14 @@ enum MainMenu {
         mainMenu.addItem(viewItem)
         viewItem.submenu = makeViewMenu()
 
+        // Tools menu (Design/TOOL_MODULES_PLAN.md): between View and Window,
+        // where an instrument that acts on the open document belongs — after
+        // the menus about looking at it, before the ones about the windows it
+        // is looked at in.
+        let toolsItem = NSMenuItem()
+        mainMenu.addItem(toolsItem)
+        toolsItem.submenu = makeToolsMenu()
+
         // Window menu
         let windowItem = NSMenuItem()
         mainMenu.addItem(windowItem)
@@ -70,6 +78,33 @@ enum MainMenu {
         helpItem.submenu = NSMenu(title: "Help")
 
         return mainMenu
+    }
+
+    /// Builds the app menu bar's Tools submenu: None, then every tool-module
+    /// the registry holds, in its order (`Design/TOOL_MODULES_PLAN.md`).
+    ///
+    /// One tool-module runs per tab, so these are radio items rather than
+    /// toggles — the menu answers "which one", and None is how the panel is
+    /// closed. The tool-module an item stands for travels in
+    /// `representedObject` as its identifier, and None carries nothing, so the
+    /// same action serves every row and the controller never matches on titles.
+    ///
+    /// Built from the registry when the bar is built, which is once per launch:
+    /// what is installed cannot change while the app runs.
+    static func makeToolsMenu() -> NSMenu {
+        let toolsMenu = NSMenu(title: "Tools")
+        toolsMenu.addItem(withTitle: "None",
+                          action: #selector(MainViewController.activateTool(_:)),
+                          keyEquivalent: "")
+        guard !ToolRegistry.modules.isEmpty else { return toolsMenu }
+        toolsMenu.addItem(.separator())
+        for module in ToolRegistry.modules {
+            let item = toolsMenu.addItem(withTitle: module.title,
+                                         action: #selector(MainViewController.activateTool(_:)),
+                                         keyEquivalent: "")
+            item.representedObject = module.identifier
+        }
+        return toolsMenu
     }
 
     /// Builds the app menu bar's View submenu (§3.3 layout, §10.3 navigation,

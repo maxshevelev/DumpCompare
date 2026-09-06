@@ -444,6 +444,10 @@ final class MainViewController: NSViewController {
         emptyStateView?.setBookmarks(windowModel.bookmarkStore.bookmarks)
         updateWindowTitle()
     }
+    /// The tab's tool-module: which one is active, and the panel and session
+    /// that follow from it (`Design/TOOL_MODULES_PLAN.md`). One per tab.
+    let tools = ToolController()
+
     /// The right-hand minimap panel (hidden by default, toggled by the toolbar
     /// button). Internal so tests can assert its visibility (§19).
     let minimapView = MinimapView()
@@ -579,6 +583,7 @@ final class MainViewController: NSViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        tools.owner = self
         wireExternalChangeDetection()
         // A bookmark changed: the panes have already repainted their row, and
         // what is left for the window is the edit popover, which must not
@@ -1342,6 +1347,15 @@ final class MainViewController: NSViewController {
         for bands in overlays {
             bands.topInset = dropStripInset(for: bands)
         }
+    }
+
+    // MARK: - Tools (Design/TOOL_MODULES_PLAN.md)
+
+    /// Tools ▸ ⟨module⟩ and Tools ▸ None. The item carries the tool-module's
+    /// identifier in `representedObject`, and None carries nothing, so one
+    /// action serves every row.
+    @objc func activateTool(_ sender: NSMenuItem) {
+        tools.activate(sender.representedObject as? String)
     }
 
     // MARK: - Minimap (§19)
@@ -5941,6 +5955,14 @@ extension MainViewController: NSToolbarItemValidation {
 extension MainViewController: NSMenuItemValidation {
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
+        case #selector(activateTool(_:)):
+            // A radio group: the active tool-module is checked, and a
+            // tool-module needs a file to work on. None is always available —
+            // it is how the panel is closed.
+            let (enabled, state) = tools.menuState(for: menuItem.representedObject as? String,
+                                                   fileIsOpen: activePane.isOpen)
+            menuItem.state = state
+            return enabled
         case #selector(toggleMinimapOverview):
             // A check, because both modes are a minimap. Disabled for a file the
             // overview could only magnify — the same rule that greys out the
