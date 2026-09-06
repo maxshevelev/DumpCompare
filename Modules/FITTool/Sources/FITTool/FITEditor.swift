@@ -26,6 +26,8 @@ public enum FITEditProblem: Equatable, Sendable, Error {
     /// A table needs at least one microcode entry (§8.7).
     case cannotRemoveTheLastMicrocode
     case noSuchEntry
+    /// Nothing to add to.
+    case noTable
 
     public var message: String {
         switch self {
@@ -46,6 +48,8 @@ public enum FITEditProblem: Equatable, Sendable, Error {
             return "A FIT needs at least one microcode entry."
         case .noSuchEntry:
             return "That entry is no longer in the table."
+        case .noTable:
+            return "There is no FIT table in this file to change."
         }
     }
 }
@@ -145,13 +149,15 @@ public enum FITEditor {
     ) -> Range<UInt64> {
         guard let image else { return offset..<reader.count }
         // The innermost node that is *space* rather than a structure. A
-        // microcode component's own node is a structure, so its parent is what
-        // bounds the run.
+        // microcode component's own node is a structure, so what bounds the run
+        // is whatever holds it — and where nothing does, which is what a
+        // microcode found by the raw scan of a plain image looks like, the rest
+        // of the file does.
         let chain = image.nodes(containing: offset)
         for node in chain.reversed() where node.kind != .microcode {
             return node.range
         }
-        return chain.first?.range ?? offset..<reader.count
+        return offset..<reader.count
     }
 
     /// Adds a microcode entry: the component, and the table rebuilt around a

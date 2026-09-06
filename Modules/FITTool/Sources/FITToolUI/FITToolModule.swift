@@ -43,17 +43,34 @@ struct FITParkedState: ToolSessionState {
     /// shown. The parse runs off the main actor, so a test that waited for it
     /// on the clock would be a test that fails on a busy machine.
     public var onDisplay: ((FITDisplay) -> Void)?
+    /// Called once the add form's catalogue has arrived — empty when it could
+    /// not be fetched. Another seam for the app's tests, which wait on it
+    /// rather than on the clock.
+    public var onCatalogueLoaded: (([MicrocodeCatalogueEntry]) -> Void)?
     private var focus: Int?
+    /// The CPUIDs this image already names, which is what the add form opens
+    /// on: a dump is for one board.
+    private var cpuidsInTheImage: Set<UInt32> = []
+
+    /// The add form while it is on screen.
+    private var form: FITAddMicrocodeViewController?
+
     /// Which parse is the current one. A file edited twice in quick succession
     /// starts two, and the one that finishes second is not necessarily the one
     /// that read the newer bytes.
     private var generation = 0
+
+    /// Where microcode comes from. Swappable, because a test suite that
+    /// reaches GitHub is a suite that fails on a train.
+    public static var microcodeSource: any MicrocodeSource = CPUMicrocodesRepository()
 
     public init(host: any ToolHost) {
         self.host = host
         controller.onSelect = { [weak self] index in self?.select(index) }
         controller.onGoToTarget = { [weak self] index in self?.goToOffset(of: index) }
         controller.onCopyCPUID = { [weak self] index in self?.copyCPUID(of: index) }
+        controller.onRemoveEntry = { [weak self] index in self?.removeEntry(at: index) }
+        controller.onAddMicrocode = { [weak self] in self?.addMicrocode() }
         controller.onGoToProblem = { [weak self] index in self?.goToProblem(index) }
         controller.onFixChecksum = { [weak self] in self?.fixChecksum() }
     }
@@ -134,6 +151,9 @@ struct FITParkedState: ToolSessionState {
 
     private func show(_ display: FITDisplay) {
         self.display = display
+        cpuidsInTheImage = Set(display.rows.compactMap {
+            $0.cpuidText.flatMap { UInt32($0, radix: 16) }
+        })
         controller.show(display, focus: focus, canWrite: !host.isReadOnly)
         host.publish(display.zones)
     }
@@ -192,6 +212,180 @@ struct FITParkedState: ToolSessionState {
             return
         }
         host.reveal(offset..<min(offset + 16, host.contentSize), select: true)
+    }
+
+    // MARK: - Adding and removing
+
+    /// Opens the form: the catalogue at `github.com/platomav/CPUMicrocodes`,
+    /// searchable by CPUID, with the file names doing the describing so nothing
+    /// is downloaded until one is picked.
+    private func addMicrocode() {
+        let form = FITAddMicrocodeViewController()
+        self.form = form
+        form.cpuidsInTheImage = cpuidsInTheImage
+        form.onCancel = { [weak self] in self?.closeForm() }
+        form.onAdd = { [weak self] entry in self?.download(entry) }
+        form.onChooseFile = { [weak self] in self?.chooseMicrocodeFile() }
+        controller.presentAsSheet(form)
+
+        form.say("Fetching the list from github.com…", busy: true)
+        let source = FITToolSession.microcodeSource
+        Task { [weak self, weak form] in
+            do {
+                let entries = try await source.catalogue()
+                form?.show(entries)
+                self?.onCatalogueLoaded?(entries)
+            } catch {
+                form?.say(error.localizedDescription)
+                self?.onCatalogueLoaded?([])
+            }
+        }
+    }
+
+    private func closeForm() {
+        guard let form else { return }
+        controller.dismiss(form)
+        self.form = nil
+    }
+
+    private func download(_ entry: MicrocodeCatalogueEntry) {
+        form?.say("Fetching \(entry.fileName)…", busy: true)
+        let source = FITToolSession.microcodeSource
+        Task { [weak self] in
+            do {
+                let bytes = try await source.download(entry)
+                self?.closeForm()
+                self?.addMicrocode(bytes, describedAs: "CPUID \(entry.cpuidText)")
+            } catch {
+                self?.form?.say(error.localizedDescription)
+            }
+        }
+    }
+
+    /// The way in without a network, and the way in for a microcode this
+    /// collection does not have.
+    private func chooseMicrocodeFile() {
+        Task { [weak self] in
+            guard let file = await self?.host.requestFile(kinds: ["bin", "mcu", "dat"]) else {
+                return
+            }
+            self?.closeForm()
+            self?.addMicrocode(file.bytes, describedAs: file.name)
+        }
+    }
+
+    /// Everything after the bytes are in hand: read the image again, work out
+    /// where the component goes, and land the whole change as one step.
+    ///
+    /// Public because it is the half worth driving from a test: the form above
+    /// it is a list and a search field, and the network behind that has no
+    /// place in a test suite.
+    public func addMicrocode(_ component: [UInt8], describedAs description: String) {
+        guard !host.isReadOnly else {
+            controller.say("This file is open read-only.")
+            return
+        }
+        guard let snapshot = try? host.snapshot() else {
+            controller.say("Could not read the file.")
+            return
+        }
+        let progress = host.beginProgress("Adding microcode", onCancel: nil)
+        Task { [weak self] in
+            let prepared = await FITToolSession.prepareAdd(component, snapshot: snapshot)
+            progress.finish()
+            guard let self else { return }
+            switch prepared {
+            case .failure(let problem):
+                self.controller.say(problem.message)
+            case .success(let (transaction, placement)):
+                self.apply(transaction, saying: "Added \(description) at "
+                    + "0x\(String(placement.range.lowerBound, radix: 16, uppercase: true))."
+                    + " Boot Guard ranges are not checked — this tool cannot read them yet.")
+            }
+        }
+    }
+
+    /// Takes a row out (§10). The component it named stays in the image:
+    /// erasing it is the riskier half of step 5.
+    public func removeEntry(at index: Int) {
+        guard !host.isReadOnly else {
+            controller.say("This file is open read-only.")
+            return
+        }
+        guard let snapshot = try? host.snapshot() else {
+            controller.say("Could not read the file.")
+            return
+        }
+        let progress = host.beginProgress("Removing entry", onCancel: nil)
+        Task { [weak self] in
+            let prepared = await FITToolSession.prepareRemove(index, snapshot: snapshot)
+            progress.finish()
+            guard let self else { return }
+            switch prepared {
+            case .failure(let problem):
+                self.controller.say(problem.message)
+            case .success(let transaction):
+                self.apply(transaction,
+                           saying: "Entry \(index) removed. Its component is still in the image.")
+            }
+        }
+    }
+
+    private func apply(_ transaction: ToolTransaction, saying note: String) {
+        do {
+            try host.apply(transaction)
+            controller.say(note + " ⌘Z takes it back.")
+        } catch {
+            controller.say("Could not write: \(error)")
+        }
+    }
+
+    /// Off the main actor, and from the file as it is now rather than from the
+    /// parse the panel is showing: the user may have typed in the dump since.
+    private nonisolated static func prepareAdd(
+        _ component: [UInt8],
+        snapshot: any ToolContentReader
+    ) async -> Result<(ToolTransaction, FITPlacement), FITEditProblem> {
+        await Task.detached(priority: .userInitiated) {
+            let source = ToolContentByteSource(reader: snapshot)
+            let reader = ImageReader(source)
+            let image = UEFIParser.parse(source)
+            let report = FITReader.read(reader, image: image)
+            guard let table = report.table else { return .failure(.noTable) }
+
+            let header: MicrocodeHeader
+            switch FITEditor.microcode(in: component) {
+            case .success(let read): header = read
+            case .failure(let problem): return .failure(problem)
+            }
+            // Exactly what the header claims, so a file with something after it
+            // does not drag the extra bytes into the image.
+            let bytes = Array(component.prefix(Int(header.totalSize)))
+
+            let placement: FITPlacement
+            switch FITEditor.placement(
+                forSize: UInt64(header.totalSize), table: table, image: image,
+                reader: reader, addressDiff: report.addressDiff
+            ) {
+            case .success(let found): placement = found
+            case .failure(let problem): return .failure(problem)
+            }
+            return FITEditor.addMicrocode(bytes, at: placement, to: table, in: reader)
+                .map { ($0, placement) }
+        }.value
+    }
+
+    private nonisolated static func prepareRemove(
+        _ index: Int,
+        snapshot: any ToolContentReader
+    ) async -> Result<ToolTransaction, FITEditProblem> {
+        await Task.detached(priority: .userInitiated) {
+            let reader = ImageReader(ToolContentByteSource(reader: snapshot))
+            guard let table = FITReader.read(reader, image: nil).table else {
+                return .failure(.noTable)
+            }
+            return FITEditor.removeEntry(index, from: table, in: reader)
+        }.value
     }
 
     /// The second defect of §11, and the one a tool can put right on its own:

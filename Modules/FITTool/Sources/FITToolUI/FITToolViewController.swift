@@ -10,6 +10,8 @@ import FITTool
     var onSelect: ((Int?) -> Void)?
     var onGoToTarget: ((Int) -> Void)?
     var onCopyCPUID: ((Int) -> Void)?
+    var onRemoveEntry: ((Int) -> Void)?
+    var onAddMicrocode: (() -> Void)?
     var onGoToProblem: ((Int) -> Void)?
     var onFixChecksum: (() -> Void)?
 
@@ -27,6 +29,8 @@ import FITTool
     private let summaryLabel = NSTextField(labelWithString: "")
     private let noticeLabel = NSTextField(labelWithString: "")
     private let fixChecksumButton = NSButton()
+    private let addButton = NSButton()
+    private let removeButton = NSButton()
     /// The problems list is as tall as its content, capped at half the height
     /// of the entries.
     private var problemsRatio: NSLayoutConstraint?
@@ -72,14 +76,26 @@ import FITTool
             scroll.translatesAutoresizingMaskIntoConstraints = false
         }
 
-        fixChecksumButton.title = "Fix Checksum"
-        fixChecksumButton.bezelStyle = .rounded
-        fixChecksumButton.controlSize = .small
-        fixChecksumButton.target = self
-        fixChecksumButton.action = #selector(fixChecksumClicked)
-        fixChecksumButton.toolTip =
-            "Write the checksum this table should have — one undo step"
-        fixChecksumButton.translatesAutoresizingMaskIntoConstraints = false
+        func button(_ button: NSButton, _ title: String, _ action: Selector, _ tip: String) {
+            button.title = title
+            button.bezelStyle = .rounded
+            button.controlSize = .small
+            button.target = self
+            button.action = action
+            button.toolTip = tip
+            button.translatesAutoresizingMaskIntoConstraints = false
+        }
+        button(addButton, "Add Microcode…", #selector(addMicrocodeClicked),
+               "Put a microcode in the image and name it in the table")
+        button(removeButton, "Remove Entry", #selector(removeEntryClicked),
+               "Take the selected entry out of the table — the component stays where it is")
+        button(fixChecksumButton, "Fix Checksum", #selector(fixChecksumClicked),
+               "Write the checksum this table should have — one undo step")
+
+        let buttons = NSStackView(views: [addButton, removeButton, fixChecksumButton])
+        buttons.orientation = .horizontal
+        buttons.spacing = 6
+        buttons.translatesAutoresizingMaskIntoConstraints = false
 
         noticeLabel.font = .systemFont(ofSize: 11)
         noticeLabel.textColor = .secondaryLabelColor
@@ -90,7 +106,7 @@ import FITTool
         view.addSubview(summaryLabel)
         view.addSubview(entriesScroll)
         view.addSubview(problemsScroll)
-        view.addSubview(fixChecksumButton)
+        view.addSubview(buttons)
         view.addSubview(noticeLabel)
 
         // As tall as it needs to be, up to half the entries' height, and no
@@ -125,15 +141,12 @@ import FITTool
 
             problemsScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
             problemsScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
-            problemsScroll.bottomAnchor.constraint(
-                equalTo: fixChecksumButton.topAnchor, constant: -6
-            ),
+            problemsScroll.bottomAnchor.constraint(equalTo: buttons.topAnchor, constant: -6),
             ratio, content,
 
-            fixChecksumButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
-            fixChecksumButton.bottomAnchor.constraint(
-                equalTo: noticeLabel.topAnchor, constant: -6
-            ),
+            buttons.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
+            buttons.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -8),
+            buttons.bottomAnchor.constraint(equalTo: noticeLabel.topAnchor, constant: -6),
 
             noticeLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
             noticeLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
@@ -179,6 +192,10 @@ import FITTool
             entries.deselectAll(nil)
         }
         fixChecksumButton.isEnabled = display.checksumFix != nil && canWrite
+        addButton.isEnabled = canWrite && !display.rows.isEmpty
+        removeButton.isEnabled = canWrite
+            && (focus.flatMap { index in display.rows.first { $0.index == index } }?.canRemove
+                ?? false)
 
         let hasProblems = !display.problems.isEmpty
         problemsScroll.isHidden = !hasProblems
@@ -201,6 +218,24 @@ import FITTool
     // MARK: - Actions
 
     @objc private func fixChecksumClicked() { onFixChecksum?() }
+    @objc private func addMicrocodeClicked() { onAddMicrocode?() }
+
+    @objc private func removeEntryClicked() {
+        guard let row = selectedEntry() else { return }
+        onRemoveEntry?(row.index)
+    }
+
+    /// The row the *selection* is on, as opposed to the one a right-click
+    /// landed on.
+    private func selectedEntry() -> FITDisplayRow? {
+        let row = entries.selectedRow
+        return row >= 0 && row < display.rows.count ? display.rows[row] : nil
+    }
+
+    @objc private func removeEntryFromMenuClicked() {
+        guard let row = clickedEntry() else { return }
+        onRemoveEntry?(row.index)
+    }
 
     @objc private func entryDoubleClicked() {
         guard entries.clickedRow >= 0, entries.clickedRow < display.rows.count else { return }
@@ -247,6 +282,7 @@ extension FITToolViewController: NSMenuDelegate {
             switch command {
             case .copyCPUID: action = #selector(copyCPUIDClicked)
             case .goToOffset: action = #selector(goToOffsetClicked)
+            case .removeEntry: action = #selector(removeEntryFromMenuClicked)
             }
             let item = menu.addItem(withTitle: command.title, action: action, keyEquivalent: "")
             item.target = self

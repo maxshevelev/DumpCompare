@@ -23,6 +23,9 @@ final class FITToolFlowTests: XCTestCase {
         defaultsName = isolated.name
         ToolController.defaults = isolated.store
         ToolController.changeDelay = 0
+        // Nothing in this suite touches the network: a test that reaches
+        // github.com is a test that fails on a train.
+        FITToolSession.microcodeSource = FakeMicrocodeSource()
     }
 
     override func tearDown() {
@@ -31,6 +34,7 @@ final class FITToolFlowTests: XCTestCase {
         if let defaultsName { discardIsolatedDefaults(defaultsName, ToolController.defaults) }
         ToolController.defaults = .standard
         ToolController.changeDelay = 0.15
+        FITToolSession.microcodeSource = CPUMicrocodesRepository()
         controller = nil
         window = nil
         files = []
@@ -186,6 +190,116 @@ final class FITToolFlowTests: XCTestCase {
         XCTAssertEqual(selection.start..<selection.end, 0x2000..<0x2100)
     }
 
+    // MARK: - Adding and removing
+
+    /// The whole of §9.2 through the panel: the component lands in the erased
+    /// space after the last microcode, the table names it, and one ⌘Z takes
+    /// all of it back.
+    func testAddingAMicrocodeWritesTheComponentAndTheRow() throws {
+        let controller = try open(FITTestImage.make())
+        let pane = controller.windowModel.pane1
+        let component = FITTestImage.microcode(signature: 0x000906EA, revision: 0xB4)
+
+        try session().addMicrocode(component, describedAs: "CPUID 906EA")
+        try waitForParse()
+
+        let display = try session().display
+        XCTAssertEqual(display.rows.count, 3)
+        XCTAssertEqual(display.rows[2].cpuidText, "906EA")
+        XCTAssertEqual(display.rows[2].targetRange, 0x2100..<0x2200)
+        XCTAssertEqual(try pane.byteStorage?.read(at: 0x2100, length: 4),
+                       Array(component[0..<4]))
+        XCTAssertTrue(display.problems.filter { $0.severity == .error }.isEmpty,
+                      "\(display.problems.map(\.message))")
+
+        let item = NSMenuItem(title: "Undo", action: #selector(MainViewController.undoEdit),
+                              keyEquivalent: "z")
+        _ = controller.validateMenuItem(item)
+        XCTAssertEqual(item.title, "Undo Add Microcode")
+
+        try pane.undo()
+        try waitForParse()
+
+        XCTAssertEqual(try session().display.rows.count, 2)
+        XCTAssertEqual(try pane.byteStorage?.read(at: 0x2100, length: 4), [0xFF, 0xFF, 0xFF, 0xFF])
+    }
+
+    /// A file that is not microcode is refused before anything is written.
+    func testAFileThatIsNotMicrocodeIsRefusedWithoutWriting() throws {
+        let controller = try open(FITTestImage.make())
+        let before = try controller.windowModel.pane1.byteStorage?.read(at: 0x2100, length: 4)
+
+        try session().addMicrocode([UInt8](repeating: 0x5A, count: 0x100), describedAs: "junk")
+        try waitUntilTheNoticeSettles()
+
+        XCTAssertEqual(try controller.windowModel.pane1.byteStorage?.read(at: 0x2100, length: 4),
+                       before)
+        XCTAssertEqual(try session().display.rows.count, 2)
+    }
+
+    /// §10: the row goes, an empty slot takes its place in the tail, and the
+    /// component it named stays where it is.
+    func testRemovingAnEntryLeavesAnEmptySlotAndTheComponent() throws {
+        let controller = try open(FITTestImage.make(extraACM: true))
+        let pane = controller.windowModel.pane1
+        XCTAssertEqual(try session().display.rows.count, 3)
+
+        try session().removeEntry(at: 2)
+        try waitForParse()
+
+        let display = try session().display
+        XCTAssertEqual(display.rows.map(\.typeText), ["FIT Header", "Microcode", "Empty slot"])
+        XCTAssertEqual(try pane.byteStorage?.read(at: 0x2100, length: 4), [0xFF, 0xFF, 0xFF, 0xFF])
+        XCTAssertTrue(display.problems.filter { $0.severity == .error }.isEmpty)
+    }
+
+    /// A table needs one microcode entry (§8.7), so the only one is not offered
+    /// for removal at all — rather than offered and then refused.
+    func testTheLastMicrocodeIsNotOfferedForRemoval() throws {
+        _ = try open(FITTestImage.make())
+        let rows = try session().display.rows
+
+        XCTAssertFalse(rows[1].canRemove)
+        XCTAssertFalse(rows[1].commands.contains { $0.title == "Remove Entry" })
+        XCTAssertFalse(rows[0].canRemove)
+    }
+
+    func testAnEntryThatMayGoOffersIt() throws {
+        _ = try open(FITTestImage.make(extraACM: true))
+        let rows = try session().display.rows
+
+        XCTAssertTrue(rows[2].canRemove)
+        XCTAssertTrue(rows[2].commands.contains { $0.title == "Remove Entry" })
+    }
+
+    /// The form opens on the catalogue, narrowed to the CPUIDs this image
+    /// already names — a dump is for one board.
+    func testTheAddFormOpensWithTheCatalogue() throws {
+        let controller = try open(FITTestImage.make())
+        let loaded = expectation(description: "the catalogue arrives")
+        var entries: [MicrocodeCatalogueEntry] = []
+        try session().onCatalogueLoaded = { list in
+            entries = list
+            loaded.fulfill()
+        }
+
+        try button("Add Microcode…").performClick(nil)
+        wait(for: [loaded], timeout: 5)
+
+        XCTAssertEqual(entries.map(\.cpuidText), ["806EA", "906EA"])
+        XCTAssertFalse(controller.tools.session.map {
+            ($0.viewController.presentedViewControllers ?? []).isEmpty
+        } ?? true, "the sheet is on screen")
+    }
+
+    /// Waits for whatever the session does next to settle, for the paths that
+    /// deliberately write nothing.
+    private func waitUntilTheNoticeSettles() throws {
+        let settled = expectation(description: "the session comes back")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { settled.fulfill() }
+        wait(for: [settled], timeout: 2)
+    }
+
     /// What the right-button menu's first item does.
     func testCopyingTheCpuidPutsItOnThePasteboard() throws {
         let board = NSPasteboard(name: NSPasteboard.Name("dev.maxik.tests.fit"))
@@ -281,17 +395,20 @@ final class FITToolFlowTests: XCTestCase {
 
 /// A 64 KiB image with a FIT in it, built byte by byte — the app suite's own
 /// fixture, since the model package's builder does not ship.
-private enum FITTestImage {
+enum FITTestImage {
     static func make(
         checksum: UInt8? = nil,
-        microcodeAddress: UInt64? = nil
+        microcodeAddress: UInt64? = nil,
+        extraACM: Bool = false
     ) -> [UInt8] {
         var image = [UInt8](repeating: 0xFF, count: 0x1_0000)
         let diff: UInt64 = 0x1_0000_0000 - 0x1_0000
         image.replaceSubrange(0x2000..<0x2100, with: microcode())
 
-        var table = entry(address: 0x2020_205F_5449_465F, size: 2, type: 0x00, checksumValid: true)
+        var table = entry(address: 0x2020_205F_5449_465F, size: extraACM ? 3 : 2,
+                          type: 0x00, checksumValid: true)
         table += entry(address: microcodeAddress ?? (0x2000 + diff), size: 0, type: 0x01)
+        if extraACM { table += entry(address: 0x3000 + diff, size: 0, type: 0x02) }
         table[0x0F] = checksum ?? (0 &- table.reduce(into: UInt8(0)) { $0 = $0 &+ $1 })
         image.replaceSubrange(0x1000..<(0x1000 + table.count), with: table)
 
@@ -315,22 +432,50 @@ private enum FITTestImage {
         return bytes
     }
 
-    private static func microcode() -> [UInt8] {
+    /// A microcode image with a correct dword checksum — the editor refuses one
+    /// without it.
+    static func microcode(signature: UInt32 = 0x0008_06EA, revision: UInt32 = 0xF0) -> [UInt8] {
         var bytes: [UInt8] = []
         func u32(_ value: UInt32) {
             bytes += (0..<4).map { UInt8(truncatingIfNeeded: value >> (8 * $0)) }
         }
         u32(1)                       // HeaderType
-        u32(0xF0)                    // UpdateRevision
+        u32(revision)
         bytes += [0x19, 0x20, 0x15, 0x07]   // Year, Day, Month — BCD
-        u32(0x0008_06EA)             // ProcessorSignature
-        u32(0)                       // Checksum
+        u32(signature)
+        u32(0)                       // Checksum, filled in below
         u32(1)                       // LoaderRevision
         u32(1)                       // PlatformIds
         u32(0x40)                    // DataSize
         u32(0x100)                   // TotalSize
         u32(0); u32(0); u32(0)       // MetadataSize, UpdateRevisionMin, Reserved
         bytes += [UInt8](repeating: 0x5A, count: 0x100 - bytes.count)
+
+        var sum: UInt32 = 0
+        for index in stride(from: 0, to: bytes.count, by: 4) {
+            sum = sum &+ (UInt32(bytes[index]) | UInt32(bytes[index + 1]) << 8
+                | UInt32(bytes[index + 2]) << 16 | UInt32(bytes[index + 3]) << 24)
+        }
+        let stored = 0 &- sum
+        for index in 0..<4 { bytes[0x10 + index] = UInt8(truncatingIfNeeded: stored >> (8 * index)) }
         return bytes
+    }
+}
+
+/// A catalogue of two, and no network.
+private struct FakeMicrocodeSource: MicrocodeSource {
+    func catalogue() async throws -> [MicrocodeCatalogueEntry] {
+        [
+            MicrocodeCatalogue.entry(
+                at: "Intel/cpu806EA_plat02_ver000000F0_2019-07-15_PRD_11223344.bin", size: 0x100
+            )!,
+            MicrocodeCatalogue.entry(
+                at: "Intel/cpu906EA_plat02_ver000000B4_2021-01-01_PRD_55667788.bin", size: 0x100
+            )!
+        ]
+    }
+
+    func download(_ entry: MicrocodeCatalogueEntry) async throws -> [UInt8] {
+        FITTestImage.microcode(signature: entry.cpuid, revision: entry.revision)
     }
 }

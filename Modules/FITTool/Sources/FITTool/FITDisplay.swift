@@ -25,6 +25,9 @@ public struct FITDisplayRow: Equatable, Sendable {
     public var rowRange: Range<UInt64>
     /// Where the row points, when it points into the image.
     public var targetRange: Range<UInt64>?
+    /// Whether §10 allows this row to go: not the header, and not the last
+    /// microcode a table has.
+    public var canRemove: Bool
 
     /// Where "go to the offset" leads: what the row points at, or — for the
     /// header and for an empty slot, which point nowhere — the row itself.
@@ -42,6 +45,7 @@ public struct FITDisplayRow: Equatable, Sendable {
         var commands: [FITRowCommand] = []
         if let cpuidText { commands.append(.copyCPUID(cpuidText)) }
         commands.append(.goToOffset(offsetToGoTo))
+        if canRemove { commands.append(.removeEntry(index)) }
         return commands
     }
 }
@@ -58,11 +62,14 @@ public enum FITRowCommand: Equatable, Sendable {
     case copyCPUID(String)
     /// Go to what the row points at, and put it in focus.
     case goToOffset(UInt64)
+    /// Take the row out of the table (§10).
+    case removeEntry(Int)
 
     public var title: String {
         switch self {
         case .copyCPUID: return "Copy CPUID"
         case .goToOffset: return "Go to Offset"
+        case .removeEntry: return "Remove Entry"
         }
     }
 }
@@ -135,6 +142,8 @@ public enum FITPresenter {
             )
         }
         let problemRows = Set(report.problems.compactMap(\.entryIndex))
+        // A table needs one microcode entry (§8.7), so the last one cannot go.
+        let microcodeCount = table.rows.filter { $0.entry.type == FIT.microcodeType }.count
         let rows = table.rows.map { row in
             FITDisplayRow(
                 index: row.entry.index,
@@ -146,7 +155,9 @@ public enum FITPresenter {
                 hasProblem: problemRows.contains(row.entry.index),
                 zoneID: rowZoneID(row.entry.index),
                 rowRange: row.entry.offset..<(row.entry.offset + FITEntry.size),
-                targetRange: targetRange(of: row)
+                targetRange: targetRange(of: row),
+                canRemove: row.entry.index > 0
+                    && !(row.entry.type == FIT.microcodeType && microcodeCount == 1)
             )
         }
         return FITDisplay(

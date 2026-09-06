@@ -211,8 +211,9 @@ final class FITDisplayTests: XCTestCase {
     func testARowThatPointsNowhereGoesToItself() {
         let rows = display([microcodeRow, TestFIT.Row(FIT.emptyType, address: 0)]).rows
 
+        // The header may not be removed (§10), so it is not offered.
         XCTAssertEqual(rows[0].commands, [.goToOffset(0x1000)])
-        XCTAssertEqual(rows[2].commands, [.goToOffset(0x1020)])
+        XCTAssertEqual(rows[2].commands, [.goToOffset(0x1020), .removeEntry(2)])
         XCTAssertEqual(rows[0].zoneToFocus, "fit.row.0")
         XCTAssertEqual(rows[2].zoneToFocus, "fit.row.2")
     }
@@ -222,8 +223,20 @@ final class FITDisplayTests: XCTestCase {
     func testARowWithNoCpuidStillOffersItsOffset() {
         let rows = display([TestFIT.Row(FIT.startupACMType, target: 0x3000)]).rows
 
-        XCTAssertEqual(rows[1].commands, [.goToOffset(0x3000)])
+        XCTAssertEqual(rows[1].commands, [.goToOffset(0x3000), .removeEntry(1)])
         XCTAssertEqual(rows[1].zoneToFocus, "fit.target.1")
+    }
+
+    /// A table needs one microcode entry (§8.7), so the only one is not offered
+    /// for removal at all — rather than offered and then refused.
+    func testTheLastMicrocodeIsNotOfferedForRemoval() {
+        let one = display([microcodeRow]).rows
+        XCTAssertFalse(one[1].canRemove)
+        XCTAssertFalse(one[1].commands.contains { $0.title == "Remove Entry" })
+
+        let two = display([microcodeRow, TestFIT.Row(FIT.microcodeType, target: 0x3000)]).rows
+        XCTAssertTrue(two[1].canRemove)
+        XCTAssertTrue(two[2].canRemove)
     }
 
     /// The trip back: the user picks a zone in the dump, and the panel has to
