@@ -180,6 +180,26 @@ enum TestImage {
         return file(guid: guid, type: type, body: body.bytes)
     }
 
+    /// A Volume Top File whose last forty-eight bytes are the reset vector
+    /// (§5.7) — which is where they are in a real image, since the file's last
+    /// byte is mapped at `0xFFFFFFFF`.
+    static func volumeTopFile(
+        size: UInt64 = 0x100,
+        peiCoreEntryPoint: UInt32 = 0xFFF8_0000,
+        bootFvBaseAddress: UInt32 = 0xFFF0_0000
+    ) -> [UInt8] {
+        var body = BinaryWriter()
+        body.fill(size - FFS.headerSize - ResetVector.size, with: 0xFF)
+        body.fill(8, with: 0xEA)                      // ApEntryVector
+        body.fill(8, with: 0xFF)                      // Reserved0
+        body.u32(peiCoreEntryPoint)
+        body.fill(12, with: 0xFF)                     // Reserved1
+        body.fill(8, with: 0x90)                      // ResetVector
+        body.u32(0xFFFF_0000)                         // ApStartupSegment
+        body.u32(bootFvBaseAddress)
+        return file(guid: KnownGUIDs.volumeTopFile, body: body.bytes)
+    }
+
     /// A volume, its files laid out eight-byte aligned, the rest erased.
     static func volume(
         fileSystem: EFIGUID = KnownGUIDs.ffsV2,
@@ -190,7 +210,8 @@ enum TestImage {
         blockMapLength: UInt64? = nil,
         checksum: UInt16? = nil,
         extendedHeader: EFIGUID? = nil,
-        trailing: [UInt8] = []
+        trailing: [UInt8] = [],
+        lastFile: [UInt8]? = nil
     ) -> [UInt8] {
         // The extended header goes straight after the block map, and the base
         // header's length does not grow to cover it (§3.2).
@@ -228,6 +249,22 @@ enum TestImage {
             volume.raw(file)
         }
         volume.raw(trailing)
+        if let lastFile {
+            // Flush against the end of the volume, the way a Volume Top File
+            // is — with a pad file covering the space in front of it, which is
+            // how a real volume reaches one (§5.7).
+            let start = length - UInt64(lastFile.count)
+            let gap = start - volume.count
+            if gap >= FFS.headerSize {
+                volume.raw(file(
+                    guid: .zero,
+                    type: FFS.padType,
+                    body: [UInt8](repeating: emptyByte, count: Int(gap - FFS.headerSize))
+                ))
+            }
+            volume.pad(to: start, with: emptyByte)
+            volume.raw(lastFile)
+        }
         volume.pad(to: length, with: emptyByte)
         return volume.bytes
     }

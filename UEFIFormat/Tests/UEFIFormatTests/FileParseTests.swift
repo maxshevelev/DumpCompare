@@ -194,6 +194,23 @@ final class FileParseTests: XCTestCase {
         XCTAssertEqual(children[2].range, 0x168..<0x400)
     }
 
+    /// And what is in there gets searched: vendors put runs of microcode and
+    /// whole volumes in the space after a volume's files, and leaving it as one
+    /// opaque block would hide them (§5.8).
+    func testWhatIsInsideNonUefiDataIsFound() {
+        let image = TestImage.volume(
+            length: 0x1000,
+            files: [TestImage.file(body: [1, 2, 3, 4, 5, 6, 7, 8])],
+            trailing: [UInt8](repeating: 0xFF, count: 0x100) + TestImage.microcode()
+        )
+        let children = UEFIParser.parse(image).roots[0].children
+        let data = children.last
+
+        XCTAssertEqual(data?.kind, .nonUEFIData)
+        XCTAssertEqual(data?.children.map(\.kind), [.microcode, .padding])
+        XCTAssertEqual(data?.children.first?.range, 0x168..<0x1D8)
+    }
+
     /// And the boundary between the two goes *back* to the eight-byte mark
     /// (§5.8): whatever the data turns out to be, it starts aligned, so the
     /// erased bytes in front of it belong to it and not to the free space.

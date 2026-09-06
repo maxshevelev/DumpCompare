@@ -19,17 +19,22 @@ public struct UEFIImage: Sendable {
     /// (§5.7). Nil means the VTF was missing or compressed, and then every
     /// address in the image is unknowable — not zero, not a guess.
     public let addressDiff: UInt64?
+    /// The image's own statement of where it is loaded, when the second pass
+    /// got far enough to read it (§5.7).
+    public let resetVector: ResetVector?
 
     public init(
         size: UInt64,
         roots: [UEFINode],
         diagnostics: [UEFIDiagnostic] = [],
-        addressDiff: UInt64? = nil
+        addressDiff: UInt64? = nil,
+        resetVector: ResetVector? = nil
     ) {
         self.size = size
         self.roots = UEFIImage.stampingIDs(roots, under: NodeID())
         self.diagnostics = diagnostics
         self.addressDiff = addressDiff
+        self.resetVector = resetVector
     }
 
     /// Ids are stamped here, at the end, rather than threaded through the

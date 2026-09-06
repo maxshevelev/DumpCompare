@@ -202,11 +202,14 @@ extension Parser {
 
         while offset < body.upperBound {
             guard body.upperBound - offset >= FFS.headerSize else {
-                nodes.append(nonUEFIData(offset..<body.upperBound, emptyByte: emptyByte))
+                nodes.append(nonUEFIData(offset..<body.upperBound, emptyByte: emptyByte, depth: depth))
                 break
             }
             if reader.isFilled(offset..<(offset + FFS.headerSize), with: emptyByte) {
-                nodes += freeSpace(from: offset, to: body.upperBound, of: body, emptyByte: emptyByte)
+                nodes += freeSpace(
+                    from: offset, to: body.upperBound, of: body,
+                    emptyByte: emptyByte, depth: depth
+                )
                 break
             }
             guard let file = parseFile(
@@ -239,7 +242,8 @@ extension Parser {
         from start: UInt64,
         to end: UInt64,
         of body: Range<UInt64>,
-        emptyByte: UInt8
+        emptyByte: UInt8,
+        depth: Int
     ) -> [UEFINode] {
         guard let firstUsed = reader.firstOffset(in: start..<end, notEqualTo: emptyByte) else {
             return [UEFINode(kind: .freeSpace, name: "Free space", range: start..<end, isErased: true)]
@@ -256,16 +260,28 @@ extension Parser {
                 kind: .freeSpace, name: "Free space", range: start..<boundary, isErased: true
             ))
         }
-        nodes.append(nonUEFIData(boundary..<end, emptyByte: emptyByte))
+        nodes.append(nonUEFIData(boundary..<end, emptyByte: emptyByte, depth: depth))
         return nodes
     }
 
-    func nonUEFIData(_ range: Range<UInt64>, emptyByte: UInt8) -> UEFINode {
-        UEFINode(
+    /// Bytes inside a volume that are not files. Searched all the same (§5.8):
+    /// vendors put whole volumes and runs of microcode in the space after a
+    /// volume's files, and leaving it as one opaque block would hide them.
+    func nonUEFIData(_ range: Range<UInt64>, emptyByte: UInt8, depth: Int) -> UEFINode {
+        var node = UEFINode(
             kind: .nonUEFIData,
             name: "Non-UEFI data",
             range: range,
             isErased: reader.isFilled(range, with: emptyByte)
         )
+        if !node.isErased, depth < limits.maxDepth {
+            let found = scanRawArea(range, emptyByte: emptyByte, depth: depth + 1)
+            // Nothing but padding means the search found nothing, and a single
+            // padding child that repeats its parent is noise.
+            if found.contains(where: { $0.kind != .padding }) {
+                node.children = found
+            }
+        }
+        return node
     }
 }

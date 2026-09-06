@@ -50,8 +50,15 @@ final class Parser {
     }
 
     func run() -> UEFIImage {
-        let roots = reader.count == 0 ? [] : parseTopLevel(reader.all, depth: 0)
-        return UEFIImage(size: reader.count, roots: roots, diagnostics: diagnostics)
+        var roots = reader.count == 0 ? [] : parseTopLevel(reader.all, depth: 0)
+        let second = roots.isEmpty ? SecondPass() : runSecondPass(&roots)
+        return UEFIImage(
+            size: reader.count,
+            roots: roots,
+            diagnostics: diagnostics,
+            addressDiff: second.addressDiff,
+            resetVector: second.resetVector
+        )
     }
 
     /// What kind of thing this is (§1): an update capsule, a full flash dump

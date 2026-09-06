@@ -48,8 +48,12 @@ public struct UEFIDiagnostic: Equatable, Sendable {
         case unknownType(Structure, UInt8)
         /// A tree deep enough to be a loop rather than an image (§11).
         case recursionLimit
-        /// No Volume Top File, so no addresses, so no second pass (§5.7).
-        case noVolumeTopFile
+        /// A Volume Top File was found but cannot anchor the image — it ends
+        /// past the top of the address space (§5.7). Not having one at all is
+        /// no diagnostic: a partial dump of a BIOS region or an EC has no VTF
+        /// and is not defective for it. `UEFIImage.addressDiff` being nil says
+        /// everything there is to say about that.
+        case addressesUnknown
         /// Two flash regions covering the same bytes: a descriptor nobody can
         /// trust (§2.2).
         case overlappingRegions
@@ -59,7 +63,7 @@ public struct UEFIDiagnostic: Equatable, Sendable {
             case .truncated, .zeroSize, .recursionLimit:
                 return .error
             case .checksumMismatch, .sizeMismatch, .unknownFileSystem,
-                 .unknownType, .noVolumeTopFile, .overlappingRegions:
+                 .unknownType, .addressesUnknown, .overlappingRegions:
                 return .warning
             }
         }
@@ -94,8 +98,8 @@ public struct UEFIDiagnostic: Equatable, Sendable {
             return "unknown \(structure.label) type \(hex(UInt64(code)))"
         case .recursionLimit:
             return "nesting is too deep to be an image"
-        case .noVolumeTopFile:
-            return "no volume top file, so absolute addresses are unknown"
+        case .addressesUnknown:
+            return "the volume top file ends past the top of the address space"
         case .overlappingRegions:
             return "this flash region overlaps the one before it"
         }
