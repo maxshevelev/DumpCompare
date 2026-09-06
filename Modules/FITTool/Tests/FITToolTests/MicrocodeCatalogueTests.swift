@@ -34,6 +34,7 @@ final class MicrocodeCatalogueTests: XCTestCase {
         XCTAssertEqual(entry.cpuid, 0x906EB)
         XCTAssertEqual(entry.cpuidText, "906EB")
         XCTAssertEqual(entry.platformID, 0x02)
+        XCTAssertEqual(entry.platformText, "02")   // as the file name writes it
         XCTAssertEqual(entry.revision, 0x7C)
         XCTAssertEqual(entry.revisionText, "7C")
         XCTAssertEqual(entry.date, "2017-12-03")

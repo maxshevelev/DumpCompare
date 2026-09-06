@@ -37,8 +37,12 @@ public struct MicrocodeCatalogueEntry: Equatable, Sendable, Identifiable {
 
     public var revisionText: String { String(revision, radix: 16, uppercase: true) }
 
+    /// Two hex digits at least, the way the file name writes it: `plat02`, not
+    /// `plat2`.
     public var platformText: String {
-        platformID.map { String($0, radix: 16, uppercase: true) } ?? ""
+        guard let platformID else { return "" }
+        let text = String(platformID, radix: 16, uppercase: true)
+        return text.count < 2 ? "0" + text : text
     }
 
     public var fileName: String { String(path.split(separator: "/").last ?? "") }

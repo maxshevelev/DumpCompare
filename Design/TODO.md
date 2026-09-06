@@ -153,39 +153,24 @@ subsection.
 **Cost.** 6–10 hours, nearly all of it in deciding the three questions and in
 the tests that hold the answers.
 
-### Adding a microcode entry to the FIT table
+### Boot Guard, before a component is written into a protected range
 
-**What.** The piece the FIT tool-module exists for in the long run: put a new
-microcode image into the file and give it a row in the table
-(`Design/UEFI/FIT_TABLE_FORMAT.md` §9.2). Today the tool reads, validates and
-fixes the header's checksum; it does not add anything.
+**What.** The one check the FIT tool cannot make. Adding a microcode puts bytes
+somewhere in the image; if that somewhere is covered by a Boot Guard protected
+range — the IBB described in the Boot Policy, or a range listed in a vendor hash
+file — the hash stops matching and the platform will not start. The panel says
+so after every add, because saying so is all it can do.
 
-**Why not yet.** Every step of §9.2 is a placement rule, and each one needs the
-image around it rather than the table: the component has to be 16-byte aligned,
-big enough for `TotalSize`, outside every element of the tree, outside the Boot
-Guard protected ranges — which `UEFIFormat` does not read yet — and inside one
-flash region. Then the row: an empty `0x7F` slot is the safe way in, but the
-slots sit at the end of the table and a microcode row has to keep its place in
-the type order, so filling one means shifting the rows between and eating a slot
-from the tail. Growing `header.Size` instead is only possible when the bytes
-after the table are free. Then the checksum, which is the easy part and already
-written.
+**Why it is not done.** The ranges live in structures `UEFIFormat` does not read
+yet (§10.4 of `UEFI_IMAGE_FORMAT.md`: four vendor hash file layouts across three
+vendors, plus the Boot Policy manifest). See the entry below.
 
-**How.** Three things, in order: a placement finder that proposes an offset and
-says why the ones it rejected were rejected; the row insertion, as one
-`ToolTransaction` — the component, the row, the shifted rows, the header count
-and the checksum, landing together or not at all, which is exactly the shape
-transactions were given for; and a validation pass afterwards that re-reads
-what was written. Deleting an entry (§10) is the same machinery backwards and
-comes with it.
+**How.** Once the parse produces them, the placement search takes a list of
+forbidden ranges and skips any candidate that touches one, and the notice after
+an add changes from a warning to a statement. The FIT tool's side of it is a
+parameter and a filter; the work is all in the parse.
 
-**Touches.** `FITTool` (the placement model and the transaction builder),
-`FITToolUI` (a sheet to pick the microcode file — `host.requestFile` already
-hands it over), and the Boot Guard ranges above, which decide whether a
-placement is safe rather than merely empty.
-
-**Cost.** 12–20 hours, most of it in the placement rules and the tests that hold
-them.
+**Cost.** 6–10 hours in `UEFIFormat`, an hour in `FITTool`.
 
 ### What `UEFIFormat` leaves unread
 

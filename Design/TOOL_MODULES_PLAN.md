@@ -422,13 +422,23 @@ apply is absent instead of greyed. Columns are fixed and narrow and the table
 scrolls sideways — squeezing the one column with something to say into whatever
 is left is how it ends up reading "Microco…".
 
-**One repair, on purpose.** The header's checksum, when the header says it
-counts and it does not add up — §11's second defect, one byte, one named undo
-step, and a re-read afterwards that stops offering it. Adding a microcode entry
-(§9.2) is the piece this tool exists for in the long run and it is a different
-size of job: a component has to be placed, the empty slots juggled, the entries
-shifted to keep the type order, and every one of those has a rule about what it
-must not overlap. `Design/TODO.md` carries it.
+**Three edits, each one step.** The header's checksum when it does not add up
+(§11's second defect, one byte); adding a microcode entry (§9.2); and taking one
+out (§10). Each lands as a single `ToolTransaction` — for an addition that is
+the component, the row, the rows shifted around it, the header's count and the
+checksum — because half of that written is an image that does not boot.
+
+Adding opens a form on the collection at `github.com/platomav/CPUMicrocodes`,
+which encodes the CPUID, the platform, the revision and the date into every file
+name: a thousand microcodes are searchable without downloading one of them. The
+list opens narrowed to the CPUIDs the image already names, since a dump is for
+one board. `Choose File…` is the way in without a network. The app gained
+`com.apple.security.network.client` for this and for nothing else.
+
+What the tool cannot check is Boot Guard: the protected ranges are in structures
+`UEFIFormat` does not read yet, and a component written inside one stops the
+platform booting. It says so after every add rather than pretending otherwise,
+and `Design/TODO.md` carries the work.
 
 The panel's own parse runs off the main actor over `host.snapshot()`, through an
 adapter from `ToolContentReader` to `ByteSource` that lives in the tool-module
