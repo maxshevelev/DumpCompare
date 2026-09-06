@@ -429,11 +429,14 @@ the component, the row, the rows shifted around it, the header's count and the
 checksum — because half of that written is an image that does not boot.
 
 Adding opens a form on the collection at `github.com/platomav/CPUMicrocodes`,
-which encodes the CPUID, the platform, the revision and the date into every file
-name: a thousand microcodes are searchable without downloading one of them. The
-list opens narrowed to the CPUIDs the image already names, since a dump is for
-one board. `Choose File…` is the way in without a network. The app gained
-`com.apple.security.network.client` for this and for nothing else.
+which encodes the processor, the revision and the date into every file name:
+thousands of microcodes are searchable without downloading one of them. The
+vendor popup — AMD, Freescale, Intel, VIA, a directory each — opens on Intel,
+the only kind a FIT can name, and picking one lists everything that vendor has;
+the search field is how a CPUID is found in a list that long. `Choose File…` is
+the way in without a network, and for microcode the collection does not have.
+The app gained `com.apple.security.network.client` for this and for nothing
+else.
 
 What the tool cannot check is Boot Guard: the protected ranges are in structures
 `UEFIFormat` does not read yet, and a component written inside one stops the
