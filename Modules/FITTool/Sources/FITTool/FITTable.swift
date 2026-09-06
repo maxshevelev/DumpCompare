@@ -97,10 +97,10 @@ public enum FITReader {
     public static func read(_ reader: ImageReader, image: UEFIImage?) -> FITReport {
         let assumed = image?.addressDiff == nil
         let addressDiff = image?.addressDiff ?? (0x1_0000_0000 &- reader.count)
+        // That the mapping was assumed is not a problem with the table: it is a
+        // caveat about the reading, and it belongs in the line that says what
+        // was read rather than in the list of what is wrong.
         var problems: [FITProblem] = []
-        if assumed {
-            problems.append(FITProblem(.addressesAssumed(addressDiff: addressDiff)))
-        }
 
         func report(_ table: FITTable?, _ candidates: [UInt64] = []) -> FITReport {
             FITReport(

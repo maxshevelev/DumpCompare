@@ -26,6 +26,10 @@ import FITTool
     private let summaryLabel = NSTextField(labelWithString: "")
     private let noticeLabel = NSTextField(labelWithString: "")
     private let fixChecksumButton = NSButton()
+    /// The problems list gets half the height of the entries when there is
+    /// something in it, and none at all when there is not.
+    private var problemsRatio: NSLayoutConstraint?
+    private var problemsCollapsed: NSLayoutConstraint?
 
     private enum Column {
         static let index = NSUserInterfaceItemIdentifier("index")
@@ -45,6 +49,10 @@ import FITTool
         summaryLabel.translatesAutoresizingMaskIntoConstraints = false
 
         configure(entries, doubleAction: #selector(entryDoubleClicked))
+        // What a row points at is the column worth the slack when the user
+        // widens the panel; the fields in front of it are fixed-width by
+        // nature.
+        entries.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         column(entries, Column.index, "#", 22)
         column(entries, Column.type, "Type", 132)
         column(entries, Column.address, "Address", 84)
@@ -85,12 +93,17 @@ import FITTool
         view.addSubview(fixChecksumButton)
         view.addSubview(noticeLabel)
 
-        // The problems list gets a third of the height, and gives way first
-        // when the panel is squeezed.
-        let problemsHeight = problemsScroll.heightAnchor.constraint(
+        // Half the entries' height when there is something to say, and no
+        // height at all when there is not — an empty box under a good table is
+        // a box the user has to work out the meaning of.
+        let ratio = problemsScroll.heightAnchor.constraint(
             equalTo: entriesScroll.heightAnchor, multiplier: 0.5
         )
-        problemsHeight.priority = .defaultHigh
+        ratio.priority = .defaultHigh
+        problemsRatio = ratio
+        let collapsed = problemsScroll.heightAnchor.constraint(equalToConstant: 0)
+        collapsed.priority = .defaultHigh
+        problemsCollapsed = collapsed
         let bottom = noticeLabel.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -8)
         // Breakable, for the reason the panel's own insets are (§19.2): a panel
         // squeezed to nothing is a legal state, and this chain must give way
@@ -114,7 +127,7 @@ import FITTool
             problemsScroll.bottomAnchor.constraint(
                 equalTo: fixChecksumButton.topAnchor, constant: -6
             ),
-            problemsHeight,
+            ratio,
 
             fixChecksumButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
             fixChecksumButton.bottomAnchor.constraint(
@@ -165,7 +178,11 @@ import FITTool
             entries.deselectAll(nil)
         }
         fixChecksumButton.isEnabled = display.checksumFix != nil && canWrite
-        problemsScroll.isHidden = display.problems.isEmpty && display.rows.isEmpty
+
+        let hasProblems = !display.problems.isEmpty
+        problemsScroll.isHidden = !hasProblems
+        problemsRatio?.isActive = hasProblems
+        problemsCollapsed?.isActive = !hasProblems
     }
 
     /// A line under the buttons — what happened, or what to do next. The panel
@@ -231,7 +248,12 @@ extension FITToolViewController: NSTableViewDataSource, NSTableViewDelegate {
         // A row the validator complained about is red wherever the eye lands on
         // it, not only in the list below.
         cell.textField?.textColor = entry.hasProblem ? .systemRed : .labelColor
-        cell.textField?.toolTip = entry.targetText.isEmpty ? nil : entry.targetText
+        // The version is a real field and it decides how a policy row's address
+        // is read (§7.3), but it is the same 1.00 on almost every row — so it
+        // lives where a curious pointer finds it rather than in a column.
+        cell.textField?.toolTip = column.identifier == Column.type
+            ? "Version \(entry.versionText)"
+            : (entry.targetText.isEmpty ? nil : entry.targetText)
         return cell
     }
 

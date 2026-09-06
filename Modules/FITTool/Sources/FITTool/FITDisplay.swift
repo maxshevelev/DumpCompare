@@ -119,6 +119,12 @@ public enum FITPresenter {
             "FIT at \(hex(table.range.lowerBound))",
             "\(table.entries.count) " + (table.entries.count == 1 ? "entry" : "entries")
         ]
+        if report.addressDiffIsAssumed {
+            // Said every time, because it is true every time for a region cut
+            // out of a dump — and there every address in the table is wrong by
+            // whatever was cut off in front of it.
+            parts.append("addresses assumed")
+        }
         if !table.checksumIsChecked {
             parts.append("checksum unused")
         } else if table.checksumIsCorrect {

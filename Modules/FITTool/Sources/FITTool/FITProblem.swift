@@ -15,11 +15,6 @@ public struct FITProblem: Equatable, Sendable {
     }
 
     public enum Kind: Equatable, Sendable {
-        /// No Volume Top File, so the image was taken to be mapped against the
-        /// top of the address space. True of a full flash dump; false of a
-        /// region cut out of one, where every address here will be wrong by
-        /// whatever was cut off.
-        case addressesAssumed(addressDiff: UInt64)
         case imageHasNoPointer
         case pointerLeadsOutsideTheImage(address: UInt64)
         case noTableAtThePointer(address: UInt64)
@@ -55,7 +50,7 @@ public struct FITProblem: Equatable, Sendable {
 
     public var severity: Severity {
         switch kind {
-        case .addressesAssumed, .reservedIsNotZero:
+        case .reservedIsNotZero:
             return .warning
         default:
             return .error
@@ -64,9 +59,6 @@ public struct FITProblem: Equatable, Sendable {
 
     public var message: String {
         switch kind {
-        case .addressesAssumed(let diff):
-            return "No volume top file: assuming the image is mapped at "
-                + hex(0x1_0000_0000 - diff <= 0 ? 0 : diff) + " and up"
         case .imageHasNoPointer:
             return "The image is too small to hold a FIT pointer"
         case .pointerLeadsOutsideTheImage(let address):

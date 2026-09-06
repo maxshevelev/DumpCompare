@@ -44,6 +44,23 @@ final class FITDisplayTests: XCTestCase {
         )
     }
 
+    /// A region cut out of a dump has no volume top file, and then every
+    /// address in the table is wrong by whatever was cut off in front of it.
+    /// The summary says which reading it did, every time.
+    func testTheSummarySaysWhenTheMappingWasAssumed() {
+        let bytes = TestFIT.image(
+            rows: [microcodeRow],
+            contents: [microcode: TestFIT.microcode(totalSize: 0x180)]
+        )
+        let shown = FITPresenter.display(FITReader.read(ImageReader(bytes), image: nil))
+
+        XCTAssertEqual(
+            shown.summary,
+            "FIT at 0x1000 · 1 entry · addresses assumed · checksum 0x5C"
+        )
+        XCTAssertTrue(shown.problems.isEmpty)
+    }
+
     /// A table whose header says the checksum does not count is not wrong for
     /// having a stale one, and the summary should not imply that it is (§5).
     func testTheSummarySaysWhenTheChecksumIsNotUsed() {

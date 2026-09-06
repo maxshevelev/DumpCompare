@@ -108,7 +108,12 @@ final class FITToolFlowTests: XCTestCase {
         _ = try open(FITTestImage.make())
         let display = try session().display
 
-        XCTAssertEqual(display.summary, "FIT at 0x1000 · 1 entry · checksum 0x5C")
+        // No volume top file in a fixture this small, so the reading says it
+        // assumed the image is mapped against the top of the address space.
+        XCTAssertEqual(
+            display.summary,
+            "FIT at 0x1000 · 1 entry · addresses assumed · checksum 0x5C"
+        )
         XCTAssertEqual(display.rows.map(\.typeText), ["FIT Header", "Microcode"])
         XCTAssertEqual(display.rows[1].targetText,
                        "Microcode 0x000806EA, revision 0xF0, 2019-07-15")
@@ -171,6 +176,41 @@ final class FITToolFlowTests: XCTestCase {
 
         XCTAssertEqual(try pane.byteStorage?.read(at: 0x100F, length: 1), [0xCC])
         XCTAssertNotNil(try session().display.checksumFix)
+    }
+
+    /// The list of problems is not there when there are none: an empty box
+    /// under a table that checks out is a box the user has to work out the
+    /// meaning of.
+    func testTheProblemListIsOnlyThereWhenThereAreProblems() throws {
+        _ = try open(FITTestImage.make())
+        let panel = try XCTUnwrap(controller?.tools.panel)
+        let problems = descendants(of: panel, NSTableView.self)[1]
+
+        XCTAssertEqual(problems.enclosingScrollView?.isHidden, true)
+
+        _ = try open(FITTestImage.make(checksum: 0xCC))
+        let after = try XCTUnwrap(controller?.tools.panel)
+        let shown = descendants(of: after, NSTableView.self)[1]
+
+        XCTAssertEqual(shown.enclosingScrollView?.isHidden, false)
+        XCTAssertEqual(shown.numberOfRows, 1)
+    }
+
+    /// A row the validator complained about is red where the eye lands on it,
+    /// not only in the list underneath.
+    func testARowWithAProblemIsRed() throws {
+        _ = try open(FITTestImage.make(microcodeAddress: 0xFFFF_1000))
+        let table = try entriesTable()
+
+        func colour(row: Int) throws -> NSColor? {
+            let view = try XCTUnwrap(
+                table.view(atColumn: 1, row: row, makeIfNecessary: true) as? NSTableCellView
+            )
+            return view.textField?.textColor
+        }
+
+        XCTAssertEqual(try colour(row: 1), .systemRed)
+        XCTAssertEqual(try colour(row: 0), .labelColor)
     }
 
     /// An address off by one hex digit, landing on bytes that are not

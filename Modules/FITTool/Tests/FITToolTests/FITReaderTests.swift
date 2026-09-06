@@ -25,7 +25,7 @@ final class FITReaderTests: XCTestCase {
         XCTAssertEqual(report.table?.pointerAddress, 0xFFFF_1000)
         XCTAssertEqual(report.table?.rows.count, 2)
         XCTAssertEqual(report.table?.entries.count, 1)
-        XCTAssertEqual(report.problems.map(\.severity), [.warning])   // addresses assumed
+        XCTAssertTrue(report.problems.isEmpty)
     }
 
     /// The header's `Size` counts entries, not bytes — the field everyone reads
@@ -42,16 +42,14 @@ final class FITReaderTests: XCTestCase {
 
     /// Without a volume top file the image is taken to be mapped against the
     /// top of the address space. That is true of a full flash dump and false of
-    /// a region cut out of one, so it is said out loud rather than assumed
-    /// quietly.
+    /// a region cut out of one, so the reading says which it did — but as a
+    /// caveat about itself, not as a problem with the table.
     func testAnAssumedAddressMappingIsSaidOutLoud() {
         let report = read(ordinaryImage)
 
         XCTAssertTrue(report.addressDiffIsAssumed)
         XCTAssertEqual(report.addressDiff, 0xFFFF_0000)
-        XCTAssertTrue(report.problems.contains {
-            $0.kind == .addressesAssumed(addressDiff: 0xFFFF_0000)
-        })
+        XCTAssertTrue(report.problems.isEmpty)
     }
 
     /// With a parse that found a volume top file, the mapping is the image's
@@ -62,7 +60,7 @@ final class FITReaderTests: XCTestCase {
         let report = read(ordinaryImage, image: parsed)
 
         XCTAssertFalse(report.addressDiffIsAssumed)
-        XCTAssertFalse(report.problems.contains { $0.severity == .warning })
+        XCTAssertTrue(report.problems.isEmpty)
         XCTAssertEqual(report.table?.range, 0x1000..<0x1020)
     }
 
