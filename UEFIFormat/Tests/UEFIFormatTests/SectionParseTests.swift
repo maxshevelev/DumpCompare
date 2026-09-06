@@ -169,6 +169,16 @@ final class SectionParseTests: XCTestCase {
         )
     }
 
+    /// The gap at `0x1A` is the specification's, and a range that papered over
+    /// it would wave through a value that means something is wrong.
+    func testTheGapInTheSectionTypesIsNotAType() {
+        XCTAssertEqual(
+            diagnostics([TestImage.section(type: 0x1A, body: [1, 2, 3, 4])]),
+            [.unknownType(.sectionHeader, 0x1A)]
+        )
+        XCTAssertTrue(diagnostics([TestImage.section(type: 0x1B, body: [1, 2, 3, 4])]).isEmpty)
+    }
+
     /// Zero would put the walk back on the same offset for ever (§11).
     func testASectionOfZeroSizeStopsTheWalk() {
         let sections = [

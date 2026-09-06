@@ -48,8 +48,11 @@ enum Section {
     }
 
     static func isKnown(_ type: UInt8) -> Bool {
-        (0x01...0x03).contains(type) || (0x10...0x1C).contains(type)
-            || type == 0x20 || type == 0xF0
+        // 0x1A is not a section type. The gap is the specification's, and a
+        // range that papers over it would wave through the one value in here
+        // that means something is wrong.
+        (0x01...0x03).contains(type) || (0x10...0x19).contains(type)
+            || type == 0x1B || type == 0x1C || type == 0x20 || type == 0xF0
     }
 }
 
