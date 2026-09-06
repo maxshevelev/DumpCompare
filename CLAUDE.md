@@ -17,8 +17,9 @@ Architecture:
 - View layer.
 
 Running the tests:
-- `Scripts/run-tests.sh` — the Core package, then the app suite in groups, one
-  group at a time. `-o <regex>` runs only the classes whose names match.
+- `Scripts/run-tests.sh` — every Swift package, then the app suite in groups,
+  one group at a time. `-o <regex>` runs only the classes whose names match;
+  `--no-packages` skips the packages.
 - Never run two `xcodebuild test` invocations at once: they share one UI
   session, and the tests that wait on a window, an animation or a panel then
   fail for reasons that are not bugs.

@@ -11,6 +11,8 @@ packages:
     path: DumpCompareCore
   ALSplitView:
     path: ALSplitView
+  ToolModuleKit:
+    path: ToolModuleKit
 
 targets:
   DumpCompare:
@@ -24,6 +26,10 @@ targets:
     dependencies:
       - package: DumpCompareCore
       - package: ALSplitView
+      # What a tool-module and the app agree on (Design/TOOL_MODULES_PLAN.md).
+      # The app links it; each tool-module package will link it too, and that
+      # is the whole of what the two sides share.
+      - package: ToolModuleKit
     entitlements:
       path: DumpCompareApp/DumpCompare.entitlements
       properties:
@@ -115,6 +121,7 @@ targets:
       - target: DumpCompare
       - package: DumpCompareCore
       - package: ALSplitView
+      - package: ToolModuleKit
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.maxik.DumpCompareTests

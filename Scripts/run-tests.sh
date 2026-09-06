@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Runs the suite in groups, one group at a time.
+# Runs every Swift package's tests, then the app suite in groups, one at a time.
 #
 # One `xcodebuild test` over 95 test classes is a single process holding a real
 # window server session for twenty minutes, and the tests that wait on a window,
@@ -12,10 +12,14 @@
 # invocations at once fight over the same UI session, and the failures that
 # produces ("expected non-nil value of type NSOpenPanel") look like real bugs.
 #
-#     Scripts/run-tests.sh                 # the Core package, then every group
+#     Scripts/run-tests.sh                 # every package, then every group
 #     Scripts/run-tests.sh -g 20           # bigger groups, fewer launches
 #     Scripts/run-tests.sh -o Library      # only the classes whose name matches
-#     Scripts/run-tests.sh --no-core       # skip the Core package
+#     Scripts/run-tests.sh --no-packages   # skip the packages, run the app only
+#
+# The packages are found by looking for a `Package.swift` beside this project,
+# so a new one (ToolModuleKit, and a package per tool-module after it) is picked
+# up without an edit here.
 #
 # Groups are cut from the class names as they are found, so a new test file
 # needs no edit here.
@@ -25,13 +29,13 @@ cd "$(dirname "$0")/.." || exit 1
 
 size=12
 only=""
-core=yes
+packages=yes
 
 while [ $# -gt 0 ]; do
     case "$1" in
         -g) size="$2"; shift 2 ;;
         -o) only="$2"; shift 2 ;;
-        --no-core) core=no; shift ;;
+        --no-packages|--no-core) packages=no; shift ;;
         -h|--help) sed -n '3,25p' "$0"; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
@@ -44,10 +48,12 @@ report() {   # keeps the counts and the failures, drops the rest
     grep -E "^/Users.*error:|Executed [0-9]+ tests" | tail -20
 }
 
-if [ "$core" = yes ] && [ -z "$only" ]; then
-    echo "── DumpCompareCore"
-    ( cd DumpCompareCore && swift test 2>&1 ) | report | tail -1
-    [ "${PIPESTATUS[0]:-0}" -ne 0 ] && failed=1
+if [ "$packages" = yes ] && [ -z "$only" ]; then
+    for package in $(ls -d ./*/Package.swift 2>/dev/null | sed 's|/Package.swift$||' | sort); do
+        echo "── ${package#./}"
+        ( cd "$package" && swift test 2>&1 ) | report | tail -1
+        [ "${PIPESTATUS[0]:-0}" -ne 0 ] && failed=1
+    done
 fi
 
 classes=$(grep -h "^final class .*: XCTestCase" DumpCompareTests/*.swift \

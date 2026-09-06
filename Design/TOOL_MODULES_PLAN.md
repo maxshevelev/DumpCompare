@@ -75,8 +75,7 @@ public protocol ToolModule {
     static var identifier: String { get }        // "dev.maxik.tool.fit"
     static var title: String { get }             // the Tools menu item
     static var preferredPanelWidth: CGFloat { get }
-    init()
-    @MainActor func makeSession(host: any ToolHost) -> any ToolSession
+    @MainActor static func makeSession(host: any ToolHost) -> any ToolSession
 }
 
 @MainActor public protocol ToolSession: AnyObject {
@@ -111,7 +110,7 @@ The host, as one pane sees it:
     func apply(_ transaction: ToolTransaction) throws
 
     /// What the dump should show. Replaces the previous map entirely.
-    func publish(zones: [Zone], focus: Zone.ID?)
+    func publish(_ zones: ZoneMap)
 
     func reveal(_ range: Range<UInt64>, select: Bool)
 
@@ -139,13 +138,29 @@ public struct ToolTransaction {
     public struct Write { public var offset: UInt64; public var bytes: [UInt8] }
 }
 
-public struct Zone: Equatable, Identifiable {
+public struct Zone: Equatable, Identifiable, Sendable {
     public var id: String
     public var name: String
     public var range: Range<UInt64>    // half-open, as everywhere
     public var kind: ZoneKind          // reserved
 }
+
+/// The published map: the zones, and which one is in focus.
+public struct ZoneMap: Equatable, Sendable {
+    public var zones: [Zone]
+    public var focus: Zone.ID?
+    /// What the dump can actually draw: clamped to the file, empty and
+    /// duplicate zones dropped, ordered outermost first. Overlap is untouched —
+    /// zones nest.
+    public func normalized(contentSize: UInt64) -> ZoneMap
+}
 ```
+
+Both value types carry the little logic there is, and both are checked before
+anything reaches the file: `ToolTransaction.validated()` sorts the writes,
+merges the ones that touch, and refuses a transaction that writes over its own
+bytes — which is what a mis-computed offset looks like, the mistake §11 of the
+FIT document is a post-mortem of.
 
 Overwrite is the only write in v1, which is not a restriction on tool-modules so
 much as the shape their work has: adding a FIT entry is four non-adjacent
