@@ -796,6 +796,49 @@ final class FindFlowTests: XCTestCase {
         }, "Done must close the find bar")
     }
 
+    /// Escape pressed in the hex dump — not in the pattern field — dismisses an
+    /// active search the same way Escape in the bar does: the bar closes and the
+    /// highlighting ends, but the set, and a results panel listing it, survive
+    /// (§11). The dump is where the user's eyes are after a search, so its
+    /// Escape must mean "done" too, not fall through to nothing.
+    func testEscapeInTheHexPaneDismissesAnActiveSearch() throws {
+        let bytes: [UInt8] = [0xAA, 0x00, 0xAA, 0x00, 0xAA]
+        let (controller, window, url) = try makeController(bytes)
+        defer { cleanup(controller, url) }
+        let pane = controller.windowModel.pane1
+
+        controller.findPattern()
+        let (combo, _, _, _) = try barControls(window)
+        combo.stringValue = "AA"
+        try clickFindNext(window)
+        XCTAssertTrue(pumpUntil(3) { pane.matchSet != nil }, "the premise: an active search")
+
+        // Open the results panel too, so "the set survives" has something to show.
+        let panel = try runSearchAll("AA", in: window)
+        XCTAssertEqual(panel.tableView.numberOfRows, 3)
+
+        // Move the focus to the dump, the way a click there would, so the Escape
+        // is the dump's and not the pattern field's.
+        let hexView = try descendant(HexView.self, of: window.contentView!)
+        window.makeFirstResponder(hexView)
+        XCTAssertTrue(window.firstResponder === hexView, "the premise: the dump has the focus")
+
+        let esc = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                                   timestamp: 0, windowNumber: window.windowNumber,
+                                   context: nil, characters: "\u{1B}",
+                                   charactersIgnoringModifiers: "\u{1B}",
+                                   isARepeat: false, keyCode: 53)!
+        window.sendEvent(esc)
+
+        XCTAssertTrue(pumpUntil(2) {
+            descendants(of: window.contentView!, FindBarView.self).first?.isHidden == true
+        }, "Escape in the dump must close the find bar")
+        XCTAssertNil(pane.highlightedMatchSet, "the highlighting ends with the bar")
+        XCTAssertEqual(pane.matchSet?.total, 3, "but the set survives")
+        XCTAssertEqual(panel.tableView.numberOfRows, 3,
+                       "and the results panel keeps listing it")
+    }
+
     // MARK: - History (§11)
 
     /// A successful search is remembered; reopening the bar offers the same
