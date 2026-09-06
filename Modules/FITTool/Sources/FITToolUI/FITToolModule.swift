@@ -394,10 +394,11 @@ struct FITParkedState: ToolSessionState {
             // The tree, because a removal moves microcode up into the space the
             // removed one leaves, and the addresses that names them come from
             // the same mapping every other address here does.
-            let report = FITReader.read(reader, image: UEFIParser.parse(source))
+            let image = UEFIParser.parse(source)
+            let report = FITReader.read(reader, image: image)
             guard let table = report.table else { return .failure(.noTable) }
             return FITEditor.removeEntry(
-                index, from: table, in: reader, addressDiff: report.addressDiff
+                index, from: table, image: image, in: reader, addressDiff: report.addressDiff
             )
         }.value
     }

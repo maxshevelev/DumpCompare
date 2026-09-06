@@ -8,6 +8,43 @@ import UEFIFormat
 /// digit, a checksum left over from the edit before, types out of order — and
 /// those have to be built rather than found. Every way of breaking one is a
 /// parameter here, and no real dump goes into this repository.
+/// Bytes, little-endian, in the order they are written down.
+struct BinaryWriter {
+    private(set) var bytes: [UInt8] = []
+
+    var count: UInt64 { UInt64(bytes.count) }
+
+    mutating func u8(_ value: UInt8) { bytes.append(value) }
+
+    mutating func u16(_ value: UInt16) {
+        bytes += (0..<2).map { UInt8(truncatingIfNeeded: value >> (8 * $0)) }
+    }
+
+    mutating func u24(_ value: UInt32) {
+        bytes += (0..<3).map { UInt8(truncatingIfNeeded: value >> (8 * $0)) }
+    }
+
+    mutating func u32(_ value: UInt32) {
+        bytes += (0..<4).map { UInt8(truncatingIfNeeded: value >> (8 * $0)) }
+    }
+
+    mutating func u64(_ value: UInt64) {
+        bytes += (0..<8).map { UInt8(truncatingIfNeeded: value >> (8 * $0)) }
+    }
+
+    mutating func guid(_ value: EFIGUID) { bytes += value.bytes }
+
+    mutating func raw(_ value: [UInt8]) { bytes += value }
+
+    mutating func fill(_ count: UInt64, with byte: UInt8) {
+        bytes += [UInt8](repeating: byte, count: Int(count))
+    }
+
+    mutating func pad(to size: UInt64, with byte: UInt8) {
+        if count < size { fill(size - count, with: byte) }
+    }
+}
+
 enum TestFIT {
     /// A row of the table, said in terms of what it is meant to point at.
     struct Row {

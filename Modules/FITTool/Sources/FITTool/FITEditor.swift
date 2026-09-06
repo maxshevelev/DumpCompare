@@ -15,9 +15,11 @@ public enum FITEditProblem: Equatable, Sendable, Error {
     /// There is no microcode in the table to put the new one after, so there is
     /// no telling where this image keeps them (§9.2).
     case noMicrocodeToFollow
-    /// No run of erased bytes long enough, in the area the existing microcode
-    /// lives in.
-    case noRoomForTheComponent(needed: UInt64)
+    /// No run of erased bytes long enough, in the element the existing
+    /// microcode lives in. Carries what was needed, the most that was free, and
+    /// where it looked — a refusal that does not say those three things leaves
+    /// the user with nowhere to go.
+    case noRoomForTheComponent(needed: UInt64, largestFree: UInt64, inside: String)
     /// The table has no empty slot and the bytes after it are not free, so it
     /// cannot grow (§9.1).
     case theTableCannotGrow
@@ -39,9 +41,11 @@ public enum FITEditProblem: Equatable, Sendable, Error {
             return "That microcode's checksum does not add up — its dwords should sum to zero."
         case .noMicrocodeToFollow:
             return "There is no microcode in this table to put a new one after."
-        case .noRoomForTheComponent(let needed):
-            return "No erased run of 0x" + String(needed, radix: 16, uppercase: true)
-                + " bytes after the last microcode."
+        case .noRoomForTheComponent(let needed, let largestFree, let inside):
+            return "That microcode needs 0x" + String(needed, radix: 16, uppercase: true)
+                + " bytes. The most that is free after the last microcode is 0x"
+                + String(largestFree, radix: 16, uppercase: true) + ", in " + inside + "."
+
         case .theTableCannotGrow:
             return "The table has no empty slot, and the bytes after it are not free."
         case .theRunCannotGrow(let needed):
@@ -141,6 +145,15 @@ public enum FITEditor {
         addressDiff: UInt64
     ) -> Result<FITPlacement, FITEditProblem> {
         guard size > 0 else { return .failure(.notMicrocode) }
+        func noRoom(_ largest: UInt64, _ area: (range: Range<UInt64>, name: String)) -> FITEditProblem {
+            .noRoomForTheComponent(
+                needed: size,
+                largestFree: largest,
+                inside: "\(area.name) at 0x"
+                    + String(area.range.lowerBound, radix: 16, uppercase: true) + "–0x"
+                    + String(area.range.upperBound, radix: 16, uppercase: true)
+            )
+        }
         let components = table.rows.compactMap { row -> Range<UInt64>? in
             guard case .microcode(let header) = row.target else { return nil }
             return header.range
@@ -148,16 +161,17 @@ public enum FITEditor {
         guard let last = components.max(by: { $0.upperBound < $1.upperBound }) else {
             return .failure(.noMicrocodeToFollow)
         }
+        let area = spareArea(around: last.lowerBound, image: image, reader: reader)
         guard let start = alignUp(last.upperBound, to: 16) else {
-            return .failure(.noRoomForTheComponent(needed: size))
+            return .failure(noRoom(0, area))
         }
 
         // The element the existing microcode sits in bounds the search: a
         // component that ran past it would land in another structure, or in
         // another flash region.
-        let area = spareArea(around: last.lowerBound, image: image, reader: reader)
         var candidate = start
-        while candidate + size <= area.upperBound {
+        var largest: UInt64 = 0
+        while candidate + size <= area.range.upperBound {
             if reader.isFilled(candidate..<(candidate + size), with: 0xFF) {
                 return .success(FITPlacement(
                     range: candidate..<(candidate + size),
@@ -165,21 +179,29 @@ public enum FITEditor {
                 ))
             }
             guard let used = reader.firstOffset(
-                in: candidate..<min(candidate + size, area.upperBound), notEqualTo: 0xFF
+                in: candidate..<min(candidate + size, area.range.upperBound), notEqualTo: 0xFF
             ), let next = alignUp(used + 1, to: 16) else { break }
+            largest = max(largest, used - candidate)
             candidate = next
         }
-        return .failure(.noRoomForTheComponent(needed: size))
+        // What was left at the end is a run too, and usually the biggest one —
+        // the message is only useful if it names the best that was on offer.
+        if area.range.upperBound > candidate,
+           reader.isFilled(candidate..<area.range.upperBound, with: 0xFF) {
+            largest = max(largest, area.range.upperBound - candidate)
+        }
+        return .failure(noRoom(largest, area))
     }
 
     /// What bounds the search: the node the last microcode lives in, or the
-    /// rest of the file when there is no tree to say.
+    /// rest of the file when there is no tree to say. Named, because a refusal
+    /// that cannot say where it looked is a refusal nobody can act on.
     private static func spareArea(
         around offset: UInt64,
         image: UEFIImage?,
         reader: ImageReader
-    ) -> Range<UInt64> {
-        guard let image else { return offset..<reader.count }
+    ) -> (range: Range<UInt64>, name: String) {
+        guard let image else { return (offset..<reader.count, "the rest of the file") }
         // The innermost node that is *space* rather than a structure. A
         // microcode component's own node is a structure, so what bounds the run
         // is whatever holds it — and where nothing does, which is what a
@@ -187,9 +209,9 @@ public enum FITEditor {
         // of the file does.
         let chain = image.nodes(containing: offset)
         for node in chain.reversed() where node.kind != .microcode {
-            return node.range
+            return (node.range, node.name)
         }
-        return offset..<reader.count
+        return (offset..<reader.count, "the rest of the file")
     }
 
     /// Adds a microcode, or replaces the one already there for its CPUID.
@@ -250,7 +272,10 @@ public enum FITEditor {
                 ))
             }
             return .success((
-                ToolTransaction(name: "Replace Microcode", writes: writes),
+                withContainerRepairs(
+                    ToolTransaction(name: "Replace Microcode", writes: writes),
+                    image: image, reader: reader
+                ),
                 FITEditOutcome(
                     kind: .replaced,
                     range: old.offset..<(old.offset + UInt64(header.totalSize)),
@@ -303,9 +328,12 @@ public enum FITEditor {
         }
         return addMicrocode(bytes, at: placement, to: table, in: reader).map { transaction in
             let index = (table.rows.lastIndex { $0.entry.type == FIT.microcodeType } ?? 0) + 1
-            return (transaction, FITEditOutcome(
-                kind: .added, range: placement.range, entryIndex: index, replaced: nil
-            ))
+            return (
+                withContainerRepairs(transaction, image: image, reader: reader),
+                FITEditOutcome(
+                    kind: .added, range: placement.range, entryIndex: index, replaced: nil
+                )
+            )
         }
     }
 
@@ -369,10 +397,14 @@ public enum FITEditor {
     ///
     /// Moving a component changes its address, which anything outside the FIT
     /// that named it will not know about. Boot Guard is the one that matters,
-    /// and this tool cannot read its ranges (`Design/TODO.md`).
+    /// and this tool cannot read its ranges (`Design/TODO.md`). What it *can*
+    /// put right it does: a run inside an FFS file leaves that file's checksums
+    /// describing what used to be there, and those are recomputed into the same
+    /// transaction.
     public static func removeEntry(
         _ index: Int,
         from table: FITTable,
+        image: UEFIImage?,
         in reader: ImageReader,
         addressDiff: UInt64
     ) -> Result<(ToolTransaction, FITRemovalOutcome), FITEditProblem> {
@@ -396,7 +428,7 @@ public enum FITEditor {
             // Dropping a component is re-laying the run with nothing in its
             // place, which is the same operation as replacing it with something
             // of another size.
-            switch relay(replacing: removed, with: nil, in: table, image: nil, reader: reader) {
+            switch relay(replacing: removed, with: nil, in: table, image: image, reader: reader) {
             case .failure(let problem):
                 return .failure(problem)
             case .success(let plan):
@@ -417,7 +449,10 @@ public enum FITEditor {
         writes.append(ToolTransaction.Write(offset: table.range.lowerBound, bytes: assembled))
 
         return .success((
-            ToolTransaction(name: "Remove FIT Entry", writes: writes),
+            withContainerRepairs(
+                ToolTransaction(name: "Remove FIT Entry", writes: writes),
+                image: image, reader: reader
+            ),
             FITRemovalOutcome(entryIndex: index, moved: moved, erased: erased)
         ))
     }
@@ -430,6 +465,48 @@ public enum FITEditor {
         var write: ToolTransaction.Write
         var moves: [(rowIndex: Int, newOffset: UInt64)]
         var erased: Range<UInt64>?
+    }
+
+    /// The checksums a change breaks on its way out, recomputed and folded into
+    /// the same transaction.
+    ///
+    /// Microcode does not always live in a raw region: on plenty of boards the
+    /// run sits inside an FFS file, and then changing those bytes leaves that
+    /// file's own `IntegrityCheck` describing what used to be there (§5.4). The
+    /// repairs are computed over the image *as this transaction will leave it*
+    /// — a checksum describes bytes as they will be, not as they are — which is
+    /// what `OverlayByteSource` is for.
+    ///
+    /// A volume needs nothing: its checksum covers its own header and not its
+    /// body (§3.3), which is the one mercy in this format.
+    private static func withContainerRepairs(
+        _ transaction: ToolTransaction,
+        image: UEFIImage?,
+        reader: ImageReader
+    ) -> ToolTransaction {
+        guard let image else { return transaction }
+        let after = ImageReader(OverlayByteSource(
+            base: reader.source,
+            patches: transaction.writes.map {
+                OverlayByteSource.Patch(offset: $0.offset, bytes: $0.bytes)
+            }
+        ))
+
+        var repaired = transaction
+        var done: Set<NodeID> = []
+        for write in transaction.writes {
+            let chain = image.nodes(containing: write.offset)
+            guard let file = chain.last(where: { $0.kind == .file }), !done.contains(file.id)
+            else { continue }
+            done.insert(file.id)
+            let revision = chain.last { $0.kind == .volume }?.subtype ?? 2
+            for repair in UEFIChecksums.repairs(for: file, volumeRevision: revision, in: after) {
+                repaired.writes.append(
+                    ToolTransaction.Write(offset: repair.offset, bytes: repair.bytes)
+                )
+            }
+        }
+        return repaired
     }
 
     /// Re-lays the run from `removed`'s offset, putting `replacement` where it
@@ -486,7 +563,7 @@ public enum FITEditor {
         if next > oldEnd {
             // The run grew. What it grew into has to be free, and inside the
             // element that holds it.
-            let area = spareArea(around: start, image: image, reader: reader)
+            let area = spareArea(around: start, image: image, reader: reader).range
             guard next <= area.upperBound, next <= reader.count,
                   reader.isFilled(oldEnd..<next, with: 0xFF)
             else { return .failure(.theRunCannotGrow(needed: next - oldEnd)) }

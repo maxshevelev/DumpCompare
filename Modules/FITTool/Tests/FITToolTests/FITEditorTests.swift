@@ -137,10 +137,18 @@ final class FITEditorTests: XCTestCase {
         let padding = UEFINode(kind: .padding, name: "Padding", range: 0x1800..<0x2180)
         let parsed = UEFIImage(size: UInt64(bytes.count), roots: [padding], addressDiff: 0xFFFF_0000)
 
-        XCTAssertEqual(
-            try placement(bytes, image: parsed),
-            .failure(.noRoomForTheComponent(needed: 0x100))
-        )
+        guard case .failure(let problem) = try placement(bytes, image: parsed) else {
+            return XCTFail("expected a refusal")
+        }
+        // The refusal names all three things somebody needs to act on it: how
+        // much was wanted, how much was free, and where it looked.
+        guard case .noRoomForTheComponent(let needed, let free, let inside) = problem else {
+            return XCTFail("expected no room")
+        }
+        XCTAssertEqual(needed, 0x100)
+        XCTAssertEqual(free, 0x80)
+        XCTAssertEqual(inside, "Padding at 0x1800–0x2180")
+        XCTAssertTrue(problem.message.contains("0x80"), problem.message)
     }
 
     /// A microcode found by the raw scan of an image with no volumes in it is a
@@ -496,7 +504,7 @@ final class FITEditorTests: XCTestCase {
         _ index: Int, from bytes: [UInt8]
     ) throws -> Result<(ToolTransaction, FITRemovalOutcome), FITEditProblem> {
         FITEditor.removeEntry(
-            index, from: try table(bytes), in: ImageReader(bytes),
+            index, from: try table(bytes), image: nil, in: ImageReader(bytes),
             addressDiff: TestFIT.addressDiff(of: UInt64(bytes.count))
         )
     }
