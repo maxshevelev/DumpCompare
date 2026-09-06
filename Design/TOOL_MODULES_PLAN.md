@@ -388,6 +388,41 @@ Editing is served by `UEFIChecksums`, which returns the *writes* a repair needs
 rather than performing them — a tool-module turns them into a `ToolTransaction`
 so that an edit and the checksums it invalidates land as one undoable step.
 
+## The FIT tool-module
+
+The first one with a format behind it (`Modules/FITTool`, `FITTool` and
+`FITToolUI`), and the answer to what the whole seam was built for.
+
+What it does: finds the table from both ends — the pointer at `0xFFFFFFC0` has
+to lead somewhere and the signature has to be there when it arrives — reads
+every row, **follows every address to see what is actually there**, and checks
+the table against the invariants of §8. The panel is the entries above and what
+is wrong with them below; double-clicking a row goes to what it points at, and
+double-clicking a problem goes to the byte it is about.
+
+Two decisions worth keeping.
+
+**Reading rather than trusting.** A microcode row's size field is required to be
+zero and its real size lives in the component, so the size shown is the
+component's; an address is followed and the forty-eight bytes there are checked
+for a microcode header. That one read is the whole of §11 — an address off by a
+hex digit, landing in free space, which the tool it was written with reported as
+a silent `0`. Where a row points at nothing recognisable, the panel says so
+instead of showing a zero that looks like a legal "this type has no size".
+
+**One repair, on purpose.** The header's checksum, when the header says it
+counts and it does not add up — §11's second defect, one byte, one named undo
+step, and a re-read afterwards that stops offering it. Adding a microcode entry
+(§9.2) is the piece this tool exists for in the long run and it is a different
+size of job: a component has to be placed, the empty slots juggled, the entries
+shifted to keep the type order, and every one of those has a rule about what it
+must not overlap. `Design/TODO.md` carries it.
+
+The panel's own parse runs off the main actor over `host.snapshot()`, through an
+adapter from `ToolContentReader` to `ByteSource` that lives in the tool-module
+because neither package is allowed to know about the other. When a second
+tool-module needs the same ten lines, they move to a shared package.
+
 ## Open questions
 
 - **Does a click on a zone in the dump reach the tool-module?** Selecting the
