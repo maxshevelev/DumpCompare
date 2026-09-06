@@ -249,6 +249,14 @@ struct FITParkedState: ToolSessionState {
     }
 
     private func download(_ entry: MicrocodeCatalogueEntry) {
+        // Refused here rather than after the download: a FIT names Intel
+        // microcode and nothing else (§6, §7.1), and the file would only be
+        // turned away by the header check a moment later.
+        guard entry.vendor == .intel else {
+            form?.say("A FIT names Intel microcode only — \(entry.vendor.rawValue)"
+                + " microcode cannot go in one.")
+            return
+        }
         form?.say("Fetching \(entry.fileName)…", busy: true)
         let source = FITToolSession.microcodeSource
         Task { [weak self] in

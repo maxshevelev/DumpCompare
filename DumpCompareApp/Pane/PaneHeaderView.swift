@@ -38,7 +38,10 @@ final class PaneHeaderView: NSView {
     ///
     /// Resolved through sRGB inside the caller's drawing appearance, because a
     /// catalog colour has no components to scale until it is.
-    private static func headerRuleColor() -> NSColor {
+    /// Not private: the tool panel's header sits at the same height on the
+    /// other side of the window, and the two rules have to be the one rule
+    /// (`Design/TOOL_MODULES_PLAN.md`).
+    static func headerRuleColor() -> NSColor {
         let separator = NSColor.separatorColor
         guard let resolved = separator.usingColorSpace(.sRGB) else { return separator }
         return resolved.withAlphaComponent(resolved.alphaComponent * separatorStrength)

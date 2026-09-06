@@ -286,7 +286,8 @@ final class FITToolFlowTests: XCTestCase {
         try button("Add Microcode…").performClick(nil)
         wait(for: [loaded], timeout: 5)
 
-        XCTAssertEqual(entries.map(\.cpuidText), ["806EA", "906EA"])
+        XCTAssertEqual(entries.map(\.cpuidText), ["806EA", "906EA", "800F11"])
+        XCTAssertEqual(entries.map(\.vendor), [.intel, .intel, .amd])
         XCTAssertFalse(controller.tools.session.map {
             ($0.viewController.presentedViewControllers ?? []).isEmpty
         } ?? true, "the sheet is on screen")
@@ -466,16 +467,17 @@ enum FITTestImage {
 private struct FakeMicrocodeSource: MicrocodeSource {
     func catalogue() async throws -> [MicrocodeCatalogueEntry] {
         [
-            MicrocodeCatalogue.entry(
-                at: "Intel/cpu806EA_plat02_ver000000F0_2019-07-15_PRD_11223344.bin", size: 0x100
-            )!,
-            MicrocodeCatalogue.entry(
-                at: "Intel/cpu906EA_plat02_ver000000B4_2021-01-01_PRD_55667788.bin", size: 0x100
-            )!
-        ]
+            "Intel/cpu806EA_plat02_ver000000F0_2019-07-15_PRD_11223344.bin",
+            "Intel/cpu906EA_plat02_ver000000B4_2021-01-01_PRD_55667788.bin",
+            // A vendor a FIT cannot name, which the form still lists.
+            "AMD/cpu00800F11_ver08001129_2017-07-14_4F426450.bin"
+        ].compactMap { MicrocodeCatalogue.entry(at: $0, size: 0x100) }
     }
 
     func download(_ entry: MicrocodeCatalogueEntry) async throws -> [UInt8] {
-        FITTestImage.microcode(signature: entry.cpuid, revision: entry.revision)
+        FITTestImage.microcode(
+            signature: entry.cpuid ?? 0,
+            revision: UInt32(entry.revisionText, radix: 16) ?? 0
+        )
     }
 }

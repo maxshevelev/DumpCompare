@@ -24,7 +24,7 @@ import FITTool
     let table = NSTableView()
     private let scrollView = NSScrollView()
     private let searchField = NSSearchField()
-    private let platformPopUp = NSPopUpButton()
+    private let vendorPopUp = NSPopUpButton()
     private let onlyInImage = NSButton(checkboxWithTitle: "Only CPUIDs in this image",
                                        target: nil, action: nil)
     private let statusLabel = NSTextField(labelWithString: "")
@@ -46,18 +46,29 @@ import FITTool
         let title = NSTextField(labelWithString: "Add Microcode")
         title.font = .systemFont(ofSize: 13, weight: .semibold)
         let source = NSTextField(labelWithString:
-            "Intel microcode from github.com/platomav/CPUMicrocodes — a FIT names no other kind.")
+            "From github.com/platomav/CPUMicrocodes. A FIT names Intel microcode only —"
+            + " the other vendors are here to look at.")
         source.font = .systemFont(ofSize: 11)
         source.textColor = .secondaryLabelColor
 
         searchField.placeholderString = "CPUID, revision or file name"
         searchField.target = self
         searchField.action = #selector(narrow)
-        platformPopUp.target = self
-        platformPopUp.action = #selector(narrow)
+        // Every vendor the collection has a directory for, Intel first because
+        // that is the only kind a FIT can name.
+        for vendor in MicrocodeVendor.allCases {
+            vendorPopUp.addItem(withTitle: vendor.rawValue)
+        }
+        vendorPopUp.selectItem(at: 0)
+        vendorPopUp.target = self
+        vendorPopUp.action = #selector(narrow)
         onlyInImage.target = self
         onlyInImage.action = #selector(narrow)
         onlyInImage.controlSize = .small
+        // Off to begin with: picking a vendor is asking to see what that vendor
+        // has, and narrowing it before the user has looked would hide most of
+        // it.
+        onlyInImage.state = .off
 
         table.style = .inset
         table.usesAlternatingRowBackgroundColors = true
@@ -105,7 +116,13 @@ import FITTool
         let chooseFile = button("Choose File…", #selector(chooseFileClicked))
         chooseFile.toolTip = "Add a microcode you already have, without the network"
 
-        let filters = NSStackView(views: [platformPopUp, onlyInImage, searchField])
+        // Labelled, because the column two rows down is called "Plat" and means
+        // Intel's platform id — a different thing entirely.
+        let vendorLabel = NSTextField(labelWithString: "Vendor:")
+        vendorLabel.font = .systemFont(ofSize: 11)
+        vendorLabel.textColor = .secondaryLabelColor
+
+        let filters = NSStackView(views: [vendorLabel, vendorPopUp, onlyInImage, searchField])
         filters.orientation = .horizontal
         filters.spacing = 8
         searchField.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -148,16 +165,21 @@ import FITTool
     /// The catalogue arrived.
     func show(_ entries: [MicrocodeCatalogueEntry]) {
         self.entries = entries
-        platformPopUp.removeAllItems()
-        platformPopUp.addItem(withTitle: "Every platform")
-        for platform in MicrocodeCatalogue.platformIDs(in: entries) {
-            platformPopUp.addItem(
-                withTitle: "Platform " + String(platform, radix: 16, uppercase: true)
-            )
+        let counts = MicrocodeCatalogue.counts(in: entries)
+        for (index, vendor) in MicrocodeVendor.allCases.enumerated() {
+            vendorPopUp.item(at: index)?.title =
+                "\(vendor.rawValue) (\(counts[vendor] ?? 0))"
         }
         onlyInImage.isEnabled = !cpuidsInTheImage.isEmpty
-        onlyInImage.state = cpuidsInTheImage.isEmpty ? .off : .on
         narrow()
+    }
+
+    /// The vendor the popup is on. Intel unless the user says otherwise: it is
+    /// the only kind a FIT can name.
+    private var vendor: MicrocodeVendor {
+        let index = vendorPopUp.indexOfSelectedItem
+        let all = MicrocodeVendor.allCases
+        return index >= 0 && index < all.count ? all[index] : .intel
     }
 
     /// A line at the bottom: what is happening, or what went wrong.
@@ -172,17 +194,19 @@ import FITTool
     }
 
     @objc private func narrow() {
-        let platforms = MicrocodeCatalogue.platformIDs(in: entries)
-        let index = platformPopUp.indexOfSelectedItem - 1
         shown = MicrocodeCatalogue.filter(
             entries,
+            vendor: vendor,
             search: searchField.stringValue,
-            platformID: index >= 0 && index < platforms.count ? platforms[index] : nil,
             cpuidsInTheImage: onlyInImage.state == .on ? cpuidsInTheImage : nil
         )
         table.reloadData()
         addButton.isEnabled = false
-        say(entries.isEmpty ? "" : "\(shown.count) of \(entries.count) microcodes")
+        guard !entries.isEmpty else { return say("") }
+        let total = MicrocodeCatalogue.counts(in: entries)[vendor] ?? 0
+        say(shown.count == total
+            ? "\(total) \(vendor.rawValue) microcodes"
+            : "\(shown.count) of \(total) \(vendor.rawValue) microcodes")
     }
 
     @objc private func addClicked() {

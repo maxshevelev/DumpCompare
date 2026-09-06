@@ -17,6 +17,9 @@ final class ToolPanelView: NSView {
     var onClose: (() -> Void)?
 
     private let header = NSView()
+    /// The same wrench the toolbar's Tools button carries, so the panel and the
+    /// button that opened it read as one thing.
+    private let iconView = NSImageView()
     private let titleLabel = NSTextField(labelWithString: "")
     private let fileLabel = NSTextField(labelWithString: "")
     private let closeButton = NSButton()
@@ -51,7 +54,13 @@ final class ToolPanelView: NSView {
 
         header.translatesAutoresizingMaskIntoConstraints = false
         header.wantsLayer = true
-        header.layer?.backgroundColor = NSColor.underPageBackgroundColor.cgColor
+
+        iconView.image = NSImage(
+            systemSymbolName: "wrench.and.screwdriver", accessibilityDescription: nil
+        )?.withSymbolConfiguration(.init(pointSize: 11, weight: .regular))
+        iconView.contentTintColor = .secondaryLabelColor
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconView.setContentCompressionResistancePriority(.required, for: .horizontal)
 
         titleLabel.font = .systemFont(ofSize: 11, weight: .semibold)
         titleLabel.textColor = .labelColor
@@ -82,14 +91,15 @@ final class ToolPanelView: NSView {
         for separator in [bottomSeparator, trailingSeparator] {
             separator.translatesAutoresizingMaskIntoConstraints = false
             separator.wantsLayer = true
-            separator.layer?.backgroundColor = NSColor.separatorColor.cgColor
         }
+        applyChromeColors()
 
         body.translatesAutoresizingMaskIntoConstraints = false
 
         addSubview(header)
         addSubview(body)
         addSubview(trailingSeparator)
+        header.addSubview(iconView)
         header.addSubview(titleLabel)
         header.addSubview(fileLabel)
         header.addSubview(closeButton)
@@ -99,8 +109,12 @@ final class ToolPanelView: NSView {
         // width, for the reason the minimap panel's do (§19.2): a collapsed
         // panel is a legal state and must not log a constraint conflict every
         // time it is reached.
-        let leading = titleLabel.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 8)
+        let leading = iconView.leadingAnchor.constraint(equalTo: header.leadingAnchor, constant: 8)
         leading.priority = .defaultHigh
+        let afterIcon = titleLabel.leadingAnchor.constraint(
+            equalTo: iconView.trailingAnchor, constant: 5
+        )
+        afterIcon.priority = .defaultHigh
         let gap = fileLabel.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: 6)
         gap.priority = .defaultHigh
         let trailing = closeButton.trailingAnchor.constraint(equalTo: header.trailingAnchor, constant: -6)
@@ -115,7 +129,8 @@ final class ToolPanelView: NSView {
             header.trailingAnchor.constraint(equalTo: trailingAnchor),
             header.heightAnchor.constraint(equalToConstant: Self.headerHeight),
 
-            leading, gap, trailing, toClose,
+            leading, afterIcon, gap, trailing, toClose,
+            iconView.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             titleLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             fileLabel.centerYAnchor.constraint(equalTo: header.centerYAnchor),
             closeButton.centerYAnchor.constraint(equalTo: header.centerYAnchor),
@@ -139,6 +154,32 @@ final class ToolPanelView: NSView {
             body.trailingAnchor.constraint(equalTo: trailingSeparator.leadingAnchor),
             body.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
+    }
+
+    /// The header is chrome and not document, and it says so with the same fill
+    /// the panes' headers use — a translucent system fill made to sit over
+    /// content, at the tertiary weight (`PaneHeaderView`). It used to be
+    /// `underPageBackgroundColor`, which is a page's *surround* and reads as a
+    /// dark bar beside a light dump.
+    ///
+    /// The bottom rule is the panes' rule, because the two headers are the same
+    /// height on either side of the window and a line that stops and restarts
+    /// in a different colour is a line that has been noticed.
+    private func applyChromeColors() {
+        header.layer?.backgroundColor = NSColor.tertiarySystemFill.cgColor
+        bottomSeparator.layer?.backgroundColor = PaneHeaderView.headerRuleColor().cgColor
+        trailingSeparator.layer?.backgroundColor = NSColor.separatorColor.cgColor
+    }
+
+    /// A layer colour is resolved once, when it is assigned, and these are
+    /// assigned before the panel is in a window — so a later switch to dark
+    /// mode would leave the header light. Re-resolved here, where the effective
+    /// appearance is authoritative (§3.2), exactly as the panes' header does.
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            applyChromeColors()
+        }
     }
 
     @objc private func closeClicked() {
@@ -169,6 +210,10 @@ final class ToolPanelView: NSView {
 
     /// What the panel is showing, for the tests that ask.
     var contentView: NSView? { body.subviews.first }
+    /// The header's fill and its icon, for the test that keeps the header from
+    /// going back to being a dark bar with nothing on it.
+    var headerFill: CGColor? { header.layer?.backgroundColor }
+    var headerIcon: NSImage? { iconView.image }
     var title: String { titleLabel.stringValue }
     var fileName: String { fileLabel.stringValue }
 }

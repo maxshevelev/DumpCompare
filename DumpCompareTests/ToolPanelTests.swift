@@ -91,6 +91,28 @@ final class ToolPanelTests: XCTestCase {
         XCTAssertEqual(controller.tools.panel.fileName, controller.windowModel.pane1.status.fileName)
     }
 
+    /// The header is chrome beside the dump, not a dark bar in front of it: the
+    /// same translucent fill the panes' own headers use. It was
+    /// `underPageBackgroundColor` — a page's *surround*, which reads as a slab
+    /// of dark grey next to a light dump.
+    func testTheHeaderIsTheSameChromeAsAPanesHeader() throws {
+        let (controller, _) = try makeController()
+        controller.tools.activate(StubToolA.identifier, animated: false)
+
+        XCTAssertEqual(controller.tools.panel.headerFill, NSColor.tertiarySystemFill.cgColor)
+        XCTAssertNotEqual(controller.tools.panel.headerFill,
+                          NSColor.underPageBackgroundColor.cgColor)
+    }
+
+    /// And it carries the wrench the toolbar's Tools button carries, so the
+    /// panel and the button that opened it read as one thing.
+    func testTheHeaderCarriesTheToolsIcon() throws {
+        let (controller, _) = try makeController()
+        controller.tools.activate(StubToolA.identifier, animated: false)
+
+        XCTAssertNotNil(controller.tools.panel.headerIcon)
+    }
+
     func testNoneClosesThePanel() throws {
         let (controller, _) = try makeController()
         controller.tools.activate(StubToolA.identifier, animated: false)
