@@ -333,9 +333,49 @@ Each stage builds, tests and is committable on its own.
    read-only refusal, and the dump refreshing under the panel.
 7. **Files** — `requestFile` and `exportFile` through the host's panels, with
    the security scope staying on the app's side.
-8. **`UEFIFormat`** — the package, the first pass, the second pass, FIT. Its own
-   branch's worth of work, and the first thing that makes a tool-module worth
-   opening.
+8. **`UEFIFormat`** — the package, the first pass, the second pass. Shipped;
+   see below. The first thing that makes a tool-module worth opening.
+
+## The UEFI package
+
+A shared package and not a tool-module: the structure browser and the FIT
+editor need the same tree, and parsing an image twice in two packages is how
+the two would drift apart. It depends on nothing — not on `ToolModuleKit`, not
+on the app — so `swift test` over an image built byte by byte can pin down a
+diagnostic without a window.
+
+Three decisions worth writing down, because each of them is a road not taken.
+
+**A node is ranges of the file, never bytes.** Header, body and tail are
+`Range<UInt64>` into the image, so a 32 MiB dump parses into a few thousand
+nodes and anyone who wants the bytes reads them back through the same reader.
+It is also what makes the tree honest for an editor: a node says where a
+structure *is*, so writing to it writes to the file rather than to a copy that
+then has to be put back.
+
+**It does not decompress.** Tiano, LZMA, Brotli, GZip and Zlib are five
+algorithms, none of them in the system libraries, against a project rule of no
+third-party code. A compressed section is a leaf that names its algorithm and
+keeps its body whole. CRC32 is the exception the format itself makes — it
+checks the data without transforming it, so what is inside is still read.
+
+**FIT is not in here.** The table is not part of the UEFI tree: it is found
+through a pointer at `size − 0x40`, its entries address physical memory, and
+what they point at is often outside any FFS file. Its structure, its checksum
+and its edit rules are a tool-module's business. What the package owes that
+tool-module is the one thing it cannot work out for itself — `addressDiff`,
+which comes from the Volume Top File and therefore from a full parse — plus
+`offset(forAddress:)`, the reset vector, and the microcode recognition the raw
+scan needed anyway.
+
+Two more things it deliberately leaves undone, both waiting on a tool-module
+that wants them: Boot Guard protected ranges (§10.4, which need the Boot Policy
+as well as the vendor hash files), and the innards of the flash descriptor
+beyond its region map. `Design/TODO.md` carries both.
+
+Editing is served by `UEFIChecksums`, which returns the *writes* a repair needs
+rather than performing them — a tool-module turns them into a `ToolTransaction`
+so that an edit and the checksums it invalidates land as one undoable step.
 
 ## Open questions
 

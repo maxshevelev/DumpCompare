@@ -153,6 +153,38 @@ subsection.
 **Cost.** 6–10 hours, nearly all of it in deciding the three questions and in
 the tests that hold the answers.
 
+### What `UEFIFormat` leaves unread
+
+**What.** Four parts of the image format the parser recognises but does not open
+up. Each is a leaf node with its bytes intact today, and each becomes a subtree
+the day a tool-module needs it.
+
+- **Compressed sections.** Tiano, LZMA (three vendor GUIDs of it), Brotli, GZip
+  and Zlib, none of them in the system libraries. A section names its algorithm
+  and keeps its body whole. Implementing one of them — LZMA is the one that
+  matters, it holds the DXE volume in most images — turns roughly half of a
+  modern image from one leaf into a tree of hundreds of files. It is also the
+  point at which a node stops being a range of the file, so it needs an answer
+  about what an edit inside a decompressed buffer even means.
+- **Boot Guard protected ranges** (§10.4 of `UEFI_IMAGE_FORMAT.md`). The vendor
+  hash files are four structures across three vendors, and the ranges they list
+  together with the IBB from the Boot Policy are the regions an edit must not
+  touch. Until this exists, `isFixed` tells the truth about the VTF, microcode,
+  regions and files marked fixed, and stays silent about Boot Guard.
+- **The flash descriptor's innards** — the masters section, the straps, the VSCC
+  table, the OEM section. The region map is parsed because it is the map of the
+  whole image; the rest is descriptor configuration nobody has asked to see.
+- **NVRAM stores, BPDT/CPD and AMD microcode** (§8, §9). Recognised as volumes
+  with an unknown file system, or as padding, which keeps their bytes and loses
+  their structure.
+
+**Why.** Each was left out to keep the package free of third-party code and the
+first pass finite. None of them blocks the FIT tool-module, which is what the
+package was built for.
+
+**Cost.** LZMA alone is 15–25 hours with the tests it deserves; the others are
+4–8 hours each.
+
 ### Split the minimap into layers
 
 **What.** `MinimapView.swift` is ~2500 lines and grows with every feature that
