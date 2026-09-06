@@ -143,6 +143,18 @@ final class FITEditorTests: XCTestCase {
         )
     }
 
+    /// A microcode found by the raw scan of an image with no volumes in it is a
+    /// node with no parent, and then there is nothing to bound the search but
+    /// the file. Reading the component's own node as the bound leaves no room
+    /// at all — which is what the app's own test caught first.
+    func testAMicrocodeWithNoParentIsBoundedByTheFile() throws {
+        let bytes = image()
+        let node = UEFINode(kind: .microcode, name: "Microcode", range: microcode..<(microcode + 0x100))
+        let parsed = UEFIImage(size: UInt64(bytes.count), roots: [node], addressDiff: 0xFFFF_0000)
+
+        XCTAssertEqual(try placement(bytes, image: parsed).get().range, 0x2100..<0x2200)
+    }
+
     // MARK: - Adding
 
     /// The whole edit is one transaction: the component and the table it is
