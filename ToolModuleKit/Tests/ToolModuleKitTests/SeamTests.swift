@@ -47,9 +47,6 @@ final class SeamTests: XCTestCase {
         func reveal(_ range: Range<UInt64>, select: Bool) { revealed = (range, select) }
         func requestFile(kinds: [String]) async -> ToolFile? { nil }
         func exportFile(_ bytes: [UInt8], suggestedName: String) async -> Bool { false }
-        func beginProgress(_ title: String, onCancel: (() -> Void)?) -> any ToolProgress {
-            StubProgress()
-        }
     }
 
     private struct FrozenBytes: ToolContentReader {
@@ -62,11 +59,6 @@ final class SeamTests: XCTestCase {
     }
 
     private enum StubError: Error { case readOnly, pastTheEnd }
-
-    @MainActor private final class StubProgress: ToolProgress {
-        func report(_ fraction: Double?) {}
-        func finish() {}
-    }
 
     /// Marks the first sixteen bytes as a zone and can write a byte.
     @MainActor private final class StubSession: ToolSession {

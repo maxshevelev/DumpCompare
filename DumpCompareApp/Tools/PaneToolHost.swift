@@ -110,19 +110,6 @@ import ToolModuleKit
         guard let owner else { return false }
         return owner.exportFileForTool(bytes, suggestedName: suggestedName)
     }
-
-    /// A long job in the pane's own status bar, where the comparison build and
-    /// the overview rebuild already report (§14.4) — a parse looks like every
-    /// other slow thing in this app rather than inventing a second place to
-    /// watch. The strip is debounced by the pane, so a parse that finishes in
-    /// milliseconds never flashes a bar.
-    func beginProgress(_ title: String, onCancel: (() -> Void)?) -> any ToolProgress {
-        let operation = BackgroundOperation(name: title, onCancel: { onCancel?() })
-        if let pane, let view = owner?.filePaneView(for: pane) {
-            view.beginOperation(operation)
-        }
-        return OperationProgress(operation: operation)
-    }
 }
 
 /// Bytes that cannot change, from any thread: an immutable storage snapshot
@@ -138,20 +125,6 @@ private struct FrozenContent: ToolContentReader {
         }
         return try storage.read(at: offset, length: length)
     }
-}
-
-/// A `BackgroundOperation` behind the progress a tool-module was handed.
-@MainActor private final class OperationProgress: ToolProgress {
-    private let operation: BackgroundOperation
-
-    init(operation: BackgroundOperation) { self.operation = operation }
-
-    func report(_ fraction: Double?) {
-        guard let fraction else { return }
-        operation.report(fraction)
-    }
-
-    func finish() { operation.finish() }
 }
 
 /// What the host refuses, and why. Each case is something a tool-module's

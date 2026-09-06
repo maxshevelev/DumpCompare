@@ -67,18 +67,6 @@ import Foundation
     /// Offers bytes to the user as a file to save. False when they cancel or
     /// the write fails.
     func exportFile(_ bytes: [UInt8], suggestedName: String) async -> Bool
-
-    /// Puts a long operation in the pane's status bar, where the comparison
-    /// build and the overview rebuild already report, so a parse looks like
-    /// every other slow job in this app instead of inventing a second place to
-    /// watch. The tool-module holds the returned object for as long as the work
-    /// runs and finishes it when the work ends.
-    ///
-    /// `onCancel` is what the strip's × does. It is not optional decoration:
-    /// the app's status bar shows that button for every operation it carries,
-    /// and a button that stops nothing is worse than a job that cannot be
-    /// stopped — pass nil only for work that genuinely cannot be interrupted.
-    func beginProgress(_ title: String, onCancel: (() -> Void)?) -> any ToolProgress
 }
 
 /// Bytes that do not change under the reader, from any thread.
@@ -112,12 +100,4 @@ public struct ToolFile: Equatable, Sendable {
         self.name = name
         self.bytes = bytes
     }
-}
-
-/// A long operation, from the tool-module's side: report how far it has got,
-/// and say when it is done.
-@MainActor public protocol ToolProgress: AnyObject {
-    /// A fraction in 0…1, or nil for work whose end is not known yet.
-    func report(_ fraction: Double?)
-    func finish()
 }

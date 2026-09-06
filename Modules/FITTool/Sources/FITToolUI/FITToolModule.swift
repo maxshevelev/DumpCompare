@@ -119,11 +119,12 @@ struct FITParkedState: ToolSessionState {
 
         generation += 1
         let generation = self.generation
-        let progress = host.beginProgress("Reading the FIT table", onCancel: nil)
+        controller.showBusy()
+        let reporter = progressReporter()
         Task { [weak self] in
-            let report = await FITToolSession.parse(snapshot)
-            progress.finish()
+            let report = await FITToolSession.parse(snapshot, progress: reporter)
             guard let self, self.generation == generation else { return }
+            self.controller.endBusy()
             self.show(FITPresenter.display(report, focus: self.focus))
             if self.noticeAnswersTheUser {
                 self.noticeAnswersTheUser = false
@@ -134,17 +135,31 @@ struct FITParkedState: ToolSessionState {
         }
     }
 
+    /// What a parse reports through: a hop back to the main actor that lands on
+    /// the module's own bottom-row bar — the line under the buttons, where the
+    /// notice lives, not in a strip the panel has to grow to host. Built per
+    /// parse, so the detached task only ever moves the bar of the parse it ran.
+    private func progressReporter() -> @Sendable (Double) -> Void {
+        { [weak self] fraction in
+            guard let self else { return }
+            Task { @MainActor in self.controller.updateProgress(fraction) }
+        }
+    }
+
     /// Off the main actor: a 16 MiB image is a full UEFI parse, and the panel
-    /// is on screen while it runs.
+    /// is on screen while it runs. `progress`, when given, is what the scan
+    /// reports to as it crosses the image — the `@Sendable (Double) -> Void`
+    /// the session built to land back on the main actor's bottom-row bar.
     private nonisolated static func parse(
-        _ snapshot: any ToolContentReader
+        _ snapshot: any ToolContentReader,
+        progress: (@Sendable (Double) -> Void)? = nil
     ) async -> FITReport {
         await Task.detached(priority: .userInitiated) {
             let source = ToolContentByteSource(reader: snapshot)
             // The tree is read for one thing this tool cannot work out for
             // itself — where an address lands in the file — and for one that
             // makes it readable: what the bytes at that address belong to.
-            let image = UEFIParser.parse(source)
+            let image = UEFIParser.parse(source, progress: progress)
             return FITReader.read(ImageReader(source), image: image)
         }.value
     }
@@ -329,11 +344,12 @@ struct FITParkedState: ToolSessionState {
             fail("Could not read the file.")
             return
         }
-        let progress = host.beginProgress("Adding microcode", onCancel: nil)
+        controller.showBusy()
+        let reporter = progressReporter()
         Task { [weak self] in
-            let prepared = await FITToolSession.prepareAdd(component, snapshot: snapshot)
-            progress.finish()
+            let prepared = await FITToolSession.prepareAdd(component, snapshot: snapshot, progress: reporter)
             guard let self else { return }
+            self.controller.endBusy()
             switch prepared {
             case .failure(let problem):
                 self.fail(problem.message)
@@ -355,11 +371,12 @@ struct FITParkedState: ToolSessionState {
             fail("Could not read the file.")
             return
         }
-        let progress = host.beginProgress("Removing entry", onCancel: nil)
+        controller.showBusy()
+        let reporter = progressReporter()
         Task { [weak self] in
-            let prepared = await FITToolSession.prepareRemove(index, snapshot: snapshot)
-            progress.finish()
+            let prepared = await FITToolSession.prepareRemove(index, snapshot: snapshot, progress: reporter)
             guard let self else { return }
+            self.controller.endBusy()
             switch prepared {
             case .failure(let problem):
                 self.fail(problem.message)
@@ -383,12 +400,13 @@ struct FITParkedState: ToolSessionState {
     /// parse the panel is showing: the user may have typed in the dump since.
     private nonisolated static func prepareAdd(
         _ component: [UInt8],
-        snapshot: any ToolContentReader
+        snapshot: any ToolContentReader,
+        progress: (@Sendable (Double) -> Void)? = nil
     ) async -> Result<(ToolTransaction, FITEditOutcome), FITEditProblem> {
         await Task.detached(priority: .userInitiated) {
             let source = ToolContentByteSource(reader: snapshot)
             let reader = ImageReader(source)
-            let image = UEFIParser.parse(source)
+            let image = UEFIParser.parse(source, progress: progress)
             let report = FITReader.read(reader, image: image)
             guard let table = report.table else { return .failure(.noTable) }
             return FITEditor.addOrReplaceMicrocode(
@@ -419,7 +437,8 @@ struct FITParkedState: ToolSessionState {
 
     private nonisolated static func prepareRemove(
         _ index: Int,
-        snapshot: any ToolContentReader
+        snapshot: any ToolContentReader,
+        progress: (@Sendable (Double) -> Void)? = nil
     ) async -> Result<(ToolTransaction, FITRemovalOutcome), FITEditProblem> {
         await Task.detached(priority: .userInitiated) {
             let source = ToolContentByteSource(reader: snapshot)
@@ -427,7 +446,7 @@ struct FITParkedState: ToolSessionState {
             // The tree, because a removal moves microcode up into the space the
             // removed one leaves, and the addresses that names them come from
             // the same mapping every other address here does.
-            let image = UEFIParser.parse(source)
+            let image = UEFIParser.parse(source, progress: progress)
             let report = FITReader.read(reader, image: image)
             guard let table = report.table else { return .failure(.noTable) }
             return FITEditor.removeEntry(

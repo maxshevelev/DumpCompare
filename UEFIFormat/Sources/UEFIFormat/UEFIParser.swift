@@ -21,8 +21,22 @@ public enum UEFIParser {
         }
     }
 
-    public static func parse(_ source: ByteSource, limits: Limits = Limits()) -> UEFIImage {
-        Parser(reader: ImageReader(source), limits: limits).run()
+    /// Parses `source` into a tree. When `progress` is given it is called, on
+    /// whichever thread the parse happens to be running on, with how far the
+    /// scan has got through the image — monotonically, from just above 0 up to
+    /// 1. Nothing calls it with the parse finished; whoever asked for progress
+    /// decides what "done" means and announces it itself.
+    ///
+    /// A 16 MiB flash dump takes about a second to scan, which is the one
+    /// parse in this tool slow enough that a caller wants to show it. `progress`
+    /// is `@Sendable` because a caller runs the parse off its main actor and
+    /// must be able to hand the callback across to the scanning thread.
+    public static func parse(
+        _ source: ByteSource,
+        limits: Limits = Limits(),
+        progress: (@Sendable (Double) -> Void)? = nil
+    ) -> UEFIImage {
+        Parser(reader: ImageReader(source), limits: limits, progress: progress).run()
     }
 }
 
@@ -34,15 +48,39 @@ final class Parser {
     let reader: ImageReader
     let limits: UEFIParser.Limits
     private(set) var diagnostics: [UEFIDiagnostic] = []
+    /// Who the scan tells how far it has got, or nil to scan quietly.
+    private let onProgress: (@Sendable (Double) -> Void)?
+    /// The last fraction handed to `onProgress`. Progress only moves forward:
+    /// the bar is one line, and the parser does not always visit the image in
+    /// order — a descriptor image parses the BIOS region and then the smaller
+    /// region that sits *below* it, and that must not walk the bar backwards.
+    private var lastFraction: Double = 0
 
     /// What an unwritten byte looks like outside any volume. Inside one it is
     /// the volume's erase polarity that decides (§3.5); out here `0xFF` is what
     /// an erased chip reads as.
     static let defaultEmptyByte: UInt8 = 0xFF
 
-    init(reader: ImageReader, limits: UEFIParser.Limits) {
+    init(
+        reader: ImageReader,
+        limits: UEFIParser.Limits,
+        progress: (@Sendable (Double) -> Void)? = nil
+    ) {
         self.reader = reader
         self.limits = limits
+        self.onProgress = progress
+    }
+
+    /// Reports that the scan has reached `offset`, as a fraction of the whole
+    /// image. Drops anything that would move the bar backwards or not at all.
+    private func progressed(to offset: UInt64) {
+        guard let onProgress else { return }
+        let size = reader.count
+        guard size > 0 else { return }
+        let fraction = min(Double(offset) / Double(size), 1)
+        guard fraction > lastFraction else { return }
+        lastFraction = fraction
+        onProgress(fraction)
     }
 
     func note(_ kind: UEFIDiagnostic.Kind, at offset: UInt64) {
@@ -100,6 +138,7 @@ final class Parser {
     /// reference parser gave up on the shortcut too.
     func scanRawArea(_ range: Range<UInt64>, emptyByte: UInt8, depth: Int) -> [UEFINode] {
         guard reader.has(range), range.count >= 4 else {
+            progressed(to: range.upperBound)
             return padding(from: range.lowerBound, to: range.upperBound, emptyByte: emptyByte)
         }
         var nodes: [UEFINode] = []
@@ -108,6 +147,12 @@ final class Parser {
         let window: UInt64 = 1 << 20
 
         scan: while offset + 4 <= range.upperBound {
+            // One report per window, on the byte the window starts at: parsing
+            // is mostly this scan, so how much of the image it has crossed is
+            // how much of the work is done. The report goes out before the
+            // window is searched rather than after — it says "reached here",
+            // and a caller drawing a bar wants it filled as the scan travels.
+            progressed(to: offset)
             let end = min(offset + window, range.upperBound)
             guard let bytes = reader.bytes(offset..<end) else { break }
             var index = 0
@@ -130,6 +175,10 @@ final class Parser {
             offset = end - 3    // so a signature straddling the window is still seen
         }
 
+        // Whatever the last window left: the tail after the last structure, or
+        // the whole range when nothing was found at all. The scan has crossed
+        // the range whether or not a signature announced itself.
+        progressed(to: range.upperBound)
         nodes += padding(from: claimed, to: range.upperBound, emptyByte: emptyByte)
         return nodes
     }

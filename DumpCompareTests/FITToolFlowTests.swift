@@ -197,6 +197,114 @@ final class FITToolFlowTests: XCTestCase {
         XCTAssertEqual(selection.start..<selection.end, 0x2000..<0x2100)
     }
 
+    // MARK: - A parse's progress
+
+    /// The shape the user asked for: while a parse runs, the module's own
+    /// bottom row — the line where the notice lives — carries a determinate
+    /// bar, and the status bar of the hex pane beside it stays quiet. A parse
+    /// runs off the main actor, so seeing the scan's fractions reach the bar
+    /// also proves the report found its way back across.
+    func testAParseShowsItsProgressInTheModulesOwnRow() throws {
+        let controller = MainViewController()
+        self.controller = controller
+        let window = makeTestWindow(width: 1200, height: 700)
+        self.window = window
+        window.contentViewController = controller
+        window.setContentSize(NSSize(width: 1200, height: 700))
+        // No descriptor and no FIT: the whole image is walked byte by byte —
+        // the one slow path in a UEFI parse. 8 MiB keeps it on screen long
+        // enough to watch.
+        let url = try tempFile([UInt8](repeating: 0xFF, count: 8 << 20))
+        files.append(url)
+        try controller.windowModel.pane1.open(url: url)
+        controller.apply(mode: .singleFile)
+        window.layoutIfNeeded()
+        controller.tools.activate(FITToolModule.identifier, animated: false)
+        window.layoutIfNeeded()
+
+        let panel = try XCTUnwrap(controller.tools.panel)
+        // The bar is in the module's row from the moment the parse starts, and
+        // the scan reports each MiB it crosses — so it is moving off zero by
+        // the time a few windows have gone.
+        XCTAssertTrue(pumpUntil(8) {
+            descendants(of: panel, NSProgressIndicator.self).first.map {
+                !$0.isHidden && $0.doubleValue > 0
+            } ?? false
+        }, "a parse must show a moving, determinate bar in the module's own row")
+
+        // Not the hex pane's status bar: that one stays quiet.
+        let paneView = try XCTUnwrap(descendants(
+            of: window.contentView!, FilePaneView.self).first)
+        XCTAssertTrue(paneView.operationView.isHidden,
+                      "the hex pane's status bar must not host the module's parse")
+
+        // The parse ends: the bar leaves the row, and the pane is still quiet.
+        XCTAssertTrue(pumpUntil(8) {
+            descendants(of: panel, NSProgressIndicator.self).isEmpty
+        }, "the bar must leave the module's row when the parse finishes")
+        XCTAssertEqual(try session().display.summary, "No FIT table in this file.")
+        XCTAssertTrue(paneView.operationView.isHidden)
+    }
+
+    /// And the idle module keeps the whole row for its notice — the complaint
+    /// this design answers was a second bar appearing below the module.
+    func testIdleTheModuleHasNoProgressBar() throws {
+        _ = try open(FITTestImage.make())
+        let panel = try XCTUnwrap(controller?.tools.panel)
+
+        XCTAssertTrue(descendants(of: panel, NSProgressIndicator.self).isEmpty,
+                      "no parse running means no bar in the module's row")
+    }
+
+    /// The parse that owns the bottom row stands the modification buttons down
+    /// for the whole of it: Add, Remove and Fix Checksum all refuse while a
+    /// read is in flight, then come back exactly as the reading says. An edit
+    /// raced against a parse would land in the panel twice — once as the note
+    /// its own re-read earns, once as the note the racing parse earns when it
+    /// finishes over it — so the busy read must have the buttons to itself.
+    func testAParseStandsTheModificationButtonsDown() throws {
+        let controller = MainViewController()
+        self.controller = controller
+        let window = makeTestWindow(width: 1200, height: 700)
+        self.window = window
+        window.contentViewController = controller
+        window.setContentSize(NSSize(width: 1200, height: 700))
+        let url = try tempFile(FITTestImage.slowButReadable())
+        files.append(url)
+        try controller.windowModel.pane1.open(url: url)
+        controller.apply(mode: .singleFile)
+        window.layoutIfNeeded()
+
+        controller.tools.activate(FITToolModule.identifier, animated: false)
+        let running = try XCTUnwrap(controller.tools.session as? FITToolSession)
+        let parsed = expectation(description: "the slow parse lands")
+        running.onDisplay = { _ in parsed.fulfill() }
+
+        // The scan runs off the main actor and this thread has not yielded, so
+        // it cannot have finished yet: the parse is busy and the buttons stand
+        // down for it.
+        XCTAssertFalse(try button("Add Microcode…").isEnabled,
+                       "Add must stand down while a parse runs")
+        XCTAssertFalse(try button("Remove Entry").isEnabled,
+                       "Remove must stand down while a parse runs")
+        XCTAssertFalse(try button("Fix Checksum").isEnabled,
+                       "Fix Checksum must stand down while a parse runs")
+
+        // The reading lands, the bar leaves, and the buttons come back as it
+        // says: Add because the table has rows, Remove for the row under the
+        // cursor, Fix because the checksum is broken and checked.
+        wait(for: [parsed], timeout: 10)
+        running.onDisplay = nil
+        window.layoutIfNeeded()
+
+        try entriesTable().selectRowIndexes([1], byExtendingSelection: false)
+        XCTAssertTrue(try button("Add Microcode…").isEnabled)
+        XCTAssertTrue(try button("Remove Entry").isEnabled,
+                      "a row that may go is under the cursor")
+        XCTAssertTrue(try button("Fix Checksum").isEnabled,
+                      "the broken, checked checksum is fixable")
+    }
+
     // MARK: - Adding and removing
 
     /// The whole of §9.2 through the panel: the component lands in the erased
@@ -553,6 +661,34 @@ enum FITTestImage {
         let pointer: UInt64 = 0x1000 + diff
         for index in 0..<4 {
             image[0xFFC0 + index] = UInt8(truncatingIfNeeded: pointer >> (8 * index))
+        }
+        return image
+    }
+
+    /// The same picture eight MiB tall. A UEFI parse of it takes real time —
+    /// no descriptor, so the whole image is walked byte by byte — yet it still
+    /// ends at a table: two microcodes, and a checksum that is checked and
+    /// wrong, so once the scan is over every modification button has a reason
+    /// to come back enabled.
+    static func slowButReadable() -> [UInt8] {
+        let size = 8 << 20
+        var image = [UInt8](repeating: 0xFF, count: size)
+        let diff = 0x1_0000_0000 - UInt64(size)
+        image.replaceSubrange(0x2000..<0x2100, with: microcode())
+        image.replaceSubrange(
+            0x2100..<0x2200, with: microcode(signature: 0x0009_06EA, revision: 0xB4)
+        )
+
+        var table = entry(address: 0x2020_205F_5449_465F,
+                          size: 3, type: 0x00, checksumValid: true)
+        table += entry(address: 0x2000 + diff, size: 0, type: 0x01)
+        table += entry(address: 0x2100 + diff, size: 0, type: 0x01)
+        table[0x0F] = 0xCC  // wrong, where the header is read as checked
+        image.replaceSubrange(0x1000..<(0x1000 + table.count), with: table)
+
+        let pointer = 0x1000 + diff
+        for index in 0..<4 {
+            image[size - 0x40 + index] = UInt8(truncatingIfNeeded: pointer >> (8 * index))
         }
         return image
     }

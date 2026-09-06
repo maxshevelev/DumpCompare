@@ -16,6 +16,15 @@ import FITTool
     var onFixChecksum: (() -> Void)?
 
     private(set) var display = FITDisplay.empty
+    /// What the last `show` was allowed to do. Kept so the buttons can come
+    /// back exactly as they were once a parse that stood them down is done.
+    private var canWrite = false
+    private var currentFocus: Int?
+    /// True while a parse runs. The modification buttons stand down for the
+    /// whole of it — a parse reads a snapshot of the file as it is now, so
+    /// letting an edit race it would make the bar a lie and the two sides of
+    /// the panel disagree.
+    private var busy = false
 
     /// True while the tables are being loaded from the model — a selection the
     /// code made is not news, and without this the panel selects, publishes,
@@ -28,6 +37,11 @@ import FITTool
     private let problemsScroll = NSScrollView()
     private let summaryLabel = NSTextField(labelWithString: "")
     private let noticeLabel = NSTextField(labelWithString: "")
+    /// The row under the buttons: the notice, and the parse's progress bar on
+    /// the same line while one runs — the module's own status line carries its
+    /// progress rather than a second strip appearing below it.
+    private let bottomRow = NSStackView()
+    private let progressBar = NSProgressIndicator()
     private let fixChecksumButton = NSButton()
     private let addButton = NSButton()
     private let removeButton = NSButton()
@@ -102,12 +116,31 @@ import FITTool
         noticeLabel.lineBreakMode = .byWordWrapping
         noticeLabel.maximumNumberOfLines = 2
         noticeLabel.translatesAutoresizingMaskIntoConstraints = false
+        // The bar takes its width and the notice gives way: while a parse runs
+        // the notice is one short sentence, and there is no bar when it is not.
+        noticeLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        // The parse's bar, not in the row yet — a session puts it there with
+        // `showBusy()` and takes it away with `endBusy()`, so the notice owns
+        // the whole row the rest of the time.
+        progressBar.style = .bar
+        progressBar.isIndeterminate = false
+        progressBar.minValue = 0
+        progressBar.maxValue = 1
+        progressBar.controlSize = .small
+        progressBar.translatesAutoresizingMaskIntoConstraints = false
+
+        bottomRow.orientation = .horizontal
+        bottomRow.alignment = .centerY
+        bottomRow.spacing = 8
+        bottomRow.translatesAutoresizingMaskIntoConstraints = false
+        bottomRow.addArrangedSubview(noticeLabel)
 
         view.addSubview(summaryLabel)
         view.addSubview(entriesScroll)
         view.addSubview(problemsScroll)
         view.addSubview(buttons)
-        view.addSubview(noticeLabel)
+        view.addSubview(bottomRow)
 
         // As tall as it needs to be, up to half the entries' height, and no
         // height at all when there is nothing to say — an empty box under a
@@ -121,11 +154,15 @@ import FITTool
         let content = problemsScroll.heightAnchor.constraint(equalToConstant: 0)
         content.priority = .defaultHigh
         problemsContent = content
-        let bottom = noticeLabel.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -8)
+        let bottom = bottomRow.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -8)
         // Breakable, for the reason the panel's own insets are (§19.2): a panel
         // squeezed to nothing is a legal state, and this chain must give way
         // there rather than log a conflict against the header's height.
         bottom.priority = .defaultHigh
+        // The bar keeps this width while the notice wraps around it; high, not
+        // required, so a row squeezed very narrow gives the bar up first.
+        let barWidth = progressBar.widthAnchor.constraint(equalToConstant: 150)
+        barWidth.priority = .defaultHigh
 
         NSLayoutConstraint.activate([
             summaryLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
@@ -146,12 +183,66 @@ import FITTool
 
             buttons.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
             buttons.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -8),
-            buttons.bottomAnchor.constraint(equalTo: noticeLabel.topAnchor, constant: -6),
+            buttons.bottomAnchor.constraint(equalTo: bottomRow.topAnchor, constant: -6),
 
-            noticeLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
-            noticeLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
-            bottom
+            bottomRow.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
+            bottomRow.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
+            bottom,
+            barWidth
         ])
+    }
+
+    // MARK: - A parse's progress
+
+    /// A parse is running: the bar joins the row under the buttons, and the
+    /// three modification buttons — Add, Remove, Fix Checksum — stand down for
+    /// the whole of it. A parse reads a snapshot of the file as it is *now*, so
+    /// an edit that slipped in while it ran would make the bar a lie and the
+    /// panel's next re-read the two of them disagreeing.
+    ///
+    /// The notice is left alone — `start()` has said "Reading…" and a re-read
+    /// that follows an edit must not wipe the note the edit just earned — so
+    /// this is only ever a bar appearing beside text, never a second line.
+    func showBusy() {
+        busy = true
+        updateButtons()
+        progressBar.doubleValue = 0
+        guard progressBar.superview == nil else { return }
+        bottomRow.addArrangedSubview(progressBar)
+    }
+
+    /// How far the parse has got, a fraction in 0…1. Reported from a detached
+    /// task; the session hops it here.
+    func updateProgress(_ fraction: Double) {
+        progressBar.doubleValue = fraction
+    }
+
+    /// The parse is done: the bar leaves the row and the buttons come back as
+    /// the last reading said they should.
+    func endBusy() {
+        busy = false
+        updateButtons()
+        guard progressBar.superview != nil else { return }
+        bottomRow.removeArrangedSubview(progressBar)
+        progressBar.removeFromSuperview()
+    }
+
+    /// What the three modification buttons are allowed to do right now. While a
+    /// parse runs every one of them stands down; otherwise each follows the
+    /// reading on show — nothing to add, nothing removable under the cursor,
+    /// nothing to fix.
+    private func updateButtons() {
+        if busy {
+            addButton.isEnabled = false
+            removeButton.isEnabled = false
+            fixChecksumButton.isEnabled = false
+            return
+        }
+        fixChecksumButton.isEnabled = display.checksumFix != nil && canWrite
+        addButton.isEnabled = canWrite && !display.rows.isEmpty
+        removeButton.isEnabled = canWrite
+            && (currentFocus.flatMap { index in display.rows.first { $0.index == index } }?
+                .canRemove ?? false)
     }
 
     private func configure(_ table: NSTableView, doubleAction: Selector) {
@@ -180,6 +271,8 @@ import FITTool
     /// Everything the panel shows, in one call.
     func show(_ display: FITDisplay, focus: Int?, canWrite: Bool) {
         self.display = display
+        self.canWrite = canWrite
+        self.currentFocus = focus
         isShowingState = true
         defer { isShowingState = false }
 
@@ -191,11 +284,7 @@ import FITTool
         } else {
             entries.deselectAll(nil)
         }
-        fixChecksumButton.isEnabled = display.checksumFix != nil && canWrite
-        addButton.isEnabled = canWrite && !display.rows.isEmpty
-        removeButton.isEnabled = canWrite
-            && (focus.flatMap { index in display.rows.first { $0.index == index } }?.canRemove
-                ?? false)
+        updateButtons()
 
         let hasProblems = !display.problems.isEmpty
         problemsScroll.isHidden = !hasProblems
@@ -283,6 +372,9 @@ extension FITToolViewController: NSMenuDelegate {
         menu.removeAllItems()
         guard let row = clickedEntry() else { return }
         for command in row.commands {
+            // The Remove button stands down for a parse, and a row's menu must
+            // not offer a way around it.
+            if busy, case .removeEntry = command { continue }
             let action: Selector
             switch command {
             case .copyCPUID: action = #selector(copyCPUIDClicked)
