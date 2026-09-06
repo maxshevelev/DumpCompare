@@ -131,6 +131,23 @@ public struct ImageReader: Sendable {
         return filled
     }
 
+    /// The first byte of `range` that is not `byte`, or nil if there is none.
+    /// This is how the end of a volume's free space is found (§5.8), so it has
+    /// to read in chunks: the range is usually most of a volume.
+    public func firstOffset(in range: Range<UInt64>, notEqualTo byte: UInt8) -> UInt64? {
+        var found: UInt64?
+        var scanned: UInt64 = 0
+        forEachChunk(of: range) { chunk in
+            if let index = chunk.firstIndex(where: { $0 != byte }) {
+                found = range.lowerBound + scanned + UInt64(index)
+                return false
+            }
+            scanned += UInt64(chunk.count)
+            return true
+        }
+        return found
+    }
+
     /// Walks `range` in chunks, stopping early when `body` returns false. Out
     /// of bounds is no chunks at all, which every caller reads as "nothing
     /// matched" rather than as a silent success.
