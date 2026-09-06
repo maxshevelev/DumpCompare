@@ -28,8 +28,11 @@ public struct ResetVector: Equatable, Sendable {
     /// The address the structure starts at.
     public static let address: UInt64 = 0xFFFF_FFD0
 
-    public func isFilledIn(_ field: UInt32) -> Bool {
-        field != ResetVector.placeholder && field != 0 && field != .max
+    /// Whether a field holds an address at all, as opposed to the placeholder
+    /// EDK2 leaves behind or an erased word. A caller following one of these
+    /// without asking ends up somewhere that was never meant to be anywhere.
+    public static func isFilledIn(_ field: UInt32) -> Bool {
+        field != placeholder && field != 0 && field != .max
     }
 }
 

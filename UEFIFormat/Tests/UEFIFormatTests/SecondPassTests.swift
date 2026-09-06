@@ -67,8 +67,8 @@ final class SecondPassTests: XCTestCase {
         )
         let vector = UEFIParser.parse(image).resetVector
 
-        XCTAssertEqual(vector?.isFilledIn(vector!.peiCoreEntryPoint), false)
-        XCTAssertEqual(vector?.isFilledIn(vector!.bootFvBaseAddress), true)
+        XCTAssertFalse(ResetVector.isFilledIn(vector!.peiCoreEntryPoint))
+        XCTAssertTrue(ResetVector.isFilledIn(vector!.bootFvBaseAddress))
     }
 
     /// A file with the right GUID but no room for a reset vector in it. The
