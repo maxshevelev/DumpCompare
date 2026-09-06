@@ -1,5 +1,7 @@
 import Cocoa
+import UniformTypeIdentifiers
 import DumpCompareCore
+import ToolModuleKit
 import ALSplitView
 
 /// Whether each diff-navigation action currently has a block to go to (§10.3).
@@ -557,6 +559,12 @@ final class MainViewController: NSViewController {
     /// Where the join's open panel goes (Append File… / Insert File at Start…,
     /// §22); the same shape as the replace panel, for one file.
     var joinOpenPanel: ((NSOpenPanel) -> URL?)?
+    /// Where a tool-module's open panel goes (`ToolHost.requestFile`), the same
+    /// shape as the join's and the segment panels': a modal panel has no one to
+    /// click it under XCTest (Design/TOOL_MODULES_PLAN.md).
+    var toolOpenPanel: ((NSOpenPanel) -> URL?)?
+    /// Where a tool-module's save panel goes (`ToolHost.exportFile`).
+    var toolSavePanel: ((NSSavePanel) -> URL?)?
     /// Where the join's dirty-pane confirmation goes: the test captures the
     /// alert (its title and its two buttons — the operation's verb and Cancel)
     /// and decides. Returns the alert's response (§22.2).
@@ -1488,6 +1496,74 @@ final class MainViewController: NSViewController {
     /// action serves every row.
     @objc func activateTool(_ sender: NSMenuItem) {
         tools.activate(sender.representedObject as? String)
+    }
+
+    // MARK: - Files, for a tool-module (Design/TOOL_MODULES_PLAN.md)
+
+    /// The largest file a tool-module may be handed. A component to place
+    /// inside a dump is measured in kilobytes; the cap is here so a mistaken
+    /// pick — a disk image, a video — is refused with a sentence rather than
+    /// read into memory whole.
+    static let toolFileSizeLimit: UInt64 = 64 * 1024 * 1024
+    /// The cap in force, so a test can move it under a small file instead of
+    /// writing a 64 MiB fixture.
+    static var toolFileSizeLimitForTesting: UInt64 = toolFileSizeLimit
+
+    /// Asks the user for a file and hands back its bytes, for
+    /// `ToolHost.requestFile`.
+    ///
+    /// The panel is the app's, deliberately: what the user picks is reachable
+    /// because *this process* was granted it, and a tool-module never has to be
+    /// given a URL or a security scope of its own. It gets bytes.
+    func requestFileForTool(kinds: [String], message: String?) -> ToolFile? {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        if let message { panel.message = message }
+        panel.allowedContentTypes = kinds.compactMap { UTType(filenameExtension: $0) }
+        let url: URL?
+        if let toolOpenPanel {
+            url = toolOpenPanel(panel)
+        } else {
+            url = panel.runModal() == .OK ? panel.url : nil
+        }
+        guard let url else { return nil }
+        do {
+            let size = (try url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(UInt64.init) ?? 0
+            guard size <= Self.toolFileSizeLimitForTesting else {
+                presentAlert(title: "That file is too large",
+                             message: "“\(url.lastPathComponent)” is \(size) bytes. "
+                                + "A tool can be handed at most "
+                                + "\(Self.toolFileSizeLimitForTesting) bytes.")
+                return nil
+            }
+            return ToolFile(name: url.lastPathComponent, bytes: [UInt8](try Data(contentsOf: url)))
+        } catch {
+            presentFileError("Could not read the file.", error, url: url)
+            return nil
+        }
+    }
+
+    /// Offers bytes to the user as a file to save, for `ToolHost.exportFile`.
+    func exportFileForTool(_ bytes: [UInt8], suggestedName: String) -> Bool {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = suggestedName
+        panel.canCreateDirectories = true
+        let url: URL?
+        if let toolSavePanel {
+            url = toolSavePanel(panel)
+        } else {
+            url = panel.runModal() == .OK ? panel.url : nil
+        }
+        guard let url else { return false }
+        do {
+            try Data(bytes).write(to: url, options: .atomic)
+            return true
+        } catch {
+            presentFileError("Could not write the file.", error, url: url)
+            return false
+        }
     }
 
     /// Takes the dump to `range` for a tool-module — the same reveal a bookmark
@@ -5862,7 +5938,7 @@ final class MainViewController: NSViewController {
 
     /// Shows a file-operation error, upgrading sandbox/permission denials to a
     /// clear "grant access" prompt (§16 sandbox access denied).
-    private func presentFileError(_ title: String, _ error: Error, url: URL?) {
+    func presentFileError(_ title: String, _ error: Error, url: URL?) {
         if isSandboxAccessDenied(error) {
             let name = url?.lastPathComponent ?? "the file"
             presentAlert(title: "Access denied",

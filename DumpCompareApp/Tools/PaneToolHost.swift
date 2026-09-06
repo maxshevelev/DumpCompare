@@ -91,12 +91,17 @@ import ToolModuleKit
         owner.revealForTool(range, in: pane, select: select)
     }
 
+    /// Asks the user for a file and hands back its bytes. The panel is the
+    /// app's, so the sandbox's grant on what the user picked stays on this side
+    /// of the line: a tool-module is never given a URL or a scope to hold.
     func requestFile(kinds: [String]) async -> ToolFile? {
-        nil          // stage 7
+        guard let owner else { return nil }
+        return owner.requestFileForTool(kinds: kinds, message: String?.none)
     }
 
     func exportFile(_ bytes: [UInt8], suggestedName: String) async -> Bool {
-        false        // stage 7
+        guard let owner else { return false }
+        return owner.exportFileForTool(bytes, suggestedName: suggestedName)
     }
 
     /// A long job in the pane's own status bar, where the comparison build and
