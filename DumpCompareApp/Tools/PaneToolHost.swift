@@ -31,6 +31,13 @@ import ToolModuleKit
     var contentSize: UInt64 { pane?.fileSize ?? 0 }
     var isReadOnly: Bool { pane?.status.isReadOnly ?? true }
 
+    var caret: UInt64 { pane?.caretOffset ?? 0 }
+
+    var selection: Range<UInt64>? {
+        guard let selection = pane?.hexSelection(), !selection.isEmpty else { return nil }
+        return selection.start..<selection.end
+    }
+
     func read(_ range: Range<UInt64>) throws -> [UInt8] {
         guard let storage = pane?.byteStorage else { throw ToolHostError.noFile }
         guard range.lowerBound <= range.upperBound, range.upperBound <= storage.size else {

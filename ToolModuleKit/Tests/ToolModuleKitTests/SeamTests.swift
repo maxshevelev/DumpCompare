@@ -24,6 +24,8 @@ final class SeamTests: XCTestCase {
         var fileName = "bios.rom"
         var contentSize: UInt64 { UInt64(bytes.count) }
         var isReadOnly = false
+        var caret: UInt64 = 0
+        var selection: Range<UInt64>?
 
         func read(_ range: Range<UInt64>) throws -> [UInt8] {
             Array(bytes[Int(range.lowerBound)..<Int(range.upperBound)])

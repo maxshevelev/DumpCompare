@@ -1,5 +1,6 @@
 import Foundation
 import ToolModuleKit
+import ZoneSketchUI
 
 /// Every tool-module the app ships, in the order the Tools menu lists them
 /// (`Design/TOOL_MODULES_PLAN.md`).
@@ -12,9 +13,10 @@ import ToolModuleKit
 /// tool-module says in its own panel rather than a grey menu item that explains
 /// nothing.
 enum ToolRegistry {
-    /// The tool-modules of the shipping app. Empty until the first one lands;
-    /// the Tools menu then holds nothing but None, which is honest.
-    static let builtIn: [any ToolModule.Type] = []
+    /// The tool-modules of the shipping app, in the order the menu lists them.
+    /// One line per module; the package it comes from is a line in
+    /// `project.yml`.
+    static let builtIn: [any ToolModule.Type] = [ZoneSketchModule.self]
 
     /// What the menu is built from. A `var` so a test can install its own
     /// stand-ins without a real tool-module existing, the way the minimap's

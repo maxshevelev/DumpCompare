@@ -23,6 +23,14 @@ import Foundation
     /// show its own controls as disabled rather than let them fail.
     var isReadOnly: Bool { get }
 
+    /// Where the caret is in the bound pane.
+    var caret: UInt64 { get }
+    /// What the user has selected there, or nil for a bare caret. A
+    /// tool-module reads it to act on what the user is pointing at — "make a
+    /// zone of this", "what is this?" — rather than asking them to type an
+    /// offset they can already see.
+    var selection: Range<UInt64>? { get }
+
     /// A small read on the main actor: a header, a table, the 48 bytes that
     /// answer "is there really a microcode at this address".
     func read(_ range: Range<UInt64>) throws -> [UInt8]

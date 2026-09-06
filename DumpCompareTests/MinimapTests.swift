@@ -372,7 +372,8 @@ final class MinimapTests: XCTestCase {
         // The configuration, not the live items: the difference block is only
         // carried in comparison mode (§10.3), and this window has no files.
         XCTAssertEqual(wc.toolbarDefaultItemIdentifiers(toolbar),
-                       [.goTo, .find, .segments, .space, .insertMode, .wordSize,
+                       [.tools, .space,
+                        .goTo, .find, .segments, .space, .insertMode, .wordSize,
                         .flexibleSpace, .diffNavigation, .space, .paneLayout, .space, .toggleMinimap],
                        "flexible space pins the right-hand group to the edge; a system space keeps "
                        + "the toggle past the pane-layout item, which is past the diff block (§24)")

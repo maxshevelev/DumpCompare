@@ -13,6 +13,8 @@ packages:
     path: ALSplitView
   ToolModuleKit:
     path: ToolModuleKit
+  ZoneSketch:
+    path: Modules/ZoneSketch
 
 targets:
   DumpCompare:
@@ -27,9 +29,13 @@ targets:
       - package: DumpCompareCore
       - package: ALSplitView
       # What a tool-module and the app agree on (Design/TOOL_MODULES_PLAN.md).
-      # The app links it; each tool-module package will link it too, and that
-      # is the whole of what the two sides share.
+      # The app links it; each tool-module package links it too, and that is the
+      # whole of what the two sides share.
       - package: ToolModuleKit
+      # One line per tool-module the app ships. The registry lists them; this is
+      # what puts them in the binary.
+      - package: ZoneSketch
+        product: ZoneSketchUI
     entitlements:
       path: DumpCompareApp/DumpCompare.entitlements
       properties:
@@ -122,6 +128,8 @@ targets:
       - package: DumpCompareCore
       - package: ALSplitView
       - package: ToolModuleKit
+      - package: ZoneSketch
+        product: ZoneSketchUI
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.maxik.DumpCompareTests

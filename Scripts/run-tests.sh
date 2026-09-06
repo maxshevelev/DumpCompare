@@ -17,9 +17,9 @@
 #     Scripts/run-tests.sh -o Library      # only the classes whose name matches
 #     Scripts/run-tests.sh --no-packages   # skip the packages, run the app only
 #
-# The packages are found by looking for a `Package.swift` beside this project,
-# so a new one (ToolModuleKit, and a package per tool-module after it) is picked
-# up without an edit here.
+# The packages are found by looking for a `Package.swift` beside this project or
+# one level under it (`Modules/<name>`), so a new one — a tool-module's package —
+# is picked up without an edit here.
 #
 # Groups are cut from the class names as they are found, so a new test file
 # needs no edit here.
@@ -49,7 +49,8 @@ report() {   # keeps the counts and the failures, drops the rest
 }
 
 if [ "$packages" = yes ] && [ -z "$only" ]; then
-    for package in $(ls -d ./*/Package.swift 2>/dev/null | sed 's|/Package.swift$||' | sort); do
+    for package in $(ls -d ./*/Package.swift ./*/*/Package.swift 2>/dev/null \
+                     | sed 's|/Package.swift$||' | sort); do
         echo "── ${package#./}"
         ( cd "$package" && swift test 2>&1 ) | report | tail -1
         [ "${PIPESTATUS[0]:-0}" -ne 0 ] && failed=1
