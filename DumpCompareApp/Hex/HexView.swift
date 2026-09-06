@@ -3384,7 +3384,18 @@ enum HexTheme {
     /// accent already means "this is where you are" — the caret's link, the
     /// mirror of the other pane — and a zone is something the file *has*, not
     /// something the user is doing.
-    static let zoneFrame = NSColor.systemTeal
+    ///
+    /// The hue is `.systemTeal`'s, kept exactly; what changes is the weight.
+    /// That colour is already at saturation 1, so a richer outline is not a
+    /// saturation move — on white paper a *bright* cyan is what reads as a
+    /// wash, and dropping the brightness is what gives the line its density.
+    /// On dark paper the move is the other way: a deep teal on near-black is
+    /// just a dark line, so there the brightness goes up instead.
+    static let zoneFrame = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(srgbRed: 0.000, green: 0.865, blue: 0.920, alpha: 1)  // h 0.510, s 1, b 0.92
+            : NSColor(srgbRed: 0.000, green: 0.602, blue: 0.640, alpha: 1)  // h 0.510, s 1, b 0.64
+    }
 
     /// The six segment tints, cycled by label (§21.3): S0 light green, S1 light
     /// pink, S2 pale blue, S3 pale yellow, S4 lavender, S5 peach. A small set of
