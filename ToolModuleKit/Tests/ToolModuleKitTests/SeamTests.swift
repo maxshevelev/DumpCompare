@@ -45,7 +45,9 @@ final class SeamTests: XCTestCase {
         func reveal(_ range: Range<UInt64>, select: Bool) { revealed = (range, select) }
         func requestFile(kinds: [String]) async -> ToolFile? { nil }
         func exportFile(_ bytes: [UInt8], suggestedName: String) async -> Bool { false }
-        func beginProgress(_ title: String) -> any ToolProgress { StubProgress() }
+        func beginProgress(_ title: String, onCancel: (() -> Void)?) -> any ToolProgress {
+            StubProgress()
+        }
     }
 
     private struct FrozenBytes: ToolContentReader {

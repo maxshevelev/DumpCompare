@@ -1,0 +1,135 @@
+import Cocoa
+import DumpCompareCore
+import ToolModuleKit
+
+/// One open pane, as the tool-module bound to it is allowed to see it — the
+/// app's side of `ToolHost` (`Design/TOOL_MODULES_PLAN.md`).
+///
+/// It holds the pane and the tab weakly and answers from them: everything a
+/// tool-module reads is read at the moment it asks, so a session cannot serve
+/// its panel from a copy of the file made when it started. When the pane goes,
+/// every call fails rather than answering about a file that is no longer there.
+@MainActor final class PaneToolHost: ToolHost {
+    /// The pane this host is about — the one the session is bound to, which is
+    /// not necessarily the active one.
+    private(set) weak var pane: PaneViewModel?
+    private weak var owner: MainViewController?
+    private weak var tools: ToolController?
+
+    /// Where a snapshot puts whatever it has to spill. It belongs to the host
+    /// and goes with it, so a parse that outlives its session still reads
+    /// through a file nothing else will remove.
+    private let scratch = TemporaryFileStore()
+
+    init(pane: PaneViewModel, owner: MainViewController, tools: ToolController) {
+        self.pane = pane
+        self.owner = owner
+        self.tools = tools
+    }
+
+    var fileName: String { pane?.status.fileName ?? "" }
+    var contentSize: UInt64 { pane?.fileSize ?? 0 }
+    var isReadOnly: Bool { pane?.status.isReadOnly ?? true }
+
+    func read(_ range: Range<UInt64>) throws -> [UInt8] {
+        guard let storage = pane?.byteStorage else { throw ToolHostError.noFile }
+        guard range.lowerBound <= range.upperBound, range.upperBound <= storage.size else {
+            throw ToolHostError.outsideTheFile
+        }
+        return try storage.read(at: range.lowerBound, length: Int(range.count))
+    }
+
+    /// The document's content frozen as it is now — including unsaved edits,
+    /// which is the point: the panel has to describe the dump on screen and not
+    /// the file on disk.
+    ///
+    /// This is what Duplicate already does (§23), and for the same reason: the
+    /// snapshot copies no bytes, cannot be disturbed by later edits, and is
+    /// readable from any thread. A parse of a 16 MiB image therefore runs off
+    /// the main actor without holding anything still.
+    func snapshot() throws -> any ToolContentReader {
+        guard let storage = pane?.document?.storage else { throw ToolHostError.noFile }
+        guard let overlay = storage as? EditOverlayStorage else {
+            throw ToolHostError.noFile
+        }
+        return FrozenContent(storage: try overlay.contentSnapshot(scratch: scratch))
+    }
+
+    func apply(_ transaction: ToolTransaction) throws {
+        // Stage 6 writes this. Until then a tool-module that tries is told so,
+        // rather than being quietly ignored.
+        throw ToolHostError.writingNotAvailableYet
+    }
+
+    func publish(_ zones: ZoneMap) {
+        tools?.publish(zones, from: self)
+    }
+
+    func reveal(_ range: Range<UInt64>, select: Bool) {
+        guard let pane, let owner else { return }
+        owner.revealForTool(range, in: pane, select: select)
+    }
+
+    func requestFile(kinds: [String]) async -> ToolFile? {
+        nil          // stage 7
+    }
+
+    func exportFile(_ bytes: [UInt8], suggestedName: String) async -> Bool {
+        false        // stage 7
+    }
+
+    /// A long job in the pane's own status bar, where the comparison build and
+    /// the overview rebuild already report (§14.4) — a parse looks like every
+    /// other slow thing in this app rather than inventing a second place to
+    /// watch. The strip is debounced by the pane, so a parse that finishes in
+    /// milliseconds never flashes a bar.
+    func beginProgress(_ title: String, onCancel: (() -> Void)?) -> any ToolProgress {
+        let operation = BackgroundOperation(name: title, onCancel: { onCancel?() })
+        if let pane, let view = owner?.filePaneView(for: pane) {
+            view.beginOperation(operation)
+        }
+        return OperationProgress(operation: operation)
+    }
+}
+
+/// Bytes that cannot change, from any thread: an immutable storage snapshot
+/// behind the reader a tool-module was given.
+private struct FrozenContent: ToolContentReader {
+    let storage: any ByteStorage
+
+    var size: UInt64 { storage.size }
+
+    func read(at offset: UInt64, length: Int) throws -> [UInt8] {
+        guard length >= 0, offset &+ UInt64(length) <= size else {
+            throw ToolHostError.outsideTheFile
+        }
+        return try storage.read(at: offset, length: length)
+    }
+}
+
+/// A `BackgroundOperation` behind the progress a tool-module was handed.
+@MainActor private final class OperationProgress: ToolProgress {
+    private let operation: BackgroundOperation
+
+    init(operation: BackgroundOperation) { self.operation = operation }
+
+    func report(_ fraction: Double?) {
+        guard let fraction else { return }
+        operation.report(fraction)
+    }
+
+    func finish() { operation.finish() }
+}
+
+/// What the host refuses, and why. Each case is something a tool-module's
+/// author can act on rather than a bare failure.
+enum ToolHostError: Error, Equatable {
+    /// The pane has no document — it was closed under the session.
+    case noFile
+    /// The range asked for is not inside the file.
+    case outsideTheFile
+    /// The file is open read-only.
+    case readOnly
+    /// Writing arrives in stage 6.
+    case writingNotAvailableYet
+}

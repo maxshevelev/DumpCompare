@@ -1,4 +1,5 @@
 import Cocoa
+import DumpCompareCore
 import ToolModuleKit
 
 /// The tool-module side of one tab: which one is active, and everything that
@@ -28,6 +29,157 @@ import ToolModuleKit
     /// The active tool-module, if the registry still holds one by that name.
     var activeModule: (any ToolModule.Type)? {
         activeIdentifier.flatMap(ToolRegistry.module(identified:))
+    }
+
+    // MARK: - The session
+
+    /// The running tool-module, or nil when the tab is on None.
+    private(set) var session: (any ToolSession)?
+
+    /// The pane the session reads and writes. Bound when the session starts and
+    /// never re-pointed: clicking the other pane does not re-target a
+    /// tool-module, because what the panel's header names is where its writes
+    /// go, and a map that re-parsed under a click would be a map you cannot
+    /// trust.
+    private(set) weak var boundPane: PaneViewModel?
+
+    private var host: PaneToolHost?
+
+    /// What the session last asked the dump to show. Drawn in stage 5; kept
+    /// here from the start because it is the session's state, not the view's.
+    private(set) var zones: ZoneMap = .empty
+
+    /// How long a change is held before the session hears about it. Typing
+    /// lands one edit per keystroke and a parse per keystroke is not work, it
+    /// is heat — but the wait has to stay below the point where the panel looks
+    /// stale. A `var` so a test does not have to sleep through it.
+    static var changeDelay: TimeInterval = 0.15
+
+    private var pendingChange: ToolContentChange?
+    private var deliveryTask: Task<Void, Never>?
+
+    /// Starts `module` against `pane`: the host, the session, its view in the
+    /// panel, and the first read.
+    ///
+    /// `start()` is called after the view is in the panel rather than inside
+    /// `makeSession`, so a slow first parse runs against a panel the user can
+    /// already see.
+    private func startSession(_ module: any ToolModule.Type, on pane: PaneViewModel) {
+        guard let owner else { return }
+        let host = PaneToolHost(pane: pane, owner: owner, tools: self)
+        let session = module.makeSession(host: host)
+        self.host = host
+        self.session = session
+        boundPane = pane
+        zones = .empty
+        panel.setTitle(module.title, fileName: pane.status.fileName)
+        panel.setContent(session.viewController.view)
+        owner.addChild(session.viewController)
+        session.start()
+    }
+
+    /// Ends the running session, whatever ended it — another tool-module, None,
+    /// the file closing, the pane leaving, the tab going.
+    private func endSession() {
+        deliveryTask?.cancel()
+        deliveryTask = nil
+        pendingChange = nil
+        session?.stop()
+        if let controller = session?.viewController {
+            controller.view.removeFromSuperview()
+            controller.removeFromParent()
+        }
+        panel.setContent(nil)
+        session = nil
+        host = nil
+        boundPane = nil
+        zones = .empty
+    }
+
+    /// What the dump should draw, from the session that is running now. A
+    /// publish from a host that has been replaced is dropped rather than
+    /// applied: a parse finishing after its session ended must not repaint the
+    /// dump for a tool-module that is no longer open.
+    func publish(_ map: ZoneMap, from host: PaneToolHost) {
+        guard host === self.host else { return }
+        zones = map.normalized(contentSize: host.contentSize)
+        owner?.toolZonesChanged()
+    }
+
+    // MARK: - What happens to the session
+
+    /// An edit landed in some pane. The session hears about it only for its own
+    /// pane, and only after the changes stop coming.
+    func paneEdited(_ pane: PaneViewModel, _ edit: DiffEdit) {
+        guard pane === boundPane else { return }
+        let change: ToolContentChange
+        switch edit {
+        case .overwrite(let range):
+            change = .edited(range, sizeDelta: 0)
+        case .insert(let at, let length):
+            change = .edited(at..<(at &+ length), sizeDelta: Int64(length))
+        case .delete(let range):
+            change = .edited(range.lowerBound..<range.lowerBound,
+                             sizeDelta: -Int64(range.count))
+        }
+        schedule(change)
+    }
+
+    /// The content was replaced under the session: a revert, a change made
+    /// outside the app, a file joined on.
+    func paneReloaded(_ pane: PaneViewModel) {
+        guard pane === boundPane else { return }
+        schedule(.reloaded)
+    }
+
+    /// The bound file was closed: there is nothing left for the tool-module to
+    /// work on, so the session ends and the panel closes.
+    func paneClosed(_ pane: PaneViewModel) {
+        guard pane === boundPane else { return }
+        activate(nil)
+    }
+
+    /// The bound pane left this tab. The session belongs to the window — the
+    /// same side of the line as bookmarks (§20) — so it stays behind and ends,
+    /// and the destination keeps whatever it had.
+    func paneLeft(_ pane: PaneViewModel) {
+        guard pane === boundPane else { return }
+        activate(nil)
+    }
+
+    /// Holds `change` briefly, merging it with whatever was already waiting,
+    /// then hands the one change to the session.
+    private func schedule(_ change: ToolContentChange) {
+        pendingChange = pendingChange.map { $0.merged(with: change) } ?? change
+        deliveryTask?.cancel()
+        let delay = Self.changeDelay
+        deliveryTask = Task { [weak self] in
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+            guard !Task.isCancelled else { return }
+            self?.deliverPendingChange()
+        }
+    }
+
+    /// Hands the held change over, and refreshes the header — a Save As or a
+    /// rename changes what the file is called under a running session.
+    private func deliverPendingChange() {
+        guard let change = pendingChange, let session else { return }
+        pendingChange = nil
+        deliveryTask = nil
+        if let module = activeModule, let pane = boundPane {
+            panel.setTitle(module.title, fileName: pane.status.fileName)
+        }
+        session.contentChanged(change)
+    }
+
+    /// Delivers anything held, now. The seam a test uses instead of sleeping
+    /// through `changeDelay`.
+    func flushPendingChangeForTesting() {
+        deliveryTask?.cancel()
+        deliveryTask = nil
+        deliverPendingChange()
     }
 
     // MARK: - The panel
@@ -107,12 +259,13 @@ import ToolModuleKit
         let resolved = identifier.flatMap { ToolRegistry.module(identified: $0) == nil ? nil : $0 }
         guard resolved != activeIdentifier else { return }
         activeIdentifier = resolved
-        guard let module = activeModule else {
-            panel.setContent(nil)
+        endSession()
+        guard let module = activeModule, let pane = owner?.windowModel.activePane, pane.isOpen else {
+            activeIdentifier = nil
             setPanelVisible(false, animated: animated)
             return
         }
-        panel.setTitle(module.title, fileName: owner?.windowModel.activePane.status.fileName ?? "")
+        startSession(module, on: pane)
         isPanelVisible = true
         setPanelWidth(preferredWidth(for: module), animated: animated)
     }

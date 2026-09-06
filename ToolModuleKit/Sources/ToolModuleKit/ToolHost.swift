@@ -65,7 +65,12 @@ import Foundation
     /// every other slow job in this app instead of inventing a second place to
     /// watch. The tool-module holds the returned object for as long as the work
     /// runs and finishes it when the work ends.
-    func beginProgress(_ title: String) -> any ToolProgress
+    ///
+    /// `onCancel` is what the strip's × does. It is not optional decoration:
+    /// the app's status bar shows that button for every operation it carries,
+    /// and a button that stops nothing is worse than a job that cannot be
+    /// stopped — pass nil only for work that genuinely cannot be interrupted.
+    func beginProgress(_ title: String, onCancel: (() -> Void)?) -> any ToolProgress
 }
 
 /// Bytes that do not change under the reader, from any thread.

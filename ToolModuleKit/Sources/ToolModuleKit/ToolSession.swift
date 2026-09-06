@@ -42,4 +42,27 @@ public enum ToolContentChange: Equatable, Sendable {
     /// outside the app, a file joined onto this one. Nothing that was read
     /// before can be relied on.
     case reloaded
+
+    /// This change and `next` as one, for a host that holds a change back
+    /// briefly rather than waking a parse per keystroke.
+    ///
+    /// A reload swallows everything: once the content has been replaced there
+    /// is nothing left to be precise about. Two edits become the stretch from
+    /// the earlier start to the later end, with the length changes added up —
+    /// deliberately generous, because after a length change the second edit's
+    /// offsets are already measured in a file the first one moved, and the
+    /// number a tool-module can act on is where the damage *starts*.
+    public func merged(with next: ToolContentChange) -> ToolContentChange {
+        guard case .edited(let mine, let myDelta) = self,
+              case .edited(let theirs, let theirDelta) = next else { return .reloaded }
+        let range = min(mine.lowerBound, theirs.lowerBound)..<max(mine.upperBound, theirs.upperBound)
+        return .edited(range, sizeDelta: myDelta + theirDelta)
+    }
+
+    /// Where the content stopped being what the tool-module last read. Nil for
+    /// a reload, which invalidates all of it.
+    public var earliestAffectedOffset: UInt64? {
+        guard case .edited(let range, _) = self else { return nil }
+        return range.lowerBound
+    }
 }

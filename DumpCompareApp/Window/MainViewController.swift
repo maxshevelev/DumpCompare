@@ -99,6 +99,10 @@ final class MainViewController: NSViewController {
         // other as companions before one of them leaves.
         if mode == .comparison { unwireComparison() }
         let pane = windowModel.detachPane(index)
+        // The tool panel belongs to this window, the way its bookmarks do
+        // (§20), so a pane that leaves does not take it along: the session ends
+        // here (Design/TOOL_MODULES_PLAN.md).
+        tools.paneLeft(pane)
         // The view bound to it belongs to this window; wherever it lands builds
         // its own from the model.
         paneViews.removeValue(forKey: ObjectIdentifier(pane))?
@@ -150,7 +154,15 @@ final class MainViewController: NSViewController {
     private func tearOff(paneAt index: Int, into host: MainViewController) {
         guard let tab = host.makeSiblingTab?() else { return }
         let marks = windowModel.bookmarkStore.bookmarks
+        // Read before the pane goes: releasing it ends the session bound to it.
+        let toolFollowing = tools.boundPane === (index == 0 ? windowModel.pane1 : windowModel.pane2)
+            ? tools.activeIdentifier : nil
         tab.adoptPane(releasePane(at: index), bookmarks: marks)
+        // A tab made for this pane starts with nothing in it, so there is
+        // nothing for its tool-module to conflict with — the same reason the
+        // marks are copied rather than dropped. The session itself does not
+        // travel; the tool-module is opened again there and reads afresh.
+        if let toolFollowing { tab.tools.activate(toolFollowing, animated: false) }
     }
 
     /// A pane let go on this window's New Tab strip: it leaves for a tab of its
@@ -446,7 +458,18 @@ final class MainViewController: NSViewController {
     }
     /// The tab's tool-module: which one is active, and the panel and session
     /// that follow from it (`Design/TOOL_MODULES_PLAN.md`). One per tab.
-    let tools = ToolController()
+    ///
+    /// Lazy so it can be handed its tab at birth rather than in `viewDidLoad`:
+    /// a tab made for a pane torn off into it is asked to open a tool-module
+    /// before anything has made it load its view, and a controller that does
+    /// not know its own window cannot open a panel in it.
+    private(set) lazy var tools: ToolController = {
+        let controller = ToolController()
+        controller.owner = self
+        // The panel's ✕ is Tools ▸ None by another route.
+        controller.panel.onClose = { [weak self] in self?.tools.activate(nil) }
+        return controller
+    }()
 
     /// The right-hand minimap panel (hidden by default, toggled by the toolbar
     /// button). Internal so tests can assert its visibility (§19).
@@ -583,9 +606,6 @@ final class MainViewController: NSViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        tools.owner = self
-        // The panel's ✕ is Tools ▸ None by another route.
-        tools.panel.onClose = { [weak self] in self?.tools.activate(nil) }
         wireExternalChangeDetection()
         // A bookmark changed: the panes have already repainted their row, and
         // what is left for the window is the edit popover, which must not
@@ -975,11 +995,13 @@ final class MainViewController: NSViewController {
             paneModel.onEdit = { [weak self] edit in
                 self?.repaintMinimap(after: edit, mapIndex: 0)
                 self?.invalidateMatches(in: paneModel)
+                self?.tools.paneEdited(paneModel, edit)
             }
             paneModel.onFullInvalidation = { [weak self] in
                 self?.minimapView.invalidateCells()
                 self?.refreshMinimapMaps()
                 self?.invalidateMatches(in: paneModel)
+                self?.tools.paneReloaded(paneModel)
             }
             // A save moves the on-disk reference, so the map's red cells have to
             // clear even though no byte changed (§19).
@@ -1152,23 +1174,27 @@ final class MainViewController: NSViewController {
             self?.comparisonCoordinator.record(edit: edit)
             self?.repaintMinimap(after: edit, mapIndex: 0)
             self?.invalidateMatches(in: self?.windowModel.pane1)
+            self.map { $0.tools.paneEdited($0.windowModel.pane1, edit) }
         }
         windowModel.pane2.onEdit = { [weak self] edit in
             self?.comparisonCoordinator.record(edit: edit)
             self?.repaintMinimap(after: edit, mapIndex: 1)
             self?.invalidateMatches(in: self?.windowModel.pane2)
+            self.map { $0.tools.paneEdited($0.windowModel.pane2, edit) }
         }
         windowModel.pane1.onFullInvalidation = { [weak self] in
             self?.comparisonCoordinator.rebuild()
             self?.minimapView.invalidateCells()
             self?.refreshMinimapMaps()
             self?.invalidateMatches(in: self?.windowModel.pane1)
+            self.map { $0.tools.paneReloaded($0.windowModel.pane1) }
         }
         windowModel.pane2.onFullInvalidation = { [weak self] in
             self?.comparisonCoordinator.rebuild()
             self?.minimapView.invalidateCells()
             self?.refreshMinimapMaps()
             self?.invalidateMatches(in: self?.windowModel.pane2)
+            self.map { $0.tools.paneReloaded($0.windowModel.pane2) }
         }
         // A save clears modified state without changing a byte, so the minimap's
         // red cells have to go even though the bytes stayed put (§19).
@@ -1463,6 +1489,23 @@ final class MainViewController: NSViewController {
     @objc func activateTool(_ sender: NSMenuItem) {
         tools.activate(sender.representedObject as? String)
     }
+
+    /// Takes the dump to `range` for a tool-module — the same reveal a bookmark
+    /// or a search result gets, in the pane the session is bound to rather than
+    /// in the active one.
+    func revealForTool(_ range: Range<UInt64>, in pane: PaneViewModel, select: Bool) {
+        guard pane.isOpen else { return }
+        if select, !range.isEmpty {
+            pane.select(range: range)
+        } else {
+            pane.moveCaret(to: range.lowerBound)
+        }
+        filePaneView(for: pane)?.revealOffsetCentered(range.lowerBound)
+    }
+
+    /// The published zone map changed. Stage 5 draws it; for now this is the
+    /// one place that has to learn about it.
+    func toolZonesChanged() {}
 
     // MARK: - Minimap (§19)
 
@@ -3834,6 +3877,9 @@ final class MainViewController: NSViewController {
 
     /// Performs the pane close after the dirty prompt succeeded.
     private func performClosePane(at index: Int) {
+        // Before the model forgets which pane this was: a session bound to it
+        // has nothing left to read (Design/TOOL_MODULES_PLAN.md).
+        tools.paneClosed(index == 0 ? windowModel.pane1 : windowModel.pane2)
         windowModel.closePane(index)
         refreshMode()
         if mode == .singleFile {
@@ -4028,7 +4074,7 @@ final class MainViewController: NSViewController {
     /// The `FilePaneView` hosting `pane`, or nil when the pane has no view right
     /// now. Used to scroll the right-clicked pane's dump, which may not be the
     /// active one (§10.2).
-    private func filePaneView(for pane: PaneViewModel) -> FilePaneView? {
+    func filePaneView(for pane: PaneViewModel) -> FilePaneView? {
         if pane === windowModel.pane1 { return comparisonView?.paneView1 ?? activeFilePane }
         return comparisonView?.paneView2
     }
