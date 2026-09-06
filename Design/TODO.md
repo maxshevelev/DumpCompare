@@ -116,6 +116,43 @@ clears the forward stack.
 
 ## Later
 
+### An editable zone — a region a tool-module opens for editing
+
+**What.** A zone (`Design/TOOL_MODULES_PLAN.md`) that carries a permission as
+well as a name: the tool-module marks the stretch the user may edit, and the app
+keeps the editing inside it. Two obligations come with it — a guard on the
+boundary, and a rule about length.
+
+**Why.** It turns a tool-module from a viewer into a place to work. "Here is the
+FIT table, edit these 64 bytes and nothing else" is exactly what a bench wants
+and exactly what hand-counting offsets gets wrong. The zone is already drawn and
+already known to the host, so the permission is the only new idea.
+
+**How.** Three questions decide it, and they were parked together:
+
+- **What happens to the rest of the file while an editable zone is open** —
+  everything outside frozen, or ordinary editing left alone and only the edits
+  that cross out of the zone refused. The first is stricter and easier to
+  explain; the second does not take the file hostage while a panel is open.
+- **Refuse or warn** — the edit does not happen at all (the way a read-only file
+  behaves: caret still, a line in the status bar), or it happens after a
+  confirmation.
+- **Overwrite only inside a zone?** An insertion or a deletion moves everything
+  after the zone and makes the tool-module's map wrong the instant it lands;
+  for a flash dump it also changes the image's size, which §9.2 of
+  `Design/UEFI/FIT_TABLE_FORMAT.md` forbids outright. If the answer is yes, the
+  zone needs no length rule of its own — it inherits the app's.
+
+The guard belongs at the one place every mutation already passes through
+(`PaneViewModel`'s typing, paste, fill and delete paths), not at each of them.
+
+**Touches.** `PaneViewModel` (the guard), `Zone.kind` (which is reserved for
+exactly this), the panel's header (saying what is open for editing), and a spec
+subsection.
+
+**Cost.** 6–10 hours, nearly all of it in deciding the three questions and in
+the tests that hold the answers.
+
 ### Split the minimap into layers
 
 **What.** `MinimapView.swift` is ~2500 lines and grows with every feature that
@@ -200,6 +237,14 @@ What is left for this entry is the chrome and the screen budget: the gutter, the
 minimap bracket, the tree. The screen budget is the part to look at before
 writing anything: the gutter takes width from the grid, and the minimap's 10 pt
 margin already holds the viewport marker and the bookmark arrows.
+
+**Half of it is being built elsewhere.** `Design/TOOL_MODULES_PLAN.md` gives a
+tool-module a zone map: named ranges it publishes, drawn in the dump and
+navigable, read-only for the user and gone when the module closes. That settles
+the model and the drawing, and it settles the anchoring question by not needing
+it — a module rebuilds its map by re-reading rather than shifting it. What stays
+here is the user's half: zones the user makes and keeps, the gutter, the minimap
+bracket and the tree.
 
 **Cost.** 20–30 hours for the visible half if the segment model already exists;
 composition is that again, a parser plugin is its own project.
