@@ -64,18 +64,39 @@ enum Microcode {
     }
 }
 
-extension Parser {
-    /// One microcode image. Nil when the header does not check out, which
-    /// leaves no diagnostic — `0x00000001` appears everywhere.
-    func parseMicrocode(at offset: UInt64, limit: UInt64) -> UEFINode? {
-        guard offset + Microcode.headerSize <= limit,
-              let headerType = reader.uint32(at: offset),
+/// A microcode header that checked out, read back as values.
+///
+/// Public because a FIT table's entries point at these, and the tool-module
+/// that edits FIT has to show which processor and which revision an entry
+/// leads to. Reading them there instead would be §7.1 written down twice.
+public struct MicrocodeHeader: Equatable, Sendable {
+    public var offset: UInt64
+    public var updateRevision: UInt32
+    /// The date, as the packed BCD it is stored in.
+    public var year: UInt16
+    public var month: UInt8
+    public var day: UInt8
+    public var processorSignature: UInt32
+    public var checksum: UInt32
+    public var platformIDs: UInt32
+    public var dataSize: UInt32
+    public var totalSize: UInt32
+
+    public static let size: UInt64 = 0x30
+
+    /// Reads a header and puts it through every check of §7.1. Nil means these
+    /// bytes are not microcode — which is the usual answer, since the dword
+    /// this starts with is `0x00000001`.
+    public static func read(at offset: UInt64, in reader: ImageReader) -> MicrocodeHeader? {
+        guard let headerType = reader.uint32(at: offset),
               let updateRevision = reader.uint32(at: offset + 0x04),
               let year = reader.uint16(at: offset + 0x08),
               let day = reader.uint8(at: offset + 0x0A),
               let month = reader.uint8(at: offset + 0x0B),
-              let signature = reader.uint32(at: offset + 0x0C),
+              let processorSignature = reader.uint32(at: offset + 0x0C),
+              let checksum = reader.uint32(at: offset + 0x10),
               let loaderRevision = reader.uint32(at: offset + 0x14),
+              let platformIDs = reader.uint32(at: offset + 0x18),
               let dataSize = reader.uint32(at: offset + 0x1C),
               let totalSize = reader.uint32(at: offset + 0x20),
               totalSize != 0,
@@ -88,7 +109,37 @@ extension Parser {
               )
         else { return nil }
 
-        var end = offset + UInt64(totalSize)
+        return MicrocodeHeader(
+            offset: offset,
+            updateRevision: updateRevision,
+            year: year, month: month, day: day,
+            processorSignature: processorSignature,
+            checksum: checksum,
+            platformIDs: platformIDs,
+            dataSize: dataSize,
+            totalSize: totalSize
+        )
+    }
+
+    /// Header and data together, as `TotalSize` gives it.
+    public var range: Range<UInt64> { offset..<(offset + UInt64(totalSize)) }
+
+    /// `2019-07-15`, unpacked from the BCD. The fields are already known to be
+    /// valid BCD, or this header would not exist.
+    public var date: String {
+        String(format: "%04X-%02X-%02X", year, month, day)
+    }
+}
+
+extension Parser {
+    /// One microcode image. Nil when the header does not check out, which
+    /// leaves no diagnostic — `0x00000001` appears everywhere.
+    func parseMicrocode(at offset: UInt64, limit: UInt64) -> UEFINode? {
+        guard offset + Microcode.headerSize <= limit,
+              let header = MicrocodeHeader.read(at: offset, in: reader)
+        else { return nil }
+
+        var end = header.range.upperBound
         if end > limit {
             note(.truncated(.microcodeHeader), at: offset + 0x20)
             end = limit
@@ -97,7 +148,11 @@ extension Parser {
 
         return UEFINode(
             kind: .microcode,
-            name: String(format: "Microcode %08X, revision %08X", signature, updateRevision),
+            name: String(
+                format: "Microcode %08X, revision %08X",
+                header.processorSignature,
+                header.updateRevision
+            ),
             header: offset..<(offset + Microcode.headerSize),
             body: (offset + Microcode.headerSize)..<end,
             // Whatever FIT points at must not move (§11), and the FIT table

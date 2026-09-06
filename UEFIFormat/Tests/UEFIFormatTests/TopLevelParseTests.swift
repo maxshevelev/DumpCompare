@@ -182,6 +182,26 @@ final class TopLevelParseTests: XCTestCase {
         XCTAssertTrue(parsed.diagnostics.isEmpty)
     }
 
+    /// The header read back as values, which is what a FIT entry pointing here
+    /// has to be shown as.
+    func testAMicrocodeHeaderReadsBackAsValues() {
+        let image = TestImage.microcode(signature: 0x000A_0655, revision: 0x1C)
+        let header = MicrocodeHeader.read(at: 0, in: ImageReader(image))
+
+        XCTAssertEqual(header?.processorSignature, 0x000A_0655)
+        XCTAssertEqual(header?.updateRevision, 0x1C)
+        XCTAssertEqual(header?.date, "2019-07-15")
+        XCTAssertEqual(header?.dataSize, 0x40)
+        XCTAssertEqual(header?.range, 0..<0x70)
+    }
+
+    func testBytesThatAreNotMicrocodeReadBackAsNothing() {
+        XCTAssertNil(MicrocodeHeader.read(
+            at: 0, in: ImageReader([UInt8](repeating: 0xFF, count: 0x100))
+        ))
+        XCTAssertNil(MicrocodeHeader.read(at: 0, in: ImageReader([UInt8]([1, 0, 0, 0]))))
+    }
+
     /// The dword `0x00000001` is everywhere. Only the whole header — the loader
     /// revision, the sizes and the BCD date — decides.
     func testADwordOfOneIsNotMicrocode() {
