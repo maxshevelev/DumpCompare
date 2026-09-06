@@ -2,9 +2,10 @@ import Foundation
 
 /// The four kinds of microcode the collection holds, one directory each.
 ///
-/// Only Intel can go into a FIT (§6, §7.1) — the table names nothing else — but
-/// the others are worth browsing, and refusing them at the point of adding says
-/// more than hiding them would.
+/// Only Intel can go into a FIT (§6, §7.1) — the table names nothing else — so
+/// only Intel is ever offered. The other three are read all the same, because
+/// the listing is of the whole repository and telling them apart is what keeps
+/// AMD's names from being read as Intel's.
 public enum MicrocodeVendor: String, CaseIterable, Sendable {
     case intel = "Intel"
     case amd = "AMD"

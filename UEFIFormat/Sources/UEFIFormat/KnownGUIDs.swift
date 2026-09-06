@@ -38,6 +38,12 @@ public enum KnownGUIDs {
     /// thing in an image that ties an offset to an address (§5.7).
     public static let volumeTopFile = guid("1BA0062E-C779-4582-8566-336AE8F78F09")
 
+    /// AMD keeps its microcode in FFS files rather than in a run of its own,
+    /// and these two GUIDs are the only thing that says so (§7.2) — Intel's is
+    /// recognised by its header, AMD's is not.
+    public static let amdMicrocode = guid("DE3E049C-A218-4891-8658-5FC0FA84C788")
+    public static let amdCompressedRawFile = guid("20BC8AC9-94D1-4208-AB28-5D673FD73487")
+
     /// Names for the volumes, files and sections worth naming. Everything else
     /// is shown by its type, which is more useful than a GUID nobody knows.
     public static func name(of guid: EFIGUID) -> String? { names[guid] }
@@ -64,8 +70,8 @@ public enum KnownGUIDs {
         guid("E4536585-7909-4A60-B5C6-ECDEA6EBFB54"): "AMI padding file",
         guid("389CC6F2-1EA8-467B-AB8A-78E769AE2A15"): "Phoenix vendor hash file",
         guid("CBC91F44-A4BC-4A5B-8696-703451D0B053"): "AMI vendor hash file",
-        guid("20BC8AC9-94D1-4208-AB28-5D673FD73487"): "AMD compressed raw file",
-        guid("DE3E049C-A218-4891-8658-5FC0FA84C788"): "AMD microcode"
+        amdCompressedRawFile: "AMD compressed raw file",
+        amdMicrocode: "AMD microcode"
     ]
 
     /// What a GUID-defined section's GUID says about its body (§6.3).

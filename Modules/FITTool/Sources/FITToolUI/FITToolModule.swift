@@ -47,9 +47,15 @@ struct FITParkedState: ToolSessionState {
     /// not be fetched. Another seam for the app's tests, which wait on it
     /// rather than on the clock.
     public var onCatalogueLoaded: (([MicrocodeCatalogueEntry]) -> Void)?
+
+    /// The same seam as a method, because `try session().onCatalogueLoaded = {}`
+    /// puts the `try` inside the closure as far as the compiler is concerned.
+    public func withCatalogueSeam(_ body: @escaping () -> Void) {
+        onCatalogueLoaded = { _ in body() }
+    }
     private var focus: Int?
-    /// The CPUIDs this image already names, which is what the add form opens
-    /// on: a dump is for one board.
+    /// The CPUIDs this image already names, which is the narrowing the add
+    /// form offers: a dump is for one board.
     private var cpuidsInTheImage: Set<UInt32> = []
 
     /// The add form while it is on screen.
@@ -126,12 +132,14 @@ struct FITParkedState: ToolSessionState {
 
     /// Off the main actor: a 16 MiB image is a full UEFI parse, and the panel
     /// is on screen while it runs.
-    private nonisolated static func parse(_ snapshot: any ToolContentReader) async -> FITReport {
+    private nonisolated static func parse(
+        _ snapshot: any ToolContentReader
+    ) async -> FITReport {
         await Task.detached(priority: .userInitiated) {
             let source = ToolContentByteSource(reader: snapshot)
             // The tree is read for one thing this tool cannot work out for
-            // itself — where an address lands in the file — and for one thing
-            // that makes it readable: what the bytes at that address belong to.
+            // itself — where an address lands in the file — and for one that
+            // makes it readable: what the bytes at that address belong to.
             let image = UEFIParser.parse(source)
             return FITReader.read(ImageReader(source), image: image)
         }.value
@@ -249,14 +257,6 @@ struct FITParkedState: ToolSessionState {
     }
 
     private func download(_ entry: MicrocodeCatalogueEntry) {
-        // Refused here rather than after the download: a FIT names Intel
-        // microcode and nothing else (§6, §7.1), and the file would only be
-        // turned away by the header check a moment later.
-        guard entry.vendor == .intel else {
-            form?.say("A FIT names Intel microcode only — \(entry.vendor.rawValue)"
-                + " microcode cannot go in one.")
-            return
-        }
         form?.say("Fetching \(entry.fileName)…", busy: true)
         let source = FITToolSession.microcodeSource
         Task { [weak self] in
@@ -305,10 +305,9 @@ struct FITParkedState: ToolSessionState {
             switch prepared {
             case .failure(let problem):
                 self.controller.say(problem.message)
-            case .success(let (transaction, placement)):
-                self.apply(transaction, saying: "Added \(description) at "
-                    + "0x\(String(placement.range.lowerBound, radix: 16, uppercase: true))."
-                    + " Boot Guard ranges are not checked — this tool cannot read them yet.")
+            case .success(let (transaction, outcome)):
+                self.apply(transaction,
+                           saying: FITToolSession.note(for: outcome, describedAs: description))
             }
         }
     }
@@ -332,9 +331,8 @@ struct FITParkedState: ToolSessionState {
             switch prepared {
             case .failure(let problem):
                 self.controller.say(problem.message)
-            case .success(let transaction):
-                self.apply(transaction,
-                           saying: "Entry \(index) removed. Its component is still in the image.")
+            case .success(let (transaction, outcome)):
+                self.apply(transaction, saying: FITToolSession.note(for: outcome))
             }
         }
     }
@@ -353,47 +351,73 @@ struct FITParkedState: ToolSessionState {
     private nonisolated static func prepareAdd(
         _ component: [UInt8],
         snapshot: any ToolContentReader
-    ) async -> Result<(ToolTransaction, FITPlacement), FITEditProblem> {
+    ) async -> Result<(ToolTransaction, FITEditOutcome), FITEditProblem> {
         await Task.detached(priority: .userInitiated) {
             let source = ToolContentByteSource(reader: snapshot)
             let reader = ImageReader(source)
             let image = UEFIParser.parse(source)
             let report = FITReader.read(reader, image: image)
             guard let table = report.table else { return .failure(.noTable) }
-
-            let header: MicrocodeHeader
-            switch FITEditor.microcode(in: component) {
-            case .success(let read): header = read
-            case .failure(let problem): return .failure(problem)
-            }
-            // Exactly what the header claims, so a file with something after it
-            // does not drag the extra bytes into the image.
-            let bytes = Array(component.prefix(Int(header.totalSize)))
-
-            let placement: FITPlacement
-            switch FITEditor.placement(
-                forSize: UInt64(header.totalSize), table: table, image: image,
-                reader: reader, addressDiff: report.addressDiff
-            ) {
-            case .success(let found): placement = found
-            case .failure(let problem): return .failure(problem)
-            }
-            return FITEditor.addMicrocode(bytes, at: placement, to: table, in: reader)
-                .map { ($0, placement) }
+            return FITEditor.addOrReplaceMicrocode(
+                component, in: table, image: image, reader: reader,
+                addressDiff: report.addressDiff
+            )
         }.value
+    }
+
+    /// What the panel says afterwards. The Boot Guard caveat is on all three:
+    /// a component written into a protected range breaks its hash whether it
+    /// arrived in new space or over an old one.
+    private static func note(for outcome: FITEditOutcome, describedAs description: String) -> String {
+        let at = "0x" + String(outcome.range.lowerBound, radix: 16, uppercase: true)
+        let caveat = " Boot Guard ranges are not checked — this tool cannot read them yet."
+        guard let replaced = outcome.replaced else {
+            return "Added \(description) at \(at)." + caveat
+        }
+        let was = String(replaced.updateRevision, radix: 16, uppercase: true)
+        var note = "Replaced \(description) — revision \(was) — at \(at)"
+        if outcome.moved > 0 {
+            note += ", and \(outcome.moved) microcode"
+                + (outcome.moved == 1 ? "" : "s")
+                + " behind it moved to suit the new size"
+        }
+        return note + "." + caveat
     }
 
     private nonisolated static func prepareRemove(
         _ index: Int,
         snapshot: any ToolContentReader
-    ) async -> Result<ToolTransaction, FITEditProblem> {
+    ) async -> Result<(ToolTransaction, FITRemovalOutcome), FITEditProblem> {
         await Task.detached(priority: .userInitiated) {
-            let reader = ImageReader(ToolContentByteSource(reader: snapshot))
-            guard let table = FITReader.read(reader, image: nil).table else {
-                return .failure(.noTable)
-            }
-            return FITEditor.removeEntry(index, from: table, in: reader)
+            let source = ToolContentByteSource(reader: snapshot)
+            let reader = ImageReader(source)
+            // The tree, because a removal moves microcode up into the space the
+            // removed one leaves, and the addresses that names them come from
+            // the same mapping every other address here does.
+            let report = FITReader.read(reader, image: UEFIParser.parse(source))
+            guard let table = report.table else { return .failure(.noTable) }
+            return FITEditor.removeEntry(
+                index, from: table, in: reader, addressDiff: report.addressDiff
+            )
         }.value
+    }
+
+    /// What the panel says after a removal. Moving a component changes its
+    /// address, and anything outside the FIT that named it will not know —
+    /// Boot Guard being the one that matters.
+    private static func note(for outcome: FITRemovalOutcome) -> String {
+        var parts = ["Entry \(outcome.entryIndex) and its component are gone"]
+        if outcome.moved > 0 {
+            parts.append("\(outcome.moved) microcode"
+                + (outcome.moved == 1 ? "" : "s")
+                + " moved up and the rows now point there")
+        }
+        if let erased = outcome.erased {
+            parts.append("0x" + String(erased.count, radix: 16, uppercase: true)
+                + " bytes erased at the end of the run")
+        }
+        return parts.joined(separator: "; ") + "."
+            + " Boot Guard ranges are not checked — this tool cannot read them yet."
     }
 
     /// The second defect of §11, and the one a tool can put right on its own:

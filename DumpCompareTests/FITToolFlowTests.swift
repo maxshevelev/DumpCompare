@@ -224,6 +224,51 @@ final class FITToolFlowTests: XCTestCase {
         XCTAssertEqual(try pane.byteStorage?.read(at: 0x2100, length: 4), [0xFF, 0xFF, 0xFF, 0xFF])
     }
 
+    /// The ordinary case at a bench: a newer revision of a CPUID the table
+    /// already names. It goes where the old one was, and the table does not
+    /// change at all.
+    func testANewerRevisionOfAKnownCpuidReplacesItInPlace() throws {
+        let controller = try open(FITTestImage.make())
+        let pane = controller.windowModel.pane1
+        let newer = FITTestImage.microcode(signature: 0x0008_06EA, revision: 0xF1)
+
+        try session().addMicrocode(newer, describedAs: "CPUID 806EA")
+        try waitForParse()
+
+        let display = try session().display
+        XCTAssertEqual(display.rows.count, 2, "replaced, not added a second time")
+        XCTAssertEqual(display.rows[1].targetRange, 0x2000..<0x2100)
+        XCTAssertTrue(display.rows[1].targetText.contains("rev F1"),
+                      "\(display.rows[1].targetText)")
+        XCTAssertEqual(try pane.byteStorage?.read(at: 0x2100, length: 4),
+                       [0xFF, 0xFF, 0xFF, 0xFF], "nothing was written past it")
+
+        let item = NSMenuItem(title: "Undo", action: #selector(MainViewController.undoEdit),
+                              keyEquivalent: "z")
+        _ = controller.validateMenuItem(item)
+        XCTAssertEqual(item.title, "Undo Replace Microcode")
+    }
+
+    /// And the button says which it will be before it is pressed.
+    func testTheFormOffersReplaceForACpuidTheTableAlreadyNames() throws {
+        _ = try open(FITTestImage.make())
+        let loaded = expectation(description: "the catalogue arrives")
+        try session().withCatalogueSeam { loaded.fulfill() }
+        try button("Add Microcode…").performClick(nil)
+        wait(for: [loaded], timeout: 5)
+
+        let sheet = try XCTUnwrap(try session().viewController.presentedViewControllers?.first)
+        let table = try XCTUnwrap(descendants(of: sheet.view, NSTableView.self).first)
+        let add = try XCTUnwrap(descendants(of: sheet.view, NSButton.self)
+            .first { $0.title == "Add" || $0.title == "Replace" })
+
+        table.selectRowIndexes([0], byExtendingSelection: false)   // 806EA, in the image
+        XCTAssertEqual(add.title, "Replace")
+
+        table.selectRowIndexes([1], byExtendingSelection: false)   // 906EA, not in it
+        XCTAssertEqual(add.title, "Add")
+    }
+
     /// A file that is not microcode is refused before anything is written.
     func testAFileThatIsNotMicrocodeIsRefusedWithoutWriting() throws {
         let controller = try open(FITTestImage.make())
@@ -237,20 +282,44 @@ final class FITToolFlowTests: XCTestCase {
         XCTAssertEqual(try session().display.rows.count, 2)
     }
 
-    /// §10: the row goes, an empty slot takes its place in the tail, and the
-    /// component it named stays where it is.
-    func testRemovingAnEntryLeavesAnEmptySlotAndTheComponent() throws {
-        let controller = try open(FITTestImage.make(extraACM: true))
+    /// §10, the way a bench wants it back: the row goes, the body goes, and
+    /// what followed it in the run moves up into the space with its row
+    /// repointed.
+    func testRemovingAMicrocodeClosesUpTheRunAndTheTable() throws {
+        let controller = try open(FITTestImage.make(extraMicrocode: true))
         let pane = controller.windowModel.pane1
         XCTAssertEqual(try session().display.rows.count, 3)
+
+        try session().removeEntry(at: 1)
+        try waitForParse()
+
+        let display = try session().display
+        XCTAssertEqual(display.rows.map(\.typeText), ["FIT Header", "Microcode"])
+        XCTAssertEqual(display.rows[1].cpuidText, "906EA", "the second one moved up")
+        XCTAssertEqual(display.rows[1].targetRange, 0x2000..<0x2100)
+        XCTAssertEqual(try pane.byteStorage?.read(at: 0x2100, length: 4),
+                       [0xFF, 0xFF, 0xFF, 0xFF], "and the bytes it freed are erased")
+        XCTAssertTrue(display.problems.filter { $0.severity == .error }.isEmpty,
+                      "\(display.problems.map(\.message))")
+
+        let item = NSMenuItem(title: "Undo", action: #selector(MainViewController.undoEdit),
+                              keyEquivalent: "z")
+        _ = controller.validateMenuItem(item)
+        XCTAssertEqual(item.title, "Undo Remove FIT Entry")
+    }
+
+    /// The extent of anything else a row can point at is not something this
+    /// tool knows, so only the row goes.
+    func testRemovingARowThatIsNotMicrocodeLeavesItsBytes() throws {
+        let controller = try open(FITTestImage.make(extraACM: true))
+        let pane = controller.windowModel.pane1
 
         try session().removeEntry(at: 2)
         try waitForParse()
 
-        let display = try session().display
-        XCTAssertEqual(display.rows.map(\.typeText), ["FIT Header", "Microcode", "Empty slot"])
-        XCTAssertEqual(try pane.byteStorage?.read(at: 0x2100, length: 4), [0xFF, 0xFF, 0xFF, 0xFF])
-        XCTAssertTrue(display.problems.filter { $0.severity == .error }.isEmpty)
+        XCTAssertEqual(try session().display.rows.map(\.typeText), ["FIT Header", "Microcode"])
+        XCTAssertEqual(try pane.byteStorage?.read(at: 0x2000, length: 4),
+                       Array(FITTestImage.microcode()[0..<4]), "the microcode is untouched")
     }
 
     /// A table needs one microcode entry (§8.7), so the only one is not offered
@@ -272,13 +341,14 @@ final class FITToolFlowTests: XCTestCase {
         XCTAssertTrue(rows[2].commands.contains { $0.title == "Remove Entry" })
     }
 
-    /// The form opens on the catalogue, narrowed to the CPUIDs this image
-    /// already names — a dump is for one board.
+    /// The form opens on the whole catalogue — narrowing it is the form's job,
+    /// and the sheet is on screen while it is fetched.
     func testTheAddFormOpensWithTheCatalogue() throws {
         let controller = try open(FITTestImage.make())
         let loaded = expectation(description: "the catalogue arrives")
         var entries: [MicrocodeCatalogueEntry] = []
-        try session().onCatalogueLoaded = { list in
+        let running = try session()
+        running.onCatalogueLoaded = { list in
             entries = list
             loaded.fulfill()
         }
@@ -291,6 +361,26 @@ final class FITToolFlowTests: XCTestCase {
         XCTAssertFalse(controller.tools.session.map {
             ($0.viewController.presentedViewControllers ?? []).isEmpty
         } ?? true, "the sheet is on screen")
+    }
+
+    /// A FIT names Intel microcode and nothing else, so the form lists nothing
+    /// else — and says as much where it cannot be missed, since there is no
+    /// vendor picker to imply it.
+    func testTheFormListsIntelOnlyAndSaysSo() throws {
+        _ = try open(FITTestImage.make())
+        let loaded = expectation(description: "the catalogue arrives")
+        try session().withCatalogueSeam { loaded.fulfill() }
+        try button("Add Microcode…").performClick(nil)
+        wait(for: [loaded], timeout: 5)
+
+        let sheet = try XCTUnwrap(try session().viewController.presentedViewControllers?.first)
+        let labels = descendants(of: sheet.view, NSTextField.self).map(\.stringValue)
+        let table = try XCTUnwrap(descendants(of: sheet.view, NSTableView.self).first)
+
+        XCTAssertTrue(labels.contains { $0.contains("Intel") }, "\(labels)")
+        XCTAssertEqual(table.numberOfRows, 2, "the AMD entry is not offered")
+        XCTAssertTrue(descendants(of: sheet.view, NSPopUpButton.self).isEmpty,
+                      "no vendor picker: there is nothing to pick")
     }
 
     /// Waits for whatever the session does next to settle, for the paths that
@@ -400,15 +490,23 @@ enum FITTestImage {
     static func make(
         checksum: UInt8? = nil,
         microcodeAddress: UInt64? = nil,
-        extraACM: Bool = false
+        extraACM: Bool = false,
+        extraMicrocode: Bool = false
     ) -> [UInt8] {
         var image = [UInt8](repeating: 0xFF, count: 0x1_0000)
         let diff: UInt64 = 0x1_0000_0000 - 0x1_0000
         image.replaceSubrange(0x2000..<0x2100, with: microcode())
+        if extraMicrocode {
+            image.replaceSubrange(
+                0x2100..<0x2200, with: microcode(signature: 0x0009_06EA, revision: 0xB4)
+            )
+        }
 
-        var table = entry(address: 0x2020_205F_5449_465F, size: extraACM ? 3 : 2,
+        var table = entry(address: 0x2020_205F_5449_465F,
+                          size: extraACM || extraMicrocode ? 3 : 2,
                           type: 0x00, checksumValid: true)
         table += entry(address: microcodeAddress ?? (0x2000 + diff), size: 0, type: 0x01)
+        if extraMicrocode { table += entry(address: 0x2100 + diff, size: 0, type: 0x01) }
         if extraACM { table += entry(address: 0x3000 + diff, size: 0, type: 0x02) }
         table[0x0F] = checksum ?? (0 &- table.reduce(into: UInt8(0)) { $0 = $0 &+ $1 })
         image.replaceSubrange(0x1000..<(0x1000 + table.count), with: table)

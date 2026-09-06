@@ -1,5 +1,6 @@
 import XCTest
 @testable import FITTool
+import UEFIFormat
 
 /// The list of microcode that can be browsed and added, read from the file
 /// names in `github.com/platomav/CPUMicrocodes`.
@@ -113,7 +114,9 @@ final class MicrocodeCatalogueTests: XCTestCase {
 
     // MARK: - Narrowing it down
 
-    /// Picking a vendor is asking to see what that vendor has.
+    /// Only Intel is ever offered — a FIT names no other kind — but all four
+    /// are read, because the listing is of the whole repository and telling
+    /// them apart is what keeps AMD's names from being read as Intel's.
     func testTheVendorDecidesWhatIsListed() throws {
         XCTAssertEqual(
             MicrocodeCatalogue.filter(try entries(), vendor: .intel).map(\.cpuidText),

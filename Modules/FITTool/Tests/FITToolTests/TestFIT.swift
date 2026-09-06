@@ -118,7 +118,8 @@ enum TestFIT {
     static func microcode(
         signature: UInt32 = 0x0008_06EA,
         revision: UInt32 = 0xF0,
-        totalSize: UInt32 = 0x100
+        totalSize: UInt32 = 0x100,
+        platformIDs: UInt32 = 1
     ) -> [UInt8] {
         var bytes: [UInt8] = []
         func u32(_ value: UInt32) {
@@ -131,7 +132,7 @@ enum TestFIT {
         u32(signature)
         u32(0)                     // Checksum, filled in below
         u32(1)                     // LoaderRevision
-        u32(1)                     // PlatformIds
+        u32(platformIDs)
         u32(0x40)                  // DataSize
         u32(totalSize)
         u32(0)                     // MetadataSize

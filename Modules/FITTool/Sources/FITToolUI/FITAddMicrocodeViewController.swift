@@ -24,7 +24,6 @@ import FITTool
     let table = NSTableView()
     private let scrollView = NSScrollView()
     private let searchField = NSSearchField()
-    private let vendorPopUp = NSPopUpButton()
     private let onlyInImage = NSButton(checkboxWithTitle: "Only CPUIDs in this image",
                                        target: nil, action: nil)
     private let statusLabel = NSTextField(labelWithString: "")
@@ -43,25 +42,19 @@ import FITTool
     override func loadView() {
         view = NSView(frame: NSRect(x: 0, y: 0, width: 560, height: 460))
 
-        let title = NSTextField(labelWithString: "Add Microcode")
+        // "Intel" in the title and not only in the line below it: the list has
+        // no vendor picker any more, so what is being shown has to be said
+        // where it cannot be missed.
+        let title = NSTextField(labelWithString: "Add Intel Microcode")
         title.font = .systemFont(ofSize: 13, weight: .semibold)
         let source = NSTextField(labelWithString:
-            "From github.com/platomav/CPUMicrocodes. A FIT names Intel microcode only —"
-            + " the other vendors are here to look at.")
+            "From github.com/platomav/CPUMicrocodes — a FIT names no other kind.")
         source.font = .systemFont(ofSize: 11)
         source.textColor = .secondaryLabelColor
 
         searchField.placeholderString = "CPUID, revision or file name"
         searchField.target = self
         searchField.action = #selector(narrow)
-        // Every vendor the collection has a directory for, Intel first because
-        // that is the only kind a FIT can name.
-        for vendor in MicrocodeVendor.allCases {
-            vendorPopUp.addItem(withTitle: vendor.rawValue)
-        }
-        vendorPopUp.selectItem(at: 0)
-        vendorPopUp.target = self
-        vendorPopUp.action = #selector(narrow)
         onlyInImage.target = self
         onlyInImage.action = #selector(narrow)
         onlyInImage.controlSize = .small
@@ -116,13 +109,7 @@ import FITTool
         let chooseFile = button("Choose File…", #selector(chooseFileClicked))
         chooseFile.toolTip = "Add a microcode you already have, without the network"
 
-        // Labelled, because the column two rows down is called "Plat" and means
-        // Intel's platform id — a different thing entirely.
-        let vendorLabel = NSTextField(labelWithString: "Vendor:")
-        vendorLabel.font = .systemFont(ofSize: 11)
-        vendorLabel.textColor = .secondaryLabelColor
-
-        let filters = NSStackView(views: [vendorLabel, vendorPopUp, onlyInImage, searchField])
+        let filters = NSStackView(views: [onlyInImage, searchField])
         filters.orientation = .horizontal
         filters.spacing = 8
         searchField.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -165,21 +152,8 @@ import FITTool
     /// The catalogue arrived.
     func show(_ entries: [MicrocodeCatalogueEntry]) {
         self.entries = entries
-        let counts = MicrocodeCatalogue.counts(in: entries)
-        for (index, vendor) in MicrocodeVendor.allCases.enumerated() {
-            vendorPopUp.item(at: index)?.title =
-                "\(vendor.rawValue) (\(counts[vendor] ?? 0))"
-        }
         onlyInImage.isEnabled = !cpuidsInTheImage.isEmpty
         narrow()
-    }
-
-    /// The vendor the popup is on. Intel unless the user says otherwise: it is
-    /// the only kind a FIT can name.
-    private var vendor: MicrocodeVendor {
-        let index = vendorPopUp.indexOfSelectedItem
-        let all = MicrocodeVendor.allCases
-        return index >= 0 && index < all.count ? all[index] : .intel
     }
 
     /// A line at the bottom: what is happening, or what went wrong.
@@ -194,19 +168,21 @@ import FITTool
     }
 
     @objc private func narrow() {
+        // Intel and nothing else: a FIT names no other kind (§6, §7.1), so
+        // listing AMD or VIA would be listing what cannot be added.
         shown = MicrocodeCatalogue.filter(
             entries,
-            vendor: vendor,
+            vendor: .intel,
             search: searchField.stringValue,
             cpuidsInTheImage: onlyInImage.state == .on ? cpuidsInTheImage : nil
         )
         table.reloadData()
         addButton.isEnabled = false
         guard !entries.isEmpty else { return say("") }
-        let total = MicrocodeCatalogue.counts(in: entries)[vendor] ?? 0
+        let total = MicrocodeCatalogue.counts(in: entries)[.intel] ?? 0
         say(shown.count == total
-            ? "\(total) \(vendor.rawValue) microcodes"
-            : "\(shown.count) of \(total) \(vendor.rawValue) microcodes")
+            ? "\(total) Intel microcodes"
+            : "\(shown.count) of \(total) Intel microcodes")
     }
 
     @objc private func addClicked() {
@@ -247,6 +223,11 @@ extension FITAddMicrocodeViewController: NSTableViewDataSource, NSTableViewDeleg
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         addButton.isEnabled = selectedEntry != nil
+        // A CPUID the table already names is replaced rather than added a
+        // second time, and the button says which it will be before it is
+        // pressed.
+        let replaces = selectedEntry?.cpuid.map(cpuidsInTheImage.contains) ?? false
+        addButton.title = replaces ? "Replace" : "Add"
     }
 
     private func makeCell(identifier: NSUserInterfaceItemIdentifier) -> NSTableCellView {

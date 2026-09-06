@@ -21,6 +21,8 @@ public enum FITEditProblem: Equatable, Sendable, Error {
     /// The table has no empty slot and the bytes after it are not free, so it
     /// cannot grow (§9.1).
     case theTableCannotGrow
+    /// A bigger component would push the run past the end of whatever holds it.
+    case theRunCannotGrow(needed: UInt64)
     /// The header is not an entry to be removed (§10).
     case cannotRemoveTheHeader
     /// A table needs at least one microcode entry (§8.7).
@@ -42,6 +44,9 @@ public enum FITEditProblem: Equatable, Sendable, Error {
                 + " bytes after the last microcode."
         case .theTableCannotGrow:
             return "The table has no empty slot, and the bytes after it are not free."
+        case .theRunCannotGrow(let needed):
+            return "That microcode needs 0x" + String(needed, radix: 16, uppercase: true)
+                + " more bytes than the run it would go in has free."
         case .cannotRemoveTheHeader:
             return "The header is not an entry."
         case .cannotRemoveTheLastMicrocode:
@@ -54,15 +59,43 @@ public enum FITEditProblem: Equatable, Sendable, Error {
     }
 }
 
+/// What a change to the table turned out to be, for the sentence the panel
+/// says afterwards.
+public struct FITEditOutcome: Equatable, Sendable {
+    public enum Kind: Equatable, Sendable {
+        /// A new row, for a CPUID the table did not name.
+        case added
+        /// A CPUID the table already named. The new component goes exactly
+        /// where the old one was; what follows it in the run moves to suit.
+        case replaced
+    }
+
+    public var kind: Kind
+    /// Where the component went.
+    public var range: Range<UInt64>
+    /// The row that names it.
+    public var entryIndex: Int
+    /// What the replaced component was, when there was one.
+    public var replaced: MicrocodeHeader?
+    /// How many components behind it moved, because the new one is a different
+    /// size from the old.
+    public var moved: Int = 0
+}
+
+/// What a removal came to.
+public struct FITRemovalOutcome: Equatable, Sendable {
+    public var entryIndex: Int
+    /// How many components moved up into the space the removed one left.
+    public var moved: Int
+    /// The bytes the move freed at the end of the run, now erased.
+    public var erased: Range<UInt64>?
+}
+
 /// Where a new component would go.
 public struct FITPlacement: Equatable, Sendable {
     public var range: Range<UInt64>
     /// The address it will be reachable at once written.
     public var address: UInt64
-    /// Whether the row goes into an empty slot (§9.4) or the table has to grow
-    /// by one. The safe way in is the slot: the table's length and position do
-    /// not change, and neither does the pointer that leads to it.
-    public var usesEmptySlot: Bool
 }
 
 /// The two changes this tool makes to a table: adding a microcode entry (§9.2)
@@ -128,8 +161,7 @@ public enum FITEditor {
             if reader.isFilled(candidate..<(candidate + size), with: 0xFF) {
                 return .success(FITPlacement(
                     range: candidate..<(candidate + size),
-                    address: candidate + addressDiff,
-                    usesEmptySlot: table.rows.contains { $0.entry.isEmptySlot }
+                    address: candidate + addressDiff
                 ))
             }
             guard let used = reader.firstOffset(
@@ -160,6 +192,123 @@ public enum FITEditor {
         return offset..<reader.count
     }
 
+    /// Adds a microcode, or replaces the one already there for its CPUID.
+    ///
+    /// A dump is for one board, and the ordinary reason to open this form is
+    /// that a CPUID already in the table has a newer revision. Adding a second
+    /// row for the same processor would leave the FIT naming two microcodes for
+    /// it — legal, wasteful, and not what anybody meant.
+    ///
+    /// Replacing has two shapes. Where the new component is no bigger than the
+    /// old one it goes exactly where that one was, the tail of the old one is
+    /// erased behind it, and *nothing about the table changes* — not the row,
+    /// not the count, not even the checksum. Where it is bigger it goes
+    /// wherever a new one would, and the row that named the old one is
+    /// repointed. The old bytes are left where they are either way: erasing
+    /// them is the risk §10 step 5 warns about.
+    public static func addOrReplaceMicrocode(
+        _ component: [UInt8],
+        in table: FITTable,
+        image: UEFIImage?,
+        reader: ImageReader,
+        addressDiff: UInt64
+    ) -> Result<(ToolTransaction, FITEditOutcome), FITEditProblem> {
+        let header: MicrocodeHeader
+        switch microcode(in: component) {
+        case .success(let read): header = read
+        case .failure(let problem): return .failure(problem)
+        }
+        // Exactly what the header claims, so a file with something after it
+        // does not drag the extra bytes into the image.
+        let bytes = Array(component.prefix(Int(header.totalSize)))
+
+        guard let row = rowNaming(header.processorSignature, matching: header, in: table),
+              case .microcode(let old) = row.target
+        else {
+            return addingNewRow(bytes, for: header, to: table, image: image,
+                                reader: reader, addressDiff: addressDiff)
+        }
+
+        switch relay(replacing: old, with: bytes, in: table, image: image, reader: reader) {
+        case .failure(let problem):
+            return .failure(problem)
+        case .success(let plan):
+            var writes = [plan.write]
+            if !plan.moves.isEmpty {
+                // Only when something moved: a transaction that writes the
+                // table back unchanged is a step in the undo history that
+                // undoes nothing.
+                guard var rows = rowBytes(of: table, in: reader) else {
+                    return .failure(.noSuchEntry)
+                }
+                for move in plan.moves {
+                    writeAddress(move.newOffset + addressDiff, into: &rows[move.rowIndex])
+                }
+                writes.append(ToolTransaction.Write(
+                    offset: table.range.lowerBound,
+                    bytes: assemble(rows, checksumIsChecked: table.checksumIsChecked)
+                ))
+            }
+            return .success((
+                ToolTransaction(name: "Replace Microcode", writes: writes),
+                FITEditOutcome(
+                    kind: .replaced,
+                    range: old.offset..<(old.offset + UInt64(header.totalSize)),
+                    entryIndex: row.entry.index,
+                    replaced: old,
+                    moved: plan.moves.count
+                )
+            ))
+        }
+    }
+
+    /// The row whose component is for this processor.
+    ///
+    /// One CPUID can have several rows, one per platform mask, and they are not
+    /// interchangeable: a microcode for platform 02 does not belong in the row
+    /// that names platform 22's. So an exact mask wins, an overlapping one is
+    /// next, and only if neither is there does the first row for the CPUID
+    /// answer.
+    private static func rowNaming(
+        _ cpuid: UInt32,
+        matching header: MicrocodeHeader,
+        in table: FITTable
+    ) -> FITRow? {
+        let candidates = table.rows.filter { row in
+            guard case .microcode(let found) = row.target else { return false }
+            return found.processorSignature == cpuid
+        }
+        func component(_ row: FITRow) -> MicrocodeHeader? {
+            guard case .microcode(let found) = row.target else { return nil }
+            return found
+        }
+        return candidates.first { component($0)?.platformIDs == header.platformIDs }
+            ?? candidates.first { (component($0)?.platformIDs ?? 0) & header.platformIDs != 0 }
+            ?? candidates.first
+    }
+
+    private static func addingNewRow(
+        _ bytes: [UInt8],
+        for header: MicrocodeHeader,
+        to table: FITTable,
+        image: UEFIImage?,
+        reader: ImageReader,
+        addressDiff: UInt64
+    ) -> Result<(ToolTransaction, FITEditOutcome), FITEditProblem> {
+        let placement: FITPlacement
+        switch self.placement(forSize: UInt64(header.totalSize), table: table, image: image,
+                              reader: reader, addressDiff: addressDiff) {
+        case .success(let found): placement = found
+        case .failure(let problem): return .failure(problem)
+        }
+        return addMicrocode(bytes, at: placement, to: table, in: reader).map { transaction in
+            let index = (table.rows.lastIndex { $0.entry.type == FIT.microcodeType } ?? 0) + 1
+            return (transaction, FITEditOutcome(
+                kind: .added, range: placement.range, entryIndex: index, replaced: nil
+            ))
+        }
+    }
+
     /// Adds a microcode entry: the component, and the table rebuilt around a
     /// new row (§9.2 steps 2 to 7).
     public static func addMicrocode(
@@ -174,20 +323,24 @@ public enum FITEditor {
         // Rows do not decrease in type (§3), so a microcode row goes after the
         // last one there is.
         let insertion = (rows.lastIndex { type(of: $0) == FIT.microcodeType } ?? 0) + 1
-        if let slot = rows.indices.first(where: {
+        let end = table.range.upperBound
+        if end + FITEntry.size <= reader.count,
+           reader.isFilled(end..<(end + FITEntry.size), with: 0xFF) {
+            // The table grows by a row and the header's count goes up with it
+            // (§9.2 step 6), which needs the sixteen bytes after the table to
+            // be free.
+            rows.insert(row, at: insertion)
+        } else if let slot = rows.indices.first(where: {
             $0 >= insertion && type(of: rows[$0]) == FIT.emptyType
         }) {
-            // The safe way in (§9.4): the slot is eaten and everything between
-            // it and the new row shifts down. The table's length, its position
-            // and the pointer to it all stay as they were.
+            // Nowhere to grow into, so an empty slot is eaten instead (§9.4).
+            // The table keeps its length and the count stays as it was — the
+            // fallback rather than the first choice, because a slot in the
+            // middle of the run is not where a reader expects the spare room.
             rows.remove(at: slot)
             rows.insert(row, at: insertion)
         } else {
-            let end = table.range.upperBound
-            guard end + FITEntry.size <= reader.count,
-                  reader.isFilled(end..<(end + FITEntry.size), with: 0xFF)
-            else { return .failure(.theTableCannotGrow) }
-            rows.insert(row, at: insertion)
+            return .failure(.theTableCannotGrow)
         }
 
         return .success(ToolTransaction(
@@ -202,40 +355,155 @@ public enum FITEditor {
         ))
     }
 
-    /// Takes an entry out (§10): the rows below it move up, and the sixteen
-    /// bytes that frees at the end become an empty slot.
+    /// Takes an entry out, body and all (§10).
     ///
-    /// A slot rather than a shorter table, of the two ways §10 offers: the
-    /// table keeps its length and its place, the pointer at `0xFFFFFFC0` stays
-    /// right, and the room is there for the next addition — which is what this
-    /// tool is for.
+    /// A microcode run is one block, and a hole in the middle of it is not what
+    /// a bench wants back: the component's bytes go, everything after it in the
+    /// run moves up into the space, the rows that name those components are
+    /// repointed, and the bytes the move frees at the end are erased. The
+    /// table loses the row and the header's count comes down with it.
     ///
-    /// The component itself is left where it is. Erasing it is the riskier
-    /// half of §10 step 5: it may be covered by a Boot Guard range or referred
-    /// to by something else in the image.
+    /// A component only moves if everything between it and the one before it is
+    /// erased — so nothing that is not part of the run can be written over, and
+    /// the compaction stops at the first thing that is.
+    ///
+    /// Moving a component changes its address, which anything outside the FIT
+    /// that named it will not know about. Boot Guard is the one that matters,
+    /// and this tool cannot read its ranges (`Design/TODO.md`).
     public static func removeEntry(
         _ index: Int,
         from table: FITTable,
-        in reader: ImageReader
-    ) -> Result<ToolTransaction, FITEditProblem> {
+        in reader: ImageReader,
+        addressDiff: UInt64
+    ) -> Result<(ToolTransaction, FITRemovalOutcome), FITEditProblem> {
         guard index > 0 else { return .failure(.cannotRemoveTheHeader) }
-        guard var rows = rowBytes(of: table, in: reader), index < rows.count else {
-            return .failure(.noSuchEntry)
-        }
+        guard var rows = rowBytes(of: table, in: reader), index < rows.count,
+              index < table.rows.count
+        else { return .failure(.noSuchEntry) }
         if type(of: rows[index]) == FIT.microcodeType,
            rows.filter({ type(of: $0) == FIT.microcodeType }).count == 1 {
             return .failure(.cannotRemoveTheLastMicrocode)
         }
 
+        var writes: [ToolTransaction.Write] = []
+        var moved = 0
+        var erased: Range<UInt64>?
+
+        // Only a microcode's body is compacted: the extent of anything else a
+        // row can point at — an ACM, a policy — is not something this tool
+        // knows, and moving bytes it cannot measure is not a thing to guess at.
+        if case .microcode(let removed) = table.rows[index].target {
+            // Dropping a component is re-laying the run with nothing in its
+            // place, which is the same operation as replacing it with something
+            // of another size.
+            switch relay(replacing: removed, with: nil, in: table, image: nil, reader: reader) {
+            case .failure(let problem):
+                return .failure(problem)
+            case .success(let plan):
+                moved = plan.moves.count
+                erased = plan.erased
+                writes.append(plan.write)
+                for move in plan.moves {
+                    writeAddress(move.newOffset + addressDiff, into: &rows[move.rowIndex])
+                }
+            }
+        }
+
         rows.remove(at: index)
-        rows.append(emptySlotBytes())
-        return .success(ToolTransaction(
-            name: "Remove FIT Entry",
-            writes: [ToolTransaction.Write(
-                offset: table.range.lowerBound,
-                bytes: assemble(rows, checksumIsChecked: table.checksumIsChecked)
-            )]
+        // The sixteen bytes the table gives up are erased behind it, so no
+        // stale row is left for another parser to trip over (§10 step 3).
+        let assembled = assemble(rows, checksumIsChecked: table.checksumIsChecked)
+            + [UInt8](repeating: 0xFF, count: Int(FITEntry.size))
+        writes.append(ToolTransaction.Write(offset: table.range.lowerBound, bytes: assembled))
+
+        return .success((
+            ToolTransaction(name: "Remove FIT Entry", writes: writes),
+            FITRemovalOutcome(entryIndex: index, moved: moved, erased: erased)
         ))
+    }
+
+    /// The run of microcodes, laid out again from where one of them was.
+    private struct Relayout {
+        /// The whole re-laid stretch as one write: what goes in the hole, the
+        /// components behind it packed and aligned, and erase bytes for
+        /// anything the move left over.
+        var write: ToolTransaction.Write
+        var moves: [(rowIndex: Int, newOffset: UInt64)]
+        var erased: Range<UInt64>?
+    }
+
+    /// Re-lays the run from `removed`'s offset, putting `replacement` where it
+    /// was — or nothing, which is what a removal is.
+    ///
+    /// A component only moves if everything between it and the one before it is
+    /// erased, so nothing that is not part of the run can be written over, and
+    /// the walk stops at the first thing that is not. Growing is bounded by
+    /// whatever element holds the run: a component that would push the last one
+    /// past the end of its padding, its region or its volume is refused rather
+    /// than written over the next structure along.
+    private static func relay(
+        replacing removed: MicrocodeHeader,
+        with replacement: [UInt8]?,
+        in table: FITTable,
+        image: UEFIImage?,
+        reader: ImageReader
+    ) -> Result<Relayout, FITEditProblem> {
+        let start = removed.offset
+        var following: [(row: Int, header: MicrocodeHeader)] = []
+        for row in table.rows {
+            guard case .microcode(let header) = row.target, header.offset > start else { continue }
+            following.append((row.entry.index, header))
+        }
+        following.sort { $0.header.offset < $1.header.offset }
+
+        var accepted: [(row: Int, header: MicrocodeHeader)] = []
+        var boundary = removed.range.upperBound
+        for item in following {
+            guard item.header.offset >= boundary,
+                  item.header.offset == boundary
+                      || reader.isFilled(boundary..<item.header.offset, with: 0xFF)
+            else { break }
+            accepted.append(item)
+            boundary = item.header.range.upperBound
+        }
+
+        var payload = replacement ?? []
+        var moves: [(rowIndex: Int, newOffset: UInt64)] = []
+        var next = start + UInt64(payload.count)
+        for item in accepted {
+            // Every FIT address is aligned to sixteen (§8.9), so a component
+            // whose size is not a multiple of it leaves a gap in front of the
+            // next one.
+            let at = alignUp(next, to: 16) ?? next
+            guard let bytes = reader.bytes(item.header.range) else { break }
+            payload += [UInt8](repeating: 0xFF, count: Int(at - next))
+            payload += bytes
+            if at != item.header.offset { moves.append((item.row, at)) }
+            next = at + UInt64(item.header.totalSize)
+        }
+
+        let oldEnd = accepted.last?.header.range.upperBound ?? removed.range.upperBound
+        if next > oldEnd {
+            // The run grew. What it grew into has to be free, and inside the
+            // element that holds it.
+            let area = spareArea(around: start, image: image, reader: reader)
+            guard next <= area.upperBound, next <= reader.count,
+                  reader.isFilled(oldEnd..<next, with: 0xFF)
+            else { return .failure(.theRunCannotGrow(needed: next - oldEnd)) }
+        } else if oldEnd > next {
+            payload += [UInt8](repeating: 0xFF, count: Int(oldEnd - next))
+        }
+        return .success(Relayout(
+            write: ToolTransaction.Write(offset: start, bytes: payload),
+            moves: moves,
+            erased: oldEnd > next ? next..<oldEnd : nil
+        ))
+    }
+
+    private static func writeAddress(_ address: UInt64, into row: inout [UInt8]) {
+        for index in 0..<8 {
+            row[index] = UInt8(truncatingIfNeeded: address >> (8 * index))
+        }
     }
 
     // MARK: - Rows as bytes
