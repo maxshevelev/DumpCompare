@@ -55,10 +55,31 @@ import ToolModuleKit
         return FrozenContent(storage: try overlay.contentSnapshot(scratch: scratch))
     }
 
+    /// Writes the transaction as one named undo step.
+    ///
+    /// Everything that can be wrong with it is decided before a byte moves: the
+    /// file must be there and writable, the transaction must validate (which is
+    /// where two writes over one byte are caught), and every write must land
+    /// inside the file. A tool-module that computed an offset wrong therefore
+    /// gets an error rather than an image with a microcode written into the
+    /// middle of something else — the failure §11 of the FIT document is a
+    /// post-mortem of.
+    ///
+    /// Overwrite only, and deliberately: a dump's size is the flash chip's
+    /// size. A tool-module that needs to insert or delete does it through the
+    /// app's own shifting edits, under the warning they already carry.
     func apply(_ transaction: ToolTransaction) throws {
-        // Stage 6 writes this. Until then a tool-module that tries is told so,
-        // rather than being quietly ignored.
-        throw ToolHostError.writingNotAvailableYet
+        guard let pane, pane.isOpen, let document = pane.document else {
+            throw ToolHostError.noFile
+        }
+        guard !pane.status.isReadOnly else { throw ToolHostError.readOnly }
+        let checked = try transaction.validated()
+        let size = document.size
+        for write in checked.writes where write.range.upperBound > size {
+            throw ToolHostError.outsideTheFile
+        }
+        try pane.applyToolWrites(checked.writes.map { ($0.offset, $0.bytes) },
+                                 named: checked.name)
     }
 
     func publish(_ zones: ZoneMap) {
@@ -130,6 +151,4 @@ enum ToolHostError: Error, Equatable {
     case outsideTheFile
     /// The file is open read-only.
     case readOnly
-    /// Writing arrives in stage 6.
-    case writingNotAvailableYet
 }

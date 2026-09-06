@@ -1482,6 +1482,55 @@ final class PaneViewModel: HexViewDataSource {
         notifyAfterEdit(range: range, sizeBefore: sizeBefore)
     }
 
+    /// Applies a tool-module's transaction: several overwrites, wherever they
+    /// fall, as **one** undo step named by the tool-module
+    /// (`Design/TOOL_MODULES_PLAN.md`).
+    ///
+    /// One step is the whole point. Adding a microcode entry to a FIT table is
+    /// four writes that are nowhere near each other — the component, the entry,
+    /// the header's count, its checksum — and an image carrying three of the
+    /// four is worse than an image carrying none of them, so they arrive
+    /// together and go back together.
+    ///
+    /// If a write fails halfway the group is cancelled, which reverts what has
+    /// been applied and records nothing: the file is left as it was rather than
+    /// half-written with an undo step to explain it.
+    func applyToolWrites(_ writes: [(offset: UInt64, bytes: [UInt8])], named name: String) throws {
+        guard let doc = document, !writes.isEmpty else { return }
+        // The transaction is its own act: it must not join a typing series or
+        // inherit its id.
+        breakTypingSeries()
+        let sizeBefore = doc.size
+        let lower = writes.map(\.offset).min() ?? 0
+        let upper = writes.map { $0.offset &+ UInt64($0.bytes.count) }.max() ?? lower
+        beginSegmentEdit()
+        doc.beginEditGroup(label: name)
+        do {
+            for write in writes {
+                let range = write.offset..<(write.offset &+ UInt64(write.bytes.count))
+                try doc.overwrite(range: range, with: write.bytes)
+            }
+        } catch {
+            try? doc.cancelEditGroup()
+            discardPendingSegmentSnapshot()
+            throw error
+        }
+        doc.endEditGroup()
+        resetEditingState()
+        // One `.overwrite` over everything the transaction touched: the damage
+        // is recomputed from the current bytes, so a gap inside the span costs
+        // a rescan and nothing else.
+        let touched = lower..<upper
+        onEdit?(.overwrite(range: touched))
+        applySegmentEdit(.overwrite(range: touched))
+        notifyAfterEdit(range: touched, sizeBefore: sizeBefore)
+    }
+
+    /// What the next undo would take back, when the step has a name (§26).
+    var undoLabel: String? { document?.undoHistory.undoLabel }
+    /// The same for the next redo.
+    var redoLabel: String? { document?.undoHistory.redoLabel }
+
     /// Paste Insert: insert before the caret (confirmed by the UI, §7.2/§12.3).
     func pasteInsert(_ bytes: [UInt8]) throws {
         guard let doc = document, !bytes.isEmpty else { return }

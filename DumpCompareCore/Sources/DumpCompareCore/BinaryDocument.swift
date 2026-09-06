@@ -440,8 +440,18 @@ public final class BinaryDocument: @unchecked Sendable {
 
     // MARK: - Edit grouping (typing sessions coalesce into one undo)
 
-    public func beginEditGroup() {
-        if groupDepth == 0 { groupStartSelection = selection }
+    /// Opens an edit group: everything recorded until the matching
+    /// `endEditGroup()` becomes one undo step.
+    ///
+    /// `label` names that step for the menu — "Undo Add Microcode" — and is
+    /// what an edit made on the user's behalf by something with a name of its
+    /// own passes in (`Design/TOOL_MODULES_PLAN.md`). Ordinary editing leaves
+    /// it nil: typing has no name worth saying.
+    public func beginEditGroup(label: String? = nil) {
+        if groupDepth == 0 {
+            groupStartSelection = selection
+            groupLabel = label
+        }
         groupDepth += 1
     }
 
@@ -452,11 +462,13 @@ public final class BinaryDocument: @unchecked Sendable {
                 pendingGroupOps,
                 selectionBefore: groupStartSelection ?? selection,
                 selectionAfter: .empty(at: naturalCaretAfter(pendingGroupOps), fileSize: storage.size),
-                seriesID: currentSeriesID
+                seriesID: currentSeriesID,
+                label: groupLabel
             )
             transactionAwaitingSelection = true
             pendingGroupOps.removeAll()
             groupStartSelection = nil
+            groupLabel = nil
             onTransactionCommitted?()
             // As in `record`: the redo stack is gone, so the joins that sat on
             // it can never be redone.
@@ -478,6 +490,7 @@ public final class BinaryDocument: @unchecked Sendable {
         groupDepth = 0
         selection = (groupStartSelection ?? selection).clamped(to: storage.size)
         groupStartSelection = nil
+        groupLabel = nil
     }
 
     // MARK: - Typing series (segmented undo, Variant B)
@@ -511,6 +524,8 @@ public final class BinaryDocument: @unchecked Sendable {
     /// The selection when the open edit group began (undo of a coalesced typing
     /// session returns to it).
     private var groupStartSelection: SelectionModel?
+    /// The name the open group's step will carry, if it has one.
+    private var groupLabel: String?
     /// True between recording a transaction and `noteSelectionAfterEdit`, so a
     /// note cannot attach the selection to an older transaction.
     private var transactionAwaitingSelection = false

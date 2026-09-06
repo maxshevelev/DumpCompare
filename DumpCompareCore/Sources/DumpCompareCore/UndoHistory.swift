@@ -122,6 +122,12 @@ public final class UndoHistory: @unchecked Sendable {
     /// press). `seriesID` links the steps of one typing series; nil is
     /// outside a series.
     private struct Step {
+        /// What the user would call this step — "Add Microcode" — or nil for
+        /// the ordinary editing that needs no name (typing, a paste, a fill).
+        /// Set only by an edit made on the user's behalf by something with a
+        /// name of its own, which today means a tool-module's transaction
+        /// (`Design/TOOL_MODULES_PLAN.md`).
+        var label: String?
         var entries: [Entry]                  // in recording order (first..last)
         var seriesID: UInt64?
 
@@ -176,7 +182,8 @@ public final class UndoHistory: @unchecked Sendable {
     public func record(_ ops: [UndoOperation],
                        selectionBefore: SelectionModel,
                        selectionAfter: SelectionModel,
-                       seriesID: UInt64? = nil) {
+                       seriesID: UInt64? = nil,
+                       label: String? = nil) {
         guard !ops.isEmpty else { return }
         redoSteps.removeAll()
         let entry = Entry(transaction: UndoTransaction(ops: ops,
@@ -185,7 +192,7 @@ public final class UndoHistory: @unchecked Sendable {
                                                       serial: nextSerial),
                           serial: nextSerial)
         nextSerial += 1
-        undoSteps.append(Step(entries: [entry], seriesID: seriesID))
+        undoSteps.append(Step(label: label, entries: [entry], seriesID: seriesID))
         undoTransactionCount += 1
         lastUndoWasSeriesByte = false
         lastUndoSeriesID = nil
@@ -193,12 +200,20 @@ public final class UndoHistory: @unchecked Sendable {
 
     /// Caret-only form of `record`, for edits with no selection to restore.
     public func record(_ ops: [UndoOperation], caretBefore: UInt64 = 0, caretAfter: UInt64 = 0,
-                       fileSize: UInt64 = .max, seriesID: UInt64? = nil) {
+                       fileSize: UInt64 = .max, seriesID: UInt64? = nil, label: String? = nil) {
         record(ops,
                selectionBefore: .empty(at: caretBefore, fileSize: fileSize),
                selectionAfter: .empty(at: caretAfter, fileSize: fileSize),
-               seriesID: seriesID)
+               seriesID: seriesID,
+               label: label)
     }
+
+    /// What the next undo would take back, when that step has a name — so the
+    /// menu can say "Undo Add Microcode" rather than a bare "Undo". Nil for
+    /// ordinary editing, which is most of it.
+    public var undoLabel: String? { undoSteps.last?.label }
+    /// The same for the next redo.
+    public var redoLabel: String? { redoSteps.last?.label }
 
     /// Refines the last recorded transaction's post-edit selection, so redo
     /// restores what the editing command left on screen rather than the bare
@@ -226,7 +241,9 @@ public final class UndoHistory: @unchecked Sendable {
         }
         let ordered = collected.reversed().flatMap(\.entries)   // recording order
         undoTransactionCount -= ordered.count
-        redoSteps.append(Step(entries: ordered, seriesID: last.seriesID))
+        // The name goes onto the redo stack with the step, so a step undone
+        // and offered back is still the same act by the same name.
+        redoSteps.append(Step(label: last.label, entries: ordered, seriesID: last.seriesID))
         lastUndoWasSeriesByte = (collected.count == 1 && last.seriesID != nil)
         lastUndoSeriesID = last.seriesID
         return ordered.map(\.transaction)
@@ -243,7 +260,7 @@ public final class UndoHistory: @unchecked Sendable {
         // Each transaction goes back with the serial it was recorded under, so a
         // redo that lands on the saved state is recognised as clean again.
         for entry in step.entries {
-            undoSteps.append(Step(entries: [entry], seriesID: step.seriesID))
+            undoSteps.append(Step(label: step.label, entries: [entry], seriesID: step.seriesID))
         }
         undoTransactionCount += step.entries.count
         lastUndoWasSeriesByte = false

@@ -255,3 +255,54 @@ final class UndoHistoryTests: XCTestCase {
         XCTAssertFalse(history.isDirty)
     }
 }
+
+/// Naming an undo step, so the menu can say what it will take back
+/// (`Design/TOOL_MODULES_PLAN.md`).
+final class UndoStepLabelTests: XCTestCase {
+    private func op(_ offset: UInt64) -> UndoOperation {
+        .overwrite(range: offset..<(offset + 1), before: [0x00], after: [0xFF])
+    }
+
+    func testAnUnnamedStepHasNoLabel() {
+        let history = UndoHistory()
+
+        history.record([op(0)], caretBefore: 0, caretAfter: 1)
+
+        XCTAssertNil(history.undoLabel)
+    }
+
+    func testTheLabelIsWhatTheStepWasRecordedUnder() {
+        let history = UndoHistory()
+
+        history.record([op(0)], caretBefore: 0, caretAfter: 1, label: "Add Microcode")
+
+        XCTAssertEqual(history.undoLabel, "Add Microcode")
+    }
+
+    /// A step undone is still the same act by the same name, so redo can offer
+    /// it back under it.
+    func testTheLabelCrossesToRedoAndBack() {
+        let history = UndoHistory()
+        history.record([op(0)], caretBefore: 0, caretAfter: 1, label: "Add Microcode")
+
+        _ = history.undo()
+
+        XCTAssertNil(history.undoLabel)
+        XCTAssertEqual(history.redoLabel, "Add Microcode")
+
+        _ = history.redo()
+
+        XCTAssertEqual(history.undoLabel, "Add Microcode")
+        XCTAssertNil(history.redoLabel)
+    }
+
+    /// The name belongs to its own step and does not leak onto the next one.
+    func testAnUnnamedStepAfterANamedOneIsStillUnnamed() {
+        let history = UndoHistory()
+        history.record([op(0)], caretBefore: 0, caretAfter: 1, label: "Add Microcode")
+
+        history.record([op(4)], caretBefore: 4, caretAfter: 5)
+
+        XCTAssertNil(history.undoLabel)
+    }
+}

@@ -6148,10 +6148,17 @@ extension MainViewController: NSMenuItemValidation {
             // open.
             menuItem.state = activePane.isInsertMode ? .on : .off
             return true
+        case #selector(undoEdit):
+            // A step made on the user's behalf by something with a name of its
+            // own says what it was — "Undo Add Microcode" (§26). Ordinary
+            // editing has no name, and the item stays the bare verb.
+            menuItem.title = activePane.undoLabel.map { "Undo \($0)" } ?? "Undo"
+            return activePane.isOpen
+        case #selector(redoEdit):
+            menuItem.title = activePane.redoLabel.map { "Redo \($0)" } ?? "Redo"
+            return activePane.isOpen
         case #selector(saveDocument),
              #selector(saveDocumentAs),
-             #selector(undoEdit),
-             #selector(redoEdit),
              #selector(pasteInsert),
              #selector(deleteBytes),
              #selector(selectBlock),
