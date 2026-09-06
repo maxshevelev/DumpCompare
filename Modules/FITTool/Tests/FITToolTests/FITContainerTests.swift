@@ -216,8 +216,8 @@ final class FITContainerTests: XCTestCase {
         guard case .failure(let problem) = outcome else {
             return XCTFail("expected a refusal rather than a loose component")
         }
-        guard case .noRoomForTheComponent = problem else {
-            return XCTFail("expected no room, got \(problem)")
+        guard case .theRunCannotGrow = problem else {
+            return XCTFail("expected the run not to fit, got \(problem)")
         }
         XCTAssertEqual(fileEnd, secondMicrocode + 0x100, "precondition: the file has no slack")
     }

@@ -36,18 +36,6 @@ final class FITEditorTests: XCTestCase {
         return edited
     }
 
-    private func placement(
-        _ bytes: [UInt8], size: UInt64 = 0x100, image: UEFIImage? = nil
-    ) throws -> Result<FITPlacement, FITEditProblem> {
-        FITEditor.placement(
-            forSize: size,
-            table: try table(bytes),
-            image: image,
-            reader: ImageReader(bytes),
-            addressDiff: TestFIT.addressDiff(of: UInt64(bytes.count))
-        )
-    }
-
     // MARK: - The file the user picked
 
     func testAFileThatIsNotMicrocodeIsRefused() {
@@ -76,33 +64,39 @@ final class FITEditorTests: XCTestCase {
 
     // MARK: - Where it goes
 
-    /// Microcode lives in one run, so a new one goes right after the last —
-    /// aligned to sixteen, which every FIT address must be (§8.9).
-    func testTheComponentGoesAfterTheLastMicrocode() throws {
-        let found = try placement(image()).get()
-
-        XCTAssertEqual(found.range, 0x2100..<0x2200)
-        XCTAssertEqual(found.address, 0xFFFF_2100)
+    private func add(
+        _ component: [UInt8], to bytes: [UInt8], image: UEFIImage? = nil
+    ) throws -> Result<(ToolTransaction, FITEditOutcome), FITEditProblem> {
+        FITEditor.addOrReplaceMicrocode(
+            component, in: try table(bytes), image: image, reader: ImageReader(bytes),
+            addressDiff: TestFIT.addressDiff(of: UInt64(bytes.count))
+        )
     }
 
-    /// Every FIT address is aligned to sixteen (§8.9), and a component whose
-    /// size is not a multiple of sixteen leaves the next start unaligned unless
-    /// it is rounded up.
+    private var newMicrocode: [UInt8] {
+        TestFIT.microcode(signature: 0x000A_0671, totalSize: 0x100)
+    }
+
+    /// A microcode run is one block, and a new component goes on the end of it.
+    func testTheComponentGoesAfterTheLastMicrocode() throws {
+        let (_, outcome) = try add(newMicrocode, to: image()).get()
+
+        XCTAssertEqual(outcome.kind, .added)
+        XCTAssertEqual(outcome.range, 0x2100..<0x2200)
+        XCTAssertEqual(outcome.moved, 0)
+    }
+
+    /// Every FIT address is aligned to sixteen (§8.9), so a component whose
+    /// size is not a multiple of it leaves a gap in front of the next one.
     func testTheComponentStartsOnASixteenByteBoundary() throws {
         let bytes = TestFIT.image(
             rows: [TestFIT.Row(FIT.microcodeType, target: microcode)],
             contents: [microcode: TestFIT.microcode(totalSize: 0x108)]
         )
 
-        XCTAssertEqual(try placement(bytes).get().range.lowerBound, 0x2110)
-    }
+        let (_, outcome) = try add(newMicrocode, to: bytes).get()
 
-    /// Bytes in the way are stepped over, and the next candidate is aligned
-    /// again rather than butted up against them.
-    func testBytesInTheWayArePassed() throws {
-        let bytes = image(contents: [0x2180: [0x11, 0x22]])
-
-        XCTAssertEqual(try placement(bytes).get().range, 0x2190..<0x2290)
+        XCTAssertEqual(outcome.range.lowerBound, 0x2110)
     }
 
     /// After the *last* one, which is not the first one the table happens to
@@ -110,16 +104,45 @@ final class FITEditorTests: XCTestCase {
     func testTheComponentGoesAfterTheHighestMicrocodeNotTheFirstListed() throws {
         let bytes = TestFIT.image(
             rows: [
+                TestFIT.Row(FIT.microcodeType, target: 0x2100),
+                TestFIT.Row(FIT.microcodeType, target: microcode)
+            ],
+            contents: [
+                microcode: TestFIT.microcode(totalSize: 0x100),
+                0x2100: TestFIT.microcode(signature: 0x0009_06EA, totalSize: 0x100)
+            ]
+        )
+
+        let (_, outcome) = try add(newMicrocode, to: bytes).get()
+
+        XCTAssertEqual(outcome.range, 0x2200..<0x2300)
+        XCTAssertEqual(outcome.moved, 0, "a run with no gaps in it does not move")
+    }
+
+    /// The gap an earlier removal left is used rather than stepped over: the
+    /// run is laid out again with the new component on the end, so it closes up
+    /// behind it.
+    func testAGapInTheRunIsClosedRatherThanSteppedOver() throws {
+        let bytes = TestFIT.image(
+            rows: [
                 TestFIT.Row(FIT.microcodeType, target: microcode),
                 TestFIT.Row(FIT.microcodeType, target: 0x2200)
             ],
             contents: [
                 microcode: TestFIT.microcode(totalSize: 0x100),
-                0x2200: TestFIT.microcode(signature: 0x000906EA, totalSize: 0x100)
+                // 0x2100..0x2200 is erased: something was removed from there.
+                0x2200: TestFIT.microcode(signature: 0x0009_06EA, totalSize: 0x100)
             ]
         )
 
-        XCTAssertEqual(try placement(bytes).get().range, 0x2300..<0x2400)
+        let (transaction, outcome) = try add(newMicrocode, to: bytes).get()
+        let after = FITReader.read(ImageReader(try applying(transaction, to: bytes)), image: nil)
+
+        XCTAssertEqual(outcome.moved, 1, "the one behind the gap moved up")
+        XCTAssertEqual(outcome.range, 0x2200..<0x2300, "and the new one took its place")
+        XCTAssertEqual(after.table?.entries.map(\.entry.address),
+                       [0xFFFF_2000, 0xFFFF_2100, 0xFFFF_2200])
+        XCTAssertTrue(after.problems.isEmpty, "\(after.problems.map(\.message))")
     }
 
     /// With no microcode in the table there is no telling where this image
@@ -127,267 +150,79 @@ final class FITEditorTests: XCTestCase {
     func testATableWithNoMicrocodeHasNowhereToPutOne() throws {
         let bytes = image(rows: [TestFIT.Row(FIT.startupACMType, target: 0x3000)])
 
-        XCTAssertEqual(try placement(bytes), .failure(.noMicrocodeToFollow))
+        guard case .failure(let problem) = try add(newMicrocode, to: bytes) else {
+            return XCTFail("expected a refusal")
+        }
+        XCTAssertEqual(problem, .noMicrocodeToFollow)
     }
 
-    /// The element the existing microcode sits in bounds the search: past its
-    /// end is another structure, or another flash region.
-    func testTheSearchStaysInsideWhatHoldsTheMicrocode() throws {
+    /// Something behind the run is something the run must not be written over.
+    func testSomethingBehindTheRunStopsItGrowing() throws {
+        let bytes = image(contents: [0x2100: [0x11, 0x22, 0x33, 0x44]])
+
+        guard case .failure(let problem) = try add(newMicrocode, to: bytes) else {
+            return XCTFail("expected a refusal")
+        }
+        guard case .theRunCannotGrow(let needed, _) = problem else {
+            return XCTFail("expected the run not to fit")
+        }
+        XCTAssertEqual(needed, 0x100)
+    }
+
+    /// The element the run sits in bounds it: past its end is another
+    /// structure, or another flash region.
+    func testTheRunCannotGrowPastItsElement() throws {
         let bytes = image()
         let padding = UEFINode(kind: .padding, name: "Padding", range: 0x1800..<0x2180)
         let parsed = UEFIImage(size: UInt64(bytes.count), roots: [padding], addressDiff: 0xFFFF_0000)
 
-        guard case .failure(let problem) = try placement(bytes, image: parsed) else {
+        guard case .failure(let problem) = try add(newMicrocode, to: bytes, image: parsed) else {
             return XCTFail("expected a refusal")
         }
-        // The refusal names all three things somebody needs to act on it: how
-        // much was wanted, how much was free, and where it looked.
-        guard case .noRoomForTheComponent(let needed, let free, let inside) = problem else {
-            return XCTFail("expected no room")
+        guard case .theRunCannotGrow(let needed, _) = problem else {
+            return XCTFail("expected the run not to fit")
         }
-        XCTAssertEqual(needed, 0x100)
-        XCTAssertEqual(free, 0x80)
-        XCTAssertEqual(inside, "Padding at 0x1800–0x2180")
-        XCTAssertTrue(problem.message.contains("0x80"), problem.message)
+        XCTAssertEqual(needed, 0x80)
     }
 
     /// A microcode found by the raw scan of an image with no volumes in it is a
-    /// node with no parent, and then there is nothing to bound the search but
-    /// the file. Reading the component's own node as the bound leaves no room
-    /// at all — which is what the app's own test caught first.
+    /// node with no parent, and then there is nothing to bound the run but the
+    /// file.
     func testAMicrocodeWithNoParentIsBoundedByTheFile() throws {
         let bytes = image()
-        let node = UEFINode(kind: .microcode, name: "Microcode", range: microcode..<(microcode + 0x100))
+        let node = UEFINode(
+            kind: .microcode, name: "Microcode", range: microcode..<(microcode + 0x100)
+        )
         let parsed = UEFIImage(size: UInt64(bytes.count), roots: [node], addressDiff: 0xFFFF_0000)
 
-        XCTAssertEqual(try placement(bytes, image: parsed).get().range, 0x2100..<0x2200)
+        let (_, outcome) = try add(newMicrocode, to: bytes, image: parsed).get()
+
+        XCTAssertEqual(outcome.range, 0x2100..<0x2200)
     }
 
-    /// The search walks out of the element the run is in and takes the free
-    /// space it finds on the way — but not past the flash region, which §9.2
-    /// forbids a component to cross. Free space in the next region along is
-    /// somebody else's.
-    func testTheSearchStopsAtTheRegionBoundary() throws {
-        let bytes = image()
-        let padding = UEFINode(kind: .padding, name: "Padding", range: 0x1800..<0x2180)
-        let region = UEFINode(
-            kind: .region, name: "BIOS region",
-            header: 0x1000..<0x1000, body: 0x1000..<0x3000, children: [padding]
-        )
-        let elsewhere = UEFINode(kind: .freeSpace, name: "Free space", range: 0x3000..<0x8000)
-        let parsed = UEFIImage(
-            size: UInt64(bytes.count), roots: [region, elsewhere], addressDiff: 0xFFFF_0000
-        )
-
-        guard case .failure(let problem) = try placement(bytes, image: parsed) else {
-            return XCTFail("expected a refusal: the free space is in another region")
-        }
-        guard case .noRoomForTheComponent(_, _, let inside) = problem else {
-            return XCTFail("expected no room")
-        }
-        XCTAssertEqual(inside, "Padding at 0x1800–0x2180")
-    }
-
-    /// Padding with something in it is not spare, whatever it is called.
-    func testPaddingThatIsNotErasedIsNotRoom() throws {
-        var bytes = image()
-        bytes.replaceSubrange(0x2200..<0x2210, with: [UInt8](repeating: 0x5A, count: 0x10))
-        let element = UEFINode(kind: .padding, name: "Padding", range: 0x1800..<0x2180)
-        // Big enough to hold the component twice over, and not spare: there are
-        // bytes in it.
-        let used = UEFINode(kind: .padding, name: "Padding", range: 0x2180..<0x2600)
-        let free = UEFINode(kind: .freeSpace, name: "Free space", range: 0x2600..<0x3000)
-        // A region rather than a volume: inside a volume only the space
-        // directly behind the element is usable at all, which is a different
-        // rule and has a test of its own.
-        let region = UEFINode(
-            kind: .region, name: "BIOS region",
-            header: 0x1700..<0x1800, body: 0x1800..<0x3000,
-            children: [element, used, free]
-        )
-        let parsed = UEFIImage(
-            size: UInt64(bytes.count), roots: [region], addressDiff: 0xFFFF_0000
-        )
-
-        let found = try placement(bytes, size: 0x200, image: parsed).get()
-
-        XCTAssertEqual(found.range, 0x2600..<0x2800, "the free space, not the padding in use")
-    }
-
-    // MARK: - Adding
-
-    /// The whole edit is one transaction: the component and the table it is
-    /// named in land together or not at all.
-    func testAddingWritesTheComponentAndTheTableTogether() throws {
-        let bytes = image()
-        let component = TestFIT.microcode(signature: 0x000906EA, totalSize: 0x100)
-        let found = try placement(bytes).get()
-
-        let transaction = try FITEditor.addMicrocode(
-            component, at: found, to: try table(bytes), in: ImageReader(bytes)
-        ).get()
-
-        XCTAssertEqual(transaction.name, "Add Microcode")
-        // Sorted and checked for overlap by the transaction itself, which is
-        // where "the component landed on top of the table" would be caught.
-        XCTAssertEqual(try transaction.validated().writes.map(\.offset), [0x1000, 0x2100])
-        XCTAssertEqual(try transaction.validated().writes.map(\.bytes.count), [0x30, 0x100])
-    }
-
-    /// The test that matters: apply it, read the image again, and the new
-    /// microcode is in the table with nothing wrong with it.
-    func testAnAddedMicrocodeReadsBackAsAnEntry() throws {
-        let bytes = image()
-        let component = TestFIT.microcode(signature: 0x000906EA, revision: 0xB4, totalSize: 0x100)
-        let found = try placement(bytes).get()
-        let transaction = try FITEditor.addMicrocode(
-            component, at: found, to: try table(bytes), in: ImageReader(bytes)
-        ).get()
-
-        let edited = try applying(transaction, to: bytes)
-        let report = FITReader.read(ImageReader(edited), image: nil)
-
-        XCTAssertEqual(report.table?.entries.count, 2)
-        XCTAssertEqual(report.table?.entries.last?.entry.address, 0xFFFF_2100)
-        XCTAssertEqual(report.table?.entries.last?.entry.type, FIT.microcodeType)
-        XCTAssertEqual(report.table?.entries.last?.entry.size, 0)
-        XCTAssertTrue(report.table?.checksumIsCorrect ?? false)
-        XCTAssertTrue(report.problems.isEmpty, "\(report.problems.map(\.message))")
-    }
-
-    /// A new row goes among the microcode rows, not at the end: a FIT handler
-    /// may stop at the first type past the one it wants (§3).
-    func testTheNewRowKeepsTheTypeOrder() throws {
-        let bytes = image(rows: [
-            TestFIT.Row(FIT.microcodeType, target: microcode),
-            TestFIT.Row(FIT.startupACMType, target: 0x3000),
-            TestFIT.Row(FIT.emptyType, address: 0)
-        ])
-        let found = try placement(bytes).get()
-        let transaction = try FITEditor.addMicrocode(
-            TestFIT.microcode(totalSize: 0x100), at: found,
-            to: try table(bytes), in: ImageReader(bytes)
-        ).get()
-
-        let report = FITReader.read(ImageReader(try applying(transaction, to: bytes)), image: nil)
-
-        // The table grew by a row, so the empty slot is still there behind the
-        // rows rather than eaten by the new one.
-        XCTAssertEqual(
-            report.table?.rows.map(\.entry.type),
-            [FIT.headerType, FIT.microcodeType, FIT.microcodeType,
-             FIT.startupACMType, FIT.emptyType]
-        )
-        XCTAssertTrue(report.problems.isEmpty, "\(report.problems.map(\.message))")
-    }
-
-    /// A table with room after it grows by a row and the header's count goes up
-    /// with it (§9.2 step 6) — an empty slot further down is left where it is.
-    func testTheTableGrowsRatherThanEatingASlot() throws {
-        let bytes = image(rows: [
-            TestFIT.Row(FIT.microcodeType, target: microcode),
-            TestFIT.Row(FIT.emptyType, address: 0)
-        ])
-        let before = try table(bytes)
-        let found = try placement(bytes).get()
-
-        let transaction = try FITEditor.addMicrocode(
-            TestFIT.microcode(totalSize: 0x100), at: found, to: before, in: ImageReader(bytes)
-        ).get()
-        let after = try table(try applying(transaction, to: bytes))
-
-        XCTAssertEqual(after.header?.size, 4)
-        XCTAssertEqual(after.range.count, before.range.count + 16)
-        XCTAssertTrue(after.rows.contains { $0.entry.isEmptySlot })
-    }
-
-    /// With nothing free after the table it cannot grow, and then an empty slot
-    /// is what lets the addition happen at all (§9.4).
-    func testWithNoRoomToGrowASlotIsEaten() throws {
-        let bytes = image(
+    /// The point of laying the run out again rather than appending to it: an
+    /// unchanged component is not written, so the dump does not colour bytes
+    /// that did not change. What moved is another matter — a shifted tail is
+    /// different bytes, and shows as such.
+    func testWhatDidNotChangeIsNotWritten() throws {
+        let bytes = TestFIT.image(
             rows: [
                 TestFIT.Row(FIT.microcodeType, target: microcode),
-                TestFIT.Row(FIT.emptyType, address: 0)
+                TestFIT.Row(FIT.microcodeType, target: 0x2100)
             ],
-            contents: [0x1030: [0x11, 0x22, 0x33, 0x44]]
-        )
-        let before = try table(bytes)
-        let found = try placement(bytes).get()
-
-        let transaction = try FITEditor.addMicrocode(
-            TestFIT.microcode(totalSize: 0x100), at: found, to: before, in: ImageReader(bytes)
-        ).get()
-        let after = try table(try applying(transaction, to: bytes))
-
-        XCTAssertEqual(after.range, before.range, "the table keeps its length and its place")
-        XCTAssertEqual(after.header?.size, before.header?.size)
-        XCTAssertFalse(after.rows.contains { $0.entry.isEmptySlot }, "the slot was eaten")
-    }
-
-    /// With no slot the table grows by one row, which needs the sixteen bytes
-    /// after it to be free (§9.1).
-    func testWithNoSlotTheTableGrowsByOneRow() throws {
-        let bytes = image()
-        let found = try placement(bytes).get()
-
-        let transaction = try FITEditor.addMicrocode(
-            TestFIT.microcode(totalSize: 0x100), at: found,
-            to: try table(bytes), in: ImageReader(bytes)
-        ).get()
-        let after = try table(try applying(transaction, to: bytes))
-
-        XCTAssertEqual(after.header?.size, 3)
-        XCTAssertEqual(after.range.count, 3 * 16)
-    }
-
-    /// And with something behind the table and no slot to eat, the refusal says
-    /// what is in the way rather than only that there is no slot.
-    func testATableWithNoRoomAfterItCannotGrow() throws {
-        let bytes = image(contents: [0x1020: [0x11, 0x22, 0x33, 0x44]])
-        let found = try placement(bytes).get()
-        let node = UEFINode(kind: .file, name: "PEIM", header: 0x1020..<0x1038, body: 0x1038..<0x1100)
-        let parsed = UEFIImage(size: UInt64(bytes.count), roots: [node], addressDiff: 0xFFFF_0000)
-
-        let outcome = FITEditor.addMicrocode(
-            TestFIT.microcode(totalSize: 0x100), at: found,
-            to: try table(bytes), image: parsed, in: ImageReader(bytes)
+            contents: [
+                microcode: TestFIT.microcode(totalSize: 0x100),
+                0x2100: TestFIT.microcode(signature: 0x0009_06EA, totalSize: 0x100)
+            ]
         )
 
-        guard case .failure(.theTableCannotGrow(let after)) = outcome else {
-            return XCTFail("expected the table not to fit, got \(outcome)")
-        }
-        XCTAssertEqual(after, "inside PEIM at 0x1020")
+        let (transaction, _) = try add(newMicrocode, to: bytes).get()
+        let writes = try transaction.validated().writes
 
-        // Padding with something written in it is not room either, whatever
-        // the tree calls it.
-        let used = UEFINode(kind: .padding, name: "Padding", range: 0x1020..<0x1100)
-        XCTAssertFalse(used.isErased)
-        let withPadding = UEFIImage(
-            size: UInt64(bytes.count), roots: [used], addressDiff: 0xFFFF_0000
-        )
-        guard case .failure(.theTableCannotGrow(let behind)) = FITEditor.addMicrocode(
-            TestFIT.microcode(totalSize: 0x100), at: found,
-            to: try table(bytes), image: withPadding, in: ImageReader(bytes)
-        ) else { return XCTFail("expected the table not to fit") }
-        XCTAssertEqual(behind, "inside Padding at 0x1020")
-    }
-
-    /// A volume erased with `0x00` leaves free space that is not `0xFF` (§3.5),
-    /// and the tree is what says those bytes were never written to.
-    func testFreeSpaceThatIsNotErasedWithFFIsStillRoom() throws {
-        var bytes = image()
-        bytes.replaceSubrange(0x1020..<0x1100, with: [UInt8](repeating: 0x00, count: 0xE0))
-        var free = UEFINode(kind: .freeSpace, name: "Free space", range: 0x1020..<0x1100)
-        free.isErased = true
-        let parsed = UEFIImage(size: UInt64(bytes.count), roots: [free], addressDiff: 0xFFFF_0000)
-        let found = try placement(bytes).get()
-
-        let transaction = try FITEditor.addMicrocode(
-            TestFIT.microcode(totalSize: 0x100), at: found,
-            to: try table(bytes), image: parsed, in: ImageReader(bytes)
-        ).get()
-
-        XCTAssertEqual(try table(try applying(transaction, to: bytes)).header?.size, 3)
+        // The two components already there are not in any write: only the new
+        // one, and the table.
+        XCTAssertTrue(writes.allSatisfy { $0.offset >= 0x2200 || $0.offset < 0x2000 },
+                      "\(writes.map { "0x" + String($0.offset, radix: 16) })")
     }
 
     // MARK: - Replacing
@@ -418,10 +253,18 @@ final class FITEditorTests: XCTestCase {
         XCTAssertEqual(outcome.replaced?.updateRevision, 0xF0)
 
         // The same size means nothing behind it moves, so nothing in the table
-        // changes and the whole edit is one write of the component. A
-        // transaction that wrote the table back unchanged would be an undo step
-        // that undoes nothing.
-        XCTAssertEqual(try transaction.validated().writes.map(\.offset), [microcode])
+        // changes and the whole edit is one write. A transaction that wrote the
+        // table back unchanged would be an undo step that undoes nothing.
+        let writes = try transaction.validated().writes
+        XCTAssertEqual(writes.count, 1)
+        // And the write covers only what differs: the two microcodes share
+        // their first bytes, and bytes that did not change must not be coloured
+        // as though they had.
+        XCTAssertGreaterThan(try XCTUnwrap(writes.first).offset, microcode)
+        XCTAssertLessThanOrEqual(
+            try XCTUnwrap(writes.first).offset + UInt64(try XCTUnwrap(writes.first).bytes.count),
+            microcode + 0x100
+        )
         let after = try table(try applying(transaction, to: bytes))
         XCTAssertEqual(after.rows.count, 2)
         XCTAssertTrue(after.checksumIsCorrect)
@@ -443,7 +286,13 @@ final class FITEditorTests: XCTestCase {
         let after = FITReader.read(ImageReader(try applying(transaction, to: bytes)), image: nil)
 
         XCTAssertEqual(outcome.moved, 0)
-        XCTAssertEqual(try transaction.validated().writes.map(\.offset), [0x2100])
+        let writes = try transaction.validated().writes
+        XCTAssertEqual(writes.count, 1, "one write, and only over what differs")
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(writes.first).offset, 0x2100)
+        XCTAssertLessThanOrEqual(
+            try XCTUnwrap(writes.first).offset + UInt64(try XCTUnwrap(writes.first).bytes.count),
+            0x2200
+        )
         XCTAssertEqual(after.table?.entries.map(\.entry.address),
                        [0xFFFF_2000, 0xFFFF_2100, 0xFFFF_2200])
         XCTAssertTrue(after.problems.isEmpty, "\(after.problems.map(\.message))")
@@ -510,7 +359,10 @@ final class FITEditorTests: XCTestCase {
         guard case .failure(let problem) = outcome else { return XCTFail("expected a refusal") }
         // What is asked for is the shortfall past the element's end — the room
         // that would have to be freed — not the whole amount the run grew by.
-        XCTAssertEqual(problem, .theRunCannotGrow(needed: 0x200))
+        guard case .theRunCannotGrow(let needed, _) = problem else {
+            return XCTFail("expected the run not to fit")
+        }
+        XCTAssertEqual(needed, 0x200)
     }
 
     /// And by what is actually free: bytes belonging to something else are not
@@ -523,7 +375,10 @@ final class FITEditorTests: XCTestCase {
         guard case .failure(let problem) = try addOrReplace(bigger, in: bytes) else {
             return XCTFail("expected a refusal")
         }
-        XCTAssertEqual(problem, .theRunCannotGrow(needed: 0x100))
+        guard case .theRunCannotGrow(let needed, _) = problem else {
+            return XCTFail("expected the run not to fit")
+        }
+        XCTAssertEqual(needed, 0x100)
     }
 
     /// A CPUID the table does not name is added, not replaced.
@@ -546,11 +401,11 @@ final class FITEditorTests: XCTestCase {
         let bytes = TestFIT.image(
             rows: [
                 TestFIT.Row(FIT.microcodeType, target: microcode),
-                TestFIT.Row(FIT.microcodeType, target: 0x3000)
+                TestFIT.Row(FIT.microcodeType, target: 0x2100)
             ],
             contents: [
                 microcode: TestFIT.microcode(revision: 0xF0, totalSize: 0x100, platformIDs: 0x02),
-                0x3000: TestFIT.microcode(revision: 0xEC, totalSize: 0x100, platformIDs: 0x22)
+                0x2100: TestFIT.microcode(revision: 0xEC, totalSize: 0x100, platformIDs: 0x22)
             ]
         )
         let newer = TestFIT.microcode(revision: 0xF1, totalSize: 0x100, platformIDs: 0x22)
@@ -559,7 +414,7 @@ final class FITEditorTests: XCTestCase {
 
         XCTAssertEqual(outcome.kind, .replaced)
         XCTAssertEqual(outcome.entryIndex, 2)
-        XCTAssertEqual(outcome.range.lowerBound, 0x3000)
+        XCTAssertEqual(outcome.range.lowerBound, 0x2100)
     }
 
     func testAFileThatIsNotMicrocodeIsRefusedBeforeAnythingIsPlanned() throws {
@@ -763,14 +618,10 @@ final class FITEditorTests: XCTestCase {
     /// and the file has not changed size.
     func testAddingAndRemovingComeBackToWhereItStarted() throws {
         let bytes = image()
-        let found = try placement(bytes).get()
-        let added = try applying(
-            try FITEditor.addMicrocode(
-                TestFIT.microcode(signature: 0x0009_06EA, totalSize: 0x100), at: found,
-                to: try table(bytes), in: ImageReader(bytes)
-            ).get(),
-            to: bytes
-        )
+        let (add, _) = try add(
+            TestFIT.microcode(signature: 0x0009_06EA, totalSize: 0x100), to: bytes
+        ).get()
+        let added = try applying(add, to: bytes)
         XCTAssertEqual(try table(added).header?.size, 3)
 
         let (transaction, _) = try remove(2, from: added).get()
