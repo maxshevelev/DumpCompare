@@ -90,6 +90,10 @@ import ToolModuleKit
             controller.removeFromParent()
         }
         panel.setContent(nil)
+        // The map goes with the session that authored it: nothing else draws
+        // zones, so a dump left carrying them would be showing a tool-module's
+        // reading of a file after that tool-module has gone.
+        boundPane?.setZones(ZoneMap.empty)
         session = nil
         host = nil
         boundPane = nil
@@ -103,7 +107,7 @@ import ToolModuleKit
     func publish(_ map: ZoneMap, from host: PaneToolHost) {
         guard host === self.host else { return }
         zones = map.normalized(contentSize: host.contentSize)
-        owner?.toolZonesChanged()
+        boundPane?.setZones(zones)
     }
 
     // MARK: - What happens to the session

@@ -204,8 +204,12 @@ data source, resolved per row. It is drawn as an **outlined region** rather than
 another tint — the byte cell's layering is full (§6: segment tint, match fill,
 difference fill, selection fill, find indicator) and a sixth fill would fight
 the five below it. The contour machinery exists: `drawContours` already outlines
-the mirrored selection across rows and columns. The focused zone gets the
-contour and its name; the rest of the published map is drawn faintly.
+the mirrored selection across rows and columns. The focused zone is stroked at
+full strength and the rest faintly — a map of a dozen regions all drawn as
+loudly as each other is a cage over the bytes. The names stay in the panel: a
+label floating over the dump is a placement problem (which row, which side, what
+happens when two zones start on one row) for something the list beside it
+already answers.
 
 Navigation is `reveal(_:select:)`, which the pane already does for bookmarks and
 search results.

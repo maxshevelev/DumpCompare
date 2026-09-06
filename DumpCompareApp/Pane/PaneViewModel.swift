@@ -1,5 +1,6 @@
 import Foundation
 import DumpCompareCore
+import ToolModuleKit
 
 /// The visual state of a single byte in the hex grid (§6).
 ///
@@ -997,6 +998,36 @@ final class PaneViewModel: HexViewDataSource {
 
     func hexCurrentMatch() -> Range<UInt64>? {
         currentMatchRange
+    }
+
+    /// The zone map a tool-module published for this pane
+    /// (`Design/TOOL_MODULES_PLAN.md`), or nothing when none is running.
+    ///
+    /// The pane holds it because the dump draws it; the truth belongs to the
+    /// tab's `ToolController`, which pushes it here and clears it when the
+    /// session ends. Nothing else writes it — zones are the tool-module's alone.
+    private(set) var zones: ZoneMap = .empty
+
+    /// Replaces the drawn map. The whole dump repaints rather than the rows
+    /// that changed: a publish happens once per parse, not per keystroke, and
+    /// the map that went away is as much a repaint as the one that arrived.
+    func setZones(_ map: ZoneMap) {
+        guard map != zones else { return }
+        zones = map
+        onFullInvalidationOfZones?()
+    }
+
+    /// Fired when the drawn zone map changes, so the view repaints.
+    var onFullInvalidationOfZones: (() -> Void)?
+
+    func hexZoneSpans(in range: Range<UInt64>) -> [HexZoneSpan] {
+        guard !zones.zones.isEmpty else { return [] }
+        return zones.zones.compactMap { zone in
+            guard zone.range.lowerBound < range.upperBound,
+                  range.lowerBound < zone.range.upperBound else { return nil }
+            return HexZoneSpan(range: zone.range, name: zone.name,
+                               isFocused: zone.id == zones.focus)
+        }
     }
 
     func hexSegmentSpans(in range: Range<UInt64>) -> [HexSegmentSpan] {

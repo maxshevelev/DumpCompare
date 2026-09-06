@@ -637,6 +637,13 @@ final class FilePaneView: NSView {
             self?.hexView.needsDisplay = true
             self?.onMatchesChanged?()
         }
+        // A tool-module published a zone map, or its session ended and took one
+        // away (Design/TOOL_MODULES_PLAN.md). The dump repaints whole for the
+        // reason the matches do: a map arrives or goes wholesale, and it is one
+        // repaint per parse rather than per keystroke.
+        viewModel.onFullInvalidationOfZones = { [weak self] in
+            self?.hexView.needsDisplay = true
+        }
         // The running search's index reached further into the file: the greys
         // for that stretch are known now. Only that stretch repaints, and only
         // if the user is looking at it — the rest of the scan's instalments

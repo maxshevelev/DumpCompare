@@ -1,0 +1,170 @@
+import XCTest
+import ToolModuleKit
+@testable import DumpCompare
+
+/// Zones on screen: what a published map does to the dump
+/// (`Design/TOOL_MODULES_PLAN.md`).
+@MainActor
+final class ToolZonesTests: XCTestCase {
+    private var files: [URL] = []
+    private var controller: MainViewController?
+    private var defaultsName: String?
+
+    override func setUp() {
+        super.setUp()
+        installToolStubs()
+        let isolated = isolatedDefaults(for: self)
+        defaultsName = isolated.name
+        ToolController.defaults = isolated.store
+        ToolController.changeDelay = 0
+    }
+
+    override func tearDown() {
+        controller?.windowModel.pane1.close()
+        for file in files { try? FileManager.default.removeItem(at: file) }
+        if let defaultsName { discardIsolatedDefaults(defaultsName, ToolController.defaults) }
+        ToolController.defaults = .standard
+        ToolController.changeDelay = 0.15
+        controller = nil
+        files = []
+        super.tearDown()
+    }
+
+    private func makeController() throws -> (MainViewController, NSWindow) {
+        let url = try tempFile([UInt8](repeating: 0xAA, count: 0x400))
+        files.append(url)
+        let controller = MainViewController()
+        self.controller = controller
+        let window = makeTestWindow(width: 1000, height: 700)
+        window.contentViewController = controller
+        window.setContentSize(NSSize(width: 1000, height: 700))
+        try controller.windowModel.pane1.open(url: url)
+        controller.apply(mode: .singleFile)
+        window.layoutIfNeeded()
+        return (controller, window)
+    }
+
+    private func host(_ controller: MainViewController) throws -> any ToolHost {
+        controller.tools.activate(StubToolA.identifier, animated: false)
+        return try XCTUnwrap(StubToolA.log.session).host
+    }
+
+    private func hexView(_ window: NSWindow) throws -> HexView {
+        try XCTUnwrap(descendants(of: window.contentView!, HexView.self).first)
+    }
+
+    private func render(_ view: NSView) throws -> NSBitmapImageRep {
+        let rep = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+        view.cacheDisplay(in: view.bounds, to: rep)
+        return rep
+    }
+
+    /// How many pixels differ between two renders inside `rect`.
+    ///
+    /// A difference rather than a colour: what the test is about is that
+    /// publishing a map changes the dump where the zone is and leaves it alone
+    /// everywhere else, and asking "is this pixel teal enough" means guessing
+    /// what a translucent, anti-aliased stroke blends to over whatever was
+    /// under it.
+    private func changedPixels(_ before: NSBitmapImageRep, _ after: NSBitmapImageRep,
+                               in rect: NSRect, of view: NSView) -> Int {
+        let scale = CGFloat(before.pixelsWide) / max(view.bounds.width, 1)
+        var changed = 0
+        for x in stride(from: Int(rect.minX * scale), to: Int(rect.maxX * scale), by: 1) {
+            for y in stride(from: Int(rect.minY * scale), to: Int(rect.maxY * scale), by: 1) {
+                guard x >= 0, y >= 0, x < before.pixelsWide, y < before.pixelsHigh,
+                      let old = before.colorAt(x: x, y: y)?.usingColorSpace(.sRGB),
+                      let new = after.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+                if abs(old.redComponent - new.redComponent) > 0.02
+                    || abs(old.greenComponent - new.greenComponent) > 0.02
+                    || abs(old.blueComponent - new.blueComponent) > 0.02 {
+                    changed += 1
+                }
+            }
+        }
+        return changed
+    }
+
+    // MARK: - The map reaches the pane
+
+    func testAPublishedMapReachesThePaneTheSessionIsBoundTo() throws {
+        let (controller, _) = try makeController()
+        let host = try host(controller)
+
+        host.publish(ZoneMap(zones: [Zone(id: "fv", name: "Volume", range: 0x20..<0x60)],
+                             focus: "fv"))
+
+        XCTAssertEqual(controller.windowModel.pane1.zones.zones.map(\.name), ["Volume"])
+        XCTAssertEqual(controller.windowModel.pane1.hexZoneSpans(in: 0..<0x100).map(\.isFocused),
+                       [true])
+    }
+
+    /// The dump asks per drawn range, like the pieces and the matches do.
+    func testOnlyTheZonesReachingTheDrawnRangeAreHandedOver() throws {
+        let (controller, _) = try makeController()
+        let host = try host(controller)
+        host.publish(ZoneMap(zones: [Zone(id: "a", name: "A", range: 0x00..<0x10),
+                                     Zone(id: "b", name: "B", range: 0x300..<0x310)]))
+
+        let spans = controller.windowModel.pane1.hexZoneSpans(in: 0x100..<0x200)
+
+        XCTAssertTrue(spans.isEmpty)
+        XCTAssertEqual(controller.windowModel.pane1.hexZoneSpans(in: 0x00..<0x100).map(\.name), ["A"])
+    }
+
+    /// Nothing else draws zones, so when the session goes the dump must stop
+    /// showing a tool-module's reading of a file after that tool-module has gone.
+    func testEndingTheSessionTakesTheMapOffTheDump() throws {
+        let (controller, _) = try makeController()
+        let host = try host(controller)
+        host.publish(ZoneMap(zones: [Zone(id: "fv", name: "Volume", range: 0x20..<0x60)]))
+
+        controller.tools.activate(nil, animated: false)
+
+        XCTAssertTrue(controller.windowModel.pane1.zones.zones.isEmpty)
+        XCTAssertTrue(controller.windowModel.pane1.hexZoneSpans(in: 0..<0x400).isEmpty)
+    }
+
+    /// A map that changed has to be repainted, and the dump does not know when
+    /// one arrives except by being told.
+    func testAPublishAsksTheDumpToRepaint() throws {
+        let (controller, window) = try makeController()
+        let host = try host(controller)
+        let hexView = try hexView(window)
+        hexView.displayIfNeeded()
+        XCTAssertFalse(hexView.needsDisplay, "precondition: nothing pending")
+
+        host.publish(ZoneMap(zones: [Zone(id: "fv", name: "Volume", range: 0x20..<0x60)]))
+
+        XCTAssertTrue(hexView.needsDisplay)
+    }
+
+    // MARK: - On screen
+
+    /// The outline is actually drawn, over the bytes the zone covers — and not
+    /// over the bytes it does not.
+    func testTheZoneIsDrawnWhereItIsAndNowhereElse() throws {
+        let (controller, window) = try makeController()
+        let host = try host(controller)
+        let hexView = try hexView(window)
+        hexView.displayIfNeeded()
+        let before = try render(hexView)
+
+        host.publish(ZoneMap(zones: [Zone(id: "fv", name: "Volume", range: 0x00..<0x20)],
+                             focus: "fv"))
+        hexView.displayIfNeeded()
+        let after = try render(hexView)
+
+        let layout = hexView.hexLayout
+        XCTAssertGreaterThan(changedPixels(before, after, in: layout.rowFrame(row: 0), of: hexView), 50,
+                             "the zone's first row is drawn differently once it exists")
+        XCTAssertEqual(changedPixels(before, after, in: layout.rowFrame(row: 8), of: hexView), 0,
+                       "a row outside the zone is untouched")
+    }
+
+    /// A map of a dozen regions drawn as loudly as each other is a cage over
+    /// the bytes, so only the focused one is at full strength.
+    func testTheFocusedZoneIsStrokedMoreStronglyThanTheRest() throws {
+        XCTAssertGreaterThan(HexView.zoneFocusedAlpha, HexView.zoneAlpha)
+    }
+}

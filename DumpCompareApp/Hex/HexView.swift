@@ -23,6 +23,15 @@ struct HexSegmentSpan: Equatable {
     let colorIndex: Int
 }
 
+/// One published zone that intersects a drawn range, as the dump draws it
+/// (`Design/TOOL_MODULES_PLAN.md`): its whole byte range, its name, and whether
+/// it is the one the tool-module has in focus.
+struct HexZoneSpan: Equatable {
+    let range: Range<UInt64>
+    let name: String
+    let isFocused: Bool
+}
+
 /// Supplies the bytes and selection the hex view renders (§6).
 @MainActor
 protocol HexViewDataSource: AnyObject {
@@ -42,6 +51,11 @@ protocol HexViewDataSource: AnyObject {
     /// range rather than a call per row, the same shape as `hexBookmarkedRows`.
     /// Empty when the pane is one piece (no cuts) — there is nothing to tint.
     func hexSegmentSpans(in range: Range<UInt64>) -> [HexSegmentSpan]
+    /// The zones a tool-module has published that intersect `range`
+    /// (`Design/TOOL_MODULES_PLAN.md`). Empty unless one is running; a handful
+    /// at most, since what a tool-module publishes is the slice it wants seen
+    /// rather than its tree.
+    func hexZoneSpans(in range: Range<UInt64>) -> [HexZoneSpan]
     /// The matches of the active search that overlap `range`, for the dump's
     /// grey match highlight (§11). A list per range rather than a call per row,
     /// the same shape as `hexSegmentSpans`; a match starting before the range
@@ -928,6 +942,13 @@ final class HexView: NSView, NSViewToolTipOwner {
         if isActive && selection.isEmpty {
             drawCrossColumnLink()
         }
+
+        // Zones, outlined rather than filled: the byte cell's five background
+        // layers are spoken for (§6), and a sixth fill would fight all of them.
+        // Drawn once for the whole visible range rather than per row, the way
+        // the mirror contour is, since a zone is one shape however many rows it
+        // covers.
+        drawZoneContours(layout: layout, fileSize: fileSize, rows: rows)
 
         // Mirror the opposite pane: a selection is traced with one closed
         // contour on both panes, and a bare caret on the opposite pane is
@@ -2041,6 +2062,42 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// (§3.3). The stroke is padded off the glyphs horizontally, its corners
     /// are rounded, and it is drawn at `mirrorContourAlpha` opacity so it
     /// doesn't fight with the byte highlighting underneath.
+    /// Outlines every published zone that reaches the drawn rows.
+    ///
+    /// The focused one is stroked at full strength and the rest faintly: a map
+    /// of a dozen regions all drawn as loudly as each other is a cage over the
+    /// bytes, and the tool-module has already said which one the user is
+    /// looking at.
+    private func drawZoneContours(layout: HexLayout, fileSize: UInt64, rows: Range<Int>) {
+        guard let dataSource, !rows.isEmpty, fileSize > 0 else { return }
+        let lower = UInt64(rows.lowerBound) * UInt64(HexLayout.bytesPerRow)
+        let upper = UInt64(rows.upperBound) * UInt64(HexLayout.bytesPerRow)
+        let zones = dataSource.hexZoneSpans(in: lower..<upper)
+        guard !zones.isEmpty else { return }
+        // Faint first, so the focused zone's outline is never crossed by a
+        // neighbour's — zones nest, and the inner one is usually the focus.
+        for zone in zones.sorted(by: { !$0.isFocused && $1.isFocused }) {
+            let end = min(zone.range.upperBound, fileSize)
+            guard zone.range.lowerBound < end else { continue }
+            let span = SelectionModel(start: zone.range.lowerBound, end: end, fileSize: fileSize)
+            let loops = contour(of: span, layout: layout, region: .hex)
+                + contour(of: span, layout: layout, region: .ascii)
+            guard !loops.isEmpty else { continue }
+            HexTheme.zoneFrame
+                .withAlphaComponent(zone.isFocused ? Self.zoneFocusedAlpha : Self.zoneAlpha)
+                .setStroke()
+            let path = roundedContourPath(loops: loops, radius: Self.mirrorContourRadius)
+            path.lineWidth = zone.isFocused
+                ? Self.mirrorContourLineWidth
+                : Self.mirrorContourLineWidth / 2
+            path.stroke()
+        }
+    }
+
+    /// How strongly a published zone's outline is drawn, and the focused one.
+    static let zoneAlpha: CGFloat = 0.35
+    static let zoneFocusedAlpha: CGFloat = 0.9
+
     private func drawMirrorContour() {
         drawContours(mirrorContours())
     }
@@ -3321,6 +3378,13 @@ enum HexTheme {
     /// Thin frame mirroring the opposite pane's selection onto this pane
     /// (§3.3). The accent color ties the two panes' views of the same range.
     static let mirrorFrame = NSColor.controlAccentColor
+
+    /// The outline a tool-module's zone is drawn with
+    /// (`Design/TOOL_MODULES_PLAN.md`). Deliberately not the accent colour: the
+    /// accent already means "this is where you are" — the caret's link, the
+    /// mirror of the other pane — and a zone is something the file *has*, not
+    /// something the user is doing.
+    static let zoneFrame = NSColor.systemTeal
 
     /// The six segment tints, cycled by label (§21.3): S0 light green, S1 light
     /// pink, S2 pale blue, S3 pale yellow, S4 lavender, S5 peach. A small set of
