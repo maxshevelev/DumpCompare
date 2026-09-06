@@ -143,9 +143,9 @@ final class FolderSync<Kind: SyncedCollectionKind> {
         // a memory. Two Macs sharing a library must be on the same one: an
         // older build discards what a newer one asks about, and the newer one
         // then defers to it in good faith.
-        NSLog("DumpCompare library: starting, rules of %@, device %@, writing %@",
-              Self.rulesVersion, String(device.prefix(8)),
-              sharedURL?.lastPathComponent ?? "this Mac only")
+        // NSLog("DumpCompare library: starting, rules of %@, device %@, writing %@",
+        //       Self.rulesVersion, String(device.prefix(8)),
+        //       sharedURL?.lastPathComponent ?? "this Mac only")
         guard sharedURL != nil else { return }
         watchShared()
         sync()
@@ -197,10 +197,10 @@ final class FolderSync<Kind: SyncedCollectionKind> {
     /// its counters are merged into ours: from here on this machine has seen
     /// everything those versions knew, and the result is simply newer.
     func resolve(_ answers: [UUID: SyncResolution]) {
-        NSLog("DumpCompare library: answering %d question(s) with %@",
-              conflicts.count, String(describing: answers.values.map { "\($0)" }))
+        // NSLog("DumpCompare library: answering %d question(s) with %@",
+        //       conflicts.count, String(describing: answers.values.map { "\($0)" }))
         guard !conflicts.isEmpty else {
-            NSLog("DumpCompare library: nothing to answer — the questions had already gone")
+            // NSLog("DumpCompare library: nothing to answer — the questions had already gone")
             return
         }
         let outcome = SyncMerge<Item>.Outcome(library: document.local, conflicts: conflicts)
@@ -225,9 +225,9 @@ final class FolderSync<Kind: SyncedCollectionKind> {
         // Answered, and asked again: a file moved while the sheet was open, so
         // the answer was about a version that is no longer there.
         answerDidNotTake = !conflicts.isEmpty
-        NSLog("DumpCompare library: after answering — %d question(s), local=%@ %@, error=%@",
-              conflicts.count, Self.describe(document.local.ordered),
-              Self.describe(document.local.vector), String(describing: publishError))
+        // NSLog("DumpCompare library: after answering — %d question(s), local=%@ %@, error=%@",
+        //       conflicts.count, Self.describe(document.local.ordered),
+        //       Self.describe(document.local.vector), String(describing: publishError))
     }
 
     /// The versions the outstanding questions are about, by file — what
@@ -430,12 +430,12 @@ final class FolderSync<Kind: SyncedCollectionKind> {
         // truth is already safe locally, and the next change or the next
         // external event tries again.
         publishError = problems.first
-        if let publishError {
-            // Also to the log: a failure that only a settings tab can show is a
-            // failure nobody quotes, and this one took several rounds to name.
-            NSLog("DumpCompare: could not publish the pattern library to %@ — %@",
-                  ourURL.path, String(describing: publishError))
-        }
+        // Also to the log: a failure that only a settings tab can show is a
+        // failure nobody quotes, and this one took several rounds to name.
+        // if let publishError {
+        //     NSLog("DumpCompare: could not publish the pattern library to %@ — %@",
+        //           ourURL.path, String(describing: publishError))
+        // }
     }
 
     /// Merges one machine's file into this machine's library.
@@ -503,11 +503,11 @@ final class FolderSync<Kind: SyncedCollectionKind> {
             // A question is rare and expensive to diagnose from the outside —
             // the three libraries that produced it are gone by the time anyone
             // asks. So it says what it merged.
-            NSLog("DumpCompare library: %d question(s) from %@ — base=%@ %@ ours=%@ %@ theirs=%@ %@",
-                  outcome.conflicts.count, name,
-                  Self.describe(base?.ordered), Self.describe(base?.vector),
-                  Self.describe(document.local.ordered), Self.describe(document.local.vector),
-                  Self.describe(theirs.ordered), Self.describe(theirs.vector))
+            // NSLog("DumpCompare library: %d question(s) from %@ — base=%@ %@ ours=%@ %@ theirs=%@ %@",
+            //       outcome.conflicts.count, name,
+            //       Self.describe(base?.ordered), Self.describe(base?.vector),
+            //       Self.describe(document.local.ordered), Self.describe(document.local.vector),
+            //       Self.describe(theirs.ordered), Self.describe(theirs.vector))
             return
         }
         // Agreed with that machine, up to the version just read: what its next
