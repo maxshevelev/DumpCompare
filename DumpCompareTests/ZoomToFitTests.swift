@@ -200,7 +200,7 @@ final class ZoomToFitTests: XCTestCase {
         mainVC.apply(mode: .singleFile)
         window.layoutIfNeeded()
 
-        let split = mainVC.minimapSplit
+        let split = mainVC.panelSplit
         let pane = try XCTUnwrap(findPane(in: mainVC.view))
 
         // Without the panel the fitted width is just the hex grid.

@@ -385,3 +385,69 @@ final class ALSplitViewTests: XCTestCase {
         XCTAssertGreaterThan(children[0].frame.width, 0)
     }
 }
+
+/// The leading pane's size animation — the mirror of the trailing one, added
+/// for a panel that opens on the left (`Design/TOOL_MODULES_PLAN.md`).
+@MainActor
+final class LeadingPaneAnimationTests: XCTestCase {
+    private func makeSplit() -> ALSplitView {
+        let split = ALSplitView()
+        split.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
+        split.isVertical = true
+        split.dividerThickness = 1
+        split.addPane(NSView())
+        split.addPane(NSView())
+        split.setPaneLayout(.fixed(0), at: 0)
+        split.setPaneLayout(.fill, at: 1)
+        split.layoutSubtreeIfNeeded()
+        return split
+    }
+
+    /// A distance too small to be worth easing lands at once, and the tick is
+    /// still called with 1 — the contract the trailing side already has, so a
+    /// consumer never has to finish the move itself.
+    func testASnapStillReportsAFinishedTick() {
+        let split = makeSplit()
+        split.setDividerPosition(200, at: 0)
+        var ticks: [CGFloat] = []
+
+        split.animateLeadingPaneSize(to: 200.2, onTick: { ticks.append($0) })
+
+        XCTAssertEqual(ticks, [1])
+        XCTAssertFalse(split.isAnimatingDivider)
+        XCTAssertEqual(split.dividerPosition(at: 0), 200.2, accuracy: 0.01)
+    }
+
+    /// Driving an animation to its end, rather than waiting on its timer.
+    private func settle(_ split: ALSplitView) {
+        let deadline = Date().addingTimeInterval(2)
+        while split.isAnimatingDivider, Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
+        }
+        split.layoutSubtreeIfNeeded()
+    }
+
+    func testItMovesTheFirstDividerAndLeavesTheLastPaneFilling() {
+        let split = makeSplit()
+
+        split.animateLeadingPaneSize(to: 200)
+        settle(split)
+
+        XCTAssertFalse(split.isAnimatingDivider)
+        XCTAssertEqual(split.dividerPosition(at: 0), 200, accuracy: 1)
+        XCTAssertEqual(split.panes[1].frame.width, 600 - 200 - 1, accuracy: 1)
+    }
+
+    /// The trailing animation still works: both now run through one body, and
+    /// this is the half that was already in use.
+    func testTheTrailingAnimationStillPlacesTheLastPane() {
+        let split = makeSplit()
+
+        split.animateTrailingPaneSize(to: 100)
+        settle(split)
+
+        XCTAssertFalse(split.isAnimatingDivider)
+        XCTAssertEqual(split.panes.last?.frame.width ?? -1, 100, accuracy: 1)
+        XCTAssertEqual(split.dividerPosition(at: 0), 600 - 100 - 1, accuracy: 1)
+    }
+}

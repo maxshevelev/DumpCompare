@@ -212,7 +212,7 @@ final class MinimapTests: XCTestCase {
     func testDividerDragCannotOpenAHiddenMinimap() throws {
         let (_, window) = try makeController()
         let (split, panel) = try minimapViews(window)
-        let sv = split.minimapSplit
+        let sv = split.panelSplit
 
         XCTAssertFalse(split.minimapPanelVisible, "the minimap starts hidden")
         window.layoutIfNeeded()
@@ -239,7 +239,7 @@ final class MinimapTests: XCTestCase {
         let (split, _) = try minimapViews(window)
 
         let initialWidth = window.frame.width
-        let delta = MainViewController.minimapMinPanelWidth + split.minimapSplit.dividerThickness
+        let delta = MainViewController.minimapMinPanelWidth + split.panelSplit.dividerThickness
 
         // Showing the panel grows the window by the panel's width.
         split.setMinimapPanelVisible(true, animated: false)
@@ -272,7 +272,7 @@ final class MinimapTests: XCTestCase {
                       "reduced motion snaps the panel, so there is no animation to sample")
         let (_, window) = try makeController()
         let (controller, _) = try minimapViews(window)
-        let split = controller.minimapSplit
+        let split = controller.panelSplit
         let startWidth = window.frame.width
 
         controller.setMinimapPanelVisible(true, animated: true)
@@ -281,7 +281,8 @@ final class MinimapTests: XCTestCase {
         // cannot be missed: the animation's opening frame has run, and nothing
         // else has.
         func sample() -> (grown: CGFloat, panel: CGFloat) {
-            (window.frame.width - startWidth, split.panes[1].frame.width)
+            (window.frame.width - startWidth,
+             split.panes[MainViewController.minimapPaneIndex].frame.width)
         }
         var samples = [sample()]
         let deadline = Date().addingTimeInterval(2)
@@ -1239,7 +1240,7 @@ final class MinimapTests: XCTestCase {
     /// by the first real layout.
     func testShowBeforeFirstLayoutOpensAtThePanelWidth() throws {
         let controller = MainViewController()
-        let split = controller.minimapSplit
+        let split = controller.panelSplit
         XCTAssertEqual(split.bounds.width, 0, "no layout has run yet")
         controller.setMinimapPanelVisible(true, animated: false)
 

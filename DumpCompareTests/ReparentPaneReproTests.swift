@@ -30,25 +30,25 @@ final class ReparentPaneReproTests: XCTestCase {
         let container = try XCTUnwrap(window.contentView)
         windows.append(window)
 
-        // Build the real-app hierarchy: minimapSplit → contentHost.
-        let minimapSplit = ALSplitView()
-        minimapSplit.translatesAutoresizingMaskIntoConstraints = false
-        minimapSplit.isVertical = true
-        minimapSplit.dividerThickness = 1
+        // Build the real-app hierarchy: panelSplit → contentHost.
+        let panelSplit = ALSplitView()
+        panelSplit.translatesAutoresizingMaskIntoConstraints = false
+        panelSplit.isVertical = true
+        panelSplit.dividerThickness = 1
         let contentHost = NSView()
         contentHost.translatesAutoresizingMaskIntoConstraints = false
         let minimapPanel = NSView()
         minimapPanel.translatesAutoresizingMaskIntoConstraints = false
-        minimapSplit.addPane(contentHost)
-        minimapSplit.addPane(minimapPanel)
-        minimapSplit.setPaneLayout(.fill, at: 0)
-        minimapSplit.setPaneLayout(.fixed(0), at: 1)
-        container.addSubview(minimapSplit)
+        panelSplit.addPane(contentHost)
+        panelSplit.addPane(minimapPanel)
+        panelSplit.setPaneLayout(.fill, at: 0)
+        panelSplit.setPaneLayout(.fixed(0), at: 1)
+        container.addSubview(panelSplit)
         NSLayoutConstraint.activate([
-            minimapSplit.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            minimapSplit.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            minimapSplit.topAnchor.constraint(equalTo: container.topAnchor),
-            minimapSplit.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            panelSplit.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            panelSplit.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            panelSplit.topAnchor.constraint(equalTo: container.topAnchor),
+            panelSplit.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ])
 
         // Phase 1: single-file mode. Pane inside a SingleFileDropView in contentHost.
