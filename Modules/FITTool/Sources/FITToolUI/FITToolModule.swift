@@ -53,6 +53,7 @@ struct FITParkedState: ToolSessionState {
         self.host = host
         controller.onSelect = { [weak self] index in self?.select(index) }
         controller.onGoToTarget = { [weak self] index in self?.goToTarget(of: index) }
+        controller.onCopyCPUID = { [weak self] index in self?.copyCPUID(of: index) }
         controller.onGoToProblem = { [weak self] index in self?.goToProblem(index) }
         controller.onFixChecksum = { [weak self] in self?.fixChecksum() }
     }
@@ -147,9 +148,9 @@ struct FITParkedState: ToolSessionState {
     }
 
     /// Where the row points, which is the question a FIT row exists to answer.
-    /// Public because a double-click cannot be simulated — `clickedRow` is -1
-    /// unless a real mouse put it there — so this is the level the app's tests
-    /// drive.
+    /// Public because neither a double-click nor a right-click can be
+    /// simulated — `clickedRow` is -1 unless a real mouse put it there — so
+    /// this is the level the app's tests drive.
     public func goToTarget(of index: Int) {
         guard let row = display.rows.first(where: { $0.index == index }),
               let target = row.targetRange
@@ -157,7 +158,25 @@ struct FITParkedState: ToolSessionState {
             controller.say("That entry does not point anywhere in this file.")
             return
         }
+        // The component comes into focus, not the row that names it: going to
+        // an offset is going to what is there.
+        focus = index
+        show(display.focusingTarget(of: index))
         host.reveal(target, select: true)
+    }
+
+    /// Where a copy goes. Swappable so the app's tests do not walk off with
+    /// whatever the person running them had on their clipboard.
+    public static var pasteboard: NSPasteboard = .general
+
+    /// The number a bench writes down and looks up.
+    public func copyCPUID(of index: Int) {
+        guard let cpuid = display.rows.first(where: { $0.index == index })?.cpuidText else {
+            return
+        }
+        FITToolSession.pasteboard.clearContents()
+        FITToolSession.pasteboard.setString(cpuid, forType: .string)
+        controller.say("CPUID \(cpuid) copied.")
     }
 
     private func goToProblem(_ index: Int) {

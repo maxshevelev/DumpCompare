@@ -80,30 +80,45 @@ final class FITDisplayTests: XCTestCase {
         XCTAssertTrue(shown.rows.isEmpty)
     }
 
-    /// A microcode row's own size field is required to be zero; the size shown
-    /// is the component's (§7.1, §11).
-    func testAMicrocodeRowShowsTheSizeOfTheComponent() {
+    /// A microcode row leads with its CPUID rather than with the word
+    /// "microcode" — the type column has said that already, and the CPUID is
+    /// the thing being looked for. Five hex digits, no leading zero, the way a
+    /// bench writes it.
+    func testAMicrocodeRowLeadsWithItsCpuid() {
         let row = display([microcodeRow]).rows[1]
 
         XCTAssertEqual(row.typeText, "Microcode")
         XCTAssertEqual(row.addressText, "0xFFFF2000")
-        XCTAssertEqual(row.sizeText, "0x180")
-        XCTAssertEqual(row.targetText, "Microcode 0x000806EA, revision 0xF0, 2019-07-15")
+        XCTAssertEqual(row.cpuidText, "806EA")
+        XCTAssertEqual(row.targetText, "806EA · rev F0 · 2019-07-15 · 0x2000 · 0x180")
         XCTAssertEqual(row.targetRange, microcode..<(microcode + 0x180))
         XCTAssertFalse(row.hasProblem)
     }
 
-    /// Not `0x0`, which is indistinguishable from a size that was never
-    /// written — the confusion §11 is about.
-    func testARowWithNoSizeShowsNothingRatherThanZero() {
-        let row = display([TestFIT.Row(FIT.startupACMType, target: 0x3000)]).rows[1]
+    /// A row's own size field is required to be zero for most types, so where
+    /// there is nothing to say the line does not end with a `0x0` that looks
+    /// like a size (§11).
+    func testARowThatLeadsSomewhereElseStillSaysWhereAndHowLong() {
+        let node = UEFINode(kind: .volume, name: "FFSv2", range: 0x2800..<0x4000)
+        let image = UEFIImage(size: 0x1_0000, roots: [node], addressDiff: 0xFFFF_0000)
+        let bytes = TestFIT.image(rows: [TestFIT.Row(FIT.startupACMType, target: 0x3000)])
+        let row = FITPresenter.display(
+            FITReader.read(ImageReader(bytes), image: image)
+        ).rows[1]
 
-        XCTAssertEqual(row.sizeText, "")
+        XCTAssertNil(row.cpuidText)
+        XCTAssertEqual(row.targetText, "FFSv2 · 0x3000")
     }
 
-    func testTheHeaderRowShowsItsSignatureRatherThanAnAddress() {
-        XCTAssertEqual(display([microcodeRow]).rows[0].addressText, "_FIT_")
-        XCTAssertEqual(display([microcodeRow]).rows[0].typeText, "FIT Header")
+    /// The header's `Size` counts entries, not bytes — the field everyone reads
+    /// wrong (§4) — so the row says it both ways rather than showing `0x50` and
+    /// leaving the reader to guess which it meant.
+    func testTheHeaderRowSaysItsCountBothWays() {
+        let row = display([microcodeRow]).rows[0]
+
+        XCTAssertEqual(row.addressText, "_FIT_")
+        XCTAssertEqual(row.typeText, "FIT Header")
+        XCTAssertEqual(row.targetText, "2 rows · 0x20")
     }
 
     /// The reserved byte is a subtype here, and saying so is the difference
@@ -146,13 +161,25 @@ final class FITDisplayTests: XCTestCase {
         )
     }
 
-    func testTheZonesAreNamedAsTheRowsAre() {
-        let zones = display([microcodeRow]).zones
+    /// Every microcode in the table is a zone from the moment it is read, named
+    /// by the CPUID — which is what a bench is hunting for in a dump.
+    func testEveryMicrocodeIsAZoneNamedByItsCpuid() {
+        let zones = display([
+            microcodeRow,
+            TestFIT.Row(FIT.microcodeType, target: 0x3000)
+        ]).zones
 
         XCTAssertEqual(zones.zones.first { $0.id == "fit.row.1" }?.name, "#1 Microcode")
+        XCTAssertEqual(zones.zones.first { $0.id == "fit.target.1" }?.name, "CPUID 806EA")
+        XCTAssertEqual(zones.zones.first { $0.id == "fit.target.2" }?.range, 0x3000..<0x3010)
+    }
+
+    /// Going to an offset puts the component in focus, not the row that names
+    /// it.
+    func testGoingToATargetFocusesTheComponent() {
         XCTAssertEqual(
-            zones.zones.first { $0.id == "fit.target.1" }?.name,
-            "Microcode 0x000806EA, revision 0xF0, 2019-07-15"
+            display([microcodeRow]).focusingTarget(of: 1).zones.focus,
+            "fit.target.1"
         )
     }
 
@@ -165,6 +192,27 @@ final class FITDisplayTests: XCTestCase {
         let refocused = display([microcodeRow], focus: 1).focusing(0)
         XCTAssertEqual(refocused.zones.focus, "fit.row.0")
         XCTAssertEqual(refocused.rows, display([microcodeRow], focus: 1).rows)
+    }
+
+    // MARK: - The right-button menu
+
+    /// What is on offer is decided here and not in the view, and an item that
+    /// does not apply to the row is absent rather than greyed.
+    func testAMicrocodeRowOffersItsCpuidAndItsOffset() {
+        let rows = display([microcodeRow, TestFIT.Row(FIT.emptyType, address: 0)]).rows
+
+        XCTAssertEqual(rows[1].commands, [.copyCPUID("806EA"), .goToOffset(microcode)])
+        XCTAssertEqual(rows[1].commands.map(\.title), ["Copy CPUID", "Go to Offset"])
+        XCTAssertTrue(rows[0].commands.isEmpty)       // the header points nowhere
+        XCTAssertTrue(rows[2].commands.isEmpty)       // and neither does an empty slot
+    }
+
+    /// A row that leads somewhere without leading to microcode can still be
+    /// gone to.
+    func testARowWithNoCpuidStillOffersItsOffset() {
+        let rows = display([TestFIT.Row(FIT.startupACMType, target: 0x3000)]).rows
+
+        XCTAssertEqual(rows[1].commands, [.goToOffset(0x3000)])
     }
 
     // MARK: - The one repair

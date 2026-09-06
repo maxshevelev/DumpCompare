@@ -8,12 +8,14 @@ public struct FITDisplayRow: Equatable, Sendable {
     public var index: Int
     public var typeText: String
     public var addressText: String
-    /// Empty when the type does not use `Size` — deliberately not `0x0`, which
-    /// is indistinguishable from a size that was never written (§11).
-    public var sizeText: String
     public var versionText: String
-    /// What is actually there, read rather than assumed.
+    /// What is actually there, read rather than assumed: for microcode the
+    /// CPUID, the revision, the date, and where and how long it is.
     public var targetText: String
+    /// The CPUID of the microcode this row leads to, as five hex digits with no
+    /// leading zero — what a bench writes down and looks up. Nil for a row that
+    /// does not lead to microcode.
+    public var cpuidText: String?
     /// Something is wrong with this row, and the panel says so by colour as
     /// well as in the list below.
     public var hasProblem: Bool
@@ -21,6 +23,35 @@ public struct FITDisplayRow: Equatable, Sendable {
     public var zoneID: String
     /// Where the row points, when it points into the image.
     public var targetRange: Range<UInt64>?
+
+    /// What the right-button menu offers here.
+    public var commands: [FITRowCommand] {
+        var commands: [FITRowCommand] = []
+        if let cpuidText { commands.append(.copyCPUID(cpuidText)) }
+        if let targetRange { commands.append(.goToOffset(targetRange.lowerBound)) }
+        return commands
+    }
+}
+
+/// What the right-button menu offers for a row.
+///
+/// A value rather than a menu, so what is on offer is decided in the pure
+/// target and tested by `swift test`: the panel builds items from this and
+/// nothing more. An item that does not apply to the row is *absent* rather than
+/// present and greyed — a greyed "Copy CPUID" on the header row explains
+/// nothing.
+public enum FITRowCommand: Equatable, Sendable {
+    /// The number a bench writes down and looks up.
+    case copyCPUID(String)
+    /// Go to what the row points at, and put it in focus.
+    case goToOffset(UInt64)
+
+    public var title: String {
+        switch self {
+        case .copyCPUID: return "Copy CPUID"
+        case .goToOffset: return "Go to Offset"
+        }
+    }
 }
 
 /// Everything the panel draws, in one value.
@@ -45,8 +76,18 @@ public struct FITDisplay: Equatable, Sendable {
     /// what is drawn strongly in the dump and nothing else, so it is a change
     /// to the focus rather than a reason to read the file again.
     public func focusing(_ index: Int?) -> FITDisplay {
+        focusing(zoneID: index.map(FITPresenter.rowZoneID))
+    }
+
+    /// The same display with the *target* of a row in focus — what "go to the
+    /// offset" means: the component, not the row that names it.
+    public func focusingTarget(of index: Int) -> FITDisplay {
+        focusing(zoneID: FITPresenter.targetZoneID(index))
+    }
+
+    public func focusing(zoneID: String?) -> FITDisplay {
         var copy = self
-        copy.zones.focus = index.map(FITPresenter.rowZoneID)
+        copy.zones.focus = zoneID
         return copy
     }
 }
@@ -75,9 +116,9 @@ public enum FITPresenter {
                 index: row.entry.index,
                 typeText: typeText(of: row.entry),
                 addressText: row.entry.isHeader ? "_FIT_" : hex(row.entry.address, digits: 8),
-                sizeText: row.effectiveSize.map { hex($0) } ?? "",
                 versionText: row.entry.versionText,
                 targetText: targetText(of: row),
+                cpuidText: cpuidText(of: row),
                 hasProblem: problemRows.contains(row.entry.index),
                 zoneID: rowZoneID(row.entry.index),
                 targetRange: targetRange(of: row)
@@ -142,22 +183,55 @@ public enum FITPresenter {
         return "\(name): \(FIT.cseSecureBootSubtypeName(entry.reserved))"
     }
 
+    /// The CPUID as a bench writes it: five hex digits, no leading zero, no
+    /// `0x` — `806EA`, not `0x000806EA`.
+    public static func cpuid(_ signature: UInt32) -> String {
+        String(signature, radix: 16, uppercase: true)
+    }
+
+    private static func cpuidText(of row: FITRow) -> String? {
+        guard case .microcode(let header) = row.target else { return nil }
+        return cpuid(header.processorSignature)
+    }
+
+    /// Everything known about where the row leads, in one line, separated the
+    /// way the summary is. A microcode row leads with its CPUID rather than
+    /// with the word "microcode": the type column has already said that, and
+    /// the CPUID is the thing being looked for.
     private static func targetText(of row: FITRow) -> String {
+        var parts: [String] = []
         switch row.target {
         case .nothing:
-            return ""
+            // The header's `Size` is a count of entries, not a size — the field
+            // everyone reads wrong (§4) — so it is spelled out as both.
+            guard row.entry.isHeader else { return "" }
+            // "Rows" and not "entries": the field counts the header along with
+            // them, where the summary above counts what there is to look at.
+            return "\(row.entry.size) "
+                + (row.entry.size == 1 ? "row" : "rows")
+                + " · \(hex(row.entry.sizeInBytes))"
         case .indexIORegisters:
             return "Index/IO registers, not an address"
         case .outsideTheImage:
             return "outside this image"
         case .microcode(let header):
-            return "Microcode \(hex(UInt64(header.processorSignature), digits: 8)),"
-                + " revision \(hex(UInt64(header.updateRevision), digits: 2)), \(header.date)"
+            parts = [
+                cpuid(header.processorSignature),
+                "rev \(String(header.updateRevision, radix: 16, uppercase: true))",
+                header.date
+            ]
         case .emptyMicrocodeSlot:
-            return "empty slot"
+            parts = ["empty slot"]
         case .bytes(_, let description):
-            return description ?? "unrecognised bytes"
+            parts = [description ?? "unrecognised bytes"]
         }
+        if let offset = row.target.offset {
+            parts.append(hex(offset))
+        }
+        if let size = row.effectiveSize {
+            parts.append(hex(size))
+        }
+        return parts.joined(separator: " · ")
     }
 
     private static func targetRange(of row: FITRow) -> Range<UInt64>? {
@@ -198,9 +272,12 @@ public enum FITPresenter {
                 range: start..<(start + FITEntry.size)
             ))
             if let target = row.targetRange {
+                // Named by CPUID where there is one: that is what a bench is
+                // looking for when it goes hunting for a microcode in a dump.
                 zones.append(Zone(
                     id: targetZoneID(row.index),
-                    name: row.targetText.isEmpty ? "#\(row.index)" : row.targetText,
+                    name: row.cpuidText.map { "CPUID \($0)" }
+                        ?? (row.targetText.isEmpty ? "#\(row.index)" : row.targetText),
                     range: target
                 ))
             }

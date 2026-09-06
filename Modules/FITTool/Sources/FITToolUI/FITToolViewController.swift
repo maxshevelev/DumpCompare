@@ -9,6 +9,7 @@ import FITTool
 @MainActor final class FITToolViewController: NSViewController {
     var onSelect: ((Int?) -> Void)?
     var onGoToTarget: ((Int) -> Void)?
+    var onCopyCPUID: ((Int) -> Void)?
     var onGoToProblem: ((Int) -> Void)?
     var onFixChecksum: (() -> Void)?
 
@@ -26,16 +27,15 @@ import FITTool
     private let summaryLabel = NSTextField(labelWithString: "")
     private let noticeLabel = NSTextField(labelWithString: "")
     private let fixChecksumButton = NSButton()
-    /// The problems list gets half the height of the entries when there is
-    /// something in it, and none at all when there is not.
+    /// The problems list is as tall as its content, capped at half the height
+    /// of the entries.
     private var problemsRatio: NSLayoutConstraint?
-    private var problemsCollapsed: NSLayoutConstraint?
+    private var problemsContent: NSLayoutConstraint?
 
     private enum Column {
         static let index = NSUserInterfaceItemIdentifier("index")
         static let type = NSUserInterfaceItemIdentifier("type")
         static let address = NSUserInterfaceItemIdentifier("address")
-        static let size = NSUserInterfaceItemIdentifier("size")
         static let target = NSUserInterfaceItemIdentifier("target")
         static let problem = NSUserInterfaceItemIdentifier("problem")
     }
@@ -49,15 +49,15 @@ import FITTool
         summaryLabel.translatesAutoresizingMaskIntoConstraints = false
 
         configure(entries, doubleAction: #selector(entryDoubleClicked))
-        // What a row points at is the column worth the slack when the user
-        // widens the panel; the fields in front of it are fixed-width by
-        // nature.
-        entries.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
-        column(entries, Column.index, "#", 22)
-        column(entries, Column.type, "Type", 132)
-        column(entries, Column.address, "Address", 84)
-        column(entries, Column.size, "Size", 62)
-        column(entries, Column.target, "Points at", 180)
+        // Fixed widths, and the table scrolls sideways when they do not fit.
+        // Squeezing "Points at" to whatever is left is how the one column with
+        // something to say ends up saying "Microco…".
+        entries.columnAutoresizingStyle = .noColumnAutoresizing
+        column(entries, Column.index, "#", 20)
+        column(entries, Column.type, "Type", 96)
+        column(entries, Column.address, "Address", 76)
+        column(entries, Column.target, "Points at", 300)
+        entries.menu = contextMenu()
 
         configure(problems, doubleAction: #selector(problemDoubleClicked))
         problems.headerView = nil
@@ -93,17 +93,18 @@ import FITTool
         view.addSubview(fixChecksumButton)
         view.addSubview(noticeLabel)
 
-        // Half the entries' height when there is something to say, and no
-        // height at all when there is not — an empty box under a good table is
-        // a box the user has to work out the meaning of.
+        // As tall as it needs to be, up to half the entries' height, and no
+        // height at all when there is nothing to say — an empty box under a
+        // table that checks out is a box the user has to work out the meaning
+        // of, and a half-height box under one line is a lie about how much is
+        // wrong.
         let ratio = problemsScroll.heightAnchor.constraint(
-            equalTo: entriesScroll.heightAnchor, multiplier: 0.5
+            lessThanOrEqualTo: entriesScroll.heightAnchor, multiplier: 0.5
         )
-        ratio.priority = .defaultHigh
         problemsRatio = ratio
-        let collapsed = problemsScroll.heightAnchor.constraint(equalToConstant: 0)
-        collapsed.priority = .defaultHigh
-        problemsCollapsed = collapsed
+        let content = problemsScroll.heightAnchor.constraint(equalToConstant: 0)
+        content.priority = .defaultHigh
+        problemsContent = content
         let bottom = noticeLabel.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -8)
         // Breakable, for the reason the panel's own insets are (§19.2): a panel
         // squeezed to nothing is a legal state, and this chain must give way
@@ -127,7 +128,7 @@ import FITTool
             problemsScroll.bottomAnchor.constraint(
                 equalTo: fixChecksumButton.topAnchor, constant: -6
             ),
-            ratio,
+            ratio, content,
 
             fixChecksumButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
             fixChecksumButton.bottomAnchor.constraint(
@@ -181,8 +182,14 @@ import FITTool
 
         let hasProblems = !display.problems.isEmpty
         problemsScroll.isHidden = !hasProblems
-        problemsRatio?.isActive = hasProblems
-        problemsCollapsed?.isActive = !hasProblems
+        problemsContent?.constant = hasProblems ? problemListHeight() : 0
+    }
+
+    /// What the problems would take to show without scrolling. Read off the
+    /// table rather than assumed, so a row height set by the system still fits.
+    private func problemListHeight() -> CGFloat {
+        let row = problems.rowHeight + problems.intercellSpacing.height
+        return CGFloat(display.problems.count) * row + 8
     }
 
     /// A line under the buttons — what happened, or what to do next. The panel
@@ -200,9 +207,50 @@ import FITTool
         onGoToTarget?(display.rows[entries.clickedRow].index)
     }
 
+    /// Built fresh every time it opens, for the row under the pointer:
+    /// `clickedRow` is what a right-click sets, and an item that does not apply
+    /// to that row should not be there rather than be there and greyed.
+    private func contextMenu() -> NSMenu {
+        let menu = NSMenu()
+        menu.delegate = self
+        return menu
+    }
+
+    @objc private func copyCPUIDClicked() {
+        guard let row = clickedEntry() else { return }
+        onCopyCPUID?(row.index)
+    }
+
+    @objc private func goToOffsetClicked() {
+        guard let row = clickedEntry() else { return }
+        onGoToTarget?(row.index)
+    }
+
+    private func clickedEntry() -> FITDisplayRow? {
+        let row = entries.clickedRow
+        guard row >= 0, row < display.rows.count else { return nil }
+        return display.rows[row]
+    }
+
     @objc private func problemDoubleClicked() {
         guard problems.clickedRow >= 0, problems.clickedRow < display.problems.count else { return }
         onGoToProblem?(problems.clickedRow)
+    }
+}
+
+extension FITToolViewController: NSMenuDelegate {
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        guard let row = clickedEntry() else { return }
+        for command in row.commands {
+            let action: Selector
+            switch command {
+            case .copyCPUID: action = #selector(copyCPUIDClicked)
+            case .goToOffset: action = #selector(goToOffsetClicked)
+            }
+            let item = menu.addItem(withTitle: command.title, action: action, keyEquivalent: "")
+            item.target = self
+        }
     }
 }
 
@@ -237,9 +285,6 @@ extension FITToolViewController: NSTableViewDataSource, NSTableViewDelegate {
             cell.textField?.font = .systemFont(ofSize: 11)
         case Column.address:
             cell.textField?.stringValue = entry.addressText
-            cell.textField?.font = monospaced
-        case Column.size:
-            cell.textField?.stringValue = entry.sizeText
             cell.textField?.font = monospaced
         default:
             cell.textField?.stringValue = entry.targetText

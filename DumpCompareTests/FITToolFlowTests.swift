@@ -116,7 +116,7 @@ final class FITToolFlowTests: XCTestCase {
         )
         XCTAssertEqual(display.rows.map(\.typeText), ["FIT Header", "Microcode"])
         XCTAssertEqual(display.rows[1].targetText,
-                       "Microcode 0x000806EA, revision 0xF0, 2019-07-15")
+                       "806EA · rev F0 · 2019-07-15 · 0x2000 · 0x100")
         XCTAssertTrue(display.problems.filter { $0.severity == .error }.isEmpty)
     }
 
@@ -140,16 +140,45 @@ final class FITToolFlowTests: XCTestCase {
         XCTAssertEqual(controller.windowModel.pane1.zones.focus, "fit.row.1")
     }
 
-    /// A row exists to point somewhere, and double-clicking it goes there.
-    func testDoubleClickingARowGoesToWhatItPointsAt() throws {
+    /// A row exists to point somewhere, and going there selects the component
+    /// and puts *it* in focus — not the row that names it.
+    func testGoingToARowsOffsetSelectsTheComponentAndFocusesIt() throws {
         let controller = try open(FITTestImage.make())
 
-        // A double-click cannot be simulated — `clickedRow` is -1 unless a real
-        // mouse put it there — so this drives what the double-click calls.
+        // Neither a double-click nor a right-click can be simulated —
+        // `clickedRow` is -1 unless a real mouse put it there — so this drives
+        // what both of them call.
         try session().goToTarget(of: 1)
 
         let selection = try XCTUnwrap(controller.windowModel.pane1.hexSelection())
         XCTAssertEqual(selection.start..<selection.end, 0x2000..<0x2100)
+        XCTAssertEqual(controller.windowModel.pane1.zones.focus, "fit.target.1")
+    }
+
+    /// Every microcode in the table is outlined in the dump from the moment it
+    /// is read, named by the CPUID a bench is hunting for.
+    func testEveryMicrocodeIsAZoneNamedByItsCpuid() throws {
+        let controller = try open(FITTestImage.make())
+        let zones = controller.windowModel.pane1.zones.zones
+
+        XCTAssertEqual(zones.first { $0.id == "fit.target.1" }?.name, "CPUID 806EA")
+        XCTAssertEqual(zones.first { $0.id == "fit.target.1" }?.range, 0x2000..<0x2100)
+    }
+
+    /// What the right-button menu's first item does.
+    func testCopyingTheCpuidPutsItOnThePasteboard() throws {
+        let board = NSPasteboard(name: NSPasteboard.Name("dev.maxik.tests.fit"))
+        FITToolSession.pasteboard = board
+        defer { FITToolSession.pasteboard = .general }
+        _ = try open(FITTestImage.make())
+
+        try session().copyCPUID(of: 1)
+
+        XCTAssertEqual(board.string(forType: .string), "806EA")
+
+        // The header has no CPUID, and asking for one leaves the board alone.
+        try session().copyCPUID(of: 0)
+        XCTAssertEqual(board.string(forType: .string), "806EA")
     }
 
     /// The second defect of §11: a checksum left over from an edit that changed

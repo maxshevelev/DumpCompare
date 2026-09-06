@@ -410,6 +410,18 @@ hex digit, landing in free space, which the tool it was written with reported as
 a silent `0`. Where a row points at nothing recognisable, the panel says so
 instead of showing a zero that looks like a legal "this type has no size".
 
+**The CPUID is what is being looked for.** A microcode row's line leads with it
+— `806EA · rev F0 · 2019-07-15 · 0x2000 · 0x180`, five hex digits and no
+leading zero, the way a bench writes it — because the type column has already
+said "microcode" and the number is the thing being hunted. Every microcode in
+the table is outlined in the dump from the moment it is read, named by that
+CPUID, without anyone selecting anything. The right-button menu offers **Copy
+CPUID** and **Go to Offset**, and what is on offer for a row is a value built in
+the pure target rather than a menu assembled in the view: an item that does not
+apply is absent instead of greyed. Columns are fixed and narrow and the table
+scrolls sideways — squeezing the one column with something to say into whatever
+is left is how it ends up reading "Microco…".
+
 **One repair, on purpose.** The header's checksum, when the header says it
 counts and it does not add up — §11's second defect, one byte, one named undo
 step, and a re-read afterwards that stops offering it. Adding a microcode entry
