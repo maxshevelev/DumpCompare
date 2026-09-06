@@ -248,6 +248,81 @@ final class FITContainerTests: XCTestCase {
         XCTAssertTrue(after.problems.isEmpty, "\(after.problems.map(\.message))")
     }
 
+    /// A file padded to its end with something that is not `0xFF` — `0x20` is
+    /// what one real board uses — is still a file with room in it. The
+    /// specification says nothing about what unused space inside a file has to
+    /// contain; §5.8 describes only a volume's free space. What marks filler is
+    /// the uniformity, not the byte.
+    func testAFilePaddedWithSomethingElseStillHasRoom() throws {
+        let bytes = paddedWithSpaces(rows: 1)
+        let parsed = parse(bytes)
+        let table = try XCTUnwrap(FITReader.read(ImageReader(bytes), image: parsed).table)
+        XCTAssertEqual(parsed.innermostNode(containing: table.range.lowerBound)?.kind, .file)
+
+        let (transaction, outcome) = try FITEditor.addOrReplaceMicrocode(
+            TestFIT.microcode(signature: 0x000A_0671, totalSize: 0x100),
+            in: table, image: parsed, reader: ImageReader(bytes), addressDiff: 0xFFFF_0000
+        ).get()
+        let edited = try applying(transaction, to: bytes)
+        let after = FITReader.read(ImageReader(edited), image: parse(edited))
+
+        XCTAssertEqual(outcome.kind, .added)
+        XCTAssertEqual(after.table?.header?.size, 3, "the table grew into the padding")
+        XCTAssertTrue(after.problems.isEmpty, "\(after.problems.map(\.message))")
+    }
+
+    /// And what an edit gives back is filled the same way, so the tail stays
+    /// the one uniform stretch the next edit can use.
+    func testWhatARemovalGivesBackIsFilledTheWayTheFileIs() throws {
+        let bytes = paddedWithSpaces(rows: 2)
+        let parsed = parse(bytes)
+        let table = try XCTUnwrap(FITReader.read(ImageReader(bytes), image: parsed).table)
+        let tableEnd = table.range.upperBound
+
+        let (transaction, _) = try FITEditor.removeEntry(
+            2, from: table, image: parsed, in: ImageReader(bytes), addressDiff: 0xFFFF_0000
+        ).get()
+        let edited = try applying(transaction, to: bytes)
+
+        XCTAssertEqual(
+            Array(edited[Int(tableEnd - 16)..<Int(tableEnd)]),
+            [UInt8](repeating: 0x20, count: 16),
+            "the row it gave up is padded like the rest of the file"
+        )
+    }
+
+    /// An image whose FIT table sits inside a second file in the same volume,
+    /// that file padded to its end with spaces — which is what one real board
+    /// does.
+    ///
+    /// The volume holds the microcode file with slack of its own and then the
+    /// table's file, whose body starts where the first one ends.
+    /// The table is written over the front of that body and the rest of it
+    /// stays 0x20.
+    private func paddedWithSpaces(rows: Int) -> [UInt8] {
+        // Exactly as many components as the table names: one the table does not
+        // name is a component in the way, and the tool is right to refuse to
+        // write over it.
+        var run = TestFIT.microcode(signature: 0x0008_06EA, totalSize: 0x100)
+        if rows > 1 {
+            run += TestFIT.microcode(signature: 0x0009_06EA, totalSize: 0x100)
+        }
+        run += [UInt8](repeating: 0xFF, count: 0x200)
+        let spaces = FFS.file(
+            body: [UInt8](repeating: 0x20, count: 0x200), guid: otherFileGUID
+        )
+        var table: [TestFIT.Row] = [TestFIT.Row(FIT.microcodeType, target: firstMicrocode)]
+        if rows > 1 { table.append(TestFIT.Row(FIT.microcodeType, target: secondMicrocode)) }
+        // 0x48 volume header, 0x18 file header, the run, and 0x18 for the
+        // second file's header: where the table's own body begins.
+        let tableOffset = 0x4000 + 0x48 + 0x18 + UInt64(run.count) + 0x18
+        return TestFIT.image(
+            tableOffset: tableOffset,
+            rows: table,
+            contents: [0x4000: FFS.volume(holding: FFS.file(body: run) + spaces)]
+        )
+    }
+
     /// And where the file cannot grow — another file directly behind it — the
     /// replacement is refused rather than written through the neighbour.
     func testAReplacementIsRefusedWhereTheFileCannotGrow() throws {

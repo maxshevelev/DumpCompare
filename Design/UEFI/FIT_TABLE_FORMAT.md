@@ -1,92 +1,94 @@
-# Intel Firmware Interface Table (FIT) — структура и правила модификации
+# Intel Firmware Interface Table (FIT) — structure and rules for modifying it
 
-Документ описывает формат таблицы FIT и пошаговые правила добавления и удаления
-записей. Структуры и алгоритмы выверены по реализации UEFITool NE
-(`common/intel_fit.h`, `common/fitparser.cpp`, ветка `new_engine`, версия A76)
-и спецификации Intel «Firmware Interface Table BIOS Specification» r1.4
-(документ Intel 599500).
-
----
-
-## 1. Назначение
-
-FIT — таблица указателей на компоненты образа, которые процессор и его
-микрокод должны найти и обработать **до** выполнения первой инструкции из
-reset vector. Через FIT загружаются обновления микрокода, Startup ACM,
-манифесты Boot Guard, политики TXT/TPM и прочее.
-
-Следствие для любого инструмента, редактирующего образ: адреса в FIT —
-абсолютные физические адреса, а не смещения. Любое перемещение компонента,
-на который указывает FIT, требует правки таблицы.
+This document describes the format of the FIT table and the step-by-step rules
+for adding and removing entries. The structures and algorithms were checked
+against the UEFITool NE implementation (`common/intel_fit.h`,
+`common/fitparser.cpp`, branch `new_engine`, version A76) and against Intel's
+"Firmware Interface Table BIOS Specification" r1.4 (Intel document 599500).
 
 ---
 
-## 2. Расположение таблицы
+## 1. What it is for
 
-Указатель на FIT лежит по фиксированному физическому адресу `0xFFFFFFC0`
-(`INTEL_FIT_POINTER_OFFSET = 0x40` от конца адресного пространства).
+The FIT is a table of pointers to the components of an image that the processor
+and its microcode have to find and process **before** the first instruction of
+the reset vector runs. Microcode updates, the Startup ACM, the Boot Guard
+manifests, the TXT/TPM policies and more are all loaded through it.
 
-Пересчёт в смещение в файле образа:
+What follows for any tool that edits an image: the addresses in a FIT are
+absolute physical addresses, not offsets. Moving a component the FIT points at
+means editing the table.
+
+---
+
+## 2. Where the table is
+
+The pointer to the FIT sits at the fixed physical address `0xFFFFFFC0`
+(`INTEL_FIT_POINTER_OFFSET = 0x40` from the top of the address space).
+
+Converting it to an offset in the image file:
 
 ```
-addressDiff  = 0x100000000 - размер_образа          // для полного дампа флеша
+addressDiff  = 0x100000000 - image_size          // for a full flash dump
 file_offset  = physical_address - addressDiff
 ```
 
-Точнее, в общем случае (когда образ не занимает весь верх адресного
-пространства) `addressDiff` вычисляется по Volume Top File:
+More precisely, in the general case — where the image does not occupy the whole
+top of the address space — `addressDiff` is worked out from the Volume Top
+File:
 
 ```
 addressDiff = 0xFFFFFFFF - base(lastVtf) - fullSize(lastVtf) + 1
 ```
 
-Для образа 16 МиБ, целиком отображённого под `0xFFFFFFFF`, это даёт
-`addressDiff = 0xFF000000`, а указатель на FIT читается по смещению
-`размер_образа - 0x40`.
+For a 16 MiB image mapped entirely below `0xFFFFFFFF` this gives
+`addressDiff = 0xFF000000`, and the FIT pointer is read at offset
+`image_size - 0x40`.
 
 ```
 FIT_pointer = read_le32(image, image_size - 0x40)
 FIT_offset  = FIT_pointer - addressDiff
 ```
 
-### 2.1. Алгоритм поиска (для верификации)
+### 2.1. How to find it (for verification)
 
-Надёжный способ найти FIT — не доверять указателю вслепую, а проверить обе
-стороны связи:
+The reliable way to find the FIT is not to trust the pointer blindly but to
+check both ends of the link:
 
-1. Прочитать `FIT_pointer` по `image_size - 0x40`.
-2. Найти в образе все вхождения сигнатуры `_FIT_   ` — 8 байт
-   `5F 46 49 54 5F 20 20 20` (`INTEL_FIT_SIGNATURE = 0x2020205F5449465F`).
-3. Для каждого кандидата вычислить его физический адрес и сравнить с
-   `FIT_pointer`. Совпадение — настоящая таблица.
-4. Дополнительно проверить, что в образе хватает места хотя бы на две записи
-   (заголовок + минимум одна запись микрокода).
+1. Read `FIT_pointer` at `image_size - 0x40`.
+2. Find every occurrence in the image of the signature `_FIT_   ` — the eight
+   bytes `5F 46 49 54 5F 20 20 20`
+   (`INTEL_FIT_SIGNATURE = 0x2020205F5449465F`).
+3. For each candidate, work out its physical address and compare it with
+   `FIT_pointer`. A match is the real table.
+4. Check as well that the image has room for at least two entries (the header
+   plus at least one microcode entry).
 
-Кандидаты, не совпавшие с указателем, — это чужие данные, совпавшие по
-сигнатуре (нередко попадаются внутри сжатых блоков).
+Candidates that do not match the pointer are somebody else's data that happened
+to match the signature — they turn up inside compressed blocks often enough.
 
 ---
 
-## 3. Структура записи
+## 3. The structure of an entry
 
-Все записи, включая заголовок, имеют одинаковый размер — **16 байт**.
+Every entry, the header included, is the same size: **16 bytes**.
 
 ```c
 typedef struct {
-    UINT64 Address;            // +0x00  базовый адрес компонента, выровнен на 16
-    UINT32 Size : 24;          // +0x08  размер компонента в единицах по 16 байт
-    UINT32 Reserved : 8;       // +0x0B  должно быть 0
-    UINT16 Version;            // +0x0C  BCD: младший байт minor, старший major
-    UINT8  Type : 7;           // +0x0E  биты [6:0]
-    UINT8  ChecksumValid : 1;  // +0x0E  бит [7]
+    UINT64 Address;            // +0x00  component base address, 16-byte aligned
+    UINT32 Size : 24;          // +0x08  component size in 16-byte units
+    UINT32 Reserved : 8;       // +0x0B  must be 0
+    UINT16 Version;            // +0x0C  BCD: low byte minor, high byte major
+    UINT8  Type : 7;           // +0x0E  bits [6:0]
+    UINT8  ChecksumValid : 1;  // +0x0E  bit [7]
     UINT8  Checksum;           // +0x0F
 } INTEL_FIT_ENTRY;
 ```
 
-Побайтовая раскладка:
+Byte for byte:
 
 ```
-смещение  размер  поле
+offset    size    field
   0x00      8     Address              (LE)
   0x08      3     Size                 (LE, UINT24)
   0x0B      1     Reserved             (0x00)
@@ -95,138 +97,139 @@ typedef struct {
   0x0F      1     Checksum
 ```
 
-**Записи обязаны быть упорядочены по возрастанию `Type`.** Это требование
-спецификации, а не рекомендация: обработчик FIT в микрокоде вправе
-останавливать просмотр на первом типе, который больше искомого.
+**Entries must be ordered by ascending `Type`.** That is a requirement of the
+specification rather than a recommendation: the FIT handler in the microcode is
+entitled to stop looking at the first type greater than the one it wants.
 
 ---
 
-## 4. Заголовок (Type = 0x00)
+## 4. The header (Type = 0x00)
 
-Заголовок — ровно одна запись, всегда первая.
+The header is exactly one entry, always the first.
 
 ```
-Address        = 0x2020205F5449465F     // ASCII "_FIT_   ", читается как сигнатура
-Size           = число записей в таблице, ВКЛЮЧАЯ заголовок
+Address        = 0x2020205F5449465F     // ASCII "_FIT_   ", read as a signature
+Size           = the number of entries in the table, INCLUDING the header
 Reserved       = 0
 Version        = 0x0100
 Type           = 0x00
-ChecksumValid  = 0 или 1
-Checksum       = см. §5
+ChecksumValid  = 0 or 1
+Checksum       = see §5
 ```
 
-Ключевая деталь, на которой чаще всего ошибаются: в заголовке поле `Size`
-хранит **количество записей**, а не размер в байтах и не размер в 16-байтных
-блоках компонента. Полный размер таблицы:
+The detail people get wrong most often: in the header the `Size` field holds
+**the number of entries**, not a size in bytes and not a component size in
+16-byte units. The full size of the table is:
 
 ```
 fit_size_bytes = header.Size * 16
 ```
 
-Обе трактовки — «число записей» и «размер в единицах по 16 байт» — здесь дают
-одно и то же число, поскольку запись равна 16 байтам.
+Both readings — "the number of entries" and "the size in 16-byte units" — give
+the same number here, since an entry is 16 bytes.
 
 ---
 
-## 5. Контрольная сумма
+## 5. The checksum
 
-Проверяется только если в заголовке взведён бит `ChecksumValid`.
+Checked only when the `ChecksumValid` bit is set in the header.
 
-Алгоритм — checksum8 по **всей таблице целиком**:
+The algorithm is a checksum8 over **the whole table**:
 
 ```
 sum = 0
-для каждого байта b всей таблицы (header.Size * 16 байт),
-    считая поле header.Checksum равным нулю:
+for every byte b of the whole table (header.Size * 16 bytes),
+    counting the header.Checksum field as zero:
         sum = (sum + b) & 0xFF
 correct_checksum = (0x100 - sum) & 0xFF
 ```
 
-Эквивалентная формулировка: сумма всех байт таблицы, включая само поле
-`Checksum`, должна быть равна нулю по модулю 256.
+Put another way: the sum of every byte of the table, the `Checksum` field
+included, must come out at zero modulo 256.
 
-Поля `Checksum` в остальных записях к этой сумме отношения не имеют — они
-относятся к самим компонентам (см. §7) и в подавляющем большинстве записей
-не используются.
+The `Checksum` fields of the other entries have nothing to do with this sum —
+they belong to the components themselves (see §7) and are unused in the vast
+majority of entries.
 
-Референсная реализация на Python:
+A reference implementation in Python:
 
 ```python
 def fit_checksum(table: bytes) -> int:
     t = bytearray(table)
-    t[15] = 0                      # обнулить Checksum заголовка
+    t[15] = 0                      # zero the header's Checksum
     return (-sum(t)) & 0xFF
 ```
 
 ---
 
-## 6. Типы записей
+## 6. Entry types
 
-| Тип | Имя | Обязательность |
+| Type | Name | Required? |
 |---|---|---|
-| `0x00` | FIT Header | ровно одна, первая |
-| `0x01` | Microcode | минимум одна |
-| `0x02` | Startup ACM | опционально; обязательна для AC boot и Boot Guard |
-| `0x03` | Diagnostic ACM | опционально |
-| `0x04` | Platform Boot Policy | опционально |
-| `0x06` | FIT Reset State | опционально |
-| `0x07` | BIOS Startup Module | опционально |
-| `0x08` | TPM Policy | опционально, не более одной |
-| `0x09` | BIOS Policy | опционально |
-| `0x0A` | TXT Policy | опционально, не более одной |
-| `0x0B` | Boot Guard Key Manifest | опционально |
-| `0x0C` | Boot Guard Boot Policy | опционально |
-| `0x10` | CSE SecureBoot Settings | опционально, может быть несколько |
-| `0x1A` | VAB Provisioning Table | опционально |
-| `0x1B` | VAB Key Manifest | опционально |
-| `0x1C` | VAB Image Manifest | опционально |
-| `0x1D` | VAB Image Hash Descriptors | опционально |
-| `0x2C` | SACM Debug Record | опционально |
-| `0x2D` | ACM Feature Policy | опционально |
-| `0x2E` | SCRTM Error Record | опционально |
-| `0x2F` | JMP Debug Policy | опционально |
-| `0x30`–`0x70` | зарезервировано за OEM | — |
-| `0x7F` | **Empty** | пустой слот, см. §9.4 |
+| `0x00` | FIT Header | exactly one, first |
+| `0x01` | Microcode | at least one |
+| `0x02` | Startup ACM | optional; required for AC boot and Boot Guard |
+| `0x03` | Diagnostic ACM | optional |
+| `0x04` | Platform Boot Policy | optional |
+| `0x06` | FIT Reset State | optional |
+| `0x07` | BIOS Startup Module | optional |
+| `0x08` | TPM Policy | optional, no more than one |
+| `0x09` | BIOS Policy | optional |
+| `0x0A` | TXT Policy | optional, no more than one |
+| `0x0B` | Boot Guard Key Manifest | optional |
+| `0x0C` | Boot Guard Boot Policy | optional |
+| `0x10` | CSE SecureBoot Settings | optional, there may be several |
+| `0x1A` | VAB Provisioning Table | optional |
+| `0x1B` | VAB Key Manifest | optional |
+| `0x1C` | VAB Image Manifest | optional |
+| `0x1D` | VAB Image Hash Descriptors | optional |
+| `0x2C` | SACM Debug Record | optional |
+| `0x2D` | ACM Feature Policy | optional |
+| `0x2E` | SCRTM Error Record | optional |
+| `0x2F` | JMP Debug Policy | optional |
+| `0x30`–`0x70` | reserved for OEMs | — |
+| `0x7F` | **Empty** | an empty slot, see §9.4 |
 
-Диапазоны `0x05`, `0x0D`–`0x0F`, `0x11`–`0x19`, `0x1E`–`0x2B`, `0x71`–`0x7E`
-зарезервированы Intel.
+The ranges `0x05`, `0x0D`–`0x0F`, `0x11`–`0x19`, `0x1E`–`0x2B` and `0x71`–`0x7E`
+are reserved by Intel.
 
 ---
 
-## 7. Правила для конкретных типов
+## 7. Rules for particular types
 
 ### 7.1. Microcode (0x01)
 
-- Требуется минимум одна запись.
-- `Address` указывает на первый байт заголовка микрокода, выровнен на 16 байт.
-- Компонент по этому адресу **не должен** быть сжат, закодирован или зашифрован.
+- At least one entry is required.
+- `Address` points at the first byte of the microcode header, aligned to 16.
+- The component at that address **must not** be compressed, encoded or
+  encrypted.
 - `ChecksumValid` = 0.
-- `Size` **не используется**, должен быть 0. Реальный размер берётся из поля
-  `TotalSize` заголовка микрокода.
+- `Size` is **unused** and must be 0. The real size comes from the `TotalSize`
+  field of the microcode header.
 - `Version` = `0x0100`.
-- Слот может быть пустым — первые 4 байта по `Address` равны `FF FF FF FF`.
-  Это легальное состояние, предусмотренное спецификацией для зарезервированных
-  под будущие обновления слотов.
+- The slot may be empty — the first 4 bytes at `Address` are `FF FF FF FF`.
+  That is a legal state, provided for by the specification for slots reserved
+  for future updates.
 
 ### 7.2. Startup ACM (0x02)
 
-- `Address` указывает на первый байт заголовка ACM.
+- `Address` points at the first byte of the ACM header.
 - `ChecksumValid` = 0, `Size` = 0, `Version` = `0x0100`.
-- Отдельное аппаратное ограничение: Startup ACM отображается одной парой
-  MTRR base/limit, поэтому
+- A hardware constraint of its own: the Startup ACM is mapped by a single MTRR
+  base/limit pair, so
 
 ```
 MTRR_Size = 2 ^ ceil(log2(Startup_ACM_Size))
-MTRR_Base должен быть кратен MTRR_Size
+MTRR_Base must be a multiple of MTRR_Size
 ```
 
-  Вся область `[MTRR_Base, MTRR_Base + MTRR_Size)` — Authenticated Code
-  Execution Area (ACEA) — не должна содержать ничего, кроме самого ACM.
-  Это самое жёсткое размещенческое ограничение во всей таблице.
+  The whole area `[MTRR_Base, MTRR_Base + MTRR_Size)` — the Authenticated Code
+  Execution Area (ACEA) — must contain nothing but the ACM itself. This is the
+  strictest placement constraint in the whole table.
 
-### 7.3. TPM Policy (0x08) и TXT Policy (0x0A)
+### 7.3. TPM Policy (0x08) and TXT Policy (0x0A)
 
-Формат поля `Address` зависит от `Version`:
+The format of the `Address` field depends on `Version`:
 
 ```c
 #define INTEL_FIT_POLICY_VERSION_INDEX_IO            0
@@ -235,7 +238,7 @@ MTRR_Base должен быть кратен MTRR_Size
 typedef struct {
     UINT16 IndexRegisterAddress;
     UINT16 DataRegisterAddress;
-    UINT8  AccessWidthInBytes;   // 1 или 2
+    UINT8  AccessWidthInBytes;   // 1 or 2
     UINT8  BitPosition;
     UINT16 Index;
 } INTEL_FIT_INDEX_IO_ADDRESS;
@@ -246,23 +249,24 @@ typedef union {
 } INTEL_FIT_POLICY_PTR;
 ```
 
-При `Version == 0` первые 8 байт записи — это не адрес, а дескриптор
-Index/IO-регистров, и трактовать их как указатель нельзя.
-При `Version == 1` — обычный плоский адрес.
+With `Version == 0` the first eight bytes of the entry are not an address but a
+descriptor of Index/IO registers, and must not be treated as a pointer.
+With `Version == 1` they are an ordinary flat address.
 
-Бит 0 по указанному адресу хранит саму политику. `ChecksumValid` = 0, `Size` = 0.
+Bit 0 at the given address holds the policy itself. `ChecksumValid` = 0,
+`Size` = 0.
 
-### 7.4. Boot Guard Key Manifest (0x0B) и Boot Policy (0x0C)
+### 7.4. Boot Guard Key Manifest (0x0B) and Boot Policy (0x0C)
 
-Если присутствует Startup ACM, обе эти записи обычно должны быть тоже.
-Взаимная проверка: хеш публичного ключа Boot Policy, записанный в Key Manifest,
-должен совпадать с SHA-256 или SHA-384 фактического публичного ключа из
-Boot Policy. Расхождение означает, что один из манифестов подменён.
+If a Startup ACM is present, both of these entries usually have to be as well.
+A cross-check: the hash of the Boot Policy's public key, written down in the Key
+Manifest, must match the SHA-256 or SHA-384 of the actual public key in the Boot
+Policy. A mismatch means one of the two manifests has been replaced.
 
 ### 7.5. CSE SecureBoot (0x10)
 
-Может быть несколько записей, порядок между собой не важен. Подтип задаётся
-полем `Reserved`:
+There may be several entries, and their order among themselves does not matter.
+The subtype is given by the `Reserved` field:
 
 ```
 0  Reserved                 7  IBBL Hash
@@ -278,78 +282,79 @@ Boot Policy. Расхождение означает, что один из ма�
 
 ---
 
-## 8. Инварианты, которые обязан проверять валидатор
+## 8. The invariants a validator must check
 
-1. Указатель по `image_size - 0x40` ведёт на сигнатуру `_FIT_   `.
-2. Первая запись имеет `Type == 0x00`.
-3. `header.Size != 0`, и `header.Size * 16` помещается в образ, не пересекая
-   его конец.
-4. Второго заголовка (`Type == 0x00`) в таблице нет.
-5. Типы записей не убывают при движении по таблице.
-6. Если `header.ChecksumValid == 1` — checksum8 таблицы равен нулю.
-7. Присутствует хотя бы одна запись типа `0x01`.
-8. Для каждой записи с реальным адресом: `addressDiff < Address < 0xFFFFFFFF`,
-   то есть адрес попадает внутрь образа.
-9. Каждый `Address` выровнен на 16 байт.
-10. Для записей микрокода: по адресу лежит либо валидный заголовок микрокода,
-    либо `FF FF FF FF` (пустой слот). Всё остальное — ошибка.
-11. Сама таблица FIT и все компоненты, на которые она ссылается, находятся в
-    области образа, не подлежащей перемещению.
+1. The pointer at `image_size - 0x40` leads to the signature `_FIT_   `.
+2. The first entry has `Type == 0x00`.
+3. `header.Size != 0`, and `header.Size * 16` fits inside the image without
+   crossing its end.
+4. There is no second header (`Type == 0x00`) in the table.
+5. Entry types do not decrease as the table is walked.
+6. If `header.ChecksumValid == 1`, the table's checksum8 comes out at zero.
+7. There is at least one entry of type `0x01`.
+8. For every entry with a real address: `addressDiff < Address < 0xFFFFFFFF`,
+   that is, the address falls inside the image.
+9. Every `Address` is aligned to 16 bytes.
+10. For microcode entries: at the address there is either a valid microcode
+    header or `FF FF FF FF` (an empty slot). Anything else is an error.
+11. The FIT table itself and every component it refers to are in a part of the
+    image that must not be relocated.
 
 ---
 
-## 9. Добавление записи
+## 9. Adding an entry
 
-### 9.1. Предусловия
+### 9.1. Preconditions
 
-Таблицу можно расширять двумя способами:
+The table can be extended in two ways:
 
-- **заполнением пустого слота** типа `0x7F` — предпочтительно, размер таблицы
-  и её положение не меняются;
-- **увеличением `header.Size`** — возможно только если сразу за таблицей есть
-  свободное место (`0xFF`-заполнение), не занятое ничем другим.
+- **by filling an empty slot** of type `0x7F` — preferable, since neither the
+  size of the table nor its position changes;
+- **by increasing `header.Size`** — possible only if there is free space
+  (`0xFF` fill) directly behind the table that nothing else has taken.
 
-Перемещать таблицу целиком крайне нежелательно: придётся править указатель по
-`0xFFFFFFC0`, а он лежит внутри VTF, который может входить в защищённый
-диапазон Boot Guard.
+Moving the table as a whole is highly undesirable: the pointer at `0xFFFFFFC0`
+would have to be edited, and it sits inside the VTF, which may be covered by a
+Boot Guard protected range.
 
-### 9.2. Процедура добавления записи микрокода
+### 9.2. The procedure for adding a microcode entry
 
-Пошагово, на примере самого частого случая:
+Step by step, for the most common case:
 
-**Шаг 1. Разместить компонент в образе.**
+**Step 1. Place the component in the image.**
 
-Найти область, свободную под микрокод. Требования:
-- адрес выровнен на 16 байт;
-- размер области не меньше `TotalSize` из заголовка микрокода;
-- область не пересекается ни с одним элементом дерева образа;
-- область не входит в защищённые диапазоны Boot Guard;
-- область не пересекает границу региона флеш-дескриптора.
+Find an area free for the microcode. The requirements:
+- the address is aligned to 16 bytes;
+- the area is no smaller than `TotalSize` from the microcode header;
+- the area does not overlap any element of the image's tree;
+- the area is not inside a Boot Guard protected range;
+- the area does not cross a flash descriptor region boundary.
 
-Обычно микрокоды лежат подряд одним блоком, и новый дописывается сразу за
-последним: `new_offset = last_ucode_offset + last_ucode_TotalSize`.
+Microcode usually lies in one contiguous block, and a new one is appended right
+after the last: `new_offset = last_ucode_offset + last_ucode_TotalSize`.
 
-**Шаг 2. Записать тело микрокода** по выбранному смещению.
+**Step 2. Write the microcode body** at the chosen offset.
 
-**Шаг 3. Вычислить физический адрес.**
+**Step 3. Work out the physical address.**
 
 ```
 Address = new_offset + addressDiff
 ```
 
-Это единственный шаг, где ошибка не диагностируется автоматически — см. §11.
+This is the only step where a mistake is not diagnosed automatically — see §11.
 
-**Шаг 4. Найти позицию для записи в таблице.**
+**Step 4. Find the position for the entry in the table.**
 
-Записи упорядочены по возрастанию `Type`. Для микрокода (`0x01`) — сразу после
-последней записи типа `0x01`. Если добавление идёт в пустой слот `0x7F`, а
-свободных слотов между записями микрокода нет, придётся сдвигать хвост таблицы.
+Entries are ordered by ascending `Type`. For microcode (`0x01`) that means
+directly after the last entry of type `0x01`. If the addition is going into an
+empty `0x7F` slot and there are no free slots among the microcode entries, the
+tail of the table will have to be shifted.
 
-**Шаг 5. Заполнить запись.**
+**Step 5. Fill in the entry.**
 
 ```
-Address       = вычисленный на шаге 3
-Size          = 0                    // не используется для микрокода
+Address       = the one worked out in step 3
+Size          = 0                    // unused for microcode
 Reserved      = 0
 Version       = 0x0100
 Type          = 0x01
@@ -357,139 +362,144 @@ ChecksumValid = 0
 Checksum      = 0
 ```
 
-Байты записи для примера с `Address = 0xFFB8FC60`:
+The entry's bytes, for the example `Address = 0xFFB8FC60`:
 
 ```
 60 FC B8 FF 00 00 00 00 | 00 00 00 00 | 00 01 | 01 | 00
 └──── Address (LE) ────┘  └─Size─┘ Rsv  └─Ver─┘  Type CV|Cks
 ```
 
-**Шаг 6. Обновить `header.Size`** — увеличить на 1, если запись добавлена не в
-пустой слот.
+**Step 6. Update `header.Size`** — increase it by 1 unless the entry went into
+an empty slot.
 
-**Шаг 7. Пересчитать контрольную сумму заголовка** по §5, если
-`ChecksumValid == 1`. Записать в байт `+0x0F` заголовка.
+**Step 7. Recompute the header's checksum** per §5, if `ChecksumValid == 1`.
+Write it to byte `+0x0F` of the header.
 
-**Шаг 8. Проверить, что размер образа не изменился.** Размер дампа флеша
-фиксирован ёмкостью микросхемы; любое изменение общего размера делает образ
-непрошиваемым.
+**Step 8. Check that the size of the image has not changed.** The size of a
+flash dump is fixed by the capacity of the chip; any change to the overall size
+makes the image unflashable.
 
-**Шаг 9. Прогнать валидатор из §8.**
+**Step 9. Run the validator from §8.**
 
-### 9.3. Что дополнительно ломается при добавлении
+### 9.3. What else an addition breaks
 
-- **Boot Guard.** Если область, куда записан новый компонент, покрыта
-  защищённым диапазоном (IBB в Boot Policy или vendor hash file), хеш перестанет
-  сходиться и платформа не стартует. Проверять до записи, а не после.
-- **Контрольные суммы вышестоящих контейнеров.** Если микрокоды лежат внутри
-  FFS-файла или тома, а не в raw-области BIOS-региона, потребуется пересчитать
-  контрольную сумму FFS-файла и, возможно, `UsedSpace` тома.
-- **Подписанные капсулы.** Образ, извлечённый из подписанной капсулы, после
-  правки перестаёт соответствовать подписи. Прошивать такой образ можно только
-  напрямую программатором.
+- **Boot Guard.** If the area the new component was written to is covered by a
+  protected range (the IBB described in the Boot Policy, or a vendor hash file),
+  the hash will stop matching and the platform will not start. Check before
+  writing, not after.
+- **The checksums of the containers above it.** If the microcode lies inside an
+  FFS file or a volume rather than in a raw area of the BIOS region, the FFS
+  file's checksum — and possibly the volume's `UsedSpace` — will have to be
+  recomputed.
+- **Signed capsules.** An image extracted from a signed capsule no longer
+  matches the signature once edited. Such an image can only be flashed directly,
+  with a programmer.
 
-### 9.4. Пустые слоты (Type = 0x7F)
+### 9.4. Empty slots (Type = 0x7F)
 
-Вендоры часто резервируют место в таблице записями типа `0x7F`. Такой слот
-выглядит как:
+Vendors often reserve room in the table with entries of type `0x7F`. Such a slot
+looks like this:
 
 ```
-Address       = произвольный, обычно 0
+Address       = arbitrary, usually 0
 Size          = 0
-Version       = 0x0100 или 0x0000
+Version       = 0x0100 or 0x0000
 Type          = 0x7F
 ChecksumValid = 0
 Checksum      = 0
 ```
 
-Заполнение пустого слота — самый безопасный способ добавления: `header.Size`
-не меняется, положение таблицы не меняется, требуется пересчитать только
-контрольную сумму. Но следите за порядком типов: слот `0x7F` находится в конце
-таблицы, а запись типа `0x01` должна стоять среди других записей микрокода.
-Практически это означает сдвиг: вставить новую запись на нужное место, сдвинув
-все последующие на 16 байт вниз, и «съесть» один слот `0x7F` в хвосте.
+Filling an empty slot is the safest way to add an entry: `header.Size` does not
+change, the position of the table does not change, and only the checksum has to
+be recomputed. But watch the ordering of types: a `0x7F` slot is at the end of
+the table, while an entry of type `0x01` has to stand among the other microcode
+entries. In practice that means a shift: insert the new entry in the right
+place, moving everything after it 16 bytes down, and "eat" one `0x7F` slot at
+the tail.
 
 ---
 
-## 10. Удаление записи
+## 10. Removing an entry
 
-**Шаг 1.** Определить, что именно удаляется. Удалять записи типа `0x00`
-(заголовок) нельзя. Удаление последней записи типа `0x01` сделает таблицу
-невалидной — микрокод должен быть хотя бы один.
+**Step 1.** Work out what exactly is being removed. Entries of type `0x00` (the
+header) cannot be removed. Removing the last entry of type `0x01` makes the
+table invalid — there has to be at least one microcode.
 
-**Шаг 2. Выбрать способ.**
+**Step 2. Choose how.**
 
-- **Замена на пустой слот.** Заменить `Type` на `0x7F`, обнулить `Address` и
-  `Size`. Порядок типов при этом нарушается (`0x7F` окажется в середине), что
-  формально противоречит спецификации. Допустимо только как временная мера.
-- **Схлопывание таблицы** (правильный способ). Сдвинуть все последующие записи
-  на 16 байт вверх, в освободившийся хвост записать пустой слот `0x7F` либо
-  уменьшить `header.Size` на 1 и затереть хвостовые 16 байт значением `0xFF`.
+- **Replace it with an empty slot.** Change `Type` to `0x7F` and zero `Address`
+  and `Size`. The ordering of types is broken by this (`0x7F` ends up in the
+  middle), which formally contradicts the specification. Acceptable only as a
+  temporary measure.
+- **Collapse the table** (the proper way). Move every entry after it 16 bytes
+  up, and either write an empty `0x7F` slot into the tail this frees or
+  decrease `header.Size` by 1 and wipe the trailing 16 bytes with `0xFF`.
 
-**Шаг 3.** Если `header.Size` уменьшен — затереть освободившиеся 16 байт
-байтом-заполнителем региона (`0xFF`), чтобы не оставлять мусор, который
-собьёт другой парсер.
+**Step 3.** If `header.Size` was decreased, wipe the 16 bytes it freed with the
+region's filler byte (`0xFF`), so that no rubbish is left to confuse another
+parser.
 
-**Шаг 4.** Пересчитать контрольную сумму заголовка.
+**Step 4.** Recompute the header's checksum.
 
-**Шаг 5.** Решить судьбу самого компонента. Оставить его в образе безопаснее,
-чем затирать: он может быть покрыт защищённым диапазоном Boot Guard или на него
-могут ссылаться другие структуры. Если компонент всё же затирается, область
-заполняется `0xFF`, и это не должно менять размер образа.
+**Step 5.** Decide what becomes of the component itself. Leaving it in the image
+is safer than wiping it: it may be covered by a Boot Guard protected range, or
+other structures may refer to it. If it is wiped after all, the area is filled
+with `0xFF`, and this must not change the size of the image.
 
-**Шаг 6.** Прогнать валидатор из §8.
+**Step 6.** Run the validator from §8.
 
 ---
 
-## 11. Разбор реального случая: запись нулевого размера
+## 11. A real case, worked through: an entry with a size of zero
 
-Симптом: последняя запись микрокода в таблице отображается парсером с размером
-`00000000h` и пустым полем информации, тогда как две предыдущие такие же записи
-разбираются корректно.
+The symptom: the last microcode entry in the table is displayed by a parser with
+a size of `00000000h` and an empty information field, while the two identical
+entries before it are read correctly.
 
-Механика. Парсер сначала берёт размер прямо из записи FIT:
-
-```c
-UINT32 currentEntrySize = currentEntry->Size;      // для микрокода это 0 по спеке
-```
-
-и подменяет его настоящим размером только после успешной валидации компонента:
+The mechanics. The parser first takes the size straight from the FIT entry:
 
 ```c
-realSize = ucodeHeader->TotalSize;                 // последняя строка обработчика
+UINT32 currentEntrySize = currentEntry->Size;      // 0 for microcode, per the spec
 ```
 
-Если по адресу из записи не оказывается валидного заголовка микрокода,
-обработчик выходит досрочно, и в таблице остаётся исходный ноль.
+and substitutes the real size only after the component has been validated:
 
-Диагностический разбор конкретного образа (16 МиБ, `addressDiff = 0xFF000000`,
-FIT по `0xFFE00100`, 4 записи):
+```c
+realSize = ucodeHeader->TotalSize;                 // the handler's last line
+```
 
-| # | Адрес в FIT | Смещение | Фактическое содержимое |
+If there turns out to be no valid microcode header at the address from the
+entry, the handler exits early and the original zero stays in the table.
+
+A diagnostic reading of one particular image (16 MiB, `addressDiff = 0xFF000000`,
+FIT at `0xFFE00100`, 4 entries):
+
+| # | Address in the FIT | Offset | What is actually there |
 |---|---|---|---|
 | 1 | `FFB60060` | `B60060` | ucode `000806EA`, TotalSize `018000` |
 | 2 | `FFB78060` | `B78060` | ucode `000906EA`, TotalSize `017C00` |
-| 3 | `FFBBFC60` | `BBFC60` | `FF FF FF FF …` — пусто |
+| 3 | `FFBBFC60` | `BBFC60` | `FF FF FF FF …` — empty |
 
-Сканирование всего образа на заголовки микрокода нашло третий компонент по
-смещению `B8FC60`, то есть по адресу `FFB8FC60`. В таблице записано `FFBBFC60` —
-ошибка в одном шестнадцатеричном разряде (`8` → `B`, промах на `0x30000`).
-Целевой адрес попал в свободную `0xFF`-область, начинающуюся сразу за
-микрокодами.
+Scanning the whole image for microcode headers found the third component at
+offset `B8FC60`, that is at address `FFB8FC60`. The table says `FFBBFC60` — an
+error of one hexadecimal digit (`8` → `B`, a miss of `0x30000`). The address
+aimed at landed in the free `0xFF` area that begins directly behind the
+microcode.
 
-Второй дефект того же редактирования: контрольная сумма заголовка FIT осталась
-от старой таблицы — сохранено `CC`, при текущем содержимом требуется `B3`,
-а после исправления адреса — `B6`.
+A second defect of the same edit: the FIT header's checksum was left over from
+the old table — `CC` was stored, the current contents need `B3`, and after the
+address is corrected, `B6`.
 
-**Вывод для реализации инструмента:** после записи адреса обязательно
-верифицировать, что по нему лежит ожидаемая структура. Проверка стоит одно
-чтение 48 байт и ловит весь класс ошибок «промахнулись адресом». Полезно также
-выдавать явное сообщение вместо молчаливого нуля в поле размера — нулевой
-размер визуально неотличим от легального «Size не используется».
+**The conclusion for anyone implementing a tool:** after writing an address,
+always verify that the expected structure is there. The check costs one read of
+48 bytes and catches the whole class of "missed the address" mistakes. It is
+also worth reporting explicitly rather than leaving a silent zero in the size
+field — a zero size is visually indistinguishable from a legitimate "Size is
+unused".
 
 ---
 
-## 12. Референсный код разбора
+## 12. Reference parsing code
 
 ```python
 import struct
@@ -544,7 +554,7 @@ def parse_fit(image: bytes):
     return entries
 ```
 
-Проверка компонента, на который ссылается запись микрокода:
+Checking the component a microcode entry refers to:
 
 ```python
 def microcode_at(image: bytes, off: int):
@@ -553,7 +563,7 @@ def microcode_at(image: bytes, off: int):
     (ht, rev, yr, dd, mm, ps, cks, lr, pid, ds, ts) = struct.unpack_from(
         "<IIHBBIIIIII", image, off)
     if ht != 1 or lr != 1:
-        return None                       # включая пустой слот FF FF FF FF
+        return None                       # an empty FF FF FF FF slot included
     if ds % 4 or ds > 0xFFFFFF or ts < ds or ts > 0xFFFFFF or ts == 0:
         return None
     if not (0x1990 <= yr <= 0x2049):
@@ -564,7 +574,7 @@ def microcode_at(image: bytes, off: int):
 
 ---
 
-## 13. Сводка констант
+## 13. Constants, collected
 
 ```c
 #define INTEL_FIT_POINTER_OFFSET 0x40
@@ -599,11 +609,11 @@ def microcode_at(image: bytes, off: int):
 
 ---
 
-## 14. Источники
+## 14. Sources
 
-- Intel, «Firmware Interface Table BIOS Specification», ревизия 1.4 —
+- Intel, "Firmware Interface Table BIOS Specification", revision 1.4 —
   <https://cdrdv2-public.intel.com/599500/Firmware-Interface-Table-BIOS-Specification-r1p4.pdf>
-- UEFITool NE, `common/intel_fit.h` — определения структур и комментарии
-  с правилами по каждому типу записи.
-- UEFITool NE, `common/fitparser.cpp` — эталонная реализация поиска, разбора и
-  валидации таблицы, включая кросс-проверки Boot Guard.
+- UEFITool NE, `common/intel_fit.h` — the structure definitions and the
+  comments carrying the rules for each entry type.
+- UEFITool NE, `common/fitparser.cpp` — the reference implementation of
+  finding, parsing and validating the table, Boot Guard cross-checks included.

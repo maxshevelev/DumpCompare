@@ -191,6 +191,47 @@ public enum FITEditor {
         return areas
     }
 
+    /// Whether `range` is filler rather than content.
+    ///
+    /// Erased flash reads `0xFF`, a volume erased with polarity 0 reads `0x00`
+    /// (§3.5) — and the tools that build images pad with whatever they like: a
+    /// file holding a FIT table padded to its end with `0x20` is a real one.
+    /// The specification says nothing about what unused space *inside a file*
+    /// has to contain; §5.8 describes only a volume's free space.
+    ///
+    /// So what marks filler is not the byte but the uniformity: one value,
+    /// unbroken, from here to the end of the element that holds it. Sixteen
+    /// identical bytes in the middle of content would not pass that, and a
+    /// vendor's padding does.
+    static func isFree(
+        _ range: Range<UInt64>,
+        upTo end: UInt64,
+        in reader: ImageReader
+    ) -> Bool {
+        guard !range.isEmpty else { return false }
+        // Erased flash, which needs no argument.
+        if reader.isFilled(range, with: 0xFF) { return true }
+        // Or a fill: one value, unbroken, from here to the end of the element
+        // that holds it. Sixteen identical bytes in the middle of content would
+        // not pass that; a vendor's padding does.
+        guard range.upperBound <= end, let byte = reader.uint8(at: range.lowerBound)
+        else { return false }
+        return reader.isFilled(range.lowerBound..<end, with: byte)
+    }
+
+    /// What this image pads with, at `offset`.
+    ///
+    /// Tidying up after an edit means leaving the same fill the image already
+    /// uses: sixteen bytes of `0xFF` in the middle of a `0x20`-padded file are
+    /// litter of a new kind, and they break the uniformity the *next* edit
+    /// reads as free space.
+    static func fillByte(at offset: UInt64, upTo end: UInt64, in reader: ImageReader) -> UInt8 {
+        guard offset < end, let byte = reader.uint8(at: offset),
+              reader.isFilled(offset..<end, with: byte)
+        else { return 0xFF }
+        return byte
+    }
+
     /// Space nothing has claimed, and nothing has been written into.
     private static func isSpare(_ node: UEFINode, _ reader: ImageReader) -> Bool {
         switch node.kind {
@@ -307,32 +348,37 @@ public enum FITEditor {
         guard reader.has(needed), let bytes = reader.bytes(needed) else {
             return .taken("past the end of the image")
         }
-        // Unwritten is unwritten whatever the byte: a volume erased with `0x00`
-        // (§3.5) has free space that is not `0xFF`, and the tail of a file is
-        // padded with one or the other.
-        guard reader.isFilled(needed, with: 0xFF) || reader.isFilled(needed, with: 0x00) else {
+        func whatIsThere() -> RoomAfterTheTable {
             let head = bytes.prefix(4).map { String(format: "%02X", $0) }.joined(separator: " ")
             return .taken("\(head)… at 0x" + String(end, radix: 16, uppercase: true))
         }
 
-        // Blank, but whose? Bytes in the same element as the table are nobody
+        // Whose are they? Bytes in the same element as the table are nobody
         // else's — the table's own file has room in it, and the checksums that
         // covers are put right with everything else. Free space and padding
         // belong to nobody at all. Anything else is another structure.
-        guard let image else { return .free }
+        guard let image else {
+            return reader.isFilled(needed, with: 0xFF) ? .free : whatIsThere()
+        }
         let mine = image.innermostNode(containing: table.range.lowerBound)
-        guard let theirs = image.innermostNode(containing: end) else { return .free }
-        if theirs.id == mine?.id { return .free }
+        guard let theirs = image.innermostNode(containing: end) else {
+            return reader.isFilled(needed, with: 0xFF) ? .free : whatIsThere()
+        }
+        let sameElement = theirs.id == mine?.id
         switch theirs.kind {
         case .freeSpace, .padding, .nonUEFIData:
-            return theirs.isErased || reader.isFilled(needed, with: 0xFF)
-                ? .free
-                : .taken("inside \(theirs.name) at 0x"
-                    + String(theirs.range.lowerBound, radix: 16, uppercase: true))
+            break
         default:
-            return .taken("inside \(theirs.name) at 0x"
-                + String(theirs.range.lowerBound, radix: 16, uppercase: true))
+            guard sameElement else {
+                return .taken("inside \(theirs.name) at 0x"
+                    + String(theirs.range.lowerBound, radix: 16, uppercase: true))
+            }
         }
+        // Filler to the end of whatever holds it, whatever byte the tool that
+        // built the image chose.
+        return isFree(needed, upTo: theirs.range.upperBound, in: reader)
+            ? .free
+            : whatIsThere()
     }
 
     private enum RoomAfterTheTable {
@@ -504,10 +550,20 @@ public enum FITEditor {
         }
 
         rows.remove(at: index)
-        // The sixteen bytes the table gives up are erased behind it, so no
-        // stale row is left for another parser to trip over (§10 step 3).
+        // The sixteen bytes the table gives up are wiped behind it, so no stale
+        // row is left for another parser to trip over (§10 step 3) — with the
+        // fill the file the table sits in already uses, so the tail stays the
+        // one uniform stretch that the next edit can read as free.
+        let element = image?.innermostNode(containing: table.range.lowerBound)?.range
         let assembled = assemble(rows, checksumIsChecked: table.checksumIsChecked)
-            + [UInt8](repeating: 0xFF, count: Int(FITEntry.size))
+            + [UInt8](
+                repeating: fillByte(
+                    at: table.range.upperBound,
+                    upTo: element?.upperBound ?? reader.count,
+                    in: reader
+                ),
+                count: Int(FITEntry.size)
+            )
         writes.append(ToolTransaction.Write(offset: table.range.lowerBound, bytes: assembled))
 
         return .success((
@@ -569,9 +625,9 @@ public enum FITEditor {
             guard child.range.lowerBound == covered, isSpare(child, reader) else { break }
             covered = child.range.upperBound
         }
-        guard covered >= end, reader.isFilled(file.range.upperBound..<end, with: 0xFF) else {
-            return nil
-        }
+        guard covered >= end,
+              isFree(file.range.upperBound..<end, upTo: covered, in: reader)
+        else { return nil }
 
         let size = end - file.header.lowerBound
         guard var header = reader.bytes(file.header) else { return nil }
@@ -716,13 +772,20 @@ public enum FITEditor {
         var moves: [(rowIndex: Int, newOffset: UInt64)] = []
         var freshOffset: UInt64?
         var next = start
+        // The same fill the run already sits in, for the few bytes alignment
+        // leaves between components.
+        let alignmentFill = fillByte(
+            at: oldEnd,
+            upTo: spareArea(around: start, image: image, reader: reader).range.upperBound,
+            in: reader
+        )
 
         for item in items {
             // Every FIT address is aligned to sixteen (§8.9), so a component
             // whose size is not a multiple of it leaves a gap in front of the
             // next one.
             let at = alignUp(next, to: 16) ?? next
-            payload += [UInt8](repeating: 0xFF, count: Int(at - next))
+            payload += [UInt8](repeating: alignmentFill, count: Int(at - next))
             switch item {
             case .existing(let row, let header):
                 guard let bytes = reader.bytes(header.range) else { break }
@@ -742,7 +805,9 @@ public enum FITEditor {
             let where_ = "\(area.name) at 0x"
                 + String(area.range.lowerBound, radix: 16, uppercase: true) + "–0x"
                 + String(area.range.upperBound, radix: 16, uppercase: true)
-            guard next <= reader.count, reader.isFilled(oldEnd..<next, with: 0xFF) else {
+            guard next <= reader.count,
+                  isFree(oldEnd..<next, upTo: area.range.upperBound, in: reader)
+            else {
                 return .failure(.theRunCannotGrow(needed: next - oldEnd, inside: where_))
             }
             if next > area.range.upperBound {
@@ -756,7 +821,13 @@ public enum FITEditor {
                 growth = found
             }
         } else if oldEnd > next {
-            payload += [UInt8](repeating: 0xFF, count: Int(oldEnd - next))
+            // Tidied with the fill this image uses, not with a byte of our own
+            // choosing.
+            let area = spareArea(around: start, image: image, reader: reader).range
+            payload += [UInt8](
+                repeating: fillByte(at: oldEnd, upTo: area.upperBound, in: reader),
+                count: Int(oldEnd - next)
+            )
         }
         // Only the part that differs is written. A run whose first components
         // do not move must not be rewritten with the bytes it already holds:

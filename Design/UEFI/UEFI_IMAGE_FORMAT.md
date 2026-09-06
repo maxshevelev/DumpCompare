@@ -1,22 +1,23 @@
-# Формат образа UEFI-прошивки — описание для реализации парсера
+# The format of a UEFI firmware image — a description for writing a parser
 
-Документ описывает структуру образа прошивки, совместимого с UEFI PI, в объёме,
-достаточном для написания парсера с нуля. Все структуры и алгоритмы выверены по
-эталонной реализации UEFITool NE (`common/ffsparser.cpp`, `common/ffs.h`,
-`common/descriptor.h`, ветка `new_engine`, версия A76).
+This document describes the structure of a firmware image conforming to the UEFI
+PI, in enough detail to write a parser from scratch. Every structure and
+algorithm was checked against the reference implementation UEFITool NE
+(`common/ffsparser.cpp`, `common/ffs.h`, `common/descriptor.h`, branch
+`new_engine`, version A76).
 
 ---
 
-## 0. Общие соглашения
+## 0. Conventions
 
-| Свойство | Значение |
+| Property | Value |
 |---|---|
-| Порядок байт | little-endian везде, без исключений |
-| Упаковка структур | плотная, `#pragma pack(1)`, выравнивающих дыр нет |
-| Незанятое пространство | заполнено байтом `emptyByte`: `0xFF` при erase polarity = 1, `0x00` при 0 |
-| Базовый тип GUID | `EFI_GUID` = `{UINT32 Data1; UINT16 Data2; UINT16 Data3; UINT8 Data4[8];}`, 16 байт |
+| Byte order | little-endian everywhere, without exception |
+| Structure packing | tight, `#pragma pack(1)`, no alignment holes |
+| Unused space | filled with `emptyByte`: `0xFF` at erase polarity 1, `0x00` at 0 |
+| The base GUID type | `EFI_GUID` = `{UINT32 Data1; UINT16 Data2; UINT16 Data3; UINT8 Data4[8];}`, 16 bytes |
 
-Вспомогательные операции, которые понадобятся повсеместно:
+Helper operations needed throughout:
 
 ```
 ALIGN4(x)  = (x + 3)  & ~3
@@ -25,64 +26,66 @@ ALIGN16(x) = (x + 15) & ~15
 
 uint24ToUint32(p) = p[0] | (p[1] << 8) | (p[2] << 16)
 
-calculateSum8(buf, len)       = сумма байт по модулю 256
+calculateSum8(buf, len)       = the sum of the bytes modulo 256
 calculateChecksum8(buf, len)  = (0x100 - calculateSum8(buf, len)) & 0xFF
-calculateChecksum16(buf, len) = аналогично для UINT16, len должен быть чётным
+calculateChecksum16(buf, len) = the same for UINT16, len must be even
 ```
 
-Контрольная сумма «checksum8» построена так, что сумма всех байт вместе с полем
-контрольной суммы даёт 0. Это же правило действует для FIT, FFS-файлов и микрокода.
+The "checksum8" is built so that the sum of every byte together with the
+checksum field comes out at zero. The same rule holds for the FIT, for FFS files
+and for microcode.
 
-### Рекомендуемая модель данных
+### The data model to use
 
-Эталонный парсер строит дерево, где каждый узел хранит:
+The reference parser builds a tree in which every node holds:
 
-- `type` / `subtype` — что это за элемент,
-- `offset` — смещение относительно родителя,
-- `base` — абсолютное смещение от начала образа (вычисляемое),
-- `header`, `body`, `tail` — три непересекающихся среза байт,
-- `fixed` — флаг «нельзя двигать при пересборке»,
-- `compressed` — лежит ли элемент внутри сжатого контейнера,
-- `parsingData` — служебные данные, унаследованные детьми (erase polarity,
-  версия FFS, выравнивание тома, GUID файла).
+- `type` / `subtype` — what kind of element this is,
+- `offset` — the offset relative to the parent,
+- `base` — the absolute offset from the start of the image (computed),
+- `header`, `body`, `tail` — three non-overlapping slices of bytes,
+- `fixed` — a "must not be moved when rebuilding" flag,
+- `compressed` — whether the element lies inside a compressed container,
+- `parsingData` — housekeeping inherited by children (erase polarity, the FFS
+  version, the volume's alignment, the file's GUID).
 
-Разделение на `header`/`body`/`tail` принципиально: почти каждый уровень
-вложенности — это «заголовок + тело», и тело следующего уровня разбирается
-рекурсивно. `tail` используется только для FFSv1-файлов с `FFS_ATTRIB_TAIL_PRESENT`.
+The split into `header`/`body`/`tail` is fundamental: almost every level of
+nesting is "a header plus a body", and the body of the next level down is parsed
+recursively. `tail` is used only by FFSv1 files with `FFS_ATTRIB_TAIL_PRESENT`.
 
-Разбор идёт в два прохода:
+Parsing runs in two passes:
 
-1. **Первый проход** — построение дерева от корня вниз, чисто по смещениям.
-2. **Второй проход** — всё, что требует знания абсолютных адресов: вычисление
-   `addressDiff`, разбор reset vector, поиск и разбор FIT, проверка защищённых
-   диапазонов Boot Guard, проверка баз TE-образов. Второй проход возможен только
-   если найден Volume Top File и он не лежит внутри сжатого элемента.
+1. **The first pass** builds the tree from the root down, purely by offsets.
+2. **The second pass** does everything that needs absolute addresses: working
+   out `addressDiff`, parsing the reset vector, finding and parsing the FIT,
+   checking the Boot Guard protected ranges, checking the bases of TE images.
+   The second pass is possible only if a Volume Top File was found and it does
+   not lie inside a compressed element.
 
 ---
 
-## 1. Верхний уровень: определение типа образа
+## 1. The top level: what kind of image this is
 
-Алгоритм на входном буфере целиком:
+The algorithm, over the whole input buffer:
 
 ```
-1. Если начало буфера — известная сигнатура капсулы → снять заголовок капсулы,
-   продолжить с тела.
-2. Если по смещению 0x00 или 0x10 лежит FLASH_DESCRIPTOR_SIGNATURE (0x0FF0A55A)
-   → это Intel-образ с флеш-дескриптором.
-3. Иначе → «generic image»: весь буфер считается одной raw-областью
-   (BIOS region), сканируется эвристически (см. §4).
+1. If the start of the buffer is a known capsule signature → strip the capsule
+   header and carry on with the body.
+2. If FLASH_DESCRIPTOR_SIGNATURE (0x0FF0A55A) sits at offset 0x00 or 0x10
+   → this is an Intel image with a flash descriptor.
+3. Otherwise → a "generic image": the whole buffer is taken as one raw area
+   (the BIOS region) and scanned heuristically (see §4).
 ```
 
-Смещение 0x10 проверяется потому, что первые 16 байт дескриптора —
-`ReservedVector`, на x86 забитый `0xFF`, а на некоторых ARM-образах там лежит
-реальный ARM reset vector.
+Offset 0x10 is checked because the first 16 bytes of a descriptor are a
+`ReservedVector`, filled with `0xFF` on x86 — while on some ARM images a real
+ARM reset vector sits there.
 
-### 1.1. Капсулы
+### 1.1. Capsules
 
 ```c
 typedef struct {
     EFI_GUID CapsuleGuid;
-    UINT32   HeaderSize;      // тело начинается с этого смещения
+    UINT32   HeaderSize;      // the body begins at this offset
     UINT32   Flags;
     UINT32   CapsuleImageSize;
 } EFI_CAPSULE_HEADER;
@@ -96,37 +99,38 @@ typedef struct {                 // Toshiba
 
 typedef struct {                 // AMI Aptio
     EFI_CAPSULE_HEADER CapsuleHeader;
-    UINT16 RomImageOffset;       // от начала заголовка капсулы до тела
+    UINT16 RomImageOffset;       // from the start of the capsule header to the body
     UINT16 RomLayoutOffset;
 } APTIO_CAPSULE_HEADER;
 ```
 
-Флаги: `SETUP = 0x00000001`, `PERSIST_ACROSS_RESET = 0x00010000`,
+The flags: `SETUP = 0x00000001`, `PERSIST_ACROSS_RESET = 0x00010000`,
 `POPULATE_SYSTEM_TABLE = 0x00020000`.
 
-Распознаваемые GUID капсул:
+The capsule GUIDs that are recognised:
 
-| GUID | Тип |
+| GUID | Kind |
 |---|---|
-| `3B6686BD-0D76-4030-B70E-B5519E2FC5A0` | стандартная EFI-капсула |
-| `6DCBD5ED-E82D-4C44-BDA1-7194199AD92A` | стандартная FMP-капсула |
+| `3B6686BD-0D76-4030-B70E-B5519E2FC5A0` | the standard EFI capsule |
+| `6DCBD5ED-E82D-4C44-BDA1-7194199AD92A` | the standard FMP capsule |
 | `539182B9-ABB5-4391-B69A-E3A943F72FCC` | Intel |
 | `E20BAFD3-9914-4F4F-9537-3129E090EB3C` | Lenovo |
-| `25B5FE76-8243-4A5C-A9BD-7EE3246198B5` | Lenovo (второй) |
+| `25B5FE76-8243-4A5C-A9BD-7EE3246198B5` | Lenovo (second) |
 | `3BE07062-1D51-45D2-832B-F093257ED461` | Toshiba |
 | `4A3CA68B-7723-48FB-803D-578CC1FEC44D` | AMI Aptio signed |
 | `14EEBB90-890A-43DB-AED1-5D3C4588A418` | AMI Aptio unsigned |
 
-Для Aptio signed размер тела берётся по `RomImageOffset`; между заголовком и телом
-лежит `FW_CERTIFICATE` + `ROM_AREA[]`, которые для целей парсинга образа можно
-пропустить. Если `CapsuleImageSize` меньше фактического размера буфера, хвост —
-мусор после капсулы, его стоит выделить в отдельный узел, а не молча отбрасывать.
+For a signed Aptio capsule the body's size comes from `RomImageOffset`; between
+the header and the body lie a `FW_CERTIFICATE` and `ROM_AREA[]`, which can be
+skipped for the purposes of parsing the image. If `CapsuleImageSize` is smaller
+than the actual size of the buffer, the tail is rubbish behind the capsule, and
+it is worth making a node of its own rather than dropping it silently.
 
 ---
 
-## 2. Intel Flash Descriptor
+## 2. The Intel flash descriptor
 
-Дескриптор занимает первые `0x1000` байт образа.
+The descriptor occupies the first `0x1000` bytes of the image.
 
 ```c
 typedef struct {
@@ -135,39 +139,39 @@ typedef struct {
 } FLASH_DESCRIPTOR_HEADER;
 ```
 
-### 2.1. Карта дескриптора (FLMAP)
+### 2.1. The descriptor map (FLMAP)
 
-Сразу за заголовком, по смещению `0x14`:
+Directly behind the header, at offset `0x14`:
 
 ```c
 typedef struct {
     // FLMAP0
-    UINT32 ComponentBase      : 8;   // биты [11:4] адреса
+    UINT32 ComponentBase      : 8;   // bits [11:4] of the address
     UINT32 NumberOfFlashChips : 2;   // zero-based
     UINT32                    : 6;
     UINT32 RegionBase         : 8;
-    UINT32 NumberOfRegions    : 3;   // зарезервировано в дескрипторе v2
+    UINT32 NumberOfRegions    : 3;   // reserved in a v2 descriptor
     UINT32                    : 5;
     // FLMAP1
     UINT32 MasterBase         : 8;
     UINT32 NumberOfMasters    : 2;
     UINT32                    : 6;
     UINT32 PchStrapsBase      : 8;
-    UINT32 NumberOfPchStraps  : 8;   // one-based, в UINT32
+    UINT32 NumberOfPchStraps  : 8;   // one-based, in UINT32s
     // FLMAP2
     UINT32 ProcStrapsBase     : 8;
     UINT32 NumberOfProcStraps : 8;
     UINT32                    : 16;
     // FLMAP3
-    UINT32 DescriptorVersion;        // зарезервировано до Coffee Lake
+    UINT32 DescriptorVersion;        // reserved until Coffee Lake
 } FLASH_DESCRIPTOR_MAP;
 ```
 
-**Важно:** все поля `*Base` хранят биты `[11:4]` реального смещения. Реальное
-смещение = `Base << 4`. Максимальное значение базы — `0xE0`; больше означает
-битый дескриптор.
+**Important:** every `*Base` field holds bits `[11:4]` of a real offset. The real
+offset is `Base << 4`. The largest valid base is `0xE0`; anything greater means
+a broken descriptor.
 
-`DescriptorVersion` (начиная с Coffee Lake) разбирается как:
+`DescriptorVersion` (from Coffee Lake onwards) is read as:
 
 ```c
 typedef struct {
@@ -177,13 +181,13 @@ typedef struct {
 } FLASH_DESCRIPTOR_VERSION;
 ```
 
-Единственная известная валидная версия — Major=1, Minor=0. Значение
-`0xFFFFFFFF` означает «поле зарезервировано», то есть дескриптор v1.
+The only known valid version is Major=1, Minor=0. The value `0xFFFFFFFF` means
+"this field is reserved", that is, a v1 descriptor.
 
-### 2.2. Секция регионов
+### 2.2. The region section
 
-Расположена по `RegionBase << 4`. Каждый регион — пара `UINT16` Base/Limit,
-хранящих **старшие 16 бит** реальных 32-битных адресов:
+It lives at `RegionBase << 4`. Every region is a pair of `UINT16` base/limit
+values holding **the top 16 bits** of the real 32-bit addresses:
 
 ```
 offset = Base  << 12
@@ -191,11 +195,11 @@ limit  = (Limit << 12) | 0xFFF
 size   = limit - offset + 1
 ```
 
-Регион отсутствует, если `Limit == 0` (либо `Base > Limit`).
+A region is absent if `Limit == 0` (or if `Base > Limit`).
 
 ```c
 typedef struct {
-    UINT16 DescriptorBase, DescriptorLimit;   // сам дескриптор
+    UINT16 DescriptorBase, DescriptorLimit;   // the descriptor itself
     UINT16 BiosBase,       BiosLimit;         // BIOS
     UINT16 MeBase,         MeLimit;           // Management Engine
     UINT16 GbeBase,        GbeLimit;          // Gigabit Ethernet
@@ -214,22 +218,23 @@ typedef struct {
 } FLASH_DESCRIPTOR_REGION_SECTION;
 ```
 
-Количество валидных пар зависит от версии дескриптора: в v1 читаются первые 5
-(Descriptor, BIOS, ME, GbE, PDR), в более новых — все.
+How many pairs are valid depends on the descriptor's version: in v1 the first 5
+are read (Descriptor, BIOS, ME, GbE, PDR), in newer ones all of them.
 
-Правильный алгоритм разбора образа Intel:
+The correct algorithm for parsing an Intel image:
 
-1. Собрать список присутствующих регионов в виде `{offset, length, type}`.
-2. Отсортировать по `offset`.
-3. Проверить на пересечения — пересекающиеся регионы означают битый дескриптор.
-4. Промежутки между регионами добавить как элементы «padding».
-5. Разобрать каждый регион своим парсером; BIOS-регион и Device Expansion 1
-   разбираются как raw-области (§4), ME/GbE/PDR — как непрозрачные блобы с
-   извлечением версии.
+1. Collect the regions that are present as `{offset, length, type}`.
+2. Sort them by `offset`.
+3. Check for overlaps — overlapping regions mean a broken descriptor.
+4. Add the gaps between regions as "padding" elements.
+5. Parse each region with its own parser; the BIOS region and Device Expansion 1
+   are parsed as raw areas (§4), while ME/GbE/PDR are opaque blobs with a
+   version extracted from them.
 
-### 2.3. Секция мастеров
+### 2.3. The masters section
 
-По `MasterBase << 4`. Два формата — до Skylake и начиная с него:
+At `MasterBase << 4`. There are two formats — before Skylake and from Skylake
+onwards:
 
 ```c
 typedef struct {                            // v1
@@ -247,61 +252,64 @@ typedef struct {                            // v2, Skylake+
 } FLASH_DESCRIPTOR_MASTER_SECTION_V2;
 ```
 
-Биты доступа в v1: `DESC=0x01, BIOS=0x02, ME=0x04, GBE=0x08, PDR=0x10, EC=0x20`.
+The access bits in v1: `DESC=0x01, BIOS=0x02, ME=0x04, GBE=0x08, PDR=0x10,
+EC=0x20`.
 
-### 2.4. Прочее в дескрипторе
+### 2.4. The rest of the descriptor
 
-- `FLASH_DESCRIPTOR_UPPER_MAP` по фиксированному смещению `0x0EFC`:
+- `FLASH_DESCRIPTOR_UPPER_MAP` at the fixed offset `0x0EFC`:
   `{UINT8 VsccTableBase; UINT8 VsccTableSize; UINT16 ReservedZero;}`.
-  База — снова биты `[11:4]`, размер — в `UINT32`.
-- Таблица VSCC: массив `{UINT8 VendorId; UINT8 DeviceId0; UINT8 DeviceId1;
-  UINT8 ReservedZero; UINT32 VsccRegisterValue;}`.
-- OEM-секция: фиксированно `0x0F00`, размер `0x100`.
+  The base is again bits `[11:4]`; the size is in `UINT32`s.
+- The VSCC table: an array of `{UINT8 VendorId; UINT8 DeviceId0;
+  UINT8 DeviceId1; UINT8 ReservedZero; UINT32 VsccRegisterValue;}`.
+- The OEM section: fixed at `0x0F00`, size `0x100`.
 
 ---
 
-## 3. Firmware Volume (FV)
+## 3. The firmware volume (FV)
 
-### 3.1. Заголовок тома
+### 3.1. The volume header
 
 ```c
 typedef struct {
     UINT8    ZeroVector[16];
     EFI_GUID FileSystemGuid;
     UINT64   FvLength;
-    UINT32   Signature;        // '_FVH' = 0x4856465F, по смещению 0x28
+    UINT32   Signature;        // '_FVH' = 0x4856465F, at offset 0x28
     UINT32   Attributes;
     UINT16   HeaderLength;
     UINT16   Checksum;
-    UINT16   ExtHeaderOffset;  // зарезервировано в Revision 1
+    UINT16   ExtHeaderOffset;  // reserved in Revision 1
     UINT8    Reserved;
-    UINT8    Revision;         // 1 или 2
+    UINT8    Revision;         // 1 or 2
     // EFI_FV_BLOCK_MAP_ENTRY FvBlockMap[];
-} EFI_FIRMWARE_VOLUME_HEADER;   // 0x38 байт до блок-мапы
+} EFI_FIRMWARE_VOLUME_HEADER;   // 0x38 bytes up to the block map
 
 typedef struct {
     UINT32 NumBlocks;
     UINT32 Length;
-} EFI_FV_BLOCK_MAP_ENTRY;       // терминируется парой {0, 0}
+} EFI_FV_BLOCK_MAP_ENTRY;       // terminated by a {0, 0} pair
 ```
 
-Ключевая деталь для поиска томов: сигнатура `_FVH` находится по фиксированному
-смещению `EFI_FV_SIGNATURE_OFFSET = 0x28` от начала заголовка. Поиск ведётся по
-сигнатуре, затем откатом назад на `0x28` получается кандидат заголовка.
+The key detail for finding volumes: the `_FVH` signature is at the fixed offset
+`EFI_FV_SIGNATURE_OFFSET = 0x28` from the start of the header. The search is for
+the signature, and stepping back `0x28` gives the candidate header.
 
-**Проверки кандидата** (все обязательны, иначе ложные срабатывания):
+**The checks on a candidate** (all of them required, or there will be false
+positives):
 
-- `FvLength >= sizeof(header) + 2 * sizeof(EFI_FV_BLOCK_MAP_ENTRY)` и `< 0xFFFFFFFF`;
-- `Revision` равна 1 или 2;
-- `HeaderLength >= sizeof(EFI_FIRMWARE_VOLUME_HEADER)` и `ALIGN8(HeaderLength)`
-  не выходит за границу данных;
-- альтернативный размер, посчитанный по блок-мапе (`Σ NumBlocks * Length`),
-  сравнивается с `FvLength`; расхождение — признак повреждения, но не повод
-  отбрасывать том: эталонный парсер в этом случае пробует оба размера.
+- `FvLength >= sizeof(header) + 2 * sizeof(EFI_FV_BLOCK_MAP_ENTRY)` and
+  `< 0xFFFFFFFF`;
+- `Revision` is 1 or 2;
+- `HeaderLength >= sizeof(EFI_FIRMWARE_VOLUME_HEADER)` and `ALIGN8(HeaderLength)`
+  does not run past the end of the data;
+- the alternative size computed from the block map (`Σ NumBlocks * Length`) is
+  compared with `FvLength`; a discrepancy is a sign of damage, but not a reason
+  to throw the volume away — the reference parser tries both sizes in that case.
 
-### 3.2. Расширенный заголовок
+### 3.2. The extended header
 
-Если `Revision > 1` и `ExtHeaderOffset != 0`:
+If `Revision > 1` and `ExtHeaderOffset != 0`:
 
 ```c
 typedef struct {
@@ -309,44 +317,44 @@ typedef struct {
     UINT32   ExtHeaderSize;
 } EFI_FIRMWARE_VOLUME_EXT_HEADER;
 
-typedef struct {                       // цепочка записей внутри ext header
+typedef struct {                       // a chain of entries inside the ext header
     UINT16 ExtEntrySize;
     UINT16 ExtEntryType;               // 0x0000 = END
 } EFI_FIRMWARE_VOLUME_EXT_ENTRY;
 ```
 
-Типы записей: `END = 0x0000`, `OEM_TYPE = 0x0001` (`UINT32 TypeMask` +
-`EFI_GUID Types[]`), `GUID_TYPE = 0x0002` (`EFI_GUID FormatType` + данные).
+The entry types: `END = 0x0000`, `OEM_TYPE = 0x0001` (`UINT32 TypeMask` plus
+`EFI_GUID Types[]`), `GUID_TYPE = 0x0002` (`EFI_GUID FormatType` plus data).
 
-Итоговый размер заголовка тома:
+The resulting size of the volume header:
 
 ```
 if (Revision > 1 && ExtHeaderOffset)
     headerSize = ExtHeaderOffset + extHeader->ExtHeaderSize;
 else
     headerSize = HeaderLength;
-headerSize = ALIGN8(headerSize);       // конец ext header может быть невыровнен
+headerSize = ALIGN8(headerSize);       // the ext header may end unaligned
 ```
 
-### 3.3. Контрольная сумма заголовка
+### 3.3. The header checksum
 
-`checksum16` по первым `HeaderLength` байтам с обнулённым полем `Checksum`;
-результат должен совпасть с сохранённым значением. Обратите внимание: сумма
-считается по `HeaderLength`, а не по `headerSize` — расширенный заголовок в неё
-не входит.
+A `checksum16` over the first `HeaderLength` bytes with the `Checksum` field
+zeroed; the result must match the stored value. Note: the sum is taken over
+`HeaderLength` and not over `headerSize` — the extended header is not part of
+it.
 
-### 3.4. Определение файловой системы тома
+### 3.4. Working out the volume's file system
 
-По `FileSystemGuid`:
+From `FileSystemGuid`:
 
-| GUID | Смысл |
+| GUID | Meaning |
 |---|---|
 | `7A9354D9-0468-444A-81CE-0BF617D890DF` | FFSv1 (`EFI_FIRMWARE_FILE_SYSTEM_GUID`) |
 | `8C8CE578-8A3D-4F1C-9935-896185C32DD3` | FFSv2 |
 | `5473C07A-3DCB-4DCA-BD6F-1E9689E7349A` | FFSv3 |
 | `04ADEEAD-61FF-4D31-B6BA-64F8BF901F5A` | Apple immutable FV (FFSv2) |
 | `BD001B8C-6A71-487B-A14F-0C2A2DCF7A5D` | Apple authentication FV (FFSv2) |
-| `153D2197-29BD-44DC-AC59-887F70E41A6B` | Apple microcode volume, заголовок фикс. `0x100` |
+| `153D2197-29BD-44DC-AC59-887F70E41A6B` | Apple microcode volume, header fixed at `0x100` |
 | `AD3FFFFF-D28B-44C4-9F13-9EA98A97F9F0` | Intel FS (FFSv2) |
 | `D6A1CD70-4B33-4994-A6EA-375F2CCC5437` | Intel FS 2 (FFSv2) |
 | `4F494156-AED6-4D64-A537-B8A5557BCEEC` | Sony FS (FFSv2) |
@@ -354,80 +362,81 @@ headerSize = ALIGN8(headerSize);       // конец ext header может бы�
 | `FFF12B8D-7696-4C8B-A985-2747075B4F50` | NVRAM main store (VSS) |
 | `00504624-8A59-4EEB-BD0F-6B36E96128E0` | NVRAM additional store |
 
-Списки `FFSv2Volumes` / `FFSv3Volumes` в реализации содержат все GUID,
-трактуемые как соответствующая версия FFS. Том с неизвестным GUID не разбирается
-как FFS — его тело сохраняется как непрозрачные данные.
+The `FFSv2Volumes` / `FFSv3Volumes` lists in the implementation hold every GUID
+treated as the corresponding version of FFS. A volume with an unknown GUID is
+not parsed as FFS — its body is kept as opaque data.
 
-### 3.5. Атрибуты и выравнивание
+### 3.5. Attributes and alignment
 
-`EFI_FVB_ERASE_POLARITY = 0x00000800` определяет `emptyByte`:
-установлен → `0xFF`, сброшен → `0x00`. Это значение наследуется всеми детьми.
+`EFI_FVB_ERASE_POLARITY = 0x00000800` decides `emptyByte`: set → `0xFF`, clear →
+`0x00`. The value is inherited by every child.
 
-Выравнивание тома:
+The volume's alignment:
 
-- **Revision 1**: биты выравнивания `EFI_FVB_ALIGNMENT_2 … _64K` в
-  `Attributes[31:16]` действительны только при взведённом
-  `EFI_FVB_ALIGNMENT_CAP = 0x00008000`. На практике корректность там не соблюдают,
-  проверять смысла нет.
+- **Revision 1**: the alignment bits `EFI_FVB_ALIGNMENT_2 … _64K` in
+  `Attributes[31:16]` are valid only when `EFI_FVB_ALIGNMENT_CAP = 0x00008000`
+  is set. In practice nobody keeps them correct, and there is no point checking.
 - **Revision 2**: `alignment = 1 << ((Attributes & EFI_FVB2_ALIGNMENT) >> 16)`,
-  где `EFI_FVB2_ALIGNMENT = 0x001F0000`. Диапазон — от `ALIGNMENT_1` (0) до
-  `ALIGNMENT_2G` (0x1F). Дополнительно `EFI_FVB2_WEAK_ALIGNMENT = 0x80000000`
-  ослабляет требование выравнивания для файлов внутри.
-  По умолчанию, если атрибуты не заданы, — `0x10000` (64 КиБ).
+  where `EFI_FVB2_ALIGNMENT = 0x001F0000`. The range runs from `ALIGNMENT_1` (0)
+  to `ALIGNMENT_2G` (0x1F). On top of that, `EFI_FVB2_WEAK_ALIGNMENT =
+  0x80000000` relaxes the alignment requirement for the files inside. The
+  default, where the attributes say nothing, is `0x10000` (64 KiB).
 
-Проверка выравнивания тома имеет смысл только для несжатых томов: сжатый том
-всё равно распаковывается в память по адресу, который выбирает распаковщик.
+Checking a volume's alignment only makes sense for an uncompressed volume: a
+compressed one is unpacked into memory at whatever address the decompressor
+picks.
 
-### 3.6. Apple CRC32 и UsedSpace в ZeroVector
+### 3.6. Apple CRC32 and UsedSpace in the ZeroVector
 
-Некоторые вендоры используют зарезервированный `ZeroVector`:
+Some vendors use the reserved `ZeroVector`:
 
-- байты `[8..12)` — CRC32 тела тома (от `HeaderLength` до конца). Если значение
-  ненулевое и CRC совпадает — это Apple CRC32;
-- байты `[12..16)` — `UsedSpace`, смещение конца занятой области от начала тома.
-  Считается валидным, если совпадает с найденной границей свободного места.
+- bytes `[8..12)` — a CRC32 of the volume's body (from `HeaderLength` to the
+  end). If the value is non-zero and the CRC matches, this is an Apple CRC32;
+- bytes `[12..16)` — `UsedSpace`, the offset of the end of the used area from
+  the start of the volume. Taken as valid if it matches the free-space boundary
+  that was found.
 
 ---
 
-## 4. Raw-области и эвристический поиск
+## 4. Raw areas and the heuristic search
 
-BIOS-регион, Device Expansion, тело padding-элементов и «generic image»
-разбираются одинаково: линейным сканированием в поисках известных сигнатур.
+The BIOS region, Device Expansion, the body of a padding element and a "generic
+image" are all parsed the same way: by scanning linearly for known signatures.
 
-Алгоритм `findNextRawAreaItem` — побайтовый (не по 4 байта!) проход с проверкой
-`UINT32` по текущему смещению:
+The `findNextRawAreaItem` algorithm — byte by byte (not four bytes at a time!),
+checking a `UINT32` at the current offset:
 
 ```
-для offset от start до size-4:
+for offset from start to size-4:
     dword = read_le32(data + offset)
 
-    если dword == 0x00000001:                    // кандидат в микрокод Intel
-        требуется restSize >= sizeof(INTEL_MICROCODE_HEADER) (0x30)
-        требуется intelMicrocodeHeaderValid(header)
-        требуется TotalSize != 0
-        → найден микрокод, size = TotalSize
+    if dword == 0x00000001:                    // an Intel microcode candidate
+        requires restSize >= sizeof(INTEL_MICROCODE_HEADER) (0x30)
+        requires intelMicrocodeHeaderValid(header)
+        requires TotalSize != 0
+        → microcode found, size = TotalSize
 
-    если dword == 0x4856465F ('_FVH'):           // кандидат в том
-        требуется offset >= 0x28
-        проверить заголовок тома по §3.1
-        посчитать альтернативный размер по блок-мапе
-        → найден том, size = FvLength, altSize = сумма по блок-мапе
+    if dword == 0x4856465F ('_FVH'):           // a volume candidate
+        requires offset >= 0x28
+        check the volume header per §3.1
+        compute the alternative size from the block map
+        → volume found, size = FvLength, altSize = the block map's sum
 
-    если dword == 0x5F494F5F ('_IO_'), 0x24504324 и т.п. → прочие сторы
+    if dword == 0x5F494F5F ('_IO_'), 0x24504324 and so on → other stores
 ```
 
-Всё, что находится между найденными элементами, оформляется как padding.
-Padding, целиком состоящий из `emptyByte`, помечается как «пустой» — это важно
-при последующей пересборке.
+Everything between the elements that are found becomes padding. Padding made
+entirely of `emptyByte` is marked "empty" — which matters when the image is
+rebuilt later.
 
-Дополнительно в raw-областях ищутся хранилища NVRAM, AMD-микрокод, BPDT/CPD
-(см. §7, §8).
+Raw areas are also searched for NVRAM stores, AMD microcode and BPDT/CPD (see
+§7, §8).
 
 ---
 
-## 5. FFS-файлы
+## 5. FFS files
 
-### 5.1. Заголовки
+### 5.1. The headers
 
 ```c
 typedef union {
@@ -436,26 +445,26 @@ typedef union {
     UINT16 Checksum16;      // Revision 2
 } EFI_FFS_INTEGRITY_CHECK;
 
-typedef struct {                       // базовый, 0x18 байт
+typedef struct {                       // the base header, 0x18 bytes
     EFI_GUID                Name;
     EFI_FFS_INTEGRITY_CHECK IntegrityCheck;
     UINT8                   Type;
     UINT8                   Attributes;
-    UINT8                   Size[3];   // UINT24, полный размер файла с заголовком
+    UINT8                   Size[3];   // UINT24, the full file size with its header
     UINT8                   State;
 } EFI_FFS_FILE_HEADER;
 
-typedef struct {                       // FFSv3 large file, 0x20 байт
+typedef struct {                       // an FFSv3 large file, 0x20 bytes
     EFI_GUID                Name;
     EFI_FFS_INTEGRITY_CHECK IntegrityCheck;
     UINT8                   Type;
     UINT8                   Attributes;
-    UINT8                   Size[3];   // 0xFFFFFF или 0x000000
+    UINT8                   Size[3];   // 0xFFFFFF or 0x000000
     UINT8                   State;
     UINT64                  ExtendedSize;
 } EFI_FFS_FILE_HEADER2;
 
-typedef struct {                       // Lenovo large file в FFSv2, 0x1C байт
+typedef struct {                       // a Lenovo large file in FFSv2, 0x1C bytes
     EFI_GUID                Name;
     EFI_FFS_INTEGRITY_CHECK IntegrityCheck;
     UINT8                   Type;
@@ -466,72 +475,73 @@ typedef struct {                       // Lenovo large file в FFSv2, 0x1C ба�
 } EFI_FFS_FILE_HEADER2_LENOVO;
 ```
 
-### 5.2. Определение размера файла
+### 5.2. Working out a file's size
 
 ```
-если ffsVersion == 2:
+if ffsVersion == 2:
     size = uint24(Size)
-    если volumeRevision == 2 и (Attributes & FFS_ATTRIB_LARGE_FILE):
-        size = header2Lenovo->ExtendedSize      // нестандартное расширение Lenovo
-если ffsVersion == 3:
-    если (Attributes & FFS_ATTRIB_LARGE_FILE):
+    if volumeRevision == 2 and (Attributes & FFS_ATTRIB_LARGE_FILE):
+        size = header2Lenovo->ExtendedSize      // a non-standard Lenovo extension
+if ffsVersion == 3:
+    if (Attributes & FFS_ATTRIB_LARGE_FILE):
         size = header2->ExtendedSize
-    иначе:
+    else:
         size = uint24(Size)
 ```
 
-`Size` — **полный** размер файла, включая заголовок. Размер `0` означает
-невозможность продолжать разбор тома.
+`Size` is the **full** size of the file, its header included. A size of `0` means
+the volume cannot be parsed any further.
 
-### 5.3. Атрибуты
+### 5.3. The attributes
 
 ```
-FFS_ATTRIB_TAIL_PRESENT    0x01   // только Revision 1
-FFS_ATTRIB_RECOVERY        0x02   // только Revision 1
-FFS_ATTRIB_LARGE_FILE      0x01   // только FFSv3 (и Lenovo в FFSv2 Rev2)
+FFS_ATTRIB_TAIL_PRESENT    0x01   // Revision 1 only
+FFS_ATTRIB_RECOVERY        0x02   // Revision 1 only
+FFS_ATTRIB_LARGE_FILE      0x01   // FFSv3 only (and Lenovo, in FFSv2 Rev 2)
 FFS_ATTRIB_DATA_ALIGNMENT2 0x02   // Revision 2, UEFI PI 1.6+
 FFS_ATTRIB_FIXED           0x04
-FFS_ATTRIB_DATA_ALIGNMENT  0x38   // 3 бита индекса в таблице выравнивания
+FFS_ATTRIB_DATA_ALIGNMENT  0x38   // 3 bits of an index into the alignment table
 FFS_ATTRIB_CHECKSUM        0x40
 ```
 
-Обратите внимание на коллизию: бит `0x01` означает `TAIL_PRESENT` в томах
-Revision 1 и `LARGE_FILE` в FFSv3, бит `0x02` — `RECOVERY` или
-`DATA_ALIGNMENT2`. Интерпретация зависит от версии тома, а не от файла.
+Note the collision: bit `0x01` means `TAIL_PRESENT` in Revision 1 volumes and
+`LARGE_FILE` in FFSv3; bit `0x02` means `RECOVERY` or `DATA_ALIGNMENT2`. Which
+reading applies depends on the volume's version, not on the file's.
 
-Выравнивание тела файла:
+The alignment of a file's body:
 
 ```
 idx = (Attributes & FFS_ATTRIB_DATA_ALIGNMENT) >> 3;
-если (Attributes & FFS_ATTRIB_DATA_ALIGNMENT2) и volumeRevision == 2:
+if (Attributes & FFS_ATTRIB_DATA_ALIGNMENT2) and volumeRevision == 2:
     alignment = 1 << ffsAlignment2Table[idx];   // {17,18,19,20,21,22,23,24}
-иначе:
+else:
     alignment = 1 << ffsAlignmentTable[idx];    // {0,4,7,9,10,12,15,16}
 ```
 
-То есть базовая таблица даёт 1, 16, 128, 512, 1K, 4K, 32K, 64K байт, а
-расширенная — от 128K до 16M.
+That is, the base table gives 1, 16, 128, 512, 1K, 4K, 32K and 64K bytes, and
+the extended one from 128K to 16M.
 
-### 5.4. Контрольные суммы
+### 5.4. The checksums
 
 ```
-// заголовок: сумма всех байт заголовка, кроме двух полей IntegrityCheck и State
+// the header: the sum of every byte of the header, less the two IntegrityCheck
+// fields and State
 calculatedHeader = 0x100 - (sum8(header) - IC.Checksum.Header
                                           - IC.Checksum.File
                                           - State);
 
-// тело
-если (Attributes & FFS_ATTRIB_CHECKSUM):
-    calculatedData = checksum8(body)          // при пустом теле это ошибка формата
-иначе если volumeRevision == 1:
+// the body
+if (Attributes & FFS_ATTRIB_CHECKSUM):
+    calculatedData = checksum8(body)          // with an empty body this is a format error
+else if volumeRevision == 1:
     calculatedData = FFS_FIXED_CHECKSUM  = 0x5A
-иначе:
+else:
     calculatedData = FFS_FIXED_CHECKSUM2 = 0xAA
 ```
 
-Проверка тела выполняется только для файлов с непустым телом.
+The body is only checked for files with a non-empty body.
 
-### 5.5. Состояние файла
+### 5.5. The file's state
 
 ```
 EFI_FILE_HEADER_CONSTRUCTION 0x01
@@ -543,32 +553,32 @@ EFI_FILE_HEADER_INVALID      0x20
 EFI_FILE_ERASE_POLARITY      0x80
 ```
 
-Биты состояния записываются в порядке возрастания и **инвертируются**, если
-erase polarity тома равна 0. Для файла `emptyByte` берётся из его собственного
-`State & EFI_FILE_ERASE_POLARITY`, а не из тома — это позволяет корректно
-обрабатывать смешанные случаи.
+The state bits are written in ascending order and are **inverted** if the
+volume's erase polarity is 0. A file's `emptyByte` comes from its own
+`State & EFI_FILE_ERASE_POLARITY` rather than from the volume — which is what
+makes mixed cases readable.
 
-### 5.6. Типы файлов
+### 5.6. File types
 
 ```
-0x00 ALL (недопустим в образе)   0x0B FIRMWARE_VOLUME_IMAGE
-0x01 RAW                          0x0C COMBINED_MM_DXE
-0x02 FREEFORM                     0x0D MM_CORE
-0x03 SECURITY_CORE                0x0E MM_STANDALONE
-0x04 PEI_CORE                     0x0F MM_CORE_STANDALONE
-0x05 DXE_CORE                     0xC0..0xDF OEM
-0x06 PEIM                         0xE0..0xEF DEBUG
-0x07 DRIVER                       0xF0 PAD
-0x08 COMBINED_PEIM_DRIVER         0xF0..0xFF FFS-специфичные
+0x00 ALL (not allowed in an image)   0x0B FIRMWARE_VOLUME_IMAGE
+0x01 RAW                              0x0C COMBINED_MM_DXE
+0x02 FREEFORM                         0x0D MM_CORE
+0x03 SECURITY_CORE                    0x0E MM_STANDALONE
+0x04 PEI_CORE                         0x0F MM_CORE_STANDALONE
+0x05 DXE_CORE                         0xC0..0xDF OEM
+0x06 PEIM                             0xE0..0xEF DEBUG
+0x07 DRIVER                           0xF0 PAD
+0x08 COMBINED_PEIM_DRIVER             0xF0..0xFF FFS-specific
 0x09 APPLICATION
-0x0A MM (ранее SMM)
+0x0A MM (formerly SMM)
 ```
 
-Тип больше `0x0F` и не равный `0xF0` следует считать неизвестным.
+A type greater than `0x0F` and not equal to `0xF0` should be treated as unknown.
 
-### 5.7. Особые файлы
+### 5.7. Special files
 
-| GUID | Смысл |
+| GUID | Meaning |
 |---|---|
 | `1BA0062E-C779-4582-8566-336AE8F78F09` | **Volume Top File (VTF)** |
 | `D6A2CB7F-6A18-4E2F-B43B-9920A733700A` | EDK2 DXE Core |
@@ -579,22 +589,22 @@ erase polarity тома равна 0. Для файла `emptyByte` берётс
 | `389CC6F2-1EA8-467B-AB8A-78E769AE2A15` | Phoenix vendor hash file |
 | `CBC91F44-A4BC-4A5B-8696-703451D0B053` | AMI vendor hash file |
 | `20BC8AC9-94D1-4208-AB28-5D673FD73487` | AMD compressed raw file |
-| `DE3E049C-A218-4891-8658-5FC0FA84C788` | AMD microcode в TE/PE |
+| `DE3E049C-A218-4891-8658-5FC0FA84C788` | AMD microcode in TE/PE |
 | `05CA01FC-…` … `05CA020B-…` | AMI ROM Hole 0..15 |
 
-**Volume Top File — критически важен.** Последний байт последнего VTF в образе
-отображается на физический адрес `0xFFFFFFFF`. Отсюда:
+**The Volume Top File is critical.** The last byte of the last VTF in the image
+is mapped at the physical address `0xFFFFFFFF`. From which:
 
 ```
 addressDiff = 0xFFFFFFFF - base(lastVtf) - fullSize(lastVtf) + 1
-физический_адрес = смещение_в_файле + addressDiff
+physical_address = file_offset + addressDiff
 ```
 
-Без найденного VTF абсолютные адреса вычислить нельзя, и весь второй проход
-(FIT, reset vector, защищённые диапазоны) пропускается. Значение по умолчанию
-`addressDiff = 0x100000000` означает «адреса неизвестны».
+Without a VTF the absolute addresses cannot be worked out at all, and the whole
+second pass (FIT, reset vector, protected ranges) is skipped. The default value
+`addressDiff = 0x100000000` means "the addresses are unknown".
 
-Внутри VTF по фиксированным адресам лежит reset vector:
+Inside the VTF, at fixed addresses, lies the reset vector:
 
 ```c
 typedef struct {
@@ -608,83 +618,85 @@ typedef struct {
 } X86_RESET_VECTOR_DATA;
 ```
 
-Значение `0x12345678` в полях означает «не заполнено» (EDK2 оставляет плейсхолдер).
+The value `0x12345678` in these fields means "not filled in" (EDK2 leaves a
+placeholder).
 
-### 5.8. Обход тела тома
+### 5.8. Walking a volume's body
 
 ```
 fileOffset = 0
-пока fileOffset < размер_тела_тома:
+while fileOffset < the size of the volume's body:
     fileSize = getFileSize(...)
-    если fileSize == 0 → прервать разбор
+    if fileSize == 0 → stop parsing
 
-    если первые sizeof(EFI_FFS_FILE_HEADER) байт == emptyByte:
-        // достигли свободного пространства
-        если остаток не весь состоит из emptyByte:
-            найти первый непустой байт i
-            выровнять i вниз до 8 байт: если i != ALIGN8(i) → i = ALIGN8(i) - 8
-            [0, i)  → свободное место
-            [i, …)  → «non-UEFI data», разобрать эвристически
-        иначе:
-            весь остаток → свободное место
-        прервать
+    if the first sizeof(EFI_FFS_FILE_HEADER) bytes are all emptyByte:
+        // free space has been reached
+        if the rest is not entirely emptyByte:
+            find the first non-empty byte i
+            align i down to 8: if i != ALIGN8(i) → i = ALIGN8(i) - 8
+            [0, i)  → free space
+            [i, …)  → "non-UEFI data", parse heuristically
+        else:
+            the whole rest → free space
+        stop
 
-    если остатка не хватает на заголовок или на fileSize:
-        остаток → non-UEFI data, прервать
+    if what is left is not enough for the header or for fileSize:
+        the rest → non-UEFI data, stop
 
-    разобрать файл
+    parse the file
     fileOffset = ALIGN8(fileOffset + fileSize)
 ```
 
-Выравнивание следующего файла — всегда на 8 байт, независимо от версии FFS.
+The next file is always aligned to 8 bytes, whatever the version of FFS.
 
 ---
 
-## 6. Секции
+## 6. Sections
 
-Тело файла типов, отличных от `RAW` и `PAD`, состоит из последовательности секций.
+The body of a file of any type other than `RAW` and `PAD` is a sequence of
+sections.
 
 ```c
 typedef struct {
-    UINT8 Size[3];             // UINT24, полный размер секции с заголовком
+    UINT8 Size[3];             // UINT24, the full size of the section with its header
     UINT8 Type;
-} EFI_COMMON_SECTION_HEADER;   // 4 байта
+} EFI_COMMON_SECTION_HEADER;   // 4 bytes
 
 typedef struct {
-    UINT8  Size[3];            // == 0xFFFFFF, признак использования расширенного
+    UINT8  Size[3];            // == 0xFFFFFF, the marker for the extended header
     UINT8  Type;
     UINT32 ExtendedSize;
-} EFI_COMMON_SECTION_HEADER2;  // 8 байт
+} EFI_COMMON_SECTION_HEADER2;  // 8 bytes
 ```
 
-Расширенный заголовок применим только в FFSv3-томах: `Size == EFI_SECTION2_IS_USED
-(0xFFFFFF)` → читать `ExtendedSize`.
+The extended header applies only in FFSv3 volumes: `Size == EFI_SECTION2_IS_USED
+(0xFFFFFF)` → read `ExtendedSize`.
 
-Секции внутри файла выравниваются на 4 байта (`ALIGN4`).
+Sections inside a file are aligned to 4 bytes (`ALIGN4`).
 
-### 6.1. Типы секций
+### 6.1. Section types
 
-**Инкапсулирующие** (содержат другие секции):
+**Encapsulating** (they hold other sections):
 
-| Тип | Имя |
+| Type | Name |
 |---|---|
 | `0x01` | `COMPRESSION` |
 | `0x02` | `GUID_DEFINED` |
 | `0x03` | `DISPOSABLE` |
 
-**Листовые**:
+**Leaf**:
 
-| Тип | Имя | Тип | Имя |
+| Type | Name | Type | Name |
 |---|---|---|---|
 | `0x10` | `PE32` | `0x17` | `FIRMWARE_VOLUME_IMAGE` |
 | `0x11` | `PIC` | `0x18` | `FREEFORM_SUBTYPE_GUID` |
 | `0x12` | `TE` | `0x19` | `RAW` |
 | `0x13` | `DXE_DEPEX` | `0x1B` | `PEI_DEPEX` |
 | `0x14` | `VERSION` | `0x1C` | `MM_DEPEX` |
-| `0x15` | `USER_INTERFACE` | `0x20` | Insyde postcode (вендорный) |
-| `0x16` | `COMPATIBILITY16` | `0xF0` | Phoenix SCT postcode (вендорный) |
+| `0x15` | `USER_INTERFACE` | `0x20` | Insyde postcode (vendor) |
+| `0x16` | `COMPATIBILITY16` | `0xF0` | Phoenix SCT postcode (vendor) |
 
-### 6.2. Секция сжатия (0x01)
+### 6.2. The compression section (0x01)
 
 ```c
 typedef struct {
@@ -693,29 +705,30 @@ typedef struct {
 } EFI_COMPRESSION_SECTION;
 ```
 
-`CompressionType`: `0x00` — не сжато, `0x01` — Tiano/EFI 1.1 (алгоритм
-EfiTianoDecompress), `0x02` — customized, `0x86` — LZMA с фильтром x86.
+`CompressionType`: `0x00` — not compressed, `0x01` — Tiano/EFI 1.1 (the
+EfiTianoDecompress algorithm), `0x02` — customized, `0x86` — LZMA with an x86
+filter.
 
-Для типа `0x01` требуется пробовать оба варианта — EFI 1.1 и Tiano: они
-различаются только шириной поля и распознаются по успешности распаковки.
+For type `0x01` both variants have to be tried — EFI 1.1 and Tiano: they differ
+only in the width of a field and are told apart by which decompression succeeds.
 
-### 6.3. GUID-defined секция (0x02)
+### 6.3. The GUID-defined section (0x02)
 
 ```c
 typedef struct {
     EFI_GUID SectionDefinitionGuid;
-    UINT16   DataOffset;       // от начала секции до данных
+    UINT16   DataOffset;       // from the start of the section to the data
     UINT16   Attributes;
 } EFI_GUID_DEFINED_SECTION;
 ```
 
-Атрибуты: `PROCESSING_REQUIRED = 0x01`, `AUTH_STATUS_VALID = 0x02`.
+The attributes: `PROCESSING_REQUIRED = 0x01`, `AUTH_STATUS_VALID = 0x02`.
 
-Известные GUID:
+The known GUIDs:
 
-| GUID | Обработка |
+| GUID | Processing |
 |---|---|
-| `FC1BCDB0-7D31-49AA-936A-A4600D9DD083` | CRC32 (данные не сжаты, только проверка) |
+| `FC1BCDB0-7D31-49AA-936A-A4600D9DD083` | CRC32 (the data is not compressed, only checked) |
 | `A31280AD-481E-41B6-95E8-127F4C984779` | Tiano |
 | `EE4E5898-3914-4259-9D6E-DC7BD79403CF` | LZMA |
 | `0ED85E23-F253-413F-A03C-901987B04397` | LZMA (HP) |
@@ -723,11 +736,11 @@ typedef struct {
 | `D42AE6BD-1352-4BFB-909A-CA72A6EAE889` | LZMA + x86 filter |
 | `1D301FE9-BE79-4353-91C2-D23BC959AE0C` | GZip |
 | `CE3233F5-2CD6-4D87-9152-4A238BB6D1C4` | Zlib (AMD) |
-| `991EFAC0-E260-416B-A4B8-3B153072B804` | Zlib (AMD, второй) |
+| `991EFAC0-E260-416B-A4B8-3B153072B804` | Zlib (AMD, second) |
 | `3D532050-5CDA-4FD0-879E-0F7F630D5AFB` | Brotli |
 | `0F9D89E8-9259-4F76-A5AF-0C89E34023DF` | Firmware contents signed |
 
-Заголовки специфичных упаковщиков:
+The headers of the particular packers:
 
 ```c
 typedef struct {                   // AMD Zlib
@@ -742,7 +755,7 @@ typedef struct {                   // Brotli
 } EFI_BROTLI_SECTION_HEADER;
 ```
 
-Для подписанных секций (`FIRMWARE_CONTENTS_SIGNED`) данные предваряются
+For signed sections (`FIRMWARE_CONTENTS_SIGNED`) the data is preceded by a
 `WIN_CERTIFICATE_UEFI_GUID`:
 
 ```c
@@ -752,38 +765,39 @@ typedef struct { EFI_GUID HashType; UINT8 PublicKey[256]; UINT8 Signature[256]; 
         EFI_CERT_BLOCK_RSA2048_SHA256;
 ```
 
-`WIN_CERT_TYPE_EFI_GUID = 0x0EF1`, `CertType` для RSA2048/SHA256 —
+`WIN_CERT_TYPE_EFI_GUID = 0x0EF1`, and `CertType` for RSA2048/SHA256 is
 `A7717414-C616-4977-9420-844712A735BF`.
 
-### 6.4. Прочие секции
+### 6.4. The other sections
 
 ```c
-typedef struct { UINT16 BuildNumber; } EFI_VERSION_SECTION;        // далее UCS-2 строка
+typedef struct { UINT16 BuildNumber; } EFI_VERSION_SECTION;        // then a UCS-2 string
 typedef struct { EFI_GUID SubTypeGuid; } EFI_FREEFORM_SUBTYPE_GUID_SECTION;
 typedef struct { UINT32 Postcode; } POSTCODE_SECTION;
 ```
 
-`USER_INTERFACE` (0x15) — тело целиком UCS-2 строка с завершающим нулём.
+`USER_INTERFACE` (0x15) — the body is entirely a UCS-2 string with a terminating
+zero.
 
-Секция `FIRMWARE_VOLUME_IMAGE` (0x17) содержит вложенный том — рекурсия обратно
-к §3.
+A `FIRMWARE_VOLUME_IMAGE` section (0x17) holds a nested volume — recursion back
+to §3.
 
-### 6.5. Depex-секции
+### 6.5. Depex sections
 
-Тело — байткод из однобайтных опкодов:
+The body is bytecode of one-byte opcodes:
 
 ```
-0x00 BEFORE (только DXE, первый и единственный)
-0x01 AFTER  (только DXE, первый и единственный)
-0x02 PUSH   + EFI_GUID (16 байт операнда)
+0x00 BEFORE (DXE only, first and only)
+0x01 AFTER  (DXE only, first and only)
+0x02 PUSH   + EFI_GUID (a 16-byte operand)
 0x03 AND    0x04 OR     0x05 NOT
 0x06 TRUE   0x07 FALSE  0x08 END
-0x09 SOR    (только DXE, первый опкод)
+0x09 SOR    (DXE only, the first opcode)
 ```
 
 ---
 
-## 7. Микрокод
+## 7. Microcode
 
 ### 7.1. Intel
 
@@ -795,30 +809,31 @@ typedef struct {
     UINT8  DateDay;            // BCD
     UINT8  DateMonth;          // BCD
     UINT32 ProcessorSignature;
-    UINT32 Checksum;           // сумма всех DWORD образа == 0
+    UINT32 Checksum;           // the sum of every DWORD of the image == 0
     UINT32 LoaderRevision;     // 1
     UINT32 PlatformIds;
-    UINT32 DataSize;           // 0 означает 2000 байт
+    UINT32 DataSize;           // 0 means 2000 bytes
     UINT32 TotalSize;
-    UINT32 MetadataSize;       // зарезервировано
+    UINT32 MetadataSize;       // reserved
     UINT32 UpdateRevisionMin;
     UINT32 Reserved;
-} INTEL_MICROCODE_HEADER;      // 0x30 байт
+} INTEL_MICROCODE_HEADER;      // 0x30 bytes
 ```
 
-Критерии валидности (`intelMicrocodeHeaderValid`) — все обязательны:
+The validity criteria (`intelMicrocodeHeaderValid`) — all of them required:
 
-- `DataSize % 4 == 0` и `DataSize <= 0xFFFFFF`;
-- `TotalSize >= DataSize` и `TotalSize <= 0xFFFFFF`;
-- `DateDay` — валидный BCD в диапазонах `01–09, 10–19, 20–29, 30–31`;
-- `DateMonth` — валидный BCD `01–09, 10–12`;
-- `DateYear` — BCD в `1990–1999, 2000–2009, 2010–2019, 2020–2029, 2030–2039, 2040–2049`;
+- `DataSize % 4 == 0` and `DataSize <= 0xFFFFFF`;
+- `TotalSize >= DataSize` and `TotalSize <= 0xFFFFFF`;
+- `DateDay` — valid BCD in the ranges `01–09, 10–19, 20–29, 30–31`;
+- `DateMonth` — valid BCD `01–09, 10–12`;
+- `DateYear` — BCD in `1990–1999, 2000–2009, 2010–2019, 2020–2029, 2030–2039,
+  2040–2049`;
 - `HeaderType == 1`;
 - `LoaderRevision == 1`.
 
-При сканировании дополнительно требуется `TotalSize != 0`.
+When scanning, `TotalSize != 0` is required as well.
 
-Расширенная таблица сигнатур, если `TotalSize > 0x30 + DataSize`:
+The extended signature table, if `TotalSize > 0x30 + DataSize`:
 
 ```c
 typedef struct { UINT32 EntryCount; UINT32 Checksum; UINT8 Reserved[12]; }
@@ -827,19 +842,19 @@ typedef struct { UINT32 ProcessorSignature; UINT32 PlatformIds; UINT32 Checksum;
         INTEL_MICROCODE_EXTENDED_HEADER_ENTRY;
 ```
 
-Пустой слот микрокода — первые 4 байта равны `FF FF FF FF`. Это легальное
-состояние: спецификация FIT явно разрешает записи, указывающие на пустые слоты.
+An empty microcode slot has `FF FF FF FF` as its first 4 bytes. This is a legal
+state: the FIT specification explicitly allows entries that point at empty slots.
 
 ### 7.2. AMD
 
-Разбирается отдельно (`amd_microcode.h`), поиск ведётся как по raw-областям, так
-и внутри TE/PE-файлов с GUID `DE3E049C-A218-4891-8658-5FC0FA84C788`.
+Parsed separately (`amd_microcode.h`); the search runs both over raw areas and
+inside TE/PE files with the GUID `DE3E049C-A218-4891-8658-5FC0FA84C788`.
 
 ---
 
-## 8. IFWI: BPDT и CPD
+## 8. IFWI: BPDT and CPD
 
-Применимо к образам с Converged Security Engine (Apollo Lake и новее).
+Applies to images with a Converged Security Engine (Apollo Lake and newer).
 
 ```c
 #define BPDT_GREEN_SIGNATURE  0x000055AA
@@ -848,8 +863,8 @@ typedef struct { UINT32 ProcessorSignature; UINT32 PlatformIds; UINT32 Checksum;
 typedef struct {
     UINT32 Signature;
     UINT16 NumEntries;
-    UINT8  HeaderVersion;      // 1 или 2
-    UINT8  RedundancyFlag;     // зарезервировано в версии 1
+    UINT8  HeaderVersion;      // 1 or 2
+    UINT8  RedundancyFlag;     // reserved in version 1
     UINT32 Checksum;
     UINT32 IfwiVersion;
     UINT16 FitcMajor, FitcMinor, FitcHotfix, FitcBuild;
@@ -867,11 +882,11 @@ typedef struct {
 } BPDT_ENTRY;
 ```
 
-Типы партиций: `0 SMIP, 1 RBEP, 2 FTPR, 3 UCOD, 4 IBBP, 5 S_BPDT, 6 OBBP,
+The partition types: `0 SMIP, 1 RBEP, 2 FTPR, 3 UCOD, 4 IBBP, 5 S_BPDT, 6 OBBP,
 7 NFTP, 8 ISHC, 9 DLMP, 10 UEBP, 11 UTOK, 14 PMCP, 17 UEP, 18 WCOD, 19 LOCL,
-20 OEMP, 21 FITC, 32 PCHC` и далее (полный список — в `ffs.h`).
+20 OEMP, 21 FITC, 32 PCHC` and onwards (the full list is in `ffs.h`).
 
-Тип `5 (S_BPDT)` — вложенная BPDT, разбирается рекурсивно.
+Type `5 (S_BPDT)` is a nested BPDT and is parsed recursively.
 
 ```c
 #define CPD_SIGNATURE 0x44504324   // "$CPD"
@@ -898,23 +913,23 @@ typedef struct {
 } CPD_ENTRY;
 ```
 
-Внутри CPD-партиций лежат манифесты (`CPD_MANIFEST_HEADER`) и расширения
-(`CPD_EXTENTION_HEADER {UINT32 Type; UINT32 Length;}`) — типов около 40,
-из практически важных: `15 SIGNED_PACKAGE_INFO`, `10 MODULE_ATTRIBUTES`
-(содержит `CompressionType`: 0 — нет, 1 — Huffman, 2 — LZMA), `19 BOOT_POLICY`,
-`14 KEY_MANIFEST`, `22 IFWI_PARTITION_MANIFEST`.
+Inside the CPD partitions lie manifests (`CPD_MANIFEST_HEADER`) and extensions
+(`CPD_EXTENTION_HEADER {UINT32 Type; UINT32 Length;}`) — around 40 types, of
+which the practically important ones are `15 SIGNED_PACKAGE_INFO`,
+`10 MODULE_ATTRIBUTES` (which carries `CompressionType`: 0 — none, 1 — Huffman,
+2 — LZMA), `19 BOOT_POLICY`, `14 KEY_MANIFEST`, `22 IFWI_PARTITION_MANIFEST`.
 
 ---
 
 ## 9. NVRAM
 
-Хранилища переменных находятся эвристическим поиском сигнатур внутри raw-областей
-и томов с NVRAM-GUID. Поддерживаемые форматы (детали — в `common/nvram.h` и
-kaitai-описаниях `common/ksy/`):
+Variable stores are found by searching heuristically for signatures inside raw
+areas and volumes with an NVRAM GUID. The formats supported (the details are in
+`common/nvram.h` and the kaitai descriptions in `common/ksy/`):
 
-| Формат | Сигнатура / признак |
+| Format | Signature / marker |
 |---|---|
-| EDK2 VSS / VSS2 | `$VSS` / GUID-заголовок |
+| EDK2 VSS / VSS2 | `$VSS` / a GUID header |
 | EDK2 FTW | `EFI_FAULT_TOLERANT_WORKING_BLOCK_HEADER` |
 | AMI NVAR | `NVAR` |
 | Apple SYSF/Fsys | `Fsys` / `Gaid` |
@@ -922,13 +937,13 @@ kaitai-описаниях `common/ksy/`):
 | Phoenix FlashMap | `_FLASH_MAP` |
 | Insyde FDC / FDM | `$FDC` / `HFDM` (0x4D444648) |
 | Dell DVAR | `DVAR` (0x52415644) |
-| MS SLIC | marker / pubkey |
+| MS SLIC | a marker / a public key |
 
-Для парсера общего назначения NVRAM-сторы разумно сначала выделять как
-непрозрачные элементы и разбирать по требованию.
+For a general-purpose parser it is sensible to pick NVRAM stores out as opaque
+elements first and parse them on demand.
 
-Insyde Flash Device Map заслуживает отдельного упоминания, так как задаёт
-разметку всего образа:
+The Insyde Flash Device Map deserves a mention of its own, since it lays out the
+whole image:
 
 ```c
 typedef struct {
@@ -949,20 +964,21 @@ typedef struct {
     UINT64   RegionOffset;
     UINT64   RegionSize;
     UINT32   Attributes;       // 0x01 modifiable, 0x02 ignored
-    // UINT8 Hash[]; размер зависит от EntryFormat/EntrySize
+    // UINT8 Hash[]; the size depends on EntryFormat/EntrySize
 } INSYDE_FLASH_DEVICE_MAP_ENTRY;
 ```
 
 ---
 
-## 10. Второй проход
+## 10. The second pass
 
-Выполняется после построения дерева, требует найденного и несжатого VTF.
+Runs after the tree has been built, and needs a VTF that was found and is not
+compressed.
 
-1. **Вычисление `addressDiff`** — см. §5.7.
-2. **Reset vector** — разбор `X86_RESET_VECTOR_DATA` в теле VTF.
-3. **FIT** — см. отдельный документ `FIT_TABLE_FORMAT.md`.
-4. **Защищённые диапазоны Boot Guard**. Vendor hash files:
+1. **Working out `addressDiff`** — see §5.7.
+2. **The reset vector** — parsing `X86_RESET_VECTOR_DATA` in the VTF's body.
+3. **The FIT** — see the separate document `FIT_TABLE_FORMAT.md`.
+4. **The Boot Guard protected ranges.** The vendor hash files:
 
 ```c
 typedef struct { UINT8 Hash[32]; UINT32 Base; UINT32 Size; }
@@ -971,7 +987,7 @@ typedef struct { UINT8 Hash[32]; UINT32 Base; UINT32 Size; }
 typedef struct { UINT64 Signature; UINT32 NumEntries; }   // '$HASHTBL'
         PROTECTED_RANGE_VENDOR_HASH_FILE_HEADER_PHOENIX;
 
-typedef struct { UINT8 Hash[32]; UINT32 Size; }           // AMI v1, база из flash map
+typedef struct { UINT8 Hash[32]; UINT32 Size; }           // AMI v1, base from the flash map
         PROTECTED_RANGE_VENDOR_HASH_FILE_HEADER_AMI_V1;
 
 typedef struct { PROTECTED_RANGE_VENDOR_HASH_FILE_ENTRY Hash0, Hash1; }
@@ -986,46 +1002,48 @@ typedef struct {
 } PROTECTED_RANGE_VENDOR_HASH_FILE_HEADER_AMI_V3;
 ```
 
-Диапазоны, перечисленные в этих файлах, вместе с IBB, описанным в Boot Policy,
-образуют список областей, изменение которых сломает Boot Guard.
+The ranges listed in these files, together with the IBB described in the Boot
+Policy, make up the list of areas that Boot Guard will break if they are
+changed.
 
-5. **Проверка баз TE-образов** — у TE-секций поле `StrippedSize` иногда содержит
-   скорректированную базу; сравнение с фактическим адресом позволяет выявить
-   образы, перемещённые вендорским инструментом.
+5. **Checking the bases of TE images** — the `StrippedSize` field of a TE section
+   sometimes holds an adjusted base; comparing it with the actual address reveals
+   images that a vendor's tool has relocated.
 
 ---
 
-## 11. Практические замечания
+## 11. Practical notes
 
-**Ограничение глубины рекурсии.** Том → файл → секция → том → … Вложенность в
-реальных образах доходит до 8–10 уровней, но битый образ может дать бесконечную
-рекурсию. Ставьте жёсткий лимит.
+**Limit the recursion depth.** Volume → file → section → volume → … Real images
+nest 8 to 10 deep, but a corrupt one can recurse for ever. Set a hard limit.
 
-**Проверка границ на каждом шаге.** Каждое поле размера читается из недоверенных
-данных. Перед любым `mid(offset, size)` проверяйте `offset + size <= buffer.size()`
-с учётом переполнения (складывайте в 64-битном типе или сравнивайте вычитанием).
+**Bounds-check at every step.** Every size field is read from untrusted data.
+Before any `mid(offset, size)`, check `offset + size <= buffer.size()` allowing
+for overflow (add in a 64-bit type, or compare by subtracting).
 
-**Нулевые размеры.** `FvLength == 0`, `fileSize == 0`, `sectionSize == 0`,
-`fitHeader->Size == 0` — все означают битую структуру и должны прерывать разбор
-соответствующего уровня, иначе получится бесконечный цикл.
+**Zero sizes.** `FvLength == 0`, `fileSize == 0`, `sectionSize == 0`,
+`fitHeader->Size == 0` — all of these mean a broken structure and must stop the
+parse of that level, or the result is an infinite loop.
 
-**Битые образы — норма.** Прошивка из дампа флеша почти всегда содержит хотя бы
-одну структуру, не соответствующую спецификации. Парсер должен собирать
-диагностические сообщения и продолжать, а не падать на первой же проблеме.
-Эталонная реализация везде использует пару «флаг + сообщение», а не немедленный
-выход.
+**Broken images are the norm.** Firmware from a flash dump almost always
+contains at least one structure that does not match the specification. A parser
+has to collect diagnostic messages and carry on rather than fall over the first
+problem. The reference implementation uses a "flag plus message" pair
+everywhere, never an immediate exit.
 
-**Padding — тоже элемент.** Всё, что не разобрано, должно попасть в дерево как
-padding с сохранением байт. Иначе пересборка образа станет невозможной.
+**Padding is an element too.** Everything that was not parsed has to end up in
+the tree as padding, with its bytes kept. Otherwise rebuilding the image becomes
+impossible.
 
-**Что нельзя двигать при пересборке.** Помеченными «fixed» должны быть:
+**What must not be moved when rebuilding.** These have to be marked "fixed":
 
-- элементы с `FFS_ATTRIB_FIXED`;
-- элемент, содержащий FIT, и все элементы, на которые FIT ссылается;
-- VTF;
-- области, покрытые защищёнными диапазонами Boot Guard;
-- регионы, перечисленные во флеш-дескрипторе и Insyde Flash Device Map.
+- elements with `FFS_ATTRIB_FIXED`;
+- the element containing the FIT, and every element the FIT refers to;
+- the VTF;
+- areas covered by Boot Guard protected ranges;
+- the regions listed in the flash descriptor and in the Insyde Flash Device Map.
 
-**Сжатые элементы.** Для элементов внутри сжатых контейнеров абсолютные адреса
-не имеют смысла: распаковщик разместит их где угодно. Соответственно, проверки
-выравнивания и адресные проверки FIT для них не выполняются.
+**Compressed elements.** Absolute addresses are meaningless for elements inside
+compressed containers: the decompressor will place them wherever it likes.
+Alignment checks and the FIT's address checks are therefore not performed for
+them.
