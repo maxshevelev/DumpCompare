@@ -22,6 +22,7 @@ let package = Package(
         .macOS(.v14)
     ],
     products: [
+        .library(name: "FITTool", targets: ["FITTool"]),
         .library(name: "FITToolUI", targets: ["FITToolUI"])
     ],
     dependencies: [

@@ -164,16 +164,23 @@ targets:
       Release: Signing.xcconfig
     sources:
       - path: DumpCompareTests
+    # Every product the suite imports, declared here rather than borrowed from
+    # the host app's own links: a test that compiles only because the app
+    # happens to link something is a test that breaks when the app stops.
     dependencies:
       - target: DumpCompare
       - package: DumpCompareCore
       - package: ALSplitView
       - package: ToolModuleKit
+      - package: UEFIImage
       - package: ZoneSketch
         product: ZoneSketchUI
+      - package: FITTool
+        product: FITTool
+      - package: FITTool
+        product: FITToolUI
       - package: UEFITool
         product: UEFIToolUI
-      - package: UEFIImage
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.maxik.DumpCompareTests

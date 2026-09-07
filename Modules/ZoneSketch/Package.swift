@@ -20,6 +20,7 @@ let package = Package(
         .macOS(.v14)
     ],
     products: [
+        .library(name: "ZoneSketch", targets: ["ZoneSketch"]),
         .library(name: "ZoneSketchUI", targets: ["ZoneSketchUI"])
     ],
     dependencies: [

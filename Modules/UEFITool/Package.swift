@@ -19,6 +19,7 @@ let package = Package(
         .macOS(.v14)
     ],
     products: [
+        .library(name: "UEFITool", targets: ["UEFITool"]),
         .library(name: "UEFIToolUI", targets: ["UEFIToolUI"])
     ],
     dependencies: [

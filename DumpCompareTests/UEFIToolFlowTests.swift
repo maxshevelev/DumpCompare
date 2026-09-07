@@ -1,7 +1,6 @@
 import XCTest
 import ToolModuleKit
 import UEFIImage
-import UEFITool
 import UEFIToolUI
 @testable import DumpCompare
 
