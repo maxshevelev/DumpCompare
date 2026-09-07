@@ -2372,6 +2372,55 @@ its map, so the whole of it is legible at a glance without opening anything.
   bookmark marks already have (§19.6.1) with the cut list as the second source of
   targets. The strip's ends clamp to the file's own start and last byte.
 
+19.4.5 The zone gutter
+
+When a tool-module has published zones for a pane
+(`Design/TOOL_MODULES_PLAN.md`), they are bracketed left of its map, so what a
+parse found is legible at a glance beside the bytes it found it in.
+
+- One bracket per zone: a stem down its lane with an arm reaching toward the map
+  at each of its two ends — a `[` around the rows it names. A zone larger than
+  the detail window keeps its stem and loses the arm at the end that is off the
+  map: an arm there would say the zone stops there. A zone thinner than
+  `zoneBracketMinHeight` is grown around its own middle, so a sixteen-byte zone
+  on a whole-file overview can still be seen and hit.
+- **Nesting is indentation.** Zones nest and never partially overlap, so a
+  child's bracket is drawn one lane inside its parent's and the gutter reads as
+  the tree it stands for. The lanes are capped at three: a UEFI parse is a dozen
+  levels deep, every lane comes off the map's own width, and the panel beside it
+  holds the tree. Deeper zones share the innermost lane.
+- The gutter exists **only** while the pane has zones, and is exactly as wide as
+  the nesting it actually shows — one indent per level past the first, plus the
+  innermost lane's arm. It sits between the panel's left inset and the map with
+  its own gap of paper, the segment strip's layout mirrored: gutter – gap – map –
+  gap – strip. A file nobody is parsing loses no width to it. The bookmark marks
+  keep out of the gutter's lanes: it claims the left margin the way the strip
+  claims the right one (§19.4.3, §19.4.4).
+- The brackets are painted in the **dump's own** zone colours: the unfocused ones
+  at half strength and single width, the focused one at full strength and double
+  width, in `HexTheme.zoneFrame` — a zone on the map and the same zone in the
+  dump are one statement about the file and must not be told apart by their
+  looks. The viewport band runs edge to edge and is painted over the gutter, as
+  it is over the strip (§19.5).
+- **Hovering a bracket names its zone**: `BIOS region — 0x100…0x2FF, 512 B` — the
+  name, the range and the size, the shape the strip's own hover text takes. A
+  zone with no name is named by its range alone. The bracket under the pointer is
+  painted at full strength — the same colour, just louder — the way the strip's
+  hovered block is. Each lane owns the column around its own stem, so pointing at
+  a parent's stem names the parent even where a child's bracket runs alongside
+  it; within one lane the smallest zone under the pointer wins, and a lane with
+  no bracket at that height falls back to whichever one is beside it.
+- A left-click **on a zone's start or its end** goes to that exact offset — the
+  two facts a bracket states — reusing the snapping a cut and a bookmark's mark
+  already have (§19.4.4, §19.6.1). The end means the zone's last byte, not the
+  half-open bound. Anywhere else on the gutter the click means what a click on
+  the panel's paper means: the byte drawn at that height.
+- A right-click on a bracket opens the menu that acts on that zone: **Select
+  Zone** — the whole range selected, and the tool-module that published it told,
+  because what the zone stands for is only the tool-module's to know. One item
+  for now: the rest of `Design/ZONES_IDEA.md` wants a tool-module with something
+  to say first.
+
 19.5 The window onto the file (detail mode)
 
 Because the detail scale is fixed, a file taller than the panel does not fit:

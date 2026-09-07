@@ -131,6 +131,7 @@ import ToolModuleKit
         // zones, so a dump left carrying them would be showing a tool-module's
         // reading of a file after that tool-module has gone.
         boundPane?.setZones(ZoneMap.empty)
+        owner?.toolZonesChanged()
         session = nil
         host = nil
         boundPane = nil
@@ -146,6 +147,9 @@ import ToolModuleKit
         let previousFocus = zones.focus
         zones = map.normalized(contentSize: host.contentSize)
         boundPane?.setZones(zones)
+        // The dump repaints from the pane's own hook; everything else that
+        // draws the map — the minimap's gutter (§19.4.5) — hears about it here.
+        owner?.toolZonesChanged()
         // A zone the tool-module has just put in focus is a zone the user is
         // being shown, so the dump goes to it — the scroll only, and only when
         // it is not on screen already. Every tool-module gets this rather than

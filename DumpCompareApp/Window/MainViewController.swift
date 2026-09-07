@@ -869,6 +869,14 @@ final class MainViewController: NSViewController {
         minimapView.segmentStripMenu = { [weak self] mapIndex, pieceIndex, point in
             self?.makeMinimapSegmentMenu(mapIndex: mapIndex, pieceIndex: pieceIndex, point: point)
         }
+        // And the zone gutter's, on the other side of each map (§19.4.5): the
+        // commands that act on the zone under the pointer. Its name and range
+        // are the bracket's own — a tool-module republishes its whole map
+        // whenever anything about it changes, so there is nothing to ask for
+        // live the way a segment's name has to be.
+        minimapView.zoneBracketMenu = { [weak self] mapIndex, zoneID in
+            self?.makeMinimapZoneMenu(mapIndex: mapIndex, zoneID: zoneID)
+        }
         // The overview bins the file into one row per pixel, so a resize changes
         // the bins and the summary has to be recomputed (§19.4).
         minimapView.onOverviewRowCountChanged = { [weak self] in
@@ -1591,9 +1599,13 @@ final class MainViewController: NSViewController {
         filePaneView(for: pane)?.revealOffsetIfOffScreen(offset)
     }
 
-    /// The published zone map changed. Stage 5 draws it; for now this is the
-    /// one place that has to learn about it.
-    func toolZonesChanged() {}
+    /// The published zone map changed — a publish, a focus moving, or a session
+    /// ending and taking the map with it. The dump repaints from the pane's own
+    /// hook (`PaneViewModel.onFullInvalidationOfZones`); the minimap's gutters
+    /// are handed the map from here (§19.4.5).
+    func toolZonesChanged() {
+        syncMinimapZones()
+    }
 
     // MARK: - Minimap (§19)
 
@@ -2620,6 +2632,27 @@ final class MainViewController: NSViewController {
         minimapView.setSegmentBlocks(blocks)
     }
 
+    /// Hands the minimap the panes' published zone maps, so the gutter left of
+    /// each map brackets what a tool-module found in that file (§19.4.5).
+    ///
+    /// Read from the panes rather than from the `ToolController`: the pane is
+    /// where the map lands once it has been clamped to the file's own size
+    /// (`ZoneMap.normalized`), so the gutter and the dump bracket exactly the
+    /// same bytes. It also means this needs no idea of which pane a session is
+    /// bound to — the other pane's map is simply empty.
+    private func syncMinimapZones() {
+        let count: Int
+        switch mode {
+        case .empty: count = 0
+        case .singleFile: count = 1
+        case .comparison: count = 2
+        }
+        minimapView.setZoneMaps((0..<count).map { index in
+            guard let pane = minimapPane(at: index), pane.isOpen else { return ZoneMap.empty }
+            return pane.zones
+        })
+    }
+
     /// Hands the minimap the open files' sizes. That is all it needs to lay its
     /// maps out — everything it draws it pulls per repaint.
     private func refreshMinimapMaps() {
@@ -2632,6 +2665,10 @@ final class MainViewController: NSViewController {
         // partition follows — and a file that opened or closed changes which
         // panes have a partition at all.
         syncMinimapSegments()
+        // The same goes for the zones a tool-module published: a file that
+        // opened, closed or changed length changes which of them there are to
+        // bracket (§19.4.5).
+        syncMinimapZones()
         // The overview's match bits are binned over the extent, so a file that
         // grew or shrank re-bins them too (§11).
         scheduleMinimapMatchSync()
@@ -2880,6 +2917,63 @@ final class MainViewController: NSViewController {
         remove.target = self
         remove.representedObject = target
         return menu
+    }
+
+    // MARK: - The zone gutter's menu (§19.4.5)
+
+    /// The zone a gutter-menu item acts on, carried in the item's
+    /// `representedObject` — the way the strip's menu carries its piece.
+    ///
+    /// The *id* rather than the zone: a tool-module can republish between the
+    /// menu opening and the item being picked, and the id is what survives that
+    /// (a tool-module keeps its ids across a rebuild, `Zone.id`). The action
+    /// looks the zone up again, so it acts on the file as it is now or on
+    /// nothing at all.
+    final class ZoneMenuTarget: NSObject {
+        let mapIndex: Int
+        let zoneID: Zone.ID
+        init(mapIndex: Int, zoneID: Zone.ID) {
+            self.mapIndex = mapIndex
+            self.zoneID = zoneID
+        }
+    }
+
+    /// The right-click menu the zone gutter offers for a bracket: what acts on
+    /// the zone under the pointer (§19.4.5).
+    ///
+    /// One item for now — Select — which is the one thing every zone can do
+    /// whatever published it. Saving a zone to a file, replacing it from one,
+    /// and the rest of `Design/ZONES_IDEA.md` belong to the tool-module that
+    /// knows what the zone *is*, and each of them wants a tool-module with
+    /// something to say first (`Zone.kind`).
+    private func makeMinimapZoneMenu(mapIndex: Int, zoneID: Zone.ID) -> NSMenu? {
+        guard let pane = minimapPane(at: mapIndex), pane.isOpen,
+              let zone = pane.zones.zones.first(where: { $0.id == zoneID }) else { return nil }
+        let menu = NSMenu()
+        // The zone's name is in the title, so the menu says what it will act on
+        // — the same rule the strip's items follow with their labels (§21.3). An
+        // unnamed zone is named by where it starts, which is all there is.
+        let title = zone.name.isEmpty
+            ? "Select Zone at \(zone.range.lowerBound.bareAddress)"
+            : "Select Zone “\(zone.name)”"
+        let select = menu.addItem(withTitle: title,
+                                  action: #selector(minimapMenuSelectZone(_:)), keyEquivalent: "")
+        select.target = self
+        select.representedObject = ZoneMenuTarget(mapIndex: mapIndex, zoneID: zoneID)
+        return menu
+    }
+
+    /// Select from the gutter's menu: the zone's whole range is selected and the
+    /// tool-module that published it is told, which is the same pair of acts the
+    /// dump's own zone menu performs (`selectZone`) — the bytes are the pane's
+    /// to select, and what the zone *stands for* only the tool-module knows.
+    @objc private func minimapMenuSelectZone(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? ZoneMenuTarget,
+              let pane = minimapPane(at: target.mapIndex), pane.isOpen,
+              let zone = pane.zones.zones.first(where: { $0.id == target.zoneID }) else { return }
+        pane.select(range: zone.range)
+        filePaneView(for: pane)?.revealOffsetCentered(zone.range.lowerBound)
+        tools.zoneSelected(zone.id, in: pane)
     }
 
     /// Save Segment… from the strip's menu: the piece under the click, written to

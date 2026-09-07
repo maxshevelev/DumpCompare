@@ -1,4 +1,5 @@
 import Cocoa
+import ToolModuleKit
 
 /// The minimap panel shown to the right of the hex panes (§19).
 ///
@@ -64,6 +65,29 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     struct SegmentBlock: Equatable {
         let range: Range<UInt64>
         let colorIndex: Int
+    }
+
+    /// One published zone as the gutter left of the map draws it
+    /// (`Design/TOOL_MODULES_PLAN.md`, `Design/ZONES_IDEA.md`): the zone
+    /// itself, plus the lane its bracket goes in.
+    ///
+    /// The lane is the zone's nesting depth — zones nest and never partially
+    /// overlap, so a child's bracket sits one lane inside its parent's and the
+    /// gutter reads as the tree it stands for. Held rather than recomputed on
+    /// every repaint because the gutter's *width* is derived from it, and the
+    /// content's left edge from that: a publish is once per parse, a layout
+    /// pass is many times a second.
+    struct ZoneBracket: Equatable {
+        let id: Zone.ID
+        let name: String
+        let range: Range<UInt64>
+        /// 0 for an outermost zone, one more for each level of nesting, capped
+        /// at `zoneMaxLanes - 1` — deeper zones share the innermost lane rather
+        /// than eating the dump's width without end.
+        let lane: Int
+        /// The zone the tool-module has in focus, drawn the way the dump draws
+        /// it: full strength and double width (§19.4.5).
+        let isFocused: Bool
     }
     /// One mini hex row of the map: the per-byte state of each of its 1...16
     /// cells (the last row of a file holds fewer when its final hex row is short).
@@ -213,6 +237,48 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// test checks is actually empty (nothing is painted in it).
     static let segmentStripGap: CGFloat = 2
 
+    /// How far one level of nesting indents its bracket (§19.4.5). Four points:
+    /// enough that two stems read as two lanes, and no more, because every one
+    /// of them comes off the map's own width — which is why the levels are
+    /// capped rather than open-ended. `Design/ZONES_IDEA.md` budgeted 8 pt a
+    /// level for the dump's gutter; the map has far less to give.
+    ///
+    /// Deliberately smaller than `zoneBracketArm`, so a parent's arm reaches
+    /// across its children's lanes. That is what a nest of brackets looks like
+    /// on paper, and it costs nothing: the arms are at the zones' ends and the
+    /// stems are between them.
+    static let zoneLaneStep: CGFloat = 4
+
+    /// The paper between the gutter and the map's content, the segment strip's
+    /// gap mirrored on the other side, so the panel reads as
+    /// gutter – gap – map – gap – strip.
+    static let zoneGutterGap: CGFloat = 2
+
+    /// How far the brackets indent before deeper zones start sharing the
+    /// innermost lane. A UEFI parse is a tree a dozen levels deep and drawing
+    /// all of it would leave no map: the panel says where the zones the
+    /// tool-module published are, and the panel beside it holds the tree.
+    static let zoneMaxLanes = 3
+
+    /// How far a bracket's arms reach toward the map from its stem — what makes
+    /// the shape a `[` and not a rule, and at this length what makes a zone's
+    /// two ends findable at a glance down a column of stems.
+    static let zoneBracketArm: CGFloat = 5
+
+    /// The shortest a bracket may be drawn. A zone of a few bytes is a fraction
+    /// of a pixel on a whole-file overview, and a bracket that thin is nothing
+    /// at all: it is grown around its own middle so the zone is visible and
+    /// hittable, at the price of a couple of points of honesty about its
+    /// extent — the same trade the viewport band's floor makes (§19.6).
+    static let zoneBracketMinHeight: CGFloat = 4
+
+    /// The stem's width, and the focused zone's. Both are the dump's own
+    /// (§19.4.5): a zone in the map and the same zone in the dump are drawn
+    /// with one hue, one pair of strengths and one pair of widths, because they
+    /// are one statement about the file.
+    static let zoneBracketLineWidth: CGFloat = 1
+    static let zoneBracketFocusedLineWidth: CGFloat = 2
+
     private(set) var mapLayout: MapLayout = .single
     /// The maps currently drawn (file sizes + selections). Readable so tests can
     /// inspect them.
@@ -230,6 +296,28 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// one under the cursor" without changing what colour it is (§19.4.4). Nil
     /// when the pointer is off every strip.
     private var hoveredStripBlock: (mapIndex: Int, pieceIndex: Int)?
+
+    /// The zones each pane's tool-module has published, as the gutter left of
+    /// its map draws them, by map index (§19.4.5). Empty for a pane with no
+    /// tool-module running — which is most panes, most of the time — and the
+    /// gutter is absent there, so a file nobody is parsing loses no width to
+    /// it. Readable so tests can assert what the gutter will draw.
+    private(set) var zoneBrackets: [[ZoneBracket]] = []
+
+    /// How many lanes each map's gutter is wide, by map index — one more than
+    /// the deepest bracket's lane, capped at `zoneMaxLanes`, and 0 for a map
+    /// with no zones.
+    ///
+    /// Derived once per publish and kept, because `contentArea` needs it and
+    /// `contentArea` runs on every repaint of every map: walking the brackets
+    /// there would make a layout question out of a drawing one.
+    private var zoneLaneCounts: [Int] = []
+
+    /// The bracket under the pointer, if any — the one `drawZoneBrackets` paints
+    /// at full strength, so the zone being pointed at reads as the one under the
+    /// cursor without changing which zone is *focused* (§19.4.5). Nil when the
+    /// pointer is off every bracket.
+    private var hoveredZoneBracket: (mapIndex: Int, bracketIndex: Int)?
 
     /// The tracking area that feeds the strip's hover highlight.
     private var stripTrackingArea: NSTrackingArea?
@@ -320,9 +408,10 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     func setMapLayout(_ layout: MapLayout) {
         guard !mapLayout.equivalent(to: layout) else { return }
         mapLayout = layout
-        // The strips move with the layout, so a hover on the old position is
-        // stale: clear it (the next mouse move re-establishes it).
+        // The strips and the gutters move with the layout, so a hover on the old
+        // position is stale: clear it (the next mouse move re-establishes it).
         hoveredStripBlock = nil
+        hoveredZoneBracket = nil
         updateTopRow()
         invalidateAll()
     }
@@ -518,7 +607,64 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     func setSegmentBlocks(_ blocks: [[SegmentBlock]]) {
         guard segmentBlocks != blocks else { return }
         segmentBlocks = blocks
+        // A first cut makes the strip appear, and with it something for a hover
+        // to name.
+        refreshHoverTooltip()
         invalidateAll()
+    }
+
+    /// Replaces the zones the gutters draw, one map at a time
+    /// (`Design/TOOL_MODULES_PLAN.md`). A publish, a focus moving, a session
+    /// ending, a file closing: all of them land here, and the guard keeps the
+    /// repaint out of the no-ops — a tool-module republishes the same map after
+    /// every edit it did not change anything with.
+    ///
+    /// The whole panel repaints rather than the gutters: the gutter's width
+    /// follows the deepest zone, so a map arriving or going moves the content's
+    /// left edge and with it every cell. That is the same trade the dump makes
+    /// (`PaneViewModel.setZones`), and for the same reason — this is once per
+    /// parse, not once per keystroke.
+    func setZoneMaps(_ maps: [ZoneMap]) {
+        let brackets = maps.map(Self.brackets(for:))
+        guard brackets != zoneBrackets else { return }
+        zoneBrackets = brackets
+        zoneLaneCounts = brackets.map { list in
+            guard let deepest = list.map(\.lane).max() else { return 0 }
+            return min(Self.zoneMaxLanes, deepest + 1)
+        }
+        // A hover on a map that has just been republished names a bracket that
+        // may not exist any more; the next mouse move re-establishes it.
+        hoveredZoneBracket = nil
+        refreshHoverTooltip()
+        invalidateAll()
+    }
+
+    /// The brackets for one published map: its zones, each in the lane its
+    /// nesting puts it in.
+    ///
+    /// `ZoneMap.normalized` has already ordered the zones by start with the
+    /// longer range first, so a parent always arrives before the children
+    /// inside it and one pass with a stack of open ranges is enough. A pair that
+    /// merely *overlaps* — which no parser produces and the model does not
+    /// forbid — fails the containment test, closes the open range and lands in
+    /// the same lane, which is the honest drawing of two zones that are not
+    /// nested.
+    static func brackets(for map: ZoneMap) -> [ZoneBracket] {
+        var open: [Range<UInt64>] = []
+        var brackets: [ZoneBracket] = []
+        brackets.reserveCapacity(map.zones.count)
+        for zone in map.zones {
+            while let last = open.last,
+                  !(last.lowerBound <= zone.range.lowerBound
+                    && zone.range.upperBound <= last.upperBound) {
+                open.removeLast()
+            }
+            brackets.append(ZoneBracket(id: zone.id, name: zone.name, range: zone.range,
+                                        lane: min(zoneMaxLanes - 1, open.count),
+                                        isFocused: zone.id == map.focus))
+            open.append(zone.range)
+        }
+        return brackets
     }
 
     /// Replaces the maps (file sizes). Selections are re-applied by the caller
@@ -661,7 +807,7 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         guard sorted != bookmarks else { return }
         let rowsMoved = sorted.map(\.row) != bookmarks.map(\.row)
         bookmarks = sorted
-        refreshBookmarkTooltip()
+        refreshHoverTooltip()
         guard rowsMoved else { return }
         invalidate(maps.indices.compactMap { bookmarkMargin(forMapAt: $0)?.strip })
     }
@@ -691,10 +837,11 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         let area = area(forMapAt: index)
         let content = contentArea(within: area, forMapAt: index)
         guard area.height > 0 else { return nil }
-        let left = content.minX - area.minX
+        // The zone gutter's claim on the left margin, and the strip's on the
+        // right (each its gap plus its own width), are not paper the marks can
+        // use, so both are deducted before the wider-margin test.
+        let left = max(0, content.minX - area.minX - zoneGutterSpan(forMapAt: index))
         var right = area.maxX - content.maxX
-        // The strip's claim on the right margin (its gap plus its width) is not
-        // paper the marks can use, so it is deducted before the wider-margin test.
         if segmentStripVisible(forMapAt: index) {
             right = max(0, right - (Self.segmentStripGap + Self.segmentStripWidth))
         }
@@ -729,10 +876,15 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         // what is tested, not the mark's box: half a mark hanging over the top
         // edge still belongs to a row that is on screen.
         guard rowY >= area.minY - Self.rowStep, rowY <= area.maxY else { return nil }
+        // The apex sits just inside the margin the mark was given, not just
+        // inside the content: with a zone gutter in the left margin (§19.4.5)
+        // the two are different edges, and the gutter's lanes are not paper a
+        // mark may point across. Without one they are the same edge, which is
+        // what they were before the gutter existed.
         return Self.marginMarkerBox(pointingRight: margin.pointsRight,
                                     apexAt: margin.pointsRight
-                                        ? content.minX - Self.overviewMarkerInset
-                                        : content.maxX + Self.overviewMarkerInset,
+                                        ? margin.strip.maxX - Self.overviewMarkerInset
+                                        : margin.strip.minX + Self.overviewMarkerInset,
                                     midY: rowY + Self.byteHeight / 2,
                                     side: Self.bookmarkMarkSide)
     }
@@ -834,12 +986,20 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// or of the list does.
     private var bookmarkTooltipTag: NSView.ToolTipTag?
 
-    private func refreshBookmarkTooltip() {
+    /// Registers (or drops) that one rect. It covers the panel whenever the
+    /// panel has anything to name — a bookmark's mark, a segment strip, a zone
+    /// gutter — because all three answer from the pointer's position through
+    /// the same `stringForToolTip`, and none of them can answer without a rect
+    /// registered.
+    private func refreshHoverTooltip() {
         if let tag = bookmarkTooltipTag {
             removeToolTip(tag)
             bookmarkTooltipTag = nil
         }
-        guard !bookmarks.isEmpty, !bounds.isEmpty else { return }
+        let hasNameableChrome = !bookmarks.isEmpty
+            || maps.indices.contains { segmentStripVisible(forMapAt: $0) }
+            || zoneBrackets.contains { !$0.isEmpty }
+        guard hasNameableChrome, !bounds.isEmpty else { return }
         bookmarkTooltipTag = addToolTip(bounds, owner: self, userData: nil)
     }
 
@@ -890,15 +1050,39 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         return ""
     }
 
+    /// The hover text for a point on a zone gutter, or "" for none: the zone's
+    /// name, its range and its size — the shape the segment strip's own answer
+    /// takes, because the two are the same kind of legend (§19.4.5, §19.4.4).
+    /// A zone with no name is named by its range alone, which is the only thing
+    /// there is to say about it.
+    func zoneBracketTooltipText(at point: NSPoint) -> String {
+        for index in zoneBrackets.indices {
+            guard let bracketIndex = zoneBracket(at: point, onMapAt: index) else { continue }
+            let bracket = zoneBrackets[index][bracketIndex]
+            let start = String(bracket.range.lowerBound, radix: 16).uppercased()
+            let end = String(bracket.range.lastByte, radix: 16).uppercased()
+            let size = FilePaneView.friendlySize(UInt64(bracket.range.count))
+            let extent = "0x\(start)…0x\(end), \(size)"
+            return bracket.name.isEmpty ? extent : "\(bracket.name) — \(extent)"
+        }
+        return ""
+    }
+
     /// What hovering the panel says: the segment strip's answer for a point on
-    /// it, else a bookmark's for a point on its mark, else nothing (no tooltip).
-    /// The strip is checked first: it is a legend the user reads, and its answer
-    /// is the more specific one where the two could overlap (§19.4.4, §19.4.3).
+    /// it, the zone gutter's for a point on a bracket, else a bookmark's for a
+    /// point on its mark, else nothing (no tooltip). The two legends are
+    /// checked before the marks: they are what the user reads, and theirs is the
+    /// more specific answer where a mark's grown hit box could reach one of them
+    /// (§19.4.4, §19.4.5, §19.4.3).
     func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag,
               point: NSPoint, userData data: UnsafeMutableRawPointer?) -> String {
         let stripText = segmentStripTooltipText(at: point)
         if !stripText.isEmpty {
             return stripText
+        }
+        let zoneText = zoneBracketTooltipText(at: point)
+        if !zoneText.isEmpty {
+            return zoneText
         }
         guard let bookmark = bookmark(atMarkPoint: point) else { return "" }
         let address = bookmark.row.bareAddress
@@ -1094,7 +1278,7 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     override func layout() {
         super.layout()
         // The tooltip covers the panel, so its rect follows the bounds.
-        refreshBookmarkTooltip()
+        refreshHoverTooltip()
         // A resize changes how many rows fit, which moves the window, and
         // re-derives the divider's position from the new bounds.
         updateTopRow()
@@ -1162,6 +1346,9 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         // to edge past it, so the band is painted over the strip to stay the
         // topmost "you are here" marker (§19.4.4).
         drawSegmentStrip(dirtyRect: dirtyRect)
+        // The zone gutter is the same kind of legend on the other side, and
+        // yields to the band for the same reason (§19.4.5).
+        drawZoneBrackets(dirtyRect: dirtyRect)
         drawViewports(dirtyRect: dirtyRect)
         // After the viewport, so a bookmark's mark is not buried under the grey
         // chevron when the two land in the same margin: there are few marks and
@@ -1334,11 +1521,16 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         // own width. Added to the padding, it is how far the content's right
         // edge retreats so the strip can sit `contentPadding` from the edge.
         let stripSpan = Self.segmentStripGap + Self.segmentStripWidth
+        // And the zone gutter's claim on the left one, the mirror of it: the
+        // lanes plus their gap of paper, or nothing at all for a pane with no
+        // published zones (§19.4.5).
+        let zoneSpan = zoneGutterSpan(forMapAt: index)
         switch mapLayout {
         case .single, .stacked:
             let rightInset = pad + (segmentStripVisible(forMapAt: index) ? stripSpan : 0)
-            return NSRect(x: area.minX + pad, y: area.minY,
-                          width: max(0, area.width - pad - rightInset),
+            let x = area.minX + pad + zoneSpan
+            return NSRect(x: x, y: area.minY,
+                          width: max(0, area.maxX - rightInset - x),
                           height: area.height)
         case .sideBySide:
             // index 0 keeps the left pad (outer edge); its strip sits in the
@@ -1350,12 +1542,15 @@ final class MinimapView: NSView, NSViewToolTipOwner {
             if index == 0 {
                 let stripVisible = segmentStripVisible(forMapAt: index)
                 let gutterSpan = Self.segmentStripGap * 2 + Self.segmentStripWidth
-                let x = area.minX + pad
+                let x = area.minX + pad + zoneSpan
                 let inner = stripVisible ? (bounds.midX - gutterSpan) : area.maxX
                 return NSRect(x: x, y: area.minY,
                               width: max(0, inner - x), height: area.height)
             }
-            let x = area.minX
+            // The right map has no left padding — the two dumps meet at the
+            // panel's gutter — so its zone gutter is all the left inset it
+            // gets, and the content starts after it.
+            let x = area.minX + zoneSpan
             let rightInset = pad + (segmentStripVisible(forMapAt: index) ? stripSpan : 0)
             let inner = area.maxX - rightInset
             return NSRect(x: x, y: area.minY,
@@ -1420,6 +1615,163 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// the callers clip to the strip.
     private func stripY(of offset: UInt64, in area: NSRect) -> CGFloat {
         y(of: offset, in: area)
+    }
+
+    // MARK: - The zone gutter (§19.4.5)
+
+    /// Whether a map has a zone gutter: only when a tool-module has published
+    /// zones for that pane. Nothing running means no gutter and no width lost
+    /// to one — the same rule the segment strip follows for an unpartitioned
+    /// pane (§19.4.4).
+    func zoneGutterVisible(forMapAt index: Int) -> Bool {
+        zoneGutterLaneCount(forMapAt: index) > 0
+    }
+
+    /// How many lanes a map's gutter is wide — one per level of nesting the
+    /// published map actually reaches, capped at `zoneMaxLanes`.
+    func zoneGutterLaneCount(forMapAt index: Int) -> Int {
+        zoneLaneCounts.indices.contains(index) ? zoneLaneCounts[index] : 0
+    }
+
+    /// The gutter's full claim on the map's left margin: its lanes plus the gap
+    /// of paper between it and the content. Zero when the pane has no zones, so
+    /// `contentArea` is untouched for a file nobody is parsing.
+    private func zoneGutterSpan(forMapAt index: Int) -> CGFloat {
+        let width = zoneGutterWidth(forMapAt: index)
+        return width > 0 ? width + Self.zoneGutterGap : 0
+    }
+
+    /// The gutter's own width: one indent per level of nesting past the first,
+    /// plus the innermost lane's arm — which is what has to fit for the deepest
+    /// bracket to be a bracket. The arms of the shallower lanes reach across the
+    /// lanes inside them and cost nothing (see `zoneLaneStep`).
+    private func zoneGutterWidth(forMapAt index: Int) -> CGFloat {
+        let lanes = zoneGutterLaneCount(forMapAt: index)
+        guard lanes > 0 else { return 0 }
+        return CGFloat(lanes - 1) * Self.zoneLaneStep + Self.zoneBracketArm
+    }
+
+    /// The column a map's brackets are drawn in, or nil when the pane has no
+    /// zones (or the map is not laid out). It runs the map's full height, so a
+    /// bracket's ends sit at the same y as the bytes they bracket in the dump.
+    ///
+    /// It sits immediately left of the content, which `contentArea` has already
+    /// retreated past — outside the dump, so a bracket never covers a byte, and
+    /// on the side the segment strip does not use, so the two legends never
+    /// share a column whatever the layout (§19.4.4, §19.4.5).
+    func zoneGutterRect(forMapAt index: Int) -> NSRect? {
+        guard zoneGutterVisible(forMapAt: index) else { return nil }
+        let area = area(forMapAt: index)
+        guard area.height > 0 else { return nil }
+        let content = contentArea(within: area, forMapAt: index)
+        let width = zoneGutterWidth(forMapAt: index)
+        let x = content.minX - Self.zoneGutterGap - width
+        guard x >= area.minX else { return nil }
+        return NSRect(x: x, y: area.minY, width: width, height: area.height)
+    }
+
+    /// The x a lane's stem sits at within `gutter`. Lane 0 — the outermost
+    /// zones — is furthest from the map, and each level of nesting steps one
+    /// lane toward it, so a child's bracket is drawn inside its parent's and
+    /// the gutter reads as the tree it stands for.
+    private func zoneLaneX(_ lane: Int, in gutter: NSRect) -> CGFloat {
+        gutter.minX + CGFloat(lane) * Self.zoneLaneStep
+    }
+
+    /// Where a bracket's ends land on a map, and whether each of them is the
+    /// zone's own boundary or just the edge of the window.
+    ///
+    /// A zone larger than the detail window has one end, or neither, off the
+    /// map: the stem is clipped to what is on screen, and the arm is left off
+    /// the clipped end — an arm there would say "the zone stops here", which is
+    /// the one thing it must not say. Nil when the zone is wholly off the map.
+    ///
+    /// Shared by the drawing, the hit-testing and the tests, like
+    /// `bookmarkMarkRect`, so what is asserted is what is painted and what the
+    /// pointer finds.
+    func zoneBracketBounds(_ bracket: ZoneBracket, forMapAt index: Int)
+        -> (top: CGFloat, bottom: CGFloat, hasStart: Bool, hasEnd: Bool)? {
+        let area = area(forMapAt: index)
+        guard area.height > 0 else { return nil }
+        let startY = y(of: bracket.range.lowerBound, in: area)
+        let endY = y(of: bracket.range.upperBound, in: area)
+        guard endY > area.minY, startY < area.maxY else { return nil }
+        var top = max(startY, area.minY)
+        var bottom = min(endY, area.maxY)
+        // A zone of a few bytes on a whole-file overview is thinner than a
+        // pixel; grown around its own middle it is a bracket the eye and the
+        // pointer can both find.
+        if bottom - top < Self.zoneBracketMinHeight {
+            let middle = (top + bottom) / 2
+            top = max(area.minY, middle - Self.zoneBracketMinHeight / 2)
+            bottom = min(area.maxY, top + Self.zoneBracketMinHeight)
+            top = max(area.minY, bottom - Self.zoneBracketMinHeight)
+        }
+        return (top, bottom, startY >= area.minY, endY <= area.maxY)
+    }
+
+    /// The bracket's own shape: a stem down the lane with an arm reaching at
+    /// each end toward the map — a `[` around the bytes it names. The arms are
+    /// what make it a bracket rather than a rule, and each one is drawn only
+    /// where the zone actually starts or ends (see `zoneBracketBounds`).
+    private func zoneBracketPath(_ bracket: ZoneBracket, in gutter: NSRect,
+                                 forMapAt index: Int) -> NSBezierPath? {
+        guard let bounds = zoneBracketBounds(bracket, forMapAt: index) else { return nil }
+        // Half a point off the lane's edge so a 1 pt stem lands on the pixel
+        // rather than across two of them.
+        let stemX = zoneLaneX(bracket.lane, in: gutter) + 0.5
+        let armX = stemX + Self.zoneBracketArm
+        let path = NSBezierPath()
+        path.move(to: NSPoint(x: stemX, y: bounds.top))
+        path.line(to: NSPoint(x: stemX, y: bounds.bottom))
+        if bounds.hasStart {
+            path.move(to: NSPoint(x: stemX, y: bounds.top))
+            path.line(to: NSPoint(x: armX, y: bounds.top))
+        }
+        if bounds.hasEnd {
+            path.move(to: NSPoint(x: stemX, y: bounds.bottom))
+            path.line(to: NSPoint(x: armX, y: bounds.bottom))
+        }
+        return path
+    }
+
+    /// Draws the zone gutters: one bracket per published zone, in the dump's own
+    /// teal (§19.4.5).
+    ///
+    /// The colours are exactly the dump's: `HexTheme.zoneFrame` at
+    /// `HexView.zoneAlpha`, and the focused zone at `HexView.zoneFocusedAlpha`
+    /// and double width — a zone in the map and the same zone in the dump are
+    /// one statement about the file and must not be told apart by their looks.
+    /// The bracket under the pointer goes to full strength, keeping its own
+    /// width: the same colour, just louder, which is how the segment strip says
+    /// "this is the one you are pointing at" (§19.4.4).
+    ///
+    /// Faint first, so a focused zone's bracket is never crossed by a
+    /// neighbour's — zones nest, and the inner one is usually the focus, the
+    /// same order `HexView.zoneShapes` draws in.
+    private func drawZoneBrackets(dirtyRect: NSRect) {
+        for index in zoneBrackets.indices where maps.indices.contains(index) {
+            guard let gutter = zoneGutterRect(forMapAt: index),
+                  gutter.intersects(dirtyRect) else { continue }
+            let order = zoneBrackets[index].indices.sorted {
+                !zoneBrackets[index][$0].isFocused && zoneBrackets[index][$1].isFocused
+            }
+            for bracketIndex in order {
+                let bracket = zoneBrackets[index][bracketIndex]
+                guard let path = zoneBracketPath(bracket, in: gutter, forMapAt: index),
+                      path.bounds.insetBy(dx: -1, dy: -1).intersects(dirtyRect) else { continue }
+                let isHovered = hoveredZoneBracket?.mapIndex == index
+                    && hoveredZoneBracket?.bracketIndex == bracketIndex
+                let alpha = isHovered
+                    ? 1
+                    : (bracket.isFocused ? HexView.zoneFocusedAlpha : HexView.zoneAlpha)
+                HexTheme.zoneFrame.withAlphaComponent(alpha).setStroke()
+                path.lineWidth = bracket.isFocused
+                    ? Self.zoneBracketFocusedLineWidth
+                    : Self.zoneBracketLineWidth
+                path.stroke()
+            }
+        }
     }
 
     /// The overview's column geometry: 16 *contiguous* cells across the content
@@ -1761,6 +2113,13 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     }
 
     /// The overview's 16 column origins for a content region, for tests.
+    /// A map's padded content region — what the cells are drawn in, and what the
+    /// segment strip and the zone gutter each push in from their own side. The
+    /// tests read it to assert what a legend costs the map (§19.4.4, §19.4.5).
+    func contentAreaForTesting(forMapAt index: Int) -> NSRect {
+        contentArea(within: area(forMapAt: index), forMapAt: index)
+    }
+
     func overviewColumnLayoutForTesting(in area: NSRect) -> [(x: CGFloat, width: CGFloat)] {
         overviewColumnLayout(in: area)
     }
@@ -2384,6 +2743,15 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// on a strip piece, or the controller offers no menu.
     var segmentStripMenu: ((_ mapIndex: Int, _ pieceIndex: Int, _ point: NSPoint) -> NSMenu?)?
 
+    /// The right-click menu for a bracket on a zone gutter, built by the
+    /// controller to act on the zone it stands for (§19.4.5). Nil when the
+    /// controller offers no menu — a zone it no longer has.
+    ///
+    /// No anchor point, unlike the strip's menu: the menu pops up at the event
+    /// and nothing a zone offers is a popover that has to point somewhere. The
+    /// day one is, this grows the argument the strip's already has.
+    var zoneBracketMenu: ((_ mapIndex: Int, _ zoneID: Zone.ID) -> NSMenu?)?
+
     /// The byte offset a y on a map stands for — the inverse of `y(of:in:)`. In
     /// detail the window's first row is the base; in overview the whole extent
     /// spans the drawn rows. Clamped to the file's start.
@@ -2413,17 +2781,91 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         return segmentBlocks[index].firstIndex { $0.range.contains(offset) }
     }
 
+    /// The bracket under a point on map `index`'s gutter, if any — the index
+    /// into `zoneBrackets[index]` of the zone a hover or a right-click names.
+    ///
+    /// The lane nearest the pointer answers first, and each lane owns the half
+    /// an indent on either side of its stem: pointing at a parent's stem names
+    /// the parent even where a child's bracket runs alongside it, which a span
+    /// wide enough to cover the arms would not do. Within one lane the
+    /// *shortest* zone containing the point wins — deeper zones share the
+    /// innermost lane once the nesting runs past `zoneMaxLanes`, and the
+    /// smallest zone under the pointer is the one being aimed at, the same rule
+    /// the dump's own zone menu follows.
+    ///
+    /// A point in a lane that has no bracket at that height falls back to any
+    /// lane's, so the pointer finds the one bracket beside it rather than
+    /// nothing: the gutter is mostly paper, and a zone map is sparse.
+    ///
+    /// The vertical reach is the snap distance either way, because a bracket is
+    /// a one-point line and one nobody can hit is one that does not answer.
+    func zoneBracket(at point: NSPoint, onMapAt index: Int) -> Int? {
+        guard zoneBrackets.indices.contains(index),
+              let gutter = zoneGutterRect(forMapAt: index) else { return nil }
+        let reach = Self.bookmarkSnapDistance
+        guard gutter.insetBy(dx: -reach, dy: -reach).contains(point) else { return nil }
+        let lanes = zoneGutterLaneCount(forMapAt: index)
+        let nearestLane = min(lanes - 1, max(0, Int((
+            (point.x - gutter.minX) / Self.zoneLaneStep).rounded())))
+
+        func smallest(in lane: Int?) -> Int? {
+            var best: (index: Int, length: UInt64)?
+            for (bracketIndex, bracket) in zoneBrackets[index].enumerated() {
+                if let lane, bracket.lane != lane { continue }
+                guard let bounds = zoneBracketBounds(bracket, forMapAt: index),
+                      point.y >= bounds.top - reach,
+                      point.y <= bounds.bottom + reach else { continue }
+                let length = UInt64(bracket.range.count)
+                if best == nil || length < best!.length {
+                    best = (bracketIndex, length)
+                }
+            }
+            return best?.index
+        }
+        return smallest(in: nearestLane) ?? smallest(in: nil)
+    }
+
+    /// The bracket under `point`, whichever map's gutter it is on — what the
+    /// hover highlight names.
+    private func zoneBracketHit(at point: NSPoint) -> (mapIndex: Int, bracketIndex: Int)? {
+        for index in zoneBrackets.indices {
+            if let bracketIndex = zoneBracket(at: point, onMapAt: index) {
+                return (index, bracketIndex)
+            }
+        }
+        return nil
+    }
+
+    /// Sets the hovered bracket, repainting only the gutters that change — the
+    /// one the pointer left and the one it landed on. A hover is not a file
+    /// change, so it must not repaint the maps (§19.9).
+    private func setHoveredZoneBracket(_ hit: (mapIndex: Int, bracketIndex: Int)?) {
+        guard hoveredZoneBracket?.mapIndex != hit?.mapIndex
+            || hoveredZoneBracket?.bracketIndex != hit?.bracketIndex else { return }
+        var rects: [NSRect] = []
+        if let old = hoveredZoneBracket, let gutter = zoneGutterRect(forMapAt: old.mapIndex) {
+            rects.append(gutter)
+        }
+        if let new = hit, let gutter = zoneGutterRect(forMapAt: new.mapIndex) {
+            rects.append(gutter)
+        }
+        hoveredZoneBracket = hit
+        invalidate(rects)
+    }
+
     /// The pointer moved over the panel: update the strip's hover highlight.
     /// The highlight is the only thing a move changes — the maps and the band
     /// are untouched, so no scroll and no caret move ride on a hover.
     override func mouseMoved(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         setHoveredStripBlock(stripBlock(at: point))
+        setHoveredZoneBracket(zoneBracketHit(at: point))
     }
 
-    /// The pointer left the panel: clear the strip's hover highlight.
+    /// The pointer left the panel: clear both legends' hover highlights.
     override func mouseExited(with event: NSEvent) {
         setHoveredStripBlock(nil)
+        setHoveredZoneBracket(nil)
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -2434,6 +2876,12 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         // Checked before the band, which runs edge to edge and would otherwise
         // swallow the strip's clicks as a drag.
         if let (mapIndex, offset) = segmentStripClick(at: point) {
+            onSelectOffset?(mapIndex, offset)
+            return
+        }
+        // And a click on a zone's own end goes to that end, for the same reason
+        // and ahead of the band for the same one (§19.4.5).
+        if let (mapIndex, offset) = zoneBracketClick(at: point) {
             onSelectOffset?(mapIndex, offset)
             return
         }
@@ -2572,6 +3020,44 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// The cut nearest `point` on map `index`, within the snap distance of it.
     /// The cuts are the block boundaries — each block's start, except the first,
     /// which is the file start, not a cut — and the nearest is by the cut's own y.
+    // MARK: - The zone gutter's click (§19.4.5)
+
+    /// The map and byte a click on a zone gutter stands for: the nearer of the
+    /// zone's two ends, when one is within the snap distance of the click.
+    ///
+    /// A zone's start and its end are the two facts a bracket states, so they
+    /// are what the click snaps to — the way a click on the segment strip snaps
+    /// to a cut (§19.4.4) and a click near a bookmark's mark to its row
+    /// (§19.6.1). Nil anywhere else on the gutter, including the middle of a
+    /// long bracket: there the click means the byte drawn at that height, which
+    /// is what the panel already does with a click on its paper, and it would
+    /// be a worse answer to send the pane to the top of a zone the user pointed
+    /// at the middle of. Internal so tests can assert the target without
+    /// synthesizing clicks.
+    func zoneBracketClick(at point: NSPoint) -> (mapIndex: Int, offset: UInt64)? {
+        for index in zoneBrackets.indices where maps.indices.contains(index) {
+            guard let bracketIndex = zoneBracket(at: point, onMapAt: index) else { continue }
+            let bracket = zoneBrackets[index][bracketIndex]
+            let area = area(forMapAt: index)
+            var best: (offset: UInt64, distance: CGFloat)?
+            // The end is the last byte, not the half-open bound: the bound is
+            // the first byte *after* the zone, and taking the pane there would
+            // put the caret outside the thing that was clicked (§0).
+            let ends = [(bracket.range.lowerBound, y(of: bracket.range.lowerBound, in: area)),
+                        (bracket.range.lastByte, y(of: bracket.range.upperBound, in: area))]
+            for (offset, endY) in ends {
+                let distance = abs(point.y - endY)
+                guard distance <= Self.bookmarkSnapDistance else { continue }
+                if best == nil || distance < best!.distance {
+                    best = (offset, distance)
+                }
+            }
+            guard let best else { continue }
+            return (index, min(best.offset, max(maps[index].fileSize, 1) - 1))
+        }
+        return nil
+    }
+
     private func nearestCut(to point: NSPoint, in index: Int) -> (mapIndex: Int, offset: UInt64)? {
         let area = area(forMapAt: index)
         var best: (offset: UInt64, distance: CGFloat)?
@@ -2670,6 +3156,15 @@ final class MinimapView: NSView, NSViewToolTipOwner {
         for index in maps.indices {
             guard let pieceIndex = segmentPiece(at: point, onMapAt: index) else { continue }
             if let menu = segmentStripMenu?(index, pieceIndex, point) {
+                NSMenu.popUpContextMenu(menu, with: event, for: self)
+                return
+            }
+        }
+        // The zone gutter's own menu, on the other side of the map — the
+        // commands that act on the zone under the pointer (§19.4.5).
+        for index in zoneBrackets.indices {
+            guard let bracketIndex = zoneBracket(at: point, onMapAt: index) else { continue }
+            if let menu = zoneBracketMenu?(index, zoneBrackets[index][bracketIndex].id) {
                 NSMenu.popUpContextMenu(menu, with: event, for: self)
                 return
             }
