@@ -45,6 +45,8 @@ import ZoneSketch
         table.style = .inset
         table.usesAlternatingRowBackgroundColors = true
         table.allowsMultipleSelection = false
+        // The column order is the design's, not a drag target.
+        table.allowsColumnReordering = false
         table.rowSizeStyle = .small
         table.dataSource = self
         table.delegate = self

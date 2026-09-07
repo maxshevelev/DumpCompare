@@ -212,6 +212,8 @@ final class FavoritePatternsSettingsViewController: NSViewController,
         // autoresizing left 83 pt of the table empty on the right, which is the
         // width the pattern was supposed to be given.
         table.columnAutoresizingStyle = .noColumnAutoresizing
+        // The columns are fixed; only the rows are dragged (§11).
+        table.allowsColumnReordering = false
         self.table = table
 
         // The order is the user's, so it is dragged (§11).

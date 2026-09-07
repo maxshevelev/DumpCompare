@@ -78,6 +78,8 @@ final class LibraryConflictSheetController: SheetViewController {
         table.usesAlternatingRowBackgroundColors = true
         table.style = .inset
         table.allowsMultipleSelection = false
+        // The column order is the design's, not a drag target.
+        table.allowsColumnReordering = false
 
         func column(_ id: NSUserInterfaceItemIdentifier, _ title: String, width: CGFloat) -> NSTableColumn {
             let column = NSTableColumn(identifier: id)

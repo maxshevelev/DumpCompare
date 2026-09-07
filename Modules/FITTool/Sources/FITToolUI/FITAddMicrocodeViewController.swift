@@ -93,6 +93,8 @@ import FITTool
         table.allowsMultipleSelection = false
         table.rowSizeStyle = .small
         table.columnAutoresizingStyle = .noColumnAutoresizing
+        // The column order is the design's, not a drag target.
+        table.allowsColumnReordering = false
         table.dataSource = self
         table.delegate = self
         table.target = self
