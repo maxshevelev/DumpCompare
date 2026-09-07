@@ -127,7 +127,7 @@ final class FITToolFlowTests: XCTestCase {
         )
         XCTAssertEqual(display.rows.map(\.typeText), ["FIT Header", "Microcode"])
         XCTAssertEqual(display.rows[1].targetText,
-                       "CPUID 806EA · r. F0 · len 0x100 · 2019-07-15")
+                       "CPUID 806EA · r.F0 · len 0x100 · 2019-07-15")
         XCTAssertTrue(display.problems.filter { $0.severity == .error }.isEmpty)
     }
 
@@ -170,6 +170,26 @@ final class FITToolFlowTests: XCTestCase {
         let labels = Set(descendants(of: panel, NSTextField.self).map(\.stringValue))
         XCTAssertTrue(labels.contains("CPUID"), "the detail shows a CPUID label")
         XCTAssertTrue(labels.contains("806EA"), "the detail shows the CPUID value")
+    }
+
+    /// The detail is the lower pane of the splitter, and it has height — a
+    /// row's fields are not a sliver the user has to work out is supposed to
+    /// be there. The problems list is capped against the splitter's own height,
+    /// not the entries scroll inside it: a constraint that reaches into a split
+    /// view's subview fights the split view's layout and is how the detail
+    /// loses the height it is owed.
+    func testTheDetailPanelHasRoomToShowItsFields() throws {
+        _ = try open(FITTestImage.make())
+        try entriesTable().selectRowIndexes([1], byExtendingSelection: false)
+        window?.layoutIfNeeded()
+
+        let panel = try XCTUnwrap(controller?.tools.panel)
+        let splitter = try XCTUnwrap(descendants(of: panel, NSSplitView.self).first,
+                                     "the panel has a splitter")
+        let detail = try XCTUnwrap(splitter.subviews.last as? NSScrollView,
+                                   "the splitter's lower pane is the detail")
+        XCTAssertGreaterThan(detail.frame.height, 60,
+                             "the detail has room to show a row's fields")
     }
 
     /// A row exists to point somewhere, and going there puts the component in
@@ -410,7 +430,7 @@ final class FITToolFlowTests: XCTestCase {
         let display = try session().display
         XCTAssertEqual(display.rows.count, 2, "replaced, not added a second time")
         XCTAssertEqual(display.rows[1].targetRange, 0x2000..<0x2100)
-        XCTAssertTrue(display.rows[1].targetText.contains("r. F1"),
+        XCTAssertTrue(display.rows[1].targetText.contains("r.F1"),
                       "\(display.rows[1].targetText)")
         XCTAssertEqual(try pane.byteStorage?.read(at: 0x2100, length: 4),
                        [0xFF, 0xFF, 0xFF, 0xFF], "nothing was written past it")

@@ -278,7 +278,7 @@ public enum FITPresenter {
             // closes the line.
             parts = [
                 "CPUID \(cpuid(header.processorSignature))",
-                "r. \(String(header.updateRevision, radix: 16, uppercase: true))"
+                "r.\(String(header.updateRevision, radix: 16, uppercase: true))"
             ]
             if let size = row.effectiveSize {
                 parts.append("len \(hex(size))")

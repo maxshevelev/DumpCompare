@@ -193,13 +193,15 @@ import FITTool
         view.addSubview(buttons)
         view.addSubview(bottomRow)
 
-        // As tall as it needs to be, up to half the entries' height, and no
+        // As tall as it needs to be, up to half the splitter's height, and no
         // height at all when there is nothing to say — an empty box under a
         // table that checks out is a box the user has to work out the meaning
         // of, and a half-height box under one line is a lie about how much is
-        // wrong.
+        // wrong. The cap is on the splitter, not on the entries scroll inside
+        // it: a constraint that reaches into a split view's subview fights the
+        // split view's own layout and is how the detail below loses its height.
         let ratio = problemsScroll.heightAnchor.constraint(
-            lessThanOrEqualTo: entriesScroll.heightAnchor, multiplier: 0.5
+            lessThanOrEqualTo: splitter.heightAnchor, multiplier: 0.5
         )
         problemsRatio = ratio
         let content = problemsScroll.heightAnchor.constraint(equalToConstant: 0)

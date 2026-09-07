@@ -92,7 +92,7 @@ final class FITDisplayTests: XCTestCase {
         XCTAssertEqual(row.typeText, "Microcode")
         XCTAssertEqual(row.addressText, "0xFFFF2000")
         XCTAssertEqual(row.cpuidText, "806EA")
-        XCTAssertEqual(row.targetText, "CPUID 806EA · r. F0 · len 0x180 · 2019-07-15")
+        XCTAssertEqual(row.targetText, "CPUID 806EA · r.F0 · len 0x180 · 2019-07-15")
         XCTAssertEqual(row.targetRange, microcode..<(microcode + 0x180))
         XCTAssertFalse(row.hasProblem)
     }
