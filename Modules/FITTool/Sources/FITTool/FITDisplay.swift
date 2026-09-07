@@ -39,12 +39,12 @@ public struct FITDisplayRow: Equatable, Sendable {
         targetRange == nil ? zoneID : FITPresenter.targetZoneID(index)
     }
 
-    /// What the right-button menu offers here. Every row offers its offset; a
-    /// row that leads to microcode offers the CPUID as well.
+    /// What the right-button menu offers here. Every row leads with its offset
+    /// — going where the row points is the point of the row — and a row that
+    /// leads to microcode offers the CPUID as well.
     public var commands: [FITRowCommand] {
-        var commands: [FITRowCommand] = []
+        var commands: [FITRowCommand] = [.goToOffset(offsetToGoTo)]
         if let cpuidText { commands.append(.copyCPUID(cpuidText)) }
-        commands.append(.goToOffset(offsetToGoTo))
         if canRemove { commands.append(.removeEntry(index)) }
         return commands
     }
@@ -206,9 +206,8 @@ public enum FITPresenter {
             parts.append("checksum unused")
         } else if table.checksumIsCorrect {
             parts.append("checksum \(hex(UInt64(table.storedChecksum), digits: 2))")
-        } else {
-            parts.append("checksum \(hex(UInt64(table.storedChecksum), digits: 2)),"
-                + " should be \(hex(UInt64(table.computedChecksum), digits: 2))")
+            // A wrong checksum is not restated here: it is a problem, and the
+            // list below already says so in red, where it is meant to be read.
         }
         return parts.joined(separator: " · ")
     }
@@ -251,11 +250,18 @@ public enum FITPresenter {
         case .outsideTheImage:
             return "outside this image"
         case .microcode(let header):
+            // The CPUID is what a bench hunts for, so it leads and is labelled;
+            // the offset is dropped — the Address column already says it — the
+            // length is labelled, and the date closes the line.
             parts = [
-                cpuid(header.processorSignature),
-                "rev \(String(header.updateRevision, radix: 16, uppercase: true))",
-                header.date
+                "CPUID: \(cpuid(header.processorSignature))",
+                "rev \(String(header.updateRevision, radix: 16, uppercase: true))"
             ]
+            if let size = row.effectiveSize {
+                parts.append("Size: \(hex(size))")
+            }
+            parts.append(header.date)
+            return parts.joined(separator: " · ")
         case .emptyMicrocodeSlot:
             parts = ["empty slot"]
         case .bytes(_, let description):

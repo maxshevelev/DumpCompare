@@ -74,6 +74,7 @@ struct FITParkedState: ToolSessionState {
         self.host = host
         controller.onSelect = { [weak self] index in self?.select(index) }
         controller.onGoToTarget = { [weak self] index in self?.goToOffset(of: index) }
+        controller.onSelectTable = { [weak self] in self?.showTable() }
         controller.onCopyCPUID = { [weak self] index in self?.copyCPUID(of: index) }
         controller.onRemoveEntry = { [weak self] index in self?.removeEntry(at: index) }
         controller.onAddMicrocode = { [weak self] in self?.addMicrocode() }
@@ -230,6 +231,19 @@ struct FITParkedState: ToolSessionState {
         focus = index
         show(display.focusingTarget(of: index))
         host.reveal(row.offsetToGoTo..<(row.offsetToGoTo + 1), select: false)
+    }
+
+    /// The title names the table, not a row: clicking it puts the whole table
+    /// in focus and takes the dump there. A read with no table has nothing to
+    /// focus, so it does nothing rather than clear a focus the user set.
+    ///
+    /// Public because a click on the title is driven the same way the panel's
+    /// other clicks are — through the session, not a simulated mouse.
+    public func showTable() {
+        guard let range = display.zones.zones.first(where: { $0.id == FITPresenter.tableZoneID })?.range
+        else { return }
+        show(display.focusing(zoneID: FITPresenter.tableZoneID))
+        host.reveal(range, select: false)
     }
 
     /// The user picked one of our zones in the dump. The bytes are already

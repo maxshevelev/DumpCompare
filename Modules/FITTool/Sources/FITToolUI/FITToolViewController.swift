@@ -9,6 +9,7 @@ import FITTool
 @MainActor final class FITToolViewController: NSViewController {
     var onSelect: ((Int?) -> Void)?
     var onGoToTarget: ((Int) -> Void)?
+    var onSelectTable: (() -> Void)?
     var onCopyCPUID: ((Int) -> Void)?
     var onRemoveEntry: ((Int) -> Void)?
     var onAddMicrocode: (() -> Void)?
@@ -65,6 +66,12 @@ import FITTool
         summaryLabel.font = .systemFont(ofSize: 11, weight: .medium)
         summaryLabel.lineBreakMode = .byTruncatingTail
         summaryLabel.translatesAutoresizingMaskIntoConstraints = false
+        // The title names the table; clicking it takes the dump there and puts
+        // the whole table in focus rather than a row.
+        summaryLabel.toolTip = "Show the whole table in the dump"
+        summaryLabel.addGestureRecognizer(
+            NSClickGestureRecognizer(target: self, action: #selector(summaryClicked))
+        )
 
         configure(entries, doubleAction: #selector(entryDoubleClicked))
         // Fixed widths, and the table scrolls sideways when they do not fit.
@@ -313,6 +320,7 @@ import FITTool
 
     @objc private func fixChecksumClicked() { onFixChecksum?() }
     @objc private func addMicrocodeClicked() { onAddMicrocode?() }
+    @objc private func summaryClicked() { onSelectTable?() }
 
     @objc private func removeEntryClicked() {
         guard let row = selectedEntry() else { return }

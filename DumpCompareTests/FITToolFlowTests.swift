@@ -127,7 +127,7 @@ final class FITToolFlowTests: XCTestCase {
         )
         XCTAssertEqual(display.rows.map(\.typeText), ["FIT Header", "Microcode"])
         XCTAssertEqual(display.rows[1].targetText,
-                       "806EA · rev F0 · 2019-07-15 · 0x2000 · 0x100")
+                       "CPUID: 806EA · rev F0 · Size: 0x100 · 2019-07-15")
         XCTAssertTrue(display.problems.filter { $0.severity == .error }.isEmpty)
     }
 
@@ -167,6 +167,42 @@ final class FITToolFlowTests: XCTestCase {
         XCTAssertEqual(controller.windowModel.pane1.zones.focus, "fit.target.1")
         XCTAssertEqual(controller.windowModel.pane1.caretOffset, 0x2000)
         XCTAssertEqual(try session().display.rows.first { $0.index == 1 }?.index, 1)
+    }
+
+    /// The "FIT at …" title is clickable, and clicking it puts the whole table
+    /// in focus and takes the dump there — not a row, since the title stands
+    /// for the table.
+    func testClickingTheTitleShowsTheWholeTable() throws {
+        let controller = try open(FITTestImage.make())
+        let pane = controller.windowModel.pane1
+        let panel = try XCTUnwrap(controller.tools.panel)
+
+        // The title is the summary label, and it is the one thing in the panel
+        // that is clickable.
+        let title = try XCTUnwrap(descendants(of: panel, NSTextField.self).first {
+            $0.stringValue.hasPrefix("FIT at")
+        })
+        XCTAssertTrue(
+            (title.gestureRecognizers ?? []).contains(where: { $0 is NSClickGestureRecognizer }),
+            "the title must be clickable"
+        )
+
+        // A click on a label cannot be simulated the way a button's can, so
+        // this drives what the click calls.
+        try session().showTable()
+
+        XCTAssertEqual(pane.zones.focus, "fit.table")
+        XCTAssertEqual(pane.caretOffset, 0x1000)
+    }
+
+    /// With no table there is nothing to show, so the title does nothing rather
+    /// than clear a focus the user set.
+    func testTheTitleDoesNothingWithoutATable() throws {
+        _ = try open([UInt8](repeating: 0xAA, count: 0x1000))
+
+        try session().showTable()
+
+        XCTAssertTrue(controller?.windowModel.pane1.zones.zones.isEmpty ?? false)
     }
 
     /// Every microcode in the table is outlined in the dump from the moment it

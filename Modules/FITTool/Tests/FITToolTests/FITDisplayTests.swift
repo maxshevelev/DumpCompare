@@ -37,10 +37,12 @@ final class FITDisplayTests: XCTestCase {
         )
     }
 
-    func testTheSummarySaysWhatTheChecksumShouldHaveBeen() {
+    /// A wrong checksum is a problem, and the list below says so in red — so
+    /// the summary keeps only what is not an error and does not restate it.
+    func testTheSummaryDoesNotRestateAWrongChecksum() {
         XCTAssertEqual(
             display([microcodeRow], checksum: 0xCC).summary,
-            "FIT at 0x1000 · 1 entry · checksum 0xCC, should be 0x5C"
+            "FIT at 0x1000 · 1 entry"
         )
     }
 
@@ -90,7 +92,7 @@ final class FITDisplayTests: XCTestCase {
         XCTAssertEqual(row.typeText, "Microcode")
         XCTAssertEqual(row.addressText, "0xFFFF2000")
         XCTAssertEqual(row.cpuidText, "806EA")
-        XCTAssertEqual(row.targetText, "806EA · rev F0 · 2019-07-15 · 0x2000 · 0x180")
+        XCTAssertEqual(row.targetText, "CPUID: 806EA · rev F0 · Size: 0x180 · 2019-07-15")
         XCTAssertEqual(row.targetRange, microcode..<(microcode + 0x180))
         XCTAssertFalse(row.hasProblem)
     }
@@ -201,8 +203,8 @@ final class FITDisplayTests: XCTestCase {
     func testAMicrocodeRowOffersItsCpuidAndItsOffset() {
         let rows = display([microcodeRow]).rows
 
-        XCTAssertEqual(rows[1].commands, [.copyCPUID("806EA"), .goToOffset(microcode)])
-        XCTAssertEqual(rows[1].commands.map(\.title), ["Copy CPUID", "Go to Offset"])
+        XCTAssertEqual(rows[1].commands, [.goToOffset(microcode), .copyCPUID("806EA")])
+        XCTAssertEqual(rows[1].commands.map(\.title), ["Go to Offset", "Copy CPUID"])
     }
 
     /// A row that points nowhere — the header, an empty slot — still has an
