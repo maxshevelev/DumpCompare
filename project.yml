@@ -24,6 +24,12 @@ packages:
     path: Modules/ZoneSketch
   FITTool:
     path: Modules/FITTool
+  UEFITool:
+    path: Modules/UEFITool
+  # The shared parser. The tool-modules depend on it transitively, but the app's
+  # flow tests build a UEFI image by hand and so import it directly.
+  UEFIFormat:
+    path: UEFIFormat
 
 targets:
   DumpCompare:
@@ -47,6 +53,8 @@ targets:
         product: ZoneSketchUI
       - package: FITTool
         product: FITToolUI
+      - package: UEFITool
+        product: UEFIToolUI
     entitlements:
       path: DumpCompareApp/DumpCompare.entitlements
       properties:
@@ -145,6 +153,9 @@ targets:
       - package: ToolModuleKit
       - package: ZoneSketch
         product: ZoneSketchUI
+      - package: UEFITool
+        product: UEFIToolUI
+      - package: UEFIFormat
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.maxik.DumpCompareTests
