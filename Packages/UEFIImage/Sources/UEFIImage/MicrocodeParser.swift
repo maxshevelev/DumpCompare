@@ -81,6 +81,9 @@ public struct MicrocodeHeader: Equatable, Sendable {
     public var platformIDs: UInt32
     public var dataSize: UInt32
     public var totalSize: UInt32
+    /// Whether the image's dwords, this field included, sum to zero (§7.1) —
+    /// the check the loader runs, so a panel can say the checksum counts or not.
+    public var checksumIsCorrect: Bool
 
     public static let size: UInt64 = 0x30
 
@@ -109,6 +112,13 @@ public struct MicrocodeHeader: Equatable, Sendable {
               )
         else { return nil }
 
+        // The image's dwords, the checksum field included, must sum to zero
+        // (§7.1). The range is the whole image as `totalSize` declares it; a
+        // truncated or ragged one has no zero sum, so it reads as not counting.
+        let checksumIsCorrect = Checksums.sum32(
+            of: offset..<(offset + UInt64(totalSize)), in: reader
+        ) == 0
+
         return MicrocodeHeader(
             offset: offset,
             updateRevision: updateRevision,
@@ -117,7 +127,8 @@ public struct MicrocodeHeader: Equatable, Sendable {
             checksum: checksum,
             platformIDs: platformIDs,
             dataSize: dataSize,
-            totalSize: totalSize
+            totalSize: totalSize,
+            checksumIsCorrect: checksumIsCorrect
         )
     }
 

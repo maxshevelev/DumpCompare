@@ -195,6 +195,19 @@ final class TopLevelParseTests: XCTestCase {
         XCTAssertEqual(header?.range, 0..<0x70)
     }
 
+    /// The header carries whether the image's dwords sum to zero, so a panel
+    /// can say the checksum counts without re-reading the image.
+    func testTheHeaderSaysWhetherItsImageSumsToZero() {
+        let good = MicrocodeHeader.read(at: 0, in: ImageReader(TestImage.microcode()))
+        XCTAssertTrue(good?.checksumIsCorrect ?? false)
+
+        // A checksum that does not make the sum zero reads as not counting.
+        let bad = MicrocodeHeader.read(
+            at: 0, in: ImageReader(TestImage.microcode(checksum: 0xDEAD_BEEF))
+        )
+        XCTAssertFalse(bad?.checksumIsCorrect ?? true)
+    }
+
     func testBytesThatAreNotMicrocodeReadBackAsNothing() {
         XCTAssertNil(MicrocodeHeader.read(
             at: 0, in: ImageReader([UInt8](repeating: 0xFF, count: 0x100))

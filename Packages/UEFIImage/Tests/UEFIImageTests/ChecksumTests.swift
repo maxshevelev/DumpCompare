@@ -56,6 +56,17 @@ final class ChecksumTests: XCTestCase {
         XCTAssertNil(Checksums.sum32(of: 0..<6, in: reader))
     }
 
+    /// The one spelling of a checksum that carries a validity bit: the value in
+    /// hex, and whether the structure says it counts, in words. Shared, so the
+    /// panels read it the same.
+    func testTheChecksumWithValidityReadsAsOneLine() {
+        XCTAssertEqual(Checksums.text(0x5C, valid: true), "0x5C (Valid)")
+        XCTAssertEqual(Checksums.text(0x5C, valid: false), "0x5C (Invalid)")
+        // A narrow value is padded to the field's width, not left ragged.
+        XCTAssertEqual(Checksums.text(0, valid: false), "0x00 (Invalid)")
+        XCTAssertEqual(Checksums.text(0x1, valid: true, digits: 4), "0x0001 (Valid)")
+    }
+
     func testAligningUp() {
         XCTAssertEqual(alignUp(0x11, to: 8), 0x18)
         XCTAssertEqual(alignUp(0x18, to: 8), 0x18)
