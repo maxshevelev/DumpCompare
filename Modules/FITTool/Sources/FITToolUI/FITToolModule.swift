@@ -77,7 +77,8 @@ struct FITParkedState: ToolSessionState {
         controller.onGoToTarget = { [weak self] index in self?.goToOffset(of: index) }
         controller.onSelectTable = { [weak self] in self?.showTable() }
         controller.onCopyCPUID = { [weak self] index in self?.copyCPUID(of: index) }
-        controller.onRemoveEntry = { [weak self] index in self?.removeEntry(at: index) }
+        controller.onReplaceMicrocode = { [weak self] index in self?.replaceMicrocode(at: index) }
+        controller.onRemoveMicrocode = { [weak self] index in self?.removeMicrocode(at: index) }
         controller.onAddMicrocode = { [weak self] in self?.addMicrocode() }
         controller.onGoToProblem = { [weak self] index in self?.goToProblem(index) }
         controller.onFixChecksum = { [weak self] in self?.fixChecksum() }
@@ -312,6 +313,44 @@ struct FITParkedState: ToolSessionState {
         }
     }
 
+    /// The row's "Replace Microcode": the same catalogue, but the form names
+    /// itself after the replacing and its button does the replacing. The
+    /// replacement need not be the same CPUID — the row, not the processor, is
+    /// what is being changed — so the form opens on the whole list rather than
+    /// narrowed to the row's own CPUID.
+    ///
+    /// Public because the menu item that calls it cannot be simulated — a
+    /// right-click is not something a test can put on a row — so this is the
+    /// level the app's tests drive.
+    public func replaceMicrocode(at index: Int) {
+        let form = FITAddMicrocodeViewController()
+        form.isReplacing = true
+        self.form = form
+        let target = display.rows.first { $0.index == index }
+        form.targetCpuidText = target?.cpuidText
+        form.targetCpuid = target?.cpuidText.flatMap { UInt32($0, radix: 16) }
+        // The narrowing is to the one CPUID the row names — "replace it with a
+        // newer one" — not to everything the image has.
+        form.cpuidsInTheImage = form.targetCpuid.map { [$0] } ?? []
+        form.onCancel = { [weak self] in self?.closeForm() }
+        form.onReplace = { [weak self] entry in self?.replaceMicrocode(entry, at: index) }
+        form.onChooseFile = { [weak self] in self?.chooseMicrocodeFile(at: index) }
+        controller.presentAsSheet(form)
+
+        form.say("Fetching the list from github.com…", busy: true)
+        let source = FITToolSession.microcodeSource
+        Task { [weak self, weak form] in
+            do {
+                let entries = try await source.catalogue()
+                form?.show(entries)
+                self?.onCatalogueLoaded?(entries)
+            } catch {
+                self?.fail(error.localizedDescription, inTheForm: true)
+                self?.onCatalogueLoaded?([])
+            }
+        }
+    }
+
     private func closeForm() {
         guard let form else { return }
         controller.dismiss(form)
@@ -332,15 +371,36 @@ struct FITParkedState: ToolSessionState {
         }
     }
 
+    /// The replace half of the form's button: fetch the picked component, close
+    /// the form, and swap it into the row the form was opened from.
+    private func replaceMicrocode(_ entry: MicrocodeCatalogueEntry, at index: Int) {
+        form?.say("Fetching \(entry.fileName)…", busy: true)
+        let source = FITToolSession.microcodeSource
+        Task { [weak self] in
+            do {
+                let bytes = try await source.download(entry)
+                self?.closeForm()
+                self?.replaceMicrocode(bytes, at: index, describedAs: "CPUID \(entry.cpuidText)")
+            } catch {
+                self?.fail(error.localizedDescription, inTheForm: true)
+            }
+        }
+    }
+
     /// The way in without a network, and the way in for a microcode this
-    /// collection does not have.
-    private func chooseMicrocodeFile() {
+    /// collection does not have. When the form opened to replace a row, the
+    /// file goes to that row rather than to a new entry.
+    private func chooseMicrocodeFile(at index: Int? = nil) {
         Task { [weak self] in
             guard let file = await self?.host.requestFile(kinds: ["bin", "mcu", "dat"]) else {
                 return
             }
             self?.closeForm()
-            self?.addMicrocode(file.bytes, describedAs: file.name)
+            if let index {
+                self?.replaceMicrocode(file.bytes, at: index, describedAs: file.name)
+            } else {
+                self?.addMicrocode(file.bytes, describedAs: file.name)
+            }
         }
     }
 
@@ -375,9 +435,44 @@ struct FITParkedState: ToolSessionState {
         }
     }
 
-    /// Takes a row out (§10). The component it named stays in the image:
-    /// erasing it is the riskier half of step 5.
-    public func removeEntry(at index: Int) {
+    /// Everything after the bytes are in hand for a replace: read the image
+    /// again, swap the row's component, and land the whole change as one step.
+    ///
+    /// Public because it is the half worth driving from a test: the form above
+    /// it is a list and a search field, and the network behind that has no
+    /// place in a test suite.
+    public func replaceMicrocode(_ component: [UInt8], at index: Int, describedAs description: String) {
+        guard !host.isReadOnly else {
+            fail("This file is open read-only.")
+            return
+        }
+        guard let snapshot = try? host.snapshot() else {
+            fail("Could not read the file.")
+            return
+        }
+        controller.showBusy()
+        let reporter = progressReporter()
+        Task { [weak self] in
+            let prepared = await FITToolSession.prepareReplace(
+                index, component, snapshot: snapshot, progress: reporter
+            )
+            guard let self else { return }
+            self.controller.endBusy()
+            switch prepared {
+            case .failure(let problem):
+                self.fail(problem.message)
+            case .success(let (transaction, outcome)):
+                self.apply(transaction,
+                           saying: FITToolSession.note(for: outcome, describedAs: description))
+            }
+        }
+    }
+
+    /// Takes a microcode out of the table (§10): the row goes, the component's
+    /// bytes go with it, and what followed it in the run moves up into the
+    /// space — the run is one block, and a hole in the middle of it is not what
+    /// a bench wants back.
+    public func removeMicrocode(at index: Int) {
         guard !host.isReadOnly else {
             fail("This file is open read-only.")
             return
@@ -431,6 +526,27 @@ struct FITParkedState: ToolSessionState {
         }.value
     }
 
+    /// Off the main actor, and from the file as it is now rather than from the
+    /// parse the panel is showing: the user may have typed in the dump since.
+    private nonisolated static func prepareReplace(
+        _ index: Int,
+        _ component: [UInt8],
+        snapshot: any ToolContentReader,
+        progress: (@Sendable (Double) -> Void)? = nil
+    ) async -> Result<(ToolTransaction, FITEditOutcome), FITEditProblem> {
+        await Task.detached(priority: .userInitiated) {
+            let source = ToolContentByteSource(reader: snapshot)
+            let reader = ImageReader(source)
+            let image = UEFIParser.parse(source, progress: progress)
+            let report = FITReader.read(reader, image: image)
+            guard let table = report.table else { return .failure(.noTable) }
+            return FITEditor.replaceMicrocode(
+                at: index, component, in: table, image: image, reader: reader,
+                addressDiff: report.addressDiff
+            )
+        }.value
+    }
+
     /// What the panel says afterwards. The Boot Guard caveat is on all three:
     /// a component written into a protected range breaks its hash whether it
     /// arrived in new space or over an old one.
@@ -464,7 +580,7 @@ struct FITParkedState: ToolSessionState {
             let image = UEFIParser.parse(source, progress: progress)
             let report = FITReader.read(reader, image: image)
             guard let table = report.table else { return .failure(.noTable) }
-            return FITEditor.removeEntry(
+            return FITEditor.removeMicrocode(
                 index, from: table, image: image, in: reader, addressDiff: report.addressDiff
             )
         }.value
@@ -491,7 +607,11 @@ struct FITParkedState: ToolSessionState {
     /// The second defect of §11, and the one a tool can put right on its own:
     /// a checksum left over from an edit that changed the table and did not
     /// recompute it.
-    private func fixChecksum() {
+    ///
+    /// Public because the menu item that calls it cannot be simulated — a
+    /// right-click is not something a test can put on a row — so this is the
+    /// level the app's tests drive.
+    public func fixChecksum() {
         guard let transaction = display.checksumFix else { return }
         do {
             try host.apply(transaction)

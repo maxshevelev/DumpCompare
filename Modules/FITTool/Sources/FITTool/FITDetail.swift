@@ -37,7 +37,10 @@ public enum FITDetail {
         var fields = entryFields(of: entry)
         fields += targetFields(of: row)
         return FITRowDetail(
-            title: "#\(entry.index) \(FIT.typeName(entry.type))",
+            // The number the panel shows for the row, counting from one the way
+            // the table and the zones do — not the header's zero, which is its
+            // place, not its number.
+            title: "#\(entry.index + 1) \(FIT.typeName(entry.type))",
             fields: fields
         )
     }
@@ -45,16 +48,23 @@ public enum FITDetail {
     // MARK: - The sixteen bytes of the row itself
 
     private static func entryFields(of entry: FITEntry) -> [FITDetailField] {
+        // The type leads: it is what the row is, and the title already says it,
+        // so the fields open with it rather than with where it sits.
         var fields: [FITDetailField] = [
-            .init("Offset", hex(entry.offset, digits: 8)),
-            .init("Address", entry.isHeader ? "_FIT_" : hex(entry.address, digits: 8))
+            .init("Type", "\(FIT.typeName(entry.type)) · \(hex(entry.type, digits: 2))")
         ]
+        fields.append(.init("Offset", hex(entry.offset, digits: 8)))
+        fields.append(.init("Address", entry.isHeader ? "_FIT_" : hex(entry.address, digits: 8)))
         fields.append(.init("Size", sizeText(entry)))
-        fields.append(.init("Reserved", reservedText(entry)))
-        fields.append(.init("Version", entry.versionText))
-        fields.append(.init("Type", "\(FIT.typeName(entry.type)) · \(hex(entry.type, digits: 2))"))
-        fields.append(.init("Checksum valid", entry.checksumValid ? "yes" : "no"))
-        fields.append(.init("Checksum", hex(entry.checksum, digits: 2)))
+        fields.append(.init("Revision", entry.versionText))
+        // The checksum byte is the header's (§5), so it is shown on the header
+        // row and on no other — a row that is not the header does not carry it.
+        if entry.isHeader {
+            // The value and whether the header says it counts, in one line — the
+            // shared spelling, so it reads the same wherever a checksum carries
+            // a validity bit.
+            fields.append(.init("Checksum", Checksums.text(entry.checksum, valid: entry.checksumValid)))
+        }
         return fields
     }
 
@@ -67,14 +77,6 @@ public enum FITDetail {
         }
         if entry.size == 0 { return "0" }
         return size(entry.sizeInBytes)
-    }
-
-    private static func reservedText(_ entry: FITEntry) -> String {
-        // The reserved byte is a subtype on a CSE SecureBoot entry (§7.5).
-        if entry.type == FIT.cseSecureBootType {
-            return "\(entry.reserved)  \(FIT.cseSecureBootSubtypeName(entry.reserved))"
-        }
-        return hex(entry.reserved, digits: 2)
     }
 
     // MARK: - What the row points at
@@ -100,14 +102,18 @@ public enum FITDetail {
         case .microcode(let header):
             return [
                 .init("CPUID", FITPresenter.cpuid(header.processorSignature)),
-                .init("Revision", hex(header.updateRevision)),
+                // The microcode's own update revision — "Update revision" so it
+                // does not read as the same thing as the entry's Revision above.
+                .init("Update revision", hex(header.updateRevision)),
                 .init("Date", header.date),
                 .init("Data size", size(header.dataSize)),
                 .init("Total size", size(header.totalSize)),
                 .init("Platform IDs", hex(header.platformIDs)),
-                // The image's own dword checksum, distinct from the row's
-                // checksum byte above.
-                .init("Image checksum", hex(header.checksum))
+                // The image's own dword checksum, distinct from the header's
+                // checksum byte. Shown with whether the image sums to zero, the
+                // shared spelling, so it reads the same wherever a checksum
+                // carries a validity.
+                .init("Image checksum", Checksums.text(header.checksum, valid: header.checksumIsCorrect, digits: 4))
             ]
         case .emptyMicrocodeSlot(let offset):
             return [

@@ -233,6 +233,9 @@ import UEFITool
             value.font = field.value.hasPrefix("0x")
                 ? NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
                 : .systemFont(ofSize: 11)
+            // Selectable, not a dead label: a bench copies an offset or a GUID
+            // out of here, and a value it cannot select is one it has to retype.
+            value.isSelectable = true
             value.lineBreakMode = .byTruncatingTail
             value.translatesAutoresizingMaskIntoConstraints = false
 

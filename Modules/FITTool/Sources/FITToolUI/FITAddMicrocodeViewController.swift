@@ -10,12 +10,26 @@ import FITTool
 /// window.
 @MainActor final class FITAddMicrocodeViewController: NSViewController {
     var onAdd: ((MicrocodeCatalogueEntry) -> Void)?
+    var onReplace: ((MicrocodeCatalogueEntry) -> Void)?
     var onChooseFile: (() -> Void)?
     var onCancel: (() -> Void)?
 
+    /// True when the form opened from a row's "Replace Microcode": it then names
+    /// itself after that, and its button does the replacing rather than the
+    /// adding. The replacement need not be the same CPUID — the row, not the
+    /// processor, is what is being changed.
+    var isReplacing = false
+    /// The CPUID of the row being replaced, where the form knows it: the
+    /// "Only CPUID NNNNN" narrowing, and the "Update" the button says when the
+    /// pick is for the same processor.
+    var targetCpuid: UInt32?
+    /// The same, as the row writes it — five hex digits, no leading zero.
+    var targetCpuidText: String?
+
     /// The CPUIDs the open image already names. A dump is for one board, and
     /// what is worth adding to it is almost always a newer revision of one of
-    /// these — so that is the list it opens on.
+    /// these — so that is the list it opens on. In replace mode this is just
+    /// the one CPUID the row names, and the checkbox narrows to it.
     var cpuidsInTheImage: Set<UInt32> = []
 
     private var entries: [MicrocodeCatalogueEntry] = []
@@ -44,20 +58,31 @@ import FITTool
 
         // "Intel" in the title and not only in the line below it: the list has
         // no vendor picker any more, so what is being shown has to be said
-        // where it cannot be missed.
-        let title = NSTextField(labelWithString: "Add Intel Microcode")
+        // where it cannot be missed. In replace mode the title says what is
+        // happening to the row the form was opened from.
+        let title = NSTextField(labelWithString: isReplacing
+            ? "Replace Intel Microcode" : "Add Intel Microcode")
         title.font = .systemFont(ofSize: 13, weight: .semibold)
         let source = NSTextField(labelWithString:
             "From github.com/platomav/CPUMicrocodes — a FIT names no other kind.")
         source.font = .systemFont(ofSize: 11)
         source.textColor = .secondaryLabelColor
 
-        searchField.placeholderString = "CPUID, revision or file name"
+        // The list is searched by what a bench writes down and looks up: the
+        // CPUID. The revision and the file name are the catalogue's, not the
+        // user's, and matching them is a guess about which of the two they meant.
+        searchField.placeholderString = "CPUID"
         searchField.target = self
         searchField.action = #selector(narrow)
         onlyInImage.target = self
         onlyInImage.action = #selector(narrow)
         onlyInImage.controlSize = .small
+        // In replace mode the narrowing is to the one CPUID the row names —
+        // "replace it with a newer one" — rather than to everything the image
+        // has.
+        if isReplacing, let targetCpuidText {
+            onlyInImage.title = "Only CPUID \(targetCpuidText)"
+        }
         // Off to begin with: picking a vendor is asking to see what that vendor
         // has, and narrowing it before the user has looked would hide most of
         // it.
@@ -99,7 +124,7 @@ import FITTool
             button.keyEquivalent = key
             return button
         }
-        addButton.title = "Add"
+        addButton.title = isReplacing ? "Replace" : "Add"
         addButton.bezelStyle = .rounded
         addButton.keyEquivalent = "\r"
         addButton.target = self
@@ -171,6 +196,16 @@ import FITTool
     }
 
     @objc private func narrow() {
+        // In replace mode the narrowing is to the one CPUID the row names, and
+        // with it on there is nothing left to search — so the field goes away
+        // rather than sitting there doing nothing. Its text is cleared too, so
+        // it does not keep filtering from behind the scenes while hidden.
+        if isReplacing && onlyInImage.state == .on {
+            searchField.isHidden = true
+            searchField.stringValue = ""
+        } else {
+            searchField.isHidden = false
+        }
         // Intel and nothing else: a FIT names no other kind (§6, §7.1), so
         // listing AMD or VIA would be listing what cannot be added.
         shown = MicrocodeCatalogue.filter(
@@ -190,7 +225,7 @@ import FITTool
 
     @objc private func addClicked() {
         guard let entry = selectedEntry else { return }
-        onAdd?(entry)
+        if isReplacing { onReplace?(entry) } else { onAdd?(entry) }
     }
 
     @objc private func cancelClicked() { onCancel?() }
@@ -226,11 +261,16 @@ extension FITAddMicrocodeViewController: NSTableViewDataSource, NSTableViewDeleg
 
     func tableViewSelectionDidChange(_ notification: Notification) {
         addButton.isEnabled = selectedEntry != nil
-        // A CPUID the table already names is replaced rather than added a
-        // second time, and the button says which it will be before it is
-        // pressed.
-        let replaces = selectedEntry?.cpuid.map(cpuidsInTheImage.contains) ?? false
-        addButton.title = replaces ? "Replace" : "Add"
+        // In replace mode the button says what it will do to the row: a pick for
+        // the same processor is an update, anything else a replace. In add mode
+        // a CPUID the table already names is replaced rather than added a second
+        // time, and the button says which it will be before it is pressed.
+        if isReplacing {
+            addButton.title = (selectedEntry?.cpuid == targetCpuid) ? "Update" : "Replace"
+        } else {
+            let replaces = selectedEntry?.cpuid.map(cpuidsInTheImage.contains) ?? false
+            addButton.title = replaces ? "Replace" : "Add"
+        }
     }
 
     private func makeCell(identifier: NSUserInterfaceItemIdentifier) -> NSTableCellView {

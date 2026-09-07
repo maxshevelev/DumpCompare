@@ -425,6 +425,53 @@ final class FITEditorTests: XCTestCase {
         XCTAssertEqual(problem, .notMicrocode)
     }
 
+    // MARK: - Replacing a specific row
+
+    private func replace(
+        _ component: [UInt8], at index: Int, in bytes: [UInt8]
+    ) throws -> Result<(ToolTransaction, FITEditOutcome), FITEditProblem> {
+        FITEditor.replaceMicrocode(
+            at: index, component, in: try table(bytes), image: nil,
+            reader: ImageReader(bytes), addressDiff: TestFIT.addressDiff(of: UInt64(bytes.count))
+        )
+    }
+
+    /// The row's "Replace Microcode": the row is the target, not a CPUID match.
+    /// A component for a processor the table does not name goes into the row it
+    /// was asked for, and the table keeps the same number of rows — where the
+    /// same component through the add path would have been a second row.
+    func testReplacingARowIsByTheRowNotTheCpuid() throws {
+        let bytes = image()
+        let other = TestFIT.microcode(signature: 0x000906EA, totalSize: 0x100)
+
+        let (transaction, outcome) = try replace(other, at: 1, in: bytes).get()
+
+        XCTAssertEqual(outcome.kind, .replaced)
+        XCTAssertEqual(outcome.entryIndex, 1)
+        XCTAssertEqual(outcome.range, 0x2000..<0x2100)
+        let after = try table(try applying(transaction, to: bytes))
+        XCTAssertEqual(after.rows.count, 2, "the row was swapped, not a second added")
+        guard case .microcode(let now) = after.entries[0].target else {
+            return XCTFail("expected microcode")
+        }
+        XCTAssertEqual(now.processorSignature, 0x000906EA)
+    }
+
+    /// A header, or an index past the end, is not a row to replace.
+    func testReplacingAnIndexThatIsNotAMicrocodeIsRefused() throws {
+        let bytes = image()
+        let other = TestFIT.microcode(signature: 0x000906EA, totalSize: 0x100)
+
+        guard case .failure(let headerProblem) = try replace(other, at: 0, in: bytes) else {
+            return XCTFail("expected the header to be refused")
+        }
+        XCTAssertEqual(headerProblem, .noSuchEntry)
+        guard case .failure(let outOfRange) = try replace(other, at: 9, in: bytes) else {
+            return XCTFail("expected an out-of-range index to be refused")
+        }
+        XCTAssertEqual(outOfRange, .noSuchEntry)
+    }
+
     // MARK: - Removing
 
     /// Three microcodes in a run, one row each.
@@ -446,7 +493,7 @@ final class FITEditorTests: XCTestCase {
     private func remove(
         _ index: Int, from bytes: [UInt8]
     ) throws -> Result<(ToolTransaction, FITRemovalOutcome), FITEditProblem> {
-        FITEditor.removeEntry(
+        FITEditor.removeMicrocode(
             index, from: try table(bytes), image: nil, in: ImageReader(bytes),
             addressDiff: TestFIT.addressDiff(of: UInt64(bytes.count))
         )
@@ -568,8 +615,9 @@ final class FITEditorTests: XCTestCase {
     }
 
     /// The extent of anything else a row can point at — an ACM, a policy — is
-    /// not something this tool knows, so only the row goes.
-    func testRemovingARowThatIsNotMicrocodeLeavesTheBytesAlone() throws {
+    /// not something this tool knows, so it is not removed at all: the row
+    /// stays, and the bytes it names stay with it.
+    func testRemovingARowThatIsNotMicrocodeIsRefused() throws {
         let bytes = TestFIT.image(
             rows: [
                 TestFIT.Row(FIT.microcodeType, target: microcode),
@@ -581,14 +629,10 @@ final class FITEditorTests: XCTestCase {
             ]
         )
 
-        let (transaction, outcome) = try remove(2, from: bytes).get()
-        let edited = try applying(transaction, to: bytes)
-
-        XCTAssertEqual(outcome.moved, 0)
-        XCTAssertNil(outcome.erased)
-        XCTAssertEqual(try transaction.validated().writes.count, 1, "the table, and nothing else")
-        XCTAssertEqual(Array(edited[0x3000..<0x3040]), [UInt8](repeating: 0x5A, count: 0x40))
-        XCTAssertEqual(try table(edited).entries.count, 1)
+        guard case .failure(let problem) = try remove(2, from: bytes) else {
+            return XCTFail("expected a refusal")
+        }
+        XCTAssertEqual(problem, .notAMicrocodeRow)
     }
 
     func testTheHeaderCannotBeRemoved() throws {

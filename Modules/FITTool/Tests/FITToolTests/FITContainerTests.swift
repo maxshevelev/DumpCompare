@@ -79,7 +79,7 @@ final class FITContainerTests: XCTestCase {
         let parsed = parse(bytes)
         let table = try XCTUnwrap(FITReader.read(ImageReader(bytes), image: parsed).table)
 
-        let (transaction, outcome) = try FITEditor.removeEntry(
+        let (transaction, outcome) = try FITEditor.removeMicrocode(
             1, from: table, image: parsed, in: ImageReader(bytes), addressDiff: 0xFFFF_0000
         ).get()
         let edited = try applying(transaction, to: bytes)
@@ -128,7 +128,7 @@ final class FITContainerTests: XCTestCase {
                       "precondition: \(parse(bytes).diagnostics.map(\.message))")
         let table = try XCTUnwrap(FITReader.read(ImageReader(bytes), image: parsed).table)
 
-        let (transaction, _) = try FITEditor.removeEntry(
+        let (transaction, _) = try FITEditor.removeMicrocode(
             1, from: table, image: parsed, in: ImageReader(bytes), addressDiff: 0xFFFF_0000
         ).get()
         let edited = try applying(transaction, to: bytes)
@@ -279,7 +279,7 @@ final class FITContainerTests: XCTestCase {
         let table = try XCTUnwrap(FITReader.read(ImageReader(bytes), image: parsed).table)
         let tableEnd = table.range.upperBound
 
-        let (transaction, _) = try FITEditor.removeEntry(
+        let (transaction, _) = try FITEditor.removeMicrocode(
             2, from: table, image: parsed, in: ImageReader(bytes), addressDiff: 0xFFFF_0000
         ).get()
         let edited = try applying(transaction, to: bytes)

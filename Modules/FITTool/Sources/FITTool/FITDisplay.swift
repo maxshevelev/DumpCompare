@@ -6,8 +6,16 @@ import UEFIImage
 public struct FITDisplayRow: Equatable, Sendable {
     /// Its place in the table; 0 is the header.
     public var index: Int
+    /// The number the panel shows for the row. Counting starts at one, the way
+    /// a reader counts the rows of a table, rather than at the header's zero —
+    /// which is the row's place, not its number.
+    public var displayNumber: Int { index + 1 }
     public var typeText: String
     public var addressText: String
+    /// The size worth showing, in its own column: the component's for the rows
+    /// that point at one, the header's entry count for the header, and `0` for
+    /// a row whose size field is empty.
+    public var sizeText: String
     public var versionText: String
     /// What is actually there, read rather than assumed: for microcode the
     /// CPUID, the revision, the date, and where and how long it is.
@@ -25,9 +33,20 @@ public struct FITDisplayRow: Equatable, Sendable {
     public var rowRange: Range<UInt64>
     /// Where the row points, when it points into the image.
     public var targetRange: Range<UInt64>?
-    /// Whether §10 allows this row to go: not the header, and not the last
-    /// microcode a table has.
+    /// Whether this row is a microcode that may go. Only a microcode is
+    /// offered for removal — the extent of anything else a row can point at is
+    /// not something this tool knows — and a table keeps one microcode (§8.7),
+    /// so the last one a table has cannot be removed.
     public var canRemove: Bool
+    /// Whether the microcode this row names may be swapped for another. Every
+    /// microcode row may be replaced — the slot stays, so the one-microcode
+    /// rule (§8.7) is not touched — and the replacement need not be the same
+    /// CPUID: the row, not the processor, is what is being changed.
+    public var canReplace: Bool
+    /// Whether this row offers the checksum fix. The byte is the header's
+    /// (§5), so the fix lives on the header row — the one the mismatch turns
+    /// red — and on no other.
+    public var checksumFixAvailable: Bool
     /// The row as the table read it — entry and what it points at — kept so
     /// the detail can be rebuilt for whatever row comes into focus.
     public var model: FITRow
@@ -44,11 +63,15 @@ public struct FITDisplayRow: Equatable, Sendable {
 
     /// What the right-button menu offers here. Every row leads with its offset
     /// — going where the row points is the point of the row — and a row that
-    /// leads to microcode offers the CPUID as well.
+    /// leads to microcode offers the CPUID, its replacement, and — when it may
+    /// go — its removal. The checksum fix is offered on the header row, where
+    /// the byte lives, when it is needed.
     public var commands: [FITRowCommand] {
         var commands: [FITRowCommand] = [.goToOffset(offsetToGoTo)]
         if let cpuidText { commands.append(.copyCPUID(cpuidText)) }
-        if canRemove { commands.append(.removeEntry(index)) }
+        if canReplace { commands.append(.replaceMicrocode(index)) }
+        if canRemove { commands.append(.removeMicrocode(index)) }
+        if checksumFixAvailable { commands.append(.fixChecksum) }
         return commands
     }
 }
@@ -65,14 +88,24 @@ public enum FITRowCommand: Equatable, Sendable {
     case copyCPUID(String)
     /// Go to what the row points at, and put it in focus.
     case goToOffset(UInt64)
-    /// Take the row out of the table (§10).
-    case removeEntry(Int)
+    /// Swap the microcode this row names for another, whatever its CPUID. The
+    /// row stays; only the component it points at changes.
+    case replaceMicrocode(Int)
+    /// Take the microcode out of the table (§10). The component it named stays
+    /// in the image: erasing it is the riskier half of the edit.
+    case removeMicrocode(Int)
+    /// Write the checksum this table should have (§5, §11). The byte is the
+    /// header's, so the offer sits on the header row — the one the mismatch
+    /// turns red — and not on the rows it is not about.
+    case fixChecksum
 
     public var title: String {
         switch self {
         case .copyCPUID: return "Copy CPUID"
         case .goToOffset: return "Go to Offset"
-        case .removeEntry: return "Remove Entry"
+        case .replaceMicrocode: return "Replace Microcode"
+        case .removeMicrocode: return "Remove Microcode"
+        case .fixChecksum: return "Fix Checksum"
         }
     }
 }
@@ -159,11 +192,15 @@ public enum FITPresenter {
         let problemRows = Set(report.problems.compactMap(\.entryIndex))
         // A table needs one microcode entry (§8.7), so the last one cannot go.
         let microcodeCount = table.rows.filter { $0.entry.type == FIT.microcodeType }.count
+        // The checksum byte is the header's (§5), so the fix is offered on the
+        // header row — the one the mismatch turns red — and on no other.
+        let checksumFix = checksumFix(for: table)
         let rows = table.rows.map { row in
             FITDisplayRow(
                 index: row.entry.index,
                 typeText: typeText(of: row.entry),
                 addressText: row.entry.isHeader ? "_FIT_" : hex(row.entry.address, digits: 8),
+                sizeText: sizeText(of: row),
                 versionText: row.entry.versionText,
                 targetText: targetText(of: row),
                 cpuidText: cpuidText(of: row),
@@ -171,8 +208,9 @@ public enum FITPresenter {
                 zoneID: rowZoneID(row.entry.index),
                 rowRange: row.entry.offset..<(row.entry.offset + FITEntry.size),
                 targetRange: targetRange(of: row),
-                canRemove: row.entry.index > 0
-                    && !(row.entry.type == FIT.microcodeType && microcodeCount == 1),
+                canRemove: row.entry.type == FIT.microcodeType && microcodeCount > 1,
+                canReplace: row.entry.type == FIT.microcodeType,
+                checksumFixAvailable: checksumFix != nil && row.entry.index == 0,
                 model: row
             )
         }
@@ -186,7 +224,7 @@ public enum FITPresenter {
             summary: summary(of: report),
             rows: rows,
             problems: report.problems,
-            checksumFix: checksumFix(for: table),
+            checksumFix: checksumFix,
             zones: zones(of: table, rows: rows, focus: focus),
             detail: detail
         )
@@ -215,9 +253,13 @@ public enum FITPresenter {
                 : "No FIT table where the pointer leads. A signature sits at "
                     + report.candidates.map { hex($0) }.joined(separator: ", ") + "."
         }
+        // The count includes the header row: the panel shows the header as a
+        // row of the table, so the number the summary says is the number of
+        // rows a reader counts, header included.
+        let count = table.rows.count
         var parts = [
             "FIT at \(hex(table.range.lowerBound))",
-            "\(table.entries.count) " + (table.entries.count == 1 ? "entry" : "entries")
+            "\(count) " + (count == 1 ? "entry" : "entries")
         ]
         if report.addressDiffIsAssumed {
             // Said every time, because it is true every time for a region cut
@@ -239,6 +281,19 @@ public enum FITPresenter {
         let name = FIT.typeName(entry.type)
         guard entry.type == FIT.cseSecureBootType else { return name }
         return "\(name): \(FIT.cseSecureBootSubtypeName(entry.reserved))"
+    }
+
+    /// The size worth showing, in its own column. The header's field counts
+    /// entries rather than bytes (§4), so it says so; a microcode's field is
+    /// required to be zero, so the truth is the component's (§7.1); the rest
+    /// use the field in 16-byte units, and an empty field is a zero, not a
+    /// mystery.
+    private static func sizeText(of row: FITRow) -> String {
+        if row.entry.isHeader {
+            return "\(row.entry.size) rows"
+        }
+        guard let size = row.effectiveSize else { return "0" }
+        return hex(size)
     }
 
     /// The CPUID as a bench writes it: five hex digits, no leading zero, no
@@ -273,16 +328,12 @@ public enum FITPresenter {
         case .outsideTheImage:
             return "outside this image"
         case .microcode(let header):
-            // The CPUID is what a bench hunts for, so it leads; the offset is
-            // dropped — the Address column already says it — and the date
-            // closes the line.
+            // The CPUID is what a bench hunts for, so it leads; the offset and
+            // the size have their own columns, and the date closes the line.
             parts = [
                 "CPUID \(cpuid(header.processorSignature))",
                 "r.\(String(header.updateRevision, radix: 16, uppercase: true))"
             ]
-            if let size = row.effectiveSize {
-                parts.append("len \(hex(size))")
-            }
             parts.append(header.date)
             return parts.joined(separator: " · ")
         case .emptyMicrocodeSlot:
@@ -292,9 +343,6 @@ public enum FITPresenter {
         }
         if let offset = row.target.offset {
             parts.append(hex(offset))
-        }
-        if let size = row.effectiveSize {
-            parts.append(hex(size))
         }
         return parts.joined(separator: " · ")
     }
@@ -333,7 +381,7 @@ public enum FITPresenter {
             let start = table.range.lowerBound + UInt64(row.index) * FITEntry.size
             zones.append(Zone(
                 id: row.zoneID,
-                name: "#\(row.index) \(row.typeText)",
+                name: "#\(row.displayNumber) \(row.typeText)",
                 range: start..<(start + FITEntry.size)
             ))
             if let target = row.targetRange {
@@ -342,7 +390,7 @@ public enum FITPresenter {
                 zones.append(Zone(
                     id: targetZoneID(row.index),
                     name: row.cpuidText.map { "CPUID \($0)" }
-                        ?? (row.targetText.isEmpty ? "#\(row.index)" : row.targetText),
+                        ?? (row.targetText.isEmpty ? "#\(row.displayNumber)" : row.targetText),
                     range: target
                 ))
             }

@@ -160,11 +160,11 @@ public enum MicrocodeCatalogue {
                 guard let cpuid = entry.cpuid, cpuidsInTheImage.contains(cpuid) else { return false }
             }
             guard !needle.isEmpty else { return true }
-            // A search matches the CPUID as it is written, the revision, or the
-            // file name — whichever the user has in front of them.
+            // A search is by the CPUID — what a bench writes down and looks up
+            // — and by nothing else: the revision and the file name are the
+            // catalogue's, and matching them is a guess about which the user
+            // meant.
             return entry.cpuidText.hasPrefix(needle)
-                || entry.revisionText.hasPrefix(needle)
-                || entry.fileName.uppercased().contains(needle)
         }
     }
 

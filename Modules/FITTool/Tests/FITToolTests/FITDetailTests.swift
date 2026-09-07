@@ -28,26 +28,30 @@ final class FITDetailTests: XCTestCase {
             contents: [microcode: TestFIT.microcode(totalSize: 0x180)]
         )
         XCTAssertNotNil(detail)
-        XCTAssertEqual(detail?.title, "#1 Microcode")
+        XCTAssertEqual(detail?.title, "#2 Microcode")
+        // The fields open with what the row is, not where it sits.
+        XCTAssertEqual(detail!.fields.first?.label, "Type")
 
         // The row's own sixteen bytes.
+        XCTAssertEqual(value(detail!, "Type"), "Microcode · 0x01")
         XCTAssertEqual(value(detail!, "Offset"), "0x00001010")
         XCTAssertEqual(value(detail!, "Address"), "0xFFFF2000")
         XCTAssertEqual(value(detail!, "Size"), "0")
-        XCTAssertEqual(value(detail!, "Version"), "1.00")
-        XCTAssertEqual(value(detail!, "Type"), "Microcode · 0x01")
-        XCTAssertEqual(value(detail!, "Checksum valid"), "no")
+        XCTAssertEqual(value(detail!, "Revision"), "1.00")
+        // The checksum byte is the header's, so a row that is not the header
+        // does not show one.
+        XCTAssertNil(value(detail!, "Checksum"))
 
         // What the row points at, read from the component.
         XCTAssertEqual(value(detail!, "CPUID"), "806EA")
-        XCTAssertEqual(value(detail!, "Revision"), "0xF0")
+        XCTAssertEqual(value(detail!, "Update revision"), "0xF0")
         XCTAssertEqual(value(detail!, "Date"), "2019-07-15")
         XCTAssertEqual(value(detail!, "Data size"), "0x40 (64)")
         XCTAssertEqual(value(detail!, "Total size"), "0x180 (384)")
         XCTAssertEqual(value(detail!, "Platform IDs"), "0x1")
         // The microcode's own checksum is a field of the header, so it is
-        // shown; its value is whatever makes the image sum to zero.
-        XCTAssertTrue(value(detail!, "Image checksum")?.hasPrefix("0x") ?? false)
+        // shown, with whether the image sums to zero. The test image does.
+        XCTAssertTrue(value(detail!, "Image checksum")?.hasSuffix(" (Valid)") ?? false)
     }
 
     /// The header is a row like any other, but its `Size` counts entries rather
@@ -57,21 +61,15 @@ final class FITDetailTests: XCTestCase {
         let header = FITReader.read(ImageReader(bytes), image: nil).table?.rows[0]
         let detail = header.map(FITDetail.build)
 
-        XCTAssertEqual(detail?.title, "#0 FIT Header")
+        XCTAssertEqual(detail?.title, "#1 FIT Header")
         XCTAssertEqual(value(detail!, "Address"), "_FIT_")
         XCTAssertEqual(value(detail!, "Size"), "2 rows")
+        // The checksum byte is the header's, so it is the row that shows one —
+        // and the test table's is the one that makes it sum to zero.
+        XCTAssertTrue(value(detail!, "Checksum")?.hasSuffix(" (Valid)") ?? false)
         // The header points nowhere, so there are no target fields.
         XCTAssertNil(value(detail!, "Points at"))
         XCTAssertNil(value(detail!, "CPUID"))
-    }
-
-    /// The reserved byte is a subtype on a CSE SecureBoot entry (§7.5), and the
-    /// detail names it rather than showing a bare number.
-    func testACseRowNamesItsSubtype() {
-        let detail = detail([TestFIT.Row(FIT.cseSecureBootType, target: 0x3000, reserved: 8)])
-
-        XCTAssertEqual(value(detail!, "Type"), "CSE SecureBoot Settings · 0x10")
-        XCTAssertEqual(value(detail!, "Reserved"), "8  IBB Hash")
     }
 
     /// A policy row at version 0 keeps an Index/IO register descriptor in the

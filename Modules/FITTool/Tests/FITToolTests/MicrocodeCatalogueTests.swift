@@ -144,12 +144,17 @@ final class MicrocodeCatalogueTests: XCTestCase {
         XCTAssertTrue(MicrocodeCatalogue.filter(try entries(), vendor: .intel, search: "zzz").isEmpty)
     }
 
-    func testSearchingAlsoMatchesARevisionOrAFileName() throws {
-        XCTAssertEqual(
-            MicrocodeCatalogue.filter(try entries(), vendor: .intel, search: "B27").count, 1
+    /// The search is by the CPUID and by nothing else: the revision and the
+    /// file name are the catalogue's, and a bench does not type them, so neither
+    /// matches.
+    func testSearchingIsByTheCpuidOnly() throws {
+        // A revision and a date the catalogue carries, and that no CPUID starts
+        // with: neither matches.
+        XCTAssertTrue(
+            MicrocodeCatalogue.filter(try entries(), vendor: .intel, search: "B27").isEmpty
         )
-        XCTAssertEqual(
-            MicrocodeCatalogue.filter(try entries(), vendor: .intel, search: "1996").count, 1
+        XCTAssertTrue(
+            MicrocodeCatalogue.filter(try entries(), vendor: .intel, search: "1996").isEmpty
         )
     }
 

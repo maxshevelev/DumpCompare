@@ -13,17 +13,18 @@ import ToolModuleKit
     var onGoToTarget: ((Int) -> Void)?
     var onSelectTable: (() -> Void)?
     var onCopyCPUID: ((Int) -> Void)?
-    var onRemoveEntry: ((Int) -> Void)?
+    var onReplaceMicrocode: ((Int) -> Void)?
+    var onRemoveMicrocode: ((Int) -> Void)?
     var onAddMicrocode: (() -> Void)?
     var onGoToProblem: ((Int) -> Void)?
     var onFixChecksum: (() -> Void)?
 
     private(set) var display = FITDisplay.empty
-    /// What the last `show` was allowed to do. Kept so the buttons can come
-    /// back exactly as they were once a parse that stood them down is done.
+    /// What the last `show` was allowed to do. Kept so the button and the menu
+    /// items can come back exactly as they were once a parse that stood them
+    /// down is done.
     private var canWrite = false
-    private var currentFocus: Int?
-    /// True while a parse runs. The modification buttons stand down for the
+    /// True while a parse runs. The modification controls stand down for the
     /// whole of it — a parse reads a snapshot of the file as it is now, so
     /// letting an edit race it would make the bar a lie and the two sides of
     /// the panel disagree.
@@ -47,9 +48,7 @@ import ToolModuleKit
     /// progress rather than a second strip appearing below it.
     private let bottomRow = NSStackView()
     private let progressBar = NSProgressIndicator()
-    private let fixChecksumButton = NSButton()
     private let addButton = NSButton()
-    private let removeButton = NSButton()
     /// The problems list is as tall as its content, capped at half the height
     /// of the entries.
     private var problemsRatio: NSLayoutConstraint?
@@ -59,6 +58,7 @@ import ToolModuleKit
         static let index = NSUserInterfaceItemIdentifier("index")
         static let type = NSUserInterfaceItemIdentifier("type")
         static let address = NSUserInterfaceItemIdentifier("address")
+        static let size = NSUserInterfaceItemIdentifier("size")
         static let target = NSUserInterfaceItemIdentifier("target")
         static let problem = NSUserInterfaceItemIdentifier("problem")
     }
@@ -85,6 +85,7 @@ import ToolModuleKit
         column(entries, Column.index, "#", 20)
         column(entries, Column.type, "Type", 96)
         column(entries, Column.address, "Address", 76)
+        column(entries, Column.size, "Size", 84)
         column(entries, Column.target, "Points at", 300)
         entries.menu = contextMenu()
 
@@ -123,14 +124,12 @@ import ToolModuleKit
             button.toolTip = tip
             button.translatesAutoresizingMaskIntoConstraints = false
         }
+        // Remove and Fix Checksum are not buttons: they are offered where they
+        // apply, in the row's menu, rather than on a bar that is always there.
         button(addButton, "Add Microcode…", #selector(addMicrocodeClicked),
                "Put a microcode in the image and name it in the table")
-        button(removeButton, "Remove Entry", #selector(removeEntryClicked),
-               "Take the selected entry out of the table — the component stays where it is")
-        button(fixChecksumButton, "Fix Checksum", #selector(fixChecksumClicked),
-               "Write the checksum this table should have — one undo step")
 
-        let buttons = NSStackView(views: [addButton, removeButton, fixChecksumButton])
+        let buttons = NSStackView(views: [addButton])
         buttons.orientation = .horizontal
         buttons.spacing = 6
         buttons.translatesAutoresizingMaskIntoConstraints = false
@@ -221,9 +220,10 @@ import ToolModuleKit
     // MARK: - A parse's progress
 
     /// A parse is running: the bar joins the row under the buttons, and the
-    /// three modification buttons — Add, Remove, Fix Checksum — stand down for
-    /// the whole of it. A parse reads a snapshot of the file as it is *now*, so
-    /// an edit that slipped in while it ran would make the bar a lie and the
+    /// one button — Add — stands down for the whole of it, with the menu items
+    /// that modify the table (Remove Microcode, Fix Checksum) standing down
+    /// beside it. A parse reads a snapshot of the file as it is *now*, so an
+    /// edit that slipped in while it ran would make the bar a lie and the
     /// panel's next re-read the two of them disagreeing.
     ///
     /// The notice is left alone — `start()` has said "Reading…" and a re-read
@@ -253,22 +253,12 @@ import ToolModuleKit
         progressBar.removeFromSuperview()
     }
 
-    /// What the three modification buttons are allowed to do right now. While a
-    /// parse runs every one of them stands down; otherwise each follows the
-    /// reading on show — nothing to add, nothing removable under the cursor,
-    /// nothing to fix.
+    /// What the one button is allowed to do right now. While a parse runs it
+    /// stands down — the menu items that modify the table stand down with it,
+    /// in `menuNeedsUpdate` — otherwise it follows the reading on show:
+    /// nothing to add when the table is empty.
     private func updateButtons() {
-        if busy {
-            addButton.isEnabled = false
-            removeButton.isEnabled = false
-            fixChecksumButton.isEnabled = false
-            return
-        }
-        fixChecksumButton.isEnabled = display.checksumFix != nil && canWrite
-        addButton.isEnabled = canWrite && !display.rows.isEmpty
-        removeButton.isEnabled = canWrite
-            && (currentFocus.flatMap { index in display.rows.first { $0.index == index } }?
-                .canRemove ?? false)
+        addButton.isEnabled = !busy && canWrite && !display.rows.isEmpty
     }
 
     private func configure(_ table: NSTableView, doubleAction: Selector) {
@@ -298,7 +288,6 @@ import ToolModuleKit
     func show(_ display: FITDisplay, focus: Int?, canWrite: Bool) {
         self.display = display
         self.canWrite = canWrite
-        self.currentFocus = focus
         isShowingState = true
         defer { isShowingState = false }
 
@@ -346,6 +335,9 @@ import ToolModuleKit
             value.font = field.value.hasPrefix("0x")
                 ? NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
                 : .systemFont(ofSize: 11)
+            // Selectable, not a dead label: a bench copies an offset or a CPUID
+            // out of here, and a value it cannot select is one it has to retype.
+            value.isSelectable = true
             value.lineBreakMode = .byTruncatingTail
             value.translatesAutoresizingMaskIntoConstraints = false
 
@@ -382,21 +374,14 @@ import ToolModuleKit
     @objc private func addMicrocodeClicked() { onAddMicrocode?() }
     @objc private func summaryClicked() { onSelectTable?() }
 
-    @objc private func removeEntryClicked() {
-        guard let row = selectedEntry() else { return }
-        onRemoveEntry?(row.index)
-    }
-
-    /// The row the *selection* is on, as opposed to the one a right-click
-    /// landed on.
-    private func selectedEntry() -> FITDisplayRow? {
-        let row = entries.selectedRow
-        return row >= 0 && row < display.rows.count ? display.rows[row] : nil
-    }
-
-    @objc private func removeEntryFromMenuClicked() {
+    @objc private func replaceMicrocodeFromMenuClicked() {
         guard let row = clickedEntry() else { return }
-        onRemoveEntry?(row.index)
+        onReplaceMicrocode?(row.index)
+    }
+
+    @objc private func removeMicrocodeFromMenuClicked() {
+        guard let row = clickedEntry() else { return }
+        onRemoveMicrocode?(row.index)
     }
 
     @objc private func entryDoubleClicked() {
@@ -438,19 +423,32 @@ import ToolModuleKit
 extension FITToolViewController: NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
+        // The items that modify the table stand down for a parse — greyed, not
+        // gone, so the menu still says what it would do once the reading is
+        // done — and a parse reads a snapshot of the file, so an edit that
+        // slipped in while it ran would make the two sides of the panel
+        // disagree.
+        menu.autoenablesItems = false
         guard let row = clickedEntry() else { return }
         for command in row.commands {
-            // The Remove button stands down for a parse, and a row's menu must
-            // not offer a way around it.
-            if busy, case .removeEntry = command { continue }
             let action: Selector
             switch command {
             case .copyCPUID: action = #selector(copyCPUIDClicked)
             case .goToOffset: action = #selector(goToOffsetClicked)
-            case .removeEntry: action = #selector(removeEntryFromMenuClicked)
+            case .replaceMicrocode: action = #selector(replaceMicrocodeFromMenuClicked)
+            case .removeMicrocode: action = #selector(removeMicrocodeFromMenuClicked)
+            case .fixChecksum: action = #selector(fixChecksumClicked)
             }
             let item = menu.addItem(withTitle: command.title, action: action, keyEquivalent: "")
             item.target = self
+            if busy {
+                switch command {
+                case .replaceMicrocode, .removeMicrocode, .fixChecksum:
+                    item.isEnabled = false
+                default:
+                    break
+                }
+            }
         }
     }
 }
@@ -479,13 +477,18 @@ extension FITToolViewController: NSTableViewDataSource, NSTableViewDelegate {
         let monospaced = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         switch column.identifier {
         case Column.index:
-            cell.textField?.stringValue = "\(entry.index)"
+            // The number the reader counts, from one — not the row's zero-based
+            // place, which the header would show as 0.
+            cell.textField?.stringValue = "\(entry.displayNumber)"
             cell.textField?.font = monospaced
         case Column.type:
             cell.textField?.stringValue = entry.typeText
             cell.textField?.font = .systemFont(ofSize: 11)
         case Column.address:
             cell.textField?.stringValue = entry.addressText
+            cell.textField?.font = monospaced
+        case Column.size:
+            cell.textField?.stringValue = entry.sizeText
             cell.textField?.font = monospaced
         default:
             cell.textField?.stringValue = entry.targetText

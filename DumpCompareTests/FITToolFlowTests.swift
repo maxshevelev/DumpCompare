@@ -122,13 +122,14 @@ final class FITToolFlowTests: XCTestCase {
 
         // No volume top file in a fixture this small, so the reading says it
         // assumed the image is mapped against the top of the address space.
+        // The count includes the header row, so one microcode reads as two.
         XCTAssertEqual(
             display.summary,
-            "FIT at 0x1000 · 1 entry · addresses assumed · checksum 0x5C"
+            "FIT at 0x1000 · 2 entries · addresses assumed · checksum 0x5C"
         )
         XCTAssertEqual(display.rows.map(\.typeText), ["FIT Header", "Microcode"])
         XCTAssertEqual(display.rows[1].targetText,
-                       "CPUID 806EA · r.F0 · len 0x100 · 2019-07-15")
+                       "CPUID 806EA · r.F0 · 2019-07-15")
         XCTAssertTrue(display.problems.filter { $0.severity == .error }.isEmpty)
     }
 
@@ -161,8 +162,10 @@ final class FITToolFlowTests: XCTestCase {
         window?.layoutIfNeeded()
 
         // The detail is decided in the pure target and rides on the display.
+        // The row's number counts from one, so the first microcode — the row
+        // after the header — is the second row, not the first.
         let detail = try session().display.detail
-        XCTAssertEqual(detail.title, "#1 Microcode")
+        XCTAssertEqual(detail.title, "#2 Microcode")
         XCTAssertTrue(detail.fields.contains { $0.label == "CPUID" && $0.value == "806EA" })
         XCTAssertTrue(detail.fields.contains { $0.label == "Total size" && $0.value == "0x100 (256)" })
 
@@ -372,13 +375,15 @@ final class FITToolFlowTests: XCTestCase {
                       "no parse running means no bar in the module's row")
     }
 
-    /// The parse that owns the bottom row stands the modification buttons down
-    /// for the whole of it: Add, Remove and Fix Checksum all refuse while a
-    /// read is in flight, then come back exactly as the reading says. An edit
+    /// The parse that owns the bottom row stands the Add button down for the
+    /// whole of it: it refuses while a read is in flight, then comes back as
+    /// the reading says. The menu items that modify the table stand down with
+    /// it, in `menuNeedsUpdate` — which a test cannot drive, because the
+    /// right-click that sets `clickedRow` is not something to simulate. An edit
     /// raced against a parse would land in the panel twice — once as the note
     /// its own re-read earns, once as the note the racing parse earns when it
-    /// finishes over it — so the busy read must have the buttons to itself.
-    func testAParseStandsTheModificationButtonsDown() throws {
+    /// finishes over it — so the busy read must have the controls to itself.
+    func testAParseStandsTheAddButtonDown() throws {
         let controller = MainViewController()
         self.controller = controller
         let window = makeTestWindow(width: 1200, height: 700)
@@ -397,28 +402,19 @@ final class FITToolFlowTests: XCTestCase {
         running.onDisplay = { _ in parsed.fulfill() }
 
         // The scan runs off the main actor and this thread has not yielded, so
-        // it cannot have finished yet: the parse is busy and the buttons stand
+        // it cannot have finished yet: the parse is busy and the button stands
         // down for it.
         XCTAssertFalse(try button("Add Microcode…").isEnabled,
                        "Add must stand down while a parse runs")
-        XCTAssertFalse(try button("Remove Entry").isEnabled,
-                       "Remove must stand down while a parse runs")
-        XCTAssertFalse(try button("Fix Checksum").isEnabled,
-                       "Fix Checksum must stand down while a parse runs")
 
-        // The reading lands, the bar leaves, and the buttons come back as it
-        // says: Add because the table has rows, Remove for the row under the
-        // cursor, Fix because the checksum is broken and checked.
+        // The reading lands, the bar leaves, and the button comes back as it
+        // says: enabled because the table has rows.
         wait(for: [parsed], timeout: 10)
         running.onDisplay = nil
         window.layoutIfNeeded()
 
-        try entriesTable().selectRowIndexes([1], byExtendingSelection: false)
-        XCTAssertTrue(try button("Add Microcode…").isEnabled)
-        XCTAssertTrue(try button("Remove Entry").isEnabled,
-                      "a row that may go is under the cursor")
-        XCTAssertTrue(try button("Fix Checksum").isEnabled,
-                      "the broken, checked checksum is fixable")
+        XCTAssertTrue(try button("Add Microcode…").isEnabled,
+                      "the table has rows, so Add is back")
     }
 
     // MARK: - Adding and removing
@@ -521,7 +517,7 @@ final class FITToolFlowTests: XCTestCase {
     func testWhatWentRightIsQuiet() throws {
         let controller = try open(FITTestImage.make(checksum: 0xCC))
 
-        try button("Fix Checksum").performClick(nil)
+        try session().fixChecksum()
         try waitForParse()
 
         XCTAssertEqual(beeps, 0)
@@ -553,7 +549,7 @@ final class FITToolFlowTests: XCTestCase {
         let pane = controller.windowModel.pane1
         XCTAssertEqual(try session().display.rows.count, 3)
 
-        try session().removeEntry(at: 1)
+        try session().removeMicrocode(at: 1)
         try waitForParse()
 
         let display = try session().display
@@ -568,21 +564,28 @@ final class FITToolFlowTests: XCTestCase {
         let item = NSMenuItem(title: "Undo", action: #selector(MainViewController.undoEdit),
                               keyEquivalent: "z")
         _ = controller.validateMenuItem(item)
-        XCTAssertEqual(item.title, "Undo Remove FIT Entry")
+        XCTAssertEqual(item.title, "Undo Remove Microcode")
     }
 
     /// The extent of anything else a row can point at is not something this
-    /// tool knows, so only the row goes.
-    func testRemovingARowThatIsNotMicrocodeLeavesItsBytes() throws {
+    /// tool knows, so it is not removed at all: the refusal is red, and the
+    /// row and its bytes stay where they were.
+    func testRemovingARowThatIsNotMicrocodeIsRefused() throws {
         let controller = try open(FITTestImage.make(extraACM: true))
         let pane = controller.windowModel.pane1
+        let before = try pane.byteStorage?.read(at: 0x2000, length: 4)
 
-        try session().removeEntry(at: 2)
-        try waitForParse()
+        try session().removeMicrocode(at: 2)
+        try waitUntilTheNoticeSettles()
 
-        XCTAssertEqual(try session().display.rows.map(\.typeText), ["FIT Header", "Microcode"])
-        XCTAssertEqual(try pane.byteStorage?.read(at: 0x2000, length: 4),
-                       Array(FITTestImage.microcode()[0..<4]), "the microcode is untouched")
+        let panel = try XCTUnwrap(controller.tools.panel)
+        let notice = try XCTUnwrap(descendants(of: panel, NSTextField.self).first {
+            $0.stringValue.contains("Only a microcode entry can be removed")
+        })
+        XCTAssertEqual(notice.textColor, .systemRed)
+        XCTAssertEqual(try session().display.rows.count, 3, "the row is still there")
+        XCTAssertEqual(try pane.byteStorage?.read(at: 0x2000, length: 4), before,
+                       "the microcode is untouched")
     }
 
     /// A table needs one microcode entry (§8.7), so the only one is not offered
@@ -592,16 +595,18 @@ final class FITToolFlowTests: XCTestCase {
         let rows = try session().display.rows
 
         XCTAssertFalse(rows[1].canRemove)
-        XCTAssertFalse(rows[1].commands.contains { $0.title == "Remove Entry" })
+        XCTAssertFalse(rows[1].commands.contains { $0.title == "Remove Microcode" })
         XCTAssertFalse(rows[0].canRemove)
     }
 
+    /// A row that is a microcode and not the last one is offered for removal —
+    /// the one the menu is for.
     func testAnEntryThatMayGoOffersIt() throws {
-        _ = try open(FITTestImage.make(extraACM: true))
+        _ = try open(FITTestImage.make(extraMicrocode: true))
         let rows = try session().display.rows
 
         XCTAssertTrue(rows[2].canRemove)
-        XCTAssertTrue(rows[2].commands.contains { $0.title == "Remove Entry" })
+        XCTAssertTrue(rows[2].commands.contains { $0.title == "Remove Microcode" })
     }
 
     /// The form opens on the whole catalogue — narrowing it is the form's job,
@@ -646,6 +651,110 @@ final class FITToolFlowTests: XCTestCase {
                       "no vendor picker: there is nothing to pick")
     }
 
+    // MARK: - Replacing a row
+
+    /// The row's "Replace Microcode": the component the row names is swapped for
+    /// another, whatever the new one's CPUID, and the table keeps the same
+    /// number of rows — the slot stays, so the one-microcode rule is untouched.
+    func testReplacingARowSwapsItsComponentAndKeepsTheRow() throws {
+        let controller = try open(FITTestImage.make())
+        let pane = controller.windowModel.pane1
+        let other = FITTestImage.microcode(signature: 0x000906EA, revision: 0xB4)
+
+        try session().replaceMicrocode(other, at: 1, describedAs: "CPUID 906EA")
+        try waitForParse()
+
+        let display = try session().display
+        XCTAssertEqual(display.rows.count, 2, "swapped, not a second row added")
+        XCTAssertEqual(display.rows[1].cpuidText, "906EA")
+        XCTAssertEqual(display.rows[1].targetRange, 0x2000..<0x2100)
+        // The signature field, not the header: the first dwords are the same
+        // in every Intel microcode, and would not tell the swap from no swap.
+        XCTAssertEqual(try pane.byteStorage?.read(at: 0x200C, length: 4),
+                       Array(other[0x0C..<0x10]), "the new component is where the old one was")
+
+        let item = NSMenuItem(title: "Undo", action: #selector(MainViewController.undoEdit),
+                              keyEquivalent: "z")
+        _ = controller.validateMenuItem(item)
+        XCTAssertEqual(item.title, "Undo Replace Microcode")
+
+        try pane.undo()
+        try waitForParse()
+
+        XCTAssertEqual(try session().display.rows[1].cpuidText, "806EA")
+    }
+
+    /// The form, opened from a row's "Replace Microcode", names itself after the
+    /// replacing and narrows to the one CPUID the row names — not to everything
+    /// the image has.
+    func testTheReplaceFormNamesItselfAfterTheReplacing() throws {
+        _ = try open(FITTestImage.make())
+        let loaded = expectation(description: "the catalogue arrives")
+        try session().withCatalogueSeam { loaded.fulfill() }
+        try session().replaceMicrocode(at: 1)
+        wait(for: [loaded], timeout: 5)
+
+        let sheet = try XCTUnwrap(try session().viewController.presentedViewControllers?.first)
+        let labels = descendants(of: sheet.view, NSTextField.self).map(\.stringValue)
+        XCTAssertTrue(labels.contains("Replace Intel Microcode"), "\(labels)")
+
+        // The narrowing is to the one CPUID the row names, not to the image.
+        let checkbox = try XCTUnwrap(descendants(of: sheet.view, NSButton.self)
+            .first { $0.title.hasPrefix("Only CPUID") })
+        XCTAssertEqual(checkbox.title, "Only CPUID 806EA")
+    }
+
+    /// In replace mode the button says what it will do to the row: a pick for
+    /// the same processor is an update, anything else a replace.
+    func testTheReplaceFormSaysUpdateForTheSameCpuid() throws {
+        _ = try open(FITTestImage.make())
+        let loaded = expectation(description: "the catalogue arrives")
+        try session().withCatalogueSeam { loaded.fulfill() }
+        try session().replaceMicrocode(at: 1)
+        wait(for: [loaded], timeout: 5)
+
+        let sheet = try XCTUnwrap(try session().viewController.presentedViewControllers?.first)
+        let table = try XCTUnwrap(descendants(of: sheet.view, NSTableView.self).first)
+        let button = try XCTUnwrap(descendants(of: sheet.view, NSButton.self)
+            .first { $0.title == "Update" || $0.title == "Replace" })
+
+        table.selectRowIndexes([0], byExtendingSelection: false)   // 806EA, the row's own
+        XCTAssertEqual(button.title, "Update")
+
+        table.selectRowIndexes([1], byExtendingSelection: false)   // 906EA, another processor
+        XCTAssertEqual(button.title, "Replace")
+    }
+
+    /// In replace mode the "Only CPUID" narrowing is to the one processor the row
+    /// names, and with it on the whole list is that one — so there is nothing
+    /// left to search, and the field goes away rather than sit there doing
+    /// nothing. Off again, and it is back.
+    func testTheReplaceFormHidesTheSearchWhileNarrowedToOneCpuid() throws {
+        _ = try open(FITTestImage.make())
+        let loaded = expectation(description: "the catalogue arrives")
+        try session().withCatalogueSeam { loaded.fulfill() }
+        try session().replaceMicrocode(at: 1)
+        wait(for: [loaded], timeout: 5)
+
+        let sheet = try XCTUnwrap(try session().viewController.presentedViewControllers?.first)
+        let searchField = try XCTUnwrap(descendants(of: sheet.view, NSSearchField.self).first)
+        let checkbox = try XCTUnwrap(descendants(of: sheet.view, NSButton.self)
+            .first { $0.title.hasPrefix("Only CPUID") })
+
+        // Off to begin with, so the field is here.
+        XCTAssertEqual(checkbox.state, .off)
+        XCTAssertFalse(searchField.isHidden)
+
+        checkbox.performClick(nil)
+        XCTAssertEqual(checkbox.state, .on)
+        XCTAssertTrue(searchField.isHidden,
+                      "the one CPUID is the whole list; there is nothing to search")
+
+        checkbox.performClick(nil)
+        XCTAssertEqual(checkbox.state, .off)
+        XCTAssertFalse(searchField.isHidden)
+    }
+
     /// Waits for whatever the session does next to settle, for the paths that
     /// deliberately write nothing.
     private func waitUntilTheNoticeSettles() throws {
@@ -678,7 +787,7 @@ final class FITToolFlowTests: XCTestCase {
         let pane = controller.windowModel.pane1
         XCTAssertNotNil(try session().display.checksumFix)
 
-        try button("Fix Checksum").performClick(nil)
+        try session().fixChecksum()
         try waitForParse()
 
         XCTAssertEqual(try pane.byteStorage?.read(at: 0x100F, length: 1), [0x5C])

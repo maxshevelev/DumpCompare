@@ -31,9 +31,10 @@ final class FITDisplayTests: XCTestCase {
     private var microcodeRow: TestFIT.Row { TestFIT.Row(FIT.microcodeType, target: microcode) }
 
     func testTheSummarySaysWhereTheTableIsAndWhetherItAddsUp() {
+        // The count includes the header row, so one microcode reads as two.
         XCTAssertEqual(
             display([microcodeRow]).summary,
-            "FIT at 0x1000 · 1 entry · checksum 0x5C"
+            "FIT at 0x1000 · 2 entries · checksum 0x5C"
         )
     }
 
@@ -42,7 +43,7 @@ final class FITDisplayTests: XCTestCase {
     func testTheSummaryDoesNotRestateAWrongChecksum() {
         XCTAssertEqual(
             display([microcodeRow], checksum: 0xCC).summary,
-            "FIT at 0x1000 · 1 entry"
+            "FIT at 0x1000 · 2 entries"
         )
     }
 
@@ -58,7 +59,7 @@ final class FITDisplayTests: XCTestCase {
 
         XCTAssertEqual(
             shown.summary,
-            "FIT at 0x1000 · 1 entry · addresses assumed · checksum 0x5C"
+            "FIT at 0x1000 · 2 entries · addresses assumed · checksum 0x5C"
         )
         XCTAssertTrue(shown.problems.isEmpty)
     }
@@ -68,7 +69,7 @@ final class FITDisplayTests: XCTestCase {
     func testTheSummarySaysWhenTheChecksumIsNotUsed() {
         XCTAssertEqual(
             display([microcodeRow], checksum: 0xCC, checksumValid: false).summary,
-            "FIT at 0x1000 · 1 entry · checksum unused"
+            "FIT at 0x1000 · 2 entries · checksum unused"
         )
     }
 
@@ -92,7 +93,11 @@ final class FITDisplayTests: XCTestCase {
         XCTAssertEqual(row.typeText, "Microcode")
         XCTAssertEqual(row.addressText, "0xFFFF2000")
         XCTAssertEqual(row.cpuidText, "806EA")
-        XCTAssertEqual(row.targetText, "CPUID 806EA · r.F0 · len 0x180 · 2019-07-15")
+        // The size has its own column now; for a microcode it is the
+        // component's, not the row's zero field (§7.1) — hex, the way the
+        // column shows every size.
+        XCTAssertEqual(row.targetText, "CPUID 806EA · r.F0 · 2019-07-15")
+        XCTAssertEqual(row.sizeText, "0x180")
         XCTAssertEqual(row.targetRange, microcode..<(microcode + 0x180))
         XCTAssertFalse(row.hasProblem)
     }
@@ -121,6 +126,8 @@ final class FITDisplayTests: XCTestCase {
         XCTAssertEqual(row.addressText, "_FIT_")
         XCTAssertEqual(row.typeText, "FIT Header")
         XCTAssertEqual(row.targetText, "2 rows · 0x20")
+        // The header's size field counts entries, so its column says so.
+        XCTAssertEqual(row.sizeText, "2 rows")
     }
 
     /// The reserved byte is a subtype here, and saying so is the difference
@@ -171,7 +178,9 @@ final class FITDisplayTests: XCTestCase {
             TestFIT.Row(FIT.microcodeType, target: 0x3000)
         ]).zones
 
-        XCTAssertEqual(zones.zones.first { $0.id == "fit.row.1" }?.name, "#1 Microcode")
+        // The row's number counts from one, so the first microcode — the row
+        // after the header — is the second row, not the first.
+        XCTAssertEqual(zones.zones.first { $0.id == "fit.row.1" }?.name, "#2 Microcode")
         XCTAssertEqual(zones.zones.first { $0.id == "fit.target.1" }?.name, "CPUID 806EA")
         XCTAssertEqual(zones.zones.first { $0.id == "fit.target.2" }?.range, 0x3000..<0x3010)
     }
@@ -199,12 +208,33 @@ final class FITDisplayTests: XCTestCase {
     // MARK: - The right-button menu
 
     /// What is on offer is decided here and not in the view, and an item that
-    /// does not apply to the row is absent rather than greyed.
+    /// does not apply to the row is absent rather than greyed. The one
+    /// microcode may be replaced but not removed: the slot stays, so the
+    /// one-microcode rule is not touched by a swap.
     func testAMicrocodeRowOffersItsCpuidAndItsOffset() {
         let rows = display([microcodeRow]).rows
 
-        XCTAssertEqual(rows[1].commands, [.goToOffset(microcode), .copyCPUID("806EA")])
-        XCTAssertEqual(rows[1].commands.map(\.title), ["Go to Offset", "Copy CPUID"])
+        XCTAssertEqual(rows[1].commands,
+                       [.goToOffset(microcode), .copyCPUID("806EA"), .replaceMicrocode(1)])
+        XCTAssertEqual(rows[1].commands.map(\.title),
+                       ["Go to Offset", "Copy CPUID", "Replace Microcode"])
+    }
+
+    /// Every microcode row may be replaced — the slot stays, so even the last
+    /// and only one is offered it, where it is not offered removal. A row that
+    /// is not a microcode is offered neither.
+    func testEveryMicrocodeRowOffersItsReplacement() {
+        let one = display([microcodeRow]).rows
+        XCTAssertTrue(one[1].canReplace)
+        XCTAssertTrue(one[1].commands.contains(.replaceMicrocode(1)))
+
+        let two = display([microcodeRow, TestFIT.Row(FIT.microcodeType, target: 0x3000)]).rows
+        XCTAssertTrue(two[1].canReplace)
+        XCTAssertTrue(two[2].canReplace)
+
+        let acm = display([TestFIT.Row(FIT.startupACMType, target: 0x3000)]).rows
+        XCTAssertFalse(acm[1].canReplace)
+        XCTAssertFalse(acm[1].commands.contains { $0.title == "Replace Microcode" })
     }
 
     /// A row that points nowhere — the header, an empty slot — still has an
@@ -213,19 +243,21 @@ final class FITDisplayTests: XCTestCase {
     func testARowThatPointsNowhereGoesToItself() {
         let rows = display([microcodeRow, TestFIT.Row(FIT.emptyType, address: 0)]).rows
 
-        // The header may not be removed (§10), so it is not offered.
+        // Only a microcode is offered for removal, so neither the header nor
+        // the empty slot has it.
         XCTAssertEqual(rows[0].commands, [.goToOffset(0x1000)])
-        XCTAssertEqual(rows[2].commands, [.goToOffset(0x1020), .removeEntry(2)])
+        XCTAssertEqual(rows[2].commands, [.goToOffset(0x1020)])
         XCTAssertEqual(rows[0].zoneToFocus, "fit.row.0")
         XCTAssertEqual(rows[2].zoneToFocus, "fit.row.2")
     }
 
     /// A row that leads somewhere without leading to microcode can still be
-    /// gone to, and it is the component that comes into focus.
+    /// gone to, and it is the component that comes into focus. It is not a
+    /// microcode, so it is not offered for removal either.
     func testARowWithNoCpuidStillOffersItsOffset() {
         let rows = display([TestFIT.Row(FIT.startupACMType, target: 0x3000)]).rows
 
-        XCTAssertEqual(rows[1].commands, [.goToOffset(0x3000), .removeEntry(1)])
+        XCTAssertEqual(rows[1].commands, [.goToOffset(0x3000)])
         XCTAssertEqual(rows[1].zoneToFocus, "fit.target.1")
     }
 
@@ -234,11 +266,31 @@ final class FITDisplayTests: XCTestCase {
     func testTheLastMicrocodeIsNotOfferedForRemoval() {
         let one = display([microcodeRow]).rows
         XCTAssertFalse(one[1].canRemove)
-        XCTAssertFalse(one[1].commands.contains { $0.title == "Remove Entry" })
+        XCTAssertFalse(one[1].commands.contains { $0.title == "Remove Microcode" })
 
         let two = display([microcodeRow, TestFIT.Row(FIT.microcodeType, target: 0x3000)]).rows
         XCTAssertTrue(two[1].canRemove)
         XCTAssertTrue(two[2].canRemove)
+    }
+
+    /// The checksum byte is the header's (§5), so the fix is offered on the
+    /// header row — the one the mismatch turns red — and on no other: a row
+    /// that is not the header is not where the byte lives, and a table whose
+    /// checksum is right offers nothing at all.
+    func testTheChecksumFixIsOfferedOnlyOnTheHeaderRow() {
+        let broken = display([microcodeRow], checksum: 0xCC).rows
+        XCTAssertTrue(broken[0].checksumFixAvailable)
+        XCTAssertTrue(broken[0].commands.contains(.fixChecksum))
+        // The microcode row is not where the byte lives, so it does not offer
+        // the fix even though the table needs it.
+        XCTAssertFalse(broken[1].checksumFixAvailable)
+        XCTAssertFalse(broken[1].commands.contains(.fixChecksum))
+
+        let good = display([microcodeRow]).rows
+        XCTAssertFalse(good[0].checksumFixAvailable)
+        XCTAssertFalse(good[0].commands.contains(.fixChecksum))
+        XCTAssertFalse(good[1].checksumFixAvailable)
+        XCTAssertFalse(good[1].commands.contains(.fixChecksum))
     }
 
     /// The trip back: the user picks a zone in the dump, and the panel has to
