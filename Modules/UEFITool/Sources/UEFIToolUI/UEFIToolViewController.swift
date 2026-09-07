@@ -1,3 +1,4 @@
+import ALSplitView
 import AppKit
 import ToolModuleKit
 import UEFIImage
@@ -23,10 +24,8 @@ import UEFITool
     private let summaryLabel = NSTextField(labelWithString: "")
     private let outline = NSOutlineView()
     private let outlineScroll = NSScrollView()
-    private let detailScroll = NSScrollView()
-    private let detailStack = NSStackView()
-    private let detailPlaceholder = NSTextField(labelWithString: "")
-    private let splitter = NSSplitView()
+    private let detail = ToolDetailScroll()
+    private let splitter = ALSplitView()
     private let noticeLabel = NSTextField(labelWithString: "")
     private let progressBar = NSProgressIndicator()
     private let bottomRow = NSStackView()
@@ -46,48 +45,24 @@ import UEFITool
 
         configureOutline()
 
-        for scroll in [outlineScroll, detailScroll] {
-            scroll.hasVerticalScroller = true
-            scroll.hasHorizontalScroller = true
-            scroll.autohidesScrollers = true
-            scroll.borderType = .bezelBorder
-            scroll.translatesAutoresizingMaskIntoConstraints = false
-        }
+        outlineScroll.hasVerticalScroller = true
+        outlineScroll.hasHorizontalScroller = true
+        outlineScroll.autohidesScrollers = true
+        outlineScroll.borderType = .bezelBorder
+        outlineScroll.translatesAutoresizingMaskIntoConstraints = false
         outlineScroll.documentView = outline
 
-        // The detail is a list of label/value rows, rebuilt on every selection.
-        detailStack.orientation = .vertical
-        detailStack.alignment = .leading
-        detailStack.spacing = 3
-        detailStack.translatesAutoresizingMaskIntoConstraints = false
-        detailStack.setHuggingPriority(.defaultHigh, for: .vertical)
-
-        detailPlaceholder.font = .systemFont(ofSize: 11)
-        detailPlaceholder.textColor = .secondaryLabelColor
-        detailPlaceholder.translatesAutoresizingMaskIntoConstraints = false
-
-        let detailContainer = NSView()
-        detailContainer.translatesAutoresizingMaskIntoConstraints = false
-        detailContainer.addSubview(detailStack)
-        detailContainer.addSubview(detailPlaceholder)
-        NSLayoutConstraint.activate([
-            detailStack.topAnchor.constraint(equalTo: detailContainer.topAnchor, constant: 8),
-            detailStack.leadingAnchor.constraint(equalTo: detailContainer.leadingAnchor, constant: 10),
-            detailStack.trailingAnchor.constraint(equalTo: detailContainer.trailingAnchor, constant: -10),
-            detailPlaceholder.centerXAnchor.constraint(equalTo: detailContainer.centerXAnchor),
-            detailPlaceholder.centerYAnchor.constraint(equalTo: detailContainer.centerYAnchor)
-        ])
-        detailScroll.documentView = detailContainer
-
-        // Top: the tree. Bottom: the detail. The divider is the user's to move.
-        splitter.isVertical = true
-        splitter.dividerStyle = .thin
+        // Top: the tree. Bottom: the detail. The divider is the user's to
+        // move. `ALSplitView` places its panes by frame from its own bounds, so
+        // the third the detail starts with is a policy rather than a position
+        // measured off a view that has not been laid out yet.
+        splitter.isVertical = false
+        splitter.dividerThickness = 1
         splitter.translatesAutoresizingMaskIntoConstraints = false
-        splitter.addArrangedSubview(outlineScroll)
-        splitter.addArrangedSubview(detailScroll)
-        // The detail wants a third of the height to start; the tree takes the
-        // rest. The user can drag the divider anywhere after that.
-        splitter.setPosition(2 * view.frame.height / 3, ofDividerAt: 0)
+        splitter.addPane(outlineScroll)
+        splitter.addPane(detail)
+        splitter.setPaneLayout(.fill, at: 0)
+        splitter.setPaneLayout(.proportional(1.0 / 3), at: 1)
 
         noticeLabel.font = .systemFont(ofSize: 11)
         noticeLabel.textColor = .secondaryLabelColor
@@ -231,25 +206,23 @@ import UEFITool
     }
 
     /// Rebuilds the detail list from the fields the pure target decided.
-    private func renderDetail(_ detail: UEFINodeDetail) {
-        detailStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        guard !detail.fields.isEmpty else {
-            detailPlaceholder.isHidden = false
-            detailPlaceholder.stringValue = detail.title.isEmpty
+    private func renderDetail(_ node: UEFINodeDetail) {
+        guard !node.fields.isEmpty else {
+            detail.showPlaceholder(node.title.isEmpty
                 ? "Select a node to see what it is."
-                : detail.title
+                : node.title)
             return
         }
-        detailPlaceholder.isHidden = true
+        detail.prepareForRows()
 
-        if !detail.title.isEmpty {
-            let title = NSTextField(labelWithString: detail.title)
+        if !node.title.isEmpty {
+            let title = NSTextField(labelWithString: node.title)
             title.font = .systemFont(ofSize: 12, weight: .semibold)
             title.translatesAutoresizingMaskIntoConstraints = false
-            detailStack.addArrangedSubview(title)
+            detail.content.addArrangedSubview(title)
         }
 
-        for field in detail.fields {
+        for field in node.fields {
             let label = NSTextField(labelWithString: field.label)
             label.font = .systemFont(ofSize: 11)
             label.textColor = .secondaryLabelColor
@@ -268,7 +241,7 @@ import UEFITool
             row.alignment = .firstBaseline
             row.spacing = 6
             row.translatesAutoresizingMaskIntoConstraints = false
-            detailStack.addArrangedSubview(row)
+            detail.content.addArrangedSubview(row)
         }
     }
 }

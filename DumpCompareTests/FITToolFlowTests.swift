@@ -1,4 +1,5 @@
 import XCTest
+import ALSplitView
 import FITTool
 import FITToolUI
 import ToolModuleKit
@@ -172,24 +173,62 @@ final class FITToolFlowTests: XCTestCase {
         XCTAssertTrue(labels.contains("806EA"), "the detail shows the CPUID value")
     }
 
-    /// The detail is the lower pane of the splitter, and it has height — a
-    /// row's fields are not a sliver the user has to work out is supposed to
-    /// be there. The problems list is capped against the splitter's own height,
-    /// not the entries scroll inside it: a constraint that reaches into a split
-    /// view's subview fights the split view's layout and is how the detail
-    /// loses the height it is owed.
-    func testTheDetailPanelHasRoomToShowItsFields() throws {
+    /// The detail is the lower pane of the splitter, at the panel's full
+    /// width and with height of its own — a row's fields are not a sliver the
+    /// user has to work out is supposed to be there.
+    ///
+    /// Position, not only height: this asserted height alone while the split
+    /// was side by side, and passed the whole time the detail was a
+    /// zero-width column down the right-hand edge with the panel's full
+    /// height. Height was true for the wrong reason.
+    func testTheDetailPanelIsTheLowerPaneAtFullWidth() throws {
         _ = try open(FITTestImage.make())
         try entriesTable().selectRowIndexes([1], byExtendingSelection: false)
         window?.layoutIfNeeded()
 
         let panel = try XCTUnwrap(controller?.tools.panel)
-        let splitter = try XCTUnwrap(descendants(of: panel, NSSplitView.self).first,
+        let splitter = try XCTUnwrap(descendants(of: panel, ALSplitView.self).first,
                                      "the panel has a splitter")
-        let detail = try XCTUnwrap(splitter.subviews.last as? NSScrollView,
-                                   "the splitter's lower pane is the detail")
+        XCTAssertFalse(splitter.isVertical,
+                       "the panes are stacked — the table above, the detail below")
+        let entries = try XCTUnwrap(splitter.panes.first, "the upper pane is the table")
+        let detail = try XCTUnwrap(splitter.panes.last as? NSScrollView,
+                                   "the lower pane is the detail")
+
         XCTAssertGreaterThan(detail.frame.height, 60,
                              "the detail has room to show a row's fields")
+        XCTAssertEqual(detail.frame.width, splitter.bounds.width, accuracy: 1,
+                       "the detail spans the panel rather than a column beside the table")
+        XCTAssertGreaterThanOrEqual(detail.frame.minY, entries.frame.maxY,
+                                    "the detail sits below the table, not beside it")
+    }
+
+    /// A first open shows the placeholder where the user is looking. The
+    /// detail's document view is not flipped by default, so a scroll view
+    /// shows the *bottom* of anything taller than itself: without the
+    /// document being pinned to the visible area the text landed below the
+    /// fold, clipped, and the panel read as empty until the user scrolled up.
+    func testTheDetailPlaceholderIsInsideTheVisibleAreaOnAFirstOpen() throws {
+        _ = try open(FITTestImage.make())
+        let panel = try XCTUnwrap(controller?.tools.panel)
+
+        let placeholder = try XCTUnwrap(
+            descendants(of: panel, NSTextField.self)
+                .first { $0.stringValue.contains("to see what it is") },
+            "nothing selected yet, so the detail says what to do"
+        )
+        let scroll = try XCTUnwrap(
+            descendants(of: panel, ToolDetailScroll.self).first,
+            "the placeholder lives in the detail scroll"
+        )
+        let document = try XCTUnwrap(scroll.documentView)
+        let text = placeholder.convert(placeholder.bounds, to: document)
+
+        XCTAssertTrue(scroll.documentVisibleRect.contains(text),
+                      "the placeholder is on screen, not below the fold: "
+                      + "\(text) is not inside \(scroll.documentVisibleRect)")
+        XCTAssertFalse(anyAmbiguousLayout(under: panel),
+                       "no view in the panel is left without a size the engine can solve")
     }
 
     /// A row exists to point somewhere, and going there puts the component in
@@ -829,5 +868,15 @@ private struct FakeMicrocodeSource: MicrocodeSource {
             signature: entry.cpuid ?? 0,
             revision: UInt32(entry.revisionText, radix: 16) ?? 0
         )
+    }
+}
+
+extension XCTestCase {
+    /// True when any view under `root` has a size or position Auto Layout
+    /// cannot solve — the state that logs "Unable to simultaneously satisfy
+    /// constraints" and lands the view wherever the engine's fallback puts it.
+    @MainActor func anyAmbiguousLayout(under root: NSView) -> Bool {
+        if root.hasAmbiguousLayout { return true }
+        return root.subviews.contains { anyAmbiguousLayout(under: $0) }
     }
 }

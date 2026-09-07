@@ -46,6 +46,11 @@ Running the tests:
 
 Important rules:
 - Domain code must be pure Swift, modular, and unit-testable.
+- Every split view is `ALSplitView`. Never `NSSplitView`: it sizes its panes
+  from their content, which fights the enclosing layout, and its divider
+  position has to be set after the view has a size. `ALSplitView` places panes
+  by explicit frame math and takes a policy per pane (`.fill`,
+  `.proportional`, `.fixed`) that is right from the first layout pass.
 - The app has two file slots: File A and File B.
 - File B is optional.
 - If only one file is open, the app is in single-file mode.

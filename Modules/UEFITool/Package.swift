@@ -23,6 +23,7 @@ let package = Package(
         .library(name: "UEFIToolUI", targets: ["UEFIToolUI"])
     ],
     dependencies: [
+        .package(path: "../../Packages/ALSplitView"),
         .package(path: "../../Packages/ToolModuleKit"),
         .package(path: "../../Packages/UEFIImage"),
         .package(path: "../../Packages/UEFIContentSource")
@@ -34,6 +35,7 @@ let package = Package(
         ]),
         .target(name: "UEFIToolUI", dependencies: [
             "UEFITool",
+            .product(name: "ALSplitView", package: "ALSplitView"),
             .product(name: "ToolModuleKit", package: "ToolModuleKit"),
             .product(name: "UEFIImage", package: "UEFIImage"),
             .product(name: "UEFIContentSource", package: "UEFIContentSource")

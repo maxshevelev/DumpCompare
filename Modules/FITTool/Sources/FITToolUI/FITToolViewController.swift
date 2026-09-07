@@ -1,5 +1,7 @@
+import ALSplitView
 import AppKit
 import FITTool
+import ToolModuleKit
 
 /// The panel: the table's entries above, what is wrong with them below.
 ///
@@ -36,10 +38,8 @@ import FITTool
     let problems = NSTableView()
     private let entriesScroll = NSScrollView()
     private let problemsScroll = NSScrollView()
-    private let detailScroll = NSScrollView()
-    private let detailStack = NSStackView()
-    private let detailPlaceholder = NSTextField(labelWithString: "")
-    private let splitter = NSSplitView()
+    private let detail = ToolDetailScroll()
+    private let splitter = ALSplitView()
     private let summaryLabel = NSTextField(labelWithString: "")
     private let noticeLabel = NSTextField(labelWithString: "")
     /// The row under the buttons: the notice, and the parse's progress bar on
@@ -101,45 +101,18 @@ import FITTool
             scroll.translatesAutoresizingMaskIntoConstraints = false
         }
 
-        // The detail is a list of label/value rows, rebuilt on every selection.
-        detailStack.orientation = .vertical
-        detailStack.alignment = .leading
-        detailStack.spacing = 3
-        detailStack.translatesAutoresizingMaskIntoConstraints = false
-        detailStack.setHuggingPriority(.defaultHigh, for: .vertical)
-
-        detailPlaceholder.font = .systemFont(ofSize: 11)
-        detailPlaceholder.textColor = .secondaryLabelColor
-        detailPlaceholder.translatesAutoresizingMaskIntoConstraints = false
-
-        let detailContainer = NSView()
-        detailContainer.translatesAutoresizingMaskIntoConstraints = false
-        detailContainer.addSubview(detailStack)
-        detailContainer.addSubview(detailPlaceholder)
-        NSLayoutConstraint.activate([
-            detailStack.topAnchor.constraint(equalTo: detailContainer.topAnchor, constant: 8),
-            detailStack.leadingAnchor.constraint(equalTo: detailContainer.leadingAnchor, constant: 10),
-            detailStack.trailingAnchor.constraint(equalTo: detailContainer.trailingAnchor, constant: -10),
-            detailPlaceholder.centerXAnchor.constraint(equalTo: detailContainer.centerXAnchor),
-            detailPlaceholder.centerYAnchor.constraint(equalTo: detailContainer.centerYAnchor)
-        ])
-        detailScroll.documentView = detailContainer
-        detailScroll.hasVerticalScroller = true
-        detailScroll.hasHorizontalScroller = true
-        detailScroll.autohidesScrollers = true
-        detailScroll.borderType = .bezelBorder
-        detailScroll.translatesAutoresizingMaskIntoConstraints = false
-
         // Top: the entries. Bottom: the detail for the row in focus. The
-        // divider is the user's to move.
-        splitter.isVertical = true
-        splitter.dividerStyle = .thin
+        // divider is the user's to move. `ALSplitView` places its panes by
+        // frame from its own bounds, so the third the detail starts with is a
+        // policy rather than a position measured off a view that has not been
+        // laid out yet.
+        splitter.isVertical = false
+        splitter.dividerThickness = 1
         splitter.translatesAutoresizingMaskIntoConstraints = false
-        splitter.addArrangedSubview(entriesScroll)
-        splitter.addArrangedSubview(detailScroll)
-        // The detail wants a third of the height to start; the entries take
-        // the rest. The user can drag the divider anywhere after that.
-        splitter.setPosition(2 * view.frame.height / 3, ofDividerAt: 0)
+        splitter.addPane(entriesScroll)
+        splitter.addPane(detail)
+        splitter.setPaneLayout(.fill, at: 0)
+        splitter.setPaneLayout(.proportional(1.0 / 3), at: 1)
 
         func button(_ button: NSButton, _ title: String, _ action: Selector, _ tip: String) {
             button.title = title
@@ -346,25 +319,23 @@ import FITTool
     }
 
     /// Rebuilds the detail list from the fields the pure target decided.
-    private func renderDetail(_ detail: FITRowDetail) {
-        detailStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        guard !detail.fields.isEmpty else {
-            detailPlaceholder.isHidden = false
-            detailPlaceholder.stringValue = detail.title.isEmpty
+    private func renderDetail(_ rowDetail: FITRowDetail) {
+        guard !rowDetail.fields.isEmpty else {
+            detail.showPlaceholder(rowDetail.title.isEmpty
                 ? "Select a row to see what it is."
-                : detail.title
+                : rowDetail.title)
             return
         }
-        detailPlaceholder.isHidden = true
+        detail.prepareForRows()
 
-        if !detail.title.isEmpty {
-            let title = NSTextField(labelWithString: detail.title)
+        if !rowDetail.title.isEmpty {
+            let title = NSTextField(labelWithString: rowDetail.title)
             title.font = .systemFont(ofSize: 12, weight: .semibold)
             title.translatesAutoresizingMaskIntoConstraints = false
-            detailStack.addArrangedSubview(title)
+            detail.content.addArrangedSubview(title)
         }
 
-        for field in detail.fields {
+        for field in rowDetail.fields {
             let label = NSTextField(labelWithString: field.label)
             label.font = .systemFont(ofSize: 11)
             label.textColor = .secondaryLabelColor
@@ -383,7 +354,7 @@ import FITTool
             row.alignment = .firstBaseline
             row.spacing = 6
             row.translatesAutoresizingMaskIntoConstraints = false
-            detailStack.addArrangedSubview(row)
+            detail.content.addArrangedSubview(row)
         }
     }
 

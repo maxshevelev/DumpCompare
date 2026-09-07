@@ -1,4 +1,5 @@
 import XCTest
+import ALSplitView
 import ToolModuleKit
 import UEFIImage
 import UEFIToolUI
@@ -144,6 +145,58 @@ final class UEFIToolFlowTests: XCTestCase {
 
     /// The bottom of the panel says what the node in focus is, by its type: a
     /// volume by its file system and length, a file by its type and state.
+    /// The detail is the lower pane of the splitter, at the panel's full
+    /// width and with height of its own. Position, not only height: while the
+    /// split was side by side the detail was a zero-width column down the
+    /// right-hand edge, which is a panel with no detail at all.
+    func testTheDetailPanelIsTheLowerPaneAtFullWidth() throws {
+        _ = try open(UEFITestImage.make())
+        window?.layoutIfNeeded()
+
+        let panel = try XCTUnwrap(controller?.tools.panel)
+        let splitter = try XCTUnwrap(descendants(of: panel, ALSplitView.self).first,
+                                     "the panel has a splitter")
+        XCTAssertFalse(splitter.isVertical,
+                       "the panes are stacked — the tree above, the detail below")
+        let outline = try XCTUnwrap(splitter.panes.first, "the upper pane is the tree")
+        let detail = try XCTUnwrap(splitter.panes.last as? NSScrollView,
+                                   "the lower pane is the detail")
+
+        XCTAssertGreaterThan(detail.frame.height, 60,
+                             "the detail has room to show a node's fields")
+        XCTAssertEqual(detail.frame.width, splitter.bounds.width, accuracy: 1,
+                       "the detail spans the panel rather than a column beside the tree")
+        XCTAssertGreaterThanOrEqual(detail.frame.minY, outline.frame.maxY,
+                                    "the detail sits below the tree, not beside it")
+    }
+
+    /// A first open shows the placeholder where the user is looking. A scroll
+    /// view's document is not flipped by default, so it shows the *bottom* of
+    /// anything taller than itself: the text used to land below the fold,
+    /// clipped, and the panel read as empty until the user scrolled up.
+    func testTheDetailPlaceholderIsInsideTheVisibleAreaOnAFirstOpen() throws {
+        _ = try open(UEFITestImage.make())
+        let panel = try XCTUnwrap(controller?.tools.panel)
+
+        let placeholder = try XCTUnwrap(
+            descendants(of: panel, NSTextField.self)
+                .first { $0.stringValue.contains("to see what it is") },
+            "nothing selected yet, so the detail says what to do"
+        )
+        let scroll = try XCTUnwrap(
+            descendants(of: panel, ToolDetailScroll.self).first,
+            "the placeholder lives in the detail scroll"
+        )
+        let document = try XCTUnwrap(scroll.documentView)
+        let text = placeholder.convert(placeholder.bounds, to: document)
+
+        XCTAssertTrue(scroll.documentVisibleRect.contains(text),
+                      "the placeholder is on screen, not below the fold: "
+                      + "\(text) is not inside \(scroll.documentVisibleRect)")
+        XCTAssertFalse(anyAmbiguousLayout(under: panel),
+                       "no view in the panel is left without a size the engine can solve")
+    }
+
     func testTheDetailSaysWhatTheNodeIs() throws {
         let controller = try open(UEFITestImage.make())
         let outline = try outline()
