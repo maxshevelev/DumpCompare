@@ -18,8 +18,8 @@
 #     Scripts/run-tests.sh --no-packages   # skip the packages, run the app only
 #
 # The packages are found by looking for a `Package.swift` beside this project or
-# one level under it (`Modules/<name>`), so a new one — a tool-module's package —
-# is picked up without an edit here.
+# one level under it — `Packages/<name>` and `Modules/<name>`, which is where
+# every one of them lives — so a new package is picked up without an edit here.
 #
 # Groups are cut from the class names as they are found, so a new test file
 # needs no edit here.

@@ -1,5 +1,5 @@
 import XCTest
-@testable import UEFIFormat
+@testable import UEFIImage
 
 /// The one place this parser bounds-checks (`ImageReader`), which is why it is
 /// worth pinning down here rather than in each of the fifty callers.

@@ -1,5 +1,5 @@
 import Foundation
-import UEFIFormat
+import UEFIImage
 
 /// One label/value row in the detail list.
 public struct UEFIDetailField: Equatable, Sendable {
@@ -30,7 +30,7 @@ public struct UEFINodeDetail: Equatable, Sendable {
 ///
 /// The fields come from the bytes, through the same `ImageReader` the parser
 /// used: a field the header does not hold is absent, not guessed, and the name
-/// tables are `UEFIFormat`'s, not re-derived here.
+/// tables are `UEFIImage`'s, not re-derived here.
 public enum UEFIDetail {
     public static func build(
         for node: UEFINode,

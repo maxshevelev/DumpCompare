@@ -1,6 +1,6 @@
 import XCTest
 @testable import FITTool
-import UEFIFormat
+import UEFIImage
 
 /// What a row points at, checked by reading it (§7, §11).
 final class FITTargetTests: XCTestCase {

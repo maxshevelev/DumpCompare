@@ -1,7 +1,7 @@
 import XCTest
 @testable import FITTool
 import ToolModuleKit
-import UEFIFormat
+import UEFIImage
 
 /// What the panel draws, decided here so the view controller has no decisions
 /// left in it.

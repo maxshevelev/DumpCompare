@@ -1,6 +1,6 @@
 import Foundation
 import ToolModuleKit
-import UEFIFormat
+import UEFIImage
 
 /// Why a change to the table cannot be made.
 ///

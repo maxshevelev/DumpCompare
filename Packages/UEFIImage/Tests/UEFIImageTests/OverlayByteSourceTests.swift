@@ -1,5 +1,5 @@
 import XCTest
-@testable import UEFIFormat
+@testable import UEFIImage
 
 /// The image as it would be with a change in it — what a checksum has to be
 /// computed over, since a checksum describes bytes as they will be.

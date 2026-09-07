@@ -22,18 +22,20 @@ let package = Package(
         .library(name: "UEFIToolUI", targets: ["UEFIToolUI"])
     ],
     dependencies: [
-        .package(path: "../../ToolModuleKit"),
-        .package(path: "../../UEFIFormat")
+        .package(path: "../../Packages/ToolModuleKit"),
+        .package(path: "../../Packages/UEFIImage"),
+        .package(path: "../../Packages/UEFIContentSource")
     ],
     targets: [
         .target(name: "UEFITool", dependencies: [
             .product(name: "ToolModuleKit", package: "ToolModuleKit"),
-            .product(name: "UEFIFormat", package: "UEFIFormat")
+            .product(name: "UEFIImage", package: "UEFIImage")
         ]),
         .target(name: "UEFIToolUI", dependencies: [
             "UEFITool",
             .product(name: "ToolModuleKit", package: "ToolModuleKit"),
-            .product(name: "UEFIFormat", package: "UEFIFormat")
+            .product(name: "UEFIImage", package: "UEFIImage"),
+            .product(name: "UEFIContentSource", package: "UEFIContentSource")
         ]),
         .testTarget(name: "UEFIToolTests", dependencies: ["UEFITool"])
     ]

@@ -1,7 +1,8 @@
 import AppKit
 import FITTool
 import ToolModuleKit
-import UEFIFormat
+import UEFIContentSource
+import UEFIImage
 
 /// The Intel Firmware Interface Table, read and checked
 /// (`Design/UEFI/FIT_TABLE_FORMAT.md`).

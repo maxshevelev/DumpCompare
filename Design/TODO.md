@@ -161,7 +161,7 @@ range — the IBB described in the Boot Policy, or a range listed in a vendor ha
 file — the hash stops matching and the platform will not start. The panel says
 so after every add, because saying so is all it can do.
 
-**Why it is not done.** The ranges live in structures `UEFIFormat` does not read
+**Why it is not done.** The ranges live in structures `UEFIImage` does not read
 yet (§10.4 of `UEFI_IMAGE_FORMAT.md`: four vendor hash file layouts across three
 vendors, plus the Boot Policy manifest). See the entry below.
 
@@ -170,9 +170,9 @@ forbidden ranges and skips any candidate that touches one, and the notice after
 an add changes from a warning to a statement. The FIT tool's side of it is a
 parameter and a filter; the work is all in the parse.
 
-**Cost.** 6–10 hours in `UEFIFormat`, an hour in `FITTool`.
+**Cost.** 6–10 hours in `UEFIImage`, an hour in `FITTool`.
 
-### What `UEFIFormat` leaves unread
+### What `UEFIImage` leaves unread
 
 **What.** Four parts of the image format the parser recognises but does not open
 up. Each is a leaf node with its bytes intact today, and each becomes a subtree

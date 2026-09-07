@@ -1,5 +1,5 @@
 import XCTest
-@testable import UEFIFormat
+@testable import UEFIImage
 
 /// A file's body read as sections, and the encapsulating ones where the tree
 /// stops being a list (§6).

@@ -1,5 +1,5 @@
 import Foundation
-import UEFIFormat
+import UEFIImage
 
 /// The small UEFI structures the pure target is tested against.
 ///

@@ -1,6 +1,6 @@
 import XCTest
 @testable import FITTool
-import UEFIFormat
+import UEFIImage
 
 /// The invariants of §8 — the list a bench opens this panel to read.
 final class FITValidatorTests: XCTestCase {

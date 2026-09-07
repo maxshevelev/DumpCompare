@@ -1,5 +1,5 @@
 import XCTest
-@testable import UEFIFormat
+@testable import UEFIImage
 
 /// The pass that needs an address rather than an offset (§10).
 final class SecondPassTests: XCTestCase {

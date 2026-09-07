@@ -1,5 +1,5 @@
 import XCTest
-@testable import UEFIFormat
+@testable import UEFIImage
 
 /// Putting back what an edit invalidates (§3.3, §5.4, §7.1).
 final class ChecksumRepairTests: XCTestCase {

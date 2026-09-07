@@ -1,5 +1,5 @@
 import Foundation
-import UEFIFormat
+import UEFIImage
 
 /// One sixteen-byte row of the table — the header included, since it is a row
 /// like any other (`Design/UEFI/FIT_TABLE_FORMAT.md` §3).

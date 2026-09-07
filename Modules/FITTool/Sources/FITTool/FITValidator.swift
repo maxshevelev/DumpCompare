@@ -1,5 +1,5 @@
 import Foundation
-import UEFIFormat
+import UEFIImage
 
 /// The invariants of §8, each one checked and each one named.
 ///

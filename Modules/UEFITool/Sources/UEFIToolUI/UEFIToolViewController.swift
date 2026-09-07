@@ -1,6 +1,6 @@
 import AppKit
 import ToolModuleKit
-import UEFIFormat
+import UEFIImage
 import UEFITool
 
 /// The panel: the tree above, what the node in focus is below.

@@ -1,7 +1,7 @@
 # UEFI Structure — tool-module plan
 
 A **structure browser** for a UEFI firmware image: it parses the open file into
-the tree `UEFIFormat` already builds, shows that tree in an expandable outline,
+the tree `UEFIImage` already builds, shows that tree in an expandable outline,
 and — for the one node the user has selected — draws its bytes in the dump and
 explains what they are.
 
@@ -70,7 +70,7 @@ header:
 
 The offsets and the name tables (`FFS.typeName`, `Section.typeName`,
 `KnownGUIDs`, `FlashRegionType.label`, `MicrocodeHeader.date`) all live in
-`UEFIFormat`; the detail builder reads them through the reader and does not
+`UEFIImage`; the detail builder reads them through the reader and does not
 re-derive a single one.
 
 ## Where the decisions live
@@ -98,7 +98,7 @@ Each stage builds, tests, and is committable on its own.
    Empty for now: it builds and the menu lists it.
 2. **The pure target.** The zone builder, the zone-id trip back, and the detail
    builder for every kind, with a `swift test` suite over images built byte by
-   byte (the `UEFIFormat` `TestImage` builders, reused).
+   byte (the `UEFIImage` `TestImage` builders, reused).
 3. **The view.** The outline over the tree, the splitter, the detail list, and
    the progress line. The session that parses off the main actor and publishes
    the one zone.

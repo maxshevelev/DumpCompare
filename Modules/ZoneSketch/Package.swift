@@ -23,7 +23,7 @@ let package = Package(
         .library(name: "ZoneSketchUI", targets: ["ZoneSketchUI"])
     ],
     dependencies: [
-        .package(path: "../../ToolModuleKit")
+        .package(path: "../../Packages/ToolModuleKit")
     ],
     targets: [
         .target(name: "ZoneSketch", dependencies: [

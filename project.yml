@@ -5,6 +5,14 @@ options:
     macOS: "14.0"
   createIntermediateGroups: true
   groupSortPosition: top
+  # Every local package goes into one navigator group, wherever it lives on
+  # disk. Left at its default the group is called "Packages" AND carries
+  # `path = Packages`, so the tool-modules — which live in `Modules/` — show up
+  # in it wearing the badge Xcode puts on an item whose real folder is
+  # elsewhere, and the list reads as two sorts of package. Named like this the
+  # group is emitted with a name and no path (measured), so all of them are
+  # listed the same way.
+  localPackagesGroup: "Local Packages"
 
 # Files the project references without them belonging to a target's sources.
 # Without this the signing config is a reference Xcode cannot place, and it
@@ -13,23 +21,33 @@ options:
 fileGroups:
   - Signing.xcconfig
 
+# Every package is local; there are no remote dependencies. `Packages/` holds the
+# shared libraries and `Modules/` the tool-modules, one directory per package —
+# the two shapes are described in `CLAUDE.md`. Every one of them is listed here,
+# including those only a tool-module links: SwiftPM would resolve those through
+# that module's own manifest and build them either way, but a package Xcode
+# cannot see is one nobody edits in the project they have open.
 packages:
   DumpCompareCore:
-    path: DumpCompareCore
+    path: Packages/DumpCompareCore
   ALSplitView:
-    path: ALSplitView
+    path: Packages/ALSplitView
   ToolModuleKit:
-    path: ToolModuleKit
+    path: Packages/ToolModuleKit
+  # The shared parser. The tool-modules depend on it transitively, but the app's
+  # flow tests build a UEFI image by hand and so import it directly.
+  UEFIImage:
+    path: Packages/UEFIImage
+  # The introduction between the seam's reader and the parser's `ByteSource`,
+  # which both firmware tool-modules link and no target here depends on.
+  UEFIContentSource:
+    path: Packages/UEFIContentSource
   ZoneSketch:
     path: Modules/ZoneSketch
   FITTool:
     path: Modules/FITTool
   UEFITool:
     path: Modules/UEFITool
-  # The shared parser. The tool-modules depend on it transitively, but the app's
-  # flow tests build a UEFI image by hand and so import it directly.
-  UEFIFormat:
-    path: UEFIFormat
 
 targets:
   DumpCompare:
@@ -155,7 +173,7 @@ targets:
         product: ZoneSketchUI
       - package: UEFITool
         product: UEFIToolUI
-      - package: UEFIFormat
+      - package: UEFIImage
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.maxik.DumpCompareTests

@@ -1,5 +1,5 @@
 import XCTest
-@testable import UEFIFormat
+@testable import UEFIImage
 
 /// The sixteen bytes, and the mixed-endian text everyone writes them as
 /// (`Design/UEFI/UEFI_IMAGE_FORMAT.md` §0).

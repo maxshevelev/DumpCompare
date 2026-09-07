@@ -79,7 +79,7 @@ M1 → M2 → M3 are pure Swift and test-first. M4+ are AppKit and depend on the
 **Goal:** an empty app that builds and runs, with the core package and test targets wired.
 
 1. Create repository layout:
-   - `DumpCompareCore/` — Swift package (storage + model), with `Tests/`.
+   - `Packages/DumpCompareCore/` — Swift package (storage + model), with `Tests/`.
    - `DumpCompareApp/` — AppKit sources (entry point, window, views).
    - `project.yml` (XcodeGen) — app target, core package dependency, unit-test targets.
 2. Generate `DumpCompare.xcodeproj` (decision D2); verify `xcodebuild build` and `xcodebuild test` work.

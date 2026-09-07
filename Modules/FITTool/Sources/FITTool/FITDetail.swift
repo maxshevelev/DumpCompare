@@ -1,5 +1,5 @@
 import Foundation
-import UEFIFormat
+import UEFIImage
 
 /// One label/value row in the detail list.
 public struct FITDetailField: Equatable, Sendable {

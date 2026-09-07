@@ -1,6 +1,6 @@
 import XCTest
 @testable import FITTool
-import UEFIFormat
+import UEFIImage
 
 /// The list of microcode that can be browsed and added, read from the file
 /// names in `github.com/platomav/CPUMicrocodes`.

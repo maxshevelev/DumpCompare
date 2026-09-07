@@ -16,6 +16,24 @@ Architecture:
 - ViewModel/presentation state layer.
 - View layer.
 
+Packages:
+- Every unit of code outside the app target is a local SPM package. There are no
+  remote dependencies, and each package is listed in `packages:` in
+  `project.yml` — including one only a tool-module links, so Xcode can see it.
+- `Packages/<Name>` — a shared library: one target `<Name>`, one product
+  `<Name>`, tests in `Tests/<Name>Tests`.
+- `Modules/<Name>` — a tool-module: two targets, `<Name>` (pure, no AppKit) and
+  `<Name>UI` (the view controller and the `ToolModule` conformance). The only
+  product is `<Name>UI`. The tests cover the pure target; the host is tried in
+  the app suite. Also wire it into `DumpCompareApp/Tools/ToolRegistry.swift`.
+- A tool-module depends on `ToolModuleKit` and on shared packages. Never on
+  `DumpCompareApp`, never on `DumpCompareCore`, never on another tool-module.
+- Code two tool-modules both need moves to a shared package under `Packages/`.
+- Every package: `swift-tools-version: 5.9`, `platforms: [.macOS(.v14)]`, and a
+  header comment saying what it is and why it is a package of its own.
+- After adding a package or a source file: `xcodegen generate`. The test script
+  finds a new package by itself.
+
 Running the tests:
 - `Scripts/run-tests.sh` — every Swift package, then the app suite in groups,
   one group at a time. `-o <regex>` runs only the classes whose names match;

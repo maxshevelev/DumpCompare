@@ -1,5 +1,5 @@
 import XCTest
-@testable import UEFIFormat
+@testable import UEFIImage
 
 /// What kind of thing the file is (§1): a capsule, an Intel flash dump, or
 /// bytes to be searched.

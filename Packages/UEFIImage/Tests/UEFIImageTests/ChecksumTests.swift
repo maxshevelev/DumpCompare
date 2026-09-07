@@ -1,5 +1,5 @@
 import XCTest
-@testable import UEFIFormat
+@testable import UEFIImage
 
 /// Checksums, all of which are built so that the structure including its own
 /// checksum field sums to zero (§0).

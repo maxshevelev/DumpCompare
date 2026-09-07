@@ -1,5 +1,5 @@
 import XCTest
-@testable import UEFIFormat
+@testable import UEFIImage
 
 /// Walking a volume's body into files (§5).
 final class FileParseTests: XCTestCase {

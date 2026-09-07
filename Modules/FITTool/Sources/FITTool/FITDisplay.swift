@@ -1,6 +1,6 @@
 import Foundation
 import ToolModuleKit
-import UEFIFormat
+import UEFIImage
 
 /// One row as the panel shows it.
 public struct FITDisplayRow: Equatable, Sendable {

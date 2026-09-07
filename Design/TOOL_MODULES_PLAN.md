@@ -26,7 +26,7 @@ Settled before writing this, and the reasoning belongs with each.
 |---|---|
 | **Packaging** | one SPM package per tool-module, in this repository, linked statically and listed in `project.yml`. No bundle loading at runtime: every module ships with the app, so a loader would buy nothing and cost signing, versioning and a failure mode per launch. |
 | **UI** | the tool-module vends its own `NSViewController`, with a pure logic target underneath it in the same package. The controller is thin; what can be decided without a window is decided in the pure target and tested by `swift test`. |
-| **Dependencies** | a tool-module depends on `ToolModuleKit` and on domain packages (`UEFIFormat`). It depends on neither `DumpCompareApp` nor `DumpCompareCore` — making `DumpCompareCore` a public API is a price with no return. |
+| **Dependencies** | a tool-module depends on `ToolModuleKit` and on domain packages (`UEFIImage`). It depends on neither `DumpCompareApp` nor `DumpCompareCore` — making `DumpCompareCore` a public API is a price with no return. |
 | **Zones** | defined by the tool-module only. Read-only for the user: shown and navigated, never created or edited. The tool-module publishes a **slice** — what it wants seen — not its tree. |
 | **Zone lifetime** | zones live with the session. Nothing else authors them, so closing the tool-module takes the map with it. |
 | **Zone anchoring** | none. After an edit the map is rebuilt by re-reading, not shifted by `DiffEdit` — which removes the anchoring machinery `Design/ZONES_IDEA.md` budgeted for. |
@@ -44,7 +44,7 @@ only thing both the app and every tool-module import. Imports AppKit, because a
 session vends a view controller; every value type in it is AppKit-free, so a
 pure logic target can depend on it without dragging a window in.
 
-**`UEFIFormat`** — the domain model of a UEFI image: the tree of
+**`UEFIImage`** — the domain model of a UEFI image: the tree of
 `Design/UEFI/UEFI_IMAGE_FORMAT.md` and both parsing passes. **Not a
 tool-module** — no UI, not in the Tools menu. Several tool-modules stand on it: one showing the structure with
 export and body replacement, one working the FIT table. Pure Swift, no AppKit,
@@ -76,7 +76,9 @@ rather than a buffer — the model holds no bytes, so a 32 MiB image parses into
 a few thousand nodes and an editor writing to a node writes to the file.
 
 **`Modules/<Name>`** — one package per tool-module, two targets: `<Name>` (pure)
-and `<Name>UI` (the view controller and the `ToolModule` conformance).
+and `<Name>UI` (the view controller and the `ToolModule` conformance). The
+shared packages above live under `Packages/<Name>`. `CLAUDE.md` carries both
+shapes as the standing rule; this section is why they read that way.
 
 ## The API
 
@@ -315,7 +317,7 @@ inventing a second place to watch.
 
 Three levels, and the point of the split is that only the third needs a window.
 
-- **`UEFIFormat`, by `swift test`** over fixture images: a small hand-built
+- **`UEFIImage`, by `swift test`** over fixture images: a small hand-built
   image with a volume, a file, a section and a FIT; the diagnostic cases from
   the documents (an entry pointing at `FF FF FF FF`, a stale header checksum,
   types out of order, a zero size).
@@ -349,7 +351,7 @@ Each stage builds, tests and is committable on its own.
    read-only refusal, and the dump refreshing under the panel.
 7. **Files** — `requestFile` and `exportFile` through the host's panels, with
    the security scope staying on the app's side.
-8. **`UEFIFormat`** — the package, the first pass, the second pass. Shipped;
+8. **`UEFIImage`** — the package, the first pass, the second pass. Shipped;
    see below. The first thing that makes a tool-module worth opening.
 
 ## The UEFI package
@@ -463,7 +465,7 @@ does not have. The app gained `com.apple.security.network.client` for this and
 for nothing else.
 
 What the tool cannot check is Boot Guard: the protected ranges are in structures
-`UEFIFormat` does not read yet, and a component written inside one stops the
+`UEFIImage` does not read yet, and a component written inside one stops the
 platform booting. It says so after every add rather than pretending otherwise,
 and `Design/TODO.md` carries the work.
 

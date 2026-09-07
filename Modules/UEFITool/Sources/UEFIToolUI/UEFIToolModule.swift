@@ -1,6 +1,7 @@
 import AppKit
 import ToolModuleKit
-import UEFIFormat
+import UEFIContentSource
+import UEFIImage
 import UEFITool
 
 /// The structure of a UEFI firmware image, read and shown

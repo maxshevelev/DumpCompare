@@ -1,6 +1,6 @@
 import Foundation
 import ToolModuleKit
-import UEFIFormat
+import UEFIImage
 
 /// The decisions the UEFI structure panel makes, built and tested without a
 /// window (`Design/UEFI_STRUCTURE_TOOL.md`).

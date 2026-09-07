@@ -1,5 +1,5 @@
 import XCTest
-@testable import UEFIFormat
+@testable import UEFIImage
 
 /// The progress a caller asks the scan to report while it parses
 /// (`UEFIParser.parse(progress:)`): fractions of the image the scan has

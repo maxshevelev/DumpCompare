@@ -1,5 +1,5 @@
 import XCTest
-@testable import UEFIFormat
+@testable import UEFIImage
 
 /// Finding volumes in an image and reading their headers (§3, §4).
 final class VolumeParseTests: XCTestCase {

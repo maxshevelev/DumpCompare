@@ -1,5 +1,5 @@
 import Foundation
-@testable import UEFIFormat
+@testable import UEFIImage
 
 /// Images built by hand, byte for byte.
 ///

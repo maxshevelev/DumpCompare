@@ -35,10 +35,11 @@ fill.
 
 ## What was done
 
-1. **`ALSplitView` Swift package** (`ALSplitView/`, `swift-tools-version: 5.9`,
-   macOS 14). One source file, `Sources/ALSplitView/ALSplitView.swift`, plus a
-   test target (`Tests/ALSplitViewTests/ALSplitViewTests.swift`, 16 tests).
-   Wired into the app via `project.yml` (a local package at `path: ALSplitView`);
+1. **`ALSplitView` Swift package** (`Packages/ALSplitView/`,
+   `swift-tools-version: 5.9`, macOS 14). One source file,
+   `Sources/ALSplitView/ALSplitView.swift`, plus a test target
+   (`Tests/ALSplitViewTests/ALSplitViewTests.swift`, 16 tests). Wired into the
+   app via `project.yml` (a local package at `path: Packages/ALSplitView`);
    the app target and the test target both depend on it.
 2. **Deleted the three old `NSSplitView` subclasses:**
    `ProportionalSplitView.swift`, `SearchResultsSplitView.swift`,
@@ -303,14 +304,14 @@ refusal the default implementation would have given. It now guards on
   `NSSplitView` arranges its Auto Layout arranged-subviews *through* `layout()`
   — the framework was doing the engine bookkeeping that the plain-`NSView` port
   had to take over.
-- **Core file:** `ALSplitView/Sources/ALSplitView/ALSplitView.swift`.
+- **Core file:** `Packages/ALSplitView/Sources/ALSplitView/ALSplitView.swift`.
 - **App sites:** `DumpCompareApp/ComparisonView.swift` (outer split),
   `DumpCompareApp/FilePaneView.swift` (inner results split),
   `DumpCompareApp/MainViewController.swift` (minimap split).
 - **Pane wrapper:** `DumpCompareApp/DropBands.swift` — `PaneDropBandsView` wraps
   each `FilePaneView`, pinning it to the band's 4 edges with low horizontal
   hugging/compression resistance so a collapsed band can squeeze the pane.
-- **Tests:** `ALSplitView/Tests/ALSplitViewTests/ALSplitViewTests.swift`;
+- **Tests:** `Packages/ALSplitView/Tests/ALSplitViewTests/ALSplitViewTests.swift`;
   `DumpCompareTests/ComparisonResizeTests.swift`, `DividerDragTests.swift`,
   `LayoutToggleTests.swift`, `ReparentPaneReproTests.swift`, `MinimapTests.swift`,
   `HexColumnHeaderTests.swift` (the header clip, §1 above),

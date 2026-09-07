@@ -1,5 +1,5 @@
 import XCTest
-@testable import UEFIFormat
+@testable import UEFIImage
 
 /// The tree a parse produces, and the three questions everything downstream
 /// asks of it: what is here, what is at this offset, and where does this

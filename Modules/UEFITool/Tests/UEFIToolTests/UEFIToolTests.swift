@@ -1,7 +1,7 @@
 import XCTest
 @testable import UEFITool
 import ToolModuleKit
-import UEFIFormat
+import UEFIImage
 
 /// The one zone is the node in focus and nothing else — the tree is the
 /// parser's, and what crosses the seam is the single range worth drawing.

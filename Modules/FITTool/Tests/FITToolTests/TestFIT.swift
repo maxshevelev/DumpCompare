@@ -1,6 +1,6 @@
 import Foundation
 @testable import FITTool
-import UEFIFormat
+import UEFIImage
 
 /// Images with a FIT in them, built byte by byte.
 ///

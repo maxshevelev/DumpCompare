@@ -1,5 +1,5 @@
 import Foundation
-import UEFIFormat
+import UEFIImage
 
 /// The table as it was found: where it is, what is in it, and what its rows
 /// actually point at (§2, §3).
@@ -107,7 +107,7 @@ public struct FITReport: Equatable, Sendable {
 public enum FITReader {
     /// Finds the table and reads it.
     ///
-    /// The image is the parse from `UEFIFormat`, and it is used for exactly two
+    /// The image is the parse from `UEFIImage`, and it is used for exactly two
     /// things: the address mapping, which comes from the Volume Top File and
     /// therefore from a full parse, and naming what a row points at. Nil is
     /// allowed — the table can still be read, on the assumption every full

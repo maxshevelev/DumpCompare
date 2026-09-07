@@ -6,7 +6,7 @@
 //  fixed physical address, its entries address memory rather than the file, and
 //  what they point at is often outside any FFS file. So its structure, its
 //  rules and its edits live here, in a tool-module, and what it takes from
-//  `UEFIFormat` is the one thing it cannot work out for itself — the mapping
+//  `UEFIImage` is the one thing it cannot work out for itself — the mapping
 //  between an address and an offset, which comes from a full parse of the image
 //  (`Design/TOOL_MODULES_PLAN.md`, `Design/UEFI/FIT_TABLE_FORMAT.md`).
 //
@@ -25,18 +25,20 @@ let package = Package(
         .library(name: "FITToolUI", targets: ["FITToolUI"])
     ],
     dependencies: [
-        .package(path: "../../ToolModuleKit"),
-        .package(path: "../../UEFIFormat")
+        .package(path: "../../Packages/ToolModuleKit"),
+        .package(path: "../../Packages/UEFIImage"),
+        .package(path: "../../Packages/UEFIContentSource")
     ],
     targets: [
         .target(name: "FITTool", dependencies: [
             .product(name: "ToolModuleKit", package: "ToolModuleKit"),
-            .product(name: "UEFIFormat", package: "UEFIFormat")
+            .product(name: "UEFIImage", package: "UEFIImage")
         ]),
         .target(name: "FITToolUI", dependencies: [
             "FITTool",
             .product(name: "ToolModuleKit", package: "ToolModuleKit"),
-            .product(name: "UEFIFormat", package: "UEFIFormat")
+            .product(name: "UEFIImage", package: "UEFIImage"),
+            .product(name: "UEFIContentSource", package: "UEFIContentSource")
         ]),
         .testTarget(name: "FITToolTests", dependencies: ["FITTool"])
     ]

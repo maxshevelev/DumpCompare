@@ -1,7 +1,7 @@
 import XCTest
 @testable import FITTool
 import ToolModuleKit
-import UEFIFormat
+import UEFIImage
 
 /// A microcode run that lives inside an FFS file rather than in a raw region.
 ///

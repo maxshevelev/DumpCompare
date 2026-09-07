@@ -1,6 +1,6 @@
 import XCTest
 @testable import FITTool
-import UEFIFormat
+import UEFIImage
 
 /// Finding the table and reading it (§2, §3, §4).
 final class FITReaderTests: XCTestCase {

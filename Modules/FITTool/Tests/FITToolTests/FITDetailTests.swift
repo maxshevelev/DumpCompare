@@ -1,6 +1,6 @@
 import XCTest
 @testable import FITTool
-import UEFIFormat
+import UEFIImage
 
 /// What the detail panel says about a row: the entry's own sixteen bytes, and
 /// what its address leads to, read rather than assumed.

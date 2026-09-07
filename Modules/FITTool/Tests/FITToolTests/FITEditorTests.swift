@@ -1,7 +1,7 @@
 import XCTest
 @testable import FITTool
 import ToolModuleKit
-import UEFIFormat
+import UEFIImage
 
 /// Adding a microcode entry (§9.2) and taking one out (§10).
 final class FITEditorTests: XCTestCase {
