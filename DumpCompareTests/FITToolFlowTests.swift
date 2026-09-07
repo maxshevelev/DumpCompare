@@ -127,7 +127,7 @@ final class FITToolFlowTests: XCTestCase {
         )
         XCTAssertEqual(display.rows.map(\.typeText), ["FIT Header", "Microcode"])
         XCTAssertEqual(display.rows[1].targetText,
-                       "CPUID: 806EA · rev F0 · Size: 0x100 · 2019-07-15")
+                       "CPUID 806EA · r. F0 · len 0x100 · 2019-07-15")
         XCTAssertTrue(display.problems.filter { $0.severity == .error }.isEmpty)
     }
 
@@ -149,6 +149,27 @@ final class FITToolFlowTests: XCTestCase {
         try entriesTable().selectRowIndexes([1], byExtendingSelection: false)
 
         XCTAssertEqual(controller.windowModel.pane1.zones.focus, "fit.row.1")
+    }
+
+    /// Picking a row fills the detail below the splitter with what that row is
+    /// — the entry's own fields and what its address leads to.
+    func testPickingARowFillsTheDetail() throws {
+        _ = try open(FITTestImage.make())
+
+        try entriesTable().selectRowIndexes([1], byExtendingSelection: false)
+        window?.layoutIfNeeded()
+
+        // The detail is decided in the pure target and rides on the display.
+        let detail = try session().display.detail
+        XCTAssertEqual(detail.title, "#1 Microcode")
+        XCTAssertTrue(detail.fields.contains { $0.label == "CPUID" && $0.value == "806EA" })
+        XCTAssertTrue(detail.fields.contains { $0.label == "Total size" && $0.value == "0x100 (256)" })
+
+        // And it is on screen, not just in the model.
+        let panel = try XCTUnwrap(controller?.tools.panel)
+        let labels = Set(descendants(of: panel, NSTextField.self).map(\.stringValue))
+        XCTAssertTrue(labels.contains("CPUID"), "the detail shows a CPUID label")
+        XCTAssertTrue(labels.contains("806EA"), "the detail shows the CPUID value")
     }
 
     /// A row exists to point somewhere, and going there puts the component in
@@ -389,7 +410,7 @@ final class FITToolFlowTests: XCTestCase {
         let display = try session().display
         XCTAssertEqual(display.rows.count, 2, "replaced, not added a second time")
         XCTAssertEqual(display.rows[1].targetRange, 0x2000..<0x2100)
-        XCTAssertTrue(display.rows[1].targetText.contains("rev F1"),
+        XCTAssertTrue(display.rows[1].targetText.contains("r. F1"),
                       "\(display.rows[1].targetText)")
         XCTAssertEqual(try pane.byteStorage?.read(at: 0x2100, length: 4),
                        [0xFF, 0xFF, 0xFF, 0xFF], "nothing was written past it")

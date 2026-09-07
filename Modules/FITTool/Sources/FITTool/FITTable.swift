@@ -41,6 +41,24 @@ public struct FITRow: Equatable, Sendable {
     }
 }
 
+/// The first eight bytes of a policy row at version 0: a descriptor of
+/// Index/IO registers rather than a pointer (§7.3).
+///
+/// ```
+///   0x00   2   IndexRegisterAddress
+///   0x02   2   DataRegisterAddress
+///   0x04   1   AccessWidthInBytes   (1 or 2)
+///   0x05   1   BitPosition
+///   0x06   2   Index
+/// ```
+public struct FITIndexIODescriptor: Equatable, Sendable {
+    public var indexRegister: UInt16
+    public var dataRegister: UInt16
+    public var accessWidth: UInt8
+    public var bitPosition: UInt8
+    public var index: UInt16
+}
+
 /// What is at a row's address.
 public enum FITTarget: Equatable, Sendable {
     /// The row points nowhere by design: the header, an empty slot.
@@ -48,7 +66,7 @@ public enum FITTarget: Equatable, Sendable {
     /// A policy row whose first eight bytes are an Index/IO register
     /// descriptor rather than a pointer (§7.3). Reading it as an address is
     /// exactly the mistake the format invites here.
-    case indexIORegisters
+    case indexIORegisters(FITIndexIODescriptor)
     /// The address does not land in this image.
     case outsideTheImage
     case microcode(MicrocodeHeader)
@@ -201,7 +219,18 @@ public enum FITReader {
         if entry.isHeader || entry.isEmptySlot { return .nothing }
         if entry.type == FIT.tpmPolicyType || entry.type == FIT.txtPolicyType,
            entry.version == FIT.policyIndexIOVersion {
-            return .indexIORegisters
+            // The first eight bytes are a descriptor of Index/IO registers, not
+            // a pointer (§7.3) — and reading them as an address is exactly the
+            // mistake the format invites here. They are the row's own `Address`
+            // field, already read, so there is nothing left to fetch.
+            let raw = entry.address
+            return .indexIORegisters(FITIndexIODescriptor(
+                indexRegister: UInt16(truncatingIfNeeded: raw),
+                dataRegister: UInt16(truncatingIfNeeded: raw >> 16),
+                accessWidth: UInt8(truncatingIfNeeded: raw >> 32),
+                bitPosition: UInt8(truncatingIfNeeded: raw >> 40),
+                index: UInt16(truncatingIfNeeded: raw >> 48)
+            ))
         }
         guard entry.address >= diff else { return .outsideTheImage }
         let offset = entry.address - diff

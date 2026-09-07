@@ -61,13 +61,21 @@ final class FITTargetTests: XCTestCase {
     /// first eight bytes. Reading it as an address is the mistake the format
     /// invites, and it would put the dump somewhere meaningless (§7.3).
     func testAPolicyRowAtVersionZeroIsNotAnAddress() {
+        // The first eight bytes, read as a descriptor of Index/IO registers
+        // rather than as the pointer they are shaped like (§7.3).
         XCTAssertEqual(
             target(TestFIT.Row(FIT.tpmPolicyType, address: 0x0002_0001_0000_0080, version: 0)),
-            .indexIORegisters
+            .indexIORegisters(FITIndexIODescriptor(
+                indexRegister: 0x0080, dataRegister: 0x0000,
+                accessWidth: 1, bitPosition: 0, index: 0x0002
+            ))
         )
         XCTAssertEqual(
             target(TestFIT.Row(FIT.txtPolicyType, address: 0x1234, version: 0)),
-            .indexIORegisters
+            .indexIORegisters(FITIndexIODescriptor(
+                indexRegister: 0x1234, dataRegister: 0,
+                accessWidth: 0, bitPosition: 0, index: 0
+            ))
         )
     }
 

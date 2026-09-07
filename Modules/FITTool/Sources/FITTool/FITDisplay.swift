@@ -28,6 +28,9 @@ public struct FITDisplayRow: Equatable, Sendable {
     /// Whether §10 allows this row to go: not the header, and not the last
     /// microcode a table has.
     public var canRemove: Bool
+    /// The row as the table read it — entry and what it points at — kept so
+    /// the detail can be rebuilt for whatever row comes into focus.
+    public var model: FITRow
 
     /// Where "go to the offset" leads: what the row points at, or — for the
     /// header and for an empty slot, which point nowhere — the row itself.
@@ -86,15 +89,19 @@ public struct FITDisplay: Equatable, Sendable {
     /// is nothing to put right (§5, §11).
     public var checksumFix: ToolTransaction?
     public var zones: ZoneMap
+    /// What the row in focus is, field by field — the entry's own sixteen
+    /// bytes and what its address leads to. Empty when no row is in focus.
+    public var detail: FITRowDetail
 
     /// Nothing read yet, or nothing to show.
     public static let empty = FITDisplay(
-        summary: "", rows: [], problems: [], checksumFix: nil, zones: .empty
+        summary: "", rows: [], problems: [], checksumFix: nil, zones: .empty,
+        detail: .empty
     )
 
     /// The same display with another row selected. Selecting a row changes
-    /// what is drawn strongly in the dump and nothing else, so it is a change
-    /// to the focus rather than a reason to read the file again.
+    /// what is drawn strongly in the dump and what the detail says, so it is a
+    /// change to the focus rather than a reason to read the file again.
     public func focusing(_ index: Int?) -> FITDisplay {
         focusing(zoneID: index.map(FITPresenter.rowZoneID))
     }
@@ -109,6 +116,13 @@ public struct FITDisplay: Equatable, Sendable {
     public func focusing(zoneID: String?) -> FITDisplay {
         var copy = self
         copy.zones.focus = zoneID
+        // The detail follows the selection: the row the outline is on, whether
+        // the outline sits on the row itself or on what it points at. The table
+        // and the pointer stand for no row, so they leave the detail empty.
+        copy.detail = zoneID
+            .flatMap(FITPresenter.rowIndex(ofZone:))
+            .flatMap { index in rows.first { $0.index == index } }
+            .map { FITDetail.build(for: $0.model) } ?? .empty
         return copy
     }
 }
@@ -138,7 +152,8 @@ public enum FITPresenter {
                 rows: [],
                 problems: report.problems,
                 checksumFix: nil,
-                zones: ZoneMap.empty
+                zones: ZoneMap.empty,
+                detail: .empty
             )
         }
         let problemRows = Set(report.problems.compactMap(\.entryIndex))
@@ -157,15 +172,23 @@ public enum FITPresenter {
                 rowRange: row.entry.offset..<(row.entry.offset + FITEntry.size),
                 targetRange: targetRange(of: row),
                 canRemove: row.entry.index > 0
-                    && !(row.entry.type == FIT.microcodeType && microcodeCount == 1)
+                    && !(row.entry.type == FIT.microcodeType && microcodeCount == 1),
+                model: row
             )
         }
+        // The detail is the row the user has selected, or nothing before a
+        // selection — built here so a fresh parse shows the same detail the
+        // selection would.
+        let detail = focus
+            .flatMap { index in rows.first { $0.index == index } }
+            .map { FITDetail.build(for: $0.model) } ?? .empty
         return FITDisplay(
             summary: summary(of: report),
             rows: rows,
             problems: report.problems,
             checksumFix: checksumFix(for: table),
-            zones: zones(of: table, rows: rows, focus: focus)
+            zones: zones(of: table, rows: rows, focus: focus),
+            detail: detail
         )
     }
 
@@ -250,15 +273,15 @@ public enum FITPresenter {
         case .outsideTheImage:
             return "outside this image"
         case .microcode(let header):
-            // The CPUID is what a bench hunts for, so it leads and is labelled;
-            // the offset is dropped — the Address column already says it — the
-            // length is labelled, and the date closes the line.
+            // The CPUID is what a bench hunts for, so it leads; the offset is
+            // dropped — the Address column already says it — and the date
+            // closes the line.
             parts = [
-                "CPUID: \(cpuid(header.processorSignature))",
-                "rev \(String(header.updateRevision, radix: 16, uppercase: true))"
+                "CPUID \(cpuid(header.processorSignature))",
+                "r. \(String(header.updateRevision, radix: 16, uppercase: true))"
             ]
             if let size = row.effectiveSize {
-                parts.append("Size: \(hex(size))")
+                parts.append("len \(hex(size))")
             }
             parts.append(header.date)
             return parts.joined(separator: " · ")
