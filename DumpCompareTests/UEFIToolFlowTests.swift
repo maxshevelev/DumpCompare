@@ -145,6 +145,36 @@ final class UEFIToolFlowTests: XCTestCase {
 
     /// The bottom of the panel says what the node in focus is, by its type: a
     /// volume by its file system and length, a file by its type and state.
+    /// A row's text sits down the middle of the row. The tree is view-based
+    /// for that reason: `objectValueFor` is the cell-based path, and an
+    /// `NSTextFieldCell` draws its text against the top of the row, which
+    /// reads as every row in the tree sitting too high.
+    ///
+    /// This also guards the focus ring, which is why there is no test of its
+    /// own for that. A cell-based table draws a ring around the whole of
+    /// itself when it takes focus — `NSCell`-era behaviour — while a
+    /// view-based one leaves focus to the selection highlight. That ring was
+    /// this tree's, and no other table in the project has ever shown one
+    /// because no other table was ever cell-based. Asserting
+    /// `focusRingType == .none` instead would only have restated a line of
+    /// setup; asserting the cell view is the thing that decides.
+    func testATreeRowsTextIsCentredInTheRow() throws {
+        _ = try open(UEFITestImage.make())
+        let outline = try outline()
+
+        let cell = try XCTUnwrap(
+            outline.view(atColumn: 0, row: 0, makeIfNecessary: true) as? NSTableCellView,
+            "the tree is view-based — cell-based rows have no view here at all"
+        )
+        let field = try XCTUnwrap(cell.textField, "the cell shows its text in a field")
+        let above = field.frame.minY
+        let below = cell.bounds.height - field.frame.maxY
+
+        XCTAssertEqual(above, below, accuracy: 1,
+                       "\(above) above the text and \(below) below it — the row's "
+                       + "text is not centred")
+    }
+
     /// The detail is the lower pane of the splitter, at the panel's full
     /// width and with height of its own. Position, not only height: while the
     /// split was side by side the detail was a zero-width column down the

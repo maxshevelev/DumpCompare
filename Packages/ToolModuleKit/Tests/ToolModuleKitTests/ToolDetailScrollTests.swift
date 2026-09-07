@@ -44,7 +44,7 @@ final class ToolDetailScrollTests: XCTestCase {
 
     func testRowsTallerThanTheVisibleAreaGrowTheDocument() {
         let scroll = self.scroll(height: 60)
-        scroll.prepareForRows()
+        scroll.prepareForRows(subject: "row")
         for index in 0..<20 {
             scroll.content.addArrangedSubview(row("Field \(index)"))
         }
@@ -57,29 +57,70 @@ final class ToolDetailScrollTests: XCTestCase {
         XCTAssertTrue(scroll.placeholder.isHidden)
     }
 
-    func testRefillingPutsTheScrollBackAtTheFirstRow() {
+    /// Scrolls a filled detail down and hands back where it ended up.
+    private func scrolledDetail(subject: String) -> (ToolDetailScroll, CGFloat) {
         let scroll = self.scroll(height: 60)
-        scroll.prepareForRows()
+        scroll.prepareForRows(subject: subject)
         for index in 0..<20 {
             scroll.content.addArrangedSubview(row("Field \(index)"))
         }
         scroll.layoutSubtreeIfNeeded()
         scroll.documentView?.scroll(NSPoint(x: 0, y: 120))
         scroll.layoutSubtreeIfNeeded()
+        return (scroll, scroll.documentVisibleRect.origin.y)
+    }
 
-        // A different row was picked: the rows that follow describe another
-        // thing, and an offset kept from the last ones opens it part-way down.
-        scroll.prepareForRows()
+    func testADifferentSubjectOpensAtItsFirstRow() {
+        let (scroll, scrolled) = scrolledDetail(subject: "row 1")
+        XCTAssertGreaterThan(scrolled, 0, "the detail was scrolled down first")
+
+        scroll.prepareForRows(subject: "row 2")
         scroll.content.addArrangedSubview(row("Only field"))
         scroll.layoutSubtreeIfNeeded()
 
         XCTAssertEqual(scroll.documentVisibleRect.origin.y, 0, accuracy: 0.5,
-                       "the new detail opens at its first row")
+                       "another row's fields start at the first one, not wherever "
+                       + "the last row had been left")
+    }
+
+    /// A panel re-reads for reasons that are nothing to do with the user — an
+    /// edit anywhere in the dump costs a re-parse, and the panel re-renders the
+    /// same row from it. That must not move the reader.
+    func testTheSameSubjectKeepsTheReadersPlace() {
+        let (scroll, scrolled) = scrolledDetail(subject: "row 1")
+        XCTAssertGreaterThan(scrolled, 0, "the detail was scrolled down first")
+
+        scroll.prepareForRows(subject: "row 1")
+        for index in 0..<20 {
+            scroll.content.addArrangedSubview(row("Field \(index)"))
+        }
+        scroll.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(scroll.documentVisibleRect.origin.y, scrolled, accuracy: 0.5,
+                       "a re-read of the same row left the detail where it was")
+    }
+
+    /// The placeholder forgets the subject: the row it described is no longer
+    /// on screen, so the next row's fields are a fresh start.
+    func testAfterThePlaceholderTheNextSubjectStartsAtTheTop() {
+        let (scroll, _) = scrolledDetail(subject: "row 1")
+        scroll.showPlaceholder("Nothing selected.")
+        scroll.layoutSubtreeIfNeeded()
+
+        scroll.prepareForRows(subject: "row 1")
+        for index in 0..<20 {
+            scroll.content.addArrangedSubview(row("Field \(index)"))
+        }
+        scroll.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(scroll.documentVisibleRect.origin.y, 0, accuracy: 0.5,
+                       "the same row picked again after nothing was selected "
+                       + "opens at its first field")
     }
 
     func testThePlaceholderAndTheRowsAreNeverBothOnScreen() {
         let scroll = self.scroll()
-        scroll.prepareForRows()
+        scroll.prepareForRows(subject: "row")
         scroll.content.addArrangedSubview(row("Field"))
         scroll.layoutSubtreeIfNeeded()
         XCTAssertTrue(scroll.placeholder.isHidden, "rows replace the placeholder")

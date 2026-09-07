@@ -305,7 +305,7 @@ import ToolModuleKit
         summaryLabel.stringValue = display.summary
         entries.reloadData()
         problems.reloadData()
-        renderDetail(display.detail)
+        renderDetail(display.detail, subject: focus.map(String.init) ?? "")
         if let focus, let row = display.rows.firstIndex(where: { $0.index == focus }) {
             entries.selectRowIndexes([row], byExtendingSelection: false)
         } else {
@@ -319,14 +319,14 @@ import ToolModuleKit
     }
 
     /// Rebuilds the detail list from the fields the pure target decided.
-    private func renderDetail(_ rowDetail: FITRowDetail) {
+    private func renderDetail(_ rowDetail: FITRowDetail, subject: String) {
         guard !rowDetail.fields.isEmpty else {
             detail.showPlaceholder(rowDetail.title.isEmpty
                 ? "Select a row to see what it is."
                 : rowDetail.title)
             return
         }
-        detail.prepareForRows()
+        detail.prepareForRows(subject: subject)
 
         if !rowDetail.title.isEmpty {
             let title = NSTextField(labelWithString: rowDetail.title)

@@ -29,6 +29,10 @@ import AppKit
     /// height whenever the rows do not overflow it.
     public let placeholder = NSTextField(labelWithString: "")
 
+    /// What the rows on screen describe, so a refill can tell a different
+    /// subject from the same one re-read. Nil while the placeholder is up.
+    private var shownSubject: String?
+
     /// A flipped document, so the scroll view starts at the first row rather
     /// than the last.
     private final class TopDownView: NSView {
@@ -109,15 +113,25 @@ import AppKit
         content.arrangedSubviews.forEach { $0.removeFromSuperview() }
         placeholder.stringValue = text
         placeholder.isHidden = false
+        shownSubject = nil
     }
 
-    /// Empties the rows and hides the placeholder, ready to be refilled. Also
-    /// puts the scroll back at the first row: the rows that follow describe a
-    /// different thing than the ones just removed, and an offset kept from
-    /// those would open the new detail part-way down.
-    public func prepareForRows() {
+    /// Empties the rows and hides the placeholder, ready to be refilled with
+    /// the rows describing `subject` — a row's index, a node's path, whatever
+    /// the panel calls the thing in focus.
+    ///
+    /// The scroll goes back to the first row only when `subject` is not what
+    /// is already on screen. A panel re-reads and re-renders for reasons that
+    /// have nothing to do with the user: an edit anywhere in the dump costs a
+    /// re-parse, and resetting on every refill would throw a reader back to
+    /// the top of the detail they were part-way through. A *different* subject
+    /// is the opposite — its first field is where the reader wants to be, not
+    /// wherever the last subject had been scrolled to.
+    public func prepareForRows(subject: String) {
         content.arrangedSubviews.forEach { $0.removeFromSuperview() }
         placeholder.isHidden = true
+        guard subject != shownSubject else { return }
+        shownSubject = subject
         documentView?.scroll(.zero)
     }
 }

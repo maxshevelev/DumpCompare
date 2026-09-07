@@ -163,7 +163,7 @@ import UEFITool
 
         summaryLabel.stringValue = Self.summary(of: image)
         outline.reloadData()
-        renderDetail(detail)
+        renderDetail(detail, subject: focus?.description ?? "")
 
         guard let image, let focus, let node = image.node(focus) else {
             outline.deselectAll(nil)
@@ -206,14 +206,14 @@ import UEFITool
     }
 
     /// Rebuilds the detail list from the fields the pure target decided.
-    private func renderDetail(_ node: UEFINodeDetail) {
+    private func renderDetail(_ node: UEFINodeDetail, subject: String) {
         guard !node.fields.isEmpty else {
             detail.showPlaceholder(node.title.isEmpty
                 ? "Select a node to see what it is."
                 : node.title)
             return
         }
-        detail.prepareForRows()
+        detail.prepareForRows(subject: subject)
 
         if !node.title.isEmpty {
             let title = NSTextField(labelWithString: node.title)
@@ -263,18 +263,56 @@ extension UEFIToolViewController: NSOutlineViewDataSource, NSOutlineViewDelegate
         (item as? UEFINode)?.children.isEmpty == false
     }
 
+    /// A row's cell, view-based and with its text centred.
+    ///
+    /// Not `objectValueFor`: that is the cell-based path, and an
+    /// `NSTextFieldCell` draws its text against the TOP of the row rather than
+    /// down the middle of it, which reads as every row in the tree sitting too
+    /// high. Every other table in the project is view-based for the same
+    /// reason.
     func outlineView(
         _ outlineView: NSOutlineView,
-        objectValueFor tableColumn: NSTableColumn?,
-        byItem item: Any?
-    ) -> Any? {
-        guard let node = item as? UEFINode else { return nil }
-        switch tableColumn?.identifier {
+        viewFor tableColumn: NSTableColumn?,
+        item: Any
+    ) -> NSView? {
+        guard let node = item as? UEFINode, let identifier = tableColumn?.identifier
+        else { return nil }
+        let cell = outlineView.makeView(withIdentifier: identifier, owner: self)
+            as? NSTableCellView ?? Self.makeCell(identifier: identifier)
+        cell.textField?.stringValue = Self.text(for: node, in: identifier)
+        return cell
+    }
+
+    private static func text(
+        for node: UEFINode, in column: NSUserInterfaceItemIdentifier
+    ) -> String {
+        switch column {
         case Column.size:
-            return node.range.isEmpty ? "" : Self.sizeText(node.range.count)
+            return node.range.isEmpty ? "" : sizeText(node.range.count)
         default:
-            return node.name.isEmpty ? Self.kindLabel(node.kind) : node.name
+            return node.name.isEmpty ? kindLabel(node.kind) : node.name
         }
+    }
+
+    private static func makeCell(
+        identifier: NSUserInterfaceItemIdentifier
+    ) -> NSTableCellView {
+        let cell = NSTableCellView()
+        cell.identifier = identifier
+        let field = NSTextField(labelWithString: "")
+        field.font = .systemFont(ofSize: 11)
+        field.lineBreakMode = .byTruncatingTail
+        field.isBordered = false
+        field.drawsBackground = false
+        field.translatesAutoresizingMaskIntoConstraints = false
+        cell.addSubview(field)
+        cell.textField = field
+        NSLayoutConstraint.activate([
+            field.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
+            field.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -2),
+            field.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
+        ])
+        return cell
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
