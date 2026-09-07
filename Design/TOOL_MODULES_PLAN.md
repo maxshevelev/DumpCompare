@@ -211,6 +211,11 @@ edge:
   persisted under the module's identifier. A FIT table wants ~450 pt where the
   minimap is happy at 120–240; one shared width would be wrong for both.
 - **The header names the file** the session is bound to.
+- **Zoom-to-fit makes room for it**, as it does for the minimap (§19.2): a
+  double-click on the title bar fits the whole content area, and a panel left
+  out of that sum zooms the window to a width the dump does not actually get.
+  The width counted is the one the panel *has* — the user may have dragged it
+  wider than `preferredPanelWidth`.
 
 Activation, from Tools ▸ ⟨module⟩ or Tools ▸ None: one session per tab, the
 previous one stopped before the next starts. The panel closes with the session.

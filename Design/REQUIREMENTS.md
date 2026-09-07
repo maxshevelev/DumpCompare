@@ -2123,7 +2123,10 @@ way to navigate them by pointing.
 - The width the user drags is persisted and restored on the next show.
 - A window resize must not change the panel's width: the hex panes absorb
   the whole delta, and the clamp above holds at any window size.
-- Zoom-to-fit must make room for a visible panel on top of the hex grids.
+- Zoom-to-fit must make room for a visible panel on top of the hex grids — and
+  for the tool panel on the other edge when one is open
+  (`Design/TOOL_MODULES_PLAN.md`), since what is fitted is the whole content
+  area and not the hex grids alone.
 - Showing the panel grows the window by the panel's width (plus the divider)
   and hiding it shrinks the window by the same amount, so the hex content
   area keeps its width. The window grows or shrinks from the right edge; the

@@ -219,6 +219,85 @@ final class ZoomToFitTests: XCTestCase {
                        accuracy: 1, "the fit makes room for the visible panel")
     }
 
+    /// The tool panel makes the same claim on the leading edge that the minimap
+    /// makes on the trailing one, so zoom-to-fit adds it too: fitting the hex
+    /// grids alone zooms the window to a width the dump does not actually get
+    /// (`Design/TOOL_MODULES_PLAN.md`).
+    func testZoomAccountsForTheToolPanel() throws {
+        installToolStubs()
+        let (suite, store) = isolatedDefaults(for: self)
+        ToolController.defaults = store
+        defer {
+            discardIsolatedDefaults(suite, store)
+            ToolController.defaults = .standard
+        }
+        let url = try tempFile([UInt8](repeating: 0x41, count: 256))
+        let controller = makeController()
+        let window = controller.window!
+        let mainVC = controller.mainViewController
+        defer { cleanup(mainVC, url) }
+        try mainVC.windowModel.pane1.open(url: url)
+        mainVC.apply(mode: .singleFile)
+        window.layoutIfNeeded()
+
+        let split = mainVC.panelSplit
+        let pane = try XCTUnwrap(findPane(in: mainVC.view))
+        let closed = mainVC.windowWillUseStandardFrame(
+            window, defaultFrame: NSRect(x: 0, y: 0, width: 3000, height: 2000))
+        XCTAssertEqual(closed.width, expectedFrameWidth(for: pane.contentFitWidth, window: window),
+                       accuracy: 1, "no tool-module open, so nothing is added")
+
+        mainVC.tools.activate(StubToolA.identifier, animated: false)
+        window.layoutIfNeeded()
+        XCTAssertTrue(mainVC.tools.isPanelVisible, "the stub opened the panel")
+        let panelWidth = mainVC.toolPanelWidth()
+        XCTAssertGreaterThan(panelWidth, 0, "and it has a width")
+
+        let open = mainVC.windowWillUseStandardFrame(
+            window, defaultFrame: NSRect(x: 0, y: 0, width: 3000, height: 2000))
+        let expected = pane.contentFitWidth + panelWidth + split.dividerThickness
+        XCTAssertEqual(open.width, expectedFrameWidth(for: expected, window: window),
+                       accuracy: 1, "the fit makes room for the panel and its divider")
+    }
+
+    /// The width counted is the one the panel *has*, not the one the
+    /// tool-module asked for: zoom fits the window around what is on screen,
+    /// and the user may have dragged the panel wider.
+    func testZoomFollowsADraggedToolPanel() throws {
+        installToolStubs()
+        let (suite, store) = isolatedDefaults(for: self)
+        ToolController.defaults = store
+        defer {
+            discardIsolatedDefaults(suite, store)
+            ToolController.defaults = .standard
+        }
+        let url = try tempFile([UInt8](repeating: 0x41, count: 256))
+        let controller = makeController()
+        let window = controller.window!
+        let mainVC = controller.mainViewController
+        defer { cleanup(mainVC, url) }
+        try mainVC.windowModel.pane1.open(url: url)
+        mainVC.apply(mode: .singleFile)
+        window.setContentSize(NSSize(width: 1400, height: 700))
+        window.layoutIfNeeded()
+        mainVC.tools.activate(StubToolA.identifier, animated: false)
+        window.layoutIfNeeded()
+
+        let wider = StubToolA.preferredPanelWidth + 120
+        mainVC.setToolPanelWidth(wider, animated: false)
+        window.layoutIfNeeded()
+        let dragged = mainVC.toolPanelWidth()
+        XCTAssertEqual(dragged, wider, accuracy: 1, "the panel took the wider width")
+
+        let split = mainVC.panelSplit
+        let pane = try XCTUnwrap(findPane(in: mainVC.view))
+        let frame = mainVC.windowWillUseStandardFrame(
+            window, defaultFrame: NSRect(x: 0, y: 0, width: 3000, height: 2000))
+        let expected = pane.contentFitWidth + dragged + split.dividerThickness
+        XCTAssertEqual(frame.width, expectedFrameWidth(for: expected, window: window),
+                       accuracy: 1, "the fit follows the width the panel has")
+    }
+
     /// Side-by-side: the width must fit both grids plus the divider, the height
     /// the taller of the two files.
     func testComparisonVerticalFitsBothPanes() throws {

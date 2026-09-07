@@ -6161,6 +6161,25 @@ final class MainViewController: NSViewController {
         }
     }
 
+    /// What the tool panel claims of a zoomed window's content width: its own
+    /// width plus the divider, or nothing at all when no tool-module is open
+    /// (§3.1, `Design/TOOL_MODULES_PLAN.md`).
+    ///
+    /// The width it *has*, not the width it would open at: zoom fits the window
+    /// around what is on screen, and the user may well have dragged the panel
+    /// wider than the tool-module asked for. Before the first layout the
+    /// divider has no position to read, so the width the panel will open at
+    /// stands in — which is what it is about to become.
+    private func toolPanelFitWidth() -> CGFloat {
+        guard tools.isPanelVisible else { return 0 }
+        let live = toolPanelWidth()
+        let width = live > 0
+            ? live
+            : (tools.activeModule.map { tools.preferredWidth(for: $0) } ?? 0)
+        guard width > 0 else { return 0 }
+        return width + panelSplit.dividerThickness
+    }
+
     /// Ideal content height the window should be when zoomed (double-click on
     /// the title bar / Window > Zoom): the taller pane's full hex content plus
     /// its header and status bar — the height needed to show the biggest loaded
@@ -6202,7 +6221,11 @@ extension MainViewController: NSWindowDelegate {
         let minimapWidth = minimapPanelVisible
             ? minimapPreferredPanelWidth + panelSplit.dividerThickness
             : 0
-        let fitWidth = contentWidth + minimapWidth
+        // The tool panel is the same claim on the leading edge
+        // (`Design/TOOL_MODULES_PLAN.md`), so it is added the same way — the
+        // fit is about the whole content area, and a panel left out of it is a
+        // window that zooms to a width the dump does not actually get.
+        let fitWidth = contentWidth + minimapWidth + toolPanelFitWidth()
 
         var frame = window.frame
         let oldTop = frame.origin.y + frame.height
