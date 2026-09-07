@@ -21,3 +21,8 @@ DumpCompare.xcodeproj/
 
 # The developer's own signing team — personal, and not the repository's business.
 Signing.local.xcconfig
+
+# Claude Code's per-user state. The tooling that used to live under
+# `.claude/skills/` now lives in `Skills/`, which is committed; what is left
+# here is a machine's own, and does not belong to the repository.
+.claude/

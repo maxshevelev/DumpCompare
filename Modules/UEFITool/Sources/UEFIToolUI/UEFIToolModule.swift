@@ -15,9 +15,9 @@ import UEFITool
 public enum UEFIToolModule: ToolModule {
     public static let identifier = "dev.maxik.tool.uefi-structure"
     public static let title = "UEFI Structure"
-    /// A tree of names and a list of label/value fields: less room than the
-    /// FIT table's six columns, more than the minimap's 120.
-    public static let preferredPanelWidth: CGFloat = 420
+    /// Three columns — name, type, subtype — and a list of label/value fields:
+    /// the same room the FIT table takes, more than the minimap's 120.
+    public static let preferredPanelWidth: CGFloat = 480
 
     @MainActor public static func makeSession(host: any ToolHost) -> any ToolSession {
         UEFIToolSession(host: host)
@@ -50,6 +50,17 @@ struct UEFIParkedState: ToolSessionState {
     /// starts two, and the one that finishes second is not necessarily the one
     /// that read the newer bytes.
     private var generation = 0
+    /// The GUID catalogue the tree names are read from: empty until a fresh
+    /// download lands, which then names the GUIDs for the rest of the session.
+    /// A node with a GUID shows the GUID itself in the meantime.
+    private var guids: GuidsCatalogue = .empty
+    /// Which catalogue download is the current one, so a slow one does not
+    /// overwrite a fresh one.
+    private var guidsGeneration = 0
+
+    /// Where the fresh catalogue comes from. A test installs its own so the
+    /// suite does not reach GitHub.
+    static var guidsSource: any GuidsSource = LongSoftGuidsRepository()
 
     /// Called on the main actor once a parse has landed and the panel has been
     /// shown. The parse runs off the main actor, so a test that waited for it
@@ -66,6 +77,7 @@ struct UEFIParkedState: ToolSessionState {
     public func start() {
         controller.say("Reading…")
         reparse()
+        refreshGuids()
     }
 
     /// Any change is a reason to read again. The tree is cheap to rebuild and
@@ -115,6 +127,28 @@ struct UEFIParkedState: ToolSessionState {
         }
     }
 
+    /// The catalogue download: in the background, so it never blocks the parse
+    /// or the UI. On success it improves the names for the rest of the session
+    /// and re-shows the tree with them; on failure the baseline the build ships
+    /// stays, and the tree keeps the names it already shows. A download failure
+    /// is not a problem worth saying in red — the names are still there, just
+    /// older.
+    private func refreshGuids() {
+        guidsGeneration += 1
+        let generation = guidsGeneration
+        Task { [weak self] in
+            do {
+                let fresh = try await Self.guidsSource.guids()
+                guard let self, self.guidsGeneration == generation else { return }
+                self.guids = fresh
+                self.show()
+            } catch {
+                // The baseline stays. Nothing to say: the tree is not wrong, it
+                // is just not as up to date as it could be.
+            }
+        }
+    }
+
     /// What a parse reports through: a hop back to the main actor that lands on
     /// the module's own bottom-row bar. Built per parse, so the detached task
     /// only ever moves the bar of the parse it ran.
@@ -140,13 +174,13 @@ struct UEFIParkedState: ToolSessionState {
     /// node in focus, and the one zone that node publishes.
     private func show() {
         guard let image, let reader else {
-            controller.show(image: nil, focus: nil, detail: .empty)
+            controller.show(image: nil, focus: nil, detail: .empty, catalogue: guids)
             host.publish(.empty)
             return
         }
         let node = focus.flatMap { image.node($0) }
         let detail = node.map { UEFIDetail.build(for: $0, image: image, reader: reader) } ?? .empty
-        controller.show(image: image, focus: focus, detail: detail)
+        controller.show(image: image, focus: focus, detail: detail, catalogue: guids)
         host.publish(UEFIPresenter.zones(for: node))
     }
 

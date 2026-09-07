@@ -16,6 +16,11 @@ import UEFITool
 
     private var image: UEFIImage?
     private var focus: NodeID?
+    /// The GUID catalogue the names are read from. The session owns it — it
+    /// downloads a fresh one in the background and passes it in on every show —
+    /// so the tree shows the GUIDs themselves at first paint and the catalogue
+    /// names once the download lands.
+    private var catalogue: GuidsCatalogue = .empty
     /// True while the tree is being loaded from the model — a selection the
     /// code made is not news, and without this the panel selects, publishes,
     /// re-shows and selects again until the stack runs out.
@@ -32,11 +37,12 @@ import UEFITool
 
     private enum Column {
         static let name = NSUserInterfaceItemIdentifier("name")
-        static let size = NSUserInterfaceItemIdentifier("size")
+        static let type = NSUserInterfaceItemIdentifier("type")
+        static let subtype = NSUserInterfaceItemIdentifier("subtype")
     }
 
     override func loadView() {
-        view = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 520))
+        view = NSView(frame: NSRect(x: 0, y: 0, width: 480, height: 520))
         view.translatesAutoresizingMaskIntoConstraints = false
 
         summaryLabel.font = .systemFont(ofSize: 11, weight: .medium)
@@ -111,22 +117,30 @@ import UEFITool
         outline.style = .inset
         outline.usesAlternatingRowBackgroundColors = true
         outline.allowsMultipleSelection = false
+        // The column order is the design's, not a drag target.
+        outline.allowsColumnReordering = false
         outline.rowSizeStyle = .small
         outline.dataSource = self
         outline.delegate = self
 
         let name = NSTableColumn(identifier: Column.name)
         name.title = "Name"
-        name.width = 260
+        name.width = 240
         name.resizingMask = .autoresizingMask
         outline.addTableColumn(name)
         outline.outlineTableColumn = name
 
-        let size = NSTableColumn(identifier: Column.size)
-        size.title = "Size"
-        size.width = 80
-        size.resizingMask = []
-        outline.addTableColumn(size)
+        let type = NSTableColumn(identifier: Column.type)
+        type.title = "Type"
+        type.width = 90
+        type.resizingMask = []
+        outline.addTableColumn(type)
+
+        let subtype = NSTableColumn(identifier: Column.subtype)
+        subtype.title = "Subtype"
+        subtype.width = 120
+        subtype.resizingMask = []
+        outline.addTableColumn(subtype)
     }
 
     // MARK: - A parse's progress
@@ -155,9 +169,10 @@ import UEFITool
     }
 
     /// Everything the panel shows, in one call.
-    func show(image: UEFIImage?, focus: NodeID?, detail: UEFINodeDetail) {
+    func show(image: UEFIImage?, focus: NodeID?, detail: UEFINodeDetail, catalogue: GuidsCatalogue) {
         self.image = image
         self.focus = focus
+        self.catalogue = catalogue
         isShowingState = true
         defer { isShowingState = false }
 
@@ -177,7 +192,9 @@ import UEFITool
         }
     }
 
-    /// What the tree is, in one line: how much of the image it accounts for.
+    /// What the tree is, in one line: what the image is, and how much of it the
+    /// tree accounts for. The image type leads — a capsule, a BIOS region, a
+    /// volume — because that is what the bench opened the file to find out.
     private static func summary(of image: UEFIImage?) -> String {
         guard let image else { return "" }
         let nodes = image.allNodes
@@ -185,7 +202,10 @@ import UEFITool
         guard count > 0 else { return "Nothing here looks like a firmware image." }
         let volumes = nodes.filter { $0.kind == .volume }.count
         let files = nodes.filter { $0.kind == .file }.count
-        var parts = ["\(count) " + (count == 1 ? "node" : "nodes")]
+        var parts: [String] = []
+        let imageType = UEFITreeDisplay.imageType(of: image)
+        if !imageType.isEmpty { parts.append(imageType) }
+        parts.append("\(count) " + (count == 1 ? "node" : "nodes"))
         if volumes > 0 { parts.append("\(volumes) volume" + (volumes == 1 ? "" : "s")) }
         if files > 0 { parts.append("\(files) file" + (files == 1 ? "" : "s")) }
         return parts.joined(separator: " · ")
@@ -282,18 +302,20 @@ extension UEFIToolViewController: NSOutlineViewDataSource, NSOutlineViewDelegate
         else { return nil }
         let cell = outlineView.makeView(withIdentifier: identifier, owner: self)
             as? NSTableCellView ?? Self.makeCell(identifier: identifier)
-        cell.textField?.stringValue = Self.text(for: node, in: identifier)
+        cell.textField?.stringValue = text(for: node, in: identifier)
         return cell
     }
 
-    private static func text(
+    private func text(
         for node: UEFINode, in column: NSUserInterfaceItemIdentifier
     ) -> String {
         switch column {
-        case Column.size:
-            return node.range.isEmpty ? "" : sizeText(node.range.count)
+        case Column.type:
+            return UEFITreeDisplay.typeText(for: node)
+        case Column.subtype:
+            return UEFITreeDisplay.subtypeText(for: node)
         default:
-            return node.name.isEmpty ? kindLabel(node.kind) : node.name
+            return UEFITreeDisplay.name(for: node, catalogue: catalogue)
         }
     }
 
@@ -323,24 +345,5 @@ extension UEFIToolViewController: NSOutlineViewDataSource, NSOutlineViewDelegate
         let row = outline.selectedRow
         let node = row >= 0 ? outline.item(atRow: row) as? UEFINode : nil
         onSelect?(node?.id)
-    }
-
-    private static func sizeText(_ count: Int) -> String {
-        "0x" + String(UInt64(count), radix: 16, uppercase: true)
-    }
-
-    private static func kindLabel(_ kind: UEFINodeKind) -> String {
-        switch kind {
-        case .capsule: return "Capsule"
-        case .flashDescriptor: return "Flash descriptor"
-        case .region: return "Region"
-        case .volume: return "Volume"
-        case .file: return "FFS file"
-        case .section: return "Section"
-        case .microcode: return "Microcode"
-        case .padding: return "Padding"
-        case .freeSpace: return "Free space"
-        case .nonUEFIData: return "Non-UEFI data"
-        }
     }
 }
