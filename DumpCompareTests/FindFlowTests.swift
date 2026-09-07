@@ -1113,20 +1113,44 @@ final class FindFlowTests: XCTestCase {
         controller.findPattern()
         let (combo, _, _, _) = try barControls(window)
         combo.stringValue = "DE AD BE"
+
+        // The bar has to have taken its height before the search scrolls, and
+        // the pane has to have stopped moving before the scroll is read. Both
+        // sides of the comparison below are derived from the clip's height, so
+        // an offset centred against the height before the bar arrived, checked
+        // against the height after, is off by half the difference — which is
+        // what this test used to fail by, on a machine busy enough to land that
+        // layout pass late.
+        let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
+        let clip = paneView.scrollView.contentView
+        XCTAssertTrue(settle(clip, in: window), "the pane stopped resizing before the search")
+
         try clickFindNext(window)
         XCTAssertTrue(pumpUntil(3) { controller.windowModel.pane1.hexSelection().start == UInt64(250 * 16) })
+        XCTAssertTrue(settle(clip, in: window), "the pane stopped moving before it was read")
 
         // The match is selected, and the pane scrolled so it sits mid-view.
         let matchStart = controller.windowModel.pane1.hexSelection().start
         XCTAssertEqual(matchStart, UInt64(250 * 16))
-        let paneView = try XCTUnwrap(descendants(of: window.contentView!, FilePaneView.self).first)
         let hexView = try XCTUnwrap(paneView.scrollView.documentView as? HexView)
-        let clip = paneView.scrollView.contentView
         let rowFrame = hexView.hexLayout.rowFrame(row: Int(matchStart / 16))
         let maxY = max(0, hexView.bounds.height - clip.bounds.height)
         let expected = min(max(0, rowFrame.midY - clip.bounds.height / 2), maxY)
         XCTAssertEqual(clip.bounds.origin.y, expected, accuracy: 1.0,
                        "the match row must be vertically centred in the pane")
+    }
+
+    /// Pumps until `clip`'s height and scroll offset are the same over two
+    /// consecutive layout passes, so a measurement taken after this is taken
+    /// from a layout nothing is still changing.
+    private func settle(_ clip: NSClipView, in window: NSWindow) -> Bool {
+        var previous: NSRect?
+        return pumpUntil(2) {
+            window.layoutIfNeeded()
+            let now = clip.bounds
+            defer { previous = now }
+            return previous == now
+        }
     }
 
     // MARK: - Case sensitivity (§11)
