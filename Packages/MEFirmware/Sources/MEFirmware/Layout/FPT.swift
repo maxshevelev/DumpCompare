@@ -26,16 +26,21 @@ struct FPTParser {
     struct Result {
         var headerVersion: UInt8
         var resolvedVersion: UInt8   // get_fpt()'s dispatch, incl. the v2.1-with-v2.0-tag quirk
+        var fptStart: Int            // upstream's resolved fpt_start (partition base, region-relative)
         var partitions: [Partition]
     }
 
-    /// The first `$FPT` anchor that passes upstream's plausibility filter.
-    static func findAnchor(in data: Data) -> Int? {
+    /// The first `$FPT` anchor that passes upstream's plausibility filter. When
+    /// `range` is given the search is confined to it (upstream scans only the FD
+    /// Engine/Graphics region on whole-flash images, MEA.py 11618).
+    static func findAnchor(in data: Data, in range: Range<Int>? = nil) -> Int? {
         let tag = Data("$FPT".utf8)
-        var scan = data.startIndex
-        while let found = data.range(of: tag, in: scan..<data.endIndex) {
+        let low = data.startIndex + (range?.lowerBound ?? 0)
+        let high = data.startIndex + (range?.upperBound ?? data.count)
+        var scan = low
+        while scan < high, let found = data.range(of: tag, in: scan..<high) {
             let base = found.lowerBound
-            if base + 8 <= data.endIndex {
+            if base + 8 <= high {
                 let lowCount = data[base + 4]
                 if (0x01...0x7F).contains(lowCount)
                     && data[base + 5] == 0 && data[base + 6] == 0 && data[base + 7] == 0 {
@@ -48,6 +53,10 @@ struct FPTParser {
     }
 
     /// Decode an FPT whose header begins at `anchor` (region-relative offset).
+    /// Partition bases are upstream's `fpt_start`, not the raw marker: resolve it
+    /// from the CSE Layout Table presence (IFWI engine) and the header fields, so
+    /// a pre-IFWI engine whose `$FPT` sits 0x10 into the region still measures
+    /// partitions from the region base (fixes the false Issue id 8 on CSME 11).
     static func decode(_ data: Data, anchor: Int) -> Result? {
         let p = data.startIndex + anchor
         guard p + 0x20 + 0x20 <= data.endIndex else { return nil }  // header + one entry
@@ -55,6 +64,7 @@ struct FPTParser {
         guard count > 0, p + 0x20 + count * 0x20 <= data.endIndex else { return nil }
 
         let headerVersion = data[p + 0x08]
+        let headerLength = data[p + 0x0A]
         var resolved = headerVersion
         if headerVersion == 0x20 {
             // get_fpt(): a v2.0 tag whose second CRC word is not FF/00 is really
@@ -64,6 +74,16 @@ struct FPTParser {
                 resolved = 0x21
             }
         }
+
+        // A whole-flash region carries its Flash Descriptor; the CSE Layout Table
+        // (if any) sits at the FD Engine/Graphics base. A bare ME region probed at
+        // its own start (offset 0). Either way the probe mirrors upstream, which
+        // keys `cse_lt_struct` off that location (MEA.py 11508/11519).
+        let meRegion = FlashDescriptor.meRegion(in: data)
+        let cseLayoutOffset = meRegion?.base ?? 0
+        let cseLayoutPresent = IFWI.detectCseLayoutTable(in: data, at: cseLayoutOffset) != nil
+        let start = fptStart(anchor: anchor, version: headerVersion, length: headerLength,
+                             cseLayoutTablePresent: cseLayoutPresent, in: data)
 
         var partitions: [Partition] = []
         partitions.reserveCapacity(count)
@@ -76,18 +96,69 @@ struct FPTParser {
             let name = raw?.trimmingCharacters(in: CharacterSet(charactersIn: "\0")) ?? ""
             partitions.append(Partition(
                 name: name,
-                // Region-relative: upstream's p_offset_spi = fpt_start + Offset,
-                // where fpt_start is the anchor itself when the region begins at $FPT.
-                offset: anchor + Int(u32le(data, entry + 0x08)),
+                // Region-relative: upstream's p_offset_spi = fpt_start + Offset.
+                offset: start + Int(u32le(data, entry + 0x08)),
                 size: Int(u32le(data, entry + 0x0C)),
                 flags: u32le(data, entry + 0x1C)
             ))
         }
-        return Result(headerVersion: headerVersion, resolvedVersion: resolved, partitions: partitions)
+        return Result(headerVersion: headerVersion, resolvedVersion: resolved,
+                      fptStart: start, partitions: partitions)
     }
 
-    /// Find the first `$FPT` and decode it, or nil when none is present.
+    /// Upstream's `fpt_start` resolution (MEA.py 11667–11681): the partition
+    /// base is the `$FPT` marker minus 0x10 unless a CSE Layout Table marks this
+    /// `$FPT` as the IFWI engine's data table, or a CSE-header erase window / a
+    /// v1.0 0x20 header say the marker is the base itself.
+    static func fptStart(anchor: Int, version: UInt8, length: UInt8,
+                         cseLayoutTablePresent: Bool, in data: Data) -> Int {
+        if anchor == 0 { return 0 }
+        var start = anchor - 0x10
+
+        if cseLayoutTablePresent, version == 0x20 || version == 0x21, length == 0x20 {
+            start = anchor
+        } else {
+            // Erased CSE-header window 0x1000 before the marker: 0x48 zeros + 0x10
+            // FF (or the 0x50 variant) — upstream treats that $FPT as region-base.
+            let w = anchor - 0x1000
+            if w >= 0 {
+                let zeroCount: Int? = {
+                    if w + 0x60 <= data.count,
+                       zeroThenFF(data, at: w, zeros: 0x50) { return 0x50 }
+                    if w + 0x58 <= data.count,
+                       zeroThenFF(data, at: w, zeros: 0x48) { return 0x48 }
+                    return nil
+                }()
+                if zeroCount != nil {
+                    start = anchor
+                }
+            }
+        }
+        if start == anchor - 0x10, version == 0x10, length == 0x20 {
+            start = anchor
+        }
+        return start
+    }
+
+    /// True when `data[w...]` is `zeros` zero bytes followed by 0x10 erased (FF)
+    /// bytes — the CSE header pad immediately before a region-base `$FPT`.
+    private static func zeroThenFF(_ data: Data, at w: Int, zeros: Int) -> Bool {
+        for i in 0..<zeros where data[data.startIndex + w + i] != 0 { return false }
+        for i in zeros..<(zeros + 0x10)
+        where data[data.startIndex + w + i] != 0xFF { return false }
+        return true
+    }
+
+    /// Find the first `$FPT` inside the FD Engine/Graphics region when the image
+    /// is whole-flash (upstream MEA.py 11618), else the whole region, and decode
+    /// it — or nil when none is present.
     static func parseFirst(in data: Data) -> Result? {
+        if let me = FlashDescriptor.meRegion(in: data) {
+            guard let anchor = findAnchor(in: data, in: me.base..<(me.base + me.size)) else {
+                return nil
+            }
+            return decode(data, anchor: anchor)
+        }
         guard let anchor = findAnchor(in: data) else { return nil }
         return decode(data, anchor: anchor)
     }

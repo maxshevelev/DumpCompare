@@ -28,7 +28,7 @@ ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
 | `fpt_pat` `$FPT` | Flash Partition Table | `Layout/FPT.swift` (anchor scan inside) | ported |
 | `bpdt_pat` | Boot Partition Descriptor | IFWI layer / UEFI tree | — |
 | `orom_pat` PCIR | GSC Option ROM | `Anchors.swift` | — |
-| `fd_pat` `5AA5F00F…` | Flash Descriptor | UEFI tree (already parsed) | n/a |
+| `fd_pat` `5AA5F00F…` | Flash Descriptor | whole-flash ME-region read in `Layout/IFWI.swift` (`FlashDescriptor.meRegion`) | ported (ME-region base only) |
 | `pr_man_*_pat` + `pr_cpd_parts` | probable manifests/IUP parts | `Anchors.swift` | — |
 
 ## Flash & IFWI layout
@@ -38,8 +38,8 @@ ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
 | `FPT_Pre_Header`, `FPT_Header`, `FPT_Header_21` (+`_Flags`) | FPT header — shared v1/2/2.1 decode done; v2.1 redundancy/CRC-32 & `_Flags` bitfields deferred | `Layout/FPT.swift` | ported |
 | `FPT_Entry` | FPT partition entry (name/owner/offset/size/tokens/scratch/flags) | `Layout/FPT.swift` | ported |
 | `BPDT_Header_1`, `BPDT_Header_2`, `BPDT_Entry` | BPDT 1.6/1.7/2.0 | `Layout/IFWI.swift` | — |
-| `CSE_Layout_Table_16`, `_17` | IFWI layout 1.6/1.7 | `Layout/IFWI.swift` | — |
-| `fd_anl_init`, `fd_anl_rgn` | Flash Descriptor region parse | UEFI layer | n/a |
+| `CSE_Layout_Table_16`, `_17` | IFWI layout 1.6/1.7 — **detection ported** (`IFWI.detectCseLayoutTable`, MEA.py 11507–11545, drives `fpt_start`); full Data/Boot/Temp/ELog *partition* table surfacing deferred | `Layout/IFWI.swift` | ported (presence probe) |
+| `fd_anl_init`, `fd_anl_rgn` | Flash Descriptor region parse — FLREG2 Engine/Graphics (ME) base/size read, the one fact `fpt_start` needs (MEA.py 10045) | `Layout/IFWI.swift` (`FlashDescriptor.meRegion`) | ported (ME-region only) |
 | `CSE_Layout_*` flag classes | per-format bitfields | `Layout/*.swift` | — |
 
 ## CSE manifest & partitions

@@ -58,12 +58,48 @@ final class FPTParserTests: XCTestCase {
     }
 
     func testFindsFPTWhenNotAtRegionStart() throws {
-        let region = FPTFixture.fptRegion(anchor: 0x40, entries: [("FTPR", 0x0, 0x1000, 0)])
+        // A `$FPT` 0x10 into the region (no FD, no CSE Layout Table): upstream's
+        // fpt_start is marker − 0x10, so partitions measure from the region base,
+        // not from the marker — the pre-IFWI layout that the CSME-11 defect
+        // (+0x10 high) used to break.
+        let region = FPTFixture.fptRegion(anchor: 0x10, entries: [("FTPR", 0x1000, 0x1000, 0)])
         let anchor = try XCTUnwrap(FPTParser.findAnchor(in: region))
-        XCTAssertEqual(anchor, 0x40)
+        XCTAssertEqual(anchor, 0x10)
         let result = try XCTUnwrap(FPTParser.decode(region, anchor: anchor))
+        XCTAssertEqual(result.fptStart, 0x0)
         XCTAssertEqual(result.partitions[0].name, "FTPR")
-        XCTAssertEqual(result.partitions[0].offset, 0x40)   // region-relative (anchor-based)
+        XCTAssertEqual(result.partitions[0].offset, 0x1000)   // fpt_start + entry offset
+    }
+
+    func testResolvedFptStartKeyedOnCseLayoutTablePresence() {
+        // No FD/LT and an old-style version → base is marker − 0x10.
+        var data = FPTFixture.fptRegion(anchor: 0x10, entries: [("FTPR", 0x1000, 0x1000, 0)])
+        let marker = 0x10
+        XCTAssertEqual(FPTParser.fptStart(anchor: marker, version: 0x20, length: 0x20,
+                                          cseLayoutTablePresent: false, in: data), 0x0)
+        // Same header, but the marker IS the IFWI data table → base is the marker.
+        XCTAssertEqual(FPTParser.fptStart(anchor: marker, version: 0x20, length: 0x20,
+                                          cseLayoutTablePresent: true, in: data), marker)
+        // A v1.0 0x20 header is also its own base (upstream branch 3).
+        XCTAssertEqual(FPTParser.fptStart(anchor: marker, version: 0x10, length: 0x20,
+                                          cseLayoutTablePresent: false, in: data), marker)
+        // v1.0 but a non-0x20 length stays default.
+        XCTAssertEqual(FPTParser.fptStart(anchor: marker, version: 0x10, length: 0x30,
+                                          cseLayoutTablePresent: false, in: data), 0x0)
+        // Marker at the region base is always its own base.
+        XCTAssertEqual(FPTParser.fptStart(anchor: 0, version: 0x20, length: 0x20,
+                                          cseLayoutTablePresent: false, in: data), 0)
+        _ = data  // the erased-window branch reads data; not exercised by these cases
+    }
+
+    func testErasedWindowBranchKeepsMarkerBase() {
+        // Upstream branch 2: 0x48 zeros + 0x10 FF in the 0x1000 before the marker
+        // means the marker is the region base even with no CSE Layout Table.
+        var region = Data(repeating: 0xFF, count: 0x1200)
+        for i in 0..<0x48 { region[0x1000 - 0x1000 + i] = 0 }  // zeros start at marker−0x1000
+        // (w = 0; the 0x48 zero run then 0x10 FF already erased from the 0xFF fill)
+        XCTAssertEqual(FPTParser.fptStart(anchor: 0x1000, version: 0x20, length: 0x20,
+                                          cseLayoutTablePresent: false, in: region), 0x1000)
     }
 
     func testEmptyRegionHasNoFPT() {
