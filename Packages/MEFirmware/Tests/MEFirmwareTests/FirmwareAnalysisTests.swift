@@ -61,7 +61,7 @@ final class FirmwareAnalysisModelTests: XCTestCase {
     }
 
     func testEngineModelRevisionBumpsWithAdditiveChanges() {
-        XCTAssertEqual(EngineModelRevision.current, 3)
+        XCTAssertEqual(EngineModelRevision.current, 4)
     }
 }
 
@@ -136,6 +136,46 @@ final class AnalyzerTests: XCTestCase {
         XCTAssertEqual(cp.modules[0].isHuffman, false)
         XCTAssertEqual(cp.modules[1].name, "rbe")
         XCTAssertEqual(result.manifest?.format, .r1)  // same region fed a manifest
+    }
+
+    func testAnalyzeDecodesManifestModuleExtensionChain() async throws {
+        // A self-consistent FTPR region: a one-module $CPD whose single entry
+        // (the manifest) is placed right after the directory, sized to cover the
+        // manifest *and* an extension chain. The default manifest (major 15,
+        // 2048-bit key) selects the csme15 header family, so 0x00/0x16 decode as
+        // _R2 and 0x02 stays base. baseOffset shifts the chain's absolute offsets.
+        let chain = ExtFixture.concat([
+            ExtFixture.systemInfo(r2: true),
+            ExtFixture.featurePermissions(moduleCount: 6, rowCount: 4),
+            ExtFixture.partitionInfo(tag: 0x16, r2: true),
+        ])
+        let manifest = ManifestFixture.manifest()              // 0x284 bytes
+        let manifestBase = 0x10 + 1 * 0x18                     // $CPD R1 header + one entry
+        let moduleSize = manifest.count + chain.count          // manifest module spans both
+        var region = CPDFixture.make(name: "FTPR", moduleNames: ["$MN2"],
+                                     moduleLayout: [(offset: UInt32(manifestBase),
+                                                     size: UInt32(moduleSize))])
+        XCTAssertEqual(region.count, manifestBase)
+        region.append(manifest)
+        region.append(chain)
+        let analyzer = MEFirmwareAnalyzer(data: StubSource(databaseResult: .success(MEADatabase(revision: 378))))
+
+        let result = try await analyzer.analyze(region: region, baseOffset: 0x1000)
+
+        let cp = try XCTUnwrap(result.codePartition)
+        XCTAssertEqual(cp.modules[0].offset, manifestBase)
+        let exts = try XCTUnwrap(cp.extensions)
+        XCTAssertEqual(exts.map(\.tag), [0x00, 0x02, 0x16])
+        XCTAssertEqual(exts.map(\.id), [0, 1, 2])
+        // Chain begins at manifestBase + headerLength×4 = manifestBase + 0x284.
+        XCTAssertEqual(exts[0].offset, 0x1000 + manifestBase + manifest.count)
+        XCTAssertEqual(exts[0].systemInfo?.imageHash.count, 96)   // csme15 _R2 → SHA-384
+        XCTAssertEqual(exts[0].systemInfo?.minUMASize, 0x1122_3344)
+        XCTAssertEqual(exts[1].featurePermissions?.moduleCount, 6)
+        XCTAssertEqual(exts[1].size, 0x1C)                        // header + 4 rows
+        XCTAssertEqual(exts[2].partitionInfo?.partitionName, "FTPR")
+        XCTAssertEqual(exts[2].partitionInfo?.hash.count, 96)     // 0x16 _R2
+        XCTAssertNil(exts[2].partitionInfo?.vcn)                  // 0x16 has no VCN
     }
 
     func testAnalyzeLeavesCodePartitionNilWithoutOwningCPD() async throws {

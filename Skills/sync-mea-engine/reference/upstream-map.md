@@ -54,7 +54,7 @@ ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
 | `RBE_PM_Metadata`, `_R2`, `_R3`, `_R4` | rbe/pm module metadata | `Partition/Module.swift` | — |
 | `get_rbe_pm_met`, `rbe_pm_met_hashes` | metadata leftover hashes | `Partition/Module.swift` | — |
 | `cpd_entry_num_fix`, `cpd_size_calc`, `cpd_chk` | $CPD repair/heuristics — `cpd_chk` R1 Checksum-8 ported (`CPDParser.checksumValid`); entry-count/size repair and R2 CRC-32 deferred | `Partition/CPD.swift` | ported* |
-| operational `$CPD` → `CodePartition` module list | the chosen partition's module directory (name/offset/IsHuffman/size + header) surfaced in the UI result model — Stage-2 of the `$CPD` port; extensions (`CSE_Ext_*`) still deferred | `Models/FirmwareAnalysis.swift` (`CodePartition`) + analyzer wiring | ported |
+| operational `$CPD` → `CodePartition` module list | the chosen partition's module directory (name/offset/IsHuffman/size + header) surfaced in the UI result model — Stage-2 of the `$CPD` port; the manifest module's extension chain decodes as fixed headers + scalars (row below) | `Models/FirmwareAnalysis.swift` (`CodePartition`) + analyzer wiring | ported |
 
 ## CSE/GSC file system (VFS, MFS, FTBL/EFST, extensions)
 
@@ -65,7 +65,7 @@ ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
 | `EFS_Page_Header`, `EFS_Page_Footer`, `EFS_File_Metadata` | EFS page/footer | `FileSystem/EFS.swift` | — |
 | `MFS_Volume_Header`, `MFS_Page_Header`, `MFS_Config_Record_*`, `MFS_Home_Record_*`, `MFS_Integrity_Table_*`, `MFS_Backup_Header_R0/R1`, `MFS_Backup_Entry` | CSE MFS (older) | `FileSystem/MFS.swift` | — |
 | `UTFL_Header`, `FITC_Header` | misc CSE tables | `FileSystem/Misc.swift` | — |
-| `CSE_Ext_00` … `CSE_Ext_37`, `CSE_Ext_544F4F46` (+`_Mod`/`_R2` variants) | the 0x00–0x25+ extension blocks of a CPD entry | `Partition/Extensions.swift` — one `decode(tag:)` per `CSE_Ext_XX` | — |
+| `CSE_Ext_00` … `CSE_Ext_37`, `CSE_Ext_544F4F46` (+`_Mod`/`_R2` variants) | the 0x00–0x25+ extension blocks of a CPD entry | `Partition/Extensions.swift` — walker + per-tag header decoders (`0x00`/`0x02`/`0x03`/`0x0C`/`0x0F`/`0x16`) | ported* |
 | `cse_part_inid`, `ext_anl`, `mod_anl`, `mfs_anl`, `mfs_home_anl`, `mfs_cfg_anl`, `efs_anl`, `fitc_anl`, `mfs_home13_anl`, `get_sec_hdr_size`, `get_cfg_rec_size`, `get_vfs_start_0`, `get_mfs_anl` | walking/decode helpers | `FileSystem/*.swift` | — |
 | `get_key_usages`, `mfs_txt`, `mfs_write`, `mfs_anl_msg`, `efs_anl_msg` | manifest keys / MFS text | lower priority | — |
 

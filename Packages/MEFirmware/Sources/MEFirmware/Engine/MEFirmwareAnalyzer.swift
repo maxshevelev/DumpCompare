@@ -64,11 +64,30 @@ public actor MEFirmwareAnalyzer {
                 return nil
             }
             let header = owner.header
-            let modules = CPDParser.entries(of: header, in: region, cpdBase: header.base)
-                .enumerated().map { index, entry in
-                    CPDModule(id: index, name: entry.name, offset: entry.offset,
-                              isHuffman: entry.isHuffman, size: Int(entry.size))
-                }
+            let entries = CPDParser.entries(of: header, in: region, cpdBase: header.base)
+            let modules = entries.enumerated().map { index, entry in
+                CPDModule(id: index, name: entry.name, offset: entry.offset,
+                          isHuffman: entry.isHuffman, size: Int(entry.size))
+            }
+            // CSE extension chain of the chosen manifest's own module (upstream
+            // ext_anl .man): the entry whose content base holds the manifest is
+            // the partition's manifest module. Its size bounds the walk; the
+            // chain starts right after the manifest struct. Header revisions are
+            // chosen from the manifest alone (stage-1, no DB).
+            let extensions: [CPDExtension]? = entries.first { entry in
+                !entry.isHuffman && header.base + entry.offset == m.base && entry.size > 0
+            }.map { module in
+                let family = CPDExtensionParser.family(
+                    major: m.major, minor: m.minor, hotfix: m.hotfix, build: m.build,
+                    year: m.year, month: m.month, keyLength: m.rsaPublicKey?.count)
+                return CPDExtensionParser.decode(
+                    in: region,
+                    moduleContentBase: m.base,
+                    moduleSize: Int(module.size),
+                    chainStart: m.base + m.headerLengthBytes,
+                    family: family,
+                    baseOffset: baseOffset)
+            }
             return CodePartition(
                 name: header.partitionName,
                 offset: baseOffset + header.base,
@@ -76,7 +95,8 @@ public actor MEFirmwareAnalyzer {
                 headerLength: header.headerLength,
                 entryCount: header.numModules,
                 checksumValid: CPDParser.checksumValid(header, in: region),
-                modules: modules)
+                modules: modules,
+                extensions: extensions)
         }
 
         var issues: [Issue] = []

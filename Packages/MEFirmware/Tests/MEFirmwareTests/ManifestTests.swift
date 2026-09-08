@@ -15,6 +15,10 @@ enum ManifestFixture {
         var tag: String = "$MN2"
         var format: Format = .r1
         var flags: UInt32 = 0x1            // PVBit on, Debug off (Production)
+        // HeaderLength (dwords @ +0x04) sizes the manifest struct; the 0x284-byte
+        // synthetic manifest is 0xA1 dwords, so a CSE extension chain appended
+        // after it starts at the right offset (the real layouts are ~0x27x-0x28x).
+        var headerLength: UInt32 = 0xA1
         // Date fields are packed-BCD on the wire (nibbles are calendar digits);
         // 0x24/0x03/0x2021 = 24 March 2021.
         var day: UInt8 = 0x24
@@ -47,6 +51,7 @@ enum ManifestFixture {
         }
 
         let headerVersion: UInt32 = params.format == .r2 ? 0x2_1000 : 0x1_0000
+        u32(params.headerLength, at: 0x04)                 // HeaderLength (dwords)
         u32(headerVersion, at: 0x08)                       // HeaderVersion
         u32(params.flags, at: 0x0C)                        // Flags
         u16(0x8086, at: 0x10)                              // VEN_ID — the anchor bytes

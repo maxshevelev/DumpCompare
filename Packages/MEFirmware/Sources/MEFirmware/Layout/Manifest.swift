@@ -27,6 +27,10 @@ struct ManifestParser {
 
     struct Manifest {
         var base: Int             // struct base, region-relative
+        /// Size in bytes of the manifest struct (`HeaderLength` u32 @ +0x04, in
+        /// dwords). The CSE extension chain of a `.man` module starts right after
+        /// this (upstream `ext_anl` uses `mn2_hdr.HeaderLength * 4`).
+        var headerLengthBytes: Int
         var tag: String           // "$MN2" or "$MAN"
         var format: Format
 
@@ -110,6 +114,7 @@ struct ManifestParser {
 
         var manifest = Manifest(
             base: base,
+            headerLengthBytes: Int(u32le(data, p + 0x04)) * 4,
             tag: tag,
             format: format,
             day: bcdDay ?? Int(data[p + 0x14]),

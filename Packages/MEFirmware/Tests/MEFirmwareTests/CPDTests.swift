@@ -13,8 +13,15 @@ enum CPDFixture {
         }
     }
 
+    /// Per-module `OffsetCPD`/`Size` override. When given, each entry's offset
+    /// (bits 0–24 of OffsetAttrib) and uncompressed Size are written instead of
+    /// left zeroed — an analyzer test that places real module content after the
+    /// directory (the manifest + its extension chain) needs them.
+    typealias ModuleLayout = (offset: UInt32, size: UInt32)
+
     static func make(name: String, headerVersion: Int = 1,
-                     moduleNames: [String] = ["$MN2"]) -> Data {
+                     moduleNames: [String] = ["$MN2"],
+                     moduleLayout: [ModuleLayout]? = nil) -> Data {
         let headerLength = headerVersion == 2 ? 0x14 : 0x10
         var data = Data(repeating: 0, count: headerLength + moduleNames.count * 0x18)
         data.replaceSubrange(0..<4, with: Data("$CPD".utf8))
@@ -32,6 +39,10 @@ enum CPDFixture {
             let entry = headerLength + moduleIndex * 0x18
             for (index, byte) in module.utf8.prefix(12).enumerated() {
                 data[entry + index] = byte                         // CPD_Entry.Name
+            }
+            if let moduleLayout, moduleIndex < moduleLayout.count {
+                setUInt32(moduleLayout[moduleIndex].offset, in: &data, at: entry + 0x0C)  // OffsetCPD
+                setUInt32(moduleLayout[moduleIndex].size, in: &data, at: entry + 0x10)    // Size
             }
         }
         if headerVersion == 1 {
