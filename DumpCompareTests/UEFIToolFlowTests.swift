@@ -115,10 +115,12 @@ final class UEFIToolFlowTests: XCTestCase {
         outline.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
 
         // The file is 0x48..<0x8C: a 0x18-byte FFS header, then its sections.
+        // It sits a level down from the wrapper the file was wrapped in, hence
+        // the extra "0" in its path (§4).
         let zones = controller.windowModel.pane1.zones
-        XCTAssertEqual(zones.zones.map(\.id), ["0.0", "0.0#body"])
+        XCTAssertEqual(zones.zones.map(\.id), ["0.0.0", "0.0.0#body"])
         XCTAssertEqual(zones.zones.map(\.range), [0x48..<0x8C, 0x60..<0x8C])
-        XCTAssertEqual(zones.focus, "0.0#body",
+        XCTAssertEqual(zones.focus, "0.0.0#body",
                        "the body is what the node holds — that is the one drawn "
                        + "as the focus")
     }
@@ -149,7 +151,7 @@ final class UEFIToolFlowTests: XCTestCase {
                        "the innermost zone is offered first")
 
         controller.selectZone(submenu.items[0])
-        XCTAssertEqual(pane.zones.focus, "0.0#body")
+        XCTAssertEqual(pane.zones.focus, "0.0.0#body")
         XCTAssertEqual(outline.selectedRow, 1)
         var selection = pane.hexSelection()
         XCTAssertEqual(selection.start..<selection.end, 0x60..<0x8C,
@@ -160,6 +162,82 @@ final class UEFIToolFlowTests: XCTestCase {
         XCTAssertEqual(outline.selectedRow, 1)
         selection = pane.hexSelection()
         XCTAssertEqual(selection.start..<selection.end, 0x48..<0x8C)
+    }
+
+    /// A bare file is wrapped in a "UEFI image" root the parser invents, and
+    /// that root does no work as a row — it holds the whole file — so it is
+    /// folded into the title: no row reads "UEFI image", the volume its child
+    /// is the top of the tree, and the summary leads with the wrapper's name.
+    func testAWrappedFileShowsItsVolumeNotTheWrapperRow() throws {
+        let controller = try open(UEFITestImage.make())
+        let outline = try outline()
+        let panel = try XCTUnwrap(controller.tools.panel)
+
+        XCTAssertEqual(outline.numberOfRows, 1, "the wrapper is not a row — its "
+                       + "volume child is the top of the tree")
+        let names = (0..<outline.numberOfRows).compactMap { row in
+            (outline.view(atColumn: 0, row: row, makeIfNecessary: true) as? NSTableCellView)?
+                .textField?.stringValue
+        }
+        XCTAssertFalse(names.contains("UEFI image"),
+                       "no row shows the wrapper the tree folded away")
+
+        let title = try XCTUnwrap(descendants(of: panel, NSTextField.self).first {
+            $0.stringValue.hasPrefix("UEFI image ·")
+        })
+        XCTAssertEqual(title.toolTip, "Show the whole image in the dump")
+    }
+
+    /// The wrapper's one job was to say what the image is, and the title now
+    /// says it: clicking the title behaves exactly like a click on the wrapper's
+    /// row would — whole-file zone, detail of the whole image. The wrapper has
+    /// no row, so nothing in the tree is selected.
+    func testClickingTheTitleShowsTheWholeImage() throws {
+        let controller = try open(UEFITestImage.make())
+        let pane = controller.windowModel.pane1
+        let outline = try outline()
+        let panel = try XCTUnwrap(controller.tools.panel)
+
+        // The title is the summary label, and it is the one thing in the panel
+        // that is clickable.
+        let title = try XCTUnwrap(descendants(of: panel, NSTextField.self).first {
+            $0.stringValue.hasPrefix("UEFI image ·")
+        })
+        XCTAssertTrue(
+            (title.gestureRecognizers ?? []).contains(where: { $0 is NSClickGestureRecognizer }),
+            "the title must be clickable"
+        )
+
+        // A click on a label cannot be simulated the way a button's can, so
+        // this drives what the click calls.
+        try session().showTopNode()
+
+        XCTAssertEqual(pane.zones.zones.map(\.id), ["0"],
+                       "the whole image is the one zone, as the wrapper's row "
+                       + "used to publish")
+        XCTAssertEqual(pane.zones.zones.map(\.range), [0..<0x1000])
+        XCTAssertEqual(pane.zones.focus, "0")
+        XCTAssertEqual(outline.selectedRow, -1, "the wrapper has no row to select")
+
+        // The detail says the node in focus is the whole image.
+        let text = descendants(of: panel, NSTextField.self).map(\.stringValue)
+        XCTAssertTrue(text.contains("UEFI image"), "\(text)")
+        XCTAssertTrue(text.contains("0x0 · 0x1000 bytes"), "\(text)")
+        XCTAssertEqual(title.textColor, .controlAccentColor,
+                       "the folded-away node reads as selected in the title")
+    }
+
+    /// With no wrapper to stand for — a capsule is a root with a header, so it
+    /// earns its row — the title has nothing to select, so clicking it does
+    /// nothing rather than clear a focus the user set.
+    func testTheTitleDoesNothingWithoutAWrappedRoot() throws {
+        let controller = try open(UEFITestImage.capsule())
+        let pane = controller.windowModel.pane1
+
+        try session().showTopNode()
+
+        XCTAssertTrue(pane.zones.zones.isEmpty,
+                      "a capsule root is a row — there is no hidden top to show")
     }
 
     /// The bottom of the panel says what the node in focus is, by its type: a
@@ -345,6 +423,24 @@ enum UEFITestImage {
         // The file: a driver, named by its user-interface section.
         image.replaceSubrange(0x48..<0x8C, with: file())
         return image
+    }
+
+    /// The whole volume, wrapped in a plain UEFI capsule (§1.1). A capsule is
+    /// a root with a header of its own, so — unlike the bare volume — it has no
+    /// invented wrapper to fold away, which is what the title-click no-op test
+    /// needs.
+    static func capsule() -> [UInt8] {
+        let body = make()
+        let guid = EFIGUID("3B6686BD-0D76-4030-B70E-B5519E2FC5A0")!
+        let headerSize: UInt32 = 0x20
+        var bytes: [UInt8] = []
+        bytes += guid.bytes
+        bytes += u32(headerSize)                              // HeaderSize
+        bytes += u32(0)                                       // Flags
+        bytes += u32(headerSize + UInt32(body.count))         // CapsuleImageSize
+        bytes += [UInt8](repeating: 0xFF, count: Int(headerSize) - 16 - 12)
+        bytes += body
+        return bytes
     }
 
     /// The one file in the volume: a 0x44-byte driver whose body is a name

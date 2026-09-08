@@ -13,8 +13,16 @@ import UEFITool
 @MainActor final class UEFIToolViewController: NSViewController {
     /// The node the user picked in the tree, or nil for nothing.
     var onSelect: ((NodeID?) -> Void)?
+    /// The title was clicked. Only ever fired when the summary stands for a
+    /// node that has no row of its own.
+    var onSelectTop: (() -> Void)?
 
     private var image: UEFIImage?
+    /// The tree as it is shown: the outline's top level and the wrapper node the
+    /// summary stands for, decided in the pure target. Kept from one show to
+    /// the next so the data source reads the same top level the last show laid
+    /// out.
+    private var presented = UEFITreeDisplay.PresentedImage(title: nil, rows: [])
     private var focus: NodeID?
     /// The detail on screen, kept so the rows can be rebuilt at a new type
     /// size without waiting for the next parse — a zoom is not a re-read.
@@ -81,6 +89,12 @@ import UEFITool
         summaryLabel.font = ToolPanelFont.body(weight: .medium)
         summaryLabel.lineBreakMode = .byTruncatingTail
         summaryLabel.translatesAutoresizingMaskIntoConstraints = false
+        // The title names the image, not a row: when a pure wrapper was folded
+        // into it, clicking it selects the whole image as that row would. What
+        // it does without a wrapper is nothing — the module guards.
+        summaryLabel.addGestureRecognizer(
+            NSClickGestureRecognizer(target: self, action: #selector(summaryClicked))
+        )
 
         configureOutline()
 
@@ -251,9 +265,20 @@ import UEFITool
         isShowingState = true
         defer { isShowingState = false }
 
-        summaryLabel.stringValue = Self.summary(of: image)
+        presented = image.map(UEFITreeDisplay.present)
+            ?? UEFITreeDisplay.PresentedImage(title: nil, rows: [])
+        summaryLabel.stringValue = UEFITreeDisplay.summary(of: image)
+        updateSummaryEmphasis()
         outline.reloadData()
         renderDetail(detail, subject: focus?.description ?? "")
+
+        // The focus is the wrapper the tree folded into the title: it has no
+        // row to select, and the title already stands for it in accent colour,
+        // so there is nothing to do to the tree.
+        if presented.title != nil, focus == presented.title?.id {
+            outline.deselectAll(nil)
+            return
+        }
 
         guard let image, let focus, let node = image.node(focus) else {
             outline.deselectAll(nil)
@@ -267,33 +292,30 @@ import UEFITool
         }
     }
 
-    /// What the tree is, in one line: what the image is, and how much of it the
-    /// tree accounts for. The image type leads — a capsule, a BIOS region, a
-    /// volume — because that is what the bench opened the file to find out.
-    private static func summary(of image: UEFIImage?) -> String {
-        guard let image else { return "" }
-        let nodes = image.allNodes
-        let count = nodes.count
-        guard count > 0 else { return "Nothing here looks like a firmware image." }
-        let volumes = nodes.filter { $0.kind == .volume }.count
-        let files = nodes.filter { $0.kind == .file }.count
-        var parts: [String] = []
-        let imageType = UEFITreeDisplay.imageType(of: image)
-        if !imageType.isEmpty { parts.append(imageType) }
-        parts.append("\(count) " + (count == 1 ? "node" : "nodes"))
-        if volumes > 0 { parts.append("\(volumes) volume" + (volumes == 1 ? "" : "s")) }
-        if files > 0 { parts.append("\(files) file" + (files == 1 ? "" : "s")) }
-        return parts.joined(separator: " · ")
+    /// The title reads as clickable only when it stands for a hidden node, and
+    /// reads as *selected* when that node is the focus — the accent colour is
+    /// the row the wrapper would have got.
+    private func updateSummaryEmphasis() {
+        guard presented.title != nil else {
+            summaryLabel.toolTip = nil
+            summaryLabel.textColor = .labelColor
+            return
+        }
+        summaryLabel.toolTip = "Show the whole image in the dump"
+        summaryLabel.textColor = focus == presented.title?.id ? .controlAccentColor : .labelColor
     }
 
-    /// Expands each ancestor of the node so its row is on screen.
+    /// Expands each ancestor of the node so its row is on screen. An ancestor
+    /// that was folded into the title has no row — its children are already the
+    /// top of the tree — so only ancestors that are on screen are expanded.
     private func expandPath(to nodeID: NodeID) {
         guard !nodeID.path.isEmpty else { return }
         var nodes = image?.roots ?? []
         for (step, index) in nodeID.path.enumerated() {
             guard index < nodes.count else { return }
             let node = nodes[index]
-            if step < nodeID.path.count - 1 {
+            if step < nodeID.path.count - 1, !node.children.isEmpty,
+               outline.row(forItem: node) >= 0 {
                 outline.expandItem(node)
             }
             nodes = node.children
@@ -346,18 +368,23 @@ import UEFITool
             detail.content.addArrangedSubview(row)
         }
     }
+
+    /// The title names the image, not a row; the module decides what the fold
+    /// stands for and does nothing when there is nothing to select.
+    @objc private func summaryClicked() {
+        onSelectTop?()
+    }
 }
 
 extension UEFIToolViewController: NSOutlineViewDataSource, NSOutlineViewDelegate {
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
-        guard let image else { return 0 }
-        guard let node = item as? UEFINode else { return image.roots.count }
+        guard !presented.rows.isEmpty else { return 0 }
+        guard let node = item as? UEFINode else { return presented.rows.count }
         return node.children.count
     }
 
     func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
-        guard let image else { return UEFINode(kind: .padding, name: "", range: 0..<0) }
-        guard let node = item as? UEFINode else { return image.roots[index] }
+        guard let node = item as? UEFINode else { return presented.rows[index] }
         return node.children[index]
     }
 

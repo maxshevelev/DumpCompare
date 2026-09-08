@@ -70,6 +70,7 @@ struct UEFIParkedState: ToolSessionState {
     public init(host: any ToolHost) {
         self.host = host
         controller.onSelect = { [weak self] nodeID in self?.select(nodeID) }
+        controller.onSelectTop = { [weak self] in self?.showTopNode() }
     }
 
     public var viewController: NSViewController { controller }
@@ -191,6 +192,20 @@ struct UEFIParkedState: ToolSessionState {
     /// by itself.
     private func select(_ nodeID: NodeID?) {
         focus = nodeID
+        show()
+    }
+
+    /// The title names the image, not a row: when a pure wrapper was folded
+    /// into it, clicking the title selects the whole image exactly as that
+    /// row would — whole-file zone, detail of the wrapper. A file with no
+    /// wrapper to stand for — a capsule, one with several roots — has nothing
+    /// to select, so it does nothing rather than clear a focus the user set.
+    ///
+    /// Public because a click on the title is driven the same way the panel's
+    /// other clicks are — through the session, not a simulated mouse.
+    public func showTopNode() {
+        guard let image, let title = UEFITreeDisplay.present(image).title else { return }
+        focus = title.id
         show()
     }
 
