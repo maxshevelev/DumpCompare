@@ -33,6 +33,9 @@ public struct UEFIDiagnostic: Equatable, Sendable {
         case sectionBody
         case microcodeHeader
         case resetVector
+        /// An NVRAM store: the VSS / VSS2 / FTW and the rest that make up an
+        /// NVRAM volume body (§9).
+        case nvramStore
     }
 
     public enum Kind: Equatable, Sendable {
@@ -124,6 +127,7 @@ extension UEFIDiagnostic.Structure {
         case .sectionBody: return "section body"
         case .microcodeHeader: return "microcode header"
         case .resetVector: return "reset vector"
+        case .nvramStore: return "NVRAM store"
         }
     }
 }

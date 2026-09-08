@@ -66,6 +66,33 @@ public enum Checksums {
         return sum
     }
 
+    /// CRC-32, the IEEE 802.3 / zlib variant: reflected polynomial
+    /// `0xEDB88320`, init and final xor `0xFFFFFFFF`. The FTW header, the
+    /// Apple SysF store and the Apple `DataCrc32` field all check themselves
+    /// with it (§9), and it is the one checksum in this format that is not a
+    /// "sum to zero" — a stored value is compared against a computed one.
+    public static func crc32(_ bytes: some Sequence<UInt8>) -> UInt32 {
+        var crc: UInt32 = 0xFFFF_FFFF
+        for byte in bytes {
+            let index = Int((crc ^ UInt32(byte)) & 0xFF)
+            crc = (crc >> 8) ^ crc32Table[index]
+        }
+        return crc ^ 0xFFFF_FFFF
+    }
+
+    /// The reflected CRC-32 table, built once from the polynomial.
+    private static let crc32Table: [UInt32] = {
+        var table = [UInt32](repeating: 0, count: 256)
+        for i in 0..<256 {
+            var c = UInt32(i)
+            for _ in 0..<8 {
+                c = (c & 1) != 0 ? (c >> 1) ^ 0xEDB8_8320 : c >> 1
+            }
+            table[i] = c
+        }
+        return table
+    }()
+
     /// How a checksum and whether the structure says it counts read together:
     /// the value in hex, and the validity in words — `0x5C (Valid)` or
     /// `0x5C (Invalid)`. One spelling of it, so a checksum that carries a

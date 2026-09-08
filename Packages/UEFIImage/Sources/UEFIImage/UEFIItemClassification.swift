@@ -18,6 +18,19 @@ extension UEFINode {
         case .file: return UEFITypes.Item.file.rawValue
         case .section: return UEFITypes.Item.section.rawValue
         case .microcode: return UEFITypes.Item.intelMicrocode.rawValue
+        case .vssStore: return UEFITypes.Item.vssStore.rawValue
+        case .vss2Store: return UEFITypes.Item.vss2Store.rawValue
+        case .ftwStore: return UEFITypes.Item.ftwStore.rawValue
+        case .fdcStore: return UEFITypes.Item.fdcStore.rawValue
+        case .sysFStore: return UEFITypes.Item.sysFStore.rawValue
+        case .flashMapStore: return UEFITypes.Item.phoenixFlashMapStore.rawValue
+        case .evsaStore: return UEFITypes.Item.evsaStore.rawValue
+        case .cmdbStore: return UEFITypes.Item.cmdbStore.rawValue
+        case .slicData: return UEFITypes.Item.slicData.rawValue
+        case .vssEntry: return UEFITypes.Item.vssEntry.rawValue
+        case .sysFEntry: return UEFITypes.Item.sysFEntry.rawValue
+        case .evsaEntry: return UEFITypes.Item.evsaEntry.rawValue
+        case .flashMapEntry: return UEFITypes.Item.phoenixFlashMapEntry.rawValue
         case .padding: return UEFITypes.Item.padding.rawValue
         case .freeSpace: return UEFITypes.Item.freeSpace.rawValue
         // Data nobody claimed is a run of bytes with a type, not a structure, so
@@ -43,6 +56,15 @@ extension UEFINode {
             return subtype
         case .microcode:
             return nil
+        // A store is one kind and no more: its type byte is the item type, and
+        // the entry subtypes live on the children, not on the store.
+        case .vssStore, .vss2Store, .ftwStore, .fdcStore, .sysFStore, .flashMapStore,
+             .evsaStore, .cmdbStore:
+            return nil
+        // An entry and a SLIC blob carry the subtype the parser derived — the
+        // byte is not on the node, the parser worked it out from the header.
+        case .slicData, .vssEntry, .sysFEntry, .evsaEntry, .flashMapEntry:
+            return subtype
         case .padding:
             return Self.paddingSubtype(of: self)
         case .freeSpace:

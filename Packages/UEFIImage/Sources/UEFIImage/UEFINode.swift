@@ -117,6 +117,23 @@ public enum UEFINodeKind: String, Equatable, Sendable, CaseIterable {
     case file
     case section
     case microcode
+    /// The stores an NVRAM volume body is read as (§9). Each is a distinct kind
+    /// because the tree's Type column is keyed by kind and no byte on the node
+    /// says which store it is — the parser matched a signature to know.
+    case vssStore
+    case vss2Store
+    case ftwStore
+    case fdcStore
+    case sysFStore
+    case flashMapStore
+    case evsaStore
+    case cmdbStore
+    case slicData
+    /// A variable or entry inside one of those stores.
+    case vssEntry
+    case sysFEntry
+    case evsaEntry
+    case flashMapEntry
     /// Space between elements that belongs to no structure.
     case padding
     /// The unused tail of a volume's body (§5.8).

@@ -170,13 +170,19 @@ extension Parser {
         depth: Int
     ) -> [UEFINode] {
         guard !body.isEmpty else { return [] }
+        guard depth < limits.maxDepth else {
+            note(.recursionLimit, at: header.offset)
+            return []
+        }
+        // An NVRAM store volume is read as a run of stores, not as FFS files
+        // (§9) — its file-system GUID is not an FFS version, so it has to be
+        // checked before the FFS dispatch would call it unknown.
+        if NvramGuids.isStoreVolume(header.fileSystem) {
+            return walkNvramVolumeBody(body, emptyByte: header.emptyByte, depth: depth + 1)
+        }
         guard let ffsVersion = KnownGUIDs.ffsVersion(ofFileSystem: header.fileSystem) else {
             // A volume we cannot read the inside of still keeps its bytes (§3.4).
             note(.unknownFileSystem(header.fileSystem), at: header.offset + 0x10)
-            return []
-        }
-        guard depth < limits.maxDepth else {
-            note(.recursionLimit, at: header.offset)
             return []
         }
         return walkVolumeBody(
