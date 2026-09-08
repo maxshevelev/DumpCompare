@@ -23,13 +23,13 @@ ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
 | Upstream anchor (regex) | Finds | Swift home | Status |
 |---|---|---|---|
 | `man_pat` `$MN2`/`$MAN`, VEN `0x8086` | CSE/GSC/IUP manifest | `Layout/Manifest.swift` (anchor scan inside) | ported |
-| `bccb_pat` placeholder `$MN2` VEN `0xBCCB` | manifest placeholder | `Anchors.swift` | — |
+| `bccb_pat` placeholder `$MN2` VEN `0xBCCB` | key-manifest *placeholder* scan (`\xCB\xBC.{9}\x00\$MN2`, MEA.py 11009) — used inside the module key-usage / `oem.key`-empty passes of `cse_unpack` (6015, 6760), which sit behind the `.met`/key-usage boundary (row 73); no standalone engine fact | — | deferred — unpack key-usage heuristic (rows 71/73/134) |
 | `cpd_pat` `$CPD` | Code Partition Directory | `Partition/CPD.swift` (scan inside) | ported |
 | `fpt_pat` `$FPT` | Flash Partition Table | `Layout/FPT.swift` (anchor scan inside) | ported |
-| `bpdt_pat` | Boot Partition Descriptor | IFWI layer / UEFI tree | — |
+| `bpdt_pat` | Boot Partition Descriptor — signature scan `\xAA\x55[\x00\xAA]\x00…` (MEA.py 11018) ported as `IFWI.firstBpdt` over each non-empty CSE-LT Boot slot; header v1/v2 + entries read by `IFWI.bpdtTable` | `Layout/IFWI.swift` (`firstBpdt`, `bpdtTable`) | ported |
 | `orom_pat` PCIR | GSC Option ROM | `IUP/OROM.swift` (fixed-offset signature scan inside) | ported |
 | `fd_pat` `5AA5F00F…` | Flash Descriptor | whole-flash ME-region read in `Layout/IFWI.swift` (`FlashDescriptor.meRegion`) | ported (ME-region base only) |
-| `pr_man_*_pat` + `pr_cpd_parts` | probable manifests/IUP parts | `Anchors.swift` | — |
+| `pr_man_*_pat` + `pr_cpd_parts` | probable-IUP-part scans (`cpd_pat` + `.{1}` + one of PMCP/PCOD/PCHC/SPHY/PPHY/PHYP/NPHY, MEA.py 11032) used to locate IUP `$CPD`s when no `$FPT`/CSE-LT structure anchors them (11437) — the IUP CPD decode itself already runs off the operational-manifest scan (IUP rows); the unanchored probable-part fallback has no fixture/oracle | — | deferred — free-blob scan (unanchored-part fallback only) |
 
 ## Flash & IFWI layout
 
@@ -40,7 +40,7 @@ ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
 | `BPDT_Header_1`, `BPDT_Header_2`, `BPDT_Entry` | BPDT — **decode ported** (`IFWI.firstBpdt` ports `bpdt_pat` 11018; `bpdtTable` reads header v1/v2 by the +0x06 tag + `DescCount` entries, MEA.py 11850–12107): each non-empty CSE-LT Boot partition's BPDT surfaced as `FirmwareAnalysis.bootPartitions` (name via `$CPD`-header read else `bpdt_dict`, offset = base+raw, empty flag); 1.7 CRC-32 (`checksumValid`, fact only — upstream never errors on it) | `Layout/IFWI.swift` | ported |
 | `CSE_Layout_Table_16`, `_17` | IFWI layout 1.6/1.7 — **full decode ported** (`IFWI.layoutTable`, MEA.py 11507–11605): version probe (drives `fpt_start`), Data/Boot1-5(+Temp/ELog) partition inventory (`cse_lt_hdr_info`), 1.7 CRC-32 validity + CSE-Redundancy flag; surfaced as `FirmwareAnalysis.cseLayoutTable`, invalid 1.7 CRC → Issue id 10 | `Layout/IFWI.swift` | ported |
 | `fd_anl_init`, `fd_anl_rgn` | Flash Descriptor region parse — FLREG2 Engine/Graphics (ME) base/size read, the one fact `fpt_start` needs (MEA.py 10045) | `Layout/IFWI.swift` (`FlashDescriptor.meRegion`) | ported (ME-region only) |
-| `CSE_Layout_*` flag classes | per-format bitfields | `Layout/*.swift` | — |
+| `CSE_Layout_*` flag classes | per-format bitfields — the meaningful decode (redundancy from the 1.7 Flags bit0, 1.7 CRC-32 validity over `[0x10:0x14]` zeroed + `[0x18:…]`) is ported in `IFWI.layoutTable`; the remaining per-field flag-table *display* of each header stays behind the DB/UI label layer | `Layout/IFWI.swift` (`layoutTable`) | partial |
 
 ## CSE manifest & partitions
 
@@ -68,9 +68,9 @@ ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
 | `UTFL_Header`, `FITC_Header` | misc CSE tables | `FileSystem/Misc.swift` | deferred — same |
 | (deferral note) | The raw `MFS` region exists on **both** real dumps (CSME 12 & 15), but the newer EFST/EFS/FTBL/UTFL/FITC tables and the MFS low-level *file* walk sit inside the Huffman-compressed `vfs`/`fpf`/module bodies — decoding them needs the decompression size targets (Phase 8) plus `FileTable.dat` naming (row 93), so they stay open | — | deferred |
 | `CSE_Ext_00` … `CSE_Ext_37`, `CSE_Ext_544F4F46` (+`_Mod`/`_R2` variants) | the 0x00–0x25+ extension blocks of a CPD entry, in **both** `.man` bodies (chain after the manifest struct) and `.met` companion bodies (chain = the body itself, from `entry.offset`); walker + per-tag header decoders (`0x00`/`0x02`/`0x03`/`0x0A`/`0x0C`/`0x0F`/`0x16`; 0x0A Module Attributes is the universal `.met` lead block, revision-aware R1 0x38/SHA-256 vs R2 0x48/SHA-384); the row-bearing `.met` tags `0x04`–`0x0D` and `_Mod` row sub-tables surface as envelopes only | `Partition/Extensions.swift` — `decode` (.man) + `decodeMetBody` (.met) over shared `walkBlocks` | ported* |
-| `cse_part_inid`, `ext_anl`, `mod_anl`, `mfs_anl`, `mfs_home_anl`, `mfs_cfg_anl`, `efs_anl`, `fitc_anl`, `mfs_home13_anl`, `get_sec_hdr_size`, `get_cfg_rec_size`, `get_vfs_start_0`, `get_mfs_anl` | walking/decode helpers | `FileSystem/*.swift` | — |
+| `cse_part_inid`, `ext_anl`, `mod_anl`, `mfs_anl`, `mfs_home_anl`, `mfs_cfg_anl`, `efs_anl`, `fitc_anl`, `mfs_home13_anl`, `get_sec_hdr_size`, `get_cfg_rec_size`, `get_vfs_start_0`, `get_mfs_anl` | walking/decode drivers — the *structural portions* already split out: `ext_anl`/`mod_anl` row facts (70), `mfs_anl` volume decode (72), CSE-LT/BPDT (40–41); the low-level file/config walkers (`mfs_home*`, `mfs_cfg`, `efs`, `fitc`) sit inside the compressed module bodies + need `FileTable.dat` naming, so they follow rows 63–69 | `FileSystem/*.swift` | deferred — with the file walk (rows 63–69/96) |
 | `mfs_anl` (structural portion) | MFS page scan → System/Data sort → `Crc16_14` de-obfuscation → System-area assembly → volume header + FAT facts (surfaced as `FirmwareAnalysis.mfsVolume` + an `Issue` when a present MFS region fails to decode) | `Engine/MEFirmwareAnalyzer.swift` Stage 1 | partial |
-| `get_key_usages`, `mfs_txt`, `mfs_write`, `mfs_anl_msg`, `efs_anl_msg` | manifest keys / MFS text | lower priority | — |
+| `get_key_usages`, `mfs_txt`, `mfs_write`, `mfs_anl_msg`, `efs_anl_msg` | manifest key-usage pass + MFS text writers — `get_key_usages` keys off the module key-manifest scan (row 26) inside `cse_unpack`; the `_txt`/`_write`/`_msg` helpers are text/report sinks | — | deferred — lower priority (unpack key usage + text sinks) |
 
 ## Independent (IUP) firmware — PMC / PCHC / PHY / OROM
 
@@ -79,8 +79,8 @@ ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
 | `GSC_Info_FWI`, `GSC_Info_IUP` | GSC firmware image info — **decode ported** (`info_anl`, MEA.py 9134 + structs 358/410): an FPT partition literally named "INFO" (only GSC-family images carry one, so the name gates it) decodes as a u32 revision — 1 expected, warning Issue id 12 otherwise, decode still proceeds — then one `GSC_Info_FWI` (0x20) and the trailing `GSC_Info_IUP` rows (0x10 each) to the partition end, surfaced as `FirmwareAnalysis.gscInfo` (result-model rev 12). Raw ints + NUL-trimmed ASCII names; the FWType/FWSKU ext15 labels stay raw. Fixture-only — no GSC dump among the oracles | `IUP/GSCInfo.swift` + `Models/FirmwareAnalysis.swift` | ported |
 | `GSC_OROM_Header`, `GSC_OROM_PCI_Data` | Option ROM image/PCIR — **decode ported** (`orom_pat` scan 11021 over a region identifying as the `.orom` family, MEA.py 11451; whole-image decode 12149–12179): each match reads the 0x1C `GSC_OROM_Header` (struct 433) and — at `match + PCIDataHdrOff` — the 0x1C `GSC_OROM_PCI_Data` (struct 466), plus `data_off = max(PCIDataHdrOff + PCIR.PCIDataHdrLen, EFIImageOffset, OROMPayloadOff)` and the `$CPD` payload probe (12169–12170), surfaced as `FirmwareAnalysis.oromImages` (result-model rev 13). Fixture-only — no OROM dump among the oracles (`.orom` family identity needs a DB RSA-hash match, so the analyzer gate is dormant) | `IUP/OROM.swift` + `Models/FirmwareAnalysis.swift` | ported |
 | `pmc_anl`, `pmc_parse`, `pchc_anl`, `pchc_parse`, `phy_anl`, `phy_parse`, `pch_init_anl`, `info_anl` | PMC/PCHC/PHY/PCH init decode — **family descriptor ported** (`IUP/IUPDescriptor`, MEA.py 9164/9277/9342): Chipset Support platform + Chipset SKU letter + PMC chipset stepping from the manifest identity, mirroring the per-token SKU/stepping branches and the main-summary row gating (SKU hidden for APL/BXT/GLK/DG, stepping hidden for DG). Fills the top-level `platform`/`sku` + new `chipsetStepping` (result-model rev 9). Oracle-verified on the three 1.bin IUP partitions. The `_parse` loops and `pch_init_anl` (MFS PCH-init → CSE `platform`) remain open (`info_anl` → row 79) | `IUP/IUP.swift` + analyzer wiring | partial |
-| `chk_iup_size` | IUP size validation | `IUP/Common.swift` | — |
-| `fovd_clean` | FOVD/NVKR dirty check | `IUP/Common.swift` | — |
+| `chk_iup_size` | IUP engine-end vs file-end compare (MEA.py 9655) — emits *display* Warning/Note text about excess padding or data loss (and optionally strips padding in a debug `--check` rewrite); no model fact, no fixture value | — | deferred — display/lab machinery |
+| `fovd_clean` | FOVD(new)/NVKR(old) dirty/clean Bool (MEA.py 10113) from the GSC/IUP `$FPT`-partition walk, consumed only to print a clean/dirty status — no model fact, and its input is the per-family partition inventory behind the pipeline rows | — | deferred — display (per-family partition walk, rows 134/135) |
 
 ## Identification & database layer
 
@@ -129,10 +129,10 @@ phase needs it.)
 
 | Upstream symbol(s) | Models | Swift home | Status |
 |---|---|---|---|
-| `get_manifest`, `get_fpt`, `get_cpd`, `get_bpdt` | region scanning dispatch — `get_fpt`, `get_manifest` and `get_cpd` decode live in the parsers they dispatch (`Layout/FPT.swift`, `Layout/Manifest.swift`, `Partition/CPD.swift`); `get_bpdt` deferred | `Engine/MEFirmwareAnalyzer.swift` (stage 1 scan) | ported* |
+| `get_manifest`, `get_fpt`, `get_cpd`, `get_bpdt` | region scanning dispatch — `get_fpt`, `get_manifest`, `get_cpd` decode live in the parsers they dispatch (`Layout/FPT.swift`, `Layout/Manifest.swift`, `Partition/CPD.swift`); `get_bpdt`'s v1/v2 header dispatch is `IFWI.bpdtTable` (row 29) | `Engine/MEFirmwareAnalyzer.swift` (stage 1 scan) | ported |
 | `$FPT` re-anchor → operational partition (11802–11825) + owning-`$CPD` name fallback | pick the *operational* `$MN2` copy to identify (FTPR over the earlier RBEP recovery copy; whole-flash `$FPT` lists only internal volumes) | `Engine/ManifestSelection.swift` | ported |
-| `cse_unpack`, `cse_part_inid`, `mod_anl`, `ext_anl` | full CSE/GSC unpack (incl. the `$MN2_Stage1` module-name pass `get_variant` needs) | `Engine/Unpack.swift` | — |
-| per-family analysis chain (`pmc_*`, `pchc_*`, `phy_*`, `gsc_*`) | dispatch to IUP parsers | `Engine/Pipeline.swift` | — |
+| `cse_unpack`, `cse_part_inid`, `mod_anl`, `ext_anl` | the full GUI file-extraction unpack (incl. the `$MN2_Stage1` module-name pass and region file writes) — an output feature, not an analysis fact; the decode drivers it calls are already split into rows 70/72/133/81, so what remains is the extraction writer | `Engine/Unpack.swift` | deferred — file-extraction/repair writer (not engine-analysis facts) |
+| per-family analysis chain (`pmc_*`, `pchc_*`, `phy_*`, `gsc_*`) | dispatch to the IUP parsers — the facts per family already live in the descriptor/decode rows (IUP 81, GSC 79/80), so this is the thin print/orchestration driver of the no-region-split pipeline | `Engine/Pipeline.swift` | deferred — print/orchestration driver |
 
 ## Not ported on purpose
 
