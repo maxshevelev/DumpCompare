@@ -52,6 +52,10 @@ struct ManifestParser {
         var meMajor: Int?
         var meMinor: Int?
 
+        /// Version Control Number (VCN u32 @ +0x34) of an R0 pre-CSE manifest
+        /// (ME 7–10, TXE); nil for R1/R2, whose +0x34 is inside the MEU block.
+        var vcn: Int? = nil
+
         var pvBit: Bool           // Flags bit0
         var debugSigned: Bool     // Flags bit31
 
@@ -147,6 +151,10 @@ struct ManifestParser {
             // SVN_8/VCN, so `is_meu` (hasattr MEU_Minor) is false there.
             manifest.meMajor = Int(u16le(data, p + 0x30))
             manifest.meMinor = Int(u16le(data, p + 0x32))
+        } else {
+            // R0 carries VCN (u32) at +0x34 (`hasattr VCN` in the main flow,
+            // MEA.py 12189); R1/R2 have no VCN field there.
+            manifest.vcn = Int(u32le(data, p + 0x34))
         }
 
         // RSA key / signature slices (main flow 12198–12203).

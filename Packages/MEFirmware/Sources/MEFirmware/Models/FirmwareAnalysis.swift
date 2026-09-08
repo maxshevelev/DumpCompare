@@ -106,11 +106,15 @@ public struct ManifestSummary: Codable, Sendable, Equatable {
     public var year: Int
     public var keyHash: String?            // SHA-256 of the RSA public key
     public var signatureHash: String?      // SHA-256 of the RSA signature
+    /// Version Control Number (`VCN` u32 @ +0x34) of a pre-CSE R0 manifest
+    /// (ME 7–10, TXE); nil for R1/R2, whose +0x34 is inside the MEU block.
+    public var vcn: Int?
 
     public init(offset: Int, tag: String, format: ManifestFormat,
                 major: Int, minor: Int, hotfix: Int, build: Int, svn: Int,
                 day: Int, month: Int, year: Int,
-                keyHash: String?, signatureHash: String?) {
+                keyHash: String?, signatureHash: String?,
+                vcn: Int? = nil) {
         self.offset = offset
         self.tag = tag
         self.format = format
@@ -124,6 +128,7 @@ public struct ManifestSummary: Codable, Sendable, Equatable {
         self.year = year
         self.keyHash = keyHash
         self.signatureHash = signatureHash
+        self.vcn = vcn
     }
 }
 
@@ -531,5 +536,5 @@ public struct Issue: Codable, Sendable, Equatable, Identifiable {
 /// whether to surface the new data (`reference/result-model.md` §Versioning).
 public enum EngineModelRevision {
     /// Current revision of the `FirmwareAnalysis` shape.
-    public static let current = 9
+    public static let current = 10
 }

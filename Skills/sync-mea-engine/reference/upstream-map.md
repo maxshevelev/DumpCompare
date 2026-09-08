@@ -47,7 +47,7 @@ ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
 | Upstream symbol(s) | Models | Swift home | Status |
 |---|---|---|---|
 | `MN2_Manifest_R0`, `_R1`, `_R2` (+ flags) | `$MN2`/`$MAN` pre-CSE R0, CSE R1, R2 — R0/R1/R2 dispatch, version/SVN/date/MEU + RSA key & signature slices; full `_Flags` bitfield table deferred | `Layout/Manifest.swift` | ported |
-| `SKU_Attributes` (+flags) | pre-CSE `$SKU` | `Manifest.swift` | — |
+| `SKU_Attributes` (+flags) | pre-CSE `$SKU` — **decode ported** (`PreCSEME`, MEA.py 1044–1101 structs + main-flow 12644–13023): byte-scan `\$SKU[\x03-\x04]\x00\x00\x00` from the manifest, `FWSKUAttrib` split exactly as upstream's ctypes BigEndianStructure (Value1 bytes0–2, 8 slim/patsburg/etc 1-bit + SKUType/SKUSize byte4, Value10 bytes5–7; `sku_me` = big-endian u32 for ME 2–6) → ME 2–10 top-level `sku` + `platform` rows (oracle: T450 ME10 → 5MB / WPT-LP); R0 VCN (u32 @+0x34) surfaced as `ManifestSummary.vcn` | `Identify/PreCSEME.swift` + `Layout/Manifest.swift` | ported |
 | `MME_Header_Old`, `MME_Header_New` | ME2-10/TXE/SPS `$MME` | `Manifest.swift` | — |
 | `MCP_Header` | | `Manifest.swift` | — |
 | `CPD_Header_R1`, `CPD_Header_R2`, `CPD_Entry` (+`_OffsetAttrib`) | `$CPD` v1/v2 directory — header R1/R2 decode, entry names/offsets, owning-`$CPD` back-scan (`findPrecedingCPD`), R1 Checksum-8 + R2 CRC-32 validation (`cpd_chk`) | `Partition/CPD.swift` | ported |

@@ -142,7 +142,8 @@ public actor MEFirmwareAnalyzer {
                 major: m.major, minor: m.minor, hotfix: m.hotfix, build: m.build,
                 svn: m.svn, day: m.day, month: m.month, year: m.year,
                 keyHash: m.rsaPublicKey.map { Digest.sha256Hex($0) },
-                signatureHash: m.rsaSignature.map { Digest.sha256Hex($0) }
+                signatureHash: m.rsaSignature.map { Digest.sha256Hex($0) },
+                vcn: m.vcn
             )
         }
 
@@ -338,6 +339,19 @@ public actor MEFirmwareAnalyzer {
                                       minor: identity.minor,
                                       hotfix: identity.hotfix)
 
+        // Phase 12 (pre-CSE ME, upstream-map row 50): the classic `$SKU`
+        // SKU_Attributes (SKU_Attributes/`get_flags`, MEA.py 1044–12654) fills
+        // the `SKU` and `Chipset Support` rows of the `.me` family (major 2–10)
+        // — e.g. ME10 `SKUType 0` → "5MB", `minor 0` → "WPT-LP". The decode is
+        // DB-free (pure byte scan from the manifest), so it runs once identity
+        // has named the family `.me`; other families return nil here and keep
+        // the Phase-10 CSME SKU / empty platform / IUP path above.
+        let preCSE = identity.family == .me
+            ? PreCSEME.summary(in: region, manifestBase: manifest.base,
+                               major: identity.major, minor: identity.minor,
+                               hotfix: identity.hotfix, build: identity.build)
+            : nil
+
         return FirmwareAnalysis(
             family: identity.family,
             variant: identity.variant,
@@ -347,8 +361,8 @@ public actor MEFirmwareAnalyzer {
             securityVersion: identity.securityVersion,
             release: identity.release,
             type: .region,
-            sku: iup?.sku ?? skuText,
-            platform: iup?.platform ?? "",
+            sku: preCSE?.sku ?? iup?.sku ?? skuText,
+            platform: preCSE?.platform ?? iup?.platform ?? "",
             chipsetStepping: iup?.chipsetStepping,
             manufactureDate: Self.manufactureDate(day: manifest.day,
                                                   month: manifest.month,

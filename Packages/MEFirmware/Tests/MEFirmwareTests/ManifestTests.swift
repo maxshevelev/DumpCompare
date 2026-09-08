@@ -31,6 +31,9 @@ enum ManifestFixture {
         var svn: UInt32 = 3
         var meMajor: UInt16 = 15
         var meMinor: UInt16 = 40
+        /// R0 VCN (u32 @ +0x34); R1/R2 reuse +0x34 as part of the MEU block, so
+        /// the fixture only writes it for `.r0`.
+        var vcn: UInt32 = 2
         var publicKeySize: UInt32 = 0x40   // dwords → 0x100 bytes
         var key: [UInt8] = Array(0..<0x100).map { UInt8($0 % 0x100) }
         var signature: [UInt8] = Array(0..<0x100).map { UInt8((0xFF - ($0 % 0x100)) & 0xFF) }
@@ -69,6 +72,9 @@ enum ManifestFixture {
         u32(params.svn, at: 0x2C)                          // SVN
         u16(params.meMajor, at: 0x30)                      // MEU_Major (R1/R2)
         u16(params.meMinor, at: 0x32)                      // MEU_Minor (R1/R2)
+        if params.format == .r0 {
+            u32(params.vcn, at: 0x34)                      // R0 VCN (ME 7-10)
+        }
         u32(params.publicKeySize, at: 0x78)                // PublicKeySize (dwords)
         u32(1, at: 0x7C)                                   // ExponentSize (1 dword)
         put(params.key, at: 0x80)                          // RSAPublicKey
@@ -130,6 +136,16 @@ final class ManifestParserTests: XCTestCase {
         XCTAssertEqual(manifest.format, .r0)
         XCTAssertNil(manifest.meMajor)            // R0 reuses 0x30 as SVN_8/VCN
         XCTAssertNil(manifest.meMinor)
+        XCTAssertEqual(manifest.vcn, 2)           // R0 VCN read from +0x34
+    }
+
+    func testR1HasNoVCNField() throws {
+        var params = ManifestFixture.Params()
+        params.vcn = 7
+        let manifest = try XCTUnwrap(ManifestParser.parseFirst(in: ManifestFixture.manifest(params)))
+        XCTAssertEqual(manifest.format, .r1)
+        XCTAssertEqual(manifest.meMajor, 15)      // MEU block read for R1
+        XCTAssertNil(manifest.vcn)                // +0x34 is inside the MEU block, not VCN
     }
 
     func testDebugSignedFlagSetsReleaseBit() throws {
