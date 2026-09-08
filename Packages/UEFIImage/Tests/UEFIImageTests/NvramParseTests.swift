@@ -105,6 +105,34 @@ final class NvramParseTests: XCTestCase {
         XCTAssertTrue(parsed.diagnostics.isEmpty)
     }
 
+    /// A store that sits after a long erased run is still found: the walk jumps
+    /// the free space whole (a run of the erase byte cannot start a store)
+    /// instead of probing its recognisers byte by byte, and lands on the store.
+    func testAStoreAfterLongFreeSpaceIsStillFound() {
+        let vss = TestNVRAM.vssStore(variables: [TestNVRAM.vssVariable(name: "First")])
+        let vss2 = TestNVRAM.vss2Store(variables: [TestNVRAM.vss2Variable(name: "Second")])
+        let gap: UInt64 = 0x2000
+        var body = BinaryWriter()
+        body.raw(vss)
+        let vssEnd = 0x48 + UInt64(vss.count)
+        body.fill(gap, with: 0xFF)
+        body.raw(vss2)
+        let volumeBytes = TestImage.volume(
+            fileSystem: TestNVRAM.nvramVolumeGUID,
+            length: 0x48 + UInt64(body.count),
+            files: [],
+            trailing: body.bytes
+        )
+
+        let parsed = parse(volumeBytes)
+        let volume = parsed.roots[0]
+        XCTAssertEqual(volume.children.map(\.kind), [.vssStore, .freeSpace, .vss2Store])
+        XCTAssertEqual(volume.children[1].range, vssEnd..<(vssEnd + gap))
+        XCTAssertTrue(volume.children[1].isErased)
+        XCTAssertEqual(volume.children[2].range.lowerBound, vssEnd + gap)
+        XCTAssertTrue(parsed.diagnostics.isEmpty)
+    }
+
     /// A VSS2 store is led by a 16-byte store GUID and is 28 bytes of header;
     /// its variables are 4-byte aligned, so the padding after one is a node of
     /// its own.

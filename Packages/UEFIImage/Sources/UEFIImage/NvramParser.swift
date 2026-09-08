@@ -137,6 +137,18 @@ extension Parser {
         var storeOffset = body.lowerBound
 
         while storeOffset < body.upperBound {
+            // Free space is a run of the erase byte, and no store starts with
+            // the erase byte, so a whole run is jumped in one step instead of
+            // paying a recogniser probe for every erased byte. Real NVRAM
+            // volumes end in hundreds of kilobytes of free space; stepping it
+            // byte by byte would try all twelve recognisers at each one — and
+            // the last (a nested firmware volume) a full volume-header read.
+            if reader.uint8(at: storeOffset) == emptyByte {
+                storeOffset = reader.firstOffset(
+                    in: storeOffset..<body.upperBound, notEqualTo: emptyByte
+                ) ?? body.upperBound
+                continue
+            }
             // The store recognisers, in the order the reference parser tries
             // them: first match wins. VSS before VSS2, because a store GUID
             // whose first dword reads `$VSS` would otherwise misroute. SysF,
@@ -1080,9 +1092,15 @@ extension Parser {
     }
 
     /// A store that is really a firmware volume nested whole inside the NVRAM
-    /// area, or nil when the bytes at `offset` are not one. The volume parser
-    /// checks the `_FVH` signature and reads the volume's own body.
+    /// area, or nil when the bytes at `offset` are not one.
+    ///
+    /// The `_FVH` signature is read here before the volume parser is asked: the
+    /// walk offers this recogniser a candidate on every byte that is not free
+    /// space, and the parser's own header read slices off several fields before
+    /// it reaches the signature. One signature read decides most candidates, the
+    /// way the reference parser's single comparison does.
     private func volumeStore(at offset: UInt64, body: Range<UInt64>, depth: Int) -> UEFINode? {
-        parseVolume(at: offset, limit: body.upperBound, depth: depth + 1)
+        guard reader.uint32(at: offset + FV.signatureOffset) == FV.signature else { return nil }
+        return parseVolume(at: offset, limit: body.upperBound, depth: depth + 1)
     }
 }
