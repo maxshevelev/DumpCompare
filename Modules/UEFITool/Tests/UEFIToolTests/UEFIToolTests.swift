@@ -342,6 +342,39 @@ final class UEFIDetailTests: XCTestCase {
         XCTAssertEqual(field(detail, "PROC straps"), "128")
     }
 
+    // MARK: - The UEFI image root
+
+    /// The root a bare file is wrapped in is the whole file and nothing else:
+    /// an empty header means no descriptor to read, so the detail shows only
+    /// the common geometry fields and the Type/Subtype words — never the Intel
+    /// descriptor counters the sibling root reads.
+    func testAUefiImageWrapperShowsOnlyItsCommonFields() {
+        let node = UEFINode(
+            kind: .uefiImage,
+            subtype: UEFITypes.Sub.uefiImage,
+            name: "UEFI image",
+            header: 0..<0,
+            body: 0..<0x1000,
+            isFixed: true
+        )
+        let image = UEFIImage(size: 0x1000, roots: [node])
+        let detail = UEFIDetail.build(
+            for: node, image: image,
+            reader: ImageReader([UInt8](repeating: 0, count: 0x1000))
+        )
+
+        XCTAssertEqual(detail.title, "UEFI image")
+        XCTAssertEqual(field(detail, "Kind"), "UEFI image")
+        XCTAssertEqual(field(detail, "Type"), "UEFI")
+        XCTAssertEqual(field(detail, "Header"), "—")
+        XCTAssertEqual(field(detail, "Body"), "0x0 · 0x1000 bytes")
+        XCTAssertEqual(field(detail, "Total"), "0x0 · 0x1000 bytes")
+        XCTAssertEqual(field(detail, "Flags"), "fixed")
+        XCTAssertNil(field(detail, "Flash chips"))
+        XCTAssertNil(field(detail, "Regions"))
+        XCTAssertNil(field(detail, "Length"))
+    }
+
     // MARK: - NVRAM stores and entries
 
     func testAVssStoreReadsItsFormatAndState() {

@@ -156,6 +156,11 @@ public enum UEFIDetail {
             if let flags = reader.uint32(at: h + 0x14) { fields.append(.init("Flags", hex(flags))) }
             if let imageSize = reader.uint32(at: h + 0x18) { fields.append(.init("Image size", hex(imageSize))) }
 
+        case .uefiImage:
+            // An empty header and nothing of its own to read: the wrapper's
+            // only contribution is its common geometry fields.
+            break
+
         case .intelImage:
             // The image node is the whole file, and its bytes are the flash
             // descriptor that maps it. The header of the descriptor carries the
@@ -383,6 +388,7 @@ public enum UEFIDetail {
         switch kind {
         case .capsule: return "Capsule"
         case .intelImage: return "Intel image"
+        case .uefiImage: return "UEFI image"
         case .flashDescriptor: return "Flash descriptor"
         case .region: return "Region"
         case .volume: return "Volume"
@@ -423,9 +429,10 @@ public enum UEFIDetail {
         case .region:
             // The region label has no number in it, so the code goes with it.
             return FlashRegionType(rawValue: Int(subtype)).map { "\($0.label) · \(hex(subtype))" } ?? hex(subtype)
-        case .intelImage:
-            // Image and Intel are the type/subtype pair UEFITool names this
-            // root; the word comes from the same table as the columns.
+        case .intelImage, .uefiImage:
+            // Image and Intel / Image and UEFI are the type/subtype pairs
+            // UEFITool names these roots; the word comes from the same table as
+            // the columns.
             return UEFITypes.subtypeName(type: node.uefiItemType, subtype) ?? hex(subtype)
         // An NVRAM entry and a SLIC blob carry a derived subtype; name it from
         // the table, keeping the number where the table has no word.

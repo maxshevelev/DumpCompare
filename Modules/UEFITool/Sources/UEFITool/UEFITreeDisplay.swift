@@ -43,6 +43,66 @@ public enum UEFITreeDisplay {
         return subtype.isEmpty ? type : "\(type) · \(subtype)"
     }
 
+    /// The tree as it is shown: the outline's top level, and the node the
+    /// summary stands for when one row has been taken out of the tree.
+    ///
+    /// A single root that is a *pure wrapper* — empty header, children of its
+    /// own, never anything the format put there — holds the whole file and
+    /// does no work as a row. Its one job in the tree is to say what the image
+    /// is, so it is moved up into the panel title instead and its children
+    /// become the top of the outline. The predicate is structural, never
+    /// per-kind, so it covers the Intel image root and the UEFI image root
+    /// alike — and a capsule (whose root has a header of its own) is left as a
+    /// row, as is any file with several roots.
+    public struct PresentedImage {
+        /// The hidden wrapper the summary leads with, or nil when nothing was
+        /// folded away.
+        public let title: UEFINode?
+        /// The outline's top level: the wrapper's children when there was a
+        /// wrapper, the image's roots otherwise.
+        public let rows: [UEFINode]
+
+        public init(title: UEFINode?, rows: [UEFINode]) {
+            self.title = title
+            self.rows = rows
+        }
+    }
+
+    public static func present(_ image: UEFIImage) -> PresentedImage {
+        guard image.roots.count == 1, let root = image.roots.first,
+              root.header.isEmpty, !root.children.isEmpty
+        else { return PresentedImage(title: nil, rows: image.roots) }
+        return PresentedImage(title: root, rows: root.children)
+    }
+
+    /// What the tree is, in one line: what the image is, and how much of it the
+    /// tree accounts for.
+    ///
+    /// The image leads with the hidden wrapper's name — "UEFI image", "Intel
+    /// image" — when `present` folded one into the title; otherwise it leads
+    /// with the image type of the first root (`imageType(of:)`). Either way it
+    /// is the same decision the outline shows, so the title and the tree agree.
+    public static func summary(of image: UEFIImage?) -> String {
+        guard let image else { return "" }
+        let nodes = image.allNodes
+        let count = nodes.count
+        guard count > 0 else { return "Nothing here looks like a firmware image." }
+        let volumes = nodes.filter { $0.kind == .volume }.count
+        let files = nodes.filter { $0.kind == .file }.count
+        var parts: [String] = []
+        let presented = present(image)
+        if let title = presented.title {
+            if !title.name.isEmpty { parts.append(title.name) }
+        } else {
+            let imageType = imageType(of: image)
+            if !imageType.isEmpty { parts.append(imageType) }
+        }
+        parts.append("\(count) " + (count == 1 ? "node" : "nodes"))
+        if volumes > 0 { parts.append("\(volumes) volume" + (volumes == 1 ? "" : "s")) }
+        if files > 0 { parts.append("\(files) file" + (files == 1 ? "" : "s")) }
+        return parts.joined(separator: " · ")
+    }
+
     /// The name the tree shows for a node.
     ///
     /// A node with a GUID is named by the catalogue — the community's name for
@@ -64,6 +124,7 @@ public enum UEFITreeDisplay {
         switch kind {
         case .capsule: return "Capsule"
         case .intelImage: return "Intel image"
+        case .uefiImage: return "UEFI image"
         case .flashDescriptor: return "Flash descriptor"
         case .region: return "Region"
         case .volume: return "Volume"

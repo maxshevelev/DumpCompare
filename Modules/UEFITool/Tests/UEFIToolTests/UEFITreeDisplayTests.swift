@@ -111,4 +111,119 @@ final class UEFITreeDisplayTests: XCTestCase {
         let padding = UEFINode(kind: .padding, name: "", range: 0..<0x100)
         XCTAssertEqual(UEFITreeDisplay.name(for: padding, catalogue: .empty), "Padding")
     }
+
+    // MARK: - The hidden top row
+
+    /// The image the parser wraps a bare file in: one `.uefiImage` over the
+    /// whole file, holding the scan of it, as C++'s `parseGenericImage` makes
+    /// (§4). The one hand-built child is what the outline actually shows.
+    private func wrapperImage(_ children: [UEFINode]) -> UEFIImage {
+        let wrapper = UEFINode(
+            kind: .uefiImage,
+            subtype: UEFITypes.Sub.uefiImage,
+            name: "UEFI image",
+            header: 0..<0,
+            body: 0..<0x1000,
+            isFixed: true,
+            children: children
+        )
+        return UEFIImage(size: 0x1000, roots: [wrapper])
+    }
+
+    private func volumeNode() -> UEFINode {
+        UEFINode(
+            kind: .volume,
+            subtype: 2,
+            name: "FFSv2",
+            guid: KnownGUIDs.ffsV2,
+            header: 0..<0x38,
+            body: 0x38..<0x1000
+        )
+    }
+
+    /// A lone volume file is a single pure wrapper — empty header, children of
+    /// its own, holding the whole file — so it folds into the title and its
+    /// child becomes the top of the tree, and the summary leads with its name.
+    func testAPureWrapperIsFoldedIntoTheTitle() {
+        let presented = UEFITreeDisplay.present(wrapperImage([volumeNode()]))
+
+        XCTAssertEqual(presented.title?.kind, .uefiImage)
+        XCTAssertEqual(presented.title?.name, "UEFI image")
+        XCTAssertEqual(presented.rows.map(\.kind), [.volume])
+    }
+
+    /// The wrapper only hides when it is *pure*: a root with a header is doing
+    /// work as a row — a capsule, a volume — and stays one.
+    func testARootWithAHeaderIsNotFoldedAway() {
+        let image = TestUEFI.volume().image
+
+        let presented = UEFITreeDisplay.present(image)
+
+        XCTAssertNil(presented.title)
+        XCTAssertEqual(presented.rows.map(\.kind), [.volume])
+        XCTAssertEqual(UEFITreeDisplay.summary(of: image), "Volume · FFSv2 · 1 node · 1 volume")
+    }
+
+    /// A file with several roots has no single top to stand for — each row earns
+    /// its place, so none is folded into the title.
+    func testARootWithSeveralTopsIsNotFoldedAway() {
+        let capsule = UEFINode(
+            kind: .capsule, name: "EFI capsule",
+            header: 0..<0x20, body: 0x20..<0x1020
+        )
+        let padding = UEFINode(kind: .padding, name: "", range: 0x1020..<0x1120)
+        let image = UEFIImage(size: 0x1120, roots: [capsule, padding])
+
+        let presented = UEFITreeDisplay.present(image)
+
+        XCTAssertNil(presented.title)
+        XCTAssertEqual(presented.rows.map(\.kind), [.capsule, .padding])
+        XCTAssertEqual(UEFITreeDisplay.summary(of: image), "Capsule · 2 nodes")
+    }
+
+    /// A single wrapper-shaped root with nothing under it has no tree to open
+    /// and nothing to stand for, so it stays a row — the fold is not about the
+    /// kind but about the wrapper doing no work.
+    func testAnEmptyWrapperIsNotFoldedAway() {
+        let image = wrapperImage([])
+
+        let presented = UEFITreeDisplay.present(image)
+
+        XCTAssertNil(presented.title)
+        XCTAssertEqual(presented.rows.count, 1)
+        XCTAssertEqual(UEFITreeDisplay.summary(of: image), "Image · UEFI · 1 node")
+    }
+
+    /// An image with nothing in it at all is not an image, and the summary says
+    /// so instead of counting zero nodes.
+    func testAnEmptyImageSummarySaysNothingLooksLikeFirmware() {
+        XCTAssertEqual(UEFITreeDisplay.summary(of: UEFIImage(size: 0, roots: [])), "Nothing here looks like a firmware image.")
+        XCTAssertEqual(UEFITreeDisplay.summary(of: nil), "")
+    }
+
+    /// The summary's lead is the wrapper's name, and the count of what the tree
+    /// accounts for follows it.
+    func testASummaryLeadsWithTheWrapperNameAndCounts() {
+        XCTAssertEqual(
+            UEFITreeDisplay.summary(of: wrapperImage([volumeNode()])),
+            "UEFI image · 2 nodes · 1 volume"
+        )
+    }
+
+    /// The kind words the UEFI image root reads as: the Image type, the UEFI
+    /// subtype, and the fallback name — the same words an Intel root gets, with
+    /// the other subtype.
+    func testAUefiImageReadsAsTheImageUefiWords() {
+        let node = UEFINode(
+            kind: .uefiImage,
+            subtype: UEFITypes.Sub.uefiImage,
+            name: "",
+            header: 0..<0,
+            body: 0..<0x100
+        )
+
+        XCTAssertEqual(UEFITreeDisplay.typeText(for: node), "Image")
+        XCTAssertEqual(UEFITreeDisplay.subtypeText(for: node), "UEFI")
+        XCTAssertEqual(UEFITreeDisplay.name(for: node, catalogue: .empty), "UEFI image")
+    }
 }
