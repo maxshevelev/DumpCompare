@@ -7,12 +7,14 @@ import Foundation
 /// Huffman blobs and only a manifest's own module carries this chain.
 ///
 /// This is Stage 1 of the `CSE_Ext_*` port: the fixed header + scalars of the
-/// six tags present on real FTPR chains (`0x00` System Info, `0x02` Feature
+/// tags present on real chains — `0x00` System Info, `0x02` Feature
 /// Permissions, `0x03`/`0x16` Partition Info, `0x0C` Client SysInfo, `0x0F`
-/// Signed Package). Repeated `_Mod` row sub-tables (per-feature / per-module /
-/// per-signed-package rows), `.met` metadata chains (tags `0x0A`/`05`/`06`…)
-/// and the bitfield label dictionaries are deferred — such a block still
-/// surfaces its envelope (`tag`/`size`/`offset`) so the UI sees the whole chain.
+/// Signed Package (a `.man` body) and `0x0A` Module Attributes (the universal
+/// first block of a `.met` body). Repeated `_Mod` row sub-tables (per-feature /
+/// per-module / per-signed-package rows; the `.met` process/thread/device/MMIO/
+/// special-file/locked/user tags `0x04`–`0x0D`) and the bitfield label
+/// dictionaries are deferred — such a block still surfaces its envelope
+/// (`tag`/`size`/`offset`) so the UI sees the whole chain.
 ///
 /// Faithful to upstream `ext_anl` (lines 6067–6105):
 /// - the chain starts at `moduleContentBase + HeaderLength*4` — the manifest
@@ -72,9 +74,36 @@ enum CPDExtensionParser {
         guard moduleEnd >= moduleContentBase,
               chainStart >= moduleContentBase,
               chainStart + 8 <= moduleEnd else { return [] }
+        return walkBlocks(in: region, from: chainStart, moduleEnd: moduleEnd,
+                          family: family, baseOffset: baseOffset)
+    }
 
+    /// Decode the extension chain of a `.met` companion module (upstream ext_anl
+    /// `.met`). Unlike a `.man` body — which begins with the `$MN2`/`$MAN`
+    /// manifest struct, so its chain starts `HeaderLength*4` bytes in — a `.met`
+    /// body *is* its chain: it is always uncompressed and the walk starts at its
+    /// content base (`$CPD` entry offset, `bodySize` = entry size). Its first
+    /// block is almost always the `0x0A` Module Attributes extension.
+    static func decodeMetBody(in region: Data,
+                              contentBase: Int,
+                              bodySize: Int,
+                              family: Family,
+                              baseOffset: Int) -> [CPDExtension] {
+        guard bodySize > 0 else { return [] }
+        let bodyEnd = min(contentBase + bodySize, region.count)
+        guard bodyEnd >= contentBase, contentBase + 8 <= bodyEnd else { return [] }
+        return walkBlocks(in: region, from: contentBase, moduleEnd: bodyEnd,
+                          family: family, baseOffset: baseOffset)
+    }
+
+    /// Shared chain walk: emit one `CPDExtension` per `Tag`/`Size` block from
+    /// `from` up to `moduleEnd`, decoding a self-contained header for the tags
+    /// this stage understands and surfacing every other block as an envelope.
+    private static func walkBlocks(in region: Data, from start: Int,
+                                   moduleEnd: Int, family: Family,
+                                   baseOffset: Int) -> [CPDExtension] {
         var out: [CPDExtension] = []
-        var offset = chainStart
+        var offset = start
         var loops = 0
         while offset + 8 <= moduleEnd {
             loops += 1
@@ -89,6 +118,7 @@ enum CPDExtensionParser {
             var signedPackage: SignedPackageExtension?
             var clientSystemInfo: ClientSystemInfoExtension?
             var featurePermissions: FeaturePermissionsExtension?
+            var moduleAttributes: ModuleAttributesExtension?
 
             // Decode the header only for a self-contained block fully inside its
             // module (upstream warns on overflow; we keep the envelope instead).
@@ -105,6 +135,10 @@ enum CPDExtensionParser {
                     partitionInfo = decodePartitionInfo(region, at: offset, tag: 0x03, r2: false)
                 case (0x03, "_R2"):
                     partitionInfo = decodePartitionInfo(region, at: offset, tag: 0x03, r2: true)
+                case (0x0A, ""):
+                    moduleAttributes = decodeModuleAttributes(region, at: offset, r2: false)
+                case (0x0A, "_R2"):
+                    moduleAttributes = decodeModuleAttributes(region, at: offset, r2: true)
                 case (0x0C, ""):
                     clientSystemInfo = decodeClientSystemInfo(region, at: offset)
                 case (0x0F, ""):
@@ -116,7 +150,7 @@ enum CPDExtensionParser {
                 case (0x16, "_R2"):
                     partitionInfo = decodePartitionInfo(region, at: offset, tag: 0x16, r2: true)
                 default:
-                    break   // 0x01 Init Script & unknown tags: envelope only
+                    break   // 0x01 Init Script; .met rows-tags 0x04–0x0D & unknown: envelope only
                 }
             }
 
@@ -129,7 +163,8 @@ enum CPDExtensionParser {
                 partitionInfo: partitionInfo,
                 signedPackage: signedPackage,
                 clientSystemInfo: clientSystemInfo,
-                featurePermissions: featurePermissions))
+                featurePermissions: featurePermissions,
+                moduleAttributes: moduleAttributes))
             offset = blockEnd
         }
         return out
@@ -139,12 +174,13 @@ enum CPDExtensionParser {
 
     /// Header revision suffix ("" = original R1 struct) per upstream's
     /// per-family `ext_tag_rev_hdr_*` dicts (MEA.py 10490–10499), truncated to
-    /// the tags whose headers this stage decodes. csme15 revises 0x00/0x03/0x0F/
-    /// 0x16 (among others not decoded here); csme12 revises only 0x0F.
+    /// the tags whose headers this stage decodes. csme15 revises 0x00/0x03/0x0A/
+    /// 0x0F/0x16 (among others not decoded here); csme12 revises only 0x0F (its
+    /// `.met` headers — incl. 0x0A — keep the R1 structs).
     static func headerRevTag(_ tag: Int, _ family: Family) -> String {
         switch family {
         case .csme15:
-            return [0x00: "_R2", 0x03: "_R2", 0x0F: "_R2", 0x16: "_R2"][tag] ?? ""
+            return [0x00: "_R2", 0x03: "_R2", 0x0A: "_R2", 0x0F: "_R2", 0x16: "_R2"][tag] ?? ""
         case .csme12:
             return [0x0F: "_R2"][tag] ?? ""
         case .base:
@@ -247,6 +283,29 @@ enum CPDExtensionParser {
             fwType: r2 ? Int(UInt8(region[p + 0x24]) & 0x7) : nil,
             fwSku: r2 ? Int(UInt8(region[p + 0x25]) & 0x7) : nil,
             nvmCompatibility: r2 ? Int(u32le(region, p + 0x26) & 0x3) : nil)
+    }
+
+    /// `CSE_Ext_0A` Module Attributes (MOD_ATTR_EXTENSION) — a single
+    /// self-contained block (0x38 R1 / 0x48 R2) and the universal first block of
+    /// a `.met` chain. It describes the *owner* module of that `.met`: the
+    /// compression/encryption of its body, its uncompressed & compressed sizes,
+    /// DEV_ID/VEN_ID and the stored body hash (SHA-256 R1 / SHA-384 R2, as
+    /// uppercase hex). Raw ints; the compression/encryption label *sets* differ
+    /// between revisions (compression 0 None/1 Huffman/2 LZMA; encryption R1
+    /// 0 None/1 AES-CBC vs R2 0 None/1 AES-ECB/2 AES-CTR), so name mapping is a
+    /// display-layer concern.
+    private static func decodeModuleAttributes(_ region: Data, at p: Int, r2: Bool)
+        -> ModuleAttributesExtension? {
+        let hashLen = r2 ? 48 : 32
+        guard p + 0x18 + hashLen <= region.count else { return nil }
+        return ModuleAttributesExtension(
+            compression: Int(region[p + 0x08]),
+            encryption: Int(region[p + 0x09]),
+            uncompressedSize: Int(u32le(region, p + 0x0C)),
+            compressedSize: Int(u32le(region, p + 0x10)),
+            deviceID: Int(u16le(region, p + 0x14)),
+            vendorID: Int(u16le(region, p + 0x16)),
+            moduleHash: hexUpper(region, p + 0x18, hashLen))
     }
 
     // MARK: - Byte readers

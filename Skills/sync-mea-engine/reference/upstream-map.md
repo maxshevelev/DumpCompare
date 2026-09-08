@@ -51,10 +51,10 @@ ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
 | `MME_Header_Old`, `MME_Header_New` | ME2-10/TXE/SPS `$MME` | `Manifest.swift` | — |
 | `MCP_Header` | | `Manifest.swift` | — |
 | `CPD_Header_R1`, `CPD_Header_R2`, `CPD_Entry` (+`_OffsetAttrib`) | `$CPD` v1/v2 directory — header R1/R2 decode, entry names/offsets, owning-`$CPD` back-scan (`findPrecedingCPD`), R1 Checksum-8 + R2 CRC-32 validation (`cpd_chk`) | `Partition/CPD.swift` | ported |
-| `RBE_PM_Metadata`, `_R2`, `_R3`, `_R4` | rbe/pm module metadata | `Partition/Module.swift` | — |
-| `get_rbe_pm_met`, `rbe_pm_met_hashes` | metadata leftover hashes | `Partition/Module.swift` | — |
+| `RBE_PM_Metadata`, `_R2`, `_R3`, `_R4` | rbe/pm module metadata — **deferred to Phase 8**: `get_rbe_pm_met` reads the *decompressed* `pm`/`rbe` body (`pm` is Huffman on both dumps), so it needs the Huffman phase first | `Partition/Module.swift` | — |
+| `get_rbe_pm_met`, `rbe_pm_met_hashes` | metadata leftover hashes — same deferral (decompressed input) | `Partition/Module.swift` | — |
 | `cpd_entry_num_fix`, `cpd_size_calc`, `cpd_chk` | $CPD integrity — `cpd_chk` R1 Checksum-8 + R2 CRC-32 validated (`CPDParser.checksumValid`); `cpd_entry_num_fix`/`cpd_size_calc` ported as *probes* → integrity Issues (the decoder locates content per-entry, so it never needs the sequential-unpack repair to grow the module list) | `Partition/CPD.swift` + `Crypto/Checksum.swift` (`CRC32`) | ported |
-| operational `$CPD` → `CodePartition` module list | the chosen partition's module directory (name/offset/IsHuffman/size + header) surfaced in the UI result model — Stage-2 of the `$CPD` port; the manifest module's extension chain decodes as fixed headers + scalars (row below) | `Models/FirmwareAnalysis.swift` (`CodePartition`) + analyzer wiring | ported |
+| operational `$CPD` → `CodePartition` module list | the chosen partition's module directory (name/offset/IsHuffman/size + header) surfaced in the UI result model — Stage-2 of the `$CPD` port; each metadata-carrier module row (`kernel.met`, …) carries its decoded body chain and the manifest `.man` row repeats `CodePartition.extensions` (row below) | `Models/FirmwareAnalysis.swift` (`CodePartition`, `CPDModule.extensions`) + analyzer wiring | ported |
 
 ## CSE/GSC file system (VFS, MFS, FTBL/EFST, extensions)
 
@@ -65,7 +65,7 @@ ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
 | `EFS_Page_Header`, `EFS_Page_Footer`, `EFS_File_Metadata` | EFS page/footer | `FileSystem/EFS.swift` | — |
 | `MFS_Volume_Header`, `MFS_Page_Header`, `MFS_Config_Record_*`, `MFS_Home_Record_*`, `MFS_Integrity_Table_*`, `MFS_Backup_Header_R0/R1`, `MFS_Backup_Entry` | CSE MFS (older) | `FileSystem/MFS.swift` | — |
 | `UTFL_Header`, `FITC_Header` | misc CSE tables | `FileSystem/Misc.swift` | — |
-| `CSE_Ext_00` … `CSE_Ext_37`, `CSE_Ext_544F4F46` (+`_Mod`/`_R2` variants) | the 0x00–0x25+ extension blocks of a CPD entry | `Partition/Extensions.swift` — walker + per-tag header decoders (`0x00`/`0x02`/`0x03`/`0x0C`/`0x0F`/`0x16`) | ported* |
+| `CSE_Ext_00` … `CSE_Ext_37`, `CSE_Ext_544F4F46` (+`_Mod`/`_R2` variants) | the 0x00–0x25+ extension blocks of a CPD entry, in **both** `.man` bodies (chain after the manifest struct) and `.met` companion bodies (chain = the body itself, from `entry.offset`); walker + per-tag header decoders (`0x00`/`0x02`/`0x03`/`0x0A`/`0x0C`/`0x0F`/`0x16`; 0x0A Module Attributes is the universal `.met` lead block, revision-aware R1 0x38/SHA-256 vs R2 0x48/SHA-384); the row-bearing `.met` tags `0x04`–`0x0D` and `_Mod` row sub-tables surface as envelopes only | `Partition/Extensions.swift` — `decode` (.man) + `decodeMetBody` (.met) over shared `walkBlocks` | ported* |
 | `cse_part_inid`, `ext_anl`, `mod_anl`, `mfs_anl`, `mfs_home_anl`, `mfs_cfg_anl`, `efs_anl`, `fitc_anl`, `mfs_home13_anl`, `get_sec_hdr_size`, `get_cfg_rec_size`, `get_vfs_start_0`, `get_mfs_anl` | walking/decode helpers | `FileSystem/*.swift` | — |
 | `get_key_usages`, `mfs_txt`, `mfs_write`, `mfs_anl_msg`, `efs_anl_msg` | manifest keys / MFS text | lower priority | — |
 

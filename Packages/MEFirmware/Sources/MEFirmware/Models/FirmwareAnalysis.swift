@@ -124,20 +124,27 @@ public struct ManifestSummary: Codable, Sendable, Equatable {
 /// One row of a `$CPD` module directory (upstream `CPD_Entry`, 0x18). `offset`
 /// is the 25-bit `OffsetCPD` — the module's position *relative to the `$CPD`
 /// base* (the first module of a boot partition is usually the `$MN2`/`$MAN`
-/// manifest). `size` is the uncompressed module size.
+/// manifest). `size` is the uncompressed module size. `extensions` is the
+/// module's own CSE extension chain when its body is a metadata carrier: a
+/// `.met` companion's body *is* a chain (its leading `0x0A` block carries the
+/// owner module's compression/encryption/sizes/hash), and the manifest module's
+/// `.man` row repeats `CodePartition.extensions`.
 public struct CPDModule: Codable, Sendable, Equatable, Identifiable {
     public var id: Int
-    public var name: String      // NUL-stripped 12-byte Name, e.g. "$MN2", "rbe"
+    public var name: String      // NUL-stripped 12-byte Name, e.g. "$MN2", "kernel.met"
     public var offset: Int
     public var isHuffman: Bool   // OffsetAttrib bit 25
     public var size: Int
+    public var extensions: [CPDExtension]?
 
-    public init(id: Int, name: String, offset: Int, isHuffman: Bool, size: Int) {
+    public init(id: Int, name: String, offset: Int, isHuffman: Bool, size: Int,
+                extensions: [CPDExtension]? = nil) {
         self.id = id
         self.name = name
         self.offset = offset
         self.isHuffman = isHuffman
         self.size = size
+        self.extensions = extensions
     }
 }
 
@@ -189,13 +196,15 @@ public struct CPDExtension: Codable, Sendable, Equatable, Identifiable {
     public var signedPackage: SignedPackageExtension?    // tag 0x0F
     public var clientSystemInfo: ClientSystemInfoExtension?  // tag 0x0C
     public var featurePermissions: FeaturePermissionsExtension?  // tag 0x02
+    public var moduleAttributes: ModuleAttributesExtension?  // tag 0x0A (universal on .met chains)
 
     public init(id: Int, tag: Int, size: Int, offset: Int,
                 systemInfo: SystemInfoExtension? = nil,
                 partitionInfo: PartitionInfoExtension? = nil,
                 signedPackage: SignedPackageExtension? = nil,
                 clientSystemInfo: ClientSystemInfoExtension? = nil,
-                featurePermissions: FeaturePermissionsExtension? = nil) {
+                featurePermissions: FeaturePermissionsExtension? = nil,
+                moduleAttributes: ModuleAttributesExtension? = nil) {
         self.id = id
         self.tag = tag
         self.size = size
@@ -205,6 +214,7 @@ public struct CPDExtension: Codable, Sendable, Equatable, Identifiable {
         self.signedPackage = signedPackage
         self.clientSystemInfo = clientSystemInfo
         self.featurePermissions = featurePermissions
+        self.moduleAttributes = moduleAttributes
     }
 }
 
@@ -318,6 +328,32 @@ public struct FeaturePermissionsExtension: Codable, Sendable, Equatable {
     }
 }
 
+/// Tag `0x0A` Module Attributes (`CSE_Ext_0A`) — the first block of a `.met`
+/// chain, describing the module that `.met` accompanies. Raw scalars: exactly
+/// one payload group is set per block (the `_Mod`/row-based tags `0x04`–`0x0D`
+/// surface as an opaque envelope). `moduleHash` is the owner body's stored hash
+/// as uppercase hex — SHA-256 (64 chars) in R1, SHA-384 (96 chars) in R2.
+public struct ModuleAttributesExtension: Codable, Sendable, Equatable {
+    public var compression: Int      // 0 None, 1 Huffman, 2 LZMA (R1 & R2)
+    public var encryption: Int       // R1: 0 None, 1 AES-CBC; R2: 0 None, 1 AES-ECB, 2 AES-CTR
+    public var uncompressedSize: Int
+    public var compressedSize: Int   // LZMA & Huffman, without EOM alignment
+    public var deviceID: Int
+    public var vendorID: Int         // 0x8086 for Intel
+    public var moduleHash: String
+
+    public init(compression: Int, encryption: Int, uncompressedSize: Int,
+                compressedSize: Int, deviceID: Int, vendorID: Int, moduleHash: String) {
+        self.compression = compression
+        self.encryption = encryption
+        self.uncompressedSize = uncompressedSize
+        self.compressedSize = compressedSize
+        self.deviceID = deviceID
+        self.vendorID = vendorID
+        self.moduleHash = moduleHash
+    }
+}
+
 public struct Checksums: Codable, Sendable, Equatable {
     public var sha256: String?
     public var sha384: String?
@@ -338,5 +374,5 @@ public struct Issue: Codable, Sendable, Equatable, Identifiable {
 /// whether to surface the new data (`reference/result-model.md` §Versioning).
 public enum EngineModelRevision {
     /// Current revision of the `FirmwareAnalysis` shape.
-    public static let current = 4
+    public static let current = 5
 }

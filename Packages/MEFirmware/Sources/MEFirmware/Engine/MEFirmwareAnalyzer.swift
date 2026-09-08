@@ -87,28 +87,53 @@ public actor MEFirmwareAnalyzer {
                         + "the end of the region (content end 0x\(String(contentEnd, radix: 16)) "
                         + "> region size 0x\(String(region.count, radix: 16)))."))
             }
-            let modules = entries.enumerated().map { index, entry in
-                CPDModule(id: index, name: entry.name, offset: entry.offset,
-                          isHuffman: entry.isHuffman, size: Int(entry.size))
-            }
+            // Header-revision family, chosen from the manifest alone (stage-1,
+            // no DB): decides which tag headers decode as their `_R2` structs.
+            let family = CPDExtensionParser.family(
+                major: m.major, minor: m.minor, hotfix: m.hotfix, build: m.build,
+                year: m.year, month: m.month, keyLength: m.rsaPublicKey?.count)
+
             // CSE extension chain of the chosen manifest's own module (upstream
             // ext_anl .man): the entry whose content base holds the manifest is
             // the partition's manifest module. Its size bounds the walk; the
-            // chain starts right after the manifest struct. Header revisions are
-            // chosen from the manifest alone (stage-1, no DB).
+            // chain starts right after the manifest struct.
             let extensions: [CPDExtension]? = entries.first { entry in
                 !entry.isHuffman && header.base + entry.offset == m.base && entry.size > 0
             }.map { module in
-                let family = CPDExtensionParser.family(
-                    major: m.major, minor: m.minor, hotfix: m.hotfix, build: m.build,
-                    year: m.year, month: m.month, keyLength: m.rsaPublicKey?.count)
-                return CPDExtensionParser.decode(
+                CPDExtensionParser.decode(
                     in: region,
                     moduleContentBase: m.base,
                     moduleSize: Int(module.size),
                     chainStart: m.base + m.headerLengthBytes,
                     family: family,
                     baseOffset: baseOffset)
+            }
+
+            // Per-module metadata: a `.met` companion (name suffix `.met`, always
+            // uncompressed) has a body that *is* an extension chain starting at
+            // its content base — its leading 0x0A block carries the owner
+            // module's compression / encryption / sizes / hash. The manifest
+            // module's own `.man` chain (surfaced as `CodePartition.extensions`)
+            // is attached to its row too, so every carrier shows its blocks.
+            var modules: [CPDModule] = []
+            for (index, entry) in entries.enumerated() {
+                var rowExtensions: [CPDExtension]? = nil
+                if !entry.isHuffman, entry.size > 0 {
+                    if entry.name.hasSuffix(".met") {
+                        rowExtensions = CPDExtensionParser.decodeMetBody(
+                            in: region,
+                            contentBase: header.base + entry.offset,
+                            bodySize: Int(entry.size),
+                            family: family,
+                            baseOffset: baseOffset)
+                    } else if header.base + entry.offset == m.base {
+                        rowExtensions = extensions   // the manifest module itself
+                    }
+                }
+                modules.append(CPDModule(
+                    id: index, name: entry.name, offset: entry.offset,
+                    isHuffman: entry.isHuffman, size: Int(entry.size),
+                    extensions: rowExtensions))
             }
             codePartition = CodePartition(
                 name: header.partitionName,

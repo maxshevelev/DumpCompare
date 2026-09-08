@@ -132,6 +132,24 @@ enum ExtFixture {
         wU32(0x0F0F_0F0F, flagsAt, &b)               // Flags
         return b
     }
+
+    /// `CSE_Ext_0A` Module Attributes (0x38 R1 / 0x48 R2, single block) — the
+    /// universal first block of a `.met` chain. Constants: Compression Huffman
+    /// (1), Encryption None (0), SizeUncomp 0x15000, SizeComp 0xDDD4, DEV_ID 2,
+    /// VEN_ID 0x8086, Hash a byte ramp (32B R1 / 48B R2) at 0x18.
+    static func moduleAttributes(r2: Bool) -> Data {
+        let headerLen = r2 ? 0x48 : 0x38
+        let hashLen = r2 ? 48 : 32
+        var b = block(tag: 0x0A, headerLen: headerLen)
+        b[0x08] = 1                                  // Compression: Huffman
+        b[0x09] = 0                                  // Encryption: None
+        wU32(0x0001_5000, 0x0C, &b)                  // SizeUncomp
+        wU32(0x0000_DDD4, 0x10, &b)                  // SizeComp
+        wU16(0x0002, 0x14, &b)                       // DEV_ID
+        wU16(0x8086, 0x16, &b)                       // VEN_ID
+        ramp(0x18..<(0x18 + hashLen), &b)            // Hash
+        return b
+    }
 }
 
 final class ExtensionWalkerTests: XCTestCase {
@@ -185,12 +203,14 @@ final class ExtensionWalkerTests: XCTestCase {
     func testHeaderRevTagPerFamily() {
         XCTAssertEqual(CPDExtensionParser.headerRevTag(0x00, .csme15), "_R2")
         XCTAssertEqual(CPDExtensionParser.headerRevTag(0x03, .csme15), "_R2")
+        XCTAssertEqual(CPDExtensionParser.headerRevTag(0x0A, .csme15), "_R2")  // .met module attrs
         XCTAssertEqual(CPDExtensionParser.headerRevTag(0x0F, .csme15), "_R2")
         XCTAssertEqual(CPDExtensionParser.headerRevTag(0x16, .csme15), "_R2")
         XCTAssertEqual(CPDExtensionParser.headerRevTag(0x02, .csme15), "")  // never revised
         XCTAssertEqual(CPDExtensionParser.headerRevTag(0x0C, .csme15), "")
         XCTAssertEqual(CPDExtensionParser.headerRevTag(0x0F, .csme12), "_R2")  // 0xF→_R2
         XCTAssertEqual(CPDExtensionParser.headerRevTag(0x00, .csme12), "")
+        XCTAssertEqual(CPDExtensionParser.headerRevTag(0x0A, .csme12), "")  // csme12 .met stays R1
         XCTAssertEqual(CPDExtensionParser.headerRevTag(0x16, .csme12), "")
         XCTAssertEqual(CPDExtensionParser.headerRevTag(0x0F, .base), "")
     }
@@ -380,6 +400,75 @@ final class ExtensionWalkerTests: XCTestCase {
         XCTAssertEqual(exts[0].offset, 0x100)
         XCTAssertEqual(exts[1].offset, 0x100 + ExtFixture.systemInfo(r2: true).count)
         XCTAssertEqual(exts[1].signedPackage?.fwType, 3)
+    }
+
+    // MARK: - Module Attributes (0x0A) & .met chains
+
+    /// 0x0A decodes with a 48-byte SHA-384 hash on csme15 (_R2) and 32-byte
+    /// SHA-256 on csme12/base (R1), in a `.man`-style chain too.
+    func testModuleAttributesDecodePerRevision() {
+        let r2 = decode([ExtFixture.moduleAttributes(r2: true)], family: .csme15)
+        let attrs2 = try! XCTUnwrap(r2[0].moduleAttributes)
+        XCTAssertEqual(r2[0].tag, 0x0A)
+        XCTAssertEqual(attrs2.compression, 1)            // Huffman
+        XCTAssertEqual(attrs2.encryption, 0)             // None
+        XCTAssertEqual(attrs2.uncompressedSize, 0x15000)
+        XCTAssertEqual(attrs2.compressedSize, 0xDDD4)
+        XCTAssertEqual(attrs2.deviceID, 2)
+        XCTAssertEqual(attrs2.vendorID, 0x8086)
+        XCTAssertEqual(attrs2.moduleHash.count, 96)      // SHA-384
+        XCTAssertEqual(attrs2.moduleHash, rampHex(48))
+
+        let r1 = decode([ExtFixture.moduleAttributes(r2: false)], family: .csme12)
+        let attrs1 = try! XCTUnwrap(r1[0].moduleAttributes)
+        XCTAssertEqual(attrs1.moduleHash.count, 64)      // SHA-256
+        XCTAssertEqual(attrs1.uncompressedSize, 0x15000)
+    }
+
+    /// A `.met` body is its own chain — the walk starts at the content base (no
+    /// `HeaderLength*4` skip) and bounds itself by the body size. Multi-row tags
+    /// (here 0x09 Special File Producer with rows) stay envelopes.
+    func testDecodeMetBodyWalksFromBodyBase() {
+        let chain = ExtFixture.concat([
+            ExtFixture.moduleAttributes(r2: false),
+            ExtFixture.block(tag: 0x09, headerLen: 0x0C, tail: 0x18),  // special-file producer
+            ExtFixture.block(tag: 0x0B, headerLen: 0x08, tail: 0x10),  // locked range
+        ])
+        var region = Data(repeating: 0xEE, count: 8)      // bytes before the body
+        region.append(chain)
+
+        let exts = CPDExtensionParser.decodeMetBody(in: region,
+                                                    contentBase: 8,
+                                                    bodySize: chain.count,
+                                                    family: .csme12,
+                                                    baseOffset: 0x1000)
+        XCTAssertEqual(exts.count, 3)
+        // Chain starts exactly at the content base: first block at offset 8 →
+        // reported 0x1008. A `.man` decode would have skipped a header length here.
+        XCTAssertEqual(exts[0].offset, 0x1008)
+        XCTAssertEqual(exts.map(\.tag), [0x0A, 0x09, 0x0B])
+
+        let attrs = try! XCTUnwrap(exts[0].moduleAttributes)   // csme12: R1, SHA-256
+        XCTAssertEqual(attrs.compression, 1)
+        XCTAssertEqual(attrs.moduleHash.count, 64)
+        XCTAssertEqual(exts[1].offset, exts[0].offset + exts[0].size)
+        XCTAssertNil(exts[1].moduleAttributes)                 // row-tag: envelope only
+        XCTAssertEqual(exts[1].size, 0x0C + 0x18)
+        XCTAssertEqual(exts[2].tag, 0x0B)
+        XCTAssertNil(exts[2].featurePermissions)
+    }
+
+    func testDecodeMetBodyEmptyOrTruncatedYieldsNoBlocks() {
+        XCTAssertTrue(CPDExtensionParser.decodeMetBody(
+            in: Data(repeating: 0, count: 4), contentBase: 0, bodySize: 4,
+            family: .csme15, baseOffset: 0).isEmpty)      // body too small for an envelope
+        let body = ExtFixture.moduleAttributes(r2: true)
+        // Declared body shorter than the block's own Size → no header, envelope only.
+        let exts = CPDExtensionParser.decodeMetBody(in: body, contentBase: 0,
+                                                    bodySize: 0x40, family: .csme15,
+                                                    baseOffset: 0)
+        XCTAssertEqual(exts.count, 1)
+        XCTAssertNil(exts[0].moduleAttributes)
     }
 
     // MARK: - Helpers (expected values)

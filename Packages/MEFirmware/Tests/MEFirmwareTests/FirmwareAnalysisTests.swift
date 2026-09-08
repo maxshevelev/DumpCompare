@@ -61,7 +61,7 @@ final class FirmwareAnalysisModelTests: XCTestCase {
     }
 
     func testEngineModelRevisionBumpsWithAdditiveChanges() {
-        XCTAssertEqual(EngineModelRevision.current, 4)
+        XCTAssertEqual(EngineModelRevision.current, 5)
     }
 }
 
@@ -212,6 +212,66 @@ final class AnalyzerTests: XCTestCase {
         XCTAssertEqual(exts[2].partitionInfo?.partitionName, "FTPR")
         XCTAssertEqual(exts[2].partitionInfo?.hash.count, 96)     // 0x16 _R2
         XCTAssertNil(exts[2].partitionInfo?.vcn)                  // 0x16 has no VCN
+    }
+
+    func testAnalyzeDecodesMetModuleMetadata() async throws {
+        // A two-module FTPR region: the manifest `.man` module plus a `kernel.met`
+        // companion placed after it. The default manifest (major 15) selects the
+        // csme15 family, so the .met's leading 0x0A decodes as _R2 (SHA-384). The
+        // manifest module's row repeats CodePartition.extensions.
+        let manChain = ExtFixture.concat([
+            ExtFixture.systemInfo(r2: true),
+            ExtFixture.featurePermissions(moduleCount: 4, rowCount: 2),
+        ])
+        let manifest = ManifestFixture.manifest()
+        let manifestBase = 0x10 + 2 * 0x18                    // R1 $CPD + two entries
+        let manSpan = manifest.count + manChain.count         // $MN2 module covers both
+        let metBody = ExtFixture.concat([
+            ExtFixture.moduleAttributes(r2: true),
+            ExtFixture.block(tag: 0x09, headerLen: 0x0C, tail: 0x18),  // special-file producer
+        ])
+        let metBase = manifestBase + manSpan
+        var region = CPDFixture.make(name: "FTPR",
+                                     moduleNames: ["$MN2", "kernel.met"],
+                                     moduleLayout: [
+                                        (offset: UInt32(manifestBase), size: UInt32(manSpan)),
+                                        (offset: UInt32(metBase), size: UInt32(metBody.count)),
+                                     ])
+        region.append(manifest)
+        region.append(manChain)
+        region.append(metBody)
+        let analyzer = MEFirmwareAnalyzer(data: StubSource(databaseResult: .success(MEADatabase(revision: 378))))
+
+        let result = try await analyzer.analyze(region: region, baseOffset: 0x1000)
+
+        let cp = try XCTUnwrap(result.codePartition)
+        XCTAssertEqual(cp.modules.count, 2)
+
+        // Manifest module row carries the same .man chain as CodePartition.extensions.
+        XCTAssertEqual(cp.modules[0].name, "$MN2")
+        XCTAssertEqual(cp.modules[0].offset, manifestBase)
+        XCTAssertEqual(cp.modules[0].extensions, cp.extensions)
+        XCTAssertEqual(cp.modules[0].extensions?.map(\.tag), [0x00, 0x02])
+
+        // The .met row decoded its own body as a chain from its content base.
+        let met = cp.modules[1]
+        XCTAssertEqual(met.name, "kernel.met")
+        XCTAssertEqual(met.isHuffman, false)
+        XCTAssertEqual(met.size, metBody.count)
+        let exts = try XCTUnwrap(met.extensions)
+        XCTAssertEqual(exts.map(\.tag), [0x0A, 0x09])
+        XCTAssertEqual(exts[0].offset, 0x1000 + metBase)          // absolute, chain at body base
+        let attrs = try XCTUnwrap(exts[0].moduleAttributes)
+        XCTAssertEqual(attrs.compression, 1)                       // Huffman
+        XCTAssertEqual(attrs.encryption, 0)
+        XCTAssertEqual(attrs.uncompressedSize, 0x15000)
+        XCTAssertEqual(attrs.compressedSize, 0xDDD4)
+        XCTAssertEqual(attrs.deviceID, 2)
+        XCTAssertEqual(attrs.vendorID, 0x8086)
+        XCTAssertEqual(attrs.moduleHash.count, 96)                 // csme15 → SHA-384
+        XCTAssertNil(exts[1].moduleAttributes)                     // 0x09 row-tag: envelope
+        XCTAssertEqual(exts[1].size, 0x24)
+        XCTAssertEqual(cp.checksumValid, true)                     // directory stayed intact
     }
 
     func testAnalyzeLeavesCodePartitionNilWithoutOwningCPD() async throws {
