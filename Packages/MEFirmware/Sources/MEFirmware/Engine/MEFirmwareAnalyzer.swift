@@ -30,6 +30,46 @@ public actor MEFirmwareAnalyzer {
             FPTRegion(id: index, name: part.name,
                       offset: baseOffset + part.offset, size: part.size, flags: part.flags)
         }
+
+        // Phase 9: the CSE file system. The oldest layout — MFS — appears as a
+        // raw flash region on both real dumps (CSME 12.0.3 and CSME 15.0.30), in
+        // an FPT partition named "MFS". Decode its volume (page inventory →
+        // system chunk assembly → volume header + FAT) entirely from bytes,
+        // verified byte-for-byte on both. The newer EFST/EFS/FTBL layout lives
+        // inside the Huffman vfs/fpf module bodies (needs decompression targets)
+        // and is a later increment.
+        var mfsVolume: MFSVolume? = nil
+        var mfsIssues: [Issue] = []
+        if let mfsRegion = regions.first(where: { $0.name == "MFS" }) {
+            let volumeOffset = mfsRegion.offset - baseOffset
+            if let info = MFSParser.parse(in: region, offset: volumeOffset,
+                                          size: mfsRegion.size) {
+                mfsVolume = MFSVolume(
+                    offset: mfsRegion.offset, pageSize: info.pageSize,
+                    pageCount: info.systemPageCount + info.dataPageCount,
+                    systemPageCount: info.systemPageCount,
+                    dataPageCount: info.dataPageCount,
+                    signatureValid: info.volumeSignatureValid,
+                    volumeSize: info.volumeSize,
+                    computedVolumeSize: info.computedVolumeSize,
+                    fileRecordCount: info.fileRecordCount,
+                    usedFileCount: info.usedFileCount,
+                    ftblDictionary: info.ftblDictionary,
+                    ftblPlatform: info.ftblPlatform,
+                    ftblReserved: info.ftblReserved,
+                    usesFTBL: info.usesFTBL)
+                if !info.volumeSignatureValid {
+                    mfsIssues.append(Issue(id: 8, severity: .warning,
+                        message: "MFS volume at 0x\(String(mfsRegion.offset, radix: 16)) "
+                            + "is present but its assembled System volume header is "
+                            + "missing or its signature is invalid."))
+                }
+            } else {
+                mfsIssues.append(Issue(id: 8, severity: .warning,
+                    message: "Skipped MFS partition at 0x\(String(mfsRegion.offset, radix: 16)): "
+                        + "unrecognizable format (no MFS pages found)."))
+            }
+        }
         // A flash image carries many $MN2/$MAN copies (one per engine/IUP
         // partition, plus recovery copies); identify the *operational* one — on
         // CSME 12/15 the FTPR copy, not the RBEP recovery copy that comes first
@@ -152,6 +192,7 @@ public actor MEFirmwareAnalyzer {
                                 message: "No $FPT partition table found in the region."))
         }
         issues.append(contentsOf: cpdIssues)
+        issues.append(contentsOf: mfsIssues)
 
         // No manifest: nothing to identify, and no database is needed — return
         // the structural facts immediately (keeps a pure-FPT parse offline).
@@ -163,7 +204,7 @@ public actor MEFirmwareAnalyzer {
                 sku: "", platform: "", manufactureDate: nil,
                 sizeBytes: region.count, databaseName: nil, rsaSignatureValid: nil,
                 checksums: nil, regions: regions, manifest: manifestSummary,
-                codePartition: nil, issues: issues)
+                codePartition: nil, mfsVolume: mfsVolume, issues: issues)
         }
 
         // ——— Stage 2: identification — awaits the live MEA.dat once, then
@@ -225,6 +266,7 @@ public actor MEFirmwareAnalyzer {
             regions: regions,
             manifest: manifestSummary,
             codePartition: codePartition,
+            mfsVolume: mfsVolume,
             issues: issues)
     }
 

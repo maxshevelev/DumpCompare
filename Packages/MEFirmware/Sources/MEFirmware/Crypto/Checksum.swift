@@ -31,3 +31,35 @@ enum CRC32 {
         return crc ^ 0xFFFF_FFFF
     }
 }
+
+/// Upstream `Crc16_14` (MEA.py 9027) — the reverse de-obfuscation primitive for
+/// MFS System Page chunk indexes (used at MEA.py 7745: `chunk_index =
+/// Crc16_14(chunk_index) ^ index_value`). A CCITT-16 table (poly 0x1021) walks
+/// the two little-endian bytes of `value`, but the running CRC is kept to 14
+/// bits (init 0x3FFF, mask 0x3FFF after each byte) — the "no bits 0 and 1" of
+/// the comment: a 14-bit code space whose values 0 and 1 are never produced, so
+/// an obfuscated index can never collide with the 0xC000 "unused entry" marker.
+enum CRC16_14 {
+    private static let table: [UInt16] = {
+        var table = [UInt16](repeating: 0, count: 256)
+        for i in 0..<256 {
+            var r = UInt16(i) << 8
+            for _ in 0..<8 {
+                r = (r & 0x8000) != 0 ? (r << 1) ^ 0x1021 : (r << 1)
+            }
+            table[i] = r
+        }
+        return table
+    }()
+
+    /// The 14-bit obfuscation transform of `value`. Matches upstream: a wide
+    /// running value is masked to 0x3FFF only after each byte step.
+    static func transform(_ value: UInt16) -> UInt16 {
+        var crc: UInt32 = 0x3FFF
+        for byte in [UInt8(value & 0xFF), UInt8((value >> 8) & 0xFF)] {
+            let index = Int(byte ^ UInt8((crc >> 8) & 0xFF))
+            crc = (UInt32(table[index]) ^ (crc << 8)) & 0x3FFF
+        }
+        return UInt16(crc)
+    }
+}

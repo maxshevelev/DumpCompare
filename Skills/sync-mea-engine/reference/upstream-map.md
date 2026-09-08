@@ -60,13 +60,16 @@ ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
 
 | Upstream symbol(s) | Models | Swift home | Status |
 |---|---|---|---|
-| `FTBL_Header`, `FTBL_Table`, `FTBL_Entry` | CSE File Table | `FileSystem/FTBL.swift` | — |
-| `EFST_Header`, `EFST_Table`, `EFST_Entry` | CSE File System Table | `FileSystem/EFST.swift` | — |
-| `EFS_Page_Header`, `EFS_Page_Footer`, `EFS_File_Metadata` | EFS page/footer | `FileSystem/EFS.swift` | — |
-| `MFS_Volume_Header`, `MFS_Page_Header`, `MFS_Config_Record_*`, `MFS_Home_Record_*`, `MFS_Integrity_Table_*`, `MFS_Backup_Header_R0/R1`, `MFS_Backup_Entry` | CSE MFS (older) | `FileSystem/MFS.swift` | — |
-| `UTFL_Header`, `FITC_Header` | misc CSE tables | `FileSystem/Misc.swift` | — |
+| `FTBL_Header`, `FTBL_Table`, `FTBL_Entry` | CSE File Table | `FileSystem/FTBL.swift` | deferred — lives in the compressed `vfs`/`fpf` module bodies (row 67 note) |
+| `EFST_Header`, `EFST_Table`, `EFST_Entry` | CSE File System Table | `FileSystem/EFST.swift` | deferred — same |
+| `EFS_Page_Header`, `EFS_Page_Footer`, `EFS_File_Metadata` | EFS page/footer | `FileSystem/EFS.swift` | deferred — same |
+| `MFS_Volume_Header`, `MFS_Page_Header` | MFS volume + page header decode: page inventory (System/Data via FirstChunkIndex), per-page System chunk-index de-obfuscation (`Crc16_14`), System-area chunk assembly, volume header (Signature/FTBL dict/plat/res/VolumeSize/file-record count) + FAT `usedFileCount` from chunk 0. Byte-verified on **both** real dumps — CSME 12.0.3 (512 records/210 used, dict 1/0/0 → `usesFTBL` false) and CSME 15.0.30 (1024/136, dict 0x0A/0x04 → `usesFTBL` true). All 445 CSME-12 System chunks validate their stored chunk CRC-16 | `FileSystem/MFS.swift` (`MFSParser`, `CRC16_14`) | partial |
+| `MFS_Config_Record_*`, `MFS_Home_Record_*`, `MFS_Integrity_Table_*`, `MFS_Backup_Header_R0/R1`, `MFS_Backup_Entry` | MFS low-level *file* walk (FAT chain → home/config/integrity/backup records) | `FileSystem/MFS.swift` | deferred — needs `FileTable.dat` naming (row 93) |
+| `UTFL_Header`, `FITC_Header` | misc CSE tables | `FileSystem/Misc.swift` | deferred — same |
+| (deferral note) | The raw `MFS` region exists on **both** real dumps (CSME 12 & 15), but the newer EFST/EFS/FTBL/UTFL/FITC tables and the MFS low-level *file* walk sit inside the Huffman-compressed `vfs`/`fpf`/module bodies — decoding them needs the decompression size targets (Phase 8) plus `FileTable.dat` naming (row 93), so they stay open | — | deferred |
 | `CSE_Ext_00` … `CSE_Ext_37`, `CSE_Ext_544F4F46` (+`_Mod`/`_R2` variants) | the 0x00–0x25+ extension blocks of a CPD entry, in **both** `.man` bodies (chain after the manifest struct) and `.met` companion bodies (chain = the body itself, from `entry.offset`); walker + per-tag header decoders (`0x00`/`0x02`/`0x03`/`0x0A`/`0x0C`/`0x0F`/`0x16`; 0x0A Module Attributes is the universal `.met` lead block, revision-aware R1 0x38/SHA-256 vs R2 0x48/SHA-384); the row-bearing `.met` tags `0x04`–`0x0D` and `_Mod` row sub-tables surface as envelopes only | `Partition/Extensions.swift` — `decode` (.man) + `decodeMetBody` (.met) over shared `walkBlocks` | ported* |
 | `cse_part_inid`, `ext_anl`, `mod_anl`, `mfs_anl`, `mfs_home_anl`, `mfs_cfg_anl`, `efs_anl`, `fitc_anl`, `mfs_home13_anl`, `get_sec_hdr_size`, `get_cfg_rec_size`, `get_vfs_start_0`, `get_mfs_anl` | walking/decode helpers | `FileSystem/*.swift` | — |
+| `mfs_anl` (structural portion) | MFS page scan → System/Data sort → `Crc16_14` de-obfuscation → System-area assembly → volume header + FAT facts (surfaced as `FirmwareAnalysis.mfsVolume` + an `Issue` when a present MFS region fails to decode) | `Engine/MEFirmwareAnalyzer.swift` Stage 1 | partial |
 | `get_key_usages`, `mfs_txt`, `mfs_write`, `mfs_anl_msg`, `efs_anl_msg` | manifest keys / MFS text | lower priority | — |
 
 ## Independent (IUP) firmware — PMC / PCHC / PHY / OROM
@@ -90,7 +93,7 @@ ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
 | `get_db_json_obj` | section lookup in MEA.dat — `rsa_pre_keys` block parsed | `Data/MEADatabase.swift` | ported* |
 | `get_fw_ver` | format version string (family zero-padding) | deferred — display text, needs the DB label layer | — |
 | `cse_huffman_dictionary_load` | pick Huffman dict by (variant,major,minor) | `Decompress/Huffman.swift` (`HuffmanDictionaries.parse`/`version`) | ported |
-| (FileTable.dat loaders, `check_ftbl_id`, `check_ftbl_pl`) | module-name/version path mapping | `DB/FileTable.swift` | — |
+| (FileTable.dat loaders, `check_ftbl_id`, `check_ftbl_pl`) | MFS/FTBL low-level file naming (name the FAT-chain files the MFS walk reads — *not* the `$CPD` module names, which already live in the directory) | `DB/FileTable.swift` | deferred — with the MFS file walk (rows 66–67) |
 | `mfs_txt_json…`, `ext_table`, `pt_html`, `pt_json`, `struct_json`, `get_struct`, `ext_table` | table/JSON rendering of structs | **n/a — UI renders the result model instead** | n/a |
 
 `ported*` = the identification core is in; the marked piece waits on the `$CPD`

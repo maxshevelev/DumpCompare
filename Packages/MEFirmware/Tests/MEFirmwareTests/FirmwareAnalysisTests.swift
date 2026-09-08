@@ -23,6 +23,7 @@ final class FirmwareAnalysisModelTests: XCTestCase {
             ],
             manifest: nil,
             codePartition: nil,
+            mfsVolume: nil,
             issues: [Issue(id: 1, severity: .warning, message: "something odd")]
         )
 
@@ -61,7 +62,7 @@ final class FirmwareAnalysisModelTests: XCTestCase {
     }
 
     func testEngineModelRevisionBumpsWithAdditiveChanges() {
-        XCTAssertEqual(EngineModelRevision.current, 5)
+        XCTAssertEqual(EngineModelRevision.current, 6)
     }
 }
 

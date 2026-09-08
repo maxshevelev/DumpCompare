@@ -33,6 +33,7 @@ public struct FirmwareAnalysis: Codable, Sendable, Equatable, Identifiable {
     public var regions: [FPTRegion]           // FPT / partition table if present
     public var manifest: ManifestSummary?     // $MN2/$MAN facts + security fields
     public var codePartition: CodePartition?  // $CPD: entries, extensions, modules
+    public var mfsVolume: MFSVolume?          // MFS volume facts, when an FPT "MFS" region decodes
     public var issues: [Issue]
 }
 
@@ -360,6 +361,53 @@ public struct Checksums: Codable, Sendable, Equatable {
     public var crc32: UInt32?
 }
 
+/// MFS volume facts — the oldest CSE file system layout: a paged flash area
+/// whose logical volume header (FTBL dictionary / platform ids, declared size,
+/// file-record count) lives in the assembled System chunk 0. Decoded from an FPT
+/// region named "MFS", present on both real dumps (CSME 12.0.3: FTBL dict
+/// 1/plat 0 → `usesFTBL` false, old-style; CSME 15.0.30: dict 0x0A/plat 4 →
+/// `usesFTBL` true). `signatureValid` is false when the region carries MFS pages
+/// but chunk 0 is not a valid volume header (a corrupt or hot volume); nil
+/// `mfsVolume` on `FirmwareAnalysis` means no decodable MFS region was found.
+public struct MFSVolume: Codable, Sendable, Equatable {
+    public var offset: Int        // absolute volume start (baseOffset + region offset)
+    public var pageSize: Int
+    public var pageCount: Int
+    public var systemPageCount: Int
+    public var dataPageCount: Int
+    public var signatureValid: Bool     // assembled System chunk 0 signature == 0x724F6201
+    public var volumeSize: Int          // declared (VolumeSize: system + data)
+    public var computedVolumeSize: Int  // system+data chunk payload area actually present
+    public var fileRecordCount: Int
+    public var usedFileCount: Int
+    public var ftblDictionary: Int
+    public var ftblPlatform: Int
+    public var ftblReserved: Int
+    public var usesFTBL: Bool
+
+    public init(offset: Int, pageSize: Int, pageCount: Int,
+                systemPageCount: Int, dataPageCount: Int,
+                signatureValid: Bool, volumeSize: Int, computedVolumeSize: Int,
+                fileRecordCount: Int, usedFileCount: Int,
+                ftblDictionary: Int, ftblPlatform: Int, ftblReserved: Int,
+                usesFTBL: Bool) {
+        self.offset = offset
+        self.pageSize = pageSize
+        self.pageCount = pageCount
+        self.systemPageCount = systemPageCount
+        self.dataPageCount = dataPageCount
+        self.signatureValid = signatureValid
+        self.volumeSize = volumeSize
+        self.computedVolumeSize = computedVolumeSize
+        self.fileRecordCount = fileRecordCount
+        self.usedFileCount = usedFileCount
+        self.ftblDictionary = ftblDictionary
+        self.ftblPlatform = ftblPlatform
+        self.ftblReserved = ftblReserved
+        self.usesFTBL = usesFTBL
+    }
+}
+
 public enum Severity: String, Codable, Sendable {
     case note, warning, error
 }
@@ -374,5 +422,5 @@ public struct Issue: Codable, Sendable, Equatable, Identifiable {
 /// whether to surface the new data (`reference/result-model.md` §Versioning).
 public enum EngineModelRevision {
     /// Current revision of the `FirmwareAnalysis` shape.
-    public static let current = 5
+    public static let current = 6
 }
