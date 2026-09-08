@@ -22,7 +22,7 @@ ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
 
 | Upstream anchor (regex) | Finds | Swift home | Status |
 |---|---|---|---|
-| `man_pat` `$MN2`/`$MAN`, VEN `0x8086` | CSE/GSC/IUP manifest | `Anchors.swift` | — |
+| `man_pat` `$MN2`/`$MAN`, VEN `0x8086` | CSE/GSC/IUP manifest | `Layout/Manifest.swift` (anchor scan inside) | ported |
 | `bccb_pat` placeholder `$MN2` VEN `0xBCCB` | manifest placeholder | `Anchors.swift` | — |
 | `cpd_pat` `$CPD` | Code Partition Directory | `Anchors.swift` | — |
 | `fpt_pat` `$FPT` | Flash Partition Table | `Layout/FPT.swift` (anchor scan inside) | ported |
@@ -46,7 +46,7 @@ ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
 
 | Upstream symbol(s) | Models | Swift home | Status |
 |---|---|---|---|
-| `MN2_Manifest_R0`, `_R1`, `_R2` (+ flags) | `$MN2`/`$MAN` pre-CSE R0, CSE R1, R2 | `Manifest.swift` | — |
+| `MN2_Manifest_R0`, `_R1`, `_R2` (+ flags) | `$MN2`/`$MAN` pre-CSE R0, CSE R1, R2 — R0/R1/R2 dispatch, version/SVN/date/MEU + RSA key & signature slices; full `_Flags` bitfield table deferred | `Layout/Manifest.swift` | ported |
 | `SKU_Attributes` (+flags) | pre-CSE `$SKU` | `Manifest.swift` | — |
 | `MME_Header_Old`, `MME_Header_New` | ME2-10/TXE/SPS `$MME` | `Manifest.swift` | — |
 | `MCP_Header` | | `Manifest.swift` | — |
@@ -82,24 +82,27 @@ ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
 
 | Upstream symbol(s) | Models | Swift home | Status |
 |---|---|---|---|
-| `get_variant` | RSA-pubkey-hash → variant + module-name fallbacks | `Identify/Variant.swift` (lookup table, not an if-chain) | — |
-| `get_cse_db`, `release_fix` | DB query for release/SKU | `DB/MEADatabase.swift` | — |
+| `get_variant` | RSA-pubkey-hash → variant + shared-pre-key override + release; *module-name fallback deferred to the $CPD port* | `Identify/Identifier.swift` (lookup + small table, not an if-chain) | ported* |
+| `get_cse_db`, `release_fix` | DB query for release/SKU — `release_fix` ported (rsa_pre_keys); `get_cse_db` SKU cells deferred (needs $CPD SKU caps) | `Identify/Identifier.swift` | ported* |
 | `get_csme12_sku`, `sku_db_cse` | CSME12 SKU table logic | `Identify/SKU.swift` | — |
-| `note_new_fw` | report firmware absent from DB/repo | `Identify/Novelty.swift` | — |
-| `get_db_json_obj` | section lookup in MEA.dat | `DB/MEADatabase.swift` | — |
-| `get_fw_ver` | format version string | `DB/MEADatabase.swift` | — |
+| `note_new_fw` | report firmware absent from DB/repo — surfaced as a `.note` `Issue` by the pipeline | `Identify/Identifier.swift` (note text) | ported* |
+| `get_db_json_obj` | section lookup in MEA.dat — `rsa_pre_keys` block parsed | `Data/MEADatabase.swift` | ported* |
+| `get_fw_ver` | format version string (family zero-padding) | deferred — display text, needs the DB label layer | — |
 | `cse_huffman_dictionary_load` | pick Huffman dict by (variant,major,minor) | `DB/HuffmanDictionaries.swift` | — |
 | (FileTable.dat loaders, `check_ftbl_id`, `check_ftbl_pl`) | module-name/version path mapping | `DB/FileTable.swift` | — |
 | `mfs_txt_json…`, `ext_table`, `pt_html`, `pt_json`, `struct_json`, `get_struct`, `ext_table` | table/JSON rendering of structs | **n/a — UI renders the result model instead** | n/a |
+
+`ported*` = the identification core is in; the marked piece waits on the `$CPD`
+port (module-name heuristics, SKU cells) or the display/DB-label layer.
 
 ## Crypto & checksums
 
 | Upstream symbol(s) | Models | Swift home | Status |
 |---|---|---|---|
-| `sha_1`, `sha_256`, `sha_384`, `get_hash`, `calc_hash`, `calc_hash_hex`, `md5` | hashing | `Crypto/Digest.swift` | — |
+| `sha_1`, `sha_256`, `sha_384`, `get_hash`, `calc_hash`, `calc_hash_hex`, `md5` | hashing — only `sha_256`/`get_hash(0x20)` (uppercase hex) ported; others join with the signature path | `Crypto/Digest.swift` | ported* |
 | `mc_chk32`, `Crc16_14` | checksums | `Crypto/Checksum.swift` | — |
 | `rsa_sig_val`, `pss_mgf`, `pss_verify`, `pss_final_validate`, `unmask_DB`, `parseSign`, `get_salt` | RSA-PSS signature validation | `Crypto/RSA.swift` | — |
-| `release_fix` (key-hash tie-out) | RSA-key → release | `Crypto/RSA.swift` | — |
+| `release_fix` (key-hash tie-out) | RSA-key → release — lives with identification (calls into `MEADatabase.isPreProductionKey`) | `Identify/Identifier.swift` | ported |
 
 ## Decompression
 
@@ -111,8 +114,8 @@ ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
 
 | Upstream symbol(s) | Models | Swift home | Status |
 |---|---|---|---|
-| `get_manifest`, `get_fpt`, `get_cpd`, `get_bpdt` | region scanning dispatch | `Engine/Pipeline.swift` | — |
-| `cse_unpack`, `cse_part_inid`, `mod_anl`, `ext_anl` | full CSE/GSC unpack | `Engine/Unpack.swift` | — |
+| `get_manifest`, `get_fpt`, `get_cpd`, `get_bpdt` | region scanning dispatch — `get_fpt` and `get_manifest` decode live in the parsers they dispatch (`Layout/FPT.swift`, `Layout/Manifest.swift`); `get_cpd` deferred | `Engine/MEFirmwareAnalyzer.swift` (stage 1 scan) | ported* |
+| `cse_unpack`, `cse_part_inid`, `mod_anl`, `ext_anl` | full CSE/GSC unpack (incl. the `$MN2_Stage1` module-name pass `get_variant` needs) | `Engine/Unpack.swift` | — |
 | per-family analysis chain (`pmc_*`, `pchc_*`, `phy_*`, `gsc_*`) | dispatch to IUP parsers | `Engine/Pipeline.swift` | — |
 
 ## Not ported on purpose
@@ -130,5 +133,6 @@ name map). **Not stored or snapshotted in the project.** The module fetches
 them live from the MEAnalyzer repo on first use (single-flight, in-memory
 cache, no disk) and parses them in the DB layer — see reference/async-api.md.
 `MEA.dat` is parsed generically (revision header, `_`-separated entries,
-`RSAPKEY_*` and `*** section ***` lines), so database additions never need a
-code change; only a change to that *grammar* does.
+`RSAPKEY_*` and `*** section ***` lines, and the `rsa_pre_keys` JSON block
+between its `*BGN`/`*END` markers), so database additions never need a code
+change; only a change to that *grammar* does.
