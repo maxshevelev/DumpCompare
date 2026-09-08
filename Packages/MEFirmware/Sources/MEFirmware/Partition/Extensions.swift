@@ -6,15 +6,17 @@ import Foundation
 /// the partition manifest *plus* its extensions; `.met` module bodies are
 /// Huffman blobs and only a manifest's own module carries this chain.
 ///
-/// This is Stage 1 of the `CSE_Ext_*` port: the fixed header + scalars of the
-/// tags present on real chains — `0x00` System Info, `0x02` Feature
-/// Permissions, `0x03`/`0x16` Partition Info, `0x0C` Client SysInfo, `0x0F`
-/// Signed Package (a `.man` body) and `0x0A` Module Attributes (the universal
-/// first block of a `.met` body). Repeated `_Mod` row sub-tables (per-feature /
-/// per-module / per-signed-package rows; the `.met` process/thread/device/MMIO/
-/// special-file/locked/user tags `0x04`–`0x0D`) and the bitfield label
-/// dictionaries are deferred — such a block still surfaces its envelope
-/// (`tag`/`size`/`offset`) so the UI sees the whole chain.
+/// This covers the fixed headers and, for the row-bearing `.met` tags, their
+/// `_Mod` row sub-tables: `0x00` System Info, `0x02` Feature Permissions (count
+/// only), `0x03`/`0x16` Partition Info, `0x0C` Client SysInfo, `0x0F` Signed
+/// Package (a `.man` body), `0x0A` Module Attributes (the universal first block
+/// of a `.met` body), and the `.met` row tags `0x04` Shared Library, `0x05`
+/// Process, `0x06` Threads, `0x07` Devices, `0x08` MMIO, `0x09` Special Files,
+/// `0x0B` Locked Ranges and `0x0D` User Info (each header + `_Mod` rows sized
+/// `(Size − header) / rowStride`, revision-aware for `0x0D`). The `_02_Mod`
+/// feature rows, the `_0F_Mod` signed-package rows and the bitfield label
+/// dictionaries stay deferred, and `0x01` Init Script + unknown tags surface as
+/// an envelope (`tag`/`size`/`offset`) so the UI still sees the whole chain.
 ///
 /// Faithful to upstream `ext_anl` (lines 6067–6105):
 /// - the chain starts at `moduleContentBase + HeaderLength*4` — the manifest
@@ -119,9 +121,18 @@ enum CPDExtensionParser {
             var clientSystemInfo: ClientSystemInfoExtension?
             var featurePermissions: FeaturePermissionsExtension?
             var moduleAttributes: ModuleAttributesExtension?
+            var sharedLibrary: SharedLibraryExtension?
+            var processAttributes: ProcessAttributesExtension?
+            var threadAttributes: ThreadAttributesExtension?
+            var deviceTypes: DeviceTypesExtension?
+            var mmioRanges: MmioRangesExtension?
+            var specialFiles: SpecialFilesExtension?
+            var lockedRanges: LockedRangesExtension?
+            var userInfo: UserInfoExtension?
 
-            // Decode the header only for a self-contained block fully inside its
-            // module (upstream warns on overflow; we keep the envelope instead).
+            // Decode the header + `_Mod` rows only for a self-contained block
+            // fully inside its module (upstream warns on overflow; we keep the
+            // envelope instead).
             if blockEnd <= moduleEnd {
                 let revTag = headerRevTag(tag, family)
                 switch (tag, revTag) {
@@ -149,8 +160,24 @@ enum CPDExtensionParser {
                     partitionInfo = decodePartitionInfo(region, at: offset, tag: 0x16, r2: false)
                 case (0x16, "_R2"):
                     partitionInfo = decodePartitionInfo(region, at: offset, tag: 0x16, r2: true)
+                case (0x04, ""):
+                    sharedLibrary = decodeSharedLibrary(region, at: offset)
+                case (0x05, ""):
+                    processAttributes = decodeProcessAttributes(region, at: offset, size: size)
+                case (0x06, ""):
+                    threadAttributes = decodeThreadAttributes(region, at: offset, size: size)
+                case (0x07, ""):
+                    deviceTypes = decodeDeviceTypes(region, at: offset, size: size)
+                case (0x08, ""):
+                    mmioRanges = decodeMmioRanges(region, at: offset, size: size)
+                case (0x09, ""):
+                    specialFiles = decodeSpecialFiles(region, at: offset, size: size)
+                case (0x0B, ""):
+                    lockedRanges = decodeLockedRanges(region, at: offset, size: size)
+                case (0x0D, ""):
+                    userInfo = decodeUserInfo(region, at: offset, size: size, family: family)
                 default:
-                    break   // 0x01 Init Script; .met rows-tags 0x04–0x0D & unknown: envelope only
+                    break   // 0x01 Init Script and unknown tags: envelope only
                 }
             }
 
@@ -164,7 +191,15 @@ enum CPDExtensionParser {
                 signedPackage: signedPackage,
                 clientSystemInfo: clientSystemInfo,
                 featurePermissions: featurePermissions,
-                moduleAttributes: moduleAttributes))
+                moduleAttributes: moduleAttributes,
+                sharedLibrary: sharedLibrary,
+                processAttributes: processAttributes,
+                threadAttributes: threadAttributes,
+                deviceTypes: deviceTypes,
+                mmioRanges: mmioRanges,
+                specialFiles: specialFiles,
+                lockedRanges: lockedRanges,
+                userInfo: userInfo))
             offset = blockEnd
         }
         return out
@@ -308,12 +343,207 @@ enum CPDExtensionParser {
             moduleHash: hexUpper(region, p + 0x18, hashLen))
     }
 
+    // MARK: - Row-bearing `.met` headers + `_Mod` sub-tables
+
+    /// `CSE_Ext_04` Shared Library Attributes (0x1C) — a header-only block; it
+    /// has no `_Mod` rows, so the whole block is the header.
+    private static func decodeSharedLibrary(_ region: Data, at p: Int)
+        -> SharedLibraryExtension? {
+        guard p + 0x1C <= region.count else { return nil }
+        return SharedLibraryExtension(
+            contextSize: Int(u32le(region, p + 0x08)),
+            totalAllocatedVirtSpace: Int(u32le(region, p + 0x0C)),
+            codeBaseAddress: Int(u32le(region, p + 0x10)),
+            tlsSize: Int(u32le(region, p + 0x14)),
+            reserved: Int(u32le(region, p + 0x18)))
+    }
+
+    /// `CSE_Ext_05` Process Attributes (0x44 header). Flags u32 @0x08 holds the
+    /// seven 1-bit capabilities of `CSE_Ext_05_Flags` (FaultTolerant bit0 …
+    /// PublicNotifyReceiver bit6 — little-endian ctypes bit order); the rest of
+    /// the header mirrors the process scalars. `rows` are the trailing
+    /// `CSE_Ext_05_Mod` PROCESS_GROUP_ID entries (u16, stride 0x02) filling
+    /// `Size − 0x44`.
+    private static func decodeProcessAttributes(_ region: Data, at p: Int, size: Int)
+        -> ProcessAttributesExtension? {
+        let headerLen = 0x44
+        guard p + headerLen <= region.count, size >= headerLen else { return nil }
+        let flags = u32le(region, p + 0x08)
+        var rows: [ProcessGroupIDRow] = []
+        let rowCount = (size - headerLen) / 2
+        for r in 0..<rowCount {
+            rows.append(ProcessGroupIDRow(
+                id: r,
+                groupID: Int(u16le(region, p + headerLen + r * 2))))
+        }
+        func bit(_ b: Int) -> Bool { (flags >> b) & 1 != 0 }
+        return ProcessAttributesExtension(
+            faultTolerant: bit(0),
+            permanentProcess: bit(1),
+            singleInstance: bit(2),
+            trustedSendReceiveSender: bit(3),
+            trustedNotifySender: bit(4),
+            publicSendReceiveReceiver: bit(5),
+            publicNotifyReceiver: bit(6),
+            flagsReserved: Int(flags >> 7),
+            mainThreadID: Int(u32le(region, p + 0x0C)),
+            codeBaseAddress: Int(u32le(region, p + 0x10)),
+            codeSizeUncompressed: Int(u32le(region, p + 0x14)),
+            cm0HeapSize: Int(u32le(region, p + 0x18)),
+            bssSize: Int(u32le(region, p + 0x1C)),
+            defaultHeapSize: Int(u32le(region, p + 0x20)),
+            mainThreadEntry: Int(u32le(region, p + 0x24)),
+            allowedSysCalls: (0..<3).map { Int(u32le(region, p + 0x28 + $0 * 4)) },
+            userID: Int(u16le(region, p + 0x34)),
+            rows: rows)
+    }
+
+    /// `CSE_Ext_06` Thread Attributes (0x08 header). `rows` are the
+    /// `CSE_Ext_06_Mod` thread entries (stride 0x10) filling `Size − 0x08`.
+    private static func decodeThreadAttributes(_ region: Data, at p: Int, size: Int)
+        -> ThreadAttributesExtension? {
+        let headerLen = 0x08, stride = 0x10
+        guard p + headerLen <= region.count, size >= headerLen else { return nil }
+        var rows: [ThreadRow] = []
+        let rowCount = (size - headerLen) / stride
+        for r in 0..<rowCount {
+            let b = p + headerLen + r * stride
+            rows.append(ThreadRow(
+                id: r,
+                stackSize: Int(u32le(region, b + 0x00)),
+                flags: Int(u32le(region, b + 0x04)),
+                schedulingPolicy: Int(u32le(region, b + 0x08)),
+                reserved: Int(u32le(region, b + 0x0C))))
+        }
+        return ThreadAttributesExtension(rows: rows)
+    }
+
+    /// `CSE_Ext_07` Device Types (0x08 header). `rows` are the `CSE_Ext_07_Mod`
+    /// device entries (DeviceID + Reserved, stride 0x08). The 4-byte `_Mod_R2`
+    /// row is GSC/OROM-100 only — none of this engine's families revise 0x07.
+    private static func decodeDeviceTypes(_ region: Data, at p: Int, size: Int)
+        -> DeviceTypesExtension? {
+        let headerLen = 0x08, stride = 0x08
+        guard p + headerLen <= region.count, size >= headerLen else { return nil }
+        var rows: [DeviceRow] = []
+        let rowCount = (size - headerLen) / stride
+        for r in 0..<rowCount {
+            let b = p + headerLen + r * stride
+            rows.append(DeviceRow(
+                id: r,
+                deviceID: Int(u32le(region, b + 0x00)),
+                reserved: Int(u32le(region, b + 0x04))))
+        }
+        return DeviceTypesExtension(rows: rows)
+    }
+
+    /// `CSE_Ext_08` MMIO Ranges (0x08 header). `rows` are the `CSE_Ext_08_Mod`
+    /// range entries (BaseAddress/SizeLimit/Flags MmioAccess, stride 0x0C).
+    private static func decodeMmioRanges(_ region: Data, at p: Int, size: Int)
+        -> MmioRangesExtension? {
+        let headerLen = 0x08, stride = 0x0C
+        guard p + headerLen <= region.count, size >= headerLen else { return nil }
+        var rows: [MmioRangeRow] = []
+        let rowCount = (size - headerLen) / stride
+        for r in 0..<rowCount {
+            let b = p + headerLen + r * stride
+            rows.append(MmioRangeRow(
+                id: r,
+                baseAddress: Int(u32le(region, b + 0x00)),
+                sizeLimit: Int(u32le(region, b + 0x04)),
+                flags: Int(u32le(region, b + 0x08))))
+        }
+        return MmioRangesExtension(rows: rows)
+    }
+
+    /// `CSE_Ext_09` Special File Producer (0x0C header). Header carries
+    /// MajorNumber u16 + Flags u16 @0x0A; `rows` are the `CSE_Ext_09_Mod`
+    /// SPECIAL_FILE_DEF entries (stride 0x18) with their NUL-padded char[12]
+    /// `Name`.
+    private static func decodeSpecialFiles(_ region: Data, at p: Int, size: Int)
+        -> SpecialFilesExtension? {
+        let headerLen = 0x0C, stride = 0x18
+        guard p + headerLen <= region.count, size >= headerLen else { return nil }
+        var rows: [SpecialFileRow] = []
+        let rowCount = (size - headerLen) / stride
+        for r in 0..<rowCount {
+            let b = p + headerLen + r * stride
+            rows.append(SpecialFileRow(
+                id: r,
+                name: asciiName(region, b + 0x00, 12),
+                accessMode: Int(u16le(region, b + 0x0C)),
+                userID: Int(u16le(region, b + 0x0E)),
+                groupID: Int(u16le(region, b + 0x10)),
+                minorNumber: Int(region[b + 0x12]),
+                reserved0: Int(region[b + 0x13]),
+                reserved1: Int(u32le(region, b + 0x14))))
+        }
+        return SpecialFilesExtension(
+            majorNumber: Int(u16le(region, p + 0x08)),
+            flags: Int(u16le(region, p + 0x0A)),
+            rows: rows)
+    }
+
+    /// `CSE_Ext_0B` Locked Ranges (0x08 header). `rows` are the
+    /// `CSE_Ext_0B_Mod` locked-range entries (RangeBase/RangeSize, stride 0x08).
+    private static func decodeLockedRanges(_ region: Data, at p: Int, size: Int)
+        -> LockedRangesExtension? {
+        let headerLen = 0x08, stride = 0x08
+        guard p + headerLen <= region.count, size >= headerLen else { return nil }
+        var rows: [LockedRangeRow] = []
+        let rowCount = (size - headerLen) / stride
+        for r in 0..<rowCount {
+            let b = p + headerLen + r * stride
+            rows.append(LockedRangeRow(
+                id: r,
+                rangeBase: Int(u32le(region, b + 0x00)),
+                rangeSize: Int(u32le(region, b + 0x04))))
+        }
+        return LockedRangesExtension(rows: rows)
+    }
+
+    /// `CSE_Ext_0D` User Information (0x08 header). The `_Mod` row layout is
+    /// family-dependent (mirrors `ext_tag_rev_mod_csme12/15 = {0xD:'_R2'}`,
+    /// MEA.py 10494/10501): CSME 12/15 rows are `CSE_Ext_0D_Mod_R2` (stride
+    /// 0x10, quotas only); the base family uses `CSE_Ext_0D_Mod` (stride 0x34,
+    /// with a char[36] `WorkingDir` @0x10).
+    private static func decodeUserInfo(_ region: Data, at p: Int, size: Int,
+                                       family: Family)
+        -> UserInfoExtension? {
+        let r2 = family == .csme12 || family == .csme15
+        let headerLen = 0x08, stride = r2 ? 0x10 : 0x34
+        guard p + headerLen <= region.count, size >= headerLen else { return nil }
+        var rows: [UserInfoRow] = []
+        let rowCount = (size - headerLen) / stride
+        for r in 0..<rowCount {
+            let b = p + headerLen + r * stride
+            rows.append(UserInfoRow(
+                id: r,
+                userID: Int(u16le(region, b + 0x00)),
+                reserved: Int(u16le(region, b + 0x02)),
+                nvStorageQuota: Int(u32le(region, b + 0x04)),
+                ramStorageQuota: Int(u32le(region, b + 0x08)),
+                wopQuota: Int(u32le(region, b + 0x0C)),
+                workingDirectory: r2 ? nil : asciiName(region, b + 0x10, 36)))
+        }
+        return UserInfoExtension(rows: rows)
+    }
+
     // MARK: - Byte readers
 
     /// 4-char NUL-padded ASCII name (e.g. "FTPR"), like `CPD_Entry.Name`.
     private static func ascii4(_ data: Data, _ p: Int) -> String {
         guard p + 4 <= data.count else { return "" }
         let bytes = data.subdata(in: (data.startIndex + p)..<(data.startIndex + p + 4))
+        return String(data: bytes, encoding: .ascii)?
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\0")) ?? ""
+    }
+
+    /// `len`-char NUL-padded ASCII name (e.g. the char[12] special-file `Name`,
+    /// the char[36] user `WorkingDir`). Trailing NULs and the pad are dropped.
+    private static func asciiName(_ data: Data, _ p: Int, _ len: Int) -> String {
+        guard p + len <= data.count else { return "" }
+        let bytes = data.subdata(in: (data.startIndex + p)..<(data.startIndex + p + len))
         return String(data: bytes, encoding: .ascii)?
             .trimmingCharacters(in: CharacterSet(charactersIn: "\0")) ?? ""
     }

@@ -212,6 +212,14 @@ public struct CPDExtension: Codable, Sendable, Equatable, Identifiable {
     public var clientSystemInfo: ClientSystemInfoExtension?  // tag 0x0C
     public var featurePermissions: FeaturePermissionsExtension?  // tag 0x02
     public var moduleAttributes: ModuleAttributesExtension?  // tag 0x0A (universal on .met chains)
+    public var sharedLibrary: SharedLibraryExtension?            // tag 0x04 (header-only)
+    public var processAttributes: ProcessAttributesExtension?    // tag 0x05
+    public var threadAttributes: ThreadAttributesExtension?      // tag 0x06
+    public var deviceTypes: DeviceTypesExtension?                // tag 0x07
+    public var mmioRanges: MmioRangesExtension?                  // tag 0x08
+    public var specialFiles: SpecialFilesExtension?              // tag 0x09
+    public var lockedRanges: LockedRangesExtension?              // tag 0x0B
+    public var userInfo: UserInfoExtension?                      // tag 0x0D
 
     public init(id: Int, tag: Int, size: Int, offset: Int,
                 systemInfo: SystemInfoExtension? = nil,
@@ -219,7 +227,15 @@ public struct CPDExtension: Codable, Sendable, Equatable, Identifiable {
                 signedPackage: SignedPackageExtension? = nil,
                 clientSystemInfo: ClientSystemInfoExtension? = nil,
                 featurePermissions: FeaturePermissionsExtension? = nil,
-                moduleAttributes: ModuleAttributesExtension? = nil) {
+                moduleAttributes: ModuleAttributesExtension? = nil,
+                sharedLibrary: SharedLibraryExtension? = nil,
+                processAttributes: ProcessAttributesExtension? = nil,
+                threadAttributes: ThreadAttributesExtension? = nil,
+                deviceTypes: DeviceTypesExtension? = nil,
+                mmioRanges: MmioRangesExtension? = nil,
+                specialFiles: SpecialFilesExtension? = nil,
+                lockedRanges: LockedRangesExtension? = nil,
+                userInfo: UserInfoExtension? = nil) {
         self.id = id
         self.tag = tag
         self.size = size
@@ -230,6 +246,14 @@ public struct CPDExtension: Codable, Sendable, Equatable, Identifiable {
         self.clientSystemInfo = clientSystemInfo
         self.featurePermissions = featurePermissions
         self.moduleAttributes = moduleAttributes
+        self.sharedLibrary = sharedLibrary
+        self.processAttributes = processAttributes
+        self.threadAttributes = threadAttributes
+        self.deviceTypes = deviceTypes
+        self.mmioRanges = mmioRanges
+        self.specialFiles = specialFiles
+        self.lockedRanges = lockedRanges
+        self.userInfo = userInfo
     }
 }
 
@@ -344,10 +368,11 @@ public struct FeaturePermissionsExtension: Codable, Sendable, Equatable {
 }
 
 /// Tag `0x0A` Module Attributes (`CSE_Ext_0A`) — the first block of a `.met`
-/// chain, describing the module that `.met` accompanies. Raw scalars: exactly
-/// one payload group is set per block (the `_Mod`/row-based tags `0x04`–`0x0D`
-/// surface as an opaque envelope). `moduleHash` is the owner body's stored hash
-/// as uppercase hex — SHA-256 (64 chars) in R1, SHA-384 (96 chars) in R2.
+/// chain, describing the module that `.met` accompanies. Raw scalars. The
+/// row-based tags `0x04`–`0x0D` each get their own payload (`sharedLibrary` …
+/// `userInfo`); `0x01` Init Script and unknown tags surface as an opaque
+/// envelope only. `moduleHash` is the owner body's stored hash as uppercase
+/// hex — SHA-256 (64 chars) in R1, SHA-384 (96 chars) in R2.
 public struct ModuleAttributesExtension: Codable, Sendable, Equatable {
     public var compression: Int      // 0 None, 1 Huffman, 2 LZMA (R1 & R2)
     public var encryption: Int       // R1: 0 None, 1 AES-CBC; R2: 0 None, 1 AES-ECB, 2 AES-CTR
@@ -366,6 +391,270 @@ public struct ModuleAttributesExtension: Codable, Sendable, Equatable {
         self.deviceID = deviceID
         self.vendorID = vendorID
         self.moduleHash = moduleHash
+    }
+}
+
+/// Tag `0x04` Shared Library Attributes (`CSE_Ext_04`) — a header-only block
+/// (0x1C): it has no `_Mod` rows. Raw scalars, exactly as upstream prints them.
+public struct SharedLibraryExtension: Codable, Sendable, Equatable {
+    public var contextSize: Int              // u32 @ 0x08
+    public var totalAllocatedVirtSpace: Int  // u32 @ 0x0C
+    public var codeBaseAddress: Int          // u32 @ 0x10
+    public var tlsSize: Int                  // u32 @ 0x14
+    public var reserved: Int                 // u32 @ 0x18
+
+    public init(contextSize: Int, totalAllocatedVirtSpace: Int,
+                codeBaseAddress: Int, tlsSize: Int, reserved: Int) {
+        self.contextSize = contextSize
+        self.totalAllocatedVirtSpace = totalAllocatedVirtSpace
+        self.codeBaseAddress = codeBaseAddress
+        self.tlsSize = tlsSize
+        self.reserved = reserved
+    }
+}
+
+/// Tag `0x05` Process Attributes (`CSE_Ext_05`, 0x44 header) — the block that
+/// opens almost every `.met` chain and describes the process the module belongs
+/// to. `Flags` u32 @0x08 is split into the seven 1-bit capabilities of
+/// `CSE_Ext_05_Flags` (FaultTolerant … PublicNotifyReceiver, little-endian
+/// bit0..6) plus the 25-bit reserved word; the remaining fields are the raw
+/// process scalars (`AllowedSysCalls` kept as three raw u32). `rows` are the
+/// trailing `CSE_Ext_05_Mod` PROCESS_GROUP_ID entries (u16 each).
+public struct ProcessAttributesExtension: Codable, Sendable, Equatable {
+    public var faultTolerant: Bool                // Flags bit 0
+    public var permanentProcess: Bool             // bit 1
+    public var singleInstance: Bool               // bit 2
+    public var trustedSendReceiveSender: Bool     // bit 3
+    public var trustedNotifySender: Bool          // bit 4
+    public var publicSendReceiveReceiver: Bool    // bit 5
+    public var publicNotifyReceiver: Bool         // bit 6
+    public var flagsReserved: Int                 // bits 7–31
+    public var mainThreadID: Int                  // u32 @ 0x0C
+    public var codeBaseAddress: Int               // u32 @ 0x10
+    public var codeSizeUncompressed: Int          // u32 @ 0x14
+    public var cm0HeapSize: Int                   // u32 @ 0x18
+    public var bssSize: Int                       // u32 @ 0x1C
+    public var defaultHeapSize: Int               // u32 @ 0x20
+    public var mainThreadEntry: Int               // u32 @ 0x24
+    public var allowedSysCalls: [Int]             // AllowedSysCalls u32[3] @ 0x28
+    public var userID: Int                        // u16 @ 0x34
+    public var rows: [ProcessGroupIDRow]
+
+    public init(faultTolerant: Bool, permanentProcess: Bool,
+                singleInstance: Bool, trustedSendReceiveSender: Bool,
+                trustedNotifySender: Bool, publicSendReceiveReceiver: Bool,
+                publicNotifyReceiver: Bool, flagsReserved: Int,
+                mainThreadID: Int, codeBaseAddress: Int,
+                codeSizeUncompressed: Int, cm0HeapSize: Int, bssSize: Int,
+                defaultHeapSize: Int, mainThreadEntry: Int,
+                allowedSysCalls: [Int], userID: Int, rows: [ProcessGroupIDRow]) {
+        self.faultTolerant = faultTolerant
+        self.permanentProcess = permanentProcess
+        self.singleInstance = singleInstance
+        self.trustedSendReceiveSender = trustedSendReceiveSender
+        self.trustedNotifySender = trustedNotifySender
+        self.publicSendReceiveReceiver = publicSendReceiveReceiver
+        self.publicNotifyReceiver = publicNotifyReceiver
+        self.flagsReserved = flagsReserved
+        self.mainThreadID = mainThreadID
+        self.codeBaseAddress = codeBaseAddress
+        self.codeSizeUncompressed = codeSizeUncompressed
+        self.cm0HeapSize = cm0HeapSize
+        self.bssSize = bssSize
+        self.defaultHeapSize = defaultHeapSize
+        self.mainThreadEntry = mainThreadEntry
+        self.allowedSysCalls = allowedSysCalls
+        self.userID = userID
+        self.rows = rows
+    }
+}
+
+/// One `CSE_Ext_05_Mod` PROCESS_GROUP_ID row (u16, stride 0x02).
+public struct ProcessGroupIDRow: Codable, Sendable, Equatable, Identifiable {
+    public var id: Int
+    public var groupID: Int
+
+    public init(id: Int, groupID: Int) {
+        self.id = id
+        self.groupID = groupID
+    }
+}
+
+/// Tag `0x06` Thread Attributes (`CSE_Ext_06`, 0x08 header) — one block per `.met`
+/// whose `rows` (each `CSE_Ext_06_Mod`, stride 0x10) are the module's threads.
+/// `flags`/`schedulingPolicy` stay raw (the FlagsType bit0 / PolicyFixedPriority
+/// bit0 label mapping is a display concern).
+public struct ThreadAttributesExtension: Codable, Sendable, Equatable {
+    public var rows: [ThreadRow]
+
+    public init(rows: [ThreadRow]) {
+        self.rows = rows
+    }
+}
+
+/// One `CSE_Ext_06_Mod` thread row.
+public struct ThreadRow: Codable, Sendable, Equatable, Identifiable {
+    public var id: Int
+    public var stackSize: Int            // u32 @ 0x00
+    public var flags: Int                // u32 @ 0x04
+    public var schedulingPolicy: Int     // SchedulPolicy u32 @ 0x08
+    public var reserved: Int             // u32 @ 0x0C
+
+    public init(id: Int, stackSize: Int, flags: Int, schedulingPolicy: Int,
+                reserved: Int) {
+        self.id = id
+        self.stackSize = stackSize
+        self.flags = flags
+        self.schedulingPolicy = schedulingPolicy
+        self.reserved = reserved
+    }
+}
+
+/// Tag `0x07` Device Types (`CSE_Ext_07`, 0x08 header) — the module's devices,
+/// one `CSE_Ext_07_Mod` row (DeviceID + Reserved, stride 0x08) per device. (The
+/// 4-byte `_Mod_R2` row is GSC/OROM-100 only — outside this engine slice.)
+public struct DeviceTypesExtension: Codable, Sendable, Equatable {
+    public var rows: [DeviceRow]
+
+    public init(rows: [DeviceRow]) {
+        self.rows = rows
+    }
+}
+
+/// One `CSE_Ext_07_Mod` device row.
+public struct DeviceRow: Codable, Sendable, Equatable, Identifiable {
+    public var id: Int
+    public var deviceID: Int            // u32 @ 0x00
+    public var reserved: Int            // u32 @ 0x04
+
+    public init(id: Int, deviceID: Int, reserved: Int) {
+        self.id = id
+        self.deviceID = deviceID
+        self.reserved = reserved
+    }
+}
+
+/// Tag `0x08` MMIO Ranges (`CSE_Ext_08`, 0x08 header) — the module's mapped
+/// MMIO regions, one `CSE_Ext_08_Mod` row (stride 0x0C) per range. `flags` is
+/// the raw MmioAccess value (upstream prints 0 N/A / 1 RO / 2 WO / 3 RW).
+public struct MmioRangesExtension: Codable, Sendable, Equatable {
+    public var rows: [MmioRangeRow]
+
+    public init(rows: [MmioRangeRow]) {
+        self.rows = rows
+    }
+}
+
+/// One `CSE_Ext_08_Mod` MMIO range row.
+public struct MmioRangeRow: Codable, Sendable, Equatable, Identifiable {
+    public var id: Int
+    public var baseAddress: Int         // u32 @ 0x00
+    public var sizeLimit: Int           // u32 @ 0x04
+    public var flags: Int               // MmioAccess u32 @ 0x08
+
+    public init(id: Int, baseAddress: Int, sizeLimit: Int, flags: Int) {
+        self.id = id
+        self.baseAddress = baseAddress
+        self.sizeLimit = sizeLimit
+        self.flags = flags
+    }
+}
+
+/// Tag `0x09` Special File Producer (`CSE_Ext_09`, 0x0C header) — a char-device
+/// producer whose `rows` (each `CSE_Ext_09_Mod` SPECIAL_FILE_DEF, stride 0x18)
+/// name the special files it exposes. `name` is the NUL-padded char[12].
+public struct SpecialFilesExtension: Codable, Sendable, Equatable {
+    public var majorNumber: Int         // u16 @ 0x08
+    public var flags: Int               // u16 @ 0x0A (unknown/unused)
+    public var rows: [SpecialFileRow]
+
+    public init(majorNumber: Int, flags: Int, rows: [SpecialFileRow]) {
+        self.majorNumber = majorNumber
+        self.flags = flags
+        self.rows = rows
+    }
+}
+
+/// One `CSE_Ext_09_Mod` special-file definition row.
+public struct SpecialFileRow: Codable, Sendable, Equatable, Identifiable {
+    public var id: Int
+    public var name: String             // char[12] @ 0x00
+    public var accessMode: Int          // u16 @ 0x0C
+    public var userID: Int              // u16 @ 0x0E
+    public var groupID: Int             // u16 @ 0x10
+    public var minorNumber: Int         // u8 @ 0x12
+    public var reserved0: Int           // u8 @ 0x13
+    public var reserved1: Int           // u32 @ 0x14
+
+    public init(id: Int, name: String, accessMode: Int, userID: Int, groupID: Int,
+                minorNumber: Int, reserved0: Int, reserved1: Int) {
+        self.id = id
+        self.name = name
+        self.accessMode = accessMode
+        self.userID = userID
+        self.groupID = groupID
+        self.minorNumber = minorNumber
+        self.reserved0 = reserved0
+        self.reserved1 = reserved1
+    }
+}
+
+/// Tag `0x0B` Locked Ranges (`CSE_Ext_0B`, 0x08 header) — regions locked out of
+/// access, one `CSE_Ext_0B_Mod` row (stride 0x08) per range.
+public struct LockedRangesExtension: Codable, Sendable, Equatable {
+    public var rows: [LockedRangeRow]
+
+    public init(rows: [LockedRangeRow]) {
+        self.rows = rows
+    }
+}
+
+/// One `CSE_Ext_0B_Mod` locked-range row.
+public struct LockedRangeRow: Codable, Sendable, Equatable, Identifiable {
+    public var id: Int
+    public var rangeBase: Int           // u32 @ 0x00
+    public var rangeSize: Int           // u32 @ 0x04
+
+    public init(id: Int, rangeBase: Int, rangeSize: Int) {
+        self.id = id
+        self.rangeBase = rangeBase
+        self.rangeSize = rangeSize
+    }
+}
+
+/// Tag `0x0D` User Information (`CSE_Ext_0D`, 0x08 header) — NV/RAM storage
+/// quotas per user. Rows are `CSE_Ext_0D_Mod` (R1, stride 0x34, with a char[36]
+/// `workingDirectory`) for the base family and `CSE_Ext_0D_Mod_R2` (stride 0x10,
+/// no working directory) for CSME 12/15 — the engine's `_R2` families. Quota
+/// fields are raw u32; `wopQuota` is the wear-out-prevention quota.
+public struct UserInfoExtension: Codable, Sendable, Equatable {
+    public var rows: [UserInfoRow]
+
+    public init(rows: [UserInfoRow]) {
+        self.rows = rows
+    }
+}
+
+/// One `CSE_Ext_0D_Mod` / `_Mod_R2` user-information row. `workingDirectory` is
+/// set only on the R1 row (which this engine's families never reach).
+public struct UserInfoRow: Codable, Sendable, Equatable, Identifiable {
+    public var id: Int
+    public var userID: Int              // u16 @ 0x00
+    public var reserved: Int            // u16 @ 0x02
+    public var nvStorageQuota: Int      // u32 @ 0x04
+    public var ramStorageQuota: Int     // u32 @ 0x08
+    public var wopQuota: Int            // u32 @ 0x0C
+    public var workingDirectory: String?  // char[36] @ 0x10 (R1 only)
+
+    public init(id: Int, userID: Int, reserved: Int, nvStorageQuota: Int,
+                ramStorageQuota: Int, wopQuota: Int, workingDirectory: String?) {
+        self.id = id
+        self.userID = userID
+        self.reserved = reserved
+        self.nvStorageQuota = nvStorageQuota
+        self.ramStorageQuota = ramStorageQuota
+        self.wopQuota = wopQuota
+        self.workingDirectory = workingDirectory
     }
 }
 
@@ -900,5 +1189,5 @@ public struct Issue: Codable, Sendable, Equatable, Identifiable {
 /// whether to surface the new data (`reference/result-model.md` §Versioning).
 public enum EngineModelRevision {
     /// Current revision of the `FirmwareAnalysis` shape.
-    public static let current = 14
+    public static let current = 15
 }

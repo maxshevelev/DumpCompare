@@ -84,7 +84,7 @@ final class FirmwareAnalysisModelTests: XCTestCase {
     }
 
     func testEngineModelRevisionBumpsWithAdditiveChanges() {
-        XCTAssertEqual(EngineModelRevision.current, 14)
+        XCTAssertEqual(EngineModelRevision.current, 15)
     }
 }
 
@@ -292,7 +292,13 @@ final class AnalyzerTests: XCTestCase {
         XCTAssertEqual(attrs.deviceID, 2)
         XCTAssertEqual(attrs.vendorID, 0x8086)
         XCTAssertEqual(attrs.moduleHash.count, 96)                 // csme15 → SHA-384
-        XCTAssertNil(exts[1].moduleAttributes)                     // 0x09 row-tag: envelope
+        XCTAssertNil(exts[1].moduleAttributes)                     // 0x09 ≠ 0x0A
+        // The 0x09 special-file producer decoded its header + a blank row (the
+        // fixture block's 0x18 tail is all zeros → one empty-name definition).
+        let sf = try XCTUnwrap(exts[1].specialFiles)
+        XCTAssertEqual(sf.majorNumber, 0)
+        XCTAssertEqual(sf.rows.count, 1)
+        XCTAssertEqual(sf.rows[0].name, "")
         XCTAssertEqual(exts[1].size, 0x24)
         XCTAssertEqual(cp.checksumValid, true)                     // directory stayed intact
     }

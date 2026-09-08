@@ -150,6 +150,132 @@ enum ExtFixture {
         ramp(0x18..<(0x18 + hashLen), &b)            // Hash
         return b
     }
+
+    /// `CSE_Ext_05` Process Attributes (0x44 header + u16 group-id rows). A
+    /// two-group module: Flags 0x78 (bits 3–6 set), MainThreadID 0x3000300,
+    /// code 0x39000 / 0x2C45A, heaps 0x6280/0x22000, entry 0x39066, UID 0, and
+    /// the two row GroupIDs 0x0008 / 0x000F (the real bup.met first rows).
+    static func processAttributes(groupIDs: [UInt16]) -> Data {
+        var b = block(tag: 0x05, headerLen: 0x44, tail: groupIDs.count * 2)
+        wU32(0x0000_0078, 0x08, &b)                  // Flags
+        wU32(0x0300_0300, 0x0C, &b)                  // MainThreadID
+        wU32(0x0003_9000, 0x10, &b)                  // CodeBaseAddress
+        wU32(0x0002_C45A, 0x14, &b)                  // CodeSizeUncomp
+        wU32(0, 0x18, &b)                            // CM0HeapSize
+        wU32(0x0000_6280, 0x1C, &b)                  // BSSSize
+        wU32(0x0002_2000, 0x20, &b)                  // DefaultHeapSize
+        wU32(0x0003_9066, 0x24, &b)                  // MainThreadEntry
+        wU32(0x001F_C7FE, 0x28, &b)                  // AllowedSysCalls[0]
+        wU32(0x0000_0000, 0x2C, &b)                  // AllowedSysCalls[1]
+        wU32(0x0000_0000, 0x30, &b)                  // AllowedSysCalls[2]
+        wU16(0, 0x34, &b)                            // UserID
+        for (i, gid) in groupIDs.enumerated() {
+            wU16(gid, 0x44 + i * 2, &b)              // _Mod GroupID
+        }
+        return b
+    }
+
+    /// `CSE_Ext_06` Thread Attributes (0x08 header + 0x10 thread rows). Two
+    /// threads with the real bup.met profile: stack 0x2000, Flags 0x1
+    /// (FlagsType Live), scheduling policy 0, reserved 0.
+    static func threadAttributes(count: Int) -> Data {
+        var b = block(tag: 0x06, headerLen: 0x08, tail: count * 0x10)
+        for i in 0..<count {
+            let r = 0x08 + i * 0x10
+            wU32(0x2000, r + 0x00, &b)               // StackSize
+            wU32(0x0000_0001, r + 0x04, &b)          // Flags
+            wU32(0, r + 0x08, &b)                    // SchedulPolicy
+            wU32(0, r + 0x0C, &b)                    // Reserved
+        }
+        return b
+    }
+
+    /// `CSE_Ext_07` Device Types (0x08 header + 0x08 device rows): DeviceIDs
+    /// 0x00020000/0x00020008 (the real heci.met rows), Reserved 0.
+    static func deviceTypes() -> Data {
+        var b = block(tag: 0x07, headerLen: 0x08, tail: 2 * 0x08)
+        wU32(0x0002_0000, 0x08, &b)
+        wU32(0, 0x0C, &b)
+        wU32(0x0002_0008, 0x10, &b)
+        wU32(0, 0x14, &b)
+        return b
+    }
+
+    /// `CSE_Ext_08` MMIO Ranges (0x08 header + 0x0C range rows). Three ranges
+    /// echoing the real bup.met: 0xF7000000/0x400000 RW, 0xF00B4000/0x1000 RW,
+    /// and a 0xF5038000 read-only (Flags 1).
+    static func mmioRanges() -> Data {
+        var b = block(tag: 0x08, headerLen: 0x08, tail: 3 * 0x0C)
+        wU32(0xF700_0000, 0x08, &b); wU32(0x0040_0000, 0x0C, &b); wU32(0x3, 0x10, &b)
+        wU32(0xF00B_4000, 0x14, &b); wU32(0x0000_1000, 0x18, &b); wU32(0x3, 0x1C, &b)
+        wU32(0xF503_8000, 0x20, &b); wU32(0x0000_1000, 0x24, &b); wU32(0x1, 0x28, &b)
+        return b
+    }
+
+    /// `CSE_Ext_09` Special File Producer (0x0C header + 0x18 definition rows):
+    /// major 30, then a `heci1`-style row (name `heci1`, access 0x1F0, uid 0x2F,
+    /// gid 0x5, minor 0).
+    static func specialFiles() -> Data {
+        var b = block(tag: 0x09, headerLen: 0x0C, tail: 0x18)
+        wU16(30, 0x08, &b)                           // MajorNumber
+        wU16(0, 0x0A, &b)                            // Flags
+        for (j, byte) in "heci1".utf8.prefix(12).enumerated() {
+            b[0x0C + j] = byte
+        }                                            // Name char[12]
+        wU16(0x1F0, 0x0C + 0x0C, &b)                 // AccessMode
+        wU16(0x2F, 0x0C + 0x0E, &b)                  // UserID
+        wU16(0x05, 0x0C + 0x10, &b)                  // GroupID
+        wU8(0, 0x0C + 0x12, &b)                      // MinorNumber
+        wU8(0, 0x0C + 0x13, &b)                      // Reserved0
+        wU32(0, 0x0C + 0x14, &b)                     // Reserved1
+        return b
+    }
+
+    /// `CSE_Ext_0B` Locked Ranges (0x08 header + 0x08 rows): one range
+    /// base 0x9008 / size 0 (the real syslib.met row).
+    static func lockedRanges() -> Data {
+        var b = block(tag: 0x0B, headerLen: 0x08, tail: 0x08)
+        wU32(0x9008, 0x08, &b)
+        wU32(0, 0x0C, &b)
+        return b
+    }
+
+    /// `CSE_Ext_0D` User Information (0x08 header + `_Mod_R2` 0x10 rows when
+    /// `r2`, else `_Mod` 0x34 rows with a WorkingDir): the two real vfs.met
+    /// first rows (uid 0x94 / 0x3, nv/ram/wop 0x2000 and 0x850/0x6000/0x850).
+    static func userInfo(r2: Bool) -> Data {
+        let stride = r2 ? 0x10 : 0x34
+        var b = block(tag: 0x0D, headerLen: 0x08, tail: stride * 2)
+        func row(_ i: Int, _ uid: UInt16, _ nv: UInt32, _ ram: UInt32, _ wop: UInt32,
+                 _ dir: String) {
+            let r = 0x08 + i * stride
+            wU16(uid, r + 0x00, &b)
+            wU16(0, r + 0x02, &b)
+            wU32(nv, r + 0x04, &b)
+            wU32(ram, r + 0x08, &b)
+            wU32(wop, r + 0x0C, &b)
+            // `_Mod_R2` rows (stride 0x10) carry no WorkingDir — only base `_Mod`
+            // (0x34) rows do, at +0x10 over 36 bytes.
+            if !r2 {
+                for (j, byte) in dir.utf8.prefix(36).enumerated() { b[r + 0x10 + j] = byte }
+            }
+        }
+        row(0, 0x0094, 0x2000, 0x2000, 0x2000, "/sys")
+        row(1, 0x0003, 0x850, 0x6000, 0x850, "/tmp")
+        return b
+    }
+
+    /// `CSE_Ext_04` Shared Library Attributes (0x1C, header-only): the real
+    /// syslib.met block (ctx 0x268, virt 0x30000, reserved all-ones).
+    static func sharedLibrary() -> Data {
+        var b = block(tag: 0x04, headerLen: 0x1C)
+        wU32(0x268, 0x08, &b)                        // ContextSize
+        wU32(0x3_0000, 0x0C, &b)                     // TotAlocVirtSpc
+        wU32(0, 0x10, &b)                            // CodeBaseAddress
+        wU32(0, 0x14, &b)                            // TLSSize
+        wU32(0xFFFF_FFFF, 0x18, &b)                  // Reserved
+        return b
+    }
 }
 
 final class ExtensionWalkerTests: XCTestCase {
@@ -323,6 +449,118 @@ final class ExtensionWalkerTests: XCTestCase {
         XCTAssertEqual(exts[0].systemInfo?.imageHash.count, 64)  // 0x00 stays R1
         XCTAssertEqual(exts[1].signedPackage?.fwType, 3)          // 0x0F → _R2
         XCTAssertEqual(exts[2].partitionInfo?.hash.count, 64)     // 0x16 stays R1
+    }
+
+    // MARK: - `.met` row-bearing tags (0x04–0x0D)
+
+    func testProcessAttributesDecodesHeaderAndGroupRows() {
+        // bup.met's real block: Flags 0x78 → Trusted send/receive + public
+        // receivers set, single GroupID row 0x0008.
+        let exts = decode([ExtFixture.processAttributes(groupIDs: [0x0008])],
+                          family: .csme12)
+
+        let p = try! XCTUnwrap(exts.first?.processAttributes)
+        XCTAssertFalse(p.faultTolerant)
+        XCTAssertFalse(p.permanentProcess)
+        XCTAssertFalse(p.singleInstance)
+        XCTAssertTrue(p.trustedSendReceiveSender)
+        XCTAssertTrue(p.trustedNotifySender)
+        XCTAssertTrue(p.publicSendReceiveReceiver)
+        XCTAssertTrue(p.publicNotifyReceiver)
+        XCTAssertEqual(p.flagsReserved, 0)
+        XCTAssertEqual(p.mainThreadID, 0x0300_0300)
+        XCTAssertEqual(p.codeBaseAddress, 0x39000)
+        XCTAssertEqual(p.codeSizeUncompressed, 0x2C45A)
+        XCTAssertEqual(p.cm0HeapSize, 0)
+        XCTAssertEqual(p.bssSize, 0x6280)
+        XCTAssertEqual(p.defaultHeapSize, 0x22000)
+        XCTAssertEqual(p.mainThreadEntry, 0x39066)
+        XCTAssertEqual(p.allowedSysCalls, [0x1F_C7FE, 0, 0])
+        XCTAssertEqual(p.userID, 0)
+        XCTAssertEqual(p.rows.map(\.groupID), [0x0008])
+        // Envelope Size covers header + the single u16 row.
+        XCTAssertEqual(exts.first?.size, 0x46)
+    }
+
+    func testThreadDeviceMmioLockedBlocksDecodeRows() {
+        let exts = decode([
+            ExtFixture.threadAttributes(count: 3),
+            ExtFixture.deviceTypes(),
+            ExtFixture.mmioRanges(),
+            ExtFixture.lockedRanges(),
+        ], family: .csme12)
+
+        XCTAssertEqual(exts.count, 4)
+        XCTAssertEqual(exts.map(\.tag), [0x06, 0x07, 0x08, 0x0B])
+
+        let threads = try! XCTUnwrap(exts[0].threadAttributes)
+        XCTAssertEqual(threads.rows.count, 3)
+        XCTAssertEqual(threads.rows[0].stackSize, 0x2000)
+        XCTAssertEqual(threads.rows[0].flags, 1)         // FlagsType Live
+        XCTAssertEqual(threads.rows[0].schedulingPolicy, 0)
+        XCTAssertEqual(threads.rows.map(\.id), [0, 1, 2])
+        XCTAssertEqual(exts[0].size, 0x08 + 3 * 0x10)
+
+        let devices = try! XCTUnwrap(exts[1].deviceTypes)
+        XCTAssertEqual(devices.rows.map(\.deviceID), [0x0002_0000, 0x0002_0008])
+        XCTAssertEqual(devices.rows.map(\.reserved), [0, 0])
+
+        let mmio = try! XCTUnwrap(exts[2].mmioRanges)
+        XCTAssertEqual(mmio.rows.count, 3)
+        XCTAssertEqual(mmio.rows[0].baseAddress, 0xF700_0000)
+        XCTAssertEqual(mmio.rows[0].sizeLimit, 0x0040_0000)
+        XCTAssertEqual(mmio.rows[0].flags, 0x3)          // Read & Write
+        XCTAssertEqual(mmio.rows[2].flags, 0x1)          // Read Only
+
+        let locked = try! XCTUnwrap(exts[3].lockedRanges)
+        XCTAssertEqual(locked.rows.map(\.rangeBase), [0x9008])
+        XCTAssertEqual(locked.rows.map(\.rangeSize), [0])
+    }
+
+    func testSpecialFilesDecodesHeaderAndNamedRows() {
+        let exts = decode([ExtFixture.specialFiles()], family: .csme12)
+
+        let sf = try! XCTUnwrap(exts.first?.specialFiles)
+        XCTAssertEqual(sf.majorNumber, 30)
+        XCTAssertEqual(sf.flags, 0)
+        XCTAssertEqual(sf.rows.count, 1)
+        let row = try! XCTUnwrap(sf.rows.first)
+        XCTAssertEqual(row.name, "heci1")                // NUL-trimmed char[12]
+        XCTAssertEqual(row.accessMode, 0x1F0)
+        XCTAssertEqual(row.userID, 0x2F)
+        XCTAssertEqual(row.groupID, 0x05)
+        XCTAssertEqual(row.minorNumber, 0)
+        XCTAssertEqual(exts.first?.size, 0x0C + 0x18)
+    }
+
+    func testSharedLibraryHeaderOnlyDecodes() {
+        let exts = decode([ExtFixture.sharedLibrary()], family: .csme12)
+
+        let sl = try! XCTUnwrap(exts.first?.sharedLibrary)
+        XCTAssertEqual(sl.contextSize, 0x268)
+        XCTAssertEqual(sl.totalAllocatedVirtSpace, 0x3_0000)
+        XCTAssertEqual(sl.reserved, 0xFFFF_FFFF)
+        XCTAssertNil(exts.first?.userInfo)
+    }
+
+    func testUserInfoRowsUseFamilyRevision() {
+        // CSME 12/15 revise 0x0D `_Mod` → `_Mod_R2` (0x10 stride, no WorkingDir).
+        let exts12 = decode([ExtFixture.userInfo(r2: true)], family: .csme12)
+        let ui = try! XCTUnwrap(exts12.first?.userInfo)
+        XCTAssertEqual(ui.rows.count, 2)
+        XCTAssertEqual(ui.rows[0].userID, 0x0094)
+        XCTAssertEqual(ui.rows[0].nvStorageQuota, 0x2000)
+        XCTAssertEqual(ui.rows[0].ramStorageQuota, 0x2000)
+        XCTAssertEqual(ui.rows[0].wopQuota, 0x2000)
+        XCTAssertNil(ui.rows[0].workingDirectory)        // R2 row has no dir
+        XCTAssertEqual(exts12.first?.size, 0x08 + 2 * 0x10)
+
+        // The base family keeps `CSE_Ext_0D_Mod` (0x34 stride + WorkingDir).
+        let extsBase = decode([ExtFixture.userInfo(r2: false)], family: .base)
+        let base = try! XCTUnwrap(extsBase.first?.userInfo)
+        XCTAssertEqual(base.rows.count, 2)
+        XCTAssertEqual(base.rows[0].workingDirectory, "/sys")
+        XCTAssertEqual(extsBase.first?.size, 0x08 + 2 * 0x34)
     }
 
     func testInitScriptAndUnknownTagsAreOpaque() {
