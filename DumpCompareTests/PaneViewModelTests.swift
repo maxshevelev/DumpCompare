@@ -502,6 +502,39 @@ final class PaneViewModelTests: XCTestCase {
         XCTAssertEqual(pane.hexByteStates(in: 0..<1)[0].byte, 0x02)
     }
 
+    /// A revert discards the bytes the user typed, not the place they were
+    /// reading: the caret stays where it was instead of jumping to offset 0
+    /// (which would drag the viewport to the top of the file).
+    func testRevertKeepsTheCaretWhereItWas() throws {
+        let (pane, url) = try openPane([UInt8](repeating: 0xAB, count: 0x100))
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.moveCaret(to: 0x90)
+        pane.typeASCII(0x41)                       // overwrite byte 0x90, caret → 0x91
+        XCTAssertEqual(pane.caretOffset, 0x91)
+        XCTAssertEqual(pane.hexByteStates(in: 0x90..<0x91)[0].byte, 0x41)
+
+        try pane.revert()
+
+        XCTAssertEqual(pane.hexByteStates(in: 0x90..<0x91)[0].byte, 0xAB, "the edit is gone")
+        XCTAssertEqual(pane.caretOffset, 0x91, "the caret must survive the revert")
+    }
+
+    /// A revert back to a shorter saved file clamps the preserved caret to the
+    /// new end — an offset the saved file no longer has cannot be kept.
+    func testRevertClampsTheCaretToTheSavedEnd() throws {
+        let (pane, url) = try openPane([0xAA])
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.moveCaret(to: 1)
+        try pane.pasteWrite([0xBB, 0xCC])          // grow to three bytes, caret at end
+        XCTAssertEqual(pane.fileSize, 3)
+        XCTAssertEqual(pane.caretOffset, 3)
+
+        try pane.revert()
+
+        XCTAssertEqual(pane.fileSize, 1, "the saved file is one byte again")
+        XCTAssertEqual(pane.caretOffset, 1, "the caret clamps to the saved end, not to 0")
+    }
+
     func testModifiedByteDetection() throws {
         let (pane, url) = try openPane([0x00, 0x11, 0x22])
         defer { try? FileManager.default.removeItem(at: url) }

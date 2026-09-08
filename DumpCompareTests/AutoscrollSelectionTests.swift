@@ -293,4 +293,45 @@ final class AutoscrollSelectionTests: XCTestCase {
         XCTAssertEqual(pane.hexSelection().end, 4096, "the selection must settle at EOF")
         hexView.mouseUp(with: mouse(.leftMouseUp, at: below, window: window))
     }
+
+    // MARK: - Revert to Saved keeps the viewport put
+
+    /// Revert to Saved must not fling the user to the top of the file: the
+    /// reload re-reads the bytes, but the viewport stays where it was scrolled,
+    /// because the caret (restored to its pre-revert place, which is on-screen)
+    /// has nothing to reveal.
+    func testRevertKeepsTheViewportScrolledWhereItWas() throws {
+        let (_, pane, hexView, window, url) = try makePane([UInt8](repeating: 0xAB, count: 0x4000))
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let clip = scroll(hexView).contentView
+        let layout = hexView.hexLayout
+        // Scroll to the middle of the document, well away from both edges.
+        let maxScroll = max(0, hexView.hexContentHeight - clip.bounds.height)
+        clip.setBoundsOrigin(NSPoint(x: 0, y: maxScroll / 2))
+        scroll(hexView).reflectScrolledClipView(clip)
+        XCTAssertGreaterThan(clip.bounds.origin.y, 0, "precondition: the pane is scrolled down")
+        XCTAssertLessThan(clip.bounds.origin.y, maxScroll, "precondition: not pinned to the bottom")
+
+        // Put the caret on a byte that the scrolled viewport is actually showing.
+        let topRow = Int(clip.bounds.minY / layout.rowHeight)
+        let caretRow = topRow + 3
+        let caret = UInt64(caretRow) * 16
+        pane.setSelection(SelectionModel.empty(at: caret, fileSize: UInt64(0x4000)))
+
+        // Dirty the file at that byte, then revert it.
+        pane.typeASCII(0x41)
+        let caretAfterTyping = pane.caretOffset
+        let originBeforeRevert = clip.bounds.origin.y
+        try pane.revert()
+
+        XCTAssertEqual(pane.hexSelection().start, caretAfterTyping,
+                       "the caret comes back where the user left it")
+        XCTAssertEqual(clip.bounds.origin.y, originBeforeRevert,
+                       "the revert must not scroll the viewport to the top")
+        XCTAssertEqual(clip.bounds.origin.y, maxScroll / 2,
+                       "the viewport stays at exactly the scrolled position")
+        XCTAssertEqual(pane.hexByteStates(in: caretAfterTyping..<caretAfterTyping + 1)[0].byte,
+                       0xAB, "the reverted byte is back on disk")
+    }
 }
