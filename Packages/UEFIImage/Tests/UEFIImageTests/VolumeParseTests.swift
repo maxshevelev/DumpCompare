@@ -101,15 +101,27 @@ final class VolumeParseTests: XCTestCase {
         XCTAssertEqual(parsed.diagnostics.map(\.kind), [.truncated(.volumeBody)])
     }
 
-    /// An NVRAM store is a volume by header and not by content. Its bytes are
-    /// kept whole rather than read as files (§3.4).
-    func testAnUnknownFileSystemKeepsItsBodyWhole() {
+    /// An NVRAM store volume is read as a run of stores, not as files (§9). An
+    /// all-erased one has no stores, so its body is one run of free space — and
+    /// it is not an unknown file system.
+    func testAnErasedNvramVolumeReadsAsFreeSpace() {
         let nvram = KnownGUIDs.guid("FFF12B8D-7696-4C8B-A985-2747075B4F50")
         let parsed = parse(TestImage.volume(fileSystem: nvram, length: 0x400))
 
         XCTAssertEqual(parsed.roots.map(\.name), ["NVRAM store"])
+        XCTAssertEqual(parsed.roots[0].children.map(\.kind), [.freeSpace])
+        XCTAssertEqual(parsed.roots[0].children.map(\.range), [0x48..<0x400])
+        XCTAssertTrue(parsed.diagnostics.isEmpty)
+    }
+
+    /// A volume whose file system is not one we parse keeps its body whole and
+    /// says so (§3.4) — the NVRAM store GUIDs no longer land here.
+    func testAGenuinelyUnknownFileSystemKeepsItsBodyWhole() {
+        let unknown = KnownGUIDs.guid("11111111-2222-3333-4444-555555555555")
+        let parsed = parse(TestImage.volume(fileSystem: unknown, length: 0x400))
+
         XCTAssertTrue(parsed.roots[0].children.isEmpty)
-        XCTAssertEqual(parsed.diagnostics.map(\.kind), [.unknownFileSystem(nvram)])
+        XCTAssertEqual(parsed.diagnostics.map(\.kind), [.unknownFileSystem(unknown)])
     }
 
     func testARevisionOutsideOneAndTwoIsNotAVolume() {

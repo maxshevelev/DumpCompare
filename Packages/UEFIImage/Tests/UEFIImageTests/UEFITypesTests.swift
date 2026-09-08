@@ -90,6 +90,20 @@ final class UEFIItemClassificationTests: XCTestCase {
         XCTAssertEqual(node(.file).uefiItemType, UEFITypes.Item.file.rawValue)
         XCTAssertEqual(node(.section).uefiItemType, UEFITypes.Item.section.rawValue)
         XCTAssertEqual(node(.microcode).uefiItemType, UEFITypes.Item.intelMicrocode.rawValue)
+        // The NVRAM stores and entries each read as their own item type.
+        XCTAssertEqual(node(.vssStore).uefiItemType, UEFITypes.Item.vssStore.rawValue)
+        XCTAssertEqual(node(.vss2Store).uefiItemType, UEFITypes.Item.vss2Store.rawValue)
+        XCTAssertEqual(node(.ftwStore).uefiItemType, UEFITypes.Item.ftwStore.rawValue)
+        XCTAssertEqual(node(.fdcStore).uefiItemType, UEFITypes.Item.fdcStore.rawValue)
+        XCTAssertEqual(node(.sysFStore).uefiItemType, UEFITypes.Item.sysFStore.rawValue)
+        XCTAssertEqual(node(.flashMapStore).uefiItemType, UEFITypes.Item.phoenixFlashMapStore.rawValue)
+        XCTAssertEqual(node(.evsaStore).uefiItemType, UEFITypes.Item.evsaStore.rawValue)
+        XCTAssertEqual(node(.cmdbStore).uefiItemType, UEFITypes.Item.cmdbStore.rawValue)
+        XCTAssertEqual(node(.slicData).uefiItemType, UEFITypes.Item.slicData.rawValue)
+        XCTAssertEqual(node(.vssEntry).uefiItemType, UEFITypes.Item.vssEntry.rawValue)
+        XCTAssertEqual(node(.sysFEntry).uefiItemType, UEFITypes.Item.sysFEntry.rawValue)
+        XCTAssertEqual(node(.evsaEntry).uefiItemType, UEFITypes.Item.evsaEntry.rawValue)
+        XCTAssertEqual(node(.flashMapEntry).uefiItemType, UEFITypes.Item.phoenixFlashMapEntry.rawValue)
         XCTAssertEqual(node(.padding).uefiItemType, UEFITypes.Item.padding.rawValue)
         XCTAssertEqual(node(.freeSpace).uefiItemType, UEFITypes.Item.freeSpace.rawValue)
         // Unclaimed data reads as a file, the way a raw region does.
@@ -138,6 +152,28 @@ final class UEFIItemClassificationTests: XCTestCase {
 
     func testAMicrocodeHasNoSubtype() {
         XCTAssertNil(node(.microcode).uefiItemSubtype)
+    }
+
+    /// A store is one kind and no more: no subtype on the store itself — the
+    /// entry subtypes live on the children.
+    func testAnNvramStoreHasNoSubtype() {
+        let stores: [UEFINodeKind] = [
+            .vssStore, .vss2Store, .ftwStore, .fdcStore,
+            .sysFStore, .flashMapStore, .evsaStore, .cmdbStore,
+        ]
+        for kind in stores {
+            XCTAssertNil(node(kind).uefiItemSubtype, "\(kind)")
+        }
+    }
+
+    /// An entry and a SLIC blob carry the subtype the parser derived, not a
+    /// byte read off the node.
+    func testAnNvramEntryKeepsItsDerivedSubtype() {
+        XCTAssertEqual(node(.vssEntry, subtype: UEFITypes.Sub.standardVssEntry).uefiItemSubtype, UEFITypes.Sub.standardVssEntry)
+        XCTAssertEqual(node(.sysFEntry, subtype: UEFITypes.Sub.normalSysFEntry).uefiItemSubtype, UEFITypes.Sub.normalSysFEntry)
+        XCTAssertEqual(node(.evsaEntry, subtype: UEFITypes.Sub.dataEvsaEntry).uefiItemSubtype, UEFITypes.Sub.dataEvsaEntry)
+        XCTAssertEqual(node(.flashMapEntry, subtype: UEFITypes.Sub.dataFlashMapEntry).uefiItemSubtype, UEFITypes.Sub.dataFlashMapEntry)
+        XCTAssertEqual(node(.slicData, subtype: UEFITypes.Sub.pubkeySlicData).uefiItemSubtype, UEFITypes.Sub.pubkeySlicData)
     }
 
     /// The parser says only whether a run is all the erase byte; an erased run
