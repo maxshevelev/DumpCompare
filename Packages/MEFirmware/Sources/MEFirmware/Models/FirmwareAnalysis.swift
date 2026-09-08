@@ -74,11 +74,51 @@ public struct FPTRegion: Codable, Sendable, Equatable, Identifiable {
     public var flags: UInt32
 }
 
-/// Facts parsed from a `$MN2`/`$MAN` manifest. Seed placeholder — populated by
-/// the $MN2/$CPD port (upstream-map "CSE manifest & partitions"), still an
-/// incremental step after bootstrap.
+/// Manifest structural revision (upstream `MN2_Manifest_R0`/`_R1`/`_R2`).
+/// `.unknown` is not produced by the parser (decode rejects what it cannot
+/// classify) — it exists so the additive model can represent future revisions.
+public enum ManifestFormat: String, Codable, Sendable, CaseIterable {
+    case r0, r1, r2, unknown
+}
+
+/// Facts parsed from the *operational* `$MN2`/`$MAN` manifest — the copy the
+/// engine identified against the database (see `ManifestSelection`). `offset` is
+/// the absolute position of the manifest struct base (region `baseOffset` +
+/// region-relative base), matching `FPTRegion.offset` semantics. `keyHash` /
+/// `signatureHash` are the uppercase SHA-256 hex digests that key MEA.dat rows.
 public struct ManifestSummary: Codable, Sendable, Equatable {
-    public init() {}
+    public var offset: Int
+    public var tag: String                 // "$MN2" or "$MAN"
+    public var format: ManifestFormat
+    public var major: Int
+    public var minor: Int
+    public var hotfix: Int
+    public var build: Int
+    public var svn: Int
+    public var day: Int
+    public var month: Int
+    public var year: Int
+    public var keyHash: String?            // SHA-256 of the RSA public key
+    public var signatureHash: String?      // SHA-256 of the RSA signature
+
+    public init(offset: Int, tag: String, format: ManifestFormat,
+                major: Int, minor: Int, hotfix: Int, build: Int, svn: Int,
+                day: Int, month: Int, year: Int,
+                keyHash: String?, signatureHash: String?) {
+        self.offset = offset
+        self.tag = tag
+        self.format = format
+        self.major = major
+        self.minor = minor
+        self.hotfix = hotfix
+        self.build = build
+        self.svn = svn
+        self.day = day
+        self.month = month
+        self.year = year
+        self.keyHash = keyHash
+        self.signatureHash = signatureHash
+    }
 }
 
 /// Code Partition Directory facts — `$CPD` entries, CSE extensions, module
@@ -107,5 +147,5 @@ public struct Issue: Codable, Sendable, Equatable, Identifiable {
 /// whether to surface the new data (`reference/result-model.md` §Versioning).
 public enum EngineModelRevision {
     /// Current revision of the `FirmwareAnalysis` shape.
-    public static let current = 1
+    public static let current = 2
 }

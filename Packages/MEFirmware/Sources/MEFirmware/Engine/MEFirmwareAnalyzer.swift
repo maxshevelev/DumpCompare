@@ -30,7 +30,30 @@ public actor MEFirmwareAnalyzer {
             FPTRegion(id: index, name: part.name,
                       offset: baseOffset + part.offset, size: part.size, flags: part.flags)
         }
-        let manifest = ManifestParser.parseFirst(in: region)
+        // A flash image carries many $MN2/$MAN copies (one per engine/IUP
+        // partition, plus recovery copies); identify the *operational* one — on
+        // CSME 12/15 the FTPR copy, not the RBEP recovery copy that comes first
+        // in file order (the phase-3 fix for the false "not in the database").
+        let candidates = ManifestParser.parseCandidates(in: region)
+        let manifest = ManifestSelection.selectOperational(candidates: candidates,
+                                                           fpt: fpt, in: region)
+        let manifestSummary = manifest.map { m -> ManifestSummary in
+            let format: ManifestFormat
+            switch m.format {
+            case .r0: format = .r0
+            case .r1: format = .r1
+            case .r2: format = .r2
+            }
+            return ManifestSummary(
+                offset: baseOffset + m.base,
+                tag: m.tag,
+                format: format,
+                major: m.major, minor: m.minor, hotfix: m.hotfix, build: m.build,
+                svn: m.svn, day: m.day, month: m.month, year: m.year,
+                keyHash: m.rsaPublicKey.map { Digest.sha256Hex($0) },
+                signatureHash: m.rsaSignature.map { Digest.sha256Hex($0) }
+            )
+        }
 
         var issues: [Issue] = []
         if fpt == nil {
@@ -47,7 +70,7 @@ public actor MEFirmwareAnalyzer {
                 securityVersion: nil, release: .unknown, type: .region,
                 sku: "", platform: "", manufactureDate: nil,
                 sizeBytes: region.count, databaseName: nil, rsaSignatureValid: nil,
-                checksums: nil, regions: regions, manifest: nil,
+                checksums: nil, regions: regions, manifest: manifestSummary,
                 codePartition: nil, issues: issues)
         }
 
@@ -84,14 +107,28 @@ public actor MEFirmwareAnalyzer {
             type: .region,
             sku: "",
             platform: "",
-            manufactureDate: nil,
+            manufactureDate: Self.manufactureDate(day: manifest.day,
+                                                  month: manifest.month,
+                                                  year: manifest.year),
             sizeBytes: region.count,
             databaseName: identity.databaseName,
             rsaSignatureValid: nil,
             checksums: nil,
             regions: regions,
-            manifest: nil,
+            manifest: manifestSummary,
             codePartition: nil,
             issues: issues)
+    }
+
+    /// Compose the manifest's Day/Month/Year into the top-level manufacture date
+    /// (Gregorian, UTC). Returns nil when the fields do not form a valid date.
+    private static func manufactureDate(day: Int, month: Int, year: Int) -> Date? {
+        var components = DateComponents()
+        components.calendar = Calendar(identifier: .gregorian)
+        components.timeZone = TimeZone(secondsFromGMT: 0)
+        components.year = year
+        components.month = month
+        components.day = day
+        return components.date
     }
 }

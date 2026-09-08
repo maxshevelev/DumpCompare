@@ -24,7 +24,7 @@ ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
 |---|---|---|---|
 | `man_pat` `$MN2`/`$MAN`, VEN `0x8086` | CSE/GSC/IUP manifest | `Layout/Manifest.swift` (anchor scan inside) | ported |
 | `bccb_pat` placeholder `$MN2` VEN `0xBCCB` | manifest placeholder | `Anchors.swift` | — |
-| `cpd_pat` `$CPD` | Code Partition Directory | `Anchors.swift` | — |
+| `cpd_pat` `$CPD` | Code Partition Directory | `Partition/CPD.swift` (scan inside) | ported |
 | `fpt_pat` `$FPT` | Flash Partition Table | `Layout/FPT.swift` (anchor scan inside) | ported |
 | `bpdt_pat` | Boot Partition Descriptor | IFWI layer / UEFI tree | — |
 | `orom_pat` PCIR | GSC Option ROM | `Anchors.swift` | — |
@@ -50,10 +50,10 @@ ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
 | `SKU_Attributes` (+flags) | pre-CSE `$SKU` | `Manifest.swift` | — |
 | `MME_Header_Old`, `MME_Header_New` | ME2-10/TXE/SPS `$MME` | `Manifest.swift` | — |
 | `MCP_Header` | | `Manifest.swift` | — |
-| `CPD_Header_R1`, `CPD_Header_R2`, `CPD_Entry` (+`_OffsetAttrib`) | `$CPD` v1/v2 directory | `Partition/CPD.swift` | — |
+| `CPD_Header_R1`, `CPD_Header_R2`, `CPD_Entry` (+`_OffsetAttrib`) | `$CPD` v1/v2 directory — Stage-1: header R1/R2 decode, entry names/offsets, owning-`$CPD` back-scan (`findPrecedingCPD`); R2 CRC-32 validation deferred | `Partition/CPD.swift` | ported |
 | `RBE_PM_Metadata`, `_R2`, `_R3`, `_R4` | rbe/pm module metadata | `Partition/Module.swift` | — |
 | `get_rbe_pm_met`, `rbe_pm_met_hashes` | metadata leftover hashes | `Partition/Module.swift` | — |
-| `cpd_entry_num_fix`, `cpd_size_calc`, `cpd_chk` | $CPD repair/heuristics | `Partition/CPD.swift` | — |
+| `cpd_entry_num_fix`, `cpd_size_calc`, `cpd_chk` | $CPD repair/heuristics — `cpd_chk` R1 Checksum-8 ported (`CPDParser.checksumValid`); entry-count/size repair and R2 CRC-32 deferred | `Partition/CPD.swift` | ported* |
 
 ## CSE/GSC file system (VFS, MFS, FTBL/EFST, extensions)
 
@@ -114,7 +114,8 @@ port (module-name heuristics, SKU cells) or the display/DB-label layer.
 
 | Upstream symbol(s) | Models | Swift home | Status |
 |---|---|---|---|
-| `get_manifest`, `get_fpt`, `get_cpd`, `get_bpdt` | region scanning dispatch — `get_fpt` and `get_manifest` decode live in the parsers they dispatch (`Layout/FPT.swift`, `Layout/Manifest.swift`); `get_cpd` deferred | `Engine/MEFirmwareAnalyzer.swift` (stage 1 scan) | ported* |
+| `get_manifest`, `get_fpt`, `get_cpd`, `get_bpdt` | region scanning dispatch — `get_fpt`, `get_manifest` and `get_cpd` decode live in the parsers they dispatch (`Layout/FPT.swift`, `Layout/Manifest.swift`, `Partition/CPD.swift`); `get_bpdt` deferred | `Engine/MEFirmwareAnalyzer.swift` (stage 1 scan) | ported* |
+| `$FPT` re-anchor → operational partition (11802–11825) + owning-`$CPD` name fallback | pick the *operational* `$MN2` copy to identify (FTPR over the earlier RBEP recovery copy; whole-flash `$FPT` lists only internal volumes) | `Engine/ManifestSelection.swift` | ported |
 | `cse_unpack`, `cse_part_inid`, `mod_anl`, `ext_anl` | full CSE/GSC unpack (incl. the `$MN2_Stage1` module-name pass `get_variant` needs) | `Engine/Unpack.swift` | — |
 | per-family analysis chain (`pmc_*`, `pchc_*`, `phy_*`, `gsc_*`) | dispatch to IUP parsers | `Engine/Pipeline.swift` | — |
 

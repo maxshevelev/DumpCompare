@@ -15,9 +15,11 @@ enum ManifestFixture {
         var tag: String = "$MN2"
         var format: Format = .r1
         var flags: UInt32 = 0x1            // PVBit on, Debug off (Production)
-        var day: UInt8 = 0x0F
-        var month: UInt8 = 0x09
-        var year: UInt16 = 0x07E9          // 2025
+        // Date fields are packed-BCD on the wire (nibbles are calendar digits);
+        // 0x24/0x03/0x2021 = 24 March 2021.
+        var day: UInt8 = 0x24
+        var month: UInt8 = 0x03
+        var year: UInt16 = 0x2021
         var major: UInt16 = 15
         var minor: UInt16 = 40
         var hotfix: UInt16 = 37
@@ -97,6 +99,10 @@ final class ManifestParserTests: XCTestCase {
         XCTAssertEqual(manifest.svn, 3)
         XCTAssertEqual(manifest.pvBit, true)
         XCTAssertEqual(manifest.debugSigned, false)
+        // BCD date: 0x24 / 0x03 / 0x2021 decode to 24 March 2021.
+        XCTAssertEqual(manifest.day, 24)
+        XCTAssertEqual(manifest.month, 3)
+        XCTAssertEqual(manifest.year, 2021)
 
         let key = try XCTUnwrap(manifest.rsaPublicKey)
         let sig = try XCTUnwrap(manifest.rsaSignature)
@@ -138,5 +144,14 @@ final class ManifestParserTests: XCTestCase {
 
     func testEmptyRegionHasNoManifest() {
         XCTAssertNil(ManifestParser.parseFirst(in: Data(repeating: 0xFF, count: 0x300)))
+    }
+
+    func testDateFallsBackToRawWhenNotBCD() {
+        // 0x07E9 has a nibble > 9 (0xE) so it is not valid BCD; the decoder must
+        // keep the raw little-endian value (0x07E9 = 2025) instead of mangling it.
+        var params = ManifestFixture.Params()
+        params.year = 0x07E9
+        let manifest = try! XCTUnwrap(ManifestParser.parseFirst(in: ManifestFixture.manifest(params)))
+        XCTAssertEqual(manifest.year, 2025)
     }
 }

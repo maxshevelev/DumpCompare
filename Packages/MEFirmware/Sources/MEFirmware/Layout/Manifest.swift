@@ -56,18 +56,24 @@ struct ManifestParser {
     /// First `$MN2`/`$MAN` with the VEN 0x8086 preamble, mirroring `man_pat`.
     /// Returns the region-relative offset of the `\x86\x80` VEN bytes
     /// (= struct base + 0x10), or nil when no plausible manifest is present.
-    static func findAnchor(in data: Data) -> Int? {
-        guard data.count >= 16 else { return nil }
+    static func findAnchor(in data: Data) -> Int? { anchors(in: data).first }
+
+    /// Every `$MN2`/`$MAN` VEN-anchor offset in file order. A flash image can
+    /// carry many manifests — one per engine/IUP partition plus recovery copies
+    /// — so identification needs all of them to pick the operational copy.
+    static func anchors(in data: Data) -> [Int] {
+        guard data.count >= 16 else { return [] }
         let tagMN2 = Data("$MN2".utf8)
         let tagMAN = Data("$MAN".utf8)
+        var out: [Int] = []
         for off in 0...(data.count - 16) {
             guard data[data.startIndex + off] == 0x86,
                   data[data.startIndex + off + 1] == 0x80,
                   data[data.startIndex + off + 11] == 0x00 else { continue }
             let tag = data.subdata(in: (data.startIndex + off + 12)..<(data.startIndex + off + 16))
-            if tag == tagMN2 || tag == tagMAN { return off }
+            if tag == tagMN2 || tag == tagMAN { out.append(off) }
         }
-        return nil
+        return out
     }
 
     /// Decode the manifest whose VEN anchor sits at `anchor` (region-relative).
@@ -93,13 +99,22 @@ struct ManifestParser {
         }()
 
         let flags = u32le(data, p + 0x0C)
+
+        // Day/Month/Year are packed-BCD: Intel stores each calendar digit as a
+        // hex nibble, so upstream displays them with %X (hdr_print_cse line 901)
+        // and never converts. Decode nibbles as decimal digits; fall back to the
+        // raw integer when the byte is not valid BCD (defensive for odd dumps).
+        let bcdDay = Self.bcdByte(Int(data[p + 0x14]))
+        let bcdMonth = Self.bcdByte(Int(data[p + 0x15]))
+        let bcdYear = Self.bcdYear(Int(u16le(data, p + 0x16)))
+
         var manifest = Manifest(
             base: base,
             tag: tag,
             format: format,
-            day: Int(data[p + 0x14]),
-            month: Int(data[p + 0x15]),
-            year: Int(u16le(data, p + 0x16)),
+            day: bcdDay ?? Int(data[p + 0x14]),
+            month: bcdMonth ?? Int(data[p + 0x15]),
+            year: bcdYear ?? Int(u16le(data, p + 0x16)),
             major: Int(u16le(data, p + 0x24)),
             minor: Int(u16le(data, p + 0x26)),
             hotfix: Int(u16le(data, p + 0x28)),
@@ -136,10 +151,18 @@ struct ManifestParser {
         return manifest
     }
 
-    /// Find the first plausible `$MN2`/`$MAN` and decode it, or nil.
+    /// Find the first plausible `$MN2`/`$MAN` and decode it, or nil. Retained as
+    /// the degenerate single-manifest case of `parseCandidates` (used by tests).
     static func parseFirst(in data: Data) -> Manifest? {
-        guard let anchor = findAnchor(in: data) else { return nil }
-        return decode(data, anchor: anchor)
+        parseCandidates(in: data).first
+    }
+
+    /// Decode every plausible `$MN2`/`$MAN` in the region, in file order. The
+    /// analyzer passes the whole list to `ManifestSelection` so the operational
+    /// copy is chosen rather than the first in byte order (which on a full flash
+    /// is usually a recovery-partition copy).
+    static func parseCandidates(in data: Data) -> [Manifest] {
+        anchors(in: data).compactMap { decode(data, anchor: $0) }
     }
 
     private static func u16le(_ data: Data, _ p: Int) -> UInt16 {
@@ -151,5 +174,22 @@ struct ManifestParser {
             | (UInt32(data[p + 1]) << 8)
             | (UInt32(data[p + 2]) << 16)
             | (UInt32(data[p + 3]) << 24)
+    }
+
+    /// Decode one packed-BCD byte (`0x24` → 24). nil when a nibble exceeds 9.
+    private static func bcdByte(_ value: Int) -> Int? {
+        let hi = (value >> 4) & 0xF
+        let lo = value & 0xF
+        guard hi <= 9, lo <= 9 else { return nil }
+        return hi * 10 + lo
+    }
+
+    /// Decode a 2-byte little-endian packed-BCD year (`0x2018` → 2018). nil when
+    /// any of the four nibbles exceeds 9.
+    private static func bcdYear(_ value: Int) -> Int? {
+        let nibbles = [(value >> 12) & 0xF, (value >> 8) & 0xF,
+                       (value >> 4) & 0xF, value & 0xF]
+        guard nibbles.allSatisfy({ $0 <= 9 }) else { return nil }
+        return nibbles[0] * 1000 + nibbles[1] * 100 + nibbles[2] * 10 + nibbles[3]
     }
 }
