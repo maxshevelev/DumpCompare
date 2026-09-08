@@ -1,0 +1,134 @@
+# Upstream map — `MEA.py` → Swift engine
+
+The ledger the `sync-mea-engine` skill ports against. Left column is upstream
+(`MEA.py`, single ~14k-line file); right is the intended Swift home under
+`Packages/MEFirmware/Sources/MEFirmware/`. **Keep this file current**: mark a
+symbol `ported` in the Status column when you port it, and add new upstream
+symbols here (the `check` report lists them) before or while porting them.
+
+Measured at upstream `v1.312.0 r378` (2026-09): ~202 top-level `class`
+(most are `ctypes.LittleEndianStructure` layouts) and ~110 top-level `def`.
+Grouped by concern; `class` names list the notable ones, `…` means "and its
+`_Flags`/`_GetFlags`/`_Mod`/`_R2`/`_R3` siblings".
+
+Status: `—` not yet ported · `ported` done · `n/a` deliberately not ported.
+
+## Container finders (module-load regexes → anchors)
+
+Upstream anchors locate structures inside a region. DumpCompare already has a
+UEFI/IFWI tree, so prefer reusing its region offsets; scan only inside a raw
+ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
+`UEFIImage` region results.
+
+| Upstream anchor (regex) | Finds | Swift home | Status |
+|---|---|---|---|
+| `man_pat` `$MN2`/`$MAN`, VEN `0x8086` | CSE/GSC/IUP manifest | `Anchors.swift` | — |
+| `bccb_pat` placeholder `$MN2` VEN `0xBCCB` | manifest placeholder | `Anchors.swift` | — |
+| `cpd_pat` `$CPD` | Code Partition Directory | `Anchors.swift` | — |
+| `fpt_pat` `$FPT` | Flash Partition Table | `Layout/FPT.swift` (anchor scan inside) | ported |
+| `bpdt_pat` | Boot Partition Descriptor | IFWI layer / UEFI tree | — |
+| `orom_pat` PCIR | GSC Option ROM | `Anchors.swift` | — |
+| `fd_pat` `5AA5F00F…` | Flash Descriptor | UEFI tree (already parsed) | n/a |
+| `pr_man_*_pat` + `pr_cpd_parts` | probable manifests/IUP parts | `Anchors.swift` | — |
+
+## Flash & IFWI layout
+
+| Upstream symbol(s) | Models | Swift home | Status |
+|---|---|---|---|
+| `FPT_Pre_Header`, `FPT_Header`, `FPT_Header_21` (+`_Flags`) | FPT header — shared v1/2/2.1 decode done; v2.1 redundancy/CRC-32 & `_Flags` bitfields deferred | `Layout/FPT.swift` | ported |
+| `FPT_Entry` | FPT partition entry (name/owner/offset/size/tokens/scratch/flags) | `Layout/FPT.swift` | ported |
+| `BPDT_Header_1`, `BPDT_Header_2`, `BPDT_Entry` | BPDT 1.6/1.7/2.0 | `Layout/IFWI.swift` | — |
+| `CSE_Layout_Table_16`, `_17` | IFWI layout 1.6/1.7 | `Layout/IFWI.swift` | — |
+| `fd_anl_init`, `fd_anl_rgn` | Flash Descriptor region parse | UEFI layer | n/a |
+| `CSE_Layout_*` flag classes | per-format bitfields | `Layout/*.swift` | — |
+
+## CSE manifest & partitions
+
+| Upstream symbol(s) | Models | Swift home | Status |
+|---|---|---|---|
+| `MN2_Manifest_R0`, `_R1`, `_R2` (+ flags) | `$MN2`/`$MAN` pre-CSE R0, CSE R1, R2 | `Manifest.swift` | — |
+| `SKU_Attributes` (+flags) | pre-CSE `$SKU` | `Manifest.swift` | — |
+| `MME_Header_Old`, `MME_Header_New` | ME2-10/TXE/SPS `$MME` | `Manifest.swift` | — |
+| `MCP_Header` | | `Manifest.swift` | — |
+| `CPD_Header_R1`, `CPD_Header_R2`, `CPD_Entry` (+`_OffsetAttrib`) | `$CPD` v1/v2 directory | `Partition/CPD.swift` | — |
+| `RBE_PM_Metadata`, `_R2`, `_R3`, `_R4` | rbe/pm module metadata | `Partition/Module.swift` | — |
+| `get_rbe_pm_met`, `rbe_pm_met_hashes` | metadata leftover hashes | `Partition/Module.swift` | — |
+| `cpd_entry_num_fix`, `cpd_size_calc`, `cpd_chk` | $CPD repair/heuristics | `Partition/CPD.swift` | — |
+
+## CSE/GSC file system (VFS, MFS, FTBL/EFST, extensions)
+
+| Upstream symbol(s) | Models | Swift home | Status |
+|---|---|---|---|
+| `FTBL_Header`, `FTBL_Table`, `FTBL_Entry` | CSE File Table | `FileSystem/FTBL.swift` | — |
+| `EFST_Header`, `EFST_Table`, `EFST_Entry` | CSE File System Table | `FileSystem/EFST.swift` | — |
+| `EFS_Page_Header`, `EFS_Page_Footer`, `EFS_File_Metadata` | EFS page/footer | `FileSystem/EFS.swift` | — |
+| `MFS_Volume_Header`, `MFS_Page_Header`, `MFS_Config_Record_*`, `MFS_Home_Record_*`, `MFS_Integrity_Table_*`, `MFS_Backup_Header_R0/R1`, `MFS_Backup_Entry` | CSE MFS (older) | `FileSystem/MFS.swift` | — |
+| `UTFL_Header`, `FITC_Header` | misc CSE tables | `FileSystem/Misc.swift` | — |
+| `CSE_Ext_00` … `CSE_Ext_37`, `CSE_Ext_544F4F46` (+`_Mod`/`_R2` variants) | the 0x00–0x25+ extension blocks of a CPD entry | `Partition/Extensions.swift` — one `decode(tag:)` per `CSE_Ext_XX` | — |
+| `cse_part_inid`, `ext_anl`, `mod_anl`, `mfs_anl`, `mfs_home_anl`, `mfs_cfg_anl`, `efs_anl`, `fitc_anl`, `mfs_home13_anl`, `get_sec_hdr_size`, `get_cfg_rec_size`, `get_vfs_start_0`, `get_mfs_anl` | walking/decode helpers | `FileSystem/*.swift` | — |
+| `get_key_usages`, `mfs_txt`, `mfs_write`, `mfs_anl_msg`, `efs_anl_msg` | manifest keys / MFS text | lower priority | — |
+
+## Independent (IUP) firmware — PMC / PCHC / PHY / OROM
+
+| Upstream symbol(s) | Models | Swift home | Status |
+|---|---|---|---|
+| `GSC_Info_FWI`, `GSC_Info_IUP` | GSC firmware image info | `IUP/GSC.swift` | — |
+| `GSC_OROM_Header`, `GSC_OROM_PCI_Data` | Option ROM image/PCIR | `IUP/OROM.swift` | — |
+| `pmc_anl`, `pmc_parse`, `pchc_anl`, `pchc_parse`, `phy_anl`, `phy_parse`, `pch_init_anl`, `info_anl` | PMC/PCHC/PHY/PCH init decode | `IUP/PMC.swift`, `IUP/PCHC.swift`, `IUP/PHY.swift` | — |
+| `chk_iup_size` | IUP size validation | `IUP/Common.swift` | — |
+| `fovd_clean` | FOVD/NVKR dirty check | `IUP/Common.swift` | — |
+
+## Identification & database layer
+
+| Upstream symbol(s) | Models | Swift home | Status |
+|---|---|---|---|
+| `get_variant` | RSA-pubkey-hash → variant + module-name fallbacks | `Identify/Variant.swift` (lookup table, not an if-chain) | — |
+| `get_cse_db`, `release_fix` | DB query for release/SKU | `DB/MEADatabase.swift` | — |
+| `get_csme12_sku`, `sku_db_cse` | CSME12 SKU table logic | `Identify/SKU.swift` | — |
+| `note_new_fw` | report firmware absent from DB/repo | `Identify/Novelty.swift` | — |
+| `get_db_json_obj` | section lookup in MEA.dat | `DB/MEADatabase.swift` | — |
+| `get_fw_ver` | format version string | `DB/MEADatabase.swift` | — |
+| `cse_huffman_dictionary_load` | pick Huffman dict by (variant,major,minor) | `DB/HuffmanDictionaries.swift` | — |
+| (FileTable.dat loaders, `check_ftbl_id`, `check_ftbl_pl`) | module-name/version path mapping | `DB/FileTable.swift` | — |
+| `mfs_txt_json…`, `ext_table`, `pt_html`, `pt_json`, `struct_json`, `get_struct`, `ext_table` | table/JSON rendering of structs | **n/a — UI renders the result model instead** | n/a |
+
+## Crypto & checksums
+
+| Upstream symbol(s) | Models | Swift home | Status |
+|---|---|---|---|
+| `sha_1`, `sha_256`, `sha_384`, `get_hash`, `calc_hash`, `calc_hash_hex`, `md5` | hashing | `Crypto/Digest.swift` | — |
+| `mc_chk32`, `Crc16_14` | checksums | `Crypto/Checksum.swift` | — |
+| `rsa_sig_val`, `pss_mgf`, `pss_verify`, `pss_final_validate`, `unmask_DB`, `parseSign`, `get_salt` | RSA-PSS signature validation | `Crypto/RSA.swift` | — |
+| `release_fix` (key-hash tie-out) | RSA-key → release | `Crypto/RSA.swift` | — |
+
+## Decompression
+
+| Upstream symbol(s) | Models | Swift home | Status |
+|---|---|---|---|
+| `cse_huffman_decompress` | Huffman module decompression | `Decompress/Huffman.swift` (LZMA → Foundation `Compression`/`lzma`) | — |
+
+## Analysis pipeline (entry flow)
+
+| Upstream symbol(s) | Models | Swift home | Status |
+|---|---|---|---|
+| `get_manifest`, `get_fpt`, `get_cpd`, `get_bpdt` | region scanning dispatch | `Engine/Pipeline.swift` | — |
+| `cse_unpack`, `cse_part_inid`, `mod_anl`, `ext_anl` | full CSE/GSC unpack | `Engine/Unpack.swift` | — |
+| per-family analysis chain (`pmc_*`, `pchc_*`, `phy_*`, `gsc_*`) | dispatch to IUP parsers | `Engine/Pipeline.swift` | — |
+
+## Not ported on purpose
+
+`mea_help`, `mea_hdr`, `mea_hdr_init`, `mea_exit`, `mea_upd_check`,
+`mass_scan`, `MEA_Param`, `input_col`, `copy_on_msg`, `show_exception_and_exit`,
+colour/CLI helpers → replaced by DumpCompare's UI. `Thread_With_Result` →
+DumpCompare's own concurrency.
+
+## Data files consumed (not code)
+
+`MEA.dat` (firmware DB + `RSAPKEY_*` + `rsa_pre_keys` + `cse_known_bad_hashes`
+sections), `Huffman.dat` (decompression dictionaries), `FileTable.dat` (VFS
+name map). **Not stored or snapshotted in the project.** The module fetches
+them live from the MEAnalyzer repo on first use (single-flight, in-memory
+cache, no disk) and parses them in the DB layer — see reference/async-api.md.
+`MEA.dat` is parsed generically (revision header, `_`-separated entries,
+`RSAPKEY_*` and `*** section ***` lines), so database additions never need a
+code change; only a change to that *grammar* does.
