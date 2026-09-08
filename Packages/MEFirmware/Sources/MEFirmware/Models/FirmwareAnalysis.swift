@@ -40,6 +40,7 @@ public struct FirmwareAnalysis: Codable, Sendable, Equatable, Identifiable {
     public var cseLayoutTable: CSELayoutTable? = nil  // IFWI 1.6/1.7 CSE Layout Table inventory
     public var bootPartitions: [BPDT]? = nil          // BPDT of each non-empty CSE-LT Boot partition
     public var mmeDirectory: MMEModuleDirectory? = nil  // pre-CSE R0 $MME inventory (ME 2–10)
+    public var gscInfo: GSCInfo? = nil                  // GSC "INFO" $FPT partition decode (GSC_Info_FWI/IUP)
     public var issues: [Issue]
 }
 
@@ -632,6 +633,97 @@ public struct MCPHeader: Codable, Sendable, Equatable {
     }
 }
 
+/// A GSC "INFO" `$FPT` partition decode — upstream `info_anl` (MEA.py 9134)
+/// reading `GSC_Info_FWI` (MEA.py 358) + a list of `GSC_Info_IUP` (MEA.py 410),
+/// surfaced from any region whose FPT carries a partition literally named
+/// "INFO" (only GSC-family images name one that, so the name gates the decode —
+/// upstream-map row 79). The partition opens with a u32 revision that must be 1
+/// (upstream errors otherwise but still decodes); `revisionValid` records it so
+/// the analyzer can raise an Issue. `offset` is the absolute INFO partition base.
+/// nil on `FirmwareAnalysis` when no FPT "INFO" partition is present. No real
+/// GSC dump exists among the oracles — fixture-only.
+public struct GSCInfo: Codable, Sendable, Equatable {
+    public var offset: Int            // absolute INFO partition base (baseOffset + region-relative)
+    public var revision: Int          // partition revision u32 @ +0x00
+    public var revisionValid: Bool    // revision == 1 (upstream "Unknown revision" error otherwise)
+    public var image: GSCFirmwareImage            // the single GSC_Info_FWI
+    public var iupPartitions: [GSCIUPPartition]   // trailing GSC_Info_IUP rows, in file order
+
+    public init(offset: Int, revision: Int, revisionValid: Bool,
+                image: GSCFirmwareImage, iupPartitions: [GSCIUPPartition]) {
+        self.offset = offset
+        self.revision = revision
+        self.revisionValid = revisionValid
+        self.image = image
+        self.iupPartitions = iupPartitions
+    }
+}
+
+/// `GSC_Info_FWI` (igsc_system.h > gsc_fwu_fw_image_data, MEA.py 358) — the
+/// 0x20-byte GSC Firmware Image Info header. `project` is the 4-char NUL-
+/// trimmed ASCII Project. Field offsets are verbatim from the ctypes struct.
+public struct GSCFirmwareImage: Codable, Sendable, Equatable {
+    public var project: String       // Project[4] @ +0x00
+    public var hotfix: Int           // u16 @ +0x04
+    public var build: Int            // u16 @ +0x06
+    public var gscMajor: Int         // u16 @ +0x08
+    public var gscMinor: Int         // u16 @ +0x0A
+    public var gscHotfix: Int        // u16 @ +0x0C
+    public var gscBuild: Int         // u16 @ +0x0E
+    public var flags: UInt16         // u16 @ +0x10 (unknown)
+    public var fwType: UInt8         // u8  @ +0x12 (raw; ext15_fw_type label deferred)
+    public var fwSku: UInt8          // u8  @ +0x13 (raw; ext15_fw_sku label deferred)
+    public var arbSvn: UInt32        // u32 @ +0x14
+    public var tcbSvn: UInt32        // u32 @ +0x18
+    public var vcn: UInt32           // u32 @ +0x1C
+
+    public init(project: String, hotfix: Int, build: Int,
+                gscMajor: Int, gscMinor: Int, gscHotfix: Int, gscBuild: Int,
+                flags: UInt16, fwType: UInt8, fwSku: UInt8,
+                arbSvn: UInt32, tcbSvn: UInt32, vcn: UInt32) {
+        self.project = project
+        self.hotfix = hotfix
+        self.build = build
+        self.gscMajor = gscMajor
+        self.gscMinor = gscMinor
+        self.gscHotfix = gscHotfix
+        self.gscBuild = gscBuild
+        self.flags = flags
+        self.fwType = fwType
+        self.fwSku = fwSku
+        self.arbSvn = arbSvn
+        self.tcbSvn = tcbSvn
+        self.vcn = vcn
+    }
+
+    /// Upstream `gsc_print`: the GSC version is "N/A" when major is 0 or 0xFFFF.
+    public var versionText: String {
+        if gscMajor == 0 || gscMajor == 0xFFFF { return "N/A" }
+        return "\(gscMajor).\(gscMinor).\(gscHotfix).\(gscBuild)"
+    }
+}
+
+/// `GSC_Info_IUP` (igsc_system.h > gsc_fwu_iup_data, MEA.py 410) — one 0x10-byte
+/// GSC Independent Update Partition descriptor row.
+public struct GSCIUPPartition: Codable, Sendable, Equatable, Identifiable {
+    public var id: Int
+    public var name: String        // Name[4] @ +0x00, NUL-trimmed ASCII
+    public var flags: UInt16       // u16 @ +0x04
+    public var reserved: UInt16    // u16 @ +0x06
+    public var svn: UInt32         // u32 @ +0x08
+    public var vcn: UInt32         // u32 @ +0x0C
+
+    public init(id: Int, name: String, flags: UInt16, reserved: UInt16,
+                svn: UInt32, vcn: UInt32) {
+        self.id = id
+        self.name = name
+        self.flags = flags
+        self.reserved = reserved
+        self.svn = svn
+        self.vcn = vcn
+    }
+}
+
 public enum Severity: String, Codable, Sendable {
     case note, warning, error
 }
@@ -646,5 +738,5 @@ public struct Issue: Codable, Sendable, Equatable, Identifiable {
 /// whether to surface the new data (`reference/result-model.md` §Versioning).
 public enum EngineModelRevision {
     /// Current revision of the `FirmwareAnalysis` shape.
-    public static let current = 11
+    public static let current = 12
 }

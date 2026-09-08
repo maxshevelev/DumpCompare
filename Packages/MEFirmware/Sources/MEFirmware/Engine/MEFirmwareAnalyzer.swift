@@ -121,6 +121,30 @@ public actor MEFirmwareAnalyzer {
                         + "unrecognizable format (no MFS pages found)."))
             }
         }
+
+        // Phase 12 (GSC, upstream-map row 79): a GSC "INFO" $FPT partition.
+        // Upstream info_anl (MEA.py 9134) decodes one during the partition walk
+        // of a GSC-family image — a u32 revision (must be 1) then a GSC_Info_FWI
+        // image header and the trailing GSC_Info_IUP rows. Only such images name
+        // an FPT partition "INFO", so the name gates the decode (it stays nil on
+        // the CSME/IUP dumps, none of which carry one). No GSC dump exists among
+        // the oracles — this path is fixture-exercised.
+        var gscInfo: GSCInfo? = nil
+        var gscInfoIssues: [Issue] = []
+        if let infoRegion = regions.first(where: { $0.name == "INFO" }),
+           let info = GSCInfoParser.decode(in: region,
+                                           offset: infoRegion.offset - baseOffset,
+                                           size: infoRegion.size,
+                                           baseOffset: baseOffset) {
+            gscInfo = info
+            if !info.revisionValid {
+                gscInfoIssues.append(Issue(id: 12, severity: .warning,
+                    message: "Unknown GSC Information Partition revision "
+                        + "\(info.revision) at 0x\(String(infoRegion.offset, radix: 16)); "
+                        + "expected 1."))
+            }
+        }
+
         // A flash image carries many $MN2/$MAN copies (one per engine/IUP
         // partition, plus recovery copies); identify the *operational* one — on
         // CSME 12/15 the FTPR copy, not the RBEP recovery copy that comes first
@@ -258,6 +282,7 @@ public actor MEFirmwareAnalyzer {
         }
         issues.append(contentsOf: cpdIssues)
         issues.append(contentsOf: mfsIssues)
+        issues.append(contentsOf: gscInfoIssues)
         issues.append(contentsOf: cseLayoutIssues)
         if rsaSignatureValid == false {
             let m = manifest
@@ -279,7 +304,7 @@ public actor MEFirmwareAnalyzer {
                 regions: regions, manifest: manifestSummary,
                 codePartition: nil, mfsVolume: mfsVolume,
                 cseLayoutTable: cseLayoutTable, bootPartitions: bootPartitions,
-                mmeDirectory: nil, issues: issues)
+                mmeDirectory: nil, gscInfo: gscInfo, issues: issues)
         }
 
         // ——— Stage 2: identification — awaits the live MEA.dat once, then
@@ -402,6 +427,7 @@ public actor MEFirmwareAnalyzer {
             cseLayoutTable: cseLayoutTable,
             bootPartitions: bootPartitions,
             mmeDirectory: moduleInventory,
+            gscInfo: gscInfo,
             issues: issues)
     }
 
