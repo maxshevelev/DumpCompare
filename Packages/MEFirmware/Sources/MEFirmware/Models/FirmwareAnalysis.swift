@@ -42,6 +42,7 @@ public struct FirmwareAnalysis: Codable, Sendable, Equatable, Identifiable {
     public var mmeDirectory: MMEModuleDirectory? = nil  // pre-CSE R0 $MME inventory (ME 2–10)
     public var gscInfo: GSCInfo? = nil                  // GSC "INFO" $FPT partition decode (GSC_Info_FWI/IUP)
     public var oromImages: [GSCOROMImage]? = nil        // GSC OROM/PCIR images decoded by orom_pat (row 30/80)
+    public var rbePmMetadata: [RBE_PMMetadata]? = nil  // FTPR `pm` / RBEP `rbe` module "Metadata" table (rows 54/55)
     public var issues: [Issue]
 }
 
@@ -372,6 +373,59 @@ public struct Checksums: Codable, Sendable, Equatable {
     public var sha256: String?
     public var sha384: String?
     public var crc32: UInt32?
+}
+
+/// One row of the FTPR `pm` / RBEP `rbe` module "Metadata" table (upstream
+/// `RBE_PM_Metadata` / `_R2` / `_R3` / `_R4`, MEA.py 5161–5295) — decoded by
+/// `get_rbe_pm_met` (MEA.py 9711) from the module's decompressed body. Each row
+/// opens with `Unknown0`, DEV_ID and VEN_ID 0x8086; `variant` picks the struct:
+/// `r1`/`r3` carry the six extended fields (`bssSize` … `unknown2`), `r2`/`r4`
+/// stop after `SizeComp`. `hash` is the row's stored digest (SHA-256 for r1/r2,
+/// SHA-384 for r3/r4) as the raw LE-int uppercase hex exactly as upstream prints
+/// it. Surfaced as `FirmwareAnalysis.rbePmMetadata`.
+public struct RBE_PMMetadata: Codable, Sendable, Equatable, Identifiable {
+    public var id: Int                 // row index within the table
+    public var variant: RBE_PMVariant
+    public var unknown0: Int           // u32 @ +0x00
+    public var deviceID: Int           // u16 @ +0x04
+    public var vendorID: Int           // u16 @ +0x06 = 0x8086
+    public var sizeUncompressed: Int   // u32 @ +0x08
+    public var sizeCompressed: Int     // u32 @ +0x0C
+    public var bssSize: Int?                 // u32 @ +0x10 (r1/r3)
+    public var codeSizeUncompressed: Int?    // u32 @ +0x14 (r1/r3)
+    public var codeBaseAddress: Int?         // u32 @ +0x18 (r1/r3)
+    public var mainThreadEntry: Int?         // u32 @ +0x1C (r1/r3)
+    public var unknown1: Int?                // u32 @ +0x20 (r1/r3)
+    public var unknown2: Int?                // u32 @ +0x24 (r1/r3)
+    public var hash: String            // digest hex; uppercase LE-int (row +0x28 r1/r3, +0x10 r2/r4)
+
+    public init(id: Int, variant: RBE_PMVariant, unknown0: Int, deviceID: Int,
+                vendorID: Int, sizeUncompressed: Int, sizeCompressed: Int,
+                bssSize: Int?, codeSizeUncompressed: Int?, codeBaseAddress: Int?,
+                mainThreadEntry: Int?, unknown1: Int?, unknown2: Int?, hash: String) {
+        self.id = id
+        self.variant = variant
+        self.unknown0 = unknown0
+        self.deviceID = deviceID
+        self.vendorID = vendorID
+        self.sizeUncompressed = sizeUncompressed
+        self.sizeCompressed = sizeCompressed
+        self.bssSize = bssSize
+        self.codeSizeUncompressed = codeSizeUncompressed
+        self.codeBaseAddress = codeBaseAddress
+        self.mainThreadEntry = mainThreadEntry
+        self.unknown1 = unknown1
+        self.unknown2 = unknown2
+        self.hash = hash
+    }
+}
+
+/// The `RBE_PM_Metadata` struct variant picked by the spaced-VEN_ID pattern
+/// (`get_rbe_pm_met` tries R1 → R2 → R3 → R4): R1 (0x48, SHA-256, extended) —
+/// gap 70, R2 (0x30, SHA-256, compact) — gap 46, R3 (0x58, SHA-384, extended) —
+/// gap 86, R4 (0x40, SHA-384, compact) — gap 62. Names match the upstream struct.
+public enum RBE_PMVariant: String, Codable, Sendable, CaseIterable {
+    case r1, r2, r3, r4
 }
 
 /// MFS volume facts — the oldest CSE file system layout: a paged flash area
@@ -846,5 +900,5 @@ public struct Issue: Codable, Sendable, Equatable, Identifiable {
 /// whether to surface the new data (`reference/result-model.md` §Versioning).
 public enum EngineModelRevision {
     /// Current revision of the `FirmwareAnalysis` shape.
-    public static let current = 13
+    public static let current = 14
 }

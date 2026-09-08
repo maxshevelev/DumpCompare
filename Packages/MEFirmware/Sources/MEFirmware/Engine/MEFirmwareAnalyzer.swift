@@ -410,6 +410,27 @@ public actor MEFirmwareAnalyzer {
         let oromImages: [GSCOROMImage]? = identity.family == .orom
             ? GSCOROM.decode(in: region, baseOffset: baseOffset) : nil
 
+        // Phase 12 (upstream-map rows 54/55): the RBE/PM metadata table of the
+        // operational code partition. Upstream `get_rbe_pm_met` (MEA.py 9711)
+        // scans the decompressed body of the `pm`/`rbe` module for the run of
+        // contiguous `RBE_PM_Metadata` rows (VEN_ID 0x8086). An uncompressed body
+        // decodes purely structurally; a Huffman one (the real dumps) needs the
+        // live dictionary for this identity and is skipped when the fetch fails
+        // or the identity carries no variant/major. Both are best-effort: nil
+        // simply means no decodable pm/rbe module body was present.
+        let rbePm: [RBE_PMMetadata]?
+        if let cp = codePartition {
+            let huffmanPM = cp.modules.contains {
+                ($0.name == "pm" || $0.name == "rbe") && $0.isHuffman
+            }
+            let dictionaries = huffmanPM ? try? await data.huffmanDictionaries() : nil
+            rbePm = Self.rbePmMetadata(for: cp, in: region, baseOffset: baseOffset,
+                                       variant: identity.variant, major: identity.major,
+                                       minor: identity.minor, dictionaries: dictionaries)
+        } else {
+            rbePm = nil
+        }
+
         return FirmwareAnalysis(
             family: identity.family,
             variant: identity.variant,
@@ -438,6 +459,7 @@ public actor MEFirmwareAnalyzer {
             mmeDirectory: moduleInventory,
             gscInfo: gscInfo,
             oromImages: oromImages,
+            rbePmMetadata: rbePm,
             issues: issues)
     }
 
@@ -528,6 +550,50 @@ public actor MEFirmwareAnalyzer {
             }
         }
         return issues
+    }
+
+    /// Phase 12 (upstream-map rows 54/55): decode the RBE/PM metadata table of
+    /// the operational code partition — upstream `get_rbe_pm_met` (MEA.py 9711)
+    /// over the body of its `pm`/`rbe` module. The `pm` module is found on the
+    /// FTPR partition and the `rbe` module on an RBEP one; whichever the region
+    /// carries, its body is sliced the same way the module row locates content.
+    /// An uncompressed body (older layouts) is decoded directly; a Huffman body
+    /// is decompressed against the `.met`-declared sizes and the live dictionary
+    /// for the identity. Best-effort — any unreadable/short body returns nil.
+    private static func rbePmMetadata(
+        for codePartition: CodePartition, in region: Data, baseOffset: Int,
+        variant: String, major: Int, minor: Int,
+        dictionaries: HuffmanDictionaries?) -> [RBE_PMMetadata]? {
+        guard let module = codePartition.modules
+                .first(where: { $0.name == "pm" || $0.name == "rbe" }),
+              module.size > 0 else { return nil }
+        let moduleBase = codePartition.offset - baseOffset + module.offset
+        guard moduleBase >= 0 else { return nil }
+        guard !module.isHuffman else {
+            // Huffman body: `.met` gives the blob bounds; the dictionary picks the
+            // variant/major/minor's codebook (major/variant must be usable).
+            guard let dictionaries,
+                  let dictionary = dictionaries.dictionary(variant: variant,
+                                                           major: major, minor: minor),
+                  major != 0, variant != "" else { return nil }
+            guard let attrs = codePartition.modules
+                .first(where: { $0.name == module.name + ".met" })?
+                .extensions?
+                .compactMap({ $0.moduleAttributes })
+                .first,
+                attrs.compression == 1, attrs.encryption == 0,
+                attrs.compressedSize > 0, attrs.uncompressedSize > 0,
+                moduleBase + attrs.compressedSize <= region.count else { return nil }
+            let blob = region.subdata(in: moduleBase..<(moduleBase + attrs.compressedSize))
+            let result = HuffmanDecoder.decompress(
+                module: blob, compressedSize: attrs.compressedSize,
+                decompressedSize: attrs.uncompressedSize, dictionary: dictionary)
+            guard result.output.count == attrs.uncompressedSize, result.clean else { return nil }
+            return RBEPMMetadataParser.decode(in: result.output)
+        }
+        guard moduleBase + module.size <= region.count else { return nil }
+        let body = region.subdata(in: moduleBase..<(moduleBase + module.size))
+        return RBEPMMetadataParser.decode(in: body)
     }
 
     /// Compose the manifest's Day/Month/Year into the top-level manufacture date
