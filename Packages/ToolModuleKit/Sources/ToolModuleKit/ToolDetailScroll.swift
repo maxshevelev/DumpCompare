@@ -33,6 +33,10 @@ import AppKit
     /// subject from the same one re-read. Nil while the placeholder is up.
     private var shownSubject: String?
 
+    /// The panel's rows are rebuilt by their own module when the zoom moves;
+    /// the placeholder is this view's own text, so it re-reads the size here.
+    private var zoomObserver: NSObjectProtocol?
+
     /// A flipped document, so the scroll view starts at the first row rather
     /// than the last.
     private final class TopDownView: NSView {
@@ -56,7 +60,7 @@ import AppKit
         content.translatesAutoresizingMaskIntoConstraints = false
         content.setHuggingPriority(.defaultHigh, for: .vertical)
 
-        placeholder.font = .systemFont(ofSize: 11)
+        placeholder.font = ToolPanelFont.body()
         placeholder.textColor = .secondaryLabelColor
         placeholder.alignment = .center
         placeholder.lineBreakMode = .byWordWrapping
@@ -103,10 +107,20 @@ import AppKit
                 lessThanOrEqualTo: document.trailingAnchor, constant: -10
             )
         ])
+
+        zoomObserver = ToolPanelFont.observeZoom { [weak self] in
+            self?.placeholder.font = ToolPanelFont.body()
+        }
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    deinit {
+        if let zoomObserver {
+            NotificationCenter.default.removeObserver(zoomObserver)
+        }
+    }
 
     /// Empties the rows and shows `text` in their place.
     public func showPlaceholder(_ text: String) {

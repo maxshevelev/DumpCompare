@@ -30,6 +30,11 @@ import ToolModuleKit
     /// the panel disagree.
     private var busy = false
 
+    /// What the detail on screen describes, kept so its rows can be rebuilt at
+    /// a new type size without waiting for the next parse — a zoom is not a
+    /// re-read.
+    private var detailSubject = ""
+
     /// True while the tables are being loaded from the model — a selection the
     /// code made is not news, and without this the panel selects, publishes,
     /// re-shows and selects again until the stack runs out.
@@ -53,6 +58,9 @@ import ToolModuleKit
     /// of the entries.
     private var problemsRatio: NSLayoutConstraint?
     private var problemsContent: NSLayoutConstraint?
+    /// The panel draws at the app's zoom (`ToolPanelFont`); this is what tells
+    /// it the zoom moved.
+    private var zoomObserver: NSObjectProtocol?
 
     private enum Column {
         static let index = NSUserInterfaceItemIdentifier("index")
@@ -63,11 +71,30 @@ import ToolModuleKit
         static let problem = NSUserInterfaceItemIdentifier("problem")
     }
 
+    /// The columns, with the width each was laid out at — a width for text at
+    /// `ToolPanelFont.designSize`, so the panel scales it to whatever size the
+    /// zoom is at rather than leaving "Points at" saying "Microco…" the moment
+    /// the type grows.
+    private static let entryColumns:
+    [(id: NSUserInterfaceItemIdentifier, title: String, width: CGFloat)] = [
+        (Column.index, "#", 20),
+        (Column.type, "Type", 96),
+        (Column.address, "Address", 76),
+        (Column.size, "Size", 84),
+        (Column.target, "Points at", 300)
+    ]
+    private static let problemColumnWidth: CGFloat = 420
+
+    /// The size the widths on screen were scaled for. A zoom moves them by
+    /// what has changed since, so a column the user dragged keeps the width
+    /// they gave it rather than snapping back to the design's.
+    private var columnWidthSize = ToolPanelFont.designSize
+
     override func loadView() {
         view = NSView(frame: NSRect(x: 0, y: 0, width: 480, height: 500))
         view.translatesAutoresizingMaskIntoConstraints = false
 
-        summaryLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        summaryLabel.font = ToolPanelFont.body(weight: .medium)
         summaryLabel.lineBreakMode = .byTruncatingTail
         summaryLabel.translatesAutoresizingMaskIntoConstraints = false
         // The title names the table; clicking it takes the dump there and puts
@@ -82,16 +109,21 @@ import ToolModuleKit
         // Squeezing "Points at" to whatever is left is how the one column with
         // something to say ends up saying "Microco…".
         entries.columnAutoresizingStyle = .noColumnAutoresizing
-        column(entries, Column.index, "#", 20)
-        column(entries, Column.type, "Type", 96)
-        column(entries, Column.address, "Address", 76)
-        column(entries, Column.size, "Size", 84)
-        column(entries, Column.target, "Points at", 300)
+        for spec in Self.entryColumns {
+            column(entries, spec.id, spec.title, spec.width)
+        }
         entries.menu = contextMenu()
 
         configure(problems, doubleAction: #selector(problemDoubleClicked))
         problems.headerView = nil
-        column(problems, Column.problem, "Problem", 420)
+        column(problems, Column.problem, "Problem", Self.problemColumnWidth)
+
+        // The rows, the headers and the widths — laid out just above for text
+        // at `ToolPanelFont.designSize` — follow the app's zoom, so this comes
+        // after the columns exist rather than with the rest of a table's setup.
+        ToolPanelTable.apply(to: entries)
+        ToolPanelTable.apply(to: problems)
+        applyColumnWidths()
 
         for (scroll, table) in [(entriesScroll, entries), (problemsScroll, problems)] {
             scroll.documentView = table
@@ -134,7 +166,7 @@ import ToolModuleKit
         buttons.spacing = 6
         buttons.translatesAutoresizingMaskIntoConstraints = false
 
-        noticeLabel.font = .systemFont(ofSize: 11)
+        noticeLabel.font = ToolPanelFont.body()
         noticeLabel.textColor = .secondaryLabelColor
         noticeLabel.lineBreakMode = .byWordWrapping
         noticeLabel.maximumNumberOfLines = 2
@@ -215,6 +247,35 @@ import ToolModuleKit
             bottom,
             barWidth
         ])
+
+        zoomObserver = ToolPanelFont.observeZoom { [weak self] in
+            self?.applyPanelFont()
+        }
+    }
+
+    deinit {
+        if let zoomObserver {
+            NotificationCenter.default.removeObserver(zoomObserver)
+        }
+    }
+
+    /// Re-reads the panel's type size and puts everything on screen at it: the
+    /// two lines around the tables, both tables' rows and headers, and the
+    /// detail's own rows — which are views built per field, so they have to be
+    /// rebuilt rather than restyled. The problem list is as tall as its rows,
+    /// so its height is re-measured at the new row height.
+    private func applyPanelFont() {
+        summaryLabel.font = ToolPanelFont.body(weight: .medium)
+        noticeLabel.font = ToolPanelFont.body()
+        ToolPanelTable.apply(to: entries)
+        ToolPanelTable.apply(to: problems)
+        applyColumnWidths()
+        entries.reloadData()
+        problems.reloadData()
+        renderDetail(display.detail, subject: detailSubject)
+        if !display.problems.isEmpty {
+            problemsContent?.constant = problemListHeight()
+        }
     }
 
     // MARK: - A parse's progress
@@ -267,7 +328,6 @@ import ToolModuleKit
         table.allowsMultipleSelection = false
         // The column order is the design's, not a drag target.
         table.allowsColumnReordering = false
-        table.rowSizeStyle = .small
         table.dataSource = self
         table.delegate = self
         table.target = self
@@ -284,6 +344,18 @@ import ToolModuleKit
         column.title = title
         column.width = width
         table.addTableColumn(column)
+    }
+
+    /// Moves the columns to the size on screen — the widths grow and shrink
+    /// with the type, since a column that does not is a column whose text no
+    /// longer fits it.
+    private func applyColumnWidths() {
+        let size = ToolPanelFont.size
+        guard size != columnWidthSize else { return }
+        let ratio = size / columnWidthSize
+        ToolPanelTable.scaleColumnWidths(of: entries, by: ratio)
+        ToolPanelTable.scaleColumnWidths(of: problems, by: ratio)
+        columnWidthSize = size
     }
 
     /// Everything the panel shows, in one call.
@@ -311,6 +383,7 @@ import ToolModuleKit
 
     /// Rebuilds the detail list from the fields the pure target decided.
     private func renderDetail(_ rowDetail: FITRowDetail, subject: String) {
+        detailSubject = subject
         guard !rowDetail.fields.isEmpty else {
             detail.showPlaceholder(rowDetail.title.isEmpty
                 ? "Select a row to see what it is."
@@ -321,22 +394,24 @@ import ToolModuleKit
 
         if !rowDetail.title.isEmpty {
             let title = NSTextField(labelWithString: rowDetail.title)
-            title.font = .systemFont(ofSize: 12, weight: .semibold)
+            title.font = ToolPanelFont.title()
             title.translatesAutoresizingMaskIntoConstraints = false
             detail.content.addArrangedSubview(title)
         }
 
         for field in rowDetail.fields {
             let label = NSTextField(labelWithString: field.label)
-            label.font = .systemFont(ofSize: 11)
+            label.font = ToolPanelFont.body()
             label.textColor = .secondaryLabelColor
             label.translatesAutoresizingMaskIntoConstraints = false
-            label.widthAnchor.constraint(equalToConstant: 104).isActive = true
+            label.widthAnchor.constraint(
+                equalToConstant: ToolPanelFont.detailLabelWidth
+            ).isActive = true
 
             let value = NSTextField(labelWithString: field.value)
             value.font = field.value.hasPrefix("0x")
-                ? NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-                : .systemFont(ofSize: 11)
+                ? ToolPanelFont.monospacedDigits()
+                : ToolPanelFont.body()
             // Selectable, not a dead label: a bench copies an offset or a CPUID
             // out of here, and a value it cannot select is one it has to retype.
             value.isSelectable = true
@@ -470,13 +545,14 @@ extension FITToolViewController: NSTableViewDataSource, NSTableViewDelegate {
             guard row < display.problems.count else { return nil }
             let problem = display.problems[row]
             cell.textField?.stringValue = problem.message
+            cell.textField?.font = ToolPanelFont.body()
             cell.textField?.textColor = problem.severity == .error ? .systemRed : .secondaryLabelColor
             return cell
         }
 
         guard row < display.rows.count else { return nil }
         let entry = display.rows[row]
-        let monospaced = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        let monospaced = ToolPanelFont.monospacedDigits()
         switch column.identifier {
         case Column.index:
             // The number the reader counts, from one — not the row's zero-based
@@ -485,7 +561,7 @@ extension FITToolViewController: NSTableViewDataSource, NSTableViewDelegate {
             cell.textField?.font = monospaced
         case Column.type:
             cell.textField?.stringValue = entry.typeText
-            cell.textField?.font = .systemFont(ofSize: 11)
+            cell.textField?.font = ToolPanelFont.body()
         case Column.address:
             cell.textField?.stringValue = entry.addressText
             cell.textField?.font = monospaced
@@ -494,7 +570,7 @@ extension FITToolViewController: NSTableViewDataSource, NSTableViewDelegate {
             cell.textField?.font = monospaced
         default:
             cell.textField?.stringValue = entry.targetText
-            cell.textField?.font = .systemFont(ofSize: 11)
+            cell.textField?.font = ToolPanelFont.body()
         }
         // A row the validator complained about is red wherever the eye lands on
         // it, not only in the list below.
@@ -518,7 +594,7 @@ extension FITToolViewController: NSTableViewDataSource, NSTableViewDelegate {
         let cell = NSTableCellView()
         cell.identifier = identifier
         let field = NSTextField(labelWithString: "")
-        field.font = .systemFont(ofSize: 11)
+        field.font = ToolPanelFont.body()
         field.lineBreakMode = .byTruncatingTail
         field.translatesAutoresizingMaskIntoConstraints = false
         field.isBordered = false

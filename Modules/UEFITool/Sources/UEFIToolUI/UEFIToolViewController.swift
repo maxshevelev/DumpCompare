@@ -16,6 +16,10 @@ import UEFITool
 
     private var image: UEFIImage?
     private var focus: NodeID?
+    /// The detail on screen, kept so the rows can be rebuilt at a new type
+    /// size without waiting for the next parse — a zoom is not a re-read.
+    private var detailShown: UEFINodeDetail = .empty
+    private var detailSubject = ""
     /// The GUID catalogue the names are read from. The session owns it — it
     /// downloads a fresh one in the background and passes it in on every show —
     /// so the tree shows the GUIDs themselves at first paint and the catalogue
@@ -34,6 +38,9 @@ import UEFITool
     private let noticeLabel = NSTextField(labelWithString: "")
     private let progressBar = NSProgressIndicator()
     private let bottomRow = NSStackView()
+    /// The panel draws at the app's zoom (`ToolPanelFont`); this is what tells
+    /// it the zoom moved.
+    private var zoomObserver: NSObjectProtocol?
 
     private enum Column {
         static let name = NSUserInterfaceItemIdentifier("name")
@@ -41,11 +48,23 @@ import UEFITool
         static let subtype = NSUserInterfaceItemIdentifier("subtype")
     }
 
+    /// What each column was laid out at — a width for text at
+    /// `ToolPanelFont.designSize`, scaled from there to the size the zoom is
+    /// at. Name is not here: it takes whatever the tree is not spending on the
+    /// other two.
+    private static let typeWidth: CGFloat = 90
+    private static let subtypeWidth: CGFloat = 120
+
+    /// The size the widths on screen were scaled for. A zoom moves them by
+    /// what has changed since, so a column the user dragged keeps the width
+    /// they gave it rather than snapping back to the design's.
+    private var columnWidthSize = ToolPanelFont.designSize
+
     override func loadView() {
         view = NSView(frame: NSRect(x: 0, y: 0, width: 480, height: 520))
         view.translatesAutoresizingMaskIntoConstraints = false
 
-        summaryLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        summaryLabel.font = ToolPanelFont.body(weight: .medium)
         summaryLabel.lineBreakMode = .byTruncatingTail
         summaryLabel.translatesAutoresizingMaskIntoConstraints = false
 
@@ -70,7 +89,7 @@ import UEFITool
         splitter.setPaneLayout(.fill, at: 0)
         splitter.setPaneLayout(.proportional(1.0 / 3), at: 1)
 
-        noticeLabel.font = .systemFont(ofSize: 11)
+        noticeLabel.font = ToolPanelFont.body()
         noticeLabel.textColor = .secondaryLabelColor
         noticeLabel.lineBreakMode = .byWordWrapping
         noticeLabel.maximumNumberOfLines = 2
@@ -111,6 +130,39 @@ import UEFITool
             bottomRow.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -8),
             barWidth
         ])
+
+        zoomObserver = ToolPanelFont.observeZoom { [weak self] in
+            self?.applyPanelFont()
+        }
+    }
+
+    deinit {
+        if let zoomObserver {
+            NotificationCenter.default.removeObserver(zoomObserver)
+        }
+    }
+
+    /// Re-reads the panel's type size and puts everything on screen at it: the
+    /// two lines around the splitter, the tree's rows and header, and the
+    /// detail's own rows — which are views built per field, so they have to be
+    /// rebuilt rather than restyled.
+    private func applyPanelFont() {
+        summaryLabel.font = ToolPanelFont.body(weight: .medium)
+        noticeLabel.font = ToolPanelFont.body()
+        ToolPanelTable.apply(to: outline)
+        applyColumnWidths()
+        outline.reloadData()
+        renderDetail(detailShown, subject: detailSubject)
+    }
+
+    /// Moves the columns to the size on screen — the widths grow and shrink
+    /// with the type, since a column that does not is a column whose text no
+    /// longer fits it.
+    private func applyColumnWidths() {
+        let size = ToolPanelFont.size
+        guard size != columnWidthSize else { return }
+        ToolPanelTable.scaleColumnWidths(of: outline, by: size / columnWidthSize)
+        columnWidthSize = size
     }
 
     private func configureOutline() {
@@ -119,28 +171,37 @@ import UEFITool
         outline.allowsMultipleSelection = false
         // The column order is the design's, not a drag target.
         outline.allowsColumnReordering = false
-        outline.rowSizeStyle = .small
         outline.dataSource = self
         outline.delegate = self
 
         let name = NSTableColumn(identifier: Column.name)
         name.title = "Name"
         name.width = 240
-        name.resizingMask = .autoresizingMask
+        // Draggable, and the one column that also takes the slack when the
+        // panel is resized. Without `.userResizingMask` a column cannot be
+        // dragged at all, whatever `allowsColumnResizing` says.
+        name.resizingMask = [.autoresizingMask, .userResizingMask]
         outline.addTableColumn(name)
         outline.outlineTableColumn = name
 
         let type = NSTableColumn(identifier: Column.type)
         type.title = "Type"
-        type.width = 90
-        type.resizingMask = []
+        type.width = Self.typeWidth
+        type.resizingMask = .userResizingMask
         outline.addTableColumn(type)
 
         let subtype = NSTableColumn(identifier: Column.subtype)
         subtype.title = "Subtype"
-        subtype.width = 120
-        subtype.resizingMask = []
+        subtype.width = Self.subtypeWidth
+        subtype.resizingMask = .userResizingMask
         outline.addTableColumn(subtype)
+
+        // The rows, the header and the widths — laid out just above for text at
+        // `ToolPanelFont.designSize` — follow the app's zoom, so this comes
+        // after the columns exist rather than with the rest of the tree's
+        // setup.
+        ToolPanelTable.apply(to: outline)
+        applyColumnWidths()
     }
 
     // MARK: - A parse's progress
@@ -227,6 +288,8 @@ import UEFITool
 
     /// Rebuilds the detail list from the fields the pure target decided.
     private func renderDetail(_ node: UEFINodeDetail, subject: String) {
+        detailShown = node
+        detailSubject = subject
         guard !node.fields.isEmpty else {
             detail.showPlaceholder(node.title.isEmpty
                 ? "Select a node to see what it is."
@@ -237,22 +300,24 @@ import UEFITool
 
         if !node.title.isEmpty {
             let title = NSTextField(labelWithString: node.title)
-            title.font = .systemFont(ofSize: 12, weight: .semibold)
+            title.font = ToolPanelFont.title()
             title.translatesAutoresizingMaskIntoConstraints = false
             detail.content.addArrangedSubview(title)
         }
 
         for field in node.fields {
             let label = NSTextField(labelWithString: field.label)
-            label.font = .systemFont(ofSize: 11)
+            label.font = ToolPanelFont.body()
             label.textColor = .secondaryLabelColor
             label.translatesAutoresizingMaskIntoConstraints = false
-            label.widthAnchor.constraint(equalToConstant: 104).isActive = true
+            label.widthAnchor.constraint(
+                equalToConstant: ToolPanelFont.detailLabelWidth
+            ).isActive = true
 
             let value = NSTextField(labelWithString: field.value)
             value.font = field.value.hasPrefix("0x")
-                ? NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-                : .systemFont(ofSize: 11)
+                ? ToolPanelFont.monospacedDigits()
+                : ToolPanelFont.body()
             // Selectable, not a dead label: a bench copies an offset or a GUID
             // out of here, and a value it cannot select is one it has to retype.
             value.isSelectable = true
@@ -303,6 +368,9 @@ extension UEFIToolViewController: NSOutlineViewDataSource, NSOutlineViewDelegate
         let cell = outlineView.makeView(withIdentifier: identifier, owner: self)
             as? NSTableCellView ?? Self.makeCell(identifier: identifier)
         cell.textField?.stringValue = text(for: node, in: identifier)
+        // Set per row, not once when the cell is made: a reused cell carries
+        // the font it was made with, and the zoom moves under it.
+        cell.textField?.font = ToolPanelFont.body()
         return cell
     }
 
@@ -325,7 +393,7 @@ extension UEFIToolViewController: NSOutlineViewDataSource, NSOutlineViewDelegate
         let cell = NSTableCellView()
         cell.identifier = identifier
         let field = NSTextField(labelWithString: "")
-        field.font = .systemFont(ofSize: 11)
+        field.font = ToolPanelFont.body()
         field.lineBreakMode = .byTruncatingTail
         field.isBordered = false
         field.drawsBackground = false

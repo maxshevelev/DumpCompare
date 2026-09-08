@@ -1,4 +1,5 @@
 import Cocoa
+import ToolModuleKit
 
 /// User-configurable hex-view appearance (§3.2): the monospaced font (family
 /// and size) and the row-height compaction factor. Persisted app-wide; both
@@ -11,10 +12,14 @@ import Cocoa
 enum AppearanceSettings {
     static let fontFamilyKey = "HexFontFamily"
     static let rowHeightScaleKey = "HexRowHeightScale"
-    static let fontSizeKey = "HexFontSize"
+    /// The size key, spelled in `ToolModuleKit` — the tool-module panels read
+    /// the same setting and cannot see this file, so the two sides share one
+    /// definition rather than each carrying the string.
+    static let fontSizeKey = ToolPanelFont.zoomSizeKey
 
-    /// Posted after a change so open hex views re-lay out (§3.2).
-    static let didChangeNotification = Notification.Name("AppearanceSettingsDidChange")
+    /// Posted after a change so open hex views re-lay out (§3.2), and so the
+    /// panels that follow the zoom re-read their size.
+    static let didChangeNotification = ToolPanelFont.zoomDidChangeNotification
 
     /// Stored as the font family when the user wants the system monospaced font
     /// rather than a named family.
@@ -27,9 +32,9 @@ enum AppearanceSettings {
     static let rowHeightScaleRange: ClosedRange<CGFloat> = 0.65...1.0
 
     /// The built-in hex font size, in points.
-    static let defaultFontSize: CGFloat = 13
+    static let defaultFontSize: CGFloat = ToolPanelFont.defaultSize
     /// The range the Settings stepper offers.
-    static let fontSizeRange: ClosedRange<CGFloat> = 9...24
+    static let fontSizeRange: ClosedRange<CGFloat> = ToolPanelFont.sizeRange
     /// What one Zoom In / Zoom Out moves the size by (§3.2) — the same point
     /// the Settings stepper steps, so the two controls agree about what a step
     /// is and the menu never lands between the stepper's values.
