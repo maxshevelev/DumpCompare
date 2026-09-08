@@ -719,12 +719,14 @@ public enum RBE_PMVariant: String, Codable, Sendable, CaseIterable {
 
 /// MFS volume facts — the oldest CSE file system layout: a paged flash area
 /// whose logical volume header (FTBL dictionary / platform ids, declared size,
-/// file-record count) lives in the assembled System chunk 0. Decoded from an FPT
-/// region named "MFS", present on both real dumps (CSME 12.0.3: FTBL dict
-/// 1/plat 0 → `usesFTBL` false, old-style; CSME 15.0.30: dict 0x0A/plat 4 →
-/// `usesFTBL` true). `signatureValid` is false when the region carries MFS pages
-/// but chunk 0 is not a valid volume header (a corrupt or hot volume); nil
-/// `mfsVolume` on `FirmwareAnalysis` means no decodable MFS region was found.
+/// file-record count) lives in the assembled System chunk 0, and whose present
+/// low-level *files* are assembled by walking the FAT chunk chains (see
+/// `MFSFile`). Decoded from an FPT region named "MFS", present on both real
+/// dumps (CSME 12.0.3: FTBL dict 1/plat 0 → `usesFTBL` false, old-style; CSME
+/// 15.0.30: dict 0x0A/plat 4 → `usesFTBL` true). `signatureValid` is false when
+/// the region carries MFS pages but chunk 0 is not a valid volume header (a
+/// corrupt or hot volume); nil `mfsVolume` on `FirmwareAnalysis` means no
+/// decodable MFS region was found.
 public struct MFSVolume: Codable, Sendable, Equatable {
     public var offset: Int        // absolute volume start (baseOffset + region offset)
     public var pageSize: Int
@@ -740,13 +742,17 @@ public struct MFSVolume: Codable, Sendable, Equatable {
     public var ftblPlatform: Int
     public var ftblReserved: Int
     public var usesFTBL: Bool
+    public var presentFileCount: Int    // used records that walked to real content
+    public var fileBytes: Int           // total bytes across present files
+    public var files: [MFSFile]         // present low-level files, by index
 
     public init(offset: Int, pageSize: Int, pageCount: Int,
                 systemPageCount: Int, dataPageCount: Int,
                 signatureValid: Bool, volumeSize: Int, computedVolumeSize: Int,
                 fileRecordCount: Int, usedFileCount: Int,
                 ftblDictionary: Int, ftblPlatform: Int, ftblReserved: Int,
-                usesFTBL: Bool) {
+                usesFTBL: Bool, presentFileCount: Int = 0, fileBytes: Int = 0,
+                files: [MFSFile] = []) {
         self.offset = offset
         self.pageSize = pageSize
         self.pageCount = pageCount
@@ -761,6 +767,28 @@ public struct MFSVolume: Codable, Sendable, Equatable {
         self.ftblPlatform = ftblPlatform
         self.ftblReserved = ftblReserved
         self.usesFTBL = usesFTBL
+        self.presentFileCount = presentFileCount
+        self.fileBytes = fileBytes
+        self.files = files
+    }
+}
+
+/// One present low-level MFS file (upstream `mfs_anl` FAT chain walk, MEA.py
+/// 7849–7884): a file record whose first Data-FAT slot is used. The reserved
+/// roles upstream assigns by index (0–9: Anti-Replay, SVN Migration, Quota
+/// Storage, Intel/OEM Configuration, Manifest Backup — `mfs_dict`, MEA.py
+/// 10859) belong to the config/home-record decode layer, a later increment;
+/// here each present file is its index and the byte size of its assembled FAT
+/// chain. CSME 12.0.3 carries 210 present files (record 6 = Intel Configuration
+/// is 0x4A97 bytes); CSME 15.0.30 (FTBL layout) carries 136.
+public struct MFSFile: Codable, Sendable, Equatable, Identifiable {
+    public var id: Int { index }
+    public var index: Int
+    public var size: Int
+
+    public init(index: Int, size: Int) {
+        self.index = index
+        self.size = size
     }
 }
 
@@ -1189,5 +1217,5 @@ public struct Issue: Codable, Sendable, Equatable, Identifiable {
 /// whether to surface the new data (`reference/result-model.md` §Versioning).
 public enum EngineModelRevision {
     /// Current revision of the `FirmwareAnalysis` shape.
-    public static let current = 15
+    public static let current = 16
 }

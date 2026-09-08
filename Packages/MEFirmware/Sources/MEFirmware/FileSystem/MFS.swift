@@ -1,9 +1,9 @@
 import Foundation
 
 /// CSE MFS (CSME "Management"/Flash File System) — a faithful structural port of
-/// the *opening* of upstream `mfs_anl` (MEA.py 7499): the page inventory, the
-/// system-area chunk assembly (CRC-16/14 reverse de-obfuscation) and the volume
-/// header + FAT read that the rest of the walker builds on.
+/// upstream `mfs_anl` (MEA.py 7499): the page inventory, the system-area chunk
+/// assembly (CRC-16/14 reverse de-obfuscation), the volume header + FAT read and
+/// the low-level *file* walk that follows them.
 ///
 /// An MFS volume is a paged flash area: `pageSize`-byte pages, each starting
 /// with a `MFS_Page_Header` (tag `0xAA557887` = bytes `87 78 55 AA`). Pages whose
@@ -15,10 +15,20 @@ import Foundation
 /// is present in both real dumps — CSME 12.0.3 (`DATMAAMBAC0.BIN` @0x7000: 49
 /// pages, 512 file records, 210 used, FTBL dict 1/0/0 → `usesFTBL` false) and
 /// CSME 15.0.30 (`1.bin`: 49 pages, 1024 records, 136 used, dict 0x0A/0x04 →
-/// `usesFTBL` true) — both byte-verified. The compressed FS of newer CSE
-/// (EFS/FTBL/EFST, inside the Huffman `vfs`/`fpf` module bodies) and the MFS
-/// home/config-record *file* walk are separate later increments — this stage
-/// surfaces the volume itself.
+/// `usesFTBL` true) — both byte-verified.
+///
+/// The **low-level file walk** (upstream 7849–7884) reads the FAT as two u16
+/// arrays over the assembled System area: the first `FileRecordCount` values are
+/// the file records (0x0000 unused / 0xFFFE erased / 0xFFFF used-but-empty), each
+/// used record holding the *first data-FAT slot* of its file; the values that
+/// follow chain chunk to chunk (data-FAT slot `f` ≥ `FileRecordCount` maps to
+/// data chunk `SystemChunkCount + f − FileRecordCount`) until a small value
+/// `1…0x40` marks EOF and gives the final chunk's used byte count. Each present
+/// file is therefore its chain of raw data chunks, assembled in order. The
+/// reserved roles upstream prints (0–9: Anti-Replay, SVN Migration, Quota
+/// Storage, Intel/OEM Configuration, Manifest Backup — `mfs_dict`, MEA.py 10859)
+/// and the home/config-record decode over that content are a later increment;
+/// this stage surfaces the file inventory (index → present + byte size).
 struct MFSVolumeInfo {
     var pageSize: Int
     var systemPageCount: Int
@@ -32,6 +42,16 @@ struct MFSVolumeInfo {
     var ftblPlatform: Int
     var ftblReserved: Int
     var usesFTBL: Bool                  // not (dict,plat,reserved) == (1,0,0)
+    var files: [MFSLowLevelFile]        // present (non-empty) records, by index
+    var fileChainsIntact: Bool          // every used chain hit a clean EOF marker
+}
+
+/// One present low-level MFS file (upstream 7849–7877): the raw bytes of its
+/// FAT chain. `content` is nil for unused/erased/empty records — those are not
+/// listed in `MFSVolumeInfo.files`.
+struct MFSLowLevelFile {
+    var index: Int
+    var content: Data
 }
 
 enum MFSParser {
@@ -142,7 +162,9 @@ enum MFSParser {
                                  ftblDictionary: 0,
                                  ftblPlatform: 0,
                                  ftblReserved: 0,
-                                 usesFTBL: false)
+                                 usesFTBL: false,
+                                 files: [],
+                                 fileChainsIntact: true)
 
         guard let volume = chunks[0], volume.count >= volumeHeaderSize else {
             return info                       // no System chunk 0 ⇒ signature invalid
@@ -160,10 +182,11 @@ enum MFSParser {
         info.fileRecordCount = Int(readUInt16(volume, at: 12))
 
         // ——— File Allocation Table: `fileRecordCount` volume entries (each a
-        // low-level file's first Data chunk, or an empty marker) follow the
-        // volume header inside the System area, two bytes each. Read through
-        // the sparse chunk map (a byte at System-area offset `f` lives in
-        // chunk f / 0x40 at f % 0x40; absent chunks read as 0x00).
+        // low-level file's first Data-FAT slot, or an empty marker) follow the
+        // volume header inside the System area, two bytes each, then one slot
+        // per Data chunk of the whole volume. Read through the sparse chunk
+        // map (a byte at System-area offset `f` lives in chunk f / 0x40 at
+        // f % 0x40; absent chunks read as 0x00).
         if info.fileRecordCount > 0,
            volumeHeaderSize + info.fileRecordCount * 2 <= systemAreaSize {
             var used = 0
@@ -173,6 +196,66 @@ enum MFSParser {
                 if value != 0x0000, value != 0xFFFE, value != 0xFFFF { used += 1 }
             }
             info.usedFileCount = used
+        }
+
+        // ——— Low-level file walk (upstream 7849–7884): every *used* file record
+        // holds the first Data-FAT slot of its file; the slots that follow chain
+        // chunk to chunk (Data slot `f` ≥ FileRecordCount maps to Data chunk
+        // `SystemChunkCount + f − FileRecordCount`) until a small value 1…0x40
+        // marks EOF and gives the final chunk's used byte count. Assembled in
+        // order, that is the file's raw content. A chain that runs out of the
+        // FAT / chunk area (corrupt volume) ends with what it has and clears
+        // `fileChainsIntact`, mirroring upstream's error-and-continue.
+        if info.fileRecordCount > 0 {
+            let dataPageEstimate = max(0, pageCount - pageCount / 12 - 1)
+            let maxDataChunks = dataPageEstimate * dataChunkCount
+            func fatValue(_ slot: Int) -> UInt16 {
+                guard slot >= 0 else { return 0 }
+                let areaOffset = volumeHeaderSize + slot * 2
+                guard areaOffset + 2 <= systemAreaSize else { return 0 }
+                return readSystemAreaUInt16(chunks, at: areaOffset)
+            }
+            var files: [MFSLowLevelFile] = []
+            var intact = true
+            for record in 0..<info.fileRecordCount {
+                var value = fatValue(record)
+                if value == 0x0000 || value == 0xFFFE || value == 0xFFFF { continue }
+                var body = Data()
+                var steps = 0
+                while true {
+                    // A file chain can never visit more distinct Data chunks than
+                    // exist, so bound the walk (a cyclic/corrupt FAT upstream would
+                    // spin on; the engine must not).
+                    steps += 1
+                    if steps > maxDataChunks + 1 {
+                        intact = false
+                        break
+                    }
+                    if value < info.fileRecordCount {   // points back into the records
+                        intact = false
+                        break
+                    }
+                    let dataSlot = Int(value) - info.fileRecordCount
+                    guard dataSlot >= 0, dataSlot < maxDataChunks else {
+                        intact = false
+                        break
+                    }
+                    let chunkIndex = effectiveSystemChunkCount + dataSlot
+                    guard let chunk = chunks[chunkIndex] else {   // missing chunk
+                        intact = false
+                        break
+                    }
+                    value = fatValue(Int(value))                  // next slot in the chain
+                    if value >= 1 && value <= UInt16(chunkRawSize) {   // EOF marker
+                        body.append(chunk.prefix(Int(value)))
+                        break
+                    }
+                    body.append(chunk)
+                }
+                files.append(MFSLowLevelFile(index: record, content: body))
+            }
+            info.files = files
+            info.fileChainsIntact = intact
         }
         return info
     }

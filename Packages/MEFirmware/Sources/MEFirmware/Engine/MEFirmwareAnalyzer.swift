@@ -95,6 +95,9 @@ public actor MEFirmwareAnalyzer {
             let volumeOffset = mfsRegion.offset - baseOffset
             if let info = MFSParser.parse(in: region, offset: volumeOffset,
                                           size: mfsRegion.size) {
+                // The present low-level files are the used records whose FAT chain
+                // assembled real content; upstream lists those, not empty records.
+                let present = info.files.filter { !$0.content.isEmpty }
                 mfsVolume = MFSVolume(
                     offset: mfsRegion.offset, pageSize: info.pageSize,
                     pageCount: info.systemPageCount + info.dataPageCount,
@@ -108,12 +111,20 @@ public actor MEFirmwareAnalyzer {
                     ftblDictionary: info.ftblDictionary,
                     ftblPlatform: info.ftblPlatform,
                     ftblReserved: info.ftblReserved,
-                    usesFTBL: info.usesFTBL)
+                    usesFTBL: info.usesFTBL,
+                    presentFileCount: present.count,
+                    fileBytes: present.reduce(0) { $0 + $1.content.count },
+                    files: present.map { MFSFile(index: $0.index, size: $0.content.count) })
                 if !info.volumeSignatureValid {
                     mfsIssues.append(Issue(id: 8, severity: .warning,
                         message: "MFS volume at 0x\(String(mfsRegion.offset, radix: 16)) "
                             + "is present but its assembled System volume header is "
                             + "missing or its signature is invalid."))
+                } else if !info.fileChainsIntact {
+                    mfsIssues.append(Issue(id: 13, severity: .warning,
+                        message: "MFS volume at 0x\(String(mfsRegion.offset, radix: 16)) "
+                            + "has a low-level file whose FAT chunk chain is corrupt "
+                            + "(ends early or cycles)."))
                 }
             } else {
                 mfsIssues.append(Issue(id: 8, severity: .warning,

@@ -144,4 +144,97 @@ final class MFSTests: XCTestCase {
         // chunk index 0 de-obfuscates to 0 (verified in Python first).
         XCTAssertEqual(CRC16_14.transform(0), 0x0B5B)
     }
+
+    // MARK: Low-level file walk fixtures
+
+    /// A two-page MFS whose System chunk 0 carries a volume header for
+    /// `fileRecords` records plus a FAT, and whose one Data page (first chunk
+    /// index 2 → System area = 2 chunks) holds `dataSlotContents` in its used
+    /// chunk slots. FAT data-slot `f` (≥ `fileRecords`) maps to Data-page slot
+    /// `f − fileRecords`, matching the parser's `sys + f − fileRecords` index.
+    private static func makeFileVolume(fileRecords: UInt16,
+                                       fat: [Int: UInt16],
+                                       dataSlotContents: [Data]) -> Data {
+        // System page with only System chunk index 0 used.
+        var system = Data(repeating: 0xFF, count: 0x2000)
+        system.replaceSubrange(0..<4, with: le32(0xAA55_7887))
+        system.replaceSubrange(4..<8, with: le32(1))
+        system.replaceSubrange(12..<14, with: le16(0))
+        system.replaceSubrange(14..<16, with: le16(0))         // FirstChunkIndex 0 ⇒ System
+        let sysChunkCount = (0x2000 - 0x12 - 2) / (2 + 0x42)
+        system.replaceSubrange(0x12..<0x14, with: le16(0x0B5B))   // obfuscated index 0
+        for slot in 1...sysChunkCount {
+            let at = 0x12 + slot * 2
+            system.replaceSubrange(at..<(at + 2), with: le16(0xC000))
+        }
+        let sysIndexBytes = sysChunkCount * 2 + 2
+        // Volume chunk 0 raw (0x40): signature + 0xE header + FAT u16 slots.
+        var volume = Data(repeating: 0x00, count: 0x40)
+        volume.replaceSubrange(0..<4, with: le32(0x724F_6201))
+        volume[4] = 0x0A; volume[5] = 0x01
+        volume.replaceSubrange(8..<12, with: le32(0x1200))
+        volume.replaceSubrange(12..<14, with: le16(fileRecords))
+        // All records empty by default; `fat` overrides record and data slots.
+        for record in 0..<Int(fileRecords) {
+            let at = 0x0E + record * 2
+            volume.replaceSubrange(at..<(at + 2), with: le16(0xFFFF))
+        }
+        for (slot, value) in fat {
+            let at = 0x0E + slot * 2
+            precondition(at + 2 <= 0x40)
+            volume.replaceSubrange(at..<(at + 2), with: le16(value))
+        }
+        system.replaceSubrange((0x12 + sysIndexBytes)..<(0x12 + sysIndexBytes + 0x40),
+                               with: volume)
+
+        // Data page: first chunk index 2, used slots carry `dataSlotContents`.
+        var data = Data(repeating: 0xFF, count: 0x2000)
+        data.replaceSubrange(0..<4, with: le32(0xAA55_7887))
+        data.replaceSubrange(4..<8, with: le32(2))
+        data.replaceSubrange(14..<16, with: le16(2))            // FirstChunkIndex 2 ⇒ Data
+        let dataChunkCount = (0x2000 - 0x12) / (1 + 0x42)
+        for (slot, content) in dataSlotContents.enumerated() {
+            precondition(content.count <= 0x40)
+            data[0x12 + slot] = 0x00                            // used chunk marker
+            let at = 0x12 + dataChunkCount + slot * 0x42
+            data.replaceSubrange(at..<(at + content.count), with: content)
+        }
+        var out = system
+        out.append(data)
+        return out
+    }
+
+    func testWalksLowLevelFileChainsAcrossFAT() throws {
+        // Two used records chain into the two Data-page chunks and end on EOF
+        // markers that also give each file's final byte count.
+        let region = Self.makeFileVolume(
+            fileRecords: 20,
+            fat: [0: 20, 1: 21, 20: 6, 21: 4],       // record0→slot20(EOF 6), record1→slot21(EOF 4)
+            dataSlotContents: [Data(repeating: 0x41, count: 0x40),   // 'A' chunk
+                               Data(repeating: 0x42, count: 0x40)])  // 'B' chunk
+        let info = try XCTUnwrap(MFSParser.parse(in: region, offset: 0, size: region.count))
+
+        XCTAssertEqual(info.usedFileCount, 2)
+        XCTAssertTrue(info.fileChainsIntact)
+        XCTAssertEqual(info.files.count, 2)
+        XCTAssertEqual(info.files.map(\.index), [0, 1])
+        XCTAssertEqual(info.files[0].content, Data(repeating: 0x41, count: 6))
+        XCTAssertEqual(info.files[1].content, Data(repeating: 0x42, count: 4))
+    }
+
+    func testUsedButCorruptChainIsNonFatalAndFlagged() throws {
+        // Record 0's FAT value (a data slot ≥ fileRecords) points at a Data chunk
+        // the volume does not carry → the walk stops with what it has and reports
+        // the volume's chains as not intact, rather than failing the parse.
+        let region = Self.makeFileVolume(
+            fileRecords: 20,
+            fat: [0: 60],                             // slot 60 → chunk 42, absent
+            dataSlotContents: [])
+        let info = try XCTUnwrap(MFSParser.parse(in: region, offset: 0, size: region.count))
+
+        XCTAssertEqual(info.usedFileCount, 1)
+        XCTAssertFalse(info.fileChainsIntact)
+        XCTAssertEqual(info.files.count, 1)           // the used record is still listed
+        XCTAssertTrue(info.files[0].content.isEmpty)  // but no chunk was reachable
+    }
 }
