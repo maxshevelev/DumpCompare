@@ -158,6 +158,35 @@ final class UEFIToolFlowTests: XCTestCase {
     /// because no other table was ever cell-based. Asserting
     /// `focusRingType == .none` instead would only have restated a line of
     /// setup; asserting the cell view is the thing that decides.
+    /// Name is the column the reader is after — a GUID or a catalogue name —
+    /// so it starts wider than Type and Subtype put together, and those two
+    /// start no wider than the short words they hold.
+    func testNameStartsWiderThanTheTwoTypeColumns() throws {
+        _ = try open(UEFITestImage.make())
+        let outline = try outline()
+
+        func width(_ identifier: String) throws -> CGFloat {
+            try XCTUnwrap(outline.tableColumn(withIdentifier: .init(identifier))).width
+        }
+        let name = try width("name")
+        let type = try width("type")
+        let subtype = try width("subtype")
+
+        XCTAssertGreaterThan(name, type + subtype,
+                             "the tree spends its width on the two columns that "
+                             + "say one short word each")
+        // Wide enough for the longest word each column shows on a normal row
+        // ("Free space", "Empty (FFh)"), and not much wider.
+        let font = ToolPanelFont.body()
+        func rendered(_ text: String) -> CGFloat {
+            (text as NSString).size(withAttributes: [.font: font]).width
+        }
+        XCTAssertGreaterThan(type, rendered("Free space"))
+        XCTAssertLessThan(type, rendered("Free space") * 1.5)
+        XCTAssertGreaterThan(subtype, rendered("Empty (FFh)"))
+        XCTAssertLessThan(subtype, rendered("Empty (FFh)") * 1.5)
+    }
+
     func testATreeRowsTextIsCentredInTheRow() throws {
         _ = try open(UEFITestImage.make())
         let outline = try outline()

@@ -50,10 +50,24 @@ import UEFITool
 
     /// What each column was laid out at — a width for text at
     /// `ToolPanelFont.designSize`, scaled from there to the size the zoom is
-    /// at. Name is not here: it takes whatever the tree is not spending on the
-    /// other two.
-    private static let typeWidth: CGFloat = 90
-    private static let subtypeWidth: CGFloat = 120
+    /// at.
+    ///
+    /// Type and Subtype are as wide as the words they hold and no wider: what
+    /// they say is one short word on almost every row ("Volume", "Section",
+    /// "Driver", "Free space"), and the few long ones — "FlashDeviceMap store"
+    /// — are not worth two columns of empty space on every other row. Name is
+    /// the column with something to say, so it gets the rest: the widest thing
+    /// in the tree is a GUID or a catalogue name, and a truncated one is the
+    /// row the reader came for.
+    ///
+    /// Both are as narrow as they can be and still hold the longest word a
+    /// normal row puts in them — "Free space" and "Empty (FFh)", measured at
+    /// the design size with the cell's own 2-point insets — so taking another
+    /// few points off either would start truncating the rows that are there on
+    /// every dump.
+    private static let nameWidth: CGFloat = 319
+    private static let typeWidth: CGFloat = 62
+    private static let subtypeWidth: CGFloat = 69
 
     /// The size the widths on screen were scaled for. A zoom moves them by
     /// what has changed since, so a column the user dragged keeps the width
@@ -176,7 +190,7 @@ import UEFITool
 
         let name = NSTableColumn(identifier: Column.name)
         name.title = "Name"
-        name.width = 240
+        name.width = Self.nameWidth
         // Draggable, and the one column that also takes the slack when the
         // panel is resized. Without `.userResizingMask` a column cannot be
         // dragged at all, whatever `allowsColumnResizing` says.
