@@ -4,7 +4,9 @@ import XCTest
 /// Walking a volume's body into files (§5).
 final class FileParseTests: XCTestCase {
     private func volume(_ files: [[UInt8]], length: UInt64 = 0x400) -> UEFINode {
-        UEFIParser.parse(TestImage.volume(length: length, files: files)).roots[0]
+        // The file is a lone volume, so the parser's `UEFI image` root has it
+        // as its only child — open that envelope out to reach the volume.
+        UEFIParser.parse(TestImage.volume(length: length, files: files)).roots[0].children[0]
     }
 
     private func parse(_ files: [[UInt8]], length: UInt64 = 0x400) -> UEFIImage {
@@ -78,7 +80,7 @@ final class FileParseTests: XCTestCase {
     func testAFileOfZeroSizeStopsTheWalk() {
         let parsed = parse([TestImage.file(body: [1, 2, 3, 4], size: 0), TestImage.file(body: [9])])
 
-        XCTAssertTrue(parsed.roots[0].children.isEmpty)
+        XCTAssertTrue(parsed.roots[0].children[0].children.isEmpty)
         XCTAssertEqual(parsed.diagnostics.map(\.kind), [.zeroSize(.fileHeader)])
         XCTAssertEqual(parsed.diagnostics.map(\.offset), [0x5C])
     }
@@ -86,7 +88,7 @@ final class FileParseTests: XCTestCase {
     func testAFileSmallerThanItsHeaderStopsTheWalk() {
         let parsed = parse([TestImage.file(body: [1, 2, 3, 4], size: 0x10)])
 
-        XCTAssertTrue(parsed.roots[0].children.isEmpty)
+        XCTAssertTrue(parsed.roots[0].children[0].children.isEmpty)
         XCTAssertEqual(
             parsed.diagnostics.map(\.kind),
             [.sizeMismatch(.fileHeader, stored: 0x10, computed: 0x18)]
@@ -97,14 +99,14 @@ final class FileParseTests: XCTestCase {
     func testAFileRunningPastTheVolumeIsCutAndReported() {
         let parsed = parse([TestImage.file(body: [1, 2, 3, 4], size: 0x600)])
 
-        XCTAssertEqual(parsed.roots[0].children.map(\.range), [0x48..<0x400])
+        XCTAssertEqual(parsed.roots[0].children[0].children.map(\.range), [0x48..<0x400])
         XCTAssertEqual(parsed.diagnostics.map(\.kind), [.truncated(.fileBody)])
     }
 
     func testAStaleHeaderChecksumIsReported() {
         let parsed = parse([TestImage.file(body: [1, 2], headerChecksum: 0x11)])
 
-        XCTAssertEqual(parsed.roots[0].children.map(\.kind), [.file, .padding, .freeSpace])
+        XCTAssertEqual(parsed.roots[0].children[0].children.map(\.kind), [.file, .padding, .freeSpace])
         XCTAssertEqual(parsed.diagnostics.count, 1)
         XCTAssertEqual(parsed.diagnostics[0].offset, 0x58)
         guard case .checksumMismatch(.fileHeader, let stored, _) = parsed.diagnostics[0].kind else {
@@ -141,9 +143,9 @@ final class FileParseTests: XCTestCase {
     func testAnUnknownFileTypeIsReportedAndKept() {
         let parsed = parse([TestImage.file(type: 0x42, body: [1])])
 
-        XCTAssertEqual(parsed.roots[0].children.map(\.kind), [.file, .padding, .freeSpace])
+        XCTAssertEqual(parsed.roots[0].children[0].children.map(\.kind), [.file, .padding, .freeSpace])
         XCTAssertEqual(parsed.diagnostics.map(\.kind), [.unknownType(.fileHeader, 0x42)])
-        XCTAssertEqual(parsed.roots[0].children[0].name, "File type 0x42")
+        XCTAssertEqual(parsed.roots[0].children[0].children[0].name, "File type 0x42")
     }
 
     /// FFSv3 puts a large file's size in a 64-bit field after the base header,
@@ -154,7 +156,7 @@ final class FileParseTests: XCTestCase {
             fileSystem: KnownGUIDs.ffsV3,
             files: [TestImage.largeFile(body: [1, 2, 3, 4, 5, 6, 7, 8])]
         )
-        let file = UEFIParser.parse(image).roots[0].children[0]
+        let file = UEFIParser.parse(image).roots[0].children[0].children[0]
 
         XCTAssertEqual(file.header, 0x48..<0x68)
         XCTAssertEqual(file.body, 0x68..<0x70)
@@ -172,7 +174,7 @@ final class FileParseTests: XCTestCase {
                 volumeRevision: 1
             )]
         )
-        let file = UEFIParser.parse(image).roots[0].children[0]
+        let file = UEFIParser.parse(image).roots[0].children[0].children[0]
 
         XCTAssertEqual(file.header, 0x48..<0x60)
         XCTAssertEqual(file.body, 0x60..<0x64)
@@ -188,7 +190,7 @@ final class FileParseTests: XCTestCase {
             files: [TestImage.file(body: [1, 2, 3, 4, 5, 6, 7, 8])],
             trailing: [UInt8](repeating: 0xFF, count: 0x100) + [0x11, 0x22, 0x33, 0x44]
         )
-        let children = UEFIParser.parse(image).roots[0].children
+        let children = UEFIParser.parse(image).roots[0].children[0].children
 
         XCTAssertEqual(children.map(\.kind), [.file, .freeSpace, .nonUEFIData])
         XCTAssertEqual(children[2].range, 0x168..<0x400)
@@ -203,7 +205,7 @@ final class FileParseTests: XCTestCase {
             files: [TestImage.file(body: [1, 2, 3, 4, 5, 6, 7, 8])],
             trailing: [UInt8](repeating: 0xFF, count: 0x100) + TestImage.microcode()
         )
-        let children = UEFIParser.parse(image).roots[0].children
+        let children = UEFIParser.parse(image).roots[0].children[0].children
         let data = children.last
 
         XCTAssertEqual(data?.kind, .nonUEFIData)
@@ -220,7 +222,7 @@ final class FileParseTests: XCTestCase {
             files: [TestImage.file(body: [1, 2, 3, 4, 5, 6, 7, 8])],
             trailing: [UInt8](repeating: 0xFF, count: 0x101) + [0x11, 0x22, 0x33, 0x44]
         )
-        let children = UEFIParser.parse(image).roots[0].children
+        let children = UEFIParser.parse(image).roots[0].children[0].children
 
         XCTAssertEqual(children.map(\.range), [0x48..<0x68, 0x68..<0x168, 0x168..<0x400])
     }

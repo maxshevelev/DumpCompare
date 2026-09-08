@@ -16,8 +16,8 @@ final class VolumeParseTests: XCTestCase {
 
         let parsed = parse(image)
 
-        XCTAssertEqual(parsed.roots.map(\.kind), [.padding, .volume, .padding])
-        XCTAssertEqual(parsed.roots.map(\.range), [0..<0x100, 0x100..<0x500, 0x500..<0x600])
+        XCTAssertEqual(parsed.roots[0].children.map(\.kind), [.padding, .volume, .padding])
+        XCTAssertEqual(parsed.roots[0].children.map(\.range), [0..<0x100, 0x100..<0x500, 0x500..<0x600])
     }
 
     /// Erased padding and padding with something in it are not the same thing
@@ -28,8 +28,8 @@ final class VolumeParseTests: XCTestCase {
 
         let parsed = parse(image)
 
-        XCTAssertEqual(parsed.roots.first?.isErased, false)
-        XCTAssertEqual(parsed.roots.first?.name, "Padding")
+        XCTAssertEqual(parsed.roots[0].children.first?.isErased, false)
+        XCTAssertEqual(parsed.roots[0].children.first?.name, "Padding")
     }
 
     /// The body starts after the header, and the header is where the file walk
@@ -37,7 +37,7 @@ final class VolumeParseTests: XCTestCase {
     /// misread.
     func testTheHeaderAndBodyAreSplitAtTheHeaderLength() {
         let parsed = parse(TestImage.volume(length: 0x400))
-        let volume = parsed.roots[0]
+        let volume = parsed.roots[0].children[0]
 
         XCTAssertEqual(volume.header, 0..<0x48)
         XCTAssertEqual(volume.body, 0x48..<0x400)
@@ -55,7 +55,7 @@ final class VolumeParseTests: XCTestCase {
 
         let parsed = parse(image)
 
-        XCTAssertEqual(parsed.roots.map(\.kind), [.padding])
+        XCTAssertEqual(parsed.roots[0].children.map(\.kind), [.padding])
         XCTAssertTrue(parsed.diagnostics.isEmpty)
     }
 
@@ -63,7 +63,7 @@ final class VolumeParseTests: XCTestCase {
         var image = [UInt8](repeating: 0xFF, count: 0x100)
         image[0x10] = 0x5F; image[0x11] = 0x46; image[0x12] = 0x56; image[0x13] = 0x48
 
-        XCTAssertEqual(parse(image).roots.map(\.kind), [.padding])
+        XCTAssertEqual(parse(image).roots[0].children.map(\.kind), [.padding])
     }
 
     /// A checksum that no longer matches is the ordinary trace of an image
@@ -71,7 +71,7 @@ final class VolumeParseTests: XCTestCase {
     func testAStaleHeaderChecksumIsReported() {
         let parsed = parse(TestImage.volume(length: 0x400, checksum: 0x1234))
 
-        XCTAssertEqual(parsed.roots.map(\.kind), [.volume])
+        XCTAssertEqual(parsed.roots[0].children.map(\.kind), [.volume])
         XCTAssertEqual(
             parsed.diagnostics.map(\.kind),
             [.checksumMismatch(.volumeHeader, stored: 0x1234, computed: 0xE5D1)]
@@ -84,7 +84,7 @@ final class VolumeParseTests: XCTestCase {
     func testABlockMapThatDisagreesWithTheLengthIsReported() {
         let parsed = parse(TestImage.volume(length: 0x400, blockMapLength: 0x200))
 
-        XCTAssertEqual(parsed.roots.map(\.range), [0..<0x400])
+        XCTAssertEqual(parsed.roots[0].children.map(\.range), [0..<0x400])
         XCTAssertEqual(
             parsed.diagnostics.map(\.kind),
             [.sizeMismatch(.volumeHeader, stored: 0x400, computed: 0x200)]
@@ -97,7 +97,7 @@ final class VolumeParseTests: XCTestCase {
         let volume = TestImage.volume(length: 0x400)
         let parsed = parse(Array(volume[0..<0x300]))
 
-        XCTAssertEqual(parsed.roots.map(\.range), [0..<0x300])
+        XCTAssertEqual(parsed.roots[0].children.map(\.range), [0..<0x300])
         XCTAssertEqual(parsed.diagnostics.map(\.kind), [.truncated(.volumeBody)])
     }
 
@@ -108,9 +108,9 @@ final class VolumeParseTests: XCTestCase {
         let nvram = KnownGUIDs.guid("FFF12B8D-7696-4C8B-A985-2747075B4F50")
         let parsed = parse(TestImage.volume(fileSystem: nvram, length: 0x400))
 
-        XCTAssertEqual(parsed.roots.map(\.name), ["NVRAM store"])
-        XCTAssertEqual(parsed.roots[0].children.map(\.kind), [.freeSpace])
-        XCTAssertEqual(parsed.roots[0].children.map(\.range), [0x48..<0x400])
+        XCTAssertEqual(parsed.roots[0].children.map(\.name), ["NVRAM store"])
+        XCTAssertEqual(parsed.roots[0].children[0].children.map(\.kind), [.freeSpace])
+        XCTAssertEqual(parsed.roots[0].children[0].children.map(\.range), [0x48..<0x400])
         XCTAssertTrue(parsed.diagnostics.isEmpty)
     }
 
@@ -120,14 +120,14 @@ final class VolumeParseTests: XCTestCase {
         let unknown = KnownGUIDs.guid("11111111-2222-3333-4444-555555555555")
         let parsed = parse(TestImage.volume(fileSystem: unknown, length: 0x400))
 
-        XCTAssertTrue(parsed.roots[0].children.isEmpty)
+        XCTAssertTrue(parsed.roots[0].children[0].children.isEmpty)
         XCTAssertEqual(parsed.diagnostics.map(\.kind), [.unknownFileSystem(unknown)])
     }
 
     func testARevisionOutsideOneAndTwoIsNotAVolume() {
         let parsed = parse(TestImage.volume(revision: 3, length: 0x400))
 
-        XCTAssertEqual(parsed.roots.map(\.kind), [.padding])
+        XCTAssertEqual(parsed.roots[0].children.map(\.kind), [.padding])
     }
 
     /// The extended header moves the body but stays outside the checksum
@@ -136,7 +136,7 @@ final class VolumeParseTests: XCTestCase {
     func testAnExtendedHeaderMovesTheBodyAndStaysOutOfTheChecksum() {
         let name = KnownGUIDs.guid("AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")
         let parsed = parse(TestImage.volume(length: 0x400, extendedHeader: name))
-        let volume = parsed.roots[0]
+        let volume = parsed.roots[0].children[0]
 
         XCTAssertEqual(volume.header, 0..<0x60)   // 0x48 + 0x14, aligned up to eight
         XCTAssertEqual(volume.body, 0x60..<0x400)
@@ -150,7 +150,7 @@ final class VolumeParseTests: XCTestCase {
 
         let parsed = UEFIParser.parse(bytes)
 
-        XCTAssertEqual(parsed.roots.map(\.kind), [.volume])
+        XCTAssertEqual(parsed.roots[0].children.map(\.kind), [.volume])
         XCTAssertTrue(parsed.diagnostics.contains { $0.kind == .truncated(.volumeExtendedHeader) })
     }
 
@@ -158,7 +158,7 @@ final class VolumeParseTests: XCTestCase {
     /// volume's attribute that says (§3.5).
     func testAVolumeErasedWithZeroesReadsItsFreeSpaceAsFree() {
         let parsed = parse(TestImage.volume(length: 0x400, emptyByte: 0x00))
-        let volume = parsed.roots[0]
+        let volume = parsed.roots[0].children[0]
 
         XCTAssertEqual(volume.children.map(\.kind), [.freeSpace])
         XCTAssertEqual(volume.children.map(\.range), [0x48..<0x400])

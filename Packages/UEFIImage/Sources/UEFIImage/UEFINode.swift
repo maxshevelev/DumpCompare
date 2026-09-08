@@ -136,6 +136,12 @@ public enum UEFINodeKind: String, Equatable, Sendable, CaseIterable {
     /// under one root the way UEFITool shows it (§2.2). Its body is the whole
     /// image and its children are the descriptor and regions laid out in it.
     case intelImage
+    /// The fallback root of a file that is neither a capsule nor an Intel
+    /// descriptor image: whatever the scan found, grouped under one Image node
+    /// the way UEFITool always shows one (§4). Same `Image` type as
+    /// `.intelImage`, told apart by subtype — an empty header and a body that is
+    /// the whole range, with the raw-area scan as children.
+    case uefiImage
     case flashDescriptor
     case region
     case volume

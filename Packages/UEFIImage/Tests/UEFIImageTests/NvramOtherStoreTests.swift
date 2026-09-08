@@ -27,7 +27,7 @@ final class NvramOtherStoreTests: XCTestCase {
             TestNVRAM.sysfVariable(name: "BootOrder", data: [0x01, 0x02]),
         ])
         let parsed = parse(TestNVRAM.nvramVolume(stores: [store]))
-        let volume = parsed.roots[0]
+        let volume = parsed.roots[0].children[0]
 
         XCTAssertEqual(volume.children.map(\.kind), [.sysFStore])
         let sysf = volume.children[0]
@@ -61,7 +61,7 @@ final class NvramOtherStoreTests: XCTestCase {
             signature: NVRAM.appleDiagSignature
         )
         let parsed = parse(TestNVRAM.nvramVolume(stores: [store]))
-        let sysf = parsed.roots[0].children[0]
+        let sysf = parsed.roots[0].children[0].children[0]
 
         XCTAssertEqual(sysf.name, "Apple Diag store")
         let variable = sysf.children[0]
@@ -78,7 +78,7 @@ final class NvramOtherStoreTests: XCTestCase {
         )
         let parsed = parse(TestNVRAM.nvramVolume(stores: [store]))
 
-        XCTAssertEqual(parsed.roots[0].children.map(\.kind), [.padding])
+        XCTAssertEqual(parsed.roots[0].children[0].children.map(\.kind), [.padding])
     }
 
     // MARK: - Phoenix SCT flash map
@@ -101,7 +101,7 @@ final class NvramOtherStoreTests: XCTestCase {
         let parsed = parse(TestNVRAM.nvramVolume(stores: [
             TestNVRAM.flashMapStore(entries: [entryA, entryB, entryC]),
         ]))
-        let volume = parsed.roots[0]
+        let volume = parsed.roots[0].children[0]
 
         XCTAssertEqual(volume.children.map(\.kind), [.flashMapStore])
         let map = volume.children[0]
@@ -135,7 +135,7 @@ final class NvramOtherStoreTests: XCTestCase {
         )
         let parsed = parse(TestNVRAM.nvramVolume(stores: [store]))
 
-        XCTAssertEqual(parsed.roots[0].children.map(\.kind), [.padding])
+        XCTAssertEqual(parsed.roots[0].children[0].children.map(\.kind), [.padding])
     }
 
     // MARK: - Phoenix EVSA
@@ -154,7 +154,7 @@ final class NvramOtherStoreTests: XCTestCase {
             freeSpace: 0
         )
         let parsed = parse(TestNVRAM.nvramVolume(stores: [store]))
-        let volume = parsed.roots[0]
+        let volume = parsed.roots[0].children[0]
 
         XCTAssertEqual(volume.children.map(\.kind), [.evsaStore])
         let evsa = volume.children[0]
@@ -202,7 +202,7 @@ final class NvramOtherStoreTests: XCTestCase {
             freeSpace: 0
         )
         let parsed = parse(TestNVRAM.nvramVolume(stores: [store]))
-        let variables = parsed.roots[0].children[0].children
+        let variables = parsed.roots[0].children[0].children[0].children
 
         XCTAssertEqual(variables.count, 4)
         XCTAssertEqual(variables[2].subtype, UEFITypes.Sub.invalidEvsaEntry)
@@ -221,7 +221,7 @@ final class NvramOtherStoreTests: XCTestCase {
             ),
         ])
         let parsed = parse(TestNVRAM.nvramVolume(stores: [store]))
-        let children = parsed.roots[0].children[0].children
+        let children = parsed.roots[0].children[0].children[0].children
 
         XCTAssertEqual(children.map(\.kind), [.evsaEntry, .freeSpace])
         XCTAssertEqual(children[1].range, 0x72..<0x82)
@@ -234,7 +234,7 @@ final class NvramOtherStoreTests: XCTestCase {
         let store = TestNVRAM.evsaStore(size: 0x400)
         let parsed = parse(TestNVRAM.nvramVolume(stores: [store]))
 
-        XCTAssertEqual(parsed.roots[0].children.map(\.kind), [.padding])
+        XCTAssertEqual(parsed.roots[0].children[0].children.map(\.kind), [.padding])
     }
 
     // MARK: - Phoenix CMDB, Microsoft SLIC
@@ -243,7 +243,7 @@ final class NvramOtherStoreTests: XCTestCase {
     /// whole.
     func testACmdbStoreIsKeptWhole() {
         let parsed = parse(TestNVRAM.nvramVolume(stores: [TestNVRAM.cmdbStore()]))
-        let volume = parsed.roots[0]
+        let volume = parsed.roots[0].children[0]
 
         XCTAssertEqual(volume.children.map(\.kind), [.cmdbStore])
         let cmdb = volume.children[0]
@@ -256,7 +256,7 @@ final class NvramOtherStoreTests: XCTestCase {
     /// A SLIC public key is a fixed 0x9C-byte activation record, a whole leaf.
     func testASlicPublicKeyIsKeptWhole() {
         let parsed = parse(TestNVRAM.nvramVolume(stores: [TestNVRAM.slicPubkey()]))
-        let volume = parsed.roots[0]
+        let volume = parsed.roots[0].children[0]
 
         XCTAssertEqual(volume.children.map(\.kind), [.slicData])
         let pubkey = volume.children[0]
@@ -269,7 +269,7 @@ final class NvramOtherStoreTests: XCTestCase {
     /// A SLIC marker is a fixed 0xB6-byte activation record, a whole leaf.
     func testASlicMarkerIsKeptWhole() {
         let parsed = parse(TestNVRAM.nvramVolume(stores: [TestNVRAM.slicMarker()]))
-        let volume = parsed.roots[0]
+        let volume = parsed.roots[0].children[0]
 
         XCTAssertEqual(volume.children.map(\.kind), [.slicData])
         let marker = volume.children[0]

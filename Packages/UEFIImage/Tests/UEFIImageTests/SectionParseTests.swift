@@ -5,10 +5,12 @@ import XCTest
 /// stops being a list (§6).
 final class SectionParseTests: XCTestCase {
     private func file(_ sections: [[UInt8]], ffs: EFIGUID = KnownGUIDs.ffsV2) -> UEFINode {
+        // The file is a lone volume, so the parser's `UEFI image` root has it
+        // as its only child — open that envelope out to reach the volume's file.
         UEFIParser.parse(TestImage.volume(
             fileSystem: ffs,
             files: [TestImage.sectionedFile(sections: sections)]
-        )).roots[0].children[0]
+        )).roots[0].children[0].children[0]
     }
 
     private func diagnostics(_ sections: [[UInt8]]) -> [UEFIDiagnostic.Kind] {
@@ -223,7 +225,7 @@ final class SectionParseTests: XCTestCase {
 
     func testSectionsStopAtTheDepthLimit() {
         let parsed = UEFIParser.parse(nestedImage, limits: UEFIParser.Limits(maxDepth: 2))
-        let file = parsed.roots[0].children[0]
+        let file = parsed.roots[0].children[0].children[0]
 
         XCTAssertEqual(file.kind, .file)
         XCTAssertTrue(file.children.isEmpty)
@@ -233,7 +235,7 @@ final class SectionParseTests: XCTestCase {
 
     func testANestedVolumeStopsAtTheDepthLimit() {
         let parsed = UEFIParser.parse(nestedImage, limits: UEFIParser.Limits(maxDepth: 3))
-        let volume = parsed.roots[0].children[0].children[0].children[0]
+        let volume = parsed.roots[0].children[0].children[0].children[0].children[0]
 
         XCTAssertEqual(volume.kind, .volume)
         XCTAssertTrue(volume.children.isEmpty)

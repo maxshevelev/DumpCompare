@@ -25,7 +25,7 @@ final class ChecksumRepairTests: XCTestCase {
         XCTAssertFalse(parsed.diagnostics.isEmpty)
 
         let repairs = UEFIChecksums.repairs(
-            for: parsed.roots[0].children[0], volumeRevision: 2, in: ImageReader(image)
+            for: parsed.roots[0].children[0].children[0], volumeRevision: 2, in: ImageReader(image)
         )
 
         XCTAssertEqual(repairs.map(\.offset), [0x59])
@@ -39,7 +39,7 @@ final class ChecksumRepairTests: XCTestCase {
         XCTAssertFalse(parsed.diagnostics.isEmpty)
 
         let repairs = UEFIChecksums.repairs(
-            for: parsed.roots[0].children[0], volumeRevision: 2, in: ImageReader(image)
+            for: parsed.roots[0].children[0].children[0], volumeRevision: 2, in: ImageReader(image)
         )
 
         XCTAssertEqual(repairs.map(\.offset), [0x58])
@@ -53,7 +53,7 @@ final class ChecksumRepairTests: XCTestCase {
         let parsed = UEFIParser.parse(image)
 
         XCTAssertTrue(UEFIChecksums.repairs(
-            for: parsed.roots[0].children[0], volumeRevision: 2, in: ImageReader(image)
+            for: parsed.roots[0].children[0].children[0], volumeRevision: 2, in: ImageReader(image)
         ).isEmpty)
     }
 
@@ -63,7 +63,7 @@ final class ChecksumRepairTests: XCTestCase {
         let image = TestImage.volume(files: [
             TestImage.file(body: [1, 2], bodyChecksum: 0x00)
         ])
-        let file = UEFIParser.parse(image).roots[0].children[0]
+        let file = UEFIParser.parse(image).roots[0].children[0].children[0]
 
         XCTAssertEqual(
             UEFIChecksums.repairs(for: file, volumeRevision: 2, in: ImageReader(image))
@@ -86,7 +86,7 @@ final class ChecksumRepairTests: XCTestCase {
         let parsed = UEFIParser.parse(image)
         XCTAssertFalse(parsed.diagnostics.isEmpty)
 
-        let repairs = UEFIChecksums.repairs(forVolume: parsed.roots[0], in: ImageReader(image))
+        let repairs = UEFIChecksums.repairs(forVolume: parsed.roots[0].children[0], in: ImageReader(image))
 
         XCTAssertEqual(repairs.map(\.offset), [0x32])
         XCTAssertTrue(UEFIParser.parse(applying(repairs, to: image)).diagnostics.isEmpty)
@@ -97,7 +97,7 @@ final class ChecksumRepairTests: XCTestCase {
         let parsed = UEFIParser.parse(image)
 
         XCTAssertTrue(
-            UEFIChecksums.repairs(forVolume: parsed.roots[0], in: ImageReader(image)).isEmpty
+            UEFIChecksums.repairs(forVolume: parsed.roots[0].children[0], in: ImageReader(image)).isEmpty
         )
     }
 
@@ -109,7 +109,7 @@ final class ChecksumRepairTests: XCTestCase {
         let parsed = UEFIParser.parse(image)
         XCTAssertFalse(parsed.diagnostics.isEmpty)
 
-        let repairs = UEFIChecksums.repairs(forMicrocode: parsed.roots[0], in: ImageReader(image))
+        let repairs = UEFIChecksums.repairs(forMicrocode: parsed.roots[0].children[0], in: ImageReader(image))
 
         XCTAssertEqual(repairs.map(\.offset), [0x10])
         XCTAssertTrue(UEFIParser.parse(applying(repairs, to: image)).diagnostics.isEmpty)
@@ -124,7 +124,7 @@ final class ChecksumRepairTests: XCTestCase {
         image[0x52] = 0x0A                       // a file header worth repairing
         let parsed = UEFIParser.parse(image)
         let reader = ImageReader(image)
-        var volume = parsed.roots[0]
+        var volume = parsed.roots[0].children[0]
         var file = volume.children[0]
 
         XCTAssertFalse(UEFIChecksums.repairs(forVolume: volume, in: reader).isEmpty)
@@ -134,6 +134,6 @@ final class ChecksumRepairTests: XCTestCase {
         file.kind = .microcode
         XCTAssertTrue(UEFIChecksums.repairs(forVolume: volume, in: reader).isEmpty)
         XCTAssertTrue(UEFIChecksums.repairs(for: file, volumeRevision: 2, in: reader).isEmpty)
-        XCTAssertTrue(UEFIChecksums.repairs(forMicrocode: parsed.roots[0], in: reader).isEmpty)
+        XCTAssertTrue(UEFIChecksums.repairs(forMicrocode: parsed.roots[0].children[0], in: reader).isEmpty)
     }
 }

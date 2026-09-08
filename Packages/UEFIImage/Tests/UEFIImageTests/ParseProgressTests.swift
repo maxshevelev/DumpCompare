@@ -26,7 +26,7 @@ final class ParseProgressTests: XCTestCase {
         }
         XCTAssertEqual(seen.last, 1,
                        "a scan that reads to the end of the image reports having done so")
-        XCTAssertEqual(parsed.roots.map(\.kind), [.padding])
+        XCTAssertEqual(parsed.roots[0].children.map(\.kind), [.padding])
     }
 
     /// Reporting is opt-in: no callback, no overhead, and — importantly — the
@@ -38,7 +38,7 @@ final class ParseProgressTests: XCTestCase {
 
         let parsed = UEFIParser.parse(image)
 
-        XCTAssertEqual(parsed.roots.map(\.kind), [.padding])
+        XCTAssertEqual(parsed.roots[0].children.map(\.kind), [.padding])
         XCTAssertTrue(parsed.diagnostics.isEmpty)
     }
 }

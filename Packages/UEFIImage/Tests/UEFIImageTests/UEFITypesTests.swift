@@ -86,6 +86,8 @@ final class UEFIItemClassificationTests: XCTestCase {
         XCTAssertEqual(node(.capsule).uefiItemType, UEFITypes.Item.capsule.rawValue)
         // The whole of an Intel flash image is an Image, the same as a capsule.
         XCTAssertEqual(node(.intelImage).uefiItemType, UEFITypes.Item.image.rawValue)
+        // And so is the UEFI image root that wraps any other file.
+        XCTAssertEqual(node(.uefiImage).uefiItemType, UEFITypes.Item.image.rawValue)
         XCTAssertEqual(node(.flashDescriptor).uefiItemType, UEFITypes.Item.region.rawValue)
         XCTAssertEqual(node(.region).uefiItemType, UEFITypes.Item.region.rawValue)
         XCTAssertEqual(node(.volume).uefiItemType, UEFITypes.Item.volume.rawValue)
@@ -137,6 +139,12 @@ final class UEFIItemClassificationTests: XCTestCase {
     /// capsule, told apart by subtype.
     func testAnIntelImageReadsAsImageIntel() {
         XCTAssertEqual(node(.intelImage).uefiItemSubtype, UEFITypes.Sub.intelImage)
+    }
+
+    /// The UEFI image root is the Image/UEFI pair: the same fallback root, told
+    /// apart from Intel's by subtype (§4).
+    func testAUefiImageReadsAsImageUefi() {
+        XCTAssertEqual(node(.uefiImage).uefiItemSubtype, UEFITypes.Sub.uefiImage)
     }
 
     func testAVolumeIsNamedByItsFileSystemGuid() {

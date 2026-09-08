@@ -123,7 +123,20 @@ final class Parser {
         if hasDescriptorSignature(at: range.lowerBound) {
             return parseIntelImage(range, depth: depth)
         }
-        return scanRawArea(range, emptyByte: Parser.defaultEmptyByte, depth: depth)
+        // Everything else — a lone volume off a chip, a NVRAM blob, bytes to be
+        // searched — is one Image node over the whole file, the root UEFITool
+        // always shows. An empty header and a body that is the whole range make
+        // it a pure wrapper, so the panel can fold it into its title line and
+        // show the scan's children at the top of the tree (§4).
+        return [UEFINode(
+            kind: .uefiImage,
+            subtype: UEFITypes.Sub.uefiImage,
+            name: "UEFI image",
+            header: range.lowerBound..<range.lowerBound,
+            body: range,
+            isFixed: true,
+            children: scanRawArea(range, emptyByte: Parser.defaultEmptyByte, depth: depth)
+        )]
     }
 
     // MARK: - Raw areas
