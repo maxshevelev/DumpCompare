@@ -158,8 +158,12 @@ enum BigInt {
             for i in 0..<t.count - 1 { t[i] = t[i + 1] }
             t[t.count - 1] = 0
         }
-        var result = Array(t.prefix(k))
-        if ge(result, n) { result = subtract(result, n) }
+        // After k reductions t = (a·b + m·n)·R⁻¹ < 2n. When the modulus is large
+        // (top limb ≥ 0x80000000) 2n can reach past R, so the top limb — index k —
+        // must survive: truncating to the low k limbs would drop R−n instead of
+        // subtracting n (a data-dependent wrong result on exactly those moduli).
+        var result = Array(t.prefix(k + 1))
+        while ge(result, n) { result = subtract(result, n) }
         return trim(result)
     }
 

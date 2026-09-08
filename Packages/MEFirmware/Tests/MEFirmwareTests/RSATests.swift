@@ -43,6 +43,22 @@ final class RSATests: XCTestCase {
         XCTAssertEqual(o.embeddedHash, o.dataHash)
     }
 
+    func testCSME16ManifestSignatureValid() throws {
+        // A third real 3072-bit SSA-PSS / SHA-384 manifest, chosen because its
+        // modulus top limb is >= 0x80000000 — the geometry that once broke the
+        // Montgomery 2n-vs-R top-limb truncation (regression guard).
+        let outcome = RSA.validate(
+            tag: "$MN2",
+            publicKey: RealManifests.CSME16Key,
+            exponent: RealManifests.CSME16Exp,
+            signature: RealManifests.CSME16Sig,
+            protectedData: RealManifests.CSME16Protected)
+        let o = try XCTUnwrap(outcome)
+        XCTAssertTrue(o.valid)
+        XCTAssertEqual(o.embeddedHash?.count, 96)   // SHA-384 hex
+        XCTAssertEqual(o.embeddedHash, o.dataHash)
+    }
+
     func testTamperedProtectedDataInvalidatesBothPaths() throws {
         // Flip one byte in the protected window → both signature schemes fail.
         for (key, sig, exp, prot) in [
@@ -50,6 +66,8 @@ final class RSATests: XCTestCase {
              RealManifests.CSME12Exp, RealManifests.CSME12Protected),
             (RealManifests.CSME15Key, RealManifests.CSME15Sig,
              RealManifests.CSME15Exp, RealManifests.CSME15Protected),
+            (RealManifests.CSME16Key, RealManifests.CSME16Sig,
+             RealManifests.CSME16Exp, RealManifests.CSME16Protected),
         ] {
             var tampered = Data(prot)
             tampered[tampered.count - 1] ^= 0x01
