@@ -245,6 +245,14 @@ public actor MEFirmwareAnalyzer {
             }
         }
 
+        // Phase 10: CSME 12+ SKU ("Consumer H") from the operational partition's
+        // CSE_Ext_0C/0x0F_R2 facts + the matched MEA.dat row's platform cell.
+        // The top-level `platform` (chipset support, e.g. "CNP"/"TGP") is gated on
+        // the MFS PCH-init decode (`pch_init_final`) upstream — a later increment
+        // — so it stays empty for the MFS-carrying dumps.
+        let skuText = Self.skuText(identity: identity, codePartition: codePartition,
+                                   year: manifest.year, month: manifest.month)
+
         return FirmwareAnalysis(
             family: identity.family,
             variant: identity.variant,
@@ -254,7 +262,7 @@ public actor MEFirmwareAnalyzer {
             securityVersion: identity.securityVersion,
             release: identity.release,
             type: .region,
-            sku: "",
+            sku: skuText,
             platform: "",
             manufactureDate: Self.manufactureDate(day: manifest.day,
                                                   month: manifest.month,
@@ -345,5 +353,35 @@ public actor MEFirmwareAnalyzer {
         components.month = month
         components.day = day
         return components.date
+    }
+
+    /// The CSME 12+ `SKU` summary value (e.g. "Consumer H"), built from the
+    /// decoded `CSE_Ext_0C`/`CSE_Ext_0F_R2` facts of the operational partition's
+    /// manifest chain plus the matched MEA.dat row (see `Identify/SKU.swift`).
+    /// Empty for any other family, an unrecognised manifest, or when the chain
+    /// gives nothing determinate (no 0x0C/0x0F SKU source).
+    private static func skuText(identity: Identifier.Identity,
+                                codePartition: CodePartition?,
+                                year: Int, month: Int) -> String {
+        guard identity.identified, identity.family == .csme, identity.major >= 12,
+              codePartition != nil else { return "" }
+        // The walker surfaces one payload per tag; multiple 0x0C/0x0F blocks are
+        // possible, and upstream keeps the last of each seen.
+        var clientSystemInfo: ClientSystemInfoExtension?
+        var fwSku: Int?
+        for ext in codePartition?.extensions ?? [] {
+            if let info = ext.clientSystemInfo { clientSystemInfo = info }
+            if let f = ext.signedPackage?.fwSku { fwSku = f }
+        }
+        return SKU.csme(SKU.Facts(
+            variant: identity.variant,
+            major: identity.major, minor: identity.minor,
+            hotfix: identity.hotfix, build: identity.build,
+            year: year, month: month,
+            skuType: clientSystemInfo?.skuType,
+            skuCaps: clientSystemInfo?.skuCaps,
+            skuPlatform: clientSystemInfo?.skuPlatform,
+            fwSku: fwSku,
+            databaseRow: identity.databaseName)) ?? ""
     }
 }

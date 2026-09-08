@@ -87,8 +87,8 @@ ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
 | Upstream symbol(s) | Models | Swift home | Status |
 |---|---|---|---|
 | `get_variant` | RSA-pubkey-hash → variant + shared-pre-key override + release; *module-name fallback deferred to the $CPD port* | `Identify/Identifier.swift` (lookup + small table, not an if-chain) | ported* |
-| `get_cse_db`, `release_fix` | DB query for release/SKU — `release_fix` ported (rsa_pre_keys); `get_cse_db` SKU cells deferred (needs $CPD SKU caps) | `Identify/Identifier.swift` | ported* |
-| `get_csme12_sku`, `sku_db_cse` | CSME12 SKU table logic | `Identify/SKU.swift` | — |
+| `get_cse_db`, `release_fix` | DB query for release/SKU — release + platform/SKU cell (cell 2 PCH platform) feed `Identify/SKU.swift`; `release_fix` ported (rsa_pre_keys) | `Identify/Identifier.swift`, `Identify/SKU.swift` | ported* |
+| `get_csme12_sku`, `sku_db_cse` | CSME 12+ SKU table logic — `SKU.csme`: 0x0C/0x0F_R2 type label ladder + DB-cell override + CSME 12.0.0-alpha `SKUPlatform`/caps fallback + 14.5 H→V & 13 Slim-LP→N corrections; fills `FirmwareAnalysis.sku` | `Identify/SKU.swift` | ported |
 | `note_new_fw` | report firmware absent from DB/repo — surfaced as a `.note` `Issue` by the pipeline | `Identify/Identifier.swift` (note text) | ported* |
 | `get_db_json_obj` | section lookup in MEA.dat — `rsa_pre_keys` block parsed | `Data/MEADatabase.swift` | ported* |
 | `get_fw_ver` | format version string (family zero-padding) | deferred — display text, needs the DB label layer | — |
@@ -97,7 +97,7 @@ ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
 | `mfs_txt_json…`, `ext_table`, `pt_html`, `pt_json`, `struct_json`, `get_struct`, `ext_table` | table/JSON rendering of structs | **n/a — UI renders the result model instead** | n/a |
 
 `ported*` = the identification core is in; the marked piece waits on the `$CPD`
-port (module-name heuristics, SKU cells) or the display/DB-label layer.
+port (module-name heuristics) or the display/DB-label layer.
 
 ## Crypto & checksums
 
