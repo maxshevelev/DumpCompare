@@ -169,12 +169,193 @@ public enum UEFIDetail {
                 fields.append(.init("Limit (4 KiB)", hex((node.range.upperBound - 1) >> 12)))
             }
 
+        case .vssStore:
+            // A VSS store's header is a signature and size, then the format,
+            // state and two reserved words that describe the store (§9).
+            if let format = reader.uint8(at: h + 8) { fields.append(.init("Format", hex(format))) }
+            if let state = reader.uint8(at: h + 9) { fields.append(.init("State", hex(state))) }
+            if let reserved = reader.uint16(at: h + 10) { fields.append(.init("Reserved", hex(reserved))) }
+            if let reserved1 = reader.uint32(at: h + 12) { fields.append(.init("Reserved1", hex(reserved1))) }
+
+        case .vss2Store:
+            // A VSS2 store is the same four fields, after its 16-byte store
+            // GUID and size (§9).
+            if let format = reader.uint8(at: h + 20) { fields.append(.init("Format", hex(format))) }
+            if let state = reader.uint8(at: h + 21) { fields.append(.init("State", hex(state))) }
+            if let reserved = reader.uint16(at: h + 22) { fields.append(.init("Reserved", hex(reserved))) }
+            if let reserved1 = reader.uint32(at: h + 24) { fields.append(.init("Reserved1", hex(reserved1))) }
+
+        case .ftwStore:
+            // An FTW working block checks its own header CRC32, which lives
+            // next to the state byte (§9).
+            if let state = reader.uint8(at: h + 20) { fields.append(.init("State", hex(state))) }
+            if let crc = reader.uint32(at: h + 16) { fields.append(.init("Header CRC32", hex(crc))) }
+
+        case .sysFStore:
+            // A SysF store's header holds two unknown fields after the
+            // signature; the CRC32 over the whole store is its last four bytes.
+            if let unknown = reader.uint8(at: h + 4) { fields.append(.init("Unknown", hex(unknown))) }
+            if let unknown1 = reader.uint32(at: h + 5) { fields.append(.init("Unknown1", hex(unknown1))) }
+            // The store's CRC32 is its final four bytes, over everything before
+            // them — which is where the reference parser reads it.
+            if node.range.upperBound >= h + 4,
+               let stored = reader.uint32(at: node.range.upperBound - 4),
+               let bytes = reader.bytes(at: h, count: node.range.upperBound - 4 - h) {
+                fields.append(.init("CRC32", Checksums.text(stored, valid: Checksums.crc32(bytes) == stored, digits: 8)))
+            }
+
+        case .flashMapStore:
+            // A Phoenix flash map names its regions in an entry count and a
+            // reserved dword before the entries themselves (§9).
+            if let entries = reader.uint16(at: h + 10) { fields.append(.init("Entries", "\(entries)")) }
+            if let reserved = reader.uint32(at: h + 12) { fields.append(.init("Reserved", hex(reserved))) }
+
+        case .flashMapEntry:
+            // The region GUID is the common "GUID" field; the header adds the
+            // data and entry types and the region's physical layout.
+            if let dataType = reader.uint16(at: h + 16) { fields.append(.init("Data type", hex(dataType))) }
+            if let entryType = reader.uint16(at: h + 18) { fields.append(.init("Entry type", hex(entryType))) }
+            if let size = reader.uint32(at: h + 28) { fields.append(.init("Size", hex(size))) }
+            if let offset = reader.uint32(at: h + 32) { fields.append(.init("Offset", hex(offset))) }
+            if let address = reader.uint64(at: h + 20) { fields.append(.init("Physical address", hex(address))) }
+
+        case .evsaStore:
+            // An EVSA store is itself an entry, type 0xEC: attributes, a
+            // reserved word, and a checksum that covers its 20-byte header.
+            if let attributes = reader.uint32(at: h + 8) { fields.append(.init("Attributes", hex(attributes))) }
+            if let reserved = reader.uint32(at: h + 16) { fields.append(.init("Reserved", hex(reserved))) }
+            if let checksum = evsaChecksum(storedAt: h + 1, covering: node.header.upperBound, reader: reader) {
+                fields.append(.init("Checksum", Checksums.text(checksum.value, valid: checksum.valid)))
+            }
+
+        case .vssEntry:
+            // A variable's vendor GUID is the common identity the reference
+            // shows; the tree here is named by the decoded name, so the GUID is
+            // a field of its own. Only the standard and Apple forms put it in
+            // the same place in both a VSS and a VSS2 store, so the read is
+            // gated on them. State, reserved and attributes follow.
+            if node.subtype == UEFITypes.Sub.standardVssEntry
+                || node.subtype == UEFITypes.Sub.appleVssEntry,
+               let vendorGuid = reader.guid(at: h + 16) {
+                fields.append(.init("Variable GUID", guidText(vendorGuid)))
+            }
+            if let state = reader.uint8(at: h + 2) { fields.append(.init("State", hex(state))) }
+            if let reserved = reader.uint8(at: h + 3) { fields.append(.init("Reserved", hex(reserved))) }
+            if let attributes = reader.uint32(at: h + 4) {
+                fields.append(.init("Attributes", bits(attributes, nvramAttributeBits)))
+            }
+
+        case .evsaEntry:
+            // What the header adds depends on the entry's kind: a GUID entry
+            // and a name entry carry one id word each, a data entry carries
+            // both plus an attributes word. The GUID a guid entry names is the
+            // common "GUID" field; the name a name entry carries is its own.
+            switch node.subtype {
+            case UEFITypes.Sub.guidEvsaEntry:
+                if let guidId = reader.uint16(at: h + 4) { fields.append(.init("GuidId", hex(guidId))) }
+            case UEFITypes.Sub.nameEvsaEntry:
+                if let varId = reader.uint16(at: h + 4) { fields.append(.init("VarId", hex(varId))) }
+            default:
+                // A data variable, valid or not.
+                if let varId = reader.uint16(at: h + 6) { fields.append(.init("VarId", hex(varId))) }
+                if let guidId = reader.uint16(at: h + 4) { fields.append(.init("GuidId", hex(guidId))) }
+                if let attributes = reader.uint32(at: h + 8) {
+                    fields.append(.init("Attributes", bits(attributes, evsaAttributeBits)))
+                }
+            }
+            if let checksum = evsaChecksum(storedAt: h + 1, covering: node.range.upperBound, reader: reader) {
+                fields.append(.init("Checksum", Checksums.text(checksum.value, valid: checksum.valid)))
+            }
+
+        case .slicData:
+            // A pubkey and a marker share their first eight bytes; what the
+            // header adds after that differs (§9).
+            switch node.subtype {
+            case UEFITypes.Sub.pubkeySlicData:
+                if let keyType = reader.uint8(at: h + 8) { fields.append(.init("Key type", hex(keyType))) }
+                if let version = reader.uint8(at: h + 9) { fields.append(.init("Version", hex(version))) }
+                if let algorithm = reader.uint32(at: h + 12) { fields.append(.init("Algorithm", hex(algorithm))) }
+                if let bitLength = reader.uint32(at: h + 20) { fields.append(.init("Bit length", hex(bitLength))) }
+                if let exponent = reader.uint32(at: h + 24) { fields.append(.init("Exponent", hex(exponent))) }
+            case UEFITypes.Sub.markerSlicData:
+                if let version = reader.uint32(at: h + 8) { fields.append(.init("Version", hex(version))) }
+                if let oemID = reader.bytes(at: h + 12, count: 6) { fields.append(.init("OEM ID", asciiText(oemID))) }
+                if let oemTableID = reader.bytes(at: h + 18, count: 8) { fields.append(.init("OEM table ID", asciiText(oemTableID))) }
+                // The parser only accepts a marker whose windows flag is the
+                // known value, so the reference's word for it is the value, and
+                // anything else is shown as the raw number.
+                if let windowsFlag = reader.uint64(at: h + 26) {
+                    let value = windowsFlag == 0x2053_574F_444E_4957 ? "WINDOWS" : hex(windowsFlag)
+                    fields.append(.init("Windows flag", value))
+                }
+                if let slicVersion = reader.uint32(at: h + 34) { fields.append(.init("SLIC version", hex(slicVersion))) }
+            default: break
+            }
+
+        // FDC and CMDB stores, and a SysF variable, are read as leaves in the
+        // reference: the panel has nothing to add to their common fields.
+        case .fdcStore, .cmdbStore, .sysFEntry:
+            break
+
         case .padding, .freeSpace, .nonUEFIData:
             // No header of their own: the size the common "Total" carries is
             // the whole of what there is to say.
             break
         }
         return fields
+    }
+
+    // MARK: - NVRAM header helpers
+
+    /// The VSS variable attribute bits an entry can set, in the reference
+    /// parser's order and wording. The word is the bit's meaning, not a guess:
+    /// bit 31 is the Apple data-checksum flag.
+    private static let nvramAttributeBits: [(UInt32, String)] = [
+        (0x0000_0001, "NonVolatile"),
+        (0x0000_0002, "BootService"),
+        (0x0000_0004, "Runtime"),
+        (0x0000_0008, "HwErrorRecord"),
+        (0x0000_0010, "AuthWrite"),
+        (0x0000_0020, "TimeBasedAuthWrite"),
+        (0x0000_0040, "AppendWrite"),
+        (0x8000_0000, "AppleChecksum"),
+    ]
+
+    /// The EVSA data-entry attribute bits. A data entry shares the VSS words
+    /// and adds the extended-header bit in place of the Apple one.
+    private static let evsaAttributeBits: [(UInt32, String)] = [
+        (0x0000_0001, "NonVolatile"),
+        (0x0000_0002, "BootService"),
+        (0x0000_0004, "Runtime"),
+        (0x0000_0008, "HwErrorRecord"),
+        (0x0000_0010, "AuthWrite"),
+        (0x0000_0020, "TimeBasedAuthWrite"),
+        (0x0000_0040, "AppendWrite"),
+        (0x1000_0000, "ExtendedHeader"),
+    ]
+
+    /// The stored checksum of an EVSA record and whether it counts. An EVSA
+    /// record checks itself the sum-to-zero way: everything from the stored
+    /// checksum byte to the record's end adds up to zero (§9). The reference
+    /// parser reads that region from two bytes in, and summing from the
+    /// checksum byte is the same arithmetic.
+    private static func evsaChecksum(
+        storedAt checksumOffset: UInt64,
+        covering end: UInt64,
+        reader: ImageReader
+    ) -> (value: UInt8, valid: Bool)? {
+        guard let stored = reader.uint8(at: checksumOffset),
+              end > checksumOffset,
+              let sum = Checksums.sum8(of: checksumOffset..<end, in: reader)
+        else { return nil }
+        return (stored, sum == 0)
+    }
+
+    /// Fixed-size bytes that hold an ASCII word: everything up to the first
+    /// zero, as text. The parser's SLIC records store the OEM id and table id
+    /// without a terminator, so a trailing zero is only cut when one is there.
+    private static func asciiText(_ bytes: [UInt8]) -> String {
+        String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
     }
 
     // MARK: - Text
@@ -188,6 +369,21 @@ public enum UEFIDetail {
         case .file: return "FFS file"
         case .section: return "Section"
         case .microcode: return "Microcode"
+        // The NVRAM stores and entries read as their item-type word, matching
+        // the tree's Type column.
+        case .vssStore: return UEFITypes.typeName(UEFITypes.Item.vssStore.rawValue)
+        case .vss2Store: return UEFITypes.typeName(UEFITypes.Item.vss2Store.rawValue)
+        case .ftwStore: return UEFITypes.typeName(UEFITypes.Item.ftwStore.rawValue)
+        case .fdcStore: return UEFITypes.typeName(UEFITypes.Item.fdcStore.rawValue)
+        case .sysFStore: return UEFITypes.typeName(UEFITypes.Item.sysFStore.rawValue)
+        case .flashMapStore: return UEFITypes.typeName(UEFITypes.Item.phoenixFlashMapStore.rawValue)
+        case .evsaStore: return UEFITypes.typeName(UEFITypes.Item.evsaStore.rawValue)
+        case .cmdbStore: return UEFITypes.typeName(UEFITypes.Item.cmdbStore.rawValue)
+        case .slicData: return UEFITypes.typeName(UEFITypes.Item.slicData.rawValue)
+        case .vssEntry: return UEFITypes.typeName(UEFITypes.Item.vssEntry.rawValue)
+        case .sysFEntry: return UEFITypes.typeName(UEFITypes.Item.sysFEntry.rawValue)
+        case .evsaEntry: return UEFITypes.typeName(UEFITypes.Item.evsaEntry.rawValue)
+        case .flashMapEntry: return UEFITypes.typeName(UEFITypes.Item.phoenixFlashMapEntry.rawValue)
         case .padding: return "Padding"
         case .freeSpace: return "Free space"
         case .nonUEFIData: return "Non-UEFI data"
@@ -207,6 +403,10 @@ public enum UEFIDetail {
         case .region:
             // The region label has no number in it, so the code goes with it.
             return FlashRegionType(rawValue: Int(subtype)).map { "\($0.label) · \(hex(subtype))" } ?? hex(subtype)
+        // An NVRAM entry and a SLIC blob carry a derived subtype; name it from
+        // the table, keeping the number where the table has no word.
+        case .vssEntry, .sysFEntry, .evsaEntry, .flashMapEntry, .slicData:
+            return UEFITypes.subtypeName(type: node.uefiItemType, subtype) ?? hex(subtype)
         default: return hex(subtype)
         }
     }

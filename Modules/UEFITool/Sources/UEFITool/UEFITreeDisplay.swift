@@ -54,7 +54,10 @@ public enum UEFITreeDisplay {
         guard let guid = node.guid else {
             return node.name.isEmpty ? kindLabel(node.kind) : node.name
         }
-        return catalogue.name(of: guid) ?? guid.description
+        // The community catalogue first; the NVRAM classifier names the GUIDs
+        // it knows while the catalogue has no name for them; the GUID itself
+        // is the last resort.
+        return catalogue.name(of: guid) ?? NvramGuids.name(of: guid) ?? guid.description
     }
 
     private static func kindLabel(_ kind: UEFINodeKind) -> String {
@@ -66,6 +69,21 @@ public enum UEFITreeDisplay {
         case .file: return "FFS file"
         case .section: return "Section"
         case .microcode: return "Microcode"
+        // The NVRAM stores and entries read as their item-type word, so the
+        // fallback name and the Type column can never drift apart.
+        case .vssStore: return UEFITypes.typeName(UEFITypes.Item.vssStore.rawValue)
+        case .vss2Store: return UEFITypes.typeName(UEFITypes.Item.vss2Store.rawValue)
+        case .ftwStore: return UEFITypes.typeName(UEFITypes.Item.ftwStore.rawValue)
+        case .fdcStore: return UEFITypes.typeName(UEFITypes.Item.fdcStore.rawValue)
+        case .sysFStore: return UEFITypes.typeName(UEFITypes.Item.sysFStore.rawValue)
+        case .flashMapStore: return UEFITypes.typeName(UEFITypes.Item.phoenixFlashMapStore.rawValue)
+        case .evsaStore: return UEFITypes.typeName(UEFITypes.Item.evsaStore.rawValue)
+        case .cmdbStore: return UEFITypes.typeName(UEFITypes.Item.cmdbStore.rawValue)
+        case .slicData: return UEFITypes.typeName(UEFITypes.Item.slicData.rawValue)
+        case .vssEntry: return UEFITypes.typeName(UEFITypes.Item.vssEntry.rawValue)
+        case .sysFEntry: return UEFITypes.typeName(UEFITypes.Item.sysFEntry.rawValue)
+        case .evsaEntry: return UEFITypes.typeName(UEFITypes.Item.evsaEntry.rawValue)
+        case .flashMapEntry: return UEFITypes.typeName(UEFITypes.Item.phoenixFlashMapEntry.rawValue)
         case .padding: return "Padding"
         case .freeSpace: return "Free space"
         case .nonUEFIData: return "Non-UEFI data"

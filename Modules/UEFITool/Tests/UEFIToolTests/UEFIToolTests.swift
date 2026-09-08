@@ -205,4 +205,149 @@ final class UEFIDetailTests: XCTestCase {
 
         XCTAssertNil(field(detail, "Address"))
     }
+
+    // MARK: - NVRAM stores and entries
+
+    func testAVssStoreReadsItsFormatAndState() {
+        let built = TestUEFI.nvramVssStore()
+        let detail = UEFIDetail.build(for: built.node, image: built.image, reader: built.reader)
+
+        XCTAssertEqual(field(detail, "Kind"), "VSS store")
+        XCTAssertEqual(field(detail, "Format"), "0x5A")
+        XCTAssertEqual(field(detail, "State"), "0x1")
+        XCTAssertEqual(field(detail, "Reserved"), "0x0")
+        XCTAssertEqual(field(detail, "Reserved1"), "0x0")
+    }
+
+    /// A VSS2 store keeps the same four fields a VSS store does, after its
+    /// 16-byte store GUID — the detail reads them at the pushed-out offsets.
+    func testAVss2StoreReadsItsFormatAndState() {
+        let built = TestUEFI.nvramVss2Store()
+        let detail = UEFIDetail.build(for: built.node, image: built.image, reader: built.reader)
+
+        XCTAssertEqual(field(detail, "Kind"), "VSS2 store")
+        XCTAssertEqual(field(detail, "Format"), "0x5A")
+        XCTAssertEqual(field(detail, "State"), "0x1")
+        XCTAssertEqual(field(detail, "Reserved"), "0x0")
+        XCTAssertEqual(field(detail, "Reserved1"), "0x0")
+    }
+
+    /// The tree names a variable by its decoded name and leaves the vendor GUID
+    /// off the node, so the detail has to read the GUID back — and the attribute
+    /// bits read as their words, not just a number.
+    func testAVssVariableNamesItsGuidAndAttributeWords() {
+        let guid = EFIGUID(low: 0x1111_1111, high: 0x2222_2222)
+        let built = TestUEFI.nvramVssVariable(attributes: 0x0000_0007, vendorGuid: guid)
+        let detail = UEFIDetail.build(for: built.node, image: built.image, reader: built.reader)
+
+        XCTAssertEqual(detail.title, "BootOrder")
+        XCTAssertEqual(field(detail, "Kind"), "VSS entry")
+        XCTAssertEqual(field(detail, "Type"), "Standard")
+        XCTAssertEqual(field(detail, "Variable GUID"), guid.description)
+        XCTAssertEqual(field(detail, "State"), "0x7F")
+        XCTAssertEqual(field(detail, "Reserved"), "0x0")
+        XCTAssertEqual(field(detail, "Attributes"), "0x7 (NonVolatile, BootService, Runtime)")
+    }
+
+    /// An FTW block's header CRC is not re-verified here — the parser needs the
+    /// erase byte to blank the CRC and state fields, and it already reports a
+    /// mismatch when it reads the block — so the value is shown without a
+    /// validity claim the panel cannot back up.
+    func testAFtwStoreShowsItsStateAndHeaderCrc() {
+        let built = TestUEFI.nvramFtwStore(crc: 0xDEAD_BEEF)
+        let detail = UEFIDetail.build(for: built.node, image: built.image, reader: built.reader)
+
+        XCTAssertEqual(field(detail, "Kind"), "FTW store")
+        XCTAssertEqual(field(detail, "State"), "0x1")
+        XCTAssertEqual(field(detail, "Header CRC32"), "0xDEADBEEF")
+    }
+
+    /// A SysF store checks itself with a CRC32 over everything before its final
+    /// four bytes, so the detail can vouch for it the same way.
+    func testASysfStoreChecksItsCrc() {
+        let built = TestUEFI.nvramSysfStore()
+        let detail = UEFIDetail.build(for: built.node, image: built.image, reader: built.reader)
+
+        XCTAssertEqual(field(detail, "Kind"), "SysF store")
+        let stored = Checksums.crc32(Array(built.bytes.dropLast(4)))
+        XCTAssertEqual(field(detail, "CRC32"), Checksums.text(stored, valid: true, digits: 8))
+    }
+
+    func testASysfStoreFlagsABadCrc() {
+        let built = TestUEFI.nvramSysfStore(crc: 0xDEAD_BEEF)
+        let detail = UEFIDetail.build(for: built.node, image: built.image, reader: built.reader)
+
+        XCTAssertEqual(field(detail, "CRC32"), "0xDEADBEEF (Invalid)")
+    }
+
+    /// An EVSA store is an entry of its own whose checksum covers its 20-byte
+    /// header, and the detail can recompute it from what is in the panel.
+    func testAnEvsaStoreChecksItsHeaderChecksum() {
+        let built = TestUEFI.nvramEvsaStore(attributes: 0x0000_0007)
+        let detail = UEFIDetail.build(for: built.node, image: built.image, reader: built.reader)
+
+        XCTAssertEqual(field(detail, "Kind"), "EVSA store")
+        XCTAssertEqual(field(detail, "Attributes"), "0x7")
+        XCTAssertEqual(field(detail, "Reserved"), "0x0")
+        XCTAssertEqual(field(detail, "Checksum"), Checksums.text(built.bytes[1], valid: true))
+    }
+
+    /// A data variable's header carries the two id words its guid and name
+    /// entries own, and an attributes word whose extended-header bit has a word
+    /// of its own.
+    func testAnEvsaDataVariableReadsItsIdsAttributesAndChecksum() {
+        let built = TestUEFI.nvramEvsaDataEntry(attributes: 0x1000_0007, data: [0x01])
+        let detail = UEFIDetail.build(for: built.node, image: built.image, reader: built.reader)
+
+        XCTAssertEqual(detail.title, "Lang")
+        XCTAssertEqual(field(detail, "Kind"), "EVSA entry")
+        XCTAssertEqual(field(detail, "VarId"), "0x2")
+        XCTAssertEqual(field(detail, "GuidId"), "0x1")
+        XCTAssertEqual(field(detail, "Attributes"), "0x10000007 (NonVolatile, BootService, Runtime, ExtendedHeader)")
+        XCTAssertEqual(field(detail, "Checksum"), Checksums.text(built.bytes[1], valid: true))
+    }
+
+    /// A SLIC marker's OEM id and table id are stored ASCII, and the windows
+    /// flag is the fixed word the parser accepts — shown as that word, never as
+    /// the byte soup its little-endian layout would spell.
+    func testAMarkerShowsItsOemAndWindowsFlag() {
+        let built = TestUEFI.nvramSlicMarker()
+        let detail = UEFIDetail.build(for: built.node, image: built.image, reader: built.reader)
+
+        XCTAssertEqual(field(detail, "Kind"), "SLIC data")
+        XCTAssertEqual(field(detail, "Version"), "0x1")
+        XCTAssertEqual(field(detail, "OEM ID"), "TESTCO")
+        XCTAssertEqual(field(detail, "OEM table ID"), "TABLID01")
+        XCTAssertEqual(field(detail, "Windows flag"), "WINDOWS")
+        XCTAssertEqual(field(detail, "SLIC version"), "0x1")
+    }
+
+    func testAFirehoseFlashMapReadsItsCountAndReserved() {
+        let built = TestUEFI.nvramFlashMapStore(numEntries: 3)
+        let detail = UEFIDetail.build(for: built.node, image: built.image, reader: built.reader)
+
+        XCTAssertEqual(field(detail, "Kind"), "FlashMap store")
+        XCTAssertEqual(field(detail, "Entries"), "3")
+        XCTAssertEqual(field(detail, "Reserved"), "0x0")
+    }
+
+    /// A flash map entry carries its region's physical layout: the data and
+    /// entry types first, then where the region lies.
+    func testAFlashMapEntryReadsItsRegionLayout() {
+        let built = TestUEFI.nvramFlashMapEntry(
+            dataType: 0x0000,
+            entryType: 0x0001,
+            address: 0xFFF0_0000,
+            size: 0x1000,
+            offset: 0x40
+        )
+        let detail = UEFIDetail.build(for: built.node, image: built.image, reader: built.reader)
+
+        XCTAssertEqual(field(detail, "Kind"), "FlashMap entry")
+        XCTAssertEqual(field(detail, "Data type"), "0x0")
+        XCTAssertEqual(field(detail, "Entry type"), "0x1")
+        XCTAssertEqual(field(detail, "Size"), "0x1000")
+        XCTAssertEqual(field(detail, "Offset"), "0x40")
+        XCTAssertEqual(field(detail, "Physical address"), "0xFFF00000")
+    }
 }
