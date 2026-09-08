@@ -26,3 +26,4 @@ Signing.local.xcconfig
 # `.claude/skills/` now lives in `Skills/`, which is committed; what is left
 # here is a machine's own, and does not belong to the repository.
 .claude/
+Skills/**/__pycache__
