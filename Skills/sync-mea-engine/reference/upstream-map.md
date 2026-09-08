@@ -38,7 +38,7 @@ ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
 | `FPT_Pre_Header`, `FPT_Header`, `FPT_Header_21` (+`_Flags`) | FPT header — shared v1/2/2.1 decode done; v2.1 redundancy/CRC-32 & `_Flags` bitfields deferred | `Layout/FPT.swift` | ported |
 | `FPT_Entry` | FPT partition entry (name/owner/offset/size/tokens/scratch/flags) | `Layout/FPT.swift` | ported |
 | `BPDT_Header_1`, `BPDT_Header_2`, `BPDT_Entry` | BPDT 1.6/1.7/2.0 | `Layout/IFWI.swift` | — |
-| `CSE_Layout_Table_16`, `_17` | IFWI layout 1.6/1.7 — **detection ported** (`IFWI.detectCseLayoutTable`, MEA.py 11507–11545, drives `fpt_start`); full Data/Boot/Temp/ELog *partition* table surfacing deferred | `Layout/IFWI.swift` | ported (presence probe) |
+| `CSE_Layout_Table_16`, `_17` | IFWI layout 1.6/1.7 — **full decode ported** (`IFWI.layoutTable`, MEA.py 11507–11605): version probe (drives `fpt_start`), Data/Boot1-5(+Temp/ELog) partition inventory (`cse_lt_hdr_info`), 1.7 CRC-32 validity + CSE-Redundancy flag; surfaced as `FirmwareAnalysis.cseLayoutTable`, invalid 1.7 CRC → Issue id 10 | `Layout/IFWI.swift` | ported |
 | `fd_anl_init`, `fd_anl_rgn` | Flash Descriptor region parse — FLREG2 Engine/Graphics (ME) base/size read, the one fact `fpt_start` needs (MEA.py 10045) | `Layout/IFWI.swift` (`FlashDescriptor.meRegion`) | ported (ME-region only) |
 | `CSE_Layout_*` flag classes | per-format bitfields | `Layout/*.swift` | — |
 

@@ -24,6 +24,12 @@ final class FirmwareAnalysisModelTests: XCTestCase {
             manifest: nil,
             codePartition: nil,
             mfsVolume: nil,
+            cseLayoutTable: CSELayoutTable(
+                offset: 0x1000, version: 0x17, redundancy: true, checksumValid: true,
+                partitions: [
+                    CSELayoutPartition(id: 0, name: "Data", offset: 0x1F1000, size: 0x88000, empty: false),
+                    CSELayoutPartition(id: 1, name: "Boot 1", offset: 0x3000, size: 0x1EE000, empty: false),
+                ]),
             issues: [Issue(id: 1, severity: .warning, message: "something odd")]
         )
 
@@ -34,6 +40,9 @@ final class FirmwareAnalysisModelTests: XCTestCase {
         XCTAssertEqual(decoded.id, "csme-CSME-15.40.37.3121")
         XCTAssertEqual(decoded.version.text, "15.40.37.3121")
         XCTAssertEqual(decoded.regions[0].name, "FTUE")
+        XCTAssertEqual(decoded.cseLayoutTable?.offset, 0x1000)
+        XCTAssertEqual(decoded.cseLayoutTable?.partitions.count, 2)
+        XCTAssertEqual(decoded.cseLayoutTable?.partitions[0].name, "Data")
     }
 
     func testDecodingOmitsNewerOptionalFields() throws {
@@ -62,7 +71,7 @@ final class FirmwareAnalysisModelTests: XCTestCase {
     }
 
     func testEngineModelRevisionBumpsWithAdditiveChanges() {
-        XCTAssertEqual(EngineModelRevision.current, 6)
+        XCTAssertEqual(EngineModelRevision.current, 7)
     }
 }
 

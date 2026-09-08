@@ -28,6 +28,7 @@ struct FPTParser {
         var resolvedVersion: UInt8   // get_fpt()'s dispatch, incl. the v2.1-with-v2.0-tag quirk
         var fptStart: Int            // upstream's resolved fpt_start (partition base, region-relative)
         var partitions: [Partition]
+        var cseLayout: IFWI.LayoutInfo?  // the CSE Layout Table that precedes the $FPT, when present
     }
 
     /// The first `$FPT` anchor that passes upstream's plausibility filter. When
@@ -81,7 +82,8 @@ struct FPTParser {
         // keys `cse_lt_struct` off that location (MEA.py 11508/11519).
         let meRegion = FlashDescriptor.meRegion(in: data)
         let cseLayoutOffset = meRegion?.base ?? 0
-        let cseLayoutPresent = IFWI.detectCseLayoutTable(in: data, at: cseLayoutOffset) != nil
+        let cseLayout = IFWI.layoutTable(in: data, at: cseLayoutOffset)
+        let cseLayoutPresent = cseLayout != nil
         let start = fptStart(anchor: anchor, version: headerVersion, length: headerLength,
                              cseLayoutTablePresent: cseLayoutPresent, in: data)
 
@@ -103,7 +105,7 @@ struct FPTParser {
             ))
         }
         return Result(headerVersion: headerVersion, resolvedVersion: resolved,
-                      fptStart: start, partitions: partitions)
+                      fptStart: start, partitions: partitions, cseLayout: cseLayout)
     }
 
     /// Upstream's `fpt_start` resolution (MEA.py 11667–11681): the partition

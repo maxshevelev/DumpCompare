@@ -31,6 +31,30 @@ public actor MEFirmwareAnalyzer {
                       offset: baseOffset + part.offset, size: part.size, flags: part.flags)
         }
 
+        // The CSE Layout Table that precedes the operational $FPT on IFWI
+        // whole-flash images (upstream cse_lt region analysis): its Data/Boot/
+        // Temp/ELog partition inventory, plus 1.7 redundancy + CRC-32 validity.
+        // A pre-IFWI engine (CSME 11, e.g. old.bin) has none → nil. A wrong 1.7
+        // CRC is the same warning upstream raises (MEA.py 11553).
+        let cseLayoutTable: CSELayoutTable? = fpt?.cseLayout.map { layout in
+            CSELayoutTable(
+                offset: baseOffset + layout.base,
+                version: layout.version,
+                redundancy: layout.redundancy,
+                checksumValid: layout.checksumValid,
+                partitions: layout.slots.enumerated().map { index, slot in
+                    CSELayoutPartition(id: index, name: slot.name,
+                                       offset: baseOffset + slot.offset,
+                                       size: slot.size, empty: slot.empty)
+                })
+        }
+        var cseLayoutIssues: [Issue] = []
+        if let layout = fpt?.cseLayout, layout.version == 0x17, layout.checksumValid == false {
+            cseLayoutIssues.append(Issue(id: 10, severity: .warning,
+                message: "Checksum of the IFWI 1.7 CSE Layout Table at "
+                    + "0x\(String(baseOffset + layout.base, radix: 16)) is INVALID."))
+        }
+
         // Phase 9: the CSE file system. The oldest layout — MFS — appears as a
         // raw flash region on both real dumps (CSME 12.0.3 and CSME 15.0.30), in
         // an FPT partition named "MFS". Decode its volume (page inventory →
@@ -206,6 +230,7 @@ public actor MEFirmwareAnalyzer {
         }
         issues.append(contentsOf: cpdIssues)
         issues.append(contentsOf: mfsIssues)
+        issues.append(contentsOf: cseLayoutIssues)
         if rsaSignatureValid == false {
             let m = manifest
             issues.append(Issue(id: 9, severity: .error,
@@ -224,7 +249,8 @@ public actor MEFirmwareAnalyzer {
                 sizeBytes: region.count, databaseName: nil,
                 rsaSignatureValid: nil, checksums: checksums,
                 regions: regions, manifest: manifestSummary,
-                codePartition: nil, mfsVolume: mfsVolume, issues: issues)
+                codePartition: nil, mfsVolume: mfsVolume,
+                cseLayoutTable: cseLayoutTable, issues: issues)
         }
 
         // ——— Stage 2: identification — awaits the live MEA.dat once, then
@@ -295,6 +321,7 @@ public actor MEFirmwareAnalyzer {
             manifest: manifestSummary,
             codePartition: codePartition,
             mfsVolume: mfsVolume,
+            cseLayoutTable: cseLayoutTable,
             issues: issues)
     }
 

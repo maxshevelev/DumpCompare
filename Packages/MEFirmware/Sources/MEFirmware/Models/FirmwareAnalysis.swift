@@ -34,6 +34,7 @@ public struct FirmwareAnalysis: Codable, Sendable, Equatable, Identifiable {
     public var manifest: ManifestSummary?     // $MN2/$MAN facts + security fields
     public var codePartition: CodePartition?  // $CPD: entries, extensions, modules
     public var mfsVolume: MFSVolume?          // MFS volume facts, when an FPT "MFS" region decodes
+    public var cseLayoutTable: CSELayoutTable? = nil  // IFWI 1.6/1.7 CSE Layout Table inventory
     public var issues: [Issue]
 }
 
@@ -408,6 +409,56 @@ public struct MFSVolume: Codable, Sendable, Equatable {
     }
 }
 
+/// One slot of an IFWI 1.6/1.7 CSE Layout Table's partition inventory (upstream
+/// `cse_lt_hdr_info`, MEA.py 11549). `name` is upstream's label — "Data",
+/// "Boot 1"…"Boot 5", plus "Temp"/"ELog" on IFWI 1.7. `offset` is the slot's SPI
+/// (the table base plus its raw offset field), made absolute like every region
+/// offset in the model; `empty` is upstream's flag (offset/size NA in
+/// [0, 0xFFFFFFFF], or the whole content erased to 0x00/0xFF) — empty slots are
+/// still listed, exactly as upstream shows them.
+public struct CSELayoutPartition: Codable, Sendable, Equatable, Identifiable {
+    public var id: Int
+    public var name: String
+    public var offset: Int
+    public var size: Int
+    public var empty: Bool
+
+    public init(id: Int, name: String, offset: Int, size: Int, empty: Bool) {
+        self.id = id
+        self.name = name
+        self.offset = offset
+        self.size = size
+        self.empty = empty
+    }
+}
+
+/// Facts of an IFWI 1.6/1.7 CSE Layout Table (upstream `CSE_Layout_Table_16`/`_17`
+/// + the region analysis MEA.py 11546–11605): the Data/Boot/Temp/ELog partition
+/// inventory that maps the CSE region *before* the `$FPT` whose partitions the
+/// FPT decode reports. `offset` is the table base (region `baseOffset` +
+/// region-relative, like `CodePartition.offset`). `redundancy` is the 1.7 Flags
+/// bit 0 ("backup of BP1 is stored in the otherwise-empty BP2"); false when the
+/// version is 1.6, which carries no such flag. `checksumValid` is the 1.7 CRC-32
+/// over the pointer block (Size word through the partition fields, CRC word
+/// zeroed); nil for 1.6, which stores no comparable checksum. nil on
+/// `FirmwareAnalysis` = no CSE LT (a pre-IFWI engine, e.g. CSME 11).
+public struct CSELayoutTable: Codable, Sendable, Equatable {
+    public var offset: Int                 // absolute table base
+    public var version: Int                // 0x16 or 0x17
+    public var redundancy: Bool            // 1.7 CSE Redundancy flag; always false for 1.6
+    public var checksumValid: Bool?        // 1.7 pointer-block CRC-32; nil for 1.6
+    public var partitions: [CSELayoutPartition]
+
+    public init(offset: Int, version: Int, redundancy: Bool, checksumValid: Bool?,
+                partitions: [CSELayoutPartition]) {
+        self.offset = offset
+        self.version = version
+        self.redundancy = redundancy
+        self.checksumValid = checksumValid
+        self.partitions = partitions
+    }
+}
+
 public enum Severity: String, Codable, Sendable {
     case note, warning, error
 }
@@ -422,5 +473,5 @@ public struct Issue: Codable, Sendable, Equatable, Identifiable {
 /// whether to surface the new data (`reference/result-model.md` §Versioning).
 public enum EngineModelRevision {
     /// Current revision of the `FirmwareAnalysis` shape.
-    public static let current = 6
+    public static let current = 7
 }
