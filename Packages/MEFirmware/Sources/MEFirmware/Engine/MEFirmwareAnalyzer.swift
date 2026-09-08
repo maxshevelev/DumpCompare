@@ -182,10 +182,26 @@ public actor MEFirmwareAnalyzer {
             issues.append(Issue(id: 2, severity: .note,
                                 message: "RSA public key not found in the firmware database; "
                                     + "variant could not be determined."))
-        } else if identity.databaseName == nil {
-            // note_new_fw (~9958): a recognised engine whose firmware row is absent.
-            issues.append(Issue(id: 3, severity: .note,
-                                message: "This firmware is not in the database."))
+        } else {
+            if identity.databaseName == nil {
+                // note_new_fw (~9958): a recognised engine whose firmware row is absent.
+                issues.append(Issue(id: 3, severity: .note,
+                                    message: "This firmware is not in the database."))
+            }
+            if let cp = codePartition, Self.hasHuffmanModuleToValidate(cp) {
+                // Phase 8 integrity: every declared-Huffman module backed by a `.met`
+                // that advertises Huffman compression (and no encryption) must
+                // decompress — against the live Huffman.dat dictionary for this
+                // (variant, major, minor) — to exactly its `.met`-declared uncompressed
+                // size. Best-effort: a missing/unfetchable dictionary just skips the
+                // check rather than failing the analysis; families whose modules are
+                // LZMA/uncompressed (CSME 15+, IUP) never trigger the fetch.
+                let dictionaries = try? await data.huffmanDictionaries()
+                issues.append(contentsOf: Self.huffmanValidationIssues(
+                    for: cp, in: region, baseOffset: baseOffset,
+                    variant: identity.variant, major: identity.major, minor: identity.minor,
+                    dictionaries: dictionaries))
+            }
         }
 
         return FirmwareAnalysis(
@@ -210,6 +226,71 @@ public actor MEFirmwareAnalyzer {
             manifest: manifestSummary,
             codePartition: codePartition,
             issues: issues)
+    }
+
+    /// True when any module is a declared-Huffman row backed by a `.met` whose
+    /// `CSE_Ext_0A` advertises Huffman compression and no encryption — the only
+    /// case the Phase 8 check can validate (it needs a declared target size and a
+    /// decryptable blob). Gates the (relatively costly) Huffman.dat fetch.
+    private static func hasHuffmanModuleToValidate(_ cp: CodePartition) -> Bool {
+        cp.modules.contains { module in
+            module.isHuffman && module.size > 0 && cp.modules.contains { candidate in
+                candidate.name == module.name + ".met"
+                    && (candidate.extensions?.compactMap { $0.moduleAttributes }
+                        .contains { $0.compression == 1 && $0.encryption == 0 } ?? false)
+            }
+        }
+    }
+
+    /// Phase 8 cross-check (`mod_anl`'s Huffman branch). A code module whose
+    /// paired `.met` (name suffix `.met`) decodes a `CSE_Ext_0A` advertising
+    /// Huffman compression and no encryption is decompressed and its length
+    /// compared to the declared uncompressed size. The `.met`'s 0x0A *compressed*
+    /// size (chunk directory included) bounds the slice — that is exactly the
+    /// `compressed_size` upstream passes (MEA.py 6906/7186). Never throws; a nil
+    /// dictionary set skips everything.
+    private static func huffmanValidationIssues(
+        for codePartition: CodePartition, in region: Data, baseOffset: Int,
+        variant: String, major: Int, minor: Int,
+        dictionaries: HuffmanDictionaries?) -> [Issue] {
+        guard let dictionaries,
+              let dictionary = dictionaries.dictionary(variant: variant,
+                                                       major: major, minor: minor),
+              major != 0, variant != "" else { return [] }
+        let headerBase = codePartition.offset - baseOffset
+        var issues: [Issue] = []
+
+        for module in codePartition.modules where module.isHuffman && module.size > 0 {
+            guard let attrs = codePartition.modules
+                .first(where: { $0.name == module.name + ".met" })?
+                .extensions?
+                .compactMap({ $0.moduleAttributes })
+                .first,
+                attrs.compression == 1, attrs.encryption == 0,
+                attrs.compressedSize > 0, attrs.uncompressedSize > 0 else { continue }
+            let moduleBase = headerBase + module.offset
+            guard moduleBase + attrs.compressedSize <= region.count else {
+                issues.append(Issue(id: 7, severity: .warning,
+                    message: "Huffman module \"\(module.name)\" extends past the end of "
+                        + "the region; cannot verify its decompression."))
+                continue
+            }
+            let blob = region.subdata(in: moduleBase..<(moduleBase + attrs.compressedSize))
+            let result = HuffmanDecoder.decompress(
+                module: blob, compressedSize: attrs.compressedSize,
+                decompressedSize: attrs.uncompressedSize, dictionary: dictionary)
+            if result.output.count != attrs.uncompressedSize {
+                issues.append(Issue(id: 7, severity: .warning,
+                    message: "Huffman module \"\(module.name)\" did not decompress to its "
+                        + ".met-declared size (got 0x\(String(result.output.count, radix: 16)) "
+                        + "bytes, expected 0x\(String(attrs.uncompressedSize, radix: 16)))."))
+            } else if !result.clean {
+                issues.append(Issue(id: 7, severity: .warning,
+                    message: "Huffman module \"\(module.name)\" decompressed to the right "
+                        + "size but hit unknown codewords / an early stream end."))
+            }
+        }
+        return issues
     }
 
     /// Compose the manifest's Day/Month/Year into the top-level manufacture date

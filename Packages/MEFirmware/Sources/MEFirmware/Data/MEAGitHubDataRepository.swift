@@ -16,6 +16,7 @@ public actor MEAGitHubDataRepository: MEADataSource {
 
     private let session: URLSession
     private var databaseTask: Task<MEADatabase, Error>?
+    private var huffmanTask: Task<HuffmanDictionaries, Error>?
 
     public init() {
         self.init(session: MEAGitHubDataRepository.makeSession())
@@ -34,7 +35,16 @@ public actor MEAGitHubDataRepository: MEADataSource {
         return try await task.value
     }
 
-    // Huffman/FileTable parsers are not ported yet; the protocol defaults throw
+    public func huffmanDictionaries() async throws -> HuffmanDictionaries {
+        if let cached = huffmanTask {
+            return try await cached.value
+        }
+        let task = Task { try await self.fetchHuffmanDictionaries() }
+        huffmanTask = task
+        return try await task.value
+    }
+
+    // FileTable.dat parser is not ported yet; the protocol default throws
     // `.malformed` until the DB layer lands (see MEADataSource.swift).
 
     private func fetchDatabase() async throws -> MEADatabase {
@@ -44,6 +54,11 @@ public actor MEAGitHubDataRepository: MEADataSource {
         // yet) — but a body that is not MEA.dat at all is worth surfacing.
         guard !text.isEmpty else { throw MEADataError.malformed(file: "MEA.dat") }
         return parsed
+    }
+
+    private func fetchHuffmanDictionaries() async throws -> HuffmanDictionaries {
+        let text = try await fetchText(path: "Huffman.dat")
+        return try HuffmanDictionaries.parse(text)
     }
 
     private func fetchText(path: String) async throws -> String {

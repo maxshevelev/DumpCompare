@@ -43,23 +43,20 @@ public enum MEADataError: LocalizedError, Sendable, Equatable {
     }
 }
 
-// Parser placeholders: the DB layer that turns each .dat file into one of
-// these is a later incremental step (upstream-map "Data files consumed"), and
-// nothing in the bootstrap spine consumes them yet. They exist so the protocol
-// seam above is concrete and injectable from day one. Until their parsers land,
-// the protocol defaults below fail loudly rather than hand out empty values.
-public struct HuffmanDictionaries: Sendable, Equatable {
-    public init() {}
-}
+// Parser placeholder: the DB layer that turns FileTable.dat into this is a
+// later incremental step (upstream-map "CSE file systems"); nothing consumes
+// it yet. It exists so the protocol seam above is concrete and injectable from
+// day one. `HuffmanDictionaries` (the real type) lives in Decompress/Huffman.swift.
 public struct FileTable: Sendable, Equatable {
     public init() {}
 }
 
 extension MEADataSource {
-    /// Not ported yet: upstream `cse_huffman_dictionary_load` parses Huffman.dat
-    /// into the dictionaries the decompressor needs. Throws until then.
+    /// Default: no dictionaries available — the caller decides whether that is
+    /// fatal. `MEAGitHubDataRepository` overrides this with a live single-flight
+    /// fetch of `Huffman.dat`; test stubs that only need `database()` inherit it.
     public func huffmanDictionaries() async throws -> HuffmanDictionaries {
-        throw MEADataError.malformed(file: "Huffman.dat (parser not ported yet)")
+        throw MEADataError.malformed(file: "Huffman.dat (no data source configured)")
     }
 
     /// Not ported yet: upstream FileTable.dat loaders / `check_ftbl_id`. Throws

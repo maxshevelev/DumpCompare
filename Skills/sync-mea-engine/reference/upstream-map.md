@@ -89,7 +89,7 @@ ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
 | `note_new_fw` | report firmware absent from DB/repo — surfaced as a `.note` `Issue` by the pipeline | `Identify/Identifier.swift` (note text) | ported* |
 | `get_db_json_obj` | section lookup in MEA.dat — `rsa_pre_keys` block parsed | `Data/MEADatabase.swift` | ported* |
 | `get_fw_ver` | format version string (family zero-padding) | deferred — display text, needs the DB label layer | — |
-| `cse_huffman_dictionary_load` | pick Huffman dict by (variant,major,minor) | `DB/HuffmanDictionaries.swift` | — |
+| `cse_huffman_dictionary_load` | pick Huffman dict by (variant,major,minor) | `Decompress/Huffman.swift` (`HuffmanDictionaries.parse`/`version`) | ported |
 | (FileTable.dat loaders, `check_ftbl_id`, `check_ftbl_pl`) | module-name/version path mapping | `DB/FileTable.swift` | — |
 | `mfs_txt_json…`, `ext_table`, `pt_html`, `pt_json`, `struct_json`, `get_struct`, `ext_table` | table/JSON rendering of structs | **n/a — UI renders the result model instead** | n/a |
 
@@ -109,7 +109,18 @@ port (module-name heuristics, SKU cells) or the display/DB-label layer.
 
 | Upstream symbol(s) | Models | Swift home | Status |
 |---|---|---|---|
-| `cse_huffman_decompress` | Huffman module decompression | `Decompress/Huffman.swift` (LZMA → Foundation `Compression`/`lzma`) | — |
+| `cse_huffman_decompress` | Huffman module decompression | `Decompress/Huffman.swift` (`HuffmanDecoder`) | ported |
+
+The port exposes a `Data`-returning API (`decompress(module:compressedSize:decompressedSize:dictionary:) -> (output, clean)`),
+never early-returns — a chunk that runs out of stream / overflows / hits an unknown
+codeword is 0x7F-filled to its 0x1000 boundary and later chunks still decode (upstream
+`huff_error`). Dictionaries come live over `MEADataSource.huffmanDictionaries()`
+(`MEAGitHubDataRepository`, single-flight fetch of `Huffman.dat`); the analyzer runs a
+best-effort Phase 8 integrity check (Issue id 7) on declared-Huffman modules that have a
+`.met` 0x0A advertising Huffman + no encryption — oracle: CSME 12.0.3 22/22 modules
+decompress to their exact `.met` sizes, clean. (LZMA — upstream `mod_comp == 2` — is not
+ported here; it decompresses whole-module with Foundation `Compression`/`lzma` when a later
+phase needs it.)
 
 ## Analysis pipeline (entry flow)
 
