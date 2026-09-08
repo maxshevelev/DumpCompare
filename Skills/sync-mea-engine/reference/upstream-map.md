@@ -103,9 +103,9 @@ port (module-name heuristics) or the display/DB-label layer.
 
 | Upstream symbol(s) | Models | Swift home | Status |
 |---|---|---|---|
-| `sha_1`, `sha_256`, `sha_384`, `get_hash`, `calc_hash`, `calc_hash_hex`, `md5` | hashing — only `sha_256`/`get_hash(0x20)` (uppercase hex) ported; others join with the signature path | `Crypto/Digest.swift` | ported* |
-| `mc_chk32`, `Crc16_14` | checksums | `Crypto/Checksum.swift` | — |
-| `rsa_sig_val`, `pss_mgf`, `pss_verify`, `pss_final_validate`, `unmask_DB`, `parseSign`, `get_salt` | RSA-PSS signature validation | `Crypto/RSA.swift` | — |
+| `sha_1`, `sha_256`, `sha_384`, `get_hash`, `calc_hash`, `calc_hash_hex`, `md5` | hashing — raw + uppercase-hex SHA-1/SHA-256/SHA-384 (`calc_hash_hex`/`calc_hash` feed the PSS check; MD5 unused) | `Crypto/Digest.swift` | ported |
+| `mc_chk32`, `Crc16_14` | checksums — `mc_chk32` = `CRC32.crc32` (zlib-equal, fills `checksums.crc32`); `Crc16_14` unused | `Crypto/Checksum.swift` | ported* |
+| `rsa_sig_val`, `pss_mgf`, `pss_verify`, `pss_final_validate`, `unmask_DB`, `parseSign`, `get_salt` | RSA-PSS signature validation — Montgomery modpow (`BigInt.powerMod`) replaces Python's `pow`; dispatch `$MAN`→SHA-1 / `$MN2` 2048→SHA-256 (PKCS#1 v1.5) / 3072 + unknown→SHA-384 EMSA-PSS; empty-RSA block → valid, even/zero modulus → not checkable (nil); fills `rsaSignatureValid` | `Crypto/RSA.swift` | ported |
 | `release_fix` (key-hash tie-out) | RSA-key → release — lives with identification (calls into `MEADatabase.isPreProductionKey`) | `Identify/Identifier.swift` | ported |
 
 ## Decompression

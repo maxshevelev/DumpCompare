@@ -31,6 +31,10 @@ struct ManifestParser {
         /// dwords). The CSE extension chain of a `.man` module starts right after
         /// this (upstream `ext_anl` uses `mn2_hdr.HeaderLength * 4`).
         var headerLengthBytes: Int
+        /// Total manifest size in bytes (`Size` u32 @ +0x18, in dwords). The RSA
+        /// signature's protected data ends here (`rsa_sig_val` hashes
+        /// `base+0x80` + `base+HeaderLength*4 … base+Size*4`).
+        var sizeBytes: Int
         var tag: String           // "$MN2" or "$MAN"
         var format: Format
 
@@ -53,6 +57,9 @@ struct ManifestParser {
 
         /// Raw RSA public-key bytes (PublicKeySize * 4), when fully in bounds.
         var rsaPublicKey: Data?
+        /// Public exponent (`RSAExponent`, a single u32 right after the key), when
+        /// in bounds.
+        var rsaExponent: UInt32?
         /// Raw RSA signature bytes (same length as the key), when in bounds.
         var rsaSignature: Data?
     }
@@ -115,6 +122,7 @@ struct ManifestParser {
         var manifest = Manifest(
             base: base,
             headerLengthBytes: Int(u32le(data, p + 0x04)) * 4,
+            sizeBytes: Int(u32le(data, p + 0x18)) * 4,
             tag: tag,
             format: format,
             day: bcdDay ?? Int(data[p + 0x14]),
@@ -130,6 +138,7 @@ struct ManifestParser {
             pvBit: flags & 0x1 != 0,
             debugSigned: flags & 0x8000_0000 != 0,
             rsaPublicKey: nil,
+            rsaExponent: nil,
             rsaSignature: nil
         )
 
@@ -148,6 +157,12 @@ struct ManifestParser {
             let sigStart = keyStart + keyLen + expLen
             if data.count >= keyStart + keyLen {
                 manifest.rsaPublicKey = data.subdata(in: keyStart..<(keyStart + keyLen))
+            }
+            // Exponent sits at key end as a single u32 (structs 820/872/969), and
+            // the signature follows `ExponentSize` dwords later (always one dword
+            // on real keys).
+            if data.count >= keyStart + keyLen + 4 {
+                manifest.rsaExponent = u32le(data, keyStart + keyLen)
             }
             if data.count >= sigStart + keyLen {
                 manifest.rsaSignature = data.subdata(in: sigStart..<(sigStart + keyLen))

@@ -186,6 +186,19 @@ public actor MEFirmwareAnalyzer {
                 extensions: extensions)
         }
 
+        // Phase 11: checksums of the region (whole analyzed buffer) plus the
+        // chosen manifest's RSA signature validity. Both model fields are
+        // pre-declared nil, so filling them is not a schema change. The signature
+        // is nil when not checkable — no RSA block decoded, a window that does not
+        // fit the region, or a degenerate modulus (synthetic fixtures) — and that
+        // stays nil rather than raising an issue (upstream's "Empty RSA block"
+        // is reported *valid*, its pow crash is a different, non-real edge).
+        let checksums: Checksums? = region.isEmpty ? nil : Checksums(
+            sha256: Digest.sha256Hex(region),
+            sha384: Digest.sha384Hex(region),
+            crc32: CRC32.crc32(region))
+        let rsaSignatureValid = manifest.flatMap { Self.rsaSignatureValid(for: $0, in: region) }
+
         var issues: [Issue] = []
         if fpt == nil {
             issues.append(Issue(id: 1, severity: .note,
@@ -193,6 +206,12 @@ public actor MEFirmwareAnalyzer {
         }
         issues.append(contentsOf: cpdIssues)
         issues.append(contentsOf: mfsIssues)
+        if rsaSignatureValid == false {
+            let m = manifest
+            issues.append(Issue(id: 9, severity: .error,
+                message: "RSA Signature of \(m?.tag ?? "manifest") at "
+                    + "0x\(String(baseOffset + (m?.base ?? 0), radix: 16)) is INVALID."))
+        }
 
         // No manifest: nothing to identify, and no database is needed — return
         // the structural facts immediately (keeps a pure-FPT parse offline).
@@ -202,8 +221,9 @@ public actor MEFirmwareAnalyzer {
                 version: Version(major: 0, minor: 0, hotfix: 0, build: 0),
                 securityVersion: nil, release: .unknown, type: .region,
                 sku: "", platform: "", manufactureDate: nil,
-                sizeBytes: region.count, databaseName: nil, rsaSignatureValid: nil,
-                checksums: nil, regions: regions, manifest: manifestSummary,
+                sizeBytes: region.count, databaseName: nil,
+                rsaSignatureValid: nil, checksums: checksums,
+                regions: regions, manifest: manifestSummary,
                 codePartition: nil, mfsVolume: mfsVolume, issues: issues)
         }
 
@@ -269,13 +289,37 @@ public actor MEFirmwareAnalyzer {
                                                   year: manifest.year),
             sizeBytes: region.count,
             databaseName: identity.databaseName,
-            rsaSignatureValid: nil,
-            checksums: nil,
+            rsaSignatureValid: rsaSignatureValid,
+            checksums: checksums,
             regions: regions,
             manifest: manifestSummary,
             codePartition: codePartition,
             mfsVolume: mfsVolume,
             issues: issues)
+    }
+
+    /// Validate the chosen manifest's RSA signature against its protected-data
+    /// window, mirroring upstream `rsa_sig_val` (MEA.py 10218):
+    /// `hash_data = buffer[base:base+0x80] + buffer[base+HeaderLength*4 : base+Size*4]`.
+    /// Returns nil when the signature cannot be checked — no key/signature/exponent
+    /// decoded, the struct is not fully in the region, or the modulus is
+    /// degenerate (RSA.validate returns nil there; a synthetic even modulus is
+    /// "not checkable", not "invalid").
+    private static func rsaSignatureValid(for m: ManifestParser.Manifest,
+                                          in region: Data) -> Bool? {
+        guard let key = m.rsaPublicKey, let signature = m.rsaSignature,
+              let exponent = m.rsaExponent else { return nil }
+        // Window 1: first 0x80 of the struct; window 2: header-end … manifest-end.
+        let hdrEnd = m.base + m.headerLengthBytes
+        let sizeEnd = m.base + m.sizeBytes
+        guard m.base + 0x80 <= region.count, hdrEnd <= sizeEnd,
+              sizeEnd <= region.count else { return nil }
+        var protected = region.subdata(in: m.base..<(m.base + 0x80))
+        if sizeEnd > hdrEnd {
+            protected.append(region.subdata(in: hdrEnd..<sizeEnd))
+        }
+        return RSA.validate(tag: m.tag, publicKey: key, exponent: exponent,
+                            signature: signature, protectedData: protected)?.valid
     }
 
     /// True when any module is a declared-Huffman row backed by a `.met` whose
