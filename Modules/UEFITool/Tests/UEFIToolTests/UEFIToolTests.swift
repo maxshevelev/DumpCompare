@@ -301,6 +301,47 @@ final class UEFIDetailTests: XCTestCase {
         XCTAssertNil(field(detail, "Address"))
     }
 
+    // MARK: - The Intel image root
+
+    /// The root of a whole SPI dump reads its counters off the descriptor's
+    /// map — the block the reference parser prints under "Intel image". The
+    /// default builder bytes are the map of a real Coffee Lake board.
+    func testAnIntelImageReadsItsDescriptorCounters() {
+        let built = TestUEFI.intelImage()
+        let detail = UEFIDetail.build(for: built.node, image: built.image, reader: built.reader)
+
+        XCTAssertEqual(detail.title, "Intel image")
+        XCTAssertEqual(field(detail, "Kind"), "Intel image")
+        XCTAssertEqual(field(detail, "Type"), "Intel")
+        XCTAssertEqual(field(detail, "Header"), "—")
+        XCTAssertEqual(field(detail, "Body"), "0x0 · 0x1000 bytes")
+        XCTAssertEqual(field(detail, "Address"), "0xFFFF0000")
+        XCTAssertEqual(field(detail, "Flash chips"), "1")
+        XCTAssertEqual(field(detail, "Regions"), "1")
+        XCTAssertEqual(field(detail, "Masters"), "3")
+        XCTAssertEqual(field(detail, "PCH straps"), "90")
+        XCTAssertEqual(field(detail, "PROC straps"), "3")
+    }
+
+    /// The three zero-based counters are stored minus one and the two strap
+    /// counts are not, so a map holding raw values reads the counts back one
+    /// higher than the chips/regions/masters fields and exactly equal to the
+    /// strap fields.
+    func testAnIntelImageReadsZeroBasedCountersBackPlusOne() {
+        let built = TestUEFI.intelImage(
+            flashMap0: 0x0204_0003,          // chips 0 → 1, regions 2 → 3
+            flashMap1: 0x0700_0108,          // masters 1 → 2, PCH straps 7
+            flashMap2: 0x8000                // PROC straps 0x80
+        )
+        let detail = UEFIDetail.build(for: built.node, image: built.image, reader: built.reader)
+
+        XCTAssertEqual(field(detail, "Flash chips"), "1")
+        XCTAssertEqual(field(detail, "Regions"), "3")
+        XCTAssertEqual(field(detail, "Masters"), "2")
+        XCTAssertEqual(field(detail, "PCH straps"), "7")
+        XCTAssertEqual(field(detail, "PROC straps"), "128")
+    }
+
     // MARK: - NVRAM stores and entries
 
     func testAVssStoreReadsItsFormatAndState() {

@@ -13,6 +13,7 @@ extension UEFINode {
     public var uefiItemType: UInt8 {
         switch kind {
         case .capsule: return UEFITypes.Item.capsule.rawValue
+        case .intelImage: return UEFITypes.Item.image.rawValue
         case .region, .flashDescriptor: return UEFITypes.Item.region.rawValue
         case .volume: return UEFITypes.Item.volume.rawValue
         case .file: return UEFITypes.Item.file.rawValue
@@ -45,6 +46,8 @@ extension UEFINode {
         switch kind {
         case .capsule:
             return guid.map(Self.capsuleSubtype)
+        case .intelImage:
+            return UEFITypes.Sub.intelImage
         case .region:
             // The descriptor's region type, the one the parser read off the table.
             return subtype

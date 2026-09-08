@@ -156,6 +156,25 @@ public enum UEFIDetail {
             if let flags = reader.uint32(at: h + 0x14) { fields.append(.init("Flags", hex(flags))) }
             if let imageSize = reader.uint32(at: h + 0x18) { fields.append(.init("Image size", hex(imageSize))) }
 
+        case .intelImage:
+            // The image node is the whole file, and its bytes are the flash
+            // descriptor that maps it. The header of the descriptor carries the
+            // map (FLMAP0-2, at `0x14`) whose counters say how many chips,
+            // regions, masters and strap dwords the board has — the block the
+            // reference parser prints on its "Intel image" root. The first
+            // three are stored minus one; the two strap counts are not (§2.1).
+            if let map0 = reader.uint32(at: h + 0x14) {
+                fields.append(.init("Flash chips", "\(((map0 >> 8) & 0x3) + 1)"))
+                fields.append(.init("Regions", "\(((map0 >> 24) & 0x7) + 1)"))
+            }
+            if let map1 = reader.uint32(at: h + 0x18) {
+                fields.append(.init("Masters", "\(((map1 >> 8) & 0x3) + 1)"))
+                fields.append(.init("PCH straps", "\((map1 >> 24) & 0xFF)"))
+            }
+            if let map2 = reader.uint32(at: h + 0x1C) {
+                fields.append(.init("PROC straps", "\((map2 >> 8) & 0xFF)"))
+            }
+
         case .flashDescriptor:
             if let signature = reader.uint32(at: h + 0x10) { fields.append(.init("Signature", hex(signature))) }
             if let map = reader.uint32(at: h + 0x14) { fields.append(.init("FLMAP", hex(map))) }
@@ -363,6 +382,7 @@ public enum UEFIDetail {
     private static func kindLabel(_ kind: UEFINodeKind) -> String {
         switch kind {
         case .capsule: return "Capsule"
+        case .intelImage: return "Intel image"
         case .flashDescriptor: return "Flash descriptor"
         case .region: return "Region"
         case .volume: return "Volume"
@@ -403,6 +423,10 @@ public enum UEFIDetail {
         case .region:
             // The region label has no number in it, so the code goes with it.
             return FlashRegionType(rawValue: Int(subtype)).map { "\($0.label) · \(hex(subtype))" } ?? hex(subtype)
+        case .intelImage:
+            // Image and Intel are the type/subtype pair UEFITool names this
+            // root; the word comes from the same table as the columns.
+            return UEFITypes.subtypeName(type: node.uefiItemType, subtype) ?? hex(subtype)
         // An NVRAM entry and a SLIC blob carry a derived subtype; name it from
         // the table, keeping the number where the table has no word.
         case .vssEntry, .sysFEntry, .evsaEntry, .flashMapEntry, .slicData:

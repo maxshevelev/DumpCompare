@@ -186,6 +186,41 @@ enum TestUEFI {
         )
     }
 
+    /// The root UEFITool shows for a whole SPI dump: one `.intelImage` over the
+    /// whole file, whose first `0x1000` bytes are a descriptor. The defaults are
+    /// the map of a real Coffee Lake board — Flash chips 1, Regions 1, Masters 3,
+    /// PCH straps 90, PROC straps 3 — and each can be overridden.
+    static func intelImage(
+        totalSize: UInt64 = 0x1000,
+        addressDiff: UInt64? = 0xFFFF_0000,
+        flashMap0: UInt32 = 0x0004_0003,
+        flashMap1: UInt32 = 0x5A10_0208,
+        flashMap2: UInt32 = 0x0034_0330,
+        version: UInt32 = 0x0020_0000
+    ) -> Built {
+        var w = Writer()
+        w.fill(0x10)            // ReservedVector
+        w.u32(0x0FF0_A55A)      // signature
+        w.u32(flashMap0)        // FLMAP0 @ 0x14
+        w.u32(flashMap1)        // FLMAP1 @ 0x18
+        w.u32(flashMap2)        // FLMAP2 @ 0x1C
+        w.u32(version)          // FLMAP3 @ 0x20
+        let node = UEFINode(
+            id: .root.child(0),
+            kind: .intelImage,
+            subtype: UEFITypes.Sub.intelImage,
+            name: "Intel image",
+            header: 0..<0,
+            body: 0..<totalSize,
+            isFixed: true
+        )
+        return Built(
+            bytes: pad(w.bytes, to: totalSize),
+            node: node,
+            image: image(node, totalSize: totalSize, addressDiff: addressDiff)
+        )
+    }
+
     // MARK: - NVRAM stores and entries
 
     /// A VSS store's 16-byte header: the `$VSS` signature, size, the format and

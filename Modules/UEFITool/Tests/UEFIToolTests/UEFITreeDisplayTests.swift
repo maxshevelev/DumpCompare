@@ -12,6 +12,7 @@ final class UEFITreeDisplayTests: XCTestCase {
         XCTAssertEqual(UEFITreeDisplay.typeText(for: TestUEFI.file().node), "File")
         XCTAssertEqual(UEFITreeDisplay.typeText(for: TestUEFI.section().node), "Section")
         XCTAssertEqual(UEFITreeDisplay.typeText(for: TestUEFI.microcode().node), "Intel microcode")
+        XCTAssertEqual(UEFITreeDisplay.typeText(for: TestUEFI.intelImage().node), "Image")
         XCTAssertEqual(UEFITreeDisplay.typeText(for: TestUEFI.padding().node), "Padding")
     }
 
@@ -34,6 +35,7 @@ final class UEFITreeDisplayTests: XCTestCase {
             guid: EFIGUID("4A3CA68B-7723-48FB-803D-578CC1FEC44D"),
             header: 0..<0, body: 0..<0x100
         )
+        XCTAssertEqual(UEFITreeDisplay.subtypeText(for: TestUEFI.intelImage().node), "Intel")
         XCTAssertEqual(UEFITreeDisplay.subtypeText(for: capsule), "Aptio signed")
         let region = UEFINode(kind: .region, subtype: 7, name: "", header: 0..<0, body: 0..<0x100)
         XCTAssertEqual(UEFITreeDisplay.subtypeText(for: region), "Microcode")
@@ -54,6 +56,7 @@ final class UEFITreeDisplayTests: XCTestCase {
     /// subtype. A capsule file leads with its capsule, a dump with its first root.
     func testTheTitleLeadsWithTheImageType() {
         XCTAssertEqual(UEFITreeDisplay.imageType(of: TestUEFI.volume().image), "Volume · FFSv2")
+        XCTAssertEqual(UEFITreeDisplay.imageType(of: TestUEFI.intelImage().image), "Image · Intel")
         XCTAssertEqual(UEFITreeDisplay.imageType(of: TestUEFI.file().image), "File · Driver")
         let capsule = UEFINode(
             kind: .capsule, name: "",

@@ -61,9 +61,26 @@ extension Parser {
             || reader.uint32(at: offset + 0x10) == Descriptor.signature
     }
 
-    /// An Intel image: the descriptor, then the regions it maps, in offset
-    /// order with the gaps between them kept (§2.2).
+    /// An Intel image is one node over the whole image — a descriptor and the
+    /// regions it maps, laid out in offset order with the gaps kept (§2.2). The
+    /// wrapping node is the root UEFITool shows as `Image/Intel` ("Intel image"):
+    /// its body is the whole file, and everything a descriptor describes sits
+    /// under it rather than beside it.
     func parseIntelImage(_ range: Range<UInt64>, depth: Int) -> [UEFINode] {
+        [UEFINode(
+            kind: .intelImage,
+            subtype: UEFITypes.Sub.intelImage,
+            name: "Intel image",
+            header: range.lowerBound..<range.lowerBound,
+            body: range,
+            isFixed: true,
+            children: intelImageChildren(range, depth: depth)
+        )]
+    }
+
+    /// What an Intel image contains: the descriptor region, the regions the map
+    /// names, and the padding that fills the gaps between them.
+    private func intelImageChildren(_ range: Range<UInt64>, depth: Int) -> [UEFINode] {
         let base = range.lowerBound
         let regions = readRegions(at: base, limit: range.upperBound)
         guard !regions.isEmpty else {

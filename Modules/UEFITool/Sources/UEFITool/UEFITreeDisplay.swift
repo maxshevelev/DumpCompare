@@ -63,6 +63,7 @@ public enum UEFITreeDisplay {
     private static func kindLabel(_ kind: UEFINodeKind) -> String {
         switch kind {
         case .capsule: return "Capsule"
+        case .intelImage: return "Intel image"
         case .flashDescriptor: return "Flash descriptor"
         case .region: return "Region"
         case .volume: return "Volume"

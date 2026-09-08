@@ -11,7 +11,10 @@ final class TopLevelParseTests: XCTestCase {
 
     // MARK: - Intel images
 
-    func testTheRegionsOfAFlashDumpAreLaidOutInOrder() {
+    /// The whole image is one node of kind `.intelImage` whose body is the
+    /// file; the descriptor, regions and the padding between them sit under it
+    /// (§2.2).
+    func testAnIntelImageIsOneNodeOverTheWholeDump() {
         let image = TestImage.intelImage(
             size: 0x8000,
             regions: [
@@ -24,15 +27,23 @@ final class TopLevelParseTests: XCTestCase {
 
         let parsed = UEFIParser.parse(image)
 
+        XCTAssertEqual(parsed.roots.map(\.kind), [.intelImage])
+        let root = parsed.roots[0]
+        XCTAssertEqual(root.name, "Intel image")
+        XCTAssertEqual(root.subtype, UEFITypes.Sub.intelImage)
+        XCTAssertEqual(root.uefiItemType, UEFITypes.Item.image.rawValue)
+        XCTAssertEqual(root.header, 0..<0)
+        XCTAssertEqual(root.body, 0..<0x8000)
+        XCTAssertTrue(root.isFixed)
         XCTAssertEqual(
-            parsed.roots.map(\.kind),
+            root.children.map(\.kind),
             [.flashDescriptor, .region, .padding, .region]
         )
         XCTAssertEqual(
-            parsed.roots.map(\.range),
+            root.children.map(\.range),
             [0..<0x1000, 0x1000..<0x3000, 0x3000..<0x4000, 0x4000..<0x8000]
         )
-        XCTAssertEqual(parsed.roots.map(\.name)[1], "ME region")
+        XCTAssertEqual(root.children.map(\.name)[1], "ME region")
         XCTAssertTrue(parsed.diagnostics.isEmpty)
     }
 
@@ -46,8 +57,9 @@ final class TopLevelParseTests: XCTestCase {
         )
 
         let parsed = UEFIParser.parse(image)
-        let me = parsed.roots.first { $0.name == "ME region" }
-        let bios = parsed.roots.first { $0.name == "BIOS region" }
+        let children = parsed.roots[0].children
+        let me = children.first { $0.name == "ME region" }
+        let bios = children.first { $0.name == "BIOS region" }
 
         XCTAssertEqual(me?.children.count, 0)
         XCTAssertEqual(bios?.children.map(\.kind), [.volume, .padding])
@@ -66,8 +78,9 @@ final class TopLevelParseTests: XCTestCase {
 
         let parsed = UEFIParser.parse(image)
 
-        XCTAssertEqual(parsed.roots.map(\.kind), [.flashDescriptor, .region, .padding])
-        XCTAssertNil(parsed.roots.first { $0.name == "Microcode region" })
+        let children = parsed.roots[0].children
+        XCTAssertEqual(children.map(\.kind), [.flashDescriptor, .region, .padding])
+        XCTAssertNil(children.first { $0.name == "Microcode region" })
     }
 
     func testOverlappingRegionsAreReported() {
@@ -83,7 +96,7 @@ final class TopLevelParseTests: XCTestCase {
         let parsed = UEFIParser.parse(image)
 
         XCTAssertEqual(parsed.diagnostics.map(\.kind), [.overlappingRegions])
-        XCTAssertEqual(parsed.roots.map(\.range), [0..<0x1000, 0x1000..<0x5000, 0x5000..<0x8000])
+        XCTAssertEqual(parsed.roots[0].children.map(\.range), [0..<0x1000, 0x1000..<0x5000, 0x5000..<0x8000])
     }
 
     /// A dump that stops short of what the descriptor describes — half of a
@@ -96,12 +109,13 @@ final class TopLevelParseTests: XCTestCase {
 
         let parsed = UEFIParser.parse(image)
 
-        XCTAssertEqual(parsed.roots.map(\.range), [0..<0x1000, 0x1000..<0x4000])
+        XCTAssertEqual(parsed.roots[0].children.map(\.range), [0..<0x1000, 0x1000..<0x4000])
         XCTAssertEqual(parsed.diagnostics.map(\.kind), [.truncated(.flashDescriptor)])
     }
 
-    /// A descriptor whose own map is out of range is still a descriptor. The
-    /// rest of the image gets searched rather than given up on.
+    /// A descriptor whose own map is out of range is still a descriptor, and
+    /// still an Intel image. The rest of the image gets searched rather than
+    /// given up on (§2.2).
     func testABrokenRegionMapFallsBackToASearch() {
         var image = TestImage.intelImage(
             size: 0x8000,
@@ -113,8 +127,9 @@ final class TopLevelParseTests: XCTestCase {
         let parsed = UEFIParser.parse(image)
 
         XCTAssertEqual(parsed.diagnostics.map(\.kind), [.truncated(.flashDescriptor)])
-        XCTAssertEqual(parsed.roots.map(\.kind), [.flashDescriptor, .volume, .padding])
-        XCTAssertEqual(parsed.roots[1].range, 0x1000..<0x2000)
+        let children = parsed.roots[0].children
+        XCTAssertEqual(children.map(\.kind), [.flashDescriptor, .volume, .padding])
+        XCTAssertEqual(children[1].range, 0x1000..<0x2000)
     }
 
     // MARK: - Capsules
@@ -265,7 +280,7 @@ final class TopLevelParseTests: XCTestCase {
         )
 
         let parsed = UEFIParser.parse(image)
-        let region = parsed.roots.first { $0.name == "Microcode region" }
+        let region = parsed.roots[0].children.first { $0.name == "Microcode region" }
 
         XCTAssertEqual(region?.children.map(\.kind), [.microcode, .microcode, .padding])
         XCTAssertEqual(region?.children.map(\.range).first, 0x1000..<0x1070)

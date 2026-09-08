@@ -132,6 +132,10 @@ public struct UEFINode: Identifiable, Hashable, Sendable {
 /// the part that costs a parse to work out.
 public enum UEFINodeKind: String, Equatable, Sendable, CaseIterable {
     case capsule
+    /// The whole of an Intel flash image: a descriptor and the regions it maps,
+    /// under one root the way UEFITool shows it (§2.2). Its body is the whole
+    /// image and its children are the descriptor and regions laid out in it.
+    case intelImage
     case flashDescriptor
     case region
     case volume
