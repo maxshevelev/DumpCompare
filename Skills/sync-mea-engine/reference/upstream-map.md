@@ -37,7 +37,7 @@ ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
 |---|---|---|---|
 | `FPT_Pre_Header`, `FPT_Header`, `FPT_Header_21` (+`_Flags`) | FPT header — shared v1/2/2.1 decode done; v2.1 redundancy/CRC-32 & `_Flags` bitfields deferred | `Layout/FPT.swift` | ported |
 | `FPT_Entry` | FPT partition entry (name/owner/offset/size/tokens/scratch/flags) | `Layout/FPT.swift` | ported |
-| `BPDT_Header_1`, `BPDT_Header_2`, `BPDT_Entry` | BPDT 1.6/1.7/2.0 | `Layout/IFWI.swift` | — |
+| `BPDT_Header_1`, `BPDT_Header_2`, `BPDT_Entry` | BPDT — **decode ported** (`IFWI.firstBpdt` ports `bpdt_pat` 11018; `bpdtTable` reads header v1/v2 by the +0x06 tag + `DescCount` entries, MEA.py 11850–12107): each non-empty CSE-LT Boot partition's BPDT surfaced as `FirmwareAnalysis.bootPartitions` (name via `$CPD`-header read else `bpdt_dict`, offset = base+raw, empty flag); 1.7 CRC-32 (`checksumValid`, fact only — upstream never errors on it) | `Layout/IFWI.swift` | ported |
 | `CSE_Layout_Table_16`, `_17` | IFWI layout 1.6/1.7 — **full decode ported** (`IFWI.layoutTable`, MEA.py 11507–11605): version probe (drives `fpt_start`), Data/Boot1-5(+Temp/ELog) partition inventory (`cse_lt_hdr_info`), 1.7 CRC-32 validity + CSE-Redundancy flag; surfaced as `FirmwareAnalysis.cseLayoutTable`, invalid 1.7 CRC → Issue id 10 | `Layout/IFWI.swift` | ported |
 | `fd_anl_init`, `fd_anl_rgn` | Flash Descriptor region parse — FLREG2 Engine/Graphics (ME) base/size read, the one fact `fpt_start` needs (MEA.py 10045) | `Layout/IFWI.swift` (`FlashDescriptor.meRegion`) | ported (ME-region only) |
 | `CSE_Layout_*` flag classes | per-format bitfields | `Layout/*.swift` | — |

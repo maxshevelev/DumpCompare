@@ -35,6 +35,7 @@ public struct FirmwareAnalysis: Codable, Sendable, Equatable, Identifiable {
     public var codePartition: CodePartition?  // $CPD: entries, extensions, modules
     public var mfsVolume: MFSVolume?          // MFS volume facts, when an FPT "MFS" region decodes
     public var cseLayoutTable: CSELayoutTable? = nil  // IFWI 1.6/1.7 CSE Layout Table inventory
+    public var bootPartitions: [BPDT]? = nil          // BPDT of each non-empty CSE-LT Boot partition
     public var issues: [Issue]
 }
 
@@ -459,6 +460,60 @@ public struct CSELayoutTable: Codable, Sendable, Equatable {
     }
 }
 
+/// One entry of a Boot Partition Descriptor Table (upstream `BPDT_Entry`,
+/// MEA.py 742). `name` is upstream's label — the `$CPD` partition name when the
+/// entry content begins `$CPD`, else the `bpdt_dict` type name ("RBEP", "FTPR",
+/// "PMCP", "PCHC", …), else "Unknown". `type` is the raw u16 Type; `offset` is
+/// the entry's SPI (the BPDT base plus its raw offset), absolute like every
+/// region offset; `empty` mirrors upstream (offset/size NA in [0, 0xFFFFFFFF],
+/// or the whole content erased to 0xFF).
+public struct BPDTPartition: Codable, Sendable, Equatable, Identifiable {
+    public var id: Int
+    public var name: String
+    public var type: Int
+    public var offset: Int
+    public var size: Int
+    public var empty: Bool
+
+    public init(id: Int, name: String, type: Int, offset: Int, size: Int, empty: Bool) {
+        self.id = id
+        self.name = name
+        self.type = type
+        self.offset = offset
+        self.size = size
+        self.empty = empty
+    }
+}
+
+/// A Boot Partition Descriptor Table decoded from the head of a non-empty
+/// IFWI CSE-LT Boot partition (upstream `BPDT_Header_1`/`_2` + entry loop,
+/// MEA.py 11850–12107). `partitionName` names the hosting Boot slot ("Boot 1",
+/// "Boot 3"). `version` is the BPDT version tag — 1 (IFWI 1.6 & 2.0) or 2
+/// (IFWI 1.7). `redundancy` is the 1.7 `BPDTConfig` bit 0; false when the
+/// version is 1, whose Checksum is an XOR redundancy value rather than a flag.
+/// `checksumValid` is the 1.7 CRC-32 over the whole table (header + entries)
+/// with the stored checksum field zeroed (signature excluded); nil for version
+/// 1, which stores no comparable checksum. nil on `FirmwareAnalysis` = the
+/// image has no IFWI (pre-CSE) or no boot partitions.
+public struct BPDT: Codable, Sendable, Equatable {
+    public var offset: Int                 // absolute BPDT base
+    public var partitionName: String       // hosting CSE-LT Boot slot ("Boot 1"…)
+    public var version: Int                // 1 (IFWI 1.6 & 2.0) or 2 (IFWI 1.7)
+    public var redundancy: Bool            // 1.7 BPDTConfig bit 0; false for version 1
+    public var checksumValid: Bool?        // 1.7 CRC-32 over header+entries; nil for version 1
+    public var entries: [BPDTPartition]
+
+    public init(offset: Int, partitionName: String, version: Int, redundancy: Bool,
+                checksumValid: Bool?, entries: [BPDTPartition]) {
+        self.offset = offset
+        self.partitionName = partitionName
+        self.version = version
+        self.redundancy = redundancy
+        self.checksumValid = checksumValid
+        self.entries = entries
+    }
+}
+
 public enum Severity: String, Codable, Sendable {
     case note, warning, error
 }
@@ -473,5 +528,5 @@ public struct Issue: Codable, Sendable, Equatable, Identifiable {
 /// whether to surface the new data (`reference/result-model.md` §Versioning).
 public enum EngineModelRevision {
     /// Current revision of the `FirmwareAnalysis` shape.
-    public static let current = 7
+    public static let current = 8
 }

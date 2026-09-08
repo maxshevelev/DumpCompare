@@ -172,4 +172,100 @@ final class IFWITests: XCTestCase {
         XCTAssertEqual(layout.version, 0x17)
         XCTAssertEqual(layout.checksumValid, false)
     }
+
+    // ——— Boot Partition Descriptor Table decode ———
+
+    /// A 0x4000 erased buffer holding an IFWI 1.7 BPDT at 0 (`BPDT_Header_2`):
+    /// 3 entries — RBEP @0x1000, ISIF @0x2000 (real content), PCHC NA/empty —
+    /// a real CRC-32 over header+entries with the stored checksum zeroed, and
+    /// the redundancy bit set. Mirrors the 1.bin Boot1 shape (FIT 15.0.30).
+    private func bpdt17Buffer(corruptChecksum: Bool = false) -> Data {
+        var d = Data(repeating: 0xFF, count: 0x4000)
+        d.replaceSubrange(0..<4, with: Data([0xAA, 0x55, 0x00, 0x00]))
+        d[0x04] = 0x03; d[0x05] = 0x00          // DescCount = 3
+        d[0x06] = 0x02                          // BPDT version 2 (IFWI 1.7)
+        d[0x07] = 0x01                          // BPDTConfig: bit0 redundancy
+        le(0, &d, at: 0x0C)                     // IFWIVersion
+        le(15, &d, at: 0x10)                    // FitMajor
+        le(0x1E, &d, at: 0x14)                  // FitHotfix
+        le(0x06B4, &d, at: 0x16)                // FitBuild
+        // Entries at 0x18, stride 0xC: le() writes the 4-byte type+flags word.
+        le(1, &d, at: 0x18); le(0x1000, &d, at: 0x1C); le(0x100, &d, at: 0x20)   // RBEP
+        le(33, &d, at: 0x24); le(0x2000, &d, at: 0x28); le(0x100, &d, at: 0x2C)  // ISIF
+        le(32, &d, at: 0x30); le(0, &d, at: 0x34); le(0, &d, at: 0x38)            // PCHC NA→empty
+        d.replaceSubrange(0x1000..<0x1008, with: Data([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]))
+        d.replaceSubrange(0x2000..<0x2008, with: Data([0xAA, 0x55, 0x00, 0x00, 1, 0, 0, 0]))
+        // CRC window: [0x04:0x08] + 4 zero + [0x0C : 0x18+count*0xC].
+        let end = 0x18 + 3 * 0x0C
+        var window = d.subdata(in: 0x04..<0x08)
+        window.append(Data([0, 0, 0, 0]))
+        window.append(d.subdata(in: 0x0C..<end))
+        var stored = CRC32.crc32(window)
+        if corruptChecksum { stored ^= 0x0000_0001 }
+        le(stored, &d, at: 0x08)
+        return d
+    }
+
+    /// An IFWI 1.6/2.0 BPDT at 0 (`BPDT_Header_1`): 2 entries — FTPR @0x1000
+    /// (real content), RBEP NA/empty. Mirrors the DATMAAMBAC0 Boot1 shape.
+    private func bpdt16Buffer() -> Data {
+        var d = Data(repeating: 0xFF, count: 0x4000)
+        d.replaceSubrange(0..<4, with: Data([0xAA, 0x55, 0x00, 0x00]))
+        d[0x04] = 0x02; d[0x05] = 0x00          // DescCount = 2
+        d[0x06] = 0x01; d[0x07] = 0x00          // BPDT version 1 (u16 low byte)
+        le(2, &d, at: 0x18); le(0x1000, &d, at: 0x1C); le(0x100, &d, at: 0x20)   // FTPR
+        le(1, &d, at: 0x24); le(0, &d, at: 0x28); le(0, &d, at: 0x2C)             // RBEP empty
+        d.replaceSubrange(0x1000..<0x1008, with: Data(repeating: 0x00, count: 8))
+        return d
+    }
+
+    func testFirstBpdtFindsHeader() {
+        var d = Data(repeating: 0xFF, count: 0x4000)
+        d.replaceSubrange(0x500..<(0x500 + 0x3C), with: bpdt17Buffer().prefix(0x3C))
+        XCTAssertEqual(IFWI.firstBpdt(in: d, lo: 0, hi: 0x1000), 0x500)
+        XCTAssertNil(IFWI.firstBpdt(in: Data(repeating: 0xFF, count: 0x1000), lo: 0, hi: 0x1000))
+    }
+
+    func testDecodesIFWI17BPDT() {
+        let info = try! XCTUnwrap(IFWI.bpdtTable(in: bpdt17Buffer(), at: 0, partitionName: "Boot 1"))
+        XCTAssertEqual(info.partitionName, "Boot 1")
+        XCTAssertEqual(info.version, 2)                 // IFWI 1.7
+        XCTAssertEqual(info.redundancy, true)           // BPDTConfig bit 0
+        XCTAssertEqual(info.checksumValid, true)        // real CRC-32 over the table
+        XCTAssertEqual(info.slots.map(\.name), ["RBEP", "ISIF", "PCHC"])
+        XCTAssertEqual(info.slots[0].type, 1)
+        XCTAssertEqual(info.slots[0].offset, 0x1000)    // base + raw offset
+        XCTAssertEqual(info.slots[0].size, 0x100)
+        XCTAssertEqual(info.slots[0].empty, false)
+        XCTAssertEqual(info.slots[1].empty, false)
+        XCTAssertEqual(info.slots[2].empty, true)       // NA offset/size
+    }
+
+    func testReportsInvalidIFWI17BPDTChecksum() {
+        let info = try! XCTUnwrap(IFWI.bpdtTable(in: bpdt17Buffer(corruptChecksum: true), at: 0,
+                                                 partitionName: "Boot 1"))
+        XCTAssertEqual(info.checksumValid, false)
+    }
+
+    func testDecodesIFWI16BPDT() {
+        let info = try! XCTUnwrap(IFWI.bpdtTable(in: bpdt16Buffer(), at: 0, partitionName: "Boot 1"))
+        XCTAssertEqual(info.version, 1)                 // IFWI 1.6 & 2.0
+        XCTAssertEqual(info.redundancy, false)          // no config byte on v1
+        XCTAssertNil(info.checksumValid)                // v1 stores an XOR value
+        XCTAssertEqual(info.slots.map(\.name), ["FTPR", "RBEP"])
+        XCTAssertEqual(info.slots[0].offset, 0x1000)
+        XCTAssertEqual(info.slots[0].empty, false)
+        XCTAssertEqual(info.slots[1].empty, true)
+    }
+
+    func testNoBPDTOnErasedOrTruncated() {
+        XCTAssertNil(IFWI.bpdtTable(in: Data(repeating: 0xFF, count: 0x4000), at: 0,
+                                    partitionName: "Boot 1"))
+        // An entry table that overruns the region end is rejected.
+        var d = bpdt16Buffer()
+        XCTAssertNotNil(IFWI.bpdtTable(in: d, at: 0, partitionName: "Boot 1"))
+        d[0x04] = 0xFF                                  // absurd DescCount → table runs past end
+        d[0x05] = 0xFF
+        XCTAssertNil(IFWI.bpdtTable(in: d, at: 0, partitionName: "Boot 1"))
+    }
 }

@@ -55,6 +55,33 @@ public actor MEFirmwareAnalyzer {
                     + "0x\(String(baseOffset + layout.base, radix: 16)) is INVALID."))
         }
 
+        // Boot Partition Descriptor Tables: each non-empty CSE-LT Boot partition
+        // opens with a BPDT directory of the ME sub-partitions packed inside it
+        // (upstream bpdt_anl, MEA.py 11850–12107). A pre-IFWI engine has no CSE
+        // LT and therefore no boot partitions → nil. No Issue is raised on a bad
+        // 1.7 CRC: upstream only displays that Checksum, it does not error.
+        let bootPartitions: [BPDT]? = fpt?.cseLayout.flatMap { layout in
+            layout.slots.compactMap { slot in
+                guard slot.name.hasPrefix("Boot"), !slot.empty else { return nil }
+                let hi = min(slot.offset + slot.size, region.count)
+                guard let bpdtBase = IFWI.firstBpdt(in: region, lo: slot.offset, hi: hi),
+                      let info = IFWI.bpdtTable(in: region, at: bpdtBase,
+                                                partitionName: slot.name)
+                else { return nil }
+                return BPDT(
+                    offset: baseOffset + info.base,
+                    partitionName: slot.name,
+                    version: info.version,
+                    redundancy: info.redundancy,
+                    checksumValid: info.checksumValid,
+                    entries: info.slots.enumerated().map { index, slot in
+                        BPDTPartition(id: index, name: slot.name, type: slot.type,
+                                      offset: baseOffset + slot.offset,
+                                      size: slot.size, empty: slot.empty)
+                    })
+            }
+        }
+
         // Phase 9: the CSE file system. The oldest layout — MFS — appears as a
         // raw flash region on both real dumps (CSME 12.0.3 and CSME 15.0.30), in
         // an FPT partition named "MFS". Decode its volume (page inventory →
@@ -250,7 +277,8 @@ public actor MEFirmwareAnalyzer {
                 rsaSignatureValid: nil, checksums: checksums,
                 regions: regions, manifest: manifestSummary,
                 codePartition: nil, mfsVolume: mfsVolume,
-                cseLayoutTable: cseLayoutTable, issues: issues)
+                cseLayoutTable: cseLayoutTable, bootPartitions: bootPartitions,
+                issues: issues)
         }
 
         // ——— Stage 2: identification — awaits the live MEA.dat once, then
@@ -322,6 +350,7 @@ public actor MEFirmwareAnalyzer {
             codePartition: codePartition,
             mfsVolume: mfsVolume,
             cseLayoutTable: cseLayoutTable,
+            bootPartitions: bootPartitions,
             issues: issues)
     }
 

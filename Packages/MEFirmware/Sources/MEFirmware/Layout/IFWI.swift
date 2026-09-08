@@ -191,6 +191,148 @@ enum IFWI {
         return hi > lo ? subrange(data, lo, hi - lo) : nil
     }
 
+    // ——— Boot Partition Descriptor Tables (IFWI/BPDT) ———
+
+    /// BPDT entry type → partition name (upstream `bpdt_dict`, MEA.py 10760).
+    /// Keys 27–30 carry no mapping; anything outside the table is "Unknown".
+    static let bpdtTypeNames: [Int: String] = [
+        0: "SMIP", 1: "RBEP", 2: "FTPR", 3: "UCOD", 4: "IBBP", 5: "S-BPDT",
+        6: "OBBP", 7: "NFTP", 8: "ISHC", 9: "DLMP", 10: "UEPB", 11: "UTOK",
+        12: "UFS PHY", 13: "UFS GPP LUN", 14: "PMCP", 15: "IUNP", 16: "NVMC",
+        17: "UEP", 18: "WCOD", 19: "LOCL", 20: "OEMP", 21: "FITC", 22: "PAVP",
+        23: "IOMP", 24: "xPHY", 25: "TBTP", 26: "PLTS", 31: "DPHY", 32: "PCHC",
+        33: "ISIF", 34: "ISIC", 35: "HBMI", 36: "OMSM", 37: "GTGP", 38: "MDFI",
+        39: "PUNP", 40: "PHYP", 41: "SAMF", 42: "PPHY", 43: "GBST", 44: "TCCP",
+        45: "PSEP",
+    ]
+
+    /// One entry of a decoded BPDT (upstream `BPDT_Entry`, MEA.py 742): type,
+    /// the entry's SPI (table base + raw offset field), size and upstream's
+    /// empty flag (offset/size NA in [0, 0xFFFFFFFF] or content erased to FF).
+    struct BPDTSlot {
+        let name: String
+        let type: Int
+        let offset: Int
+        let size: Int
+        let empty: Bool
+    }
+
+    /// A decoded Boot Partition Descriptor Table (upstream `bpdt_anl`, MEA.py
+    /// 11850–12107). `base` is region-relative; `version` is the version tag — 1
+    /// (IFWI 1.6 & 2.0, `BPDT_Header_1`) or 2 (IFWI 1.7, `BPDT_Header_2`).
+    /// `redundancy` is the 1.7 `BPDTConfig` bit 0; `checksumValid` is the 1.7
+    /// CRC-32 of header+entries (signature + stored checksum excluded).
+    struct BPDTInfo {
+        let base: Int
+        let partitionName: String
+        let version: Int
+        let redundancy: Bool
+        let checksumValid: Bool?
+        let slots: [BPDTSlot]
+    }
+
+    /// First Boot Partition Descriptor Table base in `data[lo..<hi]`, a direct
+    /// port of upstream's `bpdt_pat` (MEA.py 11018):
+    /// `\xAA\x55[\x00\xAA]\x00.\x00[\x01\x02][\x00\x01].{16}` followed by three
+    /// 12-byte blocks each holding 0x00 at +1/+3/+7/+11 (an entry-table look).
+    /// `.{16}` and the other free bytes impose no constraint, so the scan checks
+    /// only those fixed bytes. Returns nil when no match fits the window.
+    static func firstBpdt(in data: Data, lo: Int, hi: Int) -> Int? {
+        let start = data.startIndex
+        guard lo >= 0, hi <= data.count, hi - lo >= 60 else { return nil }
+        var s = start + lo
+        let last = start + hi - 60
+        while s <= last {
+            if data[s] == 0xAA, data[s + 1] == 0x55,
+               data[s + 2] == 0x00 || data[s + 2] == 0xAA,
+               data[s + 3] == 0x00,
+               data[s + 5] == 0x00,
+               data[s + 6] == 0x01 || data[s + 6] == 0x02,
+               data[s + 7] == 0x00 || data[s + 7] == 0x01,
+               bpdtBlock(data, s + 24) {
+                return s - start
+            }
+            s += 1
+        }
+        return nil
+    }
+
+    /// Decode the BPDT whose header begins at region offset `base` (upstream
+    /// `bpdt_anl`, MEA.py 11874–12107): header + `DescCount` entries from +0x18,
+    /// stride 0xC. Each entry's offset is measured from the table base. nil when
+    /// `base` does not hold a plausible BPDT (version tag not 1/2, or the entry
+    /// table runs past the region end).
+    static func bpdtTable(in data: Data, at base: Int, partitionName: String) -> BPDTInfo? {
+        let start = data.startIndex
+        guard base >= 0, base + 0x18 + 0x0C <= data.count else { return nil }
+        let ver = data[start + base + 0x06]
+        guard ver == 1 || ver == 2 else { return nil }
+        let count = Int(le16(data, base + 0x04))
+        let end = base + 0x18 + count * 0x0C
+        guard count > 0, end <= data.count else { return nil }
+
+        // 1.7 redundancy flag: BPDTConfig bit 0 (0 = no backup, 1 = backed up).
+        // Version 1's Checksum is an XOR redundancy value, not a flag → false.
+        let redundancy = ver == 2 && (data[start + base + 0x07] & 0x01) != 0
+
+        // 1.7 CRC-32 (field comment at MEA.py 691): whole table without the
+        // Signature, checksum field zeroed — [base+0x04:base+0x08] + 4×\0 +
+        // [base+0x0C : end]. Version 1 stores an XOR value → nil.
+        var checksumValid: Bool? = nil
+        if ver == 2 {
+            var window = subrange(data, base + 0x04, 0x04) ?? Data()
+            window.append(Data([0, 0, 0, 0]))
+            window.append(subrange(data, base + 0x0C, end - base - 0x0C) ?? Data())
+            checksumValid = CRC32.crc32(window) == le32(data, base + 0x08)
+        }
+
+        let na: Set<UInt32> = [0, 0xFFFF_FFFF]
+        var slots: [BPDTSlot] = []
+        slots.reserveCapacity(count)
+        for index in 0..<count {
+            let e = base + 0x18 + index * 0x0C
+            let type = Int(le16(data, e))
+            let rawOffset = le32(data, e + 0x04)
+            let rawSize = le32(data, e + 0x08)
+            let spi = base + Int(rawOffset)
+            let size = Int(rawSize)
+            var empty = na.contains(rawOffset) || na.contains(rawSize)
+            if !empty, spi >= 0, spi + size <= data.count, size > 0 {
+                let content = subrange(data, spi, size) ?? Data()
+                empty = content.allSatisfy { $0 == 0xFF }   // erased (upstream: FF only)
+            }
+            let name: String
+            if !empty, spi + 0x10 <= data.count,
+               subrange(data, spi, 4) == Data("$CPD".utf8) {
+                // A $CPD partition names its own row (MEA.py 11898–11899).
+                let raw = String(data: subrange(data, spi + 0x0C, 4) ?? Data(),
+                                 encoding: .ascii)
+                name = raw?.trimmingCharacters(in: CharacterSet(charactersIn: "\0"))
+                    ?? "Unknown"
+            } else {
+                name = bpdtTypeNames[type] ?? "Unknown"
+            }
+            slots.append(BPDTSlot(name: name, type: type, offset: spi, size: size,
+                                  empty: empty))
+        }
+        return BPDTInfo(base: base, partitionName: partitionName,
+                        version: Int(ver), redundancy: redundancy,
+                        checksumValid: checksumValid, slots: slots)
+    }
+
+    /// True when the 12-byte blocks at `p`, `p+12`, `p+24` each hold 0x00 at
+    /// byte offsets +1, +3, +7, +11 (the fixed bytes of the `bpdt_pat` tail).
+    private static func bpdtBlock(_ data: Data, _ p: Int) -> Bool {
+        for k in 0..<3 {
+            let q = p + k * 12
+            if data[q + 1] != 0x00 || data[q + 3] != 0x00
+                || data[q + 7] != 0x00 || data[q + 11] != 0x00 {
+                return false
+            }
+        }
+        return true
+    }
+
     private static func subrange(_ data: Data, _ off: Int, _ len: Int) -> Data? {
         guard off >= 0, off + len <= data.count else { return nil }
         let s = data.startIndex + off

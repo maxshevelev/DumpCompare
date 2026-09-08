@@ -30,6 +30,14 @@ final class FirmwareAnalysisModelTests: XCTestCase {
                     CSELayoutPartition(id: 0, name: "Data", offset: 0x1F1000, size: 0x88000, empty: false),
                     CSELayoutPartition(id: 1, name: "Boot 1", offset: 0x3000, size: 0x1EE000, empty: false),
                 ]),
+            bootPartitions: [
+                BPDT(offset: 0x3000, partitionName: "Boot 1", version: 2, redundancy: true,
+                     checksumValid: true,
+                     entries: [
+                        BPDTPartition(id: 0, name: "RBEP", type: 1, offset: 0x4000, size: 0x18000, empty: false),
+                        BPDTPartition(id: 1, name: "FTPR", type: 2, offset: 0x59000, size: 0x125000, empty: false),
+                     ]),
+            ],
             issues: [Issue(id: 1, severity: .warning, message: "something odd")]
         )
 
@@ -43,6 +51,11 @@ final class FirmwareAnalysisModelTests: XCTestCase {
         XCTAssertEqual(decoded.cseLayoutTable?.offset, 0x1000)
         XCTAssertEqual(decoded.cseLayoutTable?.partitions.count, 2)
         XCTAssertEqual(decoded.cseLayoutTable?.partitions[0].name, "Data")
+        XCTAssertEqual(decoded.bootPartitions?.count, 1)
+        XCTAssertEqual(decoded.bootPartitions?[0].offset, 0x3000)
+        XCTAssertEqual(decoded.bootPartitions?[0].version, 2)
+        XCTAssertEqual(decoded.bootPartitions?[0].entries[0].name, "RBEP")
+        XCTAssertEqual(decoded.bootPartitions?[0].entries[1].offset, 0x59000)
     }
 
     func testDecodingOmitsNewerOptionalFields() throws {
@@ -71,7 +84,7 @@ final class FirmwareAnalysisModelTests: XCTestCase {
     }
 
     func testEngineModelRevisionBumpsWithAdditiveChanges() {
-        XCTAssertEqual(EngineModelRevision.current, 7)
+        XCTAssertEqual(EngineModelRevision.current, 8)
     }
 }
 
