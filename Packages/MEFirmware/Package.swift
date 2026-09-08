@@ -29,12 +29,19 @@ let package = Package(
         .macOS(.v14)
     ],
     products: [
-        .library(name: "MEFirmware", targets: ["MEFirmware"])
+        .library(name: "MEFirmware", targets: ["MEFirmware"]),
+        // Developer harness, not part of the library: analyse a file from the
+        // command line and dump the result model as JSON.
+        .executable(name: "MEFirmwareCLI", targets: ["MEFirmwareCLI"])
     ],
     targets: [
         .target(name: "MEFirmware"),
         .testTarget(
             name: "MEFirmwareTests",
+            dependencies: ["MEFirmware"]
+        ),
+        .executableTarget(
+            name: "MEFirmwareCLI",
             dependencies: ["MEFirmware"]
         )
     ]
