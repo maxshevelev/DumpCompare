@@ -327,6 +327,17 @@ public actor MEFirmwareAnalyzer {
         let skuText = Self.skuText(identity: identity, codePartition: codePartition,
                                    year: manifest.year, month: manifest.month)
 
+        // Phase 12 (IUP): the Independent PMC/PCHC/PHY families fill the
+        // top-level Chipset Support platform, Chipset SKU letter and PMC chipset
+        // stepping straight from their manifest identity (pmc/pchc/phy_anl) —
+        // no MFS/PCH-init involved. CSE families return nil here and keep the
+        // Phase-10 CSME SKU / empty platform.
+        let iup = IUPDescriptor.facts(family: identity.family,
+                                      variant: identity.variant,
+                                      major: identity.major,
+                                      minor: identity.minor,
+                                      hotfix: identity.hotfix)
+
         return FirmwareAnalysis(
             family: identity.family,
             variant: identity.variant,
@@ -336,8 +347,9 @@ public actor MEFirmwareAnalyzer {
             securityVersion: identity.securityVersion,
             release: identity.release,
             type: .region,
-            sku: skuText,
-            platform: "",
+            sku: iup?.sku ?? skuText,
+            platform: iup?.platform ?? "",
+            chipsetStepping: iup?.chipsetStepping,
             manufactureDate: Self.manufactureDate(day: manifest.day,
                                                   month: manifest.month,
                                                   year: manifest.year),

@@ -78,7 +78,7 @@ ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
 |---|---|---|---|
 | `GSC_Info_FWI`, `GSC_Info_IUP` | GSC firmware image info | `IUP/GSC.swift` | — |
 | `GSC_OROM_Header`, `GSC_OROM_PCI_Data` | Option ROM image/PCIR | `IUP/OROM.swift` | — |
-| `pmc_anl`, `pmc_parse`, `pchc_anl`, `pchc_parse`, `phy_anl`, `phy_parse`, `pch_init_anl`, `info_anl` | PMC/PCHC/PHY/PCH init decode | `IUP/PMC.swift`, `IUP/PCHC.swift`, `IUP/PHY.swift` | — |
+| `pmc_anl`, `pmc_parse`, `pchc_anl`, `pchc_parse`, `phy_anl`, `phy_parse`, `pch_init_anl`, `info_anl` | PMC/PCHC/PHY/PCH init decode — **family descriptor ported** (`IUP/IUPDescriptor`, MEA.py 9164/9277/9342): Chipset Support platform + Chipset SKU letter + PMC chipset stepping from the manifest identity, mirroring the per-token SKU/stepping branches and the main-summary row gating (SKU hidden for APL/BXT/GLK/DG, stepping hidden for DG). Fills the top-level `platform`/`sku` + new `chipsetStepping` (result-model rev 9). Oracle-verified on the three 1.bin IUP partitions. The `_parse` loops, `pch_init_anl` (MFS PCH-init → CSE `platform`) and `info_anl` (GSC INFO partition) remain open | `IUP/IUP.swift` + analyzer wiring | partial |
 | `chk_iup_size` | IUP size validation | `IUP/Common.swift` | — |
 | `fovd_clean` | FOVD/NVKR dirty check | `IUP/Common.swift` | — |
 

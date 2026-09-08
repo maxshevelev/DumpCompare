@@ -25,6 +25,9 @@ public struct FirmwareAnalysis: Codable, Sendable, Equatable, Identifiable {
     public var type: FirmwareType
     public var sku: String
     public var platform: String
+    /// PMC chipset stepping letter ("B"), derived like upstream `pmc_anl`.
+    /// nil for families that derive none (PCHC/PHY) or when it is unknown.
+    public var chipsetStepping: String? = nil
     public var manufactureDate: Date?
     public var sizeBytes: Int
     public var databaseName: String?          // unique name when found in MEA.dat
@@ -528,5 +531,5 @@ public struct Issue: Codable, Sendable, Equatable, Identifiable {
 /// whether to surface the new data (`reference/result-model.md` §Versioning).
 public enum EngineModelRevision {
     /// Current revision of the `FirmwareAnalysis` shape.
-    public static let current = 8
+    public static let current = 9
 }
