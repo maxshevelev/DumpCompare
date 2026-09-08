@@ -3,14 +3,18 @@ import XCTest
 import ToolModuleKit
 import UEFIImage
 
-/// The one zone is the node in focus and nothing else — the tree is the
-/// parser's, and what crosses the seam is the single range worth drawing.
+/// What the selected node publishes: the node, and its body inside it — the
+/// tree is the parser's, and what crosses the seam is only the ranges of the
+/// one node worth drawing.
 final class UEFIPresenterTests: XCTestCase {
     func testNothingSelectedPublishesNothing() {
         XCTAssertEqual(UEFIPresenter.zones(for: nil), .empty)
     }
 
-    func testTheZoneIsTheSelectedNodeAndOnlyThat() {
+    /// A node with a header of its own publishes two zones, and the body is
+    /// the one in focus: it is what the node holds, and where it starts is
+    /// where the header ended.
+    func testANodeWithAHeaderPublishesItsBodyAndFocusesIt() {
         let node = UEFINode(
             id: NodeID([1, 2, 0]),
             kind: .file,
@@ -20,11 +24,91 @@ final class UEFIPresenterTests: XCTestCase {
         )
         let zones = UEFIPresenter.zones(for: node)
 
+        XCTAssertEqual(zones.zones.map(\.id), ["1.2.0", "1.2.0#body"],
+                       "the node first, then what is inside it")
+        XCTAssertEqual(zones.zones.map(\.range), [0x1000..<0x1100, 0x1018..<0x1100])
+        XCTAssertEqual(zones.zones.map(\.name), ["VTF", "VTF body"])
+        XCTAssertEqual(zones.focus, "1.2.0#body")
+        XCTAssertFalse(zones.zones.contains { $0.id.hasSuffix("#header") },
+                       "the header is not a zone — the body's start is where it ended")
+    }
+
+    /// Both survive the map the dump actually draws: nesting is legal, and the
+    /// focus still names a zone that is in it.
+    func testTheNestedZonesSurviveNormalisation() throws {
+        let node = UEFINode(
+            id: NodeID([0]),
+            kind: .volume,
+            name: "FFSv2",
+            header: 0x0..<0x48,
+            body: 0x48..<0x1000
+        )
+        let drawable = UEFIPresenter.zones(for: node).normalized(contentSize: 0x1000)
+
+        XCTAssertEqual(drawable.zones.count, 2)
+        XCTAssertEqual(drawable.focus, "0#body")
+        XCTAssertEqual(drawable.zones(containing: 0x10).map(\.id), ["0"],
+                       "a byte in the header is in the node's zone and no other")
+        XCTAssertEqual(drawable.zones(containing: 0x48).map(\.id), ["0", "0#body"])
+    }
+
+    /// The inner two do not have to add up to the node: an FFSv1 file's tail
+    /// is part of the node and belongs to neither.
+    func testATailStaysInsideTheNodesOwnZone() {
+        let node = UEFINode(
+            id: NodeID([0, 1]),
+            kind: .file,
+            name: "Old file",
+            header: 0x200..<0x218,
+            body: 0x218..<0x2F8,
+            tail: 0x2F8..<0x300
+        )
+        let zones = UEFIPresenter.zones(for: node)
+
+        XCTAssertEqual(zones.zones[0].range, 0x200..<0x300, "the node covers its tail")
+        XCTAssertEqual(zones.zones[1].range, 0x218..<0x2F8, "the body stops before it")
+    }
+
+    /// Padding, free space, anything the parser met without a header of its
+    /// own: splitting it would draw the same range twice, so the node is the
+    /// whole of what is published — and it is the focus.
+    func testANodeWithoutAHeaderPublishesOneZone() {
+        var node = UEFINode(kind: .freeSpace, name: "Free space", range: 0x2000..<0x4000)
+        node.id = NodeID([4])
+        let zones = UEFIPresenter.zones(for: node)
+
         XCTAssertEqual(zones.zones.count, 1)
-        XCTAssertEqual(zones.zones[0].id, "1.2.0")
-        XCTAssertEqual(zones.zones[0].name, "VTF")
-        XCTAssertEqual(zones.zones[0].range, 0x1000..<0x1100)
-        XCTAssertEqual(zones.focus, "1.2.0")
+        XCTAssertEqual(zones.zones[0].range, 0x2000..<0x4000)
+        XCTAssertEqual(zones.focus, "4")
+    }
+
+    /// A node whose header is the whole of it — nothing to hold — is the same
+    /// story the other way round.
+    func testANodeWithoutABodyPublishesOneZone() {
+        let node = UEFINode(
+            id: NodeID([2]),
+            kind: .padding,
+            name: "",
+            header: 0x100..<0x120,
+            body: 0x120..<0x120
+        )
+        let zones = UEFIPresenter.zones(for: node)
+
+        XCTAssertEqual(zones.zones.count, 1)
+        XCTAssertEqual(zones.focus, "2")
+    }
+
+    /// An unnamed node's body still says what it is — the name is what the
+    /// dump's menu and the minimap's legend show.
+    func testAnUnnamedNodesBodyIsStillNamed() {
+        let node = UEFINode(
+            id: NodeID([3]),
+            kind: .section,
+            name: "",
+            header: 0x10..<0x14,
+            body: 0x14..<0x40
+        )
+        XCTAssertEqual(UEFIPresenter.zones(for: node).zones.map(\.name), ["", "Body"])
     }
 
     /// The trip back: a zone id is a node path, and the panel has to read it
@@ -36,11 +120,22 @@ final class UEFIPresenterTests: XCTestCase {
         XCTAssertEqual(UEFIPresenter.nodeID(ofZone: "3.1"), NodeID([3, 1]))
     }
 
+    /// A part's zone leads to the node it is part of: the reader picked
+    /// "VTF body" in the dump and the row they want is VTF. Any part, not only
+    /// the one published today — the suffix is not what identifies the node.
+    func testAPartsZoneIdLeadsToItsNode() {
+        XCTAssertEqual(UEFIPresenter.nodeID(ofZone: "1.2.0#body"), NodeID([1, 2, 0]))
+        XCTAssertEqual(UEFIPresenter.nodeID(ofZone: "1.2.0#header"), NodeID([1, 2, 0]))
+        XCTAssertEqual(UEFIPresenter.nodeID(ofZone: "0#body"), NodeID([0]))
+    }
+
     func testAZoneIdThatIsNotAPathIsRejected() {
         XCTAssertNil(UEFIPresenter.nodeID(ofZone: ""))
         XCTAssertNil(UEFIPresenter.nodeID(ofZone: "root"))
         XCTAssertNil(UEFIPresenter.nodeID(ofZone: "1.x"))
         XCTAssertNil(UEFIPresenter.nodeID(ofZone: "1..2"))
+        XCTAssertNil(UEFIPresenter.nodeID(ofZone: "#body"))
+        XCTAssertNil(UEFIPresenter.nodeID(ofZone: "1.x#body"))
     }
 }
 

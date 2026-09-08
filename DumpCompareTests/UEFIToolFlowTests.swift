@@ -99,8 +99,10 @@ final class UEFIToolFlowTests: XCTestCase {
     }
 
     /// The tree the parser built is the tree the outline shows, and picking a
-    /// node publishes exactly that node's range — nothing else.
-    func testSelectingANodePublishesOnlyItsZone() throws {
+    /// node publishes that node and what is inside it — the node's whole range
+    /// and its body — with the body in focus. Nothing else: not its header as
+    /// a zone of its own, not its children, not its neighbours.
+    func testSelectingANodePublishesItsBody() throws {
         let controller = try open(UEFITestImage.make())
         let outline = try outline()
 
@@ -112,34 +114,51 @@ final class UEFIToolFlowTests: XCTestCase {
         // Row 0 is the volume, row 1 its first child, the file.
         outline.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
 
+        // The file is 0x48..<0x8C: a 0x18-byte FFS header, then its sections.
         let zones = controller.windowModel.pane1.zones
-        XCTAssertEqual(zones.zones.count, 1, "the one zone is the node in focus")
-        XCTAssertEqual(zones.focus, "0.0")
-        XCTAssertEqual(zones.zones.first?.range, 0x48..<0x8C)
+        XCTAssertEqual(zones.zones.map(\.id), ["0.0", "0.0#body"])
+        XCTAssertEqual(zones.zones.map(\.range), [0x48..<0x8C, 0x60..<0x8C])
+        XCTAssertEqual(zones.focus, "0.0#body",
+                       "the body is what the node holds — that is the one drawn "
+                       + "as the focus")
     }
 
-    /// The trip back: picking the zone in the dump brings its row to the front
+    /// The trip back: picking a zone in the dump brings its row to the front
     /// of the tree. The bytes are selected by the host; the row is the half
     /// only the tool-module can do.
+    ///
+    /// A byte now sits in two of the node's zones — the node and the part it
+    /// fell in — so the menu offers both, innermost first, and either of them
+    /// leads to the same row.
     func testPickingAZoneInTheDumpSelectsItsRow() throws {
         let controller = try open(UEFITestImage.make())
         let outline = try outline()
         let pane = controller.windowModel.pane1
 
-        // Publish the file's zone by selecting it, then pick the zone back in
-        // the dump the way the right-click menu does.
+        // Publish the file's zones by selecting it, then pick one back in the
+        // dump the way the right-click menu does.
         expand(outline, 0)
         window?.layoutIfNeeded()
         outline.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
 
-        // 0x60 is inside the file (0x48..<0x8C).
+        // 0x60 is the first byte of the file's body (the file is 0x48..<0x8C).
         let menu = controller.makeOffsetMenu(for: pane, offset: 0x60)
-        let item = try XCTUnwrap(menu.items.first { $0.title.hasPrefix("Select Zone") })
-        controller.selectZone(item)
+        let parent = try XCTUnwrap(menu.items.first { $0.title == "Select Zone" })
+        let submenu = try XCTUnwrap(parent.submenu, "two zones cover the byte")
+        XCTAssertEqual(submenu.items.map(\.title), ["MyDriver body", "MyDriver"],
+                       "the innermost zone is offered first")
 
-        XCTAssertEqual(pane.zones.focus, "0.0")
+        controller.selectZone(submenu.items[0])
+        XCTAssertEqual(pane.zones.focus, "0.0#body")
         XCTAssertEqual(outline.selectedRow, 1)
-        let selection = pane.hexSelection()
+        var selection = pane.hexSelection()
+        XCTAssertEqual(selection.start..<selection.end, 0x60..<0x8C,
+                       "the body's bytes, not the whole file's")
+
+        // The node's own zone from the same menu: the same row, the whole of it.
+        controller.selectZone(submenu.items[1])
+        XCTAssertEqual(outline.selectedRow, 1)
+        selection = pane.hexSelection()
         XCTAssertEqual(selection.start..<selection.end, 0x48..<0x8C)
     }
 
