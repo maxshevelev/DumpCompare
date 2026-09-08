@@ -61,7 +61,7 @@ final class FirmwareAnalysisModelTests: XCTestCase {
     }
 
     func testEngineModelRevisionBumpsWithAdditiveChanges() {
-        XCTAssertEqual(EngineModelRevision.current, 2)
+        XCTAssertEqual(EngineModelRevision.current, 3)
     }
 }
 
@@ -109,5 +109,49 @@ final class AnalyzerTests: XCTestCase {
         XCTAssertEqual(result.regions.count, 0)
         XCTAssertEqual(result.issues.count, 1)
         XCTAssertEqual(result.issues[0].severity, .note)
+    }
+
+    func testAnalyzePopulatesOperationalCodePartition() async throws {
+        // A CPD-headed FTPR partition (two modules) whose manifest the analyzer
+        // picks; the owning $CPD becomes codePartition. baseOffset shifts its
+        // absolute offset. No FPT => only the structural note; identity is
+        // irrelevant to codePartition (stage-1 facts).
+        var region = CPDFixture.make(name: "FTPR", moduleNames: ["$MN2", "rbe"])
+        region.append(ManifestFixture.manifest())
+        let analyzer = MEFirmwareAnalyzer(data: StubSource(databaseResult: .success(MEADatabase(revision: 378))))
+
+        let result = try await analyzer.analyze(region: region, baseOffset: 0x1000)
+
+        let cp = try XCTUnwrap(result.codePartition)
+        XCTAssertEqual(cp.name, "FTPR")
+        XCTAssertEqual(cp.offset, 0x1000)             // baseOffset + $CPD base (0)
+        XCTAssertEqual(cp.headerVersion, 1)
+        XCTAssertEqual(cp.headerLength, 0x10)
+        XCTAssertEqual(cp.entryCount, 2)
+        XCTAssertEqual(cp.checksumValid, true)
+        XCTAssertEqual(cp.modules.count, 2)
+        XCTAssertEqual(cp.modules[0].name, "$MN2")
+        XCTAssertEqual(cp.modules[0].id, 0)
+        XCTAssertEqual(cp.modules[0].offset, 0)
+        XCTAssertEqual(cp.modules[0].isHuffman, false)
+        XCTAssertEqual(cp.modules[1].name, "rbe")
+        XCTAssertEqual(result.manifest?.format, .r1)  // same region fed a manifest
+    }
+
+    func testAnalyzeLeavesCodePartitionNilWithoutOwningCPD() async throws {
+        // An $FPT FTPR partition whose manifest has no owning $CPD: the manifest
+        // summary is still reported, codePartition stays nil.
+        let fpt = FPTFixture.fptRegion(entries: [
+            ("FTPR", 0x1000, 0x2000, 0)
+        ])
+        var region = fpt
+        region.append(Data(repeating: 0xFF, count: 0x1000 - fpt.count))  // manifest at 0x1000
+        region.append(ManifestFixture.manifest())
+        let analyzer = MEFirmwareAnalyzer(data: StubSource(databaseResult: .success(MEADatabase(revision: 378))))
+
+        let result = try await analyzer.analyze(region: region, baseOffset: 0)
+
+        XCTAssertNotNil(result.manifest)
+        XCTAssertNil(result.codePartition)
     }
 }

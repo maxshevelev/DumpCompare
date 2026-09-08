@@ -121,10 +121,50 @@ public struct ManifestSummary: Codable, Sendable, Equatable {
     }
 }
 
-/// Code Partition Directory facts — `$CPD` entries, CSE extensions, module
-/// list. Seed placeholder, same status as `ManifestSummary`.
+/// One row of a `$CPD` module directory (upstream `CPD_Entry`, 0x18). `offset`
+/// is the 25-bit `OffsetCPD` — the module's position *relative to the `$CPD`
+/// base* (the first module of a boot partition is usually the `$MN2`/`$MAN`
+/// manifest). `size` is the uncompressed module size.
+public struct CPDModule: Codable, Sendable, Equatable, Identifiable {
+    public var id: Int
+    public var name: String      // NUL-stripped 12-byte Name, e.g. "$MN2", "rbe"
+    public var offset: Int
+    public var isHuffman: Bool   // OffsetAttrib bit 25
+    public var size: Int
+
+    public init(id: Int, name: String, offset: Int, isHuffman: Bool, size: Int) {
+        self.id = id
+        self.name = name
+        self.offset = offset
+        self.isHuffman = isHuffman
+        self.size = size
+    }
+}
+
+/// Code Partition Directory facts for the *operational* partition — the one
+/// whose `$MN2`/`$MAN` the engine identified (upstream `CPD_Header_R1`/`_R2` +
+/// its `CPD_Entry` module list). Header fields are set from the `$CPD` header;
+/// `modules` is the decoded module directory. CSE extension blocks
+/// (`CSE_Ext_*`) and any deeper unpack are future stages.
 public struct CodePartition: Codable, Sendable, Equatable {
-    public init() {}
+    public var name: String            // PartitionName, e.g. "FTPR", "RBEP"
+    public var offset: Int             // absolute $CPD header offset (region baseOffset + CPD base)
+    public var headerVersion: Int      // 1 = R1, 2 = R2
+    public var headerLength: Int       // 0x10 (R1) / 0x14 (R2)
+    public var entryCount: Int         // declared NumModules (may exceed modules.count when the buffer truncates)
+    public var checksumValid: Bool?    // R1 Checksum-8 result; nil for R2 (CRC-32 not yet ported)
+    public var modules: [CPDModule]
+
+    public init(name: String, offset: Int, headerVersion: Int, headerLength: Int,
+                entryCount: Int, checksumValid: Bool?, modules: [CPDModule]) {
+        self.name = name
+        self.offset = offset
+        self.headerVersion = headerVersion
+        self.headerLength = headerLength
+        self.entryCount = entryCount
+        self.checksumValid = checksumValid
+        self.modules = modules
+    }
 }
 
 public struct Checksums: Codable, Sendable, Equatable {
@@ -147,5 +187,5 @@ public struct Issue: Codable, Sendable, Equatable, Identifiable {
 /// whether to surface the new data (`reference/result-model.md` §Versioning).
 public enum EngineModelRevision {
     /// Current revision of the `FirmwareAnalysis` shape.
-    public static let current = 2
+    public static let current = 3
 }

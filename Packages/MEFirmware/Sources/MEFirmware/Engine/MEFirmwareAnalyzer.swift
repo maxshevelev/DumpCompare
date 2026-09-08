@@ -55,6 +55,30 @@ public actor MEFirmwareAnalyzer {
             )
         }
 
+        // The operational partition's module directory: the $CPD that owns the
+        // chosen manifest (the back-scan ManifestSelection's fallback uses).
+        // An FPT-selected manifest with no owning $CPD yields nil (still reported
+        // by the manifest summary alone).
+        let codePartition = manifest.flatMap { m -> CodePartition? in
+            guard let owner = CPDParser.findPrecedingCPD(in: region, before: m.base) else {
+                return nil
+            }
+            let header = owner.header
+            let modules = CPDParser.entries(of: header, in: region, cpdBase: header.base)
+                .enumerated().map { index, entry in
+                    CPDModule(id: index, name: entry.name, offset: entry.offset,
+                              isHuffman: entry.isHuffman, size: Int(entry.size))
+                }
+            return CodePartition(
+                name: header.partitionName,
+                offset: baseOffset + header.base,
+                headerVersion: header.headerVersion,
+                headerLength: header.headerLength,
+                entryCount: header.numModules,
+                checksumValid: CPDParser.checksumValid(header, in: region),
+                modules: modules)
+        }
+
         var issues: [Issue] = []
         if fpt == nil {
             issues.append(Issue(id: 1, severity: .note,
@@ -116,7 +140,7 @@ public actor MEFirmwareAnalyzer {
             checksums: nil,
             regions: regions,
             manifest: manifestSummary,
-            codePartition: nil,
+            codePartition: codePartition,
             issues: issues)
     }
 

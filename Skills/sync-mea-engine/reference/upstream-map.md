@@ -54,6 +54,7 @@ ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
 | `RBE_PM_Metadata`, `_R2`, `_R3`, `_R4` | rbe/pm module metadata | `Partition/Module.swift` | — |
 | `get_rbe_pm_met`, `rbe_pm_met_hashes` | metadata leftover hashes | `Partition/Module.swift` | — |
 | `cpd_entry_num_fix`, `cpd_size_calc`, `cpd_chk` | $CPD repair/heuristics — `cpd_chk` R1 Checksum-8 ported (`CPDParser.checksumValid`); entry-count/size repair and R2 CRC-32 deferred | `Partition/CPD.swift` | ported* |
+| operational `$CPD` → `CodePartition` module list | the chosen partition's module directory (name/offset/IsHuffman/size + header) surfaced in the UI result model — Stage-2 of the `$CPD` port; extensions (`CSE_Ext_*`) still deferred | `Models/FirmwareAnalysis.swift` (`CodePartition`) + analyzer wiring | ported |
 
 ## CSE/GSC file system (VFS, MFS, FTBL/EFST, extensions)
 
