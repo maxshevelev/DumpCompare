@@ -50,10 +50,10 @@ ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
 | `SKU_Attributes` (+flags) | pre-CSE `$SKU` | `Manifest.swift` | — |
 | `MME_Header_Old`, `MME_Header_New` | ME2-10/TXE/SPS `$MME` | `Manifest.swift` | — |
 | `MCP_Header` | | `Manifest.swift` | — |
-| `CPD_Header_R1`, `CPD_Header_R2`, `CPD_Entry` (+`_OffsetAttrib`) | `$CPD` v1/v2 directory — Stage-1: header R1/R2 decode, entry names/offsets, owning-`$CPD` back-scan (`findPrecedingCPD`); R2 CRC-32 validation deferred | `Partition/CPD.swift` | ported |
+| `CPD_Header_R1`, `CPD_Header_R2`, `CPD_Entry` (+`_OffsetAttrib`) | `$CPD` v1/v2 directory — header R1/R2 decode, entry names/offsets, owning-`$CPD` back-scan (`findPrecedingCPD`), R1 Checksum-8 + R2 CRC-32 validation (`cpd_chk`) | `Partition/CPD.swift` | ported |
 | `RBE_PM_Metadata`, `_R2`, `_R3`, `_R4` | rbe/pm module metadata | `Partition/Module.swift` | — |
 | `get_rbe_pm_met`, `rbe_pm_met_hashes` | metadata leftover hashes | `Partition/Module.swift` | — |
-| `cpd_entry_num_fix`, `cpd_size_calc`, `cpd_chk` | $CPD repair/heuristics — `cpd_chk` R1 Checksum-8 ported (`CPDParser.checksumValid`); entry-count/size repair and R2 CRC-32 deferred | `Partition/CPD.swift` | ported* |
+| `cpd_entry_num_fix`, `cpd_size_calc`, `cpd_chk` | $CPD integrity — `cpd_chk` R1 Checksum-8 + R2 CRC-32 validated (`CPDParser.checksumValid`); `cpd_entry_num_fix`/`cpd_size_calc` ported as *probes* → integrity Issues (the decoder locates content per-entry, so it never needs the sequential-unpack repair to grow the module list) | `Partition/CPD.swift` + `Crypto/Checksum.swift` (`CRC32`) | ported |
 | operational `$CPD` → `CodePartition` module list | the chosen partition's module directory (name/offset/IsHuffman/size + header) surfaced in the UI result model — Stage-2 of the `$CPD` port; the manifest module's extension chain decodes as fixed headers + scalars (row below) | `Models/FirmwareAnalysis.swift` (`CodePartition`) + analyzer wiring | ported |
 
 ## CSE/GSC file system (VFS, MFS, FTBL/EFST, extensions)

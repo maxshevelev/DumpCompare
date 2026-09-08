@@ -58,13 +58,35 @@ public actor MEFirmwareAnalyzer {
         // The operational partition's module directory: the $CPD that owns the
         // chosen manifest (the back-scan ManifestSelection's fallback uses).
         // An FPT-selected manifest with no owning $CPD yields nil (still reported
-        // by the manifest summary alone).
-        let codePartition = manifest.flatMap { m -> CodePartition? in
-            guard let owner = CPDParser.findPrecedingCPD(in: region, before: m.base) else {
-                return nil
-            }
+        // by the manifest summary alone). Directory *integrity* (R1 Checksum-8 /
+        // R2 CRC-32, trailing-empty-entry overrun, content-overflow) surfaces as
+        // Issues next to the decoded facts.
+        var codePartition: CodePartition? = nil
+        var cpdIssues: [Issue] = []
+        if let m = manifest,
+           let owner = CPDParser.findPrecedingCPD(in: region, before: m.base) {
             let header = owner.header
             let entries = CPDParser.entries(of: header, in: region, cpdBase: header.base)
+            let checksumValid = CPDParser.checksumValid(header, in: region)
+            if let checksumValid, !checksumValid {
+                cpdIssues.append(Issue(id: 4, severity: .warning,
+                    message: "Checksum of $CPD partition \"\(header.partitionName)\" is INVALID."))
+            }
+            let trailing = CPDParser.trailingEmptyEntryCount(of: header, in: region)
+            if trailing > 0 {
+                let noun = trailing == 1 ? "entry" : "entries"
+                cpdIssues.append(Issue(id: 5, severity: .note,
+                    message: "$CPD partition \"\(header.partitionName)\" has \(trailing) empty "
+                        + "trailing module \(noun) beyond its declared count "
+                        + "(\(header.numModules))."))
+            }
+            let contentEnd = CPDParser.moduleContentEnd(of: header, entries: entries)
+            if contentEnd > region.count {
+                cpdIssues.append(Issue(id: 6, severity: .warning,
+                    message: "Modules of $CPD partition \"\(header.partitionName)\" extend past "
+                        + "the end of the region (content end 0x\(String(contentEnd, radix: 16)) "
+                        + "> region size 0x\(String(region.count, radix: 16)))."))
+            }
             let modules = entries.enumerated().map { index, entry in
                 CPDModule(id: index, name: entry.name, offset: entry.offset,
                           isHuffman: entry.isHuffman, size: Int(entry.size))
@@ -88,13 +110,13 @@ public actor MEFirmwareAnalyzer {
                     family: family,
                     baseOffset: baseOffset)
             }
-            return CodePartition(
+            codePartition = CodePartition(
                 name: header.partitionName,
                 offset: baseOffset + header.base,
                 headerVersion: header.headerVersion,
                 headerLength: header.headerLength,
                 entryCount: header.numModules,
-                checksumValid: CPDParser.checksumValid(header, in: region),
+                checksumValid: checksumValid,
                 modules: modules,
                 extensions: extensions)
         }
@@ -104,6 +126,7 @@ public actor MEFirmwareAnalyzer {
             issues.append(Issue(id: 1, severity: .note,
                                 message: "No $FPT partition table found in the region."))
         }
+        issues.append(contentsOf: cpdIssues)
 
         // No manifest: nothing to identify, and no database is needed — return
         // the structural facts immediately (keeps a pure-FPT parse offline).

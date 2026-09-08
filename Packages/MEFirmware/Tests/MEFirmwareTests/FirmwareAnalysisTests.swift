@@ -138,6 +138,42 @@ final class AnalyzerTests: XCTestCase {
         XCTAssertEqual(result.manifest?.format, .r1)  // same region fed a manifest
     }
 
+    func testAnalyzeValidatesR2CodePartitionChecksum() async throws {
+        // R2 $CPD (CRC-32 at +0x10). CPDFixture now stores a real CRC over
+        // header+entries with the field zeroed, so the analyzer reports it valid.
+        var region = CPDFixture.make(name: "FTPR", headerVersion: 2,
+                                     moduleNames: ["$MN2", "rbe"])
+        region.append(ManifestFixture.manifest())
+        let analyzer = MEFirmwareAnalyzer(data: StubSource(databaseResult: .success(MEADatabase(revision: 378))))
+
+        let result = try await analyzer.analyze(region: region, baseOffset: 0)
+
+        let cp = try XCTUnwrap(result.codePartition)
+        XCTAssertEqual(cp.headerVersion, 2)
+        XCTAssertEqual(cp.checksumValid, true)     // R2 CRC-32 now validated
+        // A valid directory adds no integrity warning (the no-$FPT note is fine).
+        XCTAssertTrue(result.issues.allSatisfy { $0.severity != .warning })
+        XCTAssertFalse(result.issues.contains { $0.message.contains("INVALID") })
+    }
+
+    func testAnalyzeWarnsOnInvalidChecksumAndOverrun() async throws {
+        var region = CPDFixture.make(name: "FTPR", headerVersion: 2,
+                                     moduleNames: ["$MN2", "rbe"])
+        region[0x0C] ^= 0xFF                       // corrupt a PartitionName byte → CRC fails
+        region.append(Data(repeating: 0, count: 0x18))  // empty slot right after the directory
+        region.append(ManifestFixture.manifest())  // manifest after the slot → overrun probe fires
+        let analyzer = MEFirmwareAnalyzer(data: StubSource(databaseResult: .success(MEADatabase(revision: 378))))
+
+        let result = try await analyzer.analyze(region: region, baseOffset: 0)
+
+        let cp = try XCTUnwrap(result.codePartition)
+        XCTAssertEqual(cp.checksumValid, false)
+        let severities = result.issues.map(\.severity)
+        XCTAssertTrue(severities.contains(.warning))
+        XCTAssertTrue(result.issues.contains { $0.message.contains("INVALID") })
+        XCTAssertTrue(result.issues.contains { $0.message.contains("empty trailing module") })
+    }
+
     func testAnalyzeDecodesManifestModuleExtensionChain() async throws {
         // A self-consistent FTPR region: a one-module $CPD whose single entry
         // (the manifest) is placed right after the directory, sized to cover the

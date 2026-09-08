@@ -5,7 +5,8 @@ import Foundation
 /// Builds a synthetic `$CPD` directory (header + entries) mirroring
 /// `CPD_Header_R1` (0x10) / `CPD_Header_R2` (0x14) + `CPD_Entry` (0x18).
 /// R1's checksum byte at +0x0B is computed as Checksum-8 over header+entries
-/// with the field zeroed (`cpd_chk`).
+/// with the field zeroed; R2's u32 at +0x10 as CRC-32 over the same span with
+/// the CRC field zeroed (`cpd_chk`, both branches).
 enum CPDFixture {
     static func setUInt32(_ value: UInt32, in data: inout Data, at offset: Int) {
         for shift in stride(from: 0, to: 32, by: 8) {
@@ -32,9 +33,6 @@ enum CPDFixture {
         for (index, byte) in name.utf8.prefix(4).enumerated() {    // PartitionName
             data[0x0C + index] = byte
         }
-        if headerVersion == 2 {
-            setUInt32(0, in: &data, at: 0x10)                      // CRC-32 (not validated)
-        }
         for (moduleIndex, module) in moduleNames.enumerated() {
             let entry = headerLength + moduleIndex * 0x18
             for (index, byte) in module.utf8.prefix(12).enumerated() {
@@ -50,7 +48,11 @@ enum CPDFixture {
             for index in 0..<data.count where index != 0x0B {
                 sum += Int(data[index])
             }
-            data[0x0B] = UInt8((0x100 - (sum & 0xFF)) & 0xFF)      // Checksum
+            data[0x0B] = UInt8((0x100 - (sum & 0xFF)) & 0xFF)      // Checksum-8
+        } else {
+            // CRC-32 stored at +0x10, computed over the whole directory with the
+            // 4-byte CRC field zeroed (cpd_chk R2 branch).
+            setUInt32(CRC32.crc32(data), in: &data, at: 0x10)
         }
         return data
     }
@@ -77,7 +79,8 @@ final class CPDParserTests: XCTestCase {
         XCTAssertEqual(header.headerVersion, 2)
         XCTAssertEqual(header.headerLength, 0x14)
         XCTAssertEqual(header.partitionName, "RBEP")
-        XCTAssertEqual(header.checksumField, 0)   // CRC-32 not yet validated
+        XCTAssertNotEqual(header.checksumField, 0)              // fixture stores a real CRC-32
+        XCTAssertEqual(CPDParser.checksumValid(header, in: data), true)
     }
 
     func testRejectsNonCPDAndMalformedHeaders() {
@@ -113,10 +116,39 @@ final class CPDParserTests: XCTestCase {
         XCTAssertEqual(CPDParser.checksumValid(badHeader, in: corrupted), false)
     }
 
-    func testR2ChecksumValidationDeferred() throws {
+    func testR2ChecksumValidation() throws {
         let data = CPDFixture.make(name: "RBEP", headerVersion: 2)
         let header = try XCTUnwrap(CPDParser.decodeHeader(in: data, at: 0))
-        XCTAssertNil(CPDParser.checksumValid(header, in: data))   // CRC-32 not ported
+        XCTAssertEqual(CPDParser.checksumValid(header, in: data), true)
+
+        // Corrupting any covered byte (the CRC field is the zeroed part) makes it fail.
+        var corrupted = data
+        corrupted[0x0C] ^= 0xFF                    // a PartitionName byte
+        let badHeader = try XCTUnwrap(CPDParser.decodeHeader(in: corrupted, at: 0))
+        XCTAssertEqual(CPDParser.checksumValid(badHeader, in: corrupted), false)
+    }
+
+    func testTrailingEmptyEntryProbe() throws {
+        // A directory whose real span is followed by two all-zero 0x18 slots — the
+        // shape cpd_entry_num_fix grows the count over. The probe reports them but
+        // the decoded module list stays at the declared count.
+        var data = CPDFixture.make(name: "FTPR", moduleNames: ["$MN2", "rbe"])
+        data.append(Data(repeating: 0, count: 2 * 0x18))
+        let header = try XCTUnwrap(CPDParser.decodeHeader(in: data, at: 0))
+        XCTAssertEqual(CPDParser.trailingEmptyEntryCount(of: header, in: data), 2)
+        XCTAssertEqual(CPDParser.entries(of: header, in: data, cpdBase: 0).count, 2)
+    }
+
+    func testModuleContentEnd() throws {
+        // Layout mimics the analyzer integration test: entries at offsets 0x10 and
+        // 0x28 of sizes 0x30 and 0x20 → content spans base+0x40 .. base+0x48.
+        let layout = [(offset: UInt32(0x10), size: UInt32(0x30)),
+                      (offset: UInt32(0x28), size: UInt32(0x20))]
+        let data = CPDFixture.make(name: "FTPR", moduleNames: ["a", "b"], moduleLayout: layout)
+        let header = try XCTUnwrap(CPDParser.decodeHeader(in: data, at: 0))
+        let entries = CPDParser.entries(of: header, in: data, cpdBase: 0)
+        XCTAssertEqual(CPDParser.moduleContentEnd(of: header, entries: entries),
+                       header.base + 0x28 + 0x20)
     }
 
     func testFindPrecedingCPDFindsNearestInWindow() throws {

@@ -132,22 +132,59 @@ struct CPDParser {
         return best
     }
 
-    /// R1 Checksum-8 validation (`cpd_chk`, line 9635): the stored byte at +0x0B
-    /// must equal `(0x100 − sum) & 0xFF` over header+entries with the field
-    /// zeroed. Returns nil for R2 (CRC-32 not ported yet).
+    /// Directory checksum validation (`cpd_chk`, line 9635) over header+entries
+    /// with the checksum field zeroed: R1 uses Checksum-8 (byte at +0x0B), R2
+    /// uses standard CRC-32 (u32 at +0x10). Returns nil only when the buffer is
+    /// too short to cover the whole directory.
     static func checksumValid(_ header: Header, in data: Data) -> Bool? {
-        guard header.headerVersion == 1 else { return nil }
         let start = data.startIndex + header.base
         let fullEnd = start + header.headerLength + header.numModules * 0x18
-        let end = min(fullEnd, data.endIndex)
-        var sum = 0
-        var idx = start
-        while idx < end {
-            sum += (idx == start + 0x0B) ? 0 : Int(data[idx])
-            idx += 1
+        guard fullEnd <= data.endIndex else { return nil }
+        if header.headerVersion == 1 {
+            var sum = 0
+            for idx in start..<fullEnd {
+                sum += (idx == start + 0x0B) ? 0 : Int(data[idx])
+            }
+            let calculated = (0x100 - (sum & 0xFF)) & 0xFF
+            return calculated == Int(header.checksumField)
+        } else {
+            var span = data.subdata(in: start..<fullEnd)
+            span.replaceSubrange(0x10..<0x14, with: Data(repeating: 0, count: 4))
+            return CRC32.crc32(span) == header.checksumField
         }
-        let calculated = (0x100 - (sum & 0xFF)) & 0xFF
-        return calculated == Int(header.checksumField)
+    }
+
+    /// Number of consecutive all-zero 0x18 slots immediately after the directory's
+    /// last declared entry (mirrors `cpd_entry_num_fix`, line 9597 — some `$CPD`s
+    /// under-count `NumModules` when the real directory carries extra empty
+    /// entries). Upstream tolerates up to five and errors beyond that; the probe
+    /// returns the count either way. The analyzer never adds these as modules (it
+    /// locates module content from each entry's own offset), it only reports them.
+    static func trailingEmptyEntryCount(of header: Header, in data: Data) -> Int {
+        var next = data.startIndex + header.base + header.headerLength
+            + header.numModules * 0x18
+        var count = 0
+        while next + 0x18 <= data.endIndex {
+            let window = data[next..<(next + 0x18)]
+            guard window.allSatisfy({ $0 == 0 }) else { break }
+            count += 1
+            next += 0x18
+            if count > 5 { break }
+        }
+        return count
+    }
+
+    /// Region-relative exclusive end of the last module's content
+    /// (`cpd_size_calc`, line 9612, without the 0x1000 alignment): the maximum of
+    /// `cpdBase + entry.offset + entry.size` over non-empty entries. Used only to
+    /// detect module content overflowing the region — never to size anything.
+    static func moduleContentEnd(of header: Header, entries: [Entry]) -> Int {
+        let base = header.base
+        var end = 0
+        for entry in entries where entry.size > 0 {
+            end = max(end, base + entry.offset + Int(entry.size))
+        }
+        return end
     }
 
     private static func u32le(_ data: Data, _ p: Int) -> UInt32 {

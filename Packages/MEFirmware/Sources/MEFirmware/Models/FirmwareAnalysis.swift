@@ -154,7 +154,7 @@ public struct CodePartition: Codable, Sendable, Equatable {
     public var headerVersion: Int      // 1 = R1, 2 = R2
     public var headerLength: Int       // 0x10 (R1) / 0x14 (R2)
     public var entryCount: Int         // declared NumModules (may exceed modules.count when the buffer truncates)
-    public var checksumValid: Bool?    // R1 Checksum-8 result; nil for R2 (CRC-32 not yet ported)
+    public var checksumValid: Bool?    // R1 Checksum-8 / R2 CRC-32 result; nil only when the directory is truncated
     public var modules: [CPDModule]
     public var extensions: [CPDExtension]?
 
