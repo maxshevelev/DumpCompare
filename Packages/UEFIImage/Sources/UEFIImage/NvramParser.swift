@@ -308,11 +308,6 @@ extension Parser {
 
         let isIntelLegacy = state == NVRAM.vssVariableIntelInvalid
             || state == NVRAM.vssVariableIntelValid
-        let isAuth = !isIntelLegacy && (
-            attributes & (NVRAM.vssAttributeAuthWrite
-                | NVRAM.vssAttributeTimeBasedAuth
-                | NVRAM.vssAttributeAppendWrite) != 0
-        )
 
         var headerSize: UInt64
         var nameRange: Range<UInt64>
@@ -329,34 +324,53 @@ extension Parser {
             nameRange = (offset + headerSize)..<nameEnd
             dataRange = nameEnd..<end
             subtype = UEFITypes.Sub.intelVssEntry
-        } else if isAuth {
-            // Authenticated: the two size fields are really the monotonic
-            // counter, and the real name and data sizes come after the
-            // timestamp and key index.
-            headerSize = NVRAM.vssAuthHeaderSize
-            guard let nameSize = reader.uint32(at: offset + 36),
-                  let dataSize = reader.uint32(at: offset + 40)
-            else { return nil }
-            let nameStart = offset + headerSize
-            let nameEnd = min(nameStart + UInt64(nameSize), storeEnd)
-            let dataEnd = min(nameEnd + UInt64(dataSize), storeEnd)
-            nameRange = nameStart..<nameEnd
-            dataRange = nameEnd..<dataEnd
-            subtype = UEFITypes.Sub.authVssEntry
         } else {
-            // Standard, or Apple when the data-checksum bit is set (one extra
-            // word after the vendor GUID).
-            let apple = attributes & NVRAM.vssAttributeAppleDataChecksum != 0
-            headerSize = apple ? NVRAM.vssAppleHeaderSize : NVRAM.vssStandardHeaderSize
-            guard let nameSize = reader.uint32(at: offset + 8),
-                  let dataSize = reader.uint32(at: offset + 12)
+            // The two size fields are read up front whatever the header turns
+            // out to be: for an authenticated variable they are the monotonic
+            // counter's two halves. A standard variable always carries a name
+            // and data, so two fields that both read zero cannot be that — the
+            // variable is authenticated, with a counter that happens to be
+            // zero, and its real name and data sizes come after the timestamp
+            // and key index. Firmware that never increments the counter writes
+            // every variable this way, so the zero check matters as much as the
+            // attribute bit (the reference parser's `is_auth` is the same).
+            guard let sizeLow = reader.uint32(at: offset + 8),
+                  let sizeHigh = reader.uint32(at: offset + 12)
             else { return nil }
-            let nameStart = offset + headerSize
-            let nameEnd = min(nameStart + UInt64(nameSize), storeEnd)
-            let dataEnd = min(nameEnd + UInt64(dataSize), storeEnd)
-            nameRange = nameStart..<nameEnd
-            dataRange = nameEnd..<dataEnd
-            subtype = apple ? UEFITypes.Sub.appleVssEntry : UEFITypes.Sub.standardVssEntry
+
+            let isAuth = (
+                attributes & (NVRAM.vssAttributeAuthWrite
+                    | NVRAM.vssAttributeTimeBasedAuth
+                    | NVRAM.vssAttributeAppendWrite) != 0
+            ) || sizeLow == 0 || sizeHigh == 0
+
+            if isAuth {
+                // Authenticated: the name and data sizes come after the
+                // timestamp and key index.
+                headerSize = NVRAM.vssAuthHeaderSize
+                guard let nameSize = reader.uint32(at: offset + 36),
+                      let dataSize = reader.uint32(at: offset + 40)
+                else { return nil }
+                let nameStart = offset + headerSize
+                let nameEnd = min(nameStart + UInt64(nameSize), storeEnd)
+                let dataEnd = min(nameEnd + UInt64(dataSize), storeEnd)
+                nameRange = nameStart..<nameEnd
+                dataRange = nameEnd..<dataEnd
+                subtype = UEFITypes.Sub.authVssEntry
+            } else {
+                // Standard, or Apple when the data-checksum bit is set (one
+                // extra word after the vendor GUID).
+                let apple = attributes & NVRAM.vssAttributeAppleDataChecksum != 0
+                headerSize = apple ? NVRAM.vssAppleHeaderSize : NVRAM.vssStandardHeaderSize
+                let nameSize = sizeLow
+                let dataSize = sizeHigh
+                let nameStart = offset + headerSize
+                let nameEnd = min(nameStart + UInt64(nameSize), storeEnd)
+                let dataEnd = min(nameEnd + UInt64(dataSize), storeEnd)
+                nameRange = nameStart..<nameEnd
+                dataRange = nameEnd..<dataEnd
+                subtype = apple ? UEFITypes.Sub.appleVssEntry : UEFITypes.Sub.standardVssEntry
+            }
         }
 
         // A variable whose state is not one of the valid ones is invalid,
