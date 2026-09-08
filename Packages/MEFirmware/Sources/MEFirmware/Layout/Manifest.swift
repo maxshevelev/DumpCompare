@@ -56,6 +56,12 @@ struct ManifestParser {
         /// (ME 7–10, TXE); nil for R1/R2, whose +0x34 is inside the MEU block.
         var vcn: Int? = nil
 
+        /// Module count (`NumModules` u32 @ +0x20) of an R0 pre-CSE manifest —
+        /// the declared length of its `$MME` directory (see
+        /// `PreCSEModule`/`MMEModuleDirectory`). nil for R1/R2, whose +0x20 is
+        /// the `BuildTag`.
+        var numModules: Int? = nil
+
         var pvBit: Bool           // Flags bit0
         var debugSigned: Bool     // Flags bit31
 
@@ -105,9 +111,9 @@ struct ManifestParser {
         }
         let tag = String(data: tagBytes, encoding: .ascii) ?? ""
 
+        let manVer = u32le(data, p + 0x08)
+        let numInfo = u32le(data, p + 0x20)
         let format: Format = {
-            let manVer = u32le(data, p + 0x08)
-            let numInfo = u32le(data, p + 0x20)
             if manVer == 0x10000, numInfo > 0, numInfo < 0x50 { return .r0 }
             if manVer == 0x10000 { return .r1 }
             return .r2                       // 0x21000, or unknown -> R2 (upstream default)
@@ -153,8 +159,10 @@ struct ManifestParser {
             manifest.meMinor = Int(u16le(data, p + 0x32))
         } else {
             // R0 carries VCN (u32) at +0x34 (`hasattr VCN` in the main flow,
-            // MEA.py 12189); R1/R2 have no VCN field there.
+            // MEA.py 12189); R1/R2 have no VCN field there. NumModules at +0x20
+            // (the same u32 the struct dispatch used) sizes the $MME directory.
             manifest.vcn = Int(u32le(data, p + 0x34))
+            manifest.numModules = Int(numInfo)
         }
 
         // RSA key / signature slices (main flow 12198–12203).

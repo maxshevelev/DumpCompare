@@ -34,6 +34,9 @@ enum ManifestFixture {
         /// R0 VCN (u32 @ +0x34); R1/R2 reuse +0x34 as part of the MEU block, so
         /// the fixture only writes it for `.r0`.
         var vcn: UInt32 = 2
+        /// R0 NumModules (u32 @ +0x20) — the declared length of the `$MME`
+        /// directory. R1/R2 reuse +0x20 as BuildTag (written 0x1000_0000).
+        var numModules: UInt32 = 4
         var publicKeySize: UInt32 = 0x40   // dwords → 0x100 bytes
         var key: [UInt8] = Array(0..<0x100).map { UInt8($0 % 0x100) }
         var signature: [UInt8] = Array(0..<0x100).map { UInt8((0xFF - ($0 % 0x100)) & 0xFF) }
@@ -64,7 +67,7 @@ enum ManifestFixture {
         put(Array(params.tag.utf8), at: 0x1C)              // Tag $MN2/$MAN
         // R0: NumModules at 0x20 (small); R1/R2: BuildTag. Choose so get_manifest
         // picks the requested struct (R0 requires 0 < value < 0x50).
-        u32(params.format == .r0 ? 4 : 0x1000_0000, at: 0x20)
+        u32(params.format == .r0 ? params.numModules : 0x1000_0000, at: 0x20)
         u16(params.major, at: 0x24)                        // Major
         u16(params.minor, at: 0x26)                        // Minor
         u16(params.hotfix, at: 0x28)                       // Hotfix
@@ -137,6 +140,18 @@ final class ManifestParserTests: XCTestCase {
         XCTAssertNil(manifest.meMajor)            // R0 reuses 0x30 as SVN_8/VCN
         XCTAssertNil(manifest.meMinor)
         XCTAssertEqual(manifest.vcn, 2)           // R0 VCN read from +0x34
+        XCTAssertEqual(manifest.numModules, 4)    // R0 NumModules read from +0x20
+    }
+
+    func testR0NumModulesCoversDirectory() throws {
+        // The decoded NumModules sizes the pre-CSE $MME directory: an R0 manifest
+        // declaring 8 modules must surface 8 (as on the real T450 ME10).
+        var params = ManifestFixture.Params()
+        params.format = .r0
+        params.numModules = 8
+        let manifest = try XCTUnwrap(ManifestParser.parseFirst(in: ManifestFixture.manifest(params)))
+        XCTAssertEqual(manifest.format, .r0)
+        XCTAssertEqual(manifest.numModules, 8)
     }
 
     func testR1HasNoVCNField() throws {
@@ -146,6 +161,7 @@ final class ManifestParserTests: XCTestCase {
         XCTAssertEqual(manifest.format, .r1)
         XCTAssertEqual(manifest.meMajor, 15)      // MEU block read for R1
         XCTAssertNil(manifest.vcn)                // +0x34 is inside the MEU block, not VCN
+        XCTAssertNil(manifest.numModules)         // +0x20 is the BuildTag, not NumModules
     }
 
     func testDebugSignedFlagSetsReleaseBit() throws {

@@ -279,7 +279,7 @@ public actor MEFirmwareAnalyzer {
                 regions: regions, manifest: manifestSummary,
                 codePartition: nil, mfsVolume: mfsVolume,
                 cseLayoutTable: cseLayoutTable, bootPartitions: bootPartitions,
-                issues: issues)
+                mmeDirectory: nil, issues: issues)
         }
 
         // ——— Stage 2: identification — awaits the live MEA.dat once, then
@@ -352,6 +352,30 @@ public actor MEFirmwareAnalyzer {
                                hotfix: identity.hotfix, build: identity.build)
             : nil
 
+        // Phase 12 (pre-CSE ME, upstream-map rows 51/52): the `$MME` module
+        // directory (+ trailing `$MCP`) of an R0 `.me` manifest (`$MN2` ME 6–10,
+        // `$MAN` ME 2–5). Upstream walks these rows only for region-size /
+        // uncharted-partition math, so the directory facts are surfaced as a
+        // self-contained inventory (see `MMEModuleDirectory`). An R0 manifest
+        // whose declared directory under-decodes (a row's tag was not `$MME`,
+        // upstream's sanity break) is noted, never repaired.
+        var moduleInventory: MMEModuleDirectory? = nil
+        if identity.family == .me, manifest.format == .r0 {
+            let mme = PreCSEModule.decode(
+                in: region, manifestBase: manifest.base,
+                headerLengthBytes: manifest.headerLengthBytes,
+                manifestTag: manifest.tag,
+                declaredModules: manifest.numModules ?? 0,
+                baseOffset: baseOffset)
+            if let mme, mme.modules.count < mme.declaredModules {
+                issues.append(Issue(id: 11, severity: .note,
+                    message: "Pre-CSE \(manifest.tag) module directory declares "
+                        + "\(mme.declaredModules) modules but only "
+                        + "\(mme.modules.count) `$MME` rows decoded."))
+            }
+            moduleInventory = mme
+        }
+
         return FirmwareAnalysis(
             family: identity.family,
             variant: identity.variant,
@@ -377,6 +401,7 @@ public actor MEFirmwareAnalyzer {
             mfsVolume: mfsVolume,
             cseLayoutTable: cseLayoutTable,
             bootPartitions: bootPartitions,
+            mmeDirectory: moduleInventory,
             issues: issues)
     }
 

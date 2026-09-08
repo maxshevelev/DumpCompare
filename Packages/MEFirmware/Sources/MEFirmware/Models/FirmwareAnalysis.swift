@@ -39,6 +39,7 @@ public struct FirmwareAnalysis: Codable, Sendable, Equatable, Identifiable {
     public var mfsVolume: MFSVolume?          // MFS volume facts, when an FPT "MFS" region decodes
     public var cseLayoutTable: CSELayoutTable? = nil  // IFWI 1.6/1.7 CSE Layout Table inventory
     public var bootPartitions: [BPDT]? = nil          // BPDT of each non-empty CSE-LT Boot partition
+    public var mmeDirectory: MMEModuleDirectory? = nil  // pre-CSE R0 $MME inventory (ME 2–10)
     public var issues: [Issue]
 }
 
@@ -522,6 +523,115 @@ public struct BPDT: Codable, Sendable, Equatable {
     }
 }
 
+/// A pre-CSE R0 manifest's `$MME` module directory plus the trailing `$MCP`
+/// where one is present (upstream-map rows 51/52). The directory rows are
+/// `MME_Header_Old` after a `$MAN` manifest (ME 2–5, stride 0x50) or
+/// `MME_Header_New` after a `$MN2` manifest (ME 6–10, stride 0x60); the list
+/// head is `manifest base + HeaderLength*4 + 0xC` (MEA.py 12256). Upstream
+/// (MEA.py 12256–12369) walks these rows only for region-size / uncharted-
+/// partition math and prints no module table, so this surfaces the directory
+/// facts verbatim as a self-contained inventory. `offset` is the absolute
+/// `$MME` list head. nil on `FirmwareAnalysis` for the CSME families and for
+/// R1/R2 manifests (no pre-CSE directory).
+public struct MMEModuleDirectory: Codable, Sendable, Equatable {
+    public var offset: Int            // absolute $MME list head (baseOffset + region-relative)
+    public var manifestTag: String    // "$MN2" (new header, ME 6–10) or "$MAN" (old, ME 2–5)
+    public var declaredModules: Int   // manifest NumModules
+    public var modules: [MMEModule]   // decoded rows, in file order (≤ declaredModules)
+    public var mcp: MCPHeader?        // trailing $MCP after the 0x60 padding row, nil for $MAN
+
+    public init(offset: Int, manifestTag: String, declaredModules: Int,
+                modules: [MMEModule], mcp: MCPHeader?) {
+        self.offset = offset
+        self.manifestTag = manifestTag
+        self.declaredModules = declaredModules
+        self.modules = modules
+        self.mcp = mcp
+    }
+}
+
+/// One `$MME` module directory row. Fields are directory facts read verbatim —
+/// `modBase`/`offsetMN2`/sizes are recorded exactly as stored and never resolved
+/// to content offsets (upstream makes no uniqueness promise for them, e.g. many
+/// rows share an `Offset_MN2`). New-header rows (ME 6–10) carry the
+/// size/memory/entry fields plus a 32-byte hash; old-header rows (ME 2–5) carry
+/// the four version u16s, a 16-byte GUID, a 20-byte hash and a single `size`.
+/// The other shape's fields stay nil (the two never mix in one directory).
+public struct MMEModule: Codable, Sendable, Equatable, Identifiable {
+    public var id: Int
+    public var name: String
+    /// Module hash as uppercase hex: SHA-256 (32 bytes) for the new header,
+    /// 20 bytes for the old header.
+    public var hashHex: String?
+    /// Old-header GUID (16 bytes) as uppercase hex; nil for the new header.
+    public var guidHex: String?
+    // MME_Header_New (ME 6–10, after `$MN2`):
+    public var modBase: Int?          // @ +0x34
+    public var offsetMN2: Int?        // @ +0x38  module content offset from the $MN2
+    public var sizeUncompressed: Int? // @ +0x3C
+    public var sizeCompressed: Int?   // @ +0x40
+    public var memorySize: Int?       // @ +0x44
+    public var preUmaSize: Int?       // @ +0x48
+    public var entryPoint: Int?       // @ +0x4C
+    public var flags: UInt32?         // new @ +0x50, old @ +0x44
+    // MME_Header_Old (ME 2–5, after `$MAN`):
+    public var majorVersion: Int?     // @ +0x14 (u16)
+    public var minorVersion: Int?     // @ +0x16 (u16)
+    public var hotfixVersion: Int?    // @ +0x18 (u16)
+    public var buildVersion: Int?     // @ +0x1A (u16)
+    public var size: Int?             // @ +0x40
+
+    public init(id: Int, name: String, hashHex: String? = nil, guidHex: String? = nil,
+                modBase: Int? = nil, offsetMN2: Int? = nil,
+                sizeUncompressed: Int? = nil, sizeCompressed: Int? = nil,
+                memorySize: Int? = nil, preUmaSize: Int? = nil, entryPoint: Int? = nil,
+                flags: UInt32? = nil,
+                majorVersion: Int? = nil, minorVersion: Int? = nil,
+                hotfixVersion: Int? = nil, buildVersion: Int? = nil, size: Int? = nil) {
+        self.id = id
+        self.name = name
+        self.hashHex = hashHex
+        self.guidHex = guidHex
+        self.modBase = modBase
+        self.offsetMN2 = offsetMN2
+        self.sizeUncompressed = sizeUncompressed
+        self.sizeCompressed = sizeCompressed
+        self.memorySize = memorySize
+        self.preUmaSize = preUmaSize
+        self.entryPoint = entryPoint
+        self.flags = flags
+        self.majorVersion = majorVersion
+        self.minorVersion = minorVersion
+        self.hotfixVersion = hotfixVersion
+        self.buildVersion = buildVersion
+        self.size = size
+    }
+}
+
+/// Multi-chip-package header that follows the `$MME` directory of an ME 8–10
+/// `$MN2` after one 0x60 row of padding (`mcp_start = mod_start + NumModules *
+/// mme_size + mme_size`, MEA.py 12326) — upstream `MCP_Header` (MEA.py 1145).
+/// Its `CodeSize`/`Offset_Code_MN2` hold the whole-code partition size math.
+/// nil on `MMEModuleDirectory` for `$MAN` (ME 2–5) or when the slot is empty.
+public struct MCPHeader: Codable, Sendable, Equatable {
+    public var offset: Int            // absolute $MCP base
+    public var headerSize: Int        // HeaderSize @ +0x04 (dwords)
+    public var codeSize: Int          // @ +0x08
+    public var offsetCodeMN2: Int     // @ +0x0C  code start from the $MN2
+    public var offsetPartFPT: Int     // @ +0x10  partition start from the $FPT
+    public var hashHex: String        // SHA-256 @ +0x14, uppercase hex
+
+    public init(offset: Int, headerSize: Int, codeSize: Int,
+                offsetCodeMN2: Int, offsetPartFPT: Int, hashHex: String) {
+        self.offset = offset
+        self.headerSize = headerSize
+        self.codeSize = codeSize
+        self.offsetCodeMN2 = offsetCodeMN2
+        self.offsetPartFPT = offsetPartFPT
+        self.hashHex = hashHex
+    }
+}
+
 public enum Severity: String, Codable, Sendable {
     case note, warning, error
 }
@@ -536,5 +646,5 @@ public struct Issue: Codable, Sendable, Equatable, Identifiable {
 /// whether to surface the new data (`reference/result-model.md` §Versioning).
 public enum EngineModelRevision {
     /// Current revision of the `FirmwareAnalysis` shape.
-    public static let current = 10
+    public static let current = 11
 }
