@@ -41,6 +41,7 @@ public struct FirmwareAnalysis: Codable, Sendable, Equatable, Identifiable {
     public var bootPartitions: [BPDT]? = nil          // BPDT of each non-empty CSE-LT Boot partition
     public var mmeDirectory: MMEModuleDirectory? = nil  // pre-CSE R0 $MME inventory (ME 2–10)
     public var gscInfo: GSCInfo? = nil                  // GSC "INFO" $FPT partition decode (GSC_Info_FWI/IUP)
+    public var oromImages: [GSCOROMImage]? = nil        // GSC OROM/PCIR images decoded by orom_pat (row 30/80)
     public var issues: [Issue]
 }
 
@@ -724,6 +725,113 @@ public struct GSCIUPPartition: Codable, Sendable, Equatable, Identifiable {
     }
 }
 
+/// One GSC Option ROM image found by scanning a region for `orom_pat` — the
+/// OROM/PCIR header signature (MEA.py 11021) — and decoding each match as a
+/// `GSC_OROM_Header` (MEA.py 433) plus its `GSC_OROM_PCI_Data` (MEA.py 466) at
+/// `PCIDataHdrOff` (upstream-map row 30/80; decode block MEA.py 12149–12179).
+/// `offset` is the absolute image base; `payloadOffset` is the computed
+/// `data_off = max(PCIDataHdrOff + PCIR.PCIDataHdrLen, EFIImageOffset,
+/// OROMPayloadOff)` (the OROM payload after the headers), and `payloadIsCPD`
+/// records whether that payload opens with `$CPD` (upstream uses both in the
+/// OROM IUP size math). nil on `FirmwareAnalysis` unless the region is an OROM
+/// image. Fixture-only: no real OROM dump exists among the oracles.
+public struct GSCOROMImage: Codable, Sendable, Equatable, Identifiable {
+    public var id: Int
+    public var offset: Int            // absolute image base (match start)
+    public var header: GSCOROMHeader
+    public var pciData: GSCOROMPCIData
+    public var payloadOffset: Int     // data_off (headers + payload split)
+    public var payloadIsCPD: Bool     // payload opens with "$CPD"
+
+    public init(id: Int, offset: Int, header: GSCOROMHeader,
+                pciData: GSCOROMPCIData, payloadOffset: Int, payloadIsCPD: Bool) {
+        self.id = id
+        self.offset = offset
+        self.header = header
+        self.pciData = pciData
+        self.payloadOffset = payloadOffset
+        self.payloadIsCPD = payloadIsCPD
+    }
+}
+
+/// `GSC_OROM_Header` (igsc_oprom.h > oprom_header_ext_v2, MEA.py 433) — the
+/// 0x1C-byte Option ROM image header. Offsets verbatim from the ctypes struct.
+public struct GSCOROMHeader: Codable, Sendable, Equatable {
+    public var signature: UInt16       // u16 @ +0x00 = 0xAA55
+    public var imageSize: UInt16       // u16 @ +0x02, in 512-byte blocks
+    public var initFuncEntryPoint: UInt32  // u32 @ +0x04
+    public var subSystem: UInt16       // u16 @ +0x08
+    public var machineType: UInt16     // u16 @ +0x0A
+    public var compressionType: UInt16 // u16 @ +0x0C
+    public var reserved: UInt64        // u64 @ +0x0E
+    public var efiImageOffset: UInt16  // u16 @ +0x16
+    public var pciDataHeaderOffset: UInt16  // u16 @ +0x18
+    public var oromPayloadOffset: UInt16    // u16 @ +0x1A
+
+    public init(signature: UInt16, imageSize: UInt16, initFuncEntryPoint: UInt32,
+                subSystem: UInt16, machineType: UInt16, compressionType: UInt16,
+                reserved: UInt64, efiImageOffset: UInt16,
+                pciDataHeaderOffset: UInt16, oromPayloadOffset: UInt16) {
+        self.signature = signature
+        self.imageSize = imageSize
+        self.initFuncEntryPoint = initFuncEntryPoint
+        self.subSystem = subSystem
+        self.machineType = machineType
+        self.compressionType = compressionType
+        self.reserved = reserved
+        self.efiImageOffset = efiImageOffset
+        self.pciDataHeaderOffset = pciDataHeaderOffset
+        self.oromPayloadOffset = oromPayloadOffset
+    }
+
+    /// Upstream `gsc_print`: "Image Size 0x%X" = ImageSize × 512.
+    public var imageSizeBytes: Int { Int(imageSize) * 512 }
+}
+
+/// `GSC_OROM_PCI_Data` (igsc_oprom.h > oprom_pci_data, MEA.py 466) — the
+/// 0x1C-byte OROM PCI Data (PCIR) header. Offsets verbatim from the ctypes
+/// struct. `lastImage` = `LastImageMark` bit 7 (upstream `>> 7`); `classCode`
+/// is the 3 LE bytes at +0x0D read as one UInt32.
+public struct GSCOROMPCIData: Codable, Sendable, Equatable {
+    public var signature: String       // char[4] @ +0x00 = "PCIR"
+    public var vendorID: UInt16        // u16 @ +0x04
+    public var deviceID: UInt16        // u16 @ +0x06
+    public var deviceListPointer: UInt16   // u16 @ +0x08
+    public var pciDataHeaderLength: UInt16 // u16 @ +0x0A
+    public var pciDataHeaderRevision: UInt8 // u8 @ +0x0C
+    public var classCode: UInt32       // u8[3] @ +0x0D (LE)
+    public var imageSize: UInt16       // u16 @ +0x10, in 512-byte blocks
+    public var revisionLevel: UInt16   // u16 @ +0x12
+    public var codeType: UInt8         // u8  @ +0x14 (raw; pcir_code_types label deferred)
+    public var lastImage: Bool         // u8  @ +0x15 bit 7
+    public var maxRuntimeImageLength: UInt16   // u16 @ +0x16
+    public var configUtilityCodeHeaderPointer: UInt16  // u16 @ +0x18
+    public var dmtfCLPEntryPointPointer: UInt16        // u16 @ +0x1A
+
+    public init(signature: String, vendorID: UInt16, deviceID: UInt16,
+                deviceListPointer: UInt16, pciDataHeaderLength: UInt16,
+                pciDataHeaderRevision: UInt8, classCode: UInt32,
+                imageSize: UInt16, revisionLevel: UInt16, codeType: UInt8,
+                lastImage: Bool, maxRuntimeImageLength: UInt16,
+                configUtilityCodeHeaderPointer: UInt16,
+                dmtfCLPEntryPointPointer: UInt16) {
+        self.signature = signature
+        self.vendorID = vendorID
+        self.deviceID = deviceID
+        self.deviceListPointer = deviceListPointer
+        self.pciDataHeaderLength = pciDataHeaderLength
+        self.pciDataHeaderRevision = pciDataHeaderRevision
+        self.classCode = classCode
+        self.imageSize = imageSize
+        self.revisionLevel = revisionLevel
+        self.codeType = codeType
+        self.lastImage = lastImage
+        self.maxRuntimeImageLength = maxRuntimeImageLength
+        self.configUtilityCodeHeaderPointer = configUtilityCodeHeaderPointer
+        self.dmtfCLPEntryPointPointer = dmtfCLPEntryPointPointer
+    }
+}
+
 public enum Severity: String, Codable, Sendable {
     case note, warning, error
 }
@@ -738,5 +846,5 @@ public struct Issue: Codable, Sendable, Equatable, Identifiable {
 /// whether to surface the new data (`reference/result-model.md` §Versioning).
 public enum EngineModelRevision {
     /// Current revision of the `FirmwareAnalysis` shape.
-    public static let current = 12
+    public static let current = 13
 }

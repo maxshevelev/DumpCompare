@@ -401,6 +401,15 @@ public actor MEFirmwareAnalyzer {
             moduleInventory = mme
         }
 
+        // Phase 12 (GSC OROM, upstream-map rows 30/80): when the region is an
+        // OROM firmware image (upstream `is_orom_img`), scan it for `orom_pat`
+        // and decode each GSC_OROM_Header + GSC_OROM_PCI_Data pair (MEA.py
+        // 12149–12179). Non-OROM regions keep nil. No OROM dump exists among
+        // the oracles — the gate is dormant until an OROM RSA key matches the
+        // database, and the decoder is fixture-exercised.
+        let oromImages: [GSCOROMImage]? = identity.family == .orom
+            ? GSCOROM.decode(in: region, baseOffset: baseOffset) : nil
+
         return FirmwareAnalysis(
             family: identity.family,
             variant: identity.variant,
@@ -428,6 +437,7 @@ public actor MEFirmwareAnalyzer {
             bootPartitions: bootPartitions,
             mmeDirectory: moduleInventory,
             gscInfo: gscInfo,
+            oromImages: oromImages,
             issues: issues)
     }
 

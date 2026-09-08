@@ -27,7 +27,7 @@ ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
 | `cpd_pat` `$CPD` | Code Partition Directory | `Partition/CPD.swift` (scan inside) | ported |
 | `fpt_pat` `$FPT` | Flash Partition Table | `Layout/FPT.swift` (anchor scan inside) | ported |
 | `bpdt_pat` | Boot Partition Descriptor | IFWI layer / UEFI tree | — |
-| `orom_pat` PCIR | GSC Option ROM | `Anchors.swift` | — |
+| `orom_pat` PCIR | GSC Option ROM | `IUP/OROM.swift` (fixed-offset signature scan inside) | ported |
 | `fd_pat` `5AA5F00F…` | Flash Descriptor | whole-flash ME-region read in `Layout/IFWI.swift` (`FlashDescriptor.meRegion`) | ported (ME-region base only) |
 | `pr_man_*_pat` + `pr_cpd_parts` | probable manifests/IUP parts | `Anchors.swift` | — |
 
@@ -77,7 +77,7 @@ ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
 | Upstream symbol(s) | Models | Swift home | Status |
 |---|---|---|---|
 | `GSC_Info_FWI`, `GSC_Info_IUP` | GSC firmware image info — **decode ported** (`info_anl`, MEA.py 9134 + structs 358/410): an FPT partition literally named "INFO" (only GSC-family images carry one, so the name gates it) decodes as a u32 revision — 1 expected, warning Issue id 12 otherwise, decode still proceeds — then one `GSC_Info_FWI` (0x20) and the trailing `GSC_Info_IUP` rows (0x10 each) to the partition end, surfaced as `FirmwareAnalysis.gscInfo` (result-model rev 12). Raw ints + NUL-trimmed ASCII names; the FWType/FWSKU ext15 labels stay raw. Fixture-only — no GSC dump among the oracles | `IUP/GSCInfo.swift` + `Models/FirmwareAnalysis.swift` | ported |
-| `GSC_OROM_Header`, `GSC_OROM_PCI_Data` | Option ROM image/PCIR | `IUP/OROM.swift` | — |
+| `GSC_OROM_Header`, `GSC_OROM_PCI_Data` | Option ROM image/PCIR — **decode ported** (`orom_pat` scan 11021 over a region identifying as the `.orom` family, MEA.py 11451; whole-image decode 12149–12179): each match reads the 0x1C `GSC_OROM_Header` (struct 433) and — at `match + PCIDataHdrOff` — the 0x1C `GSC_OROM_PCI_Data` (struct 466), plus `data_off = max(PCIDataHdrOff + PCIR.PCIDataHdrLen, EFIImageOffset, OROMPayloadOff)` and the `$CPD` payload probe (12169–12170), surfaced as `FirmwareAnalysis.oromImages` (result-model rev 13). Fixture-only — no OROM dump among the oracles (`.orom` family identity needs a DB RSA-hash match, so the analyzer gate is dormant) | `IUP/OROM.swift` + `Models/FirmwareAnalysis.swift` | ported |
 | `pmc_anl`, `pmc_parse`, `pchc_anl`, `pchc_parse`, `phy_anl`, `phy_parse`, `pch_init_anl`, `info_anl` | PMC/PCHC/PHY/PCH init decode — **family descriptor ported** (`IUP/IUPDescriptor`, MEA.py 9164/9277/9342): Chipset Support platform + Chipset SKU letter + PMC chipset stepping from the manifest identity, mirroring the per-token SKU/stepping branches and the main-summary row gating (SKU hidden for APL/BXT/GLK/DG, stepping hidden for DG). Fills the top-level `platform`/`sku` + new `chipsetStepping` (result-model rev 9). Oracle-verified on the three 1.bin IUP partitions. The `_parse` loops and `pch_init_anl` (MFS PCH-init → CSE `platform`) remain open (`info_anl` → row 79) | `IUP/IUP.swift` + analyzer wiring | partial |
 | `chk_iup_size` | IUP size validation | `IUP/Common.swift` | — |
 | `fovd_clean` | FOVD/NVKR dirty check | `IUP/Common.swift` | — |

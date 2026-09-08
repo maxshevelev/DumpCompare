@@ -84,7 +84,7 @@ final class FirmwareAnalysisModelTests: XCTestCase {
     }
 
     func testEngineModelRevisionBumpsWithAdditiveChanges() {
-        XCTAssertEqual(EngineModelRevision.current, 12)
+        XCTAssertEqual(EngineModelRevision.current, 13)
     }
 }
 
