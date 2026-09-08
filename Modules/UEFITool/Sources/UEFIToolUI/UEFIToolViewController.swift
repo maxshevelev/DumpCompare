@@ -18,7 +18,7 @@ import UEFITool
     var onSelectTop: (() -> Void)?
 
     private var image: UEFIImage?
-    /// The tree as it is shown: the outline's top level and the wrapper node the
+    /// The tree as it is shown: the outline's top level and the root node the
     /// summary stands for, decided in the pure target. Kept from one show to
     /// the next so the data source reads the same top level the last show laid
     /// out.
@@ -89,9 +89,9 @@ import UEFITool
         summaryLabel.font = ToolPanelFont.body(weight: .medium)
         summaryLabel.lineBreakMode = .byTruncatingTail
         summaryLabel.translatesAutoresizingMaskIntoConstraints = false
-        // The title names the image, not a row: when a pure wrapper was folded
-        // into it, clicking it selects the whole image as that row would. What
-        // it does without a wrapper is nothing — the module guards.
+        // The title names the image, not a row: the one root the tree folded
+        // into it is selected by a click as its row would. Without a root to
+        // fold, the title is not clickable — the module guards.
         summaryLabel.addGestureRecognizer(
             NSClickGestureRecognizer(target: self, action: #selector(summaryClicked))
         )
@@ -272,9 +272,9 @@ import UEFITool
         outline.reloadData()
         renderDetail(detail, subject: focus?.description ?? "")
 
-        // The focus is the wrapper the tree folded into the title: it has no
-        // row to select, and the title already stands for it in accent colour,
-        // so there is nothing to do to the tree.
+        // The focus is the root the tree folded into the title: it has no row
+        // to select, and the title already stands for it in accent colour, so
+        // there is nothing to do to the tree.
         if presented.title != nil, focus == presented.title?.id {
             outline.deselectAll(nil)
             return
@@ -292,9 +292,9 @@ import UEFITool
         }
     }
 
-    /// The title reads as clickable only when it stands for a hidden node, and
-    /// reads as *selected* when that node is the focus — the accent colour is
-    /// the row the wrapper would have got.
+    /// The title reads as clickable only when it stands for a folded root, and
+    /// reads as *selected* when that root is the focus — the accent colour is
+    /// the row the root would have got.
     private func updateSummaryEmphasis() {
         guard presented.title != nil else {
             summaryLabel.toolTip = nil

@@ -142,35 +142,21 @@ final class TopLevelParseTests: XCTestCase {
         XCTAssertEqual(parsed.roots.map(\.kind), [.capsule])
         XCTAssertEqual(parsed.roots[0].name, "EFI capsule")
         XCTAssertEqual(parsed.roots[0].header, 0..<0x20)
-        // The body is not a special format, so it is wrapped like a bare file.
-        XCTAssertEqual(parsed.roots[0].children.map(\.kind), [.uefiImage])
-        XCTAssertEqual(parsed.roots[0].children[0].children.map(\.kind), [.volume])
-        XCTAssertEqual(parsed.roots[0].children[0].children[0].range, 0x20..<0x1020)
-    }
-
-    /// The volume body of a capsule is bytes like any other file's, so it is
-    /// wrapped in the same UEFI image node a bare dump gets (§9.2.1).
-    func testACapsuleBodyIsWrappedWhenItIsNotASpecialFormat() {
-        let parsed = UEFIParser.parse(TestImage.capsule(body: volume))
-
-        XCTAssertEqual(parsed.roots.map(\.kind), [.capsule])
-        XCTAssertEqual(parsed.roots[0].name, "EFI capsule")
-        XCTAssertEqual(parsed.roots[0].header, 0..<0x20)
-        XCTAssertEqual(parsed.roots[0].children.map(\.kind), [.uefiImage])
-        XCTAssertEqual(parsed.roots[0].children[0].name, "UEFI image")
-        XCTAssertEqual(parsed.roots[0].children[0].subtype, UEFITypes.Sub.uefiImage)
+        XCTAssertEqual(parsed.roots[0].children.map(\.kind), [.volume])
         XCTAssertEqual(parsed.roots[0].children[0].range, 0x20..<0x1020)
-        XCTAssertEqual(parsed.roots[0].children[0].children.map(\.kind), [.volume])
-        XCTAssertEqual(parsed.roots[0].children[0].children[0].range, 0x20..<0x1020)
     }
 
     /// A capsule claiming less than the file holds has something after it, and
-    /// dropping it silently would lose bytes (§1.1).
+    /// dropping it silently would lose bytes (§1.1). A capsule and trailing
+    /// bytes are two things at the top, so they are grouped under the UEFI
+    /// image root the way any other multi-thing file is (§4).
     func testWhatFollowsACapsuleIsKept() {
         let parsed = UEFIParser.parse(TestImage.capsule(body: volume, trailing: 0x100))
 
-        XCTAssertEqual(parsed.roots.map(\.kind), [.capsule, .padding])
-        XCTAssertEqual(parsed.roots.map(\.range), [0..<0x1020, 0x1020..<0x1120])
+        XCTAssertEqual(parsed.roots.map(\.kind), [.uefiImage])
+        let children = parsed.roots[0].children
+        XCTAssertEqual(children.map(\.kind), [.capsule, .padding])
+        XCTAssertEqual(children.map(\.range), [0..<0x1020, 0x1020..<0x1120])
     }
 
     /// Aptio signed capsules put a certificate between the header and the
@@ -185,17 +171,21 @@ final class TopLevelParseTests: XCTestCase {
 
         let parsed = UEFIParser.parse(image)
 
-        XCTAssertEqual(parsed.roots[0].name, "AMI Aptio signed capsule")
-        XCTAssertEqual(parsed.roots[0].header, 0..<0x100)
-        XCTAssertEqual(parsed.roots[0].children.map(\.kind), [.uefiImage])
-        XCTAssertEqual(parsed.roots[0].children[0].children.map(\.kind), [.volume])
+        // The certificate and trailing bytes leave padding after the capsule,
+        // so the file is capsule + padding at the top and is grouped under the
+        // image root; the capsule itself is its first child.
+        XCTAssertEqual(parsed.roots.map(\.kind), [.uefiImage])
+        let capsule = parsed.roots[0].children[0]
+        XCTAssertEqual(capsule.name, "AMI Aptio signed capsule")
+        XCTAssertEqual(capsule.header, 0..<0x100)
+        XCTAssertEqual(capsule.children.map(\.kind), [.volume])
     }
 
     func testAGuidThatIsNotACapsuleIsJustBytes() {
         var image = [UInt8](repeating: 0xFF, count: 0x200)
         image.replaceSubrange(0..<16, with: TestImage.driverGUID.bytes)
 
-        XCTAssertEqual(UEFIParser.parse(image).roots[0].children.map(\.kind), [.padding])
+        XCTAssertEqual(UEFIParser.parse(image).roots.map(\.kind), [.padding])
     }
 
     // MARK: - Microcode
@@ -206,6 +196,8 @@ final class TopLevelParseTests: XCTestCase {
         let image = TestImage.image(padding: 0x100, TestImage.microcode(), after: 0x100)
 
         let parsed = UEFIParser.parse(image)
+        // Padding, microcode, padding — several things at the top, so they sit
+        // under the image root; the microcode is the middle child.
         let microcode = parsed.roots[0].children[1]
 
         XCTAssertEqual(microcode.kind, .microcode)
@@ -257,14 +249,14 @@ final class TopLevelParseTests: XCTestCase {
 
         let parsed = UEFIParser.parse(image)
 
-        XCTAssertEqual(parsed.roots[0].children.map(\.kind), [.padding])
+        XCTAssertEqual(parsed.roots.map(\.kind), [.padding])
         XCTAssertTrue(parsed.diagnostics.isEmpty)
     }
 
     func testAnImpossibleDateIsNotMicrocode() {
         let image = TestImage.microcode(year: 0x2019, month: 0x13, day: 0x15)
 
-        XCTAssertEqual(UEFIParser.parse(image).roots[0].children.map(\.kind), [.padding])
+        XCTAssertEqual(UEFIParser.parse(image).roots.map(\.kind), [.padding])
     }
 
     func testMicrocodeWithABrokenChecksumIsReported() {
@@ -272,7 +264,7 @@ final class TopLevelParseTests: XCTestCase {
 
         let parsed = UEFIParser.parse(image)
 
-        XCTAssertEqual(parsed.roots[0].children.map(\.kind), [.microcode])
+        XCTAssertEqual(parsed.roots.map(\.kind), [.microcode])
         XCTAssertEqual(parsed.diagnostics.count, 1)
         guard case .checksumMismatch(.microcodeHeader, let stored, _) = parsed.diagnostics[0].kind
         else { return XCTFail("expected a microcode checksum diagnostic") }
@@ -286,8 +278,8 @@ final class TopLevelParseTests: XCTestCase {
 
         let parsed = UEFIParser.parse(image)
 
-        XCTAssertEqual(parsed.roots[0].children.map(\.kind), [.padding])
-        XCTAssertTrue(parsed.roots[0].children[0].isErased)
+        XCTAssertEqual(parsed.roots.map(\.kind), [.padding])
+        XCTAssertTrue(parsed.roots[0].isErased)
     }
 
     /// A microcode region is a run of them, back to back.
@@ -307,40 +299,45 @@ final class TopLevelParseTests: XCTestCase {
 
     // MARK: - The UEFI image wrapper
 
-    /// Every file that is neither a capsule nor an Intel descriptor image is a
-    /// `UEFI image` node holding the raw-area scan, exactly as C++'s
-    /// `parseGenericImage` wraps it — a lone volume included (§4).
-    func testALoneVolumeIsWrappedInAUefiImage() {
+    /// The tree has one root. A lone volume off a chip already is that root —
+    /// it is not wrapped in an invented image it is not.
+    func testALoneVolumeIsItsOwnRoot() {
         let parsed = UEFIParser.parse(volume)
-        let root = parsed.roots[0]
 
         XCTAssertEqual(parsed.roots.count, 1)
+        let root = parsed.roots[0]
+        XCTAssertEqual(root.kind, .volume)
+        XCTAssertEqual(root.header, 0..<0x48)
+        XCTAssertEqual(root.body, 0x48..<0x1000)
+        XCTAssertEqual(root.children.map(\.kind).first, .file)
+        XCTAssertTrue(parsed.diagnostics.isEmpty)
+    }
+
+    /// Several things at the top — a run of microcode with padding around it —
+    /// are a file that is more than one image, and are grouped under the UEFI
+    /// image node UEFITool always shows as its root (§4).
+    func testSeveralThingsAtTheTopAreGroupedUnderAUefiImage() {
+        let image = TestImage.image(padding: 0x100, TestImage.microcode(), after: 0x100)
+
+        let parsed = UEFIParser.parse(image)
+
+        XCTAssertEqual(parsed.roots.count, 1)
+        let root = parsed.roots[0]
         XCTAssertEqual(root.kind, .uefiImage)
         XCTAssertEqual(root.name, "UEFI image")
         XCTAssertEqual(root.subtype, UEFITypes.Sub.uefiImage)
         XCTAssertEqual(root.uefiItemType, UEFITypes.Item.image.rawValue)
         XCTAssertEqual(root.header, 0..<0)
-        XCTAssertEqual(root.body, 0..<0x1000)
+        XCTAssertEqual(root.body, 0..<0x270)
         XCTAssertTrue(root.isFixed)
-        XCTAssertEqual(root.children.map(\.kind), [.volume])
+        XCTAssertEqual(root.children.map(\.kind), [.padding, .microcode, .padding])
         XCTAssertTrue(parsed.diagnostics.isEmpty)
-    }
-
-    /// An all-erased file is still a UEFI image; the wrapper exists even when
-    /// the only thing under it is padding (§4).
-    func testANoisyFileIsWrappedEvenWhenItOnlyYieldsPadding() {
-        let image = [UInt8](repeating: 0xFF, count: 0x200)
-
-        let parsed = UEFIParser.parse(image)
-
-        XCTAssertEqual(parsed.roots.map(\.kind), [.uefiImage])
-        XCTAssertEqual(parsed.roots[0].children.map(\.kind), [.padding])
     }
 
     /// The wrapper is not invented a second time around a file that is already
     /// an Intel image: that root stays the single root, with the descriptor and
     /// regions under it, not under a UEFI image.
-    func testAnIntelImageIsNotDoubleWrapped() {
+    func testAnIntelImageIsNotWrappedInAUefiImage() {
         let image = TestImage.intelImage(
             size: 0x8000,
             regions: [(.descriptor, 0..<0x1000), (.bios, 0x1000..<0x8000)],
@@ -349,6 +346,7 @@ final class TopLevelParseTests: XCTestCase {
 
         let parsed = UEFIParser.parse(image)
 
+        XCTAssertEqual(parsed.roots.count, 1)
         XCTAssertEqual(parsed.roots.map(\.kind), [.intelImage])
     }
 }

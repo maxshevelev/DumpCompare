@@ -110,24 +110,34 @@ final class Parser {
             note(.recursionLimit, at: range.lowerBound)
             return []
         }
+        let top: [UEFINode]
         if let capsule = parseCapsule(at: range.lowerBound, limit: range.upperBound, depth: depth) {
-            return [capsule] + padding(
+            // A capsule claiming less than the file holds has something after
+            // it; the trailing bytes stay as padding beside it (§1.1).
+            top = [capsule] + padding(
                 from: capsule.range.upperBound,
                 to: range.upperBound,
                 emptyByte: Parser.defaultEmptyByte
             )
-        }
-        // The signature is checked at `0x10` as well as at `0x00`: the first
-        // sixteen bytes are a reserved vector, `0xFF` on x86 and a real ARM
-        // reset vector on some ARM images (§1).
-        if hasDescriptorSignature(at: range.lowerBound) {
+        } else if hasDescriptorSignature(at: range.lowerBound) {
+            // The signature is checked at `0x10` as well as at `0x00`: the
+            // first sixteen bytes are a reserved vector, `0xFF` on x86 and a
+            // real ARM reset vector on some ARM images (§1). An Intel image is
+            // already the one node over the whole file, so it is returned as is.
             return parseIntelImage(range, depth: depth)
+        } else {
+            // Everything else — a lone volume off a chip, a NVRAM blob, bytes
+            // to be searched — is a raw-area scan, and the scan decides the
+            // top of the tree (§4).
+            top = scanRawArea(range, emptyByte: Parser.defaultEmptyByte, depth: depth)
         }
-        // Everything else — a lone volume off a chip, a NVRAM blob, bytes to be
-        // searched — is one Image node over the whole file, the root UEFITool
-        // always shows. An empty header and a body that is the whole range make
-        // it a pure wrapper, so the panel can fold it into its title line and
-        // show the scan's children at the top of the tree (§4).
+        // The tree has one root. Several things at the top are a file that is
+        // more than one image — a run of microcode with padding around it, a
+        // capsule with bytes after it — and are grouped under the UEFI image
+        // node UEFITool always shows as its root; the single thing a parse
+        // found is already a root of its own, and is not wrapped in an image it
+        // is not.
+        guard top.count > 1 else { return top }
         return [UEFINode(
             kind: .uefiImage,
             subtype: UEFITypes.Sub.uefiImage,
@@ -135,7 +145,7 @@ final class Parser {
             header: range.lowerBound..<range.lowerBound,
             body: range,
             isFixed: true,
-            children: scanRawArea(range, emptyByte: Parser.defaultEmptyByte, depth: depth)
+            children: top
         )]
     }
 

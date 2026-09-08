@@ -195,11 +195,11 @@ struct UEFIParkedState: ToolSessionState {
         show()
     }
 
-    /// The title names the image, not a row: when a pure wrapper was folded
-    /// into it, clicking the title selects the whole image exactly as that
-    /// row would — whole-file zone, detail of the wrapper. A file with no
-    /// wrapper to stand for — a capsule, one with several roots — has nothing
-    /// to select, so it does nothing rather than clear a focus the user set.
+    /// The title names the image, not a row: the one root the tree folded into
+    /// it is selected by a click exactly as its row would — its zone, its
+    /// detail. A file with nothing folded into the title — one with several
+    /// roots, or a single leaf — has nothing to select, so it does nothing
+    /// rather than clear a focus the user set.
     ///
     /// Public because a click on the title is driven the same way the panel's
     /// other clicks are — through the session, not a simulated mouse.

@@ -11,7 +11,7 @@ final class NvramParseTests: XCTestCase {
     func testAnNvramVolumeExpandsToItsStores() {
         let store = TestNVRAM.vssStore(variables: [TestNVRAM.vssVariable(name: "BootOrder")])
         let parsed = parse(TestNVRAM.nvramVolume(stores: [store]))
-        let volume = parsed.roots[0].children[0]
+        let volume = parsed.roots[0]
 
         XCTAssertEqual(volume.kind, .volume)
         XCTAssertEqual(volume.children.map(\.kind), [.vssStore])
@@ -25,7 +25,7 @@ final class NvramParseTests: XCTestCase {
     func testAVssVariableIsNamedByItsDecodedName() {
         let store = TestNVRAM.vssStore(variables: [TestNVRAM.vssVariable(name: "BootOrder")])
         let parsed = parse(TestNVRAM.nvramVolume(stores: [store]))
-        let entry = parsed.roots[0].children[0].children[0].children[0]
+        let entry = parsed.roots[0].children[0].children[0]
 
         XCTAssertEqual(entry.kind, .vssEntry)
         XCTAssertEqual(entry.subtype, UEFITypes.Sub.standardVssEntry)
@@ -37,7 +37,7 @@ final class NvramParseTests: XCTestCase {
     func testTheFreeSpaceAfterTheVariablesIsFound() {
         let store = TestNVRAM.vssStore(variables: [TestNVRAM.vssVariable(name: "BootOrder")])
         let parsed = parse(TestNVRAM.nvramVolume(stores: [store]))
-        let children = parsed.roots[0].children[0].children[0].children
+        let children = parsed.roots[0].children[0].children
 
         XCTAssertEqual(children.map(\.kind), [.vssEntry, .freeSpace])
         XCTAssertEqual(children[1].range, 0x8E..<0x9E)
@@ -48,7 +48,7 @@ final class NvramParseTests: XCTestCase {
         let deleted = TestNVRAM.vssVariable(name: "BootOrder", state: 0xFD)
         let store = TestNVRAM.vssStore(variables: [deleted])
         let parsed = parse(TestNVRAM.nvramVolume(stores: [store]))
-        let entry = parsed.roots[0].children[0].children[0].children[0]
+        let entry = parsed.roots[0].children[0].children[0]
 
         XCTAssertEqual(entry.subtype, UEFITypes.Sub.invalidVssEntry)
         XCTAssertEqual(entry.name, "Invalid")
@@ -60,7 +60,7 @@ final class NvramParseTests: XCTestCase {
             TestNVRAM.vssVariable(name: "SetupMode"),
         ])
         let parsed = parse(TestNVRAM.nvramVolume(stores: [store]))
-        let entries = parsed.roots[0].children[0].children[0].children
+        let entries = parsed.roots[0].children[0].children
 
         XCTAssertEqual(entries.map(\.kind), [.vssEntry, .vssEntry, .freeSpace])
         XCTAssertEqual(entries[0].name, "BootOrder")
@@ -75,7 +75,7 @@ final class NvramParseTests: XCTestCase {
             size: 0xFFFF_FFFF
         )
         let parsed = parse(TestNVRAM.nvramVolume(stores: [store]))
-        XCTAssertEqual(parsed.roots[0].children[0].children.map(\.kind), [.padding])
+        XCTAssertEqual(parsed.roots[0].children.map(\.kind), [.padding])
     }
 
     /// A store whose size field overruns the body is cut at the body's end, not
@@ -88,7 +88,7 @@ final class NvramParseTests: XCTestCase {
             size: 0x100
         )
         let parsed = parse(TestNVRAM.nvramVolume(stores: [store]))
-        let vss = parsed.roots[0].children[0].children[0]
+        let vss = parsed.roots[0].children[0]
 
         XCTAssertEqual(vss.kind, .vssStore)
         // Cut at the body's end, not believed to 0x100.
@@ -100,8 +100,8 @@ final class NvramParseTests: XCTestCase {
     func testAnErasedNvramVolumeIsFreeSpace() {
         let parsed = parse(TestNVRAM.nvramVolume(stores: [], length: 0x400))
 
-        XCTAssertEqual(parsed.roots[0].children[0].children.map(\.kind), [.freeSpace])
-        XCTAssertEqual(parsed.roots[0].children[0].children.map(\.range), [0x48..<0x400])
+        XCTAssertEqual(parsed.roots[0].children.map(\.kind), [.freeSpace])
+        XCTAssertEqual(parsed.roots[0].children.map(\.range), [0x48..<0x400])
         XCTAssertTrue(parsed.diagnostics.isEmpty)
     }
 
@@ -125,7 +125,7 @@ final class NvramParseTests: XCTestCase {
         )
 
         let parsed = parse(volumeBytes)
-        let volume = parsed.roots[0].children[0]
+        let volume = parsed.roots[0]
         XCTAssertEqual(volume.children.map(\.kind), [.vssStore, .freeSpace, .vss2Store])
         XCTAssertEqual(volume.children[1].range, vssEnd..<(vssEnd + gap))
         XCTAssertTrue(volume.children[1].isErased)
@@ -139,7 +139,7 @@ final class NvramParseTests: XCTestCase {
     func testAVss2StoreExpandsToItsVariables() {
         let store = TestNVRAM.vss2Store(variables: [TestNVRAM.vss2Variable(name: "BootOrder")])
         let parsed = parse(TestNVRAM.nvramVolume(stores: [store]))
-        let volume = parsed.roots[0].children[0]
+        let volume = parsed.roots[0]
 
         XCTAssertEqual(volume.children.map(\.kind), [.vss2Store])
         let vss2 = volume.children[0]
@@ -153,7 +153,7 @@ final class NvramParseTests: XCTestCase {
     func testAVss2VariableIsNamedByItsDecodedName() {
         let store = TestNVRAM.vss2Store(variables: [TestNVRAM.vss2Variable(name: "BootOrder")])
         let parsed = parse(TestNVRAM.nvramVolume(stores: [store]))
-        let entry = parsed.roots[0].children[0].children[0].children[0]
+        let entry = parsed.roots[0].children[0].children[0]
 
         XCTAssertEqual(entry.kind, .vssEntry)
         XCTAssertEqual(entry.subtype, UEFITypes.Sub.standardVssEntry)
@@ -167,7 +167,7 @@ final class NvramParseTests: XCTestCase {
     func testAVss2AlignmentPaddingAndFreeSpaceAreFound() {
         let store = TestNVRAM.vss2Store(variables: [TestNVRAM.vss2Variable(name: "BootOrder")])
         let parsed = parse(TestNVRAM.nvramVolume(stores: [store]))
-        let children = parsed.roots[0].children[0].children[0].children
+        let children = parsed.roots[0].children[0].children
 
         XCTAssertEqual(children.map(\.kind), [.vssEntry, .padding, .freeSpace])
         XCTAssertEqual(children[1].range, 0x9A..<0x9C)
@@ -180,7 +180,7 @@ final class NvramParseTests: XCTestCase {
         let deleted = TestNVRAM.vss2Variable(name: "BootOrder", state: 0xFD)
         let store = TestNVRAM.vss2Store(variables: [deleted])
         let parsed = parse(TestNVRAM.nvramVolume(stores: [store]))
-        let entry = parsed.roots[0].children[0].children[0].children[0]
+        let entry = parsed.roots[0].children[0].children[0]
 
         XCTAssertEqual(entry.subtype, UEFITypes.Sub.invalidVssEntry)
         XCTAssertEqual(entry.name, "Invalid")
@@ -191,7 +191,7 @@ final class NvramParseTests: XCTestCase {
     func testAnFtwStoreWithAValidCrcIsFound() {
         let store = TestNVRAM.ftwStore(writeQueue: [0x01, 0x02, 0x03, 0x04])
         let parsed = parse(TestNVRAM.nvramVolume(stores: [store]))
-        let ftw = parsed.roots[0].children[0].children[0]
+        let ftw = parsed.roots[0].children[0]
 
         XCTAssertEqual(ftw.kind, .ftwStore)
         XCTAssertEqual(ftw.name, "FTW store")
@@ -203,7 +203,7 @@ final class NvramParseTests: XCTestCase {
         let store = TestNVRAM.ftwStore(writeQueue: [0x01, 0x02, 0x03, 0x04], crc: 0xDEAD_BEEF)
         let parsed = parse(TestNVRAM.nvramVolume(stores: [store]))
 
-        XCTAssertEqual(parsed.roots[0].children[0].children.map(\.kind), [.ftwStore])
+        XCTAssertEqual(parsed.roots[0].children.map(\.kind), [.ftwStore])
         guard case .checksumMismatch(.nvramStore, stored: let stored, computed: let computed) = parsed.diagnostics[0].kind else {
             XCTFail("Expected a checksumMismatch diagnostic")
             return
@@ -221,7 +221,7 @@ final class NvramParseTests: XCTestCase {
             size: 0xFFFF_FFFF
         )
         let parsed = parse(TestNVRAM.nvramVolume(stores: [TestNVRAM.fdcStore(stores: [inner])]))
-        let volume = parsed.roots[0].children[0]
+        let volume = parsed.roots[0]
 
         XCTAssertEqual(volume.children.map(\.kind), [.fdcStore])
         let fdc = volume.children[0]
@@ -243,7 +243,7 @@ final class NvramParseTests: XCTestCase {
     func testAFirmwareVolumeNestedInsideNvramIsParsedByTheVolumeParser() {
         let inner = TestImage.volume(length: 0x200)
         let parsed = parse(TestNVRAM.nvramVolume(stores: [inner]))
-        let volume = parsed.roots[0].children[0]
+        let volume = parsed.roots[0]
 
         XCTAssertEqual(volume.children.map(\.kind), [.volume])
         let nested = volume.children[0]
@@ -257,7 +257,7 @@ final class NvramParseTests: XCTestCase {
     /// microcode parser, which names it and keeps its whole image whole.
     func testMicrocodeInsideNvramIsParsedByTheMicrocodeParser() {
         let parsed = parse(TestNVRAM.nvramVolume(stores: [TestImage.microcode()]))
-        let volume = parsed.roots[0].children[0]
+        let volume = parsed.roots[0]
 
         XCTAssertEqual(volume.children.map(\.kind), [.microcode])
         XCTAssertEqual(volume.children[0].range, volume.body)
@@ -277,7 +277,7 @@ final class NvramParseTests: XCTestCase {
             TestNVRAM.nvramVolume(stores: [outer]),
             limits: UEFIParser.Limits(maxDepth: 2)
         )
-        let volume = parsed.roots[0].children[0]
+        let volume = parsed.roots[0]
 
         XCTAssertEqual(volume.children.map(\.kind), [.fdcStore])
         XCTAssertEqual(volume.children[0].children.map(\.kind), [.fdcStore])
@@ -296,7 +296,7 @@ final class NvramParseTests: XCTestCase {
             TestNVRAM.nvramVolume(stores: [outer]),
             limits: UEFIParser.Limits(maxDepth: 3)
         )
-        let volume = parsed.roots[0].children[0]
+        let volume = parsed.roots[0]
 
         XCTAssertEqual(volume.children.map(\.kind), [.fdcStore])
         XCTAssertEqual(volume.children[0].children.map(\.kind), [.fdcStore])

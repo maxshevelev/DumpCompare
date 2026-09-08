@@ -44,22 +44,24 @@ public enum UEFITreeDisplay {
     }
 
     /// The tree as it is shown: the outline's top level, and the node the
-    /// summary stands for when one row has been taken out of the tree.
+    /// summary stands for when the tree's root has been taken out of the tree.
     ///
-    /// A single root that is a *pure wrapper* — empty header, children of its
-    /// own, never anything the format put there — holds the whole file and
-    /// does no work as a row. Its one job in the tree is to say what the image
-    /// is, so it is moved up into the panel title instead and its children
-    /// become the top of the outline. The predicate is structural, never
-    /// per-kind, so it covers the Intel image root and the UEFI image root
-    /// alike — and a capsule (whose root has a header of its own) is left as a
-    /// row, as is any file with several roots.
+    /// The parser hands over a single-rooted tree — that root is either a real
+    /// node of the file (a lone volume) or an image node the parser grouped the
+    /// file under. Whichever it is, it does no work as a row: its one job is to
+    /// say what the whole image is, so it is moved up into the panel title and
+    /// its children become the top of the outline. The predicate is purely
+    /// structural — one root with children of its own — so it never has to know
+    /// whether the root is a volume, a capsule or an invented image: the title
+    /// always names the root, and the tree always opens with what is inside it.
+    /// The image that is a single node with nothing inside — a file of padding
+    /// — keeps that node as its one row.
     public struct PresentedImage {
-        /// The hidden wrapper the summary leads with, or nil when nothing was
+        /// The hidden root the summary leads with, or nil when nothing was
         /// folded away.
         public let title: UEFINode?
-        /// The outline's top level: the wrapper's children when there was a
-        /// wrapper, the image's roots otherwise.
+        /// The outline's top level: the root's children when there was a root
+        /// to fold, the image's roots otherwise.
         public let rows: [UEFINode]
 
         public init(title: UEFINode?, rows: [UEFINode]) {
@@ -70,7 +72,7 @@ public enum UEFITreeDisplay {
 
     public static func present(_ image: UEFIImage) -> PresentedImage {
         guard image.roots.count == 1, let root = image.roots.first,
-              root.header.isEmpty, !root.children.isEmpty
+              !root.children.isEmpty
         else { return PresentedImage(title: nil, rows: image.roots) }
         return PresentedImage(title: root, rows: root.children)
     }
@@ -78,10 +80,13 @@ public enum UEFITreeDisplay {
     /// What the tree is, in one line: what the image is, and how much of it the
     /// tree accounts for.
     ///
-    /// The image leads with the hidden wrapper's name — "UEFI image", "Intel
-    /// image" — when `present` folded one into the title; otherwise it leads
-    /// with the image type of the first root (`imageType(of:)`). Either way it
-    /// is the same decision the outline shows, so the title and the tree agree.
+    /// The title leads with what the hidden root *is*. An invented image root —
+    /// "UEFI image", "Intel image" — reads by the name the parser gave it, the
+    /// phrase UEFITool uses; a real root the file already had (a lone volume, a
+    /// lone capsule) reads by its type and subtype, the same words its row would
+    /// have shown. Either way it is the same decision the outline shows, so the
+    /// title and the tree agree. Without a root to fold — an empty image, one
+    /// with several roots — it leads with the first root's image type.
     public static func summary(of image: UEFIImage?) -> String {
         guard let image else { return "" }
         let nodes = image.allNodes
@@ -90,17 +95,29 @@ public enum UEFITreeDisplay {
         let volumes = nodes.filter { $0.kind == .volume }.count
         let files = nodes.filter { $0.kind == .file }.count
         var parts: [String] = []
-        let presented = present(image)
-        if let title = presented.title {
-            if !title.name.isEmpty { parts.append(title.name) }
-        } else {
-            let imageType = imageType(of: image)
-            if !imageType.isEmpty { parts.append(imageType) }
-        }
+        let lead = titleLead(of: image)
+        if !lead.isEmpty { parts.append(lead) }
         parts.append("\(count) " + (count == 1 ? "node" : "nodes"))
         if volumes > 0 { parts.append("\(volumes) volume" + (volumes == 1 ? "" : "s")) }
         if files > 0 { parts.append("\(files) file" + (files == 1 ? "" : "s")) }
         return parts.joined(separator: " · ")
+    }
+
+    /// The word the title leads with: the hidden root, named the way it reads
+    /// as a row. An invented image root is named — "UEFI image" — because that
+    /// is the phrase UEFITool uses and the one worth reading in a title; a real
+    /// root the file already had is a format the columns name better than its
+    /// parser name does, so it reads by type · subtype.
+    private static func titleLead(of image: UEFIImage) -> String {
+        if let title = present(image).title {
+            switch title.kind {
+            case .intelImage, .uefiImage:
+                return title.name.isEmpty ? imageType(of: image) : title.name
+            default:
+                return imageType(of: image)
+            }
+        }
+        return imageType(of: image)
     }
 
     /// The name the tree shows for a node.

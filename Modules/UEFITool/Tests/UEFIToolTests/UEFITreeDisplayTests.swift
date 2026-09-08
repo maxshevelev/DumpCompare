@@ -114,9 +114,9 @@ final class UEFITreeDisplayTests: XCTestCase {
 
     // MARK: - The hidden top row
 
-    /// The image the parser wraps a bare file in: one `.uefiImage` over the
-    /// whole file, holding the scan of it, as C++'s `parseGenericImage` makes
-    /// (§4). The one hand-built child is what the outline actually shows.
+    /// The image the parser groups several things under: one `.uefiImage` over
+    /// the whole file, holding the scan of it (§4). Whatever the children, the
+    /// fold that hides it keys off them, never off its kind.
     private func wrapperImage(_ children: [UEFINode]) -> UEFIImage {
         let wrapper = UEFINode(
             kind: .uefiImage,
@@ -141,10 +141,10 @@ final class UEFITreeDisplayTests: XCTestCase {
         )
     }
 
-    /// A lone volume file is a single pure wrapper — empty header, children of
-    /// its own, holding the whole file — so it folds into the title and its
-    /// child becomes the top of the tree, and the summary leads with its name.
-    func testAPureWrapperIsFoldedIntoTheTitle() {
+    /// The parser's image root does no work as a row: its one job is to say the
+    /// whole image is UEFI, so it moves into the title and its children open the
+    /// outline. The summary leads with the root's name.
+    func testAnImageRootIsFoldedIntoTheTitle() {
         let presented = UEFITreeDisplay.present(wrapperImage([volumeNode()]))
 
         XCTAssertEqual(presented.title?.kind, .uefiImage)
@@ -152,10 +152,41 @@ final class UEFITreeDisplayTests: XCTestCase {
         XCTAssertEqual(presented.rows.map(\.kind), [.volume])
     }
 
-    /// The wrapper only hides when it is *pure*: a root with a header is doing
-    /// work as a row — a capsule, a volume — and stays one.
-    func testARootWithAHeaderIsNotFoldedAway() {
-        let image = TestUEFI.volume().image
+    /// A lone real root the file already had — a volume off a chip — folds the
+    /// same way the invented image root does, whatever its header: the predicate
+    /// is purely structural, one root with children of its own. Its children
+    /// open the tree, and the title names it by its type, the words its row
+    /// would have shown.
+    func testALoneRealRootWithChildrenIsFoldedIntoTheTitle() {
+        let volume = UEFINode(
+            kind: .volume,
+            subtype: 2,
+            name: "FFSv2",
+            guid: KnownGUIDs.ffsV2,
+            header: 0..<0x38,
+            body: 0x38..<0x1000,
+            children: [
+                UEFINode(kind: .file, name: "", header: 0..<0x18, body: 0x18..<0x40)
+            ]
+        )
+        let image = UEFIImage(size: 0x1000, roots: [volume])
+
+        let presented = UEFITreeDisplay.present(image)
+
+        XCTAssertEqual(presented.title?.kind, .volume)
+        XCTAssertEqual(presented.rows.map(\.kind), [.file])
+        XCTAssertEqual(
+            UEFITreeDisplay.summary(of: image),
+            "Volume · FFSv2 · 2 nodes · 1 volume · 1 file"
+        )
+    }
+
+    /// A root with nothing under it has no tree to open and no children to put
+    /// in its place, so it stays the one row — the fold keys off the children,
+    /// not off the kind or the header.
+    func testALeafRootIsNotFoldedAway() {
+        let volume = volumeNode()
+        let image = UEFIImage(size: 0x1000, roots: [volume])
 
         let presented = UEFITreeDisplay.present(image)
 
@@ -181,10 +212,9 @@ final class UEFITreeDisplayTests: XCTestCase {
         XCTAssertEqual(UEFITreeDisplay.summary(of: image), "Capsule · 2 nodes")
     }
 
-    /// A single wrapper-shaped root with nothing under it has no tree to open
-    /// and nothing to stand for, so it stays a row — the fold is not about the
-    /// kind but about the wrapper doing no work.
-    func testAnEmptyWrapperIsNotFoldedAway() {
+    /// A single wrapper-shaped root with nothing under it is the leaf case above
+    /// wearing a wrapper's kind: no children, so it stays a row.
+    func testAnEmptyImageRootIsNotFoldedAway() {
         let image = wrapperImage([])
 
         let presented = UEFITreeDisplay.present(image)
@@ -201,9 +231,9 @@ final class UEFITreeDisplayTests: XCTestCase {
         XCTAssertEqual(UEFITreeDisplay.summary(of: nil), "")
     }
 
-    /// The summary's lead is the wrapper's name, and the count of what the tree
-    /// accounts for follows it.
-    func testASummaryLeadsWithTheWrapperNameAndCounts() {
+    /// The summary's lead is the folded root's name, and the count of what the
+    /// tree accounts for follows it.
+    func testASummaryLeadsWithTheRootNameAndCounts() {
         XCTAssertEqual(
             UEFITreeDisplay.summary(of: wrapperImage([volumeNode()])),
             "UEFI image · 2 nodes · 1 volume"

@@ -77,9 +77,12 @@ final class UEFIToolFlowTests: XCTestCase {
         return try XCTUnwrap(descendants(of: panel, NSOutlineView.self).first)
     }
 
-    /// Expands the row's node so its children are on screen.
-    private func expand(_ outline: NSOutlineView, _ row: Int) {
-        if let item = outline.item(atRow: row) { outline.expandItem(item) }
+    /// The panel's title: the summary line leading with `prefix` — the clickable
+    /// handle to the root the tree folded into it.
+    private func summary(_ panel: NSView, prefix: String) throws -> NSTextField {
+        try XCTUnwrap(descendants(of: panel, NSTextField.self).first {
+            $0.stringValue.hasPrefix(prefix)
+        })
     }
 
     /// It is in the shipping app, not only in the tests.
@@ -106,21 +109,19 @@ final class UEFIToolFlowTests: XCTestCase {
         let controller = try open(UEFITestImage.make())
         let outline = try outline()
 
-        // The volume is the one root; its file is a level down.
-        XCTAssertEqual(outline.numberOfRows, 1, "one root before expanding")
-        expand(outline, 0)
-        window?.layoutIfNeeded()
-
-        // Row 0 is the volume, row 1 its first child, the file.
-        outline.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        // The volume is the one root of the whole file, so it folded into the
+        // title; its children — the file, the padding that aligns it and the
+        // free space — open the outline, and the file is the top row.
+        XCTAssertEqual(outline.numberOfRows, 3, "the volume is not a row — its "
+                       + "children are the top of the tree")
+        XCTAssertEqual(outline.selectedRow, -1, "nothing chosen yet")
+        outline.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
 
         // The file is 0x48..<0x8C: a 0x18-byte FFS header, then its sections.
-        // It sits a level down from the wrapper the file was wrapped in, hence
-        // the extra "0" in its path (§4).
         let zones = controller.windowModel.pane1.zones
-        XCTAssertEqual(zones.zones.map(\.id), ["0.0.0", "0.0.0#body"])
+        XCTAssertEqual(zones.zones.map(\.id), ["0.0", "0.0#body"])
         XCTAssertEqual(zones.zones.map(\.range), [0x48..<0x8C, 0x60..<0x8C])
-        XCTAssertEqual(zones.focus, "0.0.0#body",
+        XCTAssertEqual(zones.focus, "0.0#body",
                        "the body is what the node holds — that is the one drawn "
                        + "as the focus")
     }
@@ -137,11 +138,10 @@ final class UEFIToolFlowTests: XCTestCase {
         let outline = try outline()
         let pane = controller.windowModel.pane1
 
-        // Publish the file's zones by selecting it, then pick one back in the
-        // dump the way the right-click menu does.
-        expand(outline, 0)
-        window?.layoutIfNeeded()
-        outline.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        // Publish the file's zones by selecting it — the file is the top row,
+        // the volume that held it having folded into the title — then pick one
+        // back in the dump the way the right-click menu does.
+        outline.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
 
         // 0x60 is the first byte of the file's body (the file is 0x48..<0x8C).
         let menu = controller.makeOffsetMenu(for: pane, offset: 0x60)
@@ -151,48 +151,51 @@ final class UEFIToolFlowTests: XCTestCase {
                        "the innermost zone is offered first")
 
         controller.selectZone(submenu.items[0])
-        XCTAssertEqual(pane.zones.focus, "0.0.0#body")
-        XCTAssertEqual(outline.selectedRow, 1)
+        XCTAssertEqual(pane.zones.focus, "0.0#body")
+        XCTAssertEqual(outline.selectedRow, 0)
         var selection = pane.hexSelection()
         XCTAssertEqual(selection.start..<selection.end, 0x60..<0x8C,
                        "the body's bytes, not the whole file's")
 
         // The node's own zone from the same menu: the same row, the whole of it.
         controller.selectZone(submenu.items[1])
-        XCTAssertEqual(outline.selectedRow, 1)
+        XCTAssertEqual(outline.selectedRow, 0)
         selection = pane.hexSelection()
         XCTAssertEqual(selection.start..<selection.end, 0x48..<0x8C)
     }
 
-    /// A bare file is wrapped in a "UEFI image" root the parser invents, and
-    /// that root does no work as a row — it holds the whole file — so it is
-    /// folded into the title: no row reads "UEFI image", the volume its child
-    /// is the top of the tree, and the summary leads with the wrapper's name.
-    func testAWrappedFileShowsItsVolumeNotTheWrapperRow() throws {
+    /// The file is a lone FFSv2 volume off a chip — the parser invents no image
+    /// root around a single top, the volume *is* the root — and a root that
+    /// holds the whole file does no work as a row: it folds into the title the
+    /// way any single root with children does, whatever its kind or its header.
+    /// Its children open the tree, and the title names the root by the words
+    /// its row would have shown.
+    func testALoneVolumeFoldsIntoTheTitleAndItsChildrenOpenTheTree() throws {
         let controller = try open(UEFITestImage.make())
         let outline = try outline()
         let panel = try XCTUnwrap(controller.tools.panel)
 
-        XCTAssertEqual(outline.numberOfRows, 1, "the wrapper is not a row — its "
-                       + "volume child is the top of the tree")
-        let names = (0..<outline.numberOfRows).compactMap { row in
-            (outline.view(atColumn: 0, row: row, makeIfNecessary: true) as? NSTableCellView)?
-                .textField?.stringValue
+        // The volume's children — the file, the padding that aligns it, and the
+        // free space — are the top of the tree. No row reads the volume.
+        XCTAssertEqual(outline.numberOfRows, 3)
+        let kinds = (0..<outline.numberOfRows).compactMap {
+            (outline.item(atRow: $0) as? UEFINode)?.kind
         }
-        XCTAssertFalse(names.contains("UEFI image"),
-                       "no row shows the wrapper the tree folded away")
+        XCTAssertEqual(kinds, [.file, .padding, .freeSpace],
+                       "the volume folded into the title, leaving its children "
+                       + "as the top of the tree")
 
-        let title = try XCTUnwrap(descendants(of: panel, NSTextField.self).first {
-            $0.stringValue.hasPrefix("UEFI image ·")
-        })
+        // The title names the folded root by its type, and is the clickable
+        // handle to it.
+        let title = try summary(panel, prefix: "Volume · FFSv2 ·")
         XCTAssertEqual(title.toolTip, "Show the whole image in the dump")
     }
 
-    /// The wrapper's one job was to say what the image is, and the title now
-    /// says it: clicking the title behaves exactly like a click on the wrapper's
-    /// row would — whole-file zone, detail of the whole image. The wrapper has
-    /// no row, so nothing in the tree is selected.
-    func testClickingTheTitleShowsTheWholeImage() throws {
+    /// The folded root's one job is to say what the image is, and the title now
+    /// says it: clicking the title behaves exactly like a click on the root's
+    /// row would — its zones, its detail. The root has no row, so nothing in
+    /// the tree is selected, and the title itself reads as selected.
+    func testClickingTheTitleSelectsTheFoldedRoot() throws {
         let controller = try open(UEFITestImage.make())
         let pane = controller.windowModel.pane1
         let outline = try outline()
@@ -200,9 +203,7 @@ final class UEFIToolFlowTests: XCTestCase {
 
         // The title is the summary label, and it is the one thing in the panel
         // that is clickable.
-        let title = try XCTUnwrap(descendants(of: panel, NSTextField.self).first {
-            $0.stringValue.hasPrefix("UEFI image ·")
-        })
+        let title = try summary(panel, prefix: "Volume · FFSv2 ·")
         XCTAssertTrue(
             (title.gestureRecognizers ?? []).contains(where: { $0 is NSClickGestureRecognizer }),
             "the title must be clickable"
@@ -212,32 +213,40 @@ final class UEFIToolFlowTests: XCTestCase {
         // this drives what the click calls.
         try session().showTopNode()
 
-        XCTAssertEqual(pane.zones.zones.map(\.id), ["0"],
-                       "the whole image is the one zone, as the wrapper's row "
-                       + "used to publish")
-        XCTAssertEqual(pane.zones.zones.map(\.range), [0..<0x1000])
-        XCTAssertEqual(pane.zones.focus, "0")
-        XCTAssertEqual(outline.selectedRow, -1, "the wrapper has no row to select")
+        // The folded root is the volume, a real node with a header of its own:
+        // selecting it publishes the volume and its body, with the body in
+        // focus — exactly what the volume's row used to publish.
+        XCTAssertEqual(pane.zones.zones.map(\.id), ["0", "0#body"])
+        XCTAssertEqual(pane.zones.zones.map(\.range), [0..<0x1000, 0x48..<0x1000])
+        XCTAssertEqual(pane.zones.focus, "0#body")
+        XCTAssertEqual(outline.selectedRow, -1, "the folded root has no row to select")
 
-        // The detail says the node in focus is the whole image.
+        // The detail says the node in focus is the volume, which spans the
+        // whole file.
         let text = descendants(of: panel, NSTextField.self).map(\.stringValue)
-        XCTAssertTrue(text.contains("UEFI image"), "\(text)")
         XCTAssertTrue(text.contains("0x0 · 0x1000 bytes"), "\(text)")
         XCTAssertEqual(title.textColor, .controlAccentColor,
-                       "the folded-away node reads as selected in the title")
+                       "the folded-away root reads as selected in the title")
     }
 
-    /// With no wrapper to stand for — a capsule is a root with a header, so it
-    /// earns its row — the title has nothing to select, so clicking it does
-    /// nothing rather than clear a focus the user set.
-    func testTheTitleDoesNothingWithoutAWrappedRoot() throws {
-        let controller = try open(UEFITestImage.capsule())
+    /// A file with no root to fold — one that is a single leaf, padding the
+    /// whole file — shows that leaf as its one row and hides nothing. The title
+    /// has nothing to select, so clicking it does nothing rather than clear a
+    /// focus the user set.
+    func testTheTitleDoesNothingWhenThereIsNothingToFold() throws {
+        let controller = try open([UInt8](repeating: 0xFF, count: 0x1000))
+        let outline = try outline()
         let pane = controller.windowModel.pane1
+
+        // Select the one padding row, so there is a focus to keep.
+        outline.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        XCTAssertEqual(pane.zones.focus, "0")
 
         try session().showTopNode()
 
-        XCTAssertTrue(pane.zones.zones.isEmpty,
-                      "a capsule root is a row — there is no hidden top to show")
+        XCTAssertEqual(pane.zones.focus, "0",
+                       "nothing is hidden in the title, so the click leaves the "
+                       + "selection alone")
     }
 
     /// The bottom of the panel says what the node in focus is, by its type: a
@@ -358,17 +367,17 @@ final class UEFIToolFlowTests: XCTestCase {
         let outline = try outline()
         let panel = try XCTUnwrap(controller.tools.panel)
 
-        // The volume, first.
-        outline.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        // The volume is the root the tree folded into the title — it has no
+        // row — so it is read the way its row would be read, through the click
+        // the title stands in for.
+        try session().showTopNode()
         var text = descendants(of: panel, NSTextField.self).map(\.stringValue)
-        XCTAssertTrue(text.contains("FFSv2"), "\(text)")
-        XCTAssertTrue(text.contains("Revision 2"), "\(text)")
+        XCTAssertTrue(text.contains("0x0 · 0x1000 bytes"), "\(text)")
+        XCTAssertTrue(text.contains("Revision"), "\(text)")
 
-        // The file, a level down: named by its user-interface section, typed
-        // by the code in its header.
-        expand(outline, 0)
-        window?.layoutIfNeeded()
-        outline.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        // The file is a top row of its own: named by its user-interface
+        // section, typed by the code in its header.
+        outline.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         text = descendants(of: panel, NSTextField.self).map(\.stringValue)
         XCTAssertTrue(text.contains("MyDriver"), "\(text)")
         XCTAssertTrue(text.contains("Driver"), "\(text)")
@@ -423,24 +432,6 @@ enum UEFITestImage {
         // The file: a driver, named by its user-interface section.
         image.replaceSubrange(0x48..<0x8C, with: file())
         return image
-    }
-
-    /// The whole volume, wrapped in a plain UEFI capsule (§1.1). A capsule is
-    /// a root with a header of its own, so — unlike the bare volume — it has no
-    /// invented wrapper to fold away, which is what the title-click no-op test
-    /// needs.
-    static func capsule() -> [UInt8] {
-        let body = make()
-        let guid = EFIGUID("3B6686BD-0D76-4030-B70E-B5519E2FC5A0")!
-        let headerSize: UInt32 = 0x20
-        var bytes: [UInt8] = []
-        bytes += guid.bytes
-        bytes += u32(headerSize)                              // HeaderSize
-        bytes += u32(0)                                       // Flags
-        bytes += u32(headerSize + UInt32(body.count))         // CapsuleImageSize
-        bytes += [UInt8](repeating: 0xFF, count: Int(headerSize) - 16 - 12)
-        bytes += body
-        return bytes
     }
 
     /// The one file in the volume: a 0x44-byte driver whose body is a name
