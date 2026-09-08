@@ -745,6 +745,8 @@ public struct MFSVolume: Codable, Sendable, Equatable {
     public var presentFileCount: Int    // used records that walked to real content
     public var fileBytes: Int           // total bytes across present files
     public var files: [MFSFile]         // present low-level files, by index
+    public var configurations: [MFSConfiguration]  // decoded legacy (non-FTBL)
+                                          // Intel/OEM Configuration record streams
 
     public init(offset: Int, pageSize: Int, pageCount: Int,
                 systemPageCount: Int, dataPageCount: Int,
@@ -752,7 +754,7 @@ public struct MFSVolume: Codable, Sendable, Equatable {
                 fileRecordCount: Int, usedFileCount: Int,
                 ftblDictionary: Int, ftblPlatform: Int, ftblReserved: Int,
                 usesFTBL: Bool, presentFileCount: Int = 0, fileBytes: Int = 0,
-                files: [MFSFile] = []) {
+                files: [MFSFile] = [], configurations: [MFSConfiguration] = []) {
         self.offset = offset
         self.pageSize = pageSize
         self.pageCount = pageCount
@@ -770,6 +772,69 @@ public struct MFSVolume: Codable, Sendable, Equatable {
         self.presentFileCount = presentFileCount
         self.fileBytes = fileBytes
         self.files = files
+        self.configurations = configurations
+    }
+}
+
+/// A decoded legacy MFS Configuration stream (upstream `mfs_cfg_anl` MEA.py
+/// 8467, `MFS_Config_Record_0x1C` MEA.py 1319): the Intel Configuration (low-
+/// level file 6) or OEM Configuration (file 7) of an old-style (non-FTBL) MFS.
+/// `owningFile` is the low-level file index the records came from. Records are
+/// a flat ordered list — folder entries nest by name and pop back out on ".." —
+/// with file content living at `record.offset..<offset+size` inside that
+/// owning file. Only decoded for `usesFTBL == false` volumes (CSME ≤ 12): the
+/// FTBL layout's 0xC records name files through FileTable.dat, a later
+/// increment. CSME 12.0.3 carries an Intel Configuration (file 6) of 152
+/// records whose folders include bup/chipsetinit/cls/dal_ivm/…; no OEM
+/// Configuration (file 7) is present on that dump.
+public struct MFSConfiguration: Codable, Sendable, Equatable {
+    public var owningFile: Int
+    public var records: [MFSConfigRecord]
+
+    public init(owningFile: Int, records: [MFSConfigRecord]) {
+        self.owningFile = owningFile
+        self.records = records
+    }
+}
+
+/// One decoded `MFS_Config_Record_0x1C` — a file or folder entry of a legacy
+/// Intel/OEM Configuration tree. `isFolder` mirrors AccessMode.RecordType
+/// (0 File, 1 Folder); `offset`/`size` locate a file's content within the
+/// owning low-level file, `unixRights` is the 9-bit rwx bitmap, and the
+/// protection/option fields come from the AccessMode/DeployOptions bitfields.
+public struct MFSConfigRecord: Codable, Sendable, Equatable {
+    public var name: String
+    public var isFolder: Bool
+    public var size: Int
+    public var offset: Int
+    public var unixRights: Int
+    public var integrityProtection: Bool
+    public var encryptionProtection: Bool
+    public var antiReplayProtection: Bool
+    public var oemConfigurable: Bool
+    public var mcaConfigurable: Bool
+    public var reserved: Int
+    public var ownerUserID: Int
+    public var ownerGroupID: Int
+
+    public init(name: String, isFolder: Bool, size: Int, offset: Int,
+                unixRights: Int, integrityProtection: Bool,
+                encryptionProtection: Bool, antiReplayProtection: Bool,
+                oemConfigurable: Bool, mcaConfigurable: Bool,
+                reserved: Int, ownerUserID: Int, ownerGroupID: Int) {
+        self.name = name
+        self.isFolder = isFolder
+        self.size = size
+        self.offset = offset
+        self.unixRights = unixRights
+        self.integrityProtection = integrityProtection
+        self.encryptionProtection = encryptionProtection
+        self.antiReplayProtection = antiReplayProtection
+        self.oemConfigurable = oemConfigurable
+        self.mcaConfigurable = mcaConfigurable
+        self.reserved = reserved
+        self.ownerUserID = ownerUserID
+        self.ownerGroupID = ownerGroupID
     }
 }
 
@@ -1217,5 +1282,5 @@ public struct Issue: Codable, Sendable, Equatable, Identifiable {
 /// whether to surface the new data (`reference/result-model.md` §Versioning).
 public enum EngineModelRevision {
     /// Current revision of the `FirmwareAnalysis` shape.
-    public static let current = 16
+    public static let current = 17
 }

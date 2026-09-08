@@ -114,7 +114,23 @@ public actor MEFirmwareAnalyzer {
                     usesFTBL: info.usesFTBL,
                     presentFileCount: present.count,
                     fileBytes: present.reduce(0) { $0 + $1.content.count },
-                    files: present.map { MFSFile(index: $0.index, size: $0.content.count) })
+                    files: present.map { MFSFile(index: $0.index, size: $0.content.count) },
+                    configurations: info.configurations.map {
+                        MFSConfiguration(owningFile: $0.owningFile,
+                                         records: $0.records.map {
+                            MFSConfigRecord(name: $0.name, isFolder: $0.isFolder,
+                                            size: $0.size, offset: $0.offset,
+                                            unixRights: $0.unixRights,
+                                            integrityProtection: $0.integrity,
+                                            encryptionProtection: $0.encryption,
+                                            antiReplayProtection: $0.antiReplay,
+                                            oemConfigurable: $0.oemConfigurable,
+                                            mcaConfigurable: $0.mcaConfigurable,
+                                            reserved: $0.reserved,
+                                            ownerUserID: $0.ownerUserID,
+                                            ownerGroupID: $0.ownerGroupID)
+                        })
+                    })
                 if !info.volumeSignatureValid {
                     mfsIssues.append(Issue(id: 8, severity: .warning,
                         message: "MFS volume at 0x\(String(mfsRegion.offset, radix: 16)) "

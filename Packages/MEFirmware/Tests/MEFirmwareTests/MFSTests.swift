@@ -154,7 +154,10 @@ final class MFSTests: XCTestCase {
     /// `f − fileRecords`, matching the parser's `sys + f − fileRecords` index.
     private static func makeFileVolume(fileRecords: UInt16,
                                        fat: [Int: UInt16],
-                                       dataSlotContents: [Data]) -> Data {
+                                       dataSlotContents: [Data],
+                                       dictionary: UInt8 = 0x0A,
+                                       platform: UInt8 = 0x01,
+                                       reserved: UInt16 = 0) -> Data {
         // System page with only System chunk index 0 used.
         var system = Data(repeating: 0xFF, count: 0x2000)
         system.replaceSubrange(0..<4, with: le32(0xAA55_7887))
@@ -171,7 +174,8 @@ final class MFSTests: XCTestCase {
         // Volume chunk 0 raw (0x40): signature + 0xE header + FAT u16 slots.
         var volume = Data(repeating: 0x00, count: 0x40)
         volume.replaceSubrange(0..<4, with: le32(0x724F_6201))
-        volume[4] = 0x0A; volume[5] = 0x01
+        volume[4] = dictionary; volume[5] = platform
+        volume.replaceSubrange(6..<8, with: le16(reserved))
         volume.replaceSubrange(8..<12, with: le32(0x1200))
         volume.replaceSubrange(12..<14, with: le16(fileRecords))
         // All records empty by default; `fat` overrides record and data slots.
@@ -236,5 +240,129 @@ final class MFSTests: XCTestCase {
         XCTAssertFalse(info.fileChainsIntact)
         XCTAssertEqual(info.files.count, 1)           // the used record is still listed
         XCTAssertTrue(info.files[0].content.isEmpty)  // but no chunk was reachable
+    }
+
+    // MARK: Legacy Configuration record decode (files 6/7)
+
+    /// Build a legacy Configuration stream: a u32 record count then that many
+    /// 0x1C `MFS_Config_Record_0x1C` entries. AccessMode / DeployOptions are given
+    /// whole so tests can anchor real DATMAAMBAC0 bit values.
+    private static func configStream(_ records: [(name: String, accessMode: UInt16,
+                                                 deployOptions: UInt16, size: UInt16,
+                                                 offset: UInt32)]) -> Data {
+        var out = le32(UInt32(records.count))
+        for r in records {
+            var name = Data(r.name.utf8.prefix(12))
+            name.append(Data(repeating: 0, count: 12 - name.count))
+            out.append(name)                              // +0x00 FileName[12]
+            out.append(le16(0))                           // +0x0C Reserved
+            out.append(le16(r.accessMode))                // +0x0E AccessMode
+            out.append(le16(r.deployOptions))             // +0x10 DeployOptions
+            out.append(le16(r.size))                      // +0x12 FileSize
+            out.append(le16(0))                           // +0x14 OwnerUserID
+            out.append(le16(0))                           // +0x16 OwnerGroupID
+            out.append(le32(r.offset))                    // +0x18 FileOffset
+        }
+        return out
+    }
+
+    func testLegacyConfigurationStreamDecodesRecordFields() throws {
+        // Low-level file 6 (Intel Configuration) carries a 60-byte stream: count
+        // 2 then two records using DATMAAMBAC0.BIN's real bit values — record 0
+        // 'home' (AccessMode 0x116d → folder, UnixRights 0x16D=365) and record 1
+        // 'hw_binding' (AccessMode 0x3a0 → File, Integrity set, rights 0x1A0=416,
+        // DeployOptions 0x11 → OEMConfigurable, FileSize 1, offset 0x10A4). The
+        // whole content fits one Data chunk (EOF marker 60).
+        let stream = Self.configStream([
+            (name: "home", accessMode: 0x116D, deployOptions: 0, size: 0, offset: 0),
+            (name: "hw_binding", accessMode: 0x03A0, deployOptions: 0x11,
+             size: 1, offset: 0x10A4),
+        ])
+        let region = Self.makeFileVolume(
+            fileRecords: 20,
+            fat: [6: 20, 20: UInt16(stream.count)],      // record 6 → slot 20 (EOF=count)
+            dataSlotContents: [stream],
+            dictionary: 1, platform: 0, reserved: 0)     // legacy (dict 1/0/0)
+        let info = try XCTUnwrap(MFSParser.parse(in: region, offset: 0, size: region.count))
+
+        XCTAssertFalse(info.usesFTBL)
+        XCTAssertEqual(info.configurations.count, 1)
+        XCTAssertEqual(info.configurations[0].owningFile, 6)
+
+        let recs = info.configurations[0].records
+        XCTAssertEqual(recs.count, 2)
+
+        let home = recs[0]
+        XCTAssertEqual(home.name, "home")
+        XCTAssertTrue(home.isFolder)
+        XCTAssertEqual(home.unixRights, 365)             // 0x16D
+        XCTAssertEqual(home.size, 0)
+        XCTAssertEqual(home.offset, 0)
+        XCTAssertFalse(home.integrity)
+        XCTAssertFalse(home.encryption)
+        XCTAssertFalse(home.antiReplay)
+        XCTAssertFalse(home.oemConfigurable)
+        XCTAssertFalse(home.mcaConfigurable)
+
+        let binding = recs[1]
+        XCTAssertEqual(binding.name, "hw_binding")
+        XCTAssertFalse(binding.isFolder)
+        XCTAssertEqual(binding.unixRights, 416)          // 0x1A0
+        XCTAssertTrue(binding.integrity)
+        XCTAssertFalse(binding.encryption)
+        XCTAssertFalse(binding.antiReplay)
+        XCTAssertTrue(binding.oemConfigurable)
+        XCTAssertFalse(binding.mcaConfigurable)
+        XCTAssertEqual(binding.size, 1)
+        XCTAssertEqual(binding.offset, 0x10A4)
+    }
+
+    func testFTBLVolumeDoesNotDecodeConfigurationStream() throws {
+        // The FTBL layout (usesFTBL true) names its config files through
+        // FileTable.dat; its low-level 6/7 content is not a 0x1C stream, so the
+        // decode is gated on the legacy volume — configurations stay empty even
+        // when file 6 carries bytes.
+        let stream = Self.configStream([
+            (name: "home", accessMode: 0x116D, deployOptions: 0, size: 0, offset: 0),
+        ])
+        let region = Self.makeFileVolume(
+            fileRecords: 20,
+            fat: [6: 20, 20: UInt16(stream.count)],     // FTBL dict 0x0A/0x01 defaults
+            dataSlotContents: [stream])
+        let info = try XCTUnwrap(MFSParser.parse(in: region, offset: 0, size: region.count))
+
+        XCTAssertTrue(info.usesFTBL)
+        XCTAssertEqual(info.files.map(\.index), [6])     // the file walked fine…
+        XCTAssertTrue(info.configurations.isEmpty)       // …but is not decoded as config
+    }
+
+    func testLegacyVolumeWithoutConfigFilesHasEmptyConfigurations() throws {
+        // A legacy volume whose present files are none of 6/7 → no configurations.
+        let region = Self.makeFileVolume(
+            fileRecords: 20,
+            fat: [0: 20, 20: 4],                        // only record 0 (1-byte file)
+            dataSlotContents: [Data([0xAB])],
+            dictionary: 1, platform: 0, reserved: 0)
+        let info = try XCTUnwrap(MFSParser.parse(in: region, offset: 0, size: region.count))
+        XCTAssertFalse(info.usesFTBL)
+        XCTAssertTrue(info.configurations.isEmpty)
+    }
+
+    func testConfigStreamTruncatedBeforeItsDeclaredCountDecodesWhatFits() throws {
+        // A stream whose declared count exceeds the bytes present decodes the
+        // complete records that fit and stops (upstream error-and-continue); a
+        // stream shorter than the u32 count field is not a config stream at all.
+        let two = Self.configStream([
+            (name: "home", accessMode: 0x116D, deployOptions: 0, size: 0, offset: 0),
+            (name: "hw_binding", accessMode: 0x03A0, deployOptions: 0x11,
+             size: 1, offset: 0x10A4),
+        ])
+        let cut = Data(two.prefix(4 + 0x1C))            // declares 2, keeps 1 record
+        let records = MFSParser.decodeConfigRecords(cut)
+        XCTAssertEqual(records?.count, 1)
+        XCTAssertEqual(records?.first?.name, "home")
+
+        XCTAssertNil(MFSParser.decodeConfigRecords(Data([1, 2, 3])))
+        XCTAssertNil(MFSParser.decodeConfigRecords(Data()))
     }
 }

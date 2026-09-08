@@ -25,10 +25,12 @@ import Foundation
 /// data chunk `SystemChunkCount + f − FileRecordCount`) until a small value
 /// `1…0x40` marks EOF and gives the final chunk's used byte count. Each present
 /// file is therefore its chain of raw data chunks, assembled in order. The
-/// reserved roles upstream prints (0–9: Anti-Replay, SVN Migration, Quota
-/// Storage, Intel/OEM Configuration, Manifest Backup — `mfs_dict`, MEA.py 10859)
-/// and the home/config-record decode over that content are a later increment;
-/// this stage surfaces the file inventory (index → present + byte size).
+/// reserved roles upstream prints by index (0–9: Anti-Replay, SVN Migration,
+/// Quota Storage, Intel/OEM Configuration, Manifest Backup — `mfs_dict`, MEA.py
+/// 10859) select the decode over that content: the legacy (non-FTBL) Intel/OEM
+/// Configuration record streams (`mfs_cfg_anl` / `MFS_Config_Record_0x1C`) are
+/// decoded here; the FTBL 0xC naming (FileTable.dat), the file-8 Home Directory
+/// records and the per-file Integrity tables are later increments.
 struct MFSVolumeInfo {
     var pageSize: Int
     var systemPageCount: Int
@@ -44,6 +46,8 @@ struct MFSVolumeInfo {
     var usesFTBL: Bool                  // not (dict,plat,reserved) == (1,0,0)
     var files: [MFSLowLevelFile]        // present (non-empty) records, by index
     var fileChainsIntact: Bool          // every used chain hit a clean EOF marker
+    var configurations: [MFSConfigDecode]  // legacy MFS only: decoded low-level
+                                           // files 6/7 (Intel/OEM Configuration)
 }
 
 /// One present low-level MFS file (upstream 7849–7877): the raw bytes of its
@@ -52,6 +56,35 @@ struct MFSVolumeInfo {
 struct MFSLowLevelFile {
     var index: Int
     var content: Data
+}
+
+/// A decoded legacy MFS Configuration stream (upstream `mfs_cfg_anl` MEA.py
+/// 8467 over `MFS_Config_Record_0x1C`, MEA.py 1319). A config low-level file
+/// (6 = Intel Configuration, 7 = OEM Configuration) begins with a u32 record
+/// count then that many 0x1C records — a flat, ordered list whose *folder*
+/// entries nest by name and pop back out on a ".." entry. File entries carry a
+/// size and an offset into the owning low-level file where their content lives.
+struct MFSConfigDecode {
+    var owningFile: Int        // 6 = Intel Configuration, 7 = OEM Configuration
+    var records: [MFSRawConfigRecord]
+}
+
+/// One decoded `MFS_Config_Record_0x1C`. (Distinct from the public Codable
+/// `MFSConfigRecord` the analyzer maps this into.)
+struct MFSRawConfigRecord {
+    var name: String             // FileName (folders may be "..")
+    var isFolder: Bool           // AccessMode.RecordType: 0 File, 1 Folder
+    var size: Int                // FileSize (0 for folder entries)
+    var offset: Int              // FileOffset into the owning low-level file
+    var unixRights: Int          // AccessMode.UnixRights (9-bit)
+    var integrity: Bool          // AccessMode.Integrity
+    var encryption: Bool         // AccessMode.Encryption
+    var antiReplay: Bool         // AccessMode.AntiReplay
+    var oemConfigurable: Bool    // DeployOptions bit0
+    var mcaConfigurable: Bool    // DeployOptions bit1
+    var reserved: Int            // Reserved
+    var ownerUserID: Int
+    var ownerGroupID: Int
 }
 
 enum MFSParser {
@@ -164,7 +197,8 @@ enum MFSParser {
                                  ftblReserved: 0,
                                  usesFTBL: false,
                                  files: [],
-                                 fileChainsIntact: true)
+                                 fileChainsIntact: true,
+                                 configurations: [])
 
         guard let volume = chunks[0], volume.count >= volumeHeaderSize else {
             return info                       // no System chunk 0 ⇒ signature invalid
@@ -257,7 +291,57 @@ enum MFSParser {
             info.files = files
             info.fileChainsIntact = intact
         }
+
+        // ——— Legacy Configuration record decode. Only the old-style MFS
+        // (usesFTBL == false, CSME ≤ 12) lays out Intel/OEM Configuration
+        // (low-level files 6/7) as `MFS_Config_Record_0x1C` streams; the FTBL
+        // layout's 0xC records name their files through FileTable.dat (the
+        // DB/FileTable increment). Decode whichever of 6/7 the volume carries.
+        if !info.usesFTBL {
+            var configs: [MFSConfigDecode] = []
+            for owner in [6, 7] {
+                guard let file = info.files.first(where: { $0.index == owner }),
+                      !file.content.isEmpty else { continue }
+                if let records = Self.decodeConfigRecords(file.content) {
+                    configs.append(MFSConfigDecode(owningFile: owner, records: records))
+                }
+            }
+            info.configurations = configs
+        }
         return info
+    }
+
+    /// Decode a legacy Configuration record stream: a u32 record count then
+    /// that many 0x1C `MFS_Config_Record_0x1C` entries. The count bounds the
+    /// walk; a stream shorter than the declared table decodes the complete
+    /// records that fit and stops (mirroring upstream error-and-continue).
+    static func decodeConfigRecords(_ content: Data) -> [MFSRawConfigRecord]? {
+        guard content.count >= 4 else { return nil }
+        let count = Int(readUInt32(content, at: 0))
+        var records: [MFSRawConfigRecord] = []
+        for i in 0..<count {
+            let base = 4 + i * 0x1C
+            guard base + 0x1C <= content.count else { break }
+            let nameBytes = content.subdata(in: base..<(base + 12))
+            let name = String(decoding: nameBytes.prefix { $0 != 0 }, as: UTF8.self)
+            let accessMode = readUInt16(content, at: base + 0x0E)
+            let deployOptions = readUInt16(content, at: base + 0x10)
+            records.append(MFSRawConfigRecord(
+                name: name,
+                isFolder: accessMode & (1 << 12) != 0,      // RecordType
+                size: Int(readUInt16(content, at: base + 0x12)),
+                offset: Int(readUInt32(content, at: base + 0x18)),
+                unixRights: Int(accessMode & 0x1FF),
+                integrity: accessMode & (1 << 9) != 0,
+                encryption: accessMode & (1 << 10) != 0,
+                antiReplay: accessMode & (1 << 11) != 0,
+                oemConfigurable: deployOptions & 1 != 0,
+                mcaConfigurable: deployOptions & (1 << 1) != 0,
+                reserved: Int(readUInt16(content, at: base + 0x0C)),
+                ownerUserID: Int(readUInt16(content, at: base + 0x14)),
+                ownerGroupID: Int(readUInt16(content, at: base + 0x16))))
+        }
+        return records
     }
 
     /// A little-endian UInt16 at logical System-area offset `areaOffset`,
