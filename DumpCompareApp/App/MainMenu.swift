@@ -22,7 +22,7 @@ enum MainMenu {
         let appMenu = NSMenu()
         appMenu.addItem(
             withTitle: "About DumpCompare",
-            action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+            action: #selector(AppDelegate.showAbout(_:)),
             keyEquivalent: ""
         )
         appMenu.addItem(.separator())

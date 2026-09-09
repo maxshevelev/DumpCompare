@@ -193,6 +193,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         settingsWindowController.showWindow(sender)
     }
 
+    /// App ▸ About DumpCompare: the standard panel, with credits that say where
+    /// the names the app shows come from. The command needs no target — like
+    /// the standard command it replaces, it travels the responder chain to the
+    /// app delegate.
+    @objc func showAbout(_ sender: Any?) {
+        NSApp.orderFrontStandardAboutPanel(options: [
+            .credits: AboutCredits.text(),
+        ])
+    }
+
     /// Zoom In / Zoom Out (§3.2): one step of the hex font size, applied live
     /// to every open window the way the Appearance tab applies it.
     ///
