@@ -95,6 +95,7 @@ private struct ParseResult: Sendable {
         self.host = host
         controller.onSelect = { [weak self] nodeID in self?.select(nodeID) }
         controller.onSelectTop = { [weak self] in self?.showTopNode() }
+        controller.onRevealAtCaret = { [weak self] in self?.revealNodeAtCaret() }
         controller.onFixChecksum = { [weak self] nodeID in
             self?.fixChecksum(for: nodeID)
         }
@@ -223,14 +224,18 @@ private struct ParseResult: Sendable {
     }
 
     /// Everything the panel shows, in one call: the tree, the detail for the
-    /// node in focus, and the one zone that node publishes.
-    private func show() {
+    /// node in focus, and — unless told not to — the one zone that node
+    /// publishes. A reveal answers with the tree and nothing else: the dump is
+    /// where the user is standing, so it shows without publishing, because a
+    /// newly published focus would make the host scroll the dump to the node's
+    /// start and away from the caret that asked.
+    private func show(publish: Bool = true) {
         guard let image, let reader else {
             controller.show(
                 image: nil, focus: nil, detail: .empty, catalogue: guids,
                 badChecksums: checksumProblems, canWrite: !host.isReadOnly
             )
-            host.publish(.empty)
+            if publish { host.publish(.empty) }
             return
         }
         let node = focus.flatMap { image.node($0) }
@@ -244,7 +249,7 @@ private struct ParseResult: Sendable {
             image: image, focus: focus, detail: detail, catalogue: guids,
             badChecksums: checksumProblems, canWrite: !host.isReadOnly
         )
-        host.publish(UEFIPresenter.zones(for: node))
+        if publish { host.publish(UEFIPresenter.zones(for: node)) }
     }
 
     // MARK: - What the panel asks for
@@ -279,6 +284,23 @@ private struct ParseResult: Sendable {
         guard let nodeID = UEFIPresenter.nodeID(ofZone: id) else { return }
         focus = nodeID
         show()
+    }
+
+    /// The node the caret in the dump stands in, shown in the tree: expanded,
+    /// its row selected, its detail up. The offset is where the user is
+    /// pointing — the start of a selection when there is one, else the caret —
+    /// and the innermost node whose range covers it is the one that owns the
+    /// byte. Only the tree moves: the dump is where the user is standing, so
+    /// nothing is published that would scroll it away from that caret.
+    ///
+    /// Public because a click on the title-row button is driven the same way
+    /// the panel's other clicks are — through the session, not a simulated
+    /// mouse.
+    public func revealNodeAtCaret() {
+        let offset = host.selection?.lowerBound ?? host.caret
+        guard let image, let node = image.innermostNode(containing: offset) else { return }
+        focus = node.id
+        show(publish: false)
     }
 
     // MARK: - Fix Checksum

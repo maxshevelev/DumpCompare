@@ -15,6 +15,9 @@ import UEFITool
     /// The title was clicked. Only ever fired when the summary stands for a
     /// node that has no row of its own.
     var onSelectTop: (() -> Void)?
+    /// The title-row reveal button was clicked: show the node under the caret
+    /// in the dump.
+    var onRevealAtCaret: (() -> Void)?
     /// A flagged node's Fix Checksum menu item was chosen.
     var onFixChecksum: ((NodeID) -> Void)?
 
@@ -48,6 +51,11 @@ import UEFITool
     private var canWrite = false
 
     private let summaryLabel = NSTextField(labelWithString: "")
+    /// The title row's right-hand button: reveal in the tree the node under
+    /// the caret in the dump. Same glyph as the toolbar's Go To, because it is
+    /// the same act — go where the caret points — pointed at the tree instead
+    /// of the dump.
+    private let revealButton = NSButton()
     private let outline = UEFIOutlineView()
     private let outlineScroll = NSScrollView()
     private let detail = ToolDetailScroll()
@@ -105,6 +113,23 @@ import UEFITool
             NSClickGestureRecognizer(target: self, action: #selector(summaryClicked))
         )
 
+        // Borderless and quiet, like every other icon control in a panel
+        // header: the glyph carries the meaning, not a bezel.
+        revealButton.image = NSImage(
+            systemSymbolName: "dot.scope",
+            accessibilityDescription: "Reveal node at caret"
+        )
+        revealButton.symbolConfiguration = NSImage.SymbolConfiguration(
+            pointSize: 12, weight: .regular
+        )
+        revealButton.isBordered = false
+        revealButton.imagePosition = .imageOnly
+        revealButton.contentTintColor = .secondaryLabelColor
+        revealButton.toolTip = "Show the node under the caret in the tree"
+        revealButton.target = self
+        revealButton.action = #selector(revealClicked)
+        revealButton.translatesAutoresizingMaskIntoConstraints = false
+
         configureOutline()
 
         outlineScroll.hasVerticalScroller = true
@@ -147,6 +172,7 @@ import UEFITool
         bottomRow.addArrangedSubview(noticeLabel)
 
         view.addSubview(summaryLabel)
+        view.addSubview(revealButton)
         view.addSubview(splitter)
         view.addSubview(bottomRow)
 
@@ -155,7 +181,18 @@ import UEFITool
         NSLayoutConstraint.activate([
             summaryLabel.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
             summaryLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
-            summaryLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
+            // The button owns the title row's right end; a long image name
+            // truncates before it rather than running under it.
+            summaryLabel.trailingAnchor.constraint(
+                equalTo: revealButton.leadingAnchor, constant: -6
+            ),
+
+            // A small square: the glyph is 12 point, and a button the size of
+            // its image alone would be a needlessly thin thing to hit.
+            revealButton.widthAnchor.constraint(equalToConstant: 18),
+            revealButton.heightAnchor.constraint(equalToConstant: 18),
+            revealButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
+            revealButton.centerYAnchor.constraint(equalTo: summaryLabel.centerYAnchor),
 
             splitter.topAnchor.constraint(equalTo: summaryLabel.bottomAnchor, constant: 6),
             splitter.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
@@ -284,6 +321,8 @@ import UEFITool
         self.catalogue = catalogue
         self.badChecksums = badChecksums
         self.canWrite = canWrite
+        // Without a parse there is nothing to reveal the caret into.
+        revealButton.isEnabled = image != nil
         isShowingState = true
         defer { isShowingState = false }
 
@@ -400,6 +439,12 @@ import UEFITool
     /// stands for and does nothing when there is nothing to select.
     @objc private func summaryClicked() {
         onSelectTop?()
+    }
+
+    /// The reveal button: show the node the caret in the dump is in. The
+    /// module reads the caret and decides; this is only the click.
+    @objc private func revealClicked() {
+        onRevealAtCaret?()
     }
 }
 

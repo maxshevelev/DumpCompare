@@ -164,6 +164,58 @@ final class UEFIToolFlowTests: XCTestCase {
         XCTAssertEqual(selection.start..<selection.end, 0x48..<0x8C)
     }
 
+    /// The title-row button's half of the trip the zone menu makes the other
+    /// way: a caret deep in the dump brings the node that owns that byte to the
+    /// front of the tree. No zone needs to have been published first — the
+    /// caret can sit in a node the panel is not showing at all.
+    func testRevealingTheNodeUnderTheCaretSelectsItsRow() throws {
+        let controller = try open(UEFITestImage.make())
+        let outline = try outline()
+        let pane = controller.windowModel.pane1
+
+        XCTAssertEqual(outline.selectedRow, -1, "nothing chosen before the reveal")
+
+        // 0x4A is inside the file's own header (0x48..<0x60): no child of the
+        // file begins before its body at 0x60, so the innermost node over it is
+        // the file itself.
+        pane.moveCaret(to: 0x4A)
+        try session().revealNodeAtCaret()
+
+        window?.layoutIfNeeded()
+        let row = outline.selectedRow
+        XCTAssertGreaterThanOrEqual(row, 0, "the reveal selected a row")
+        XCTAssertEqual(
+            (outline.item(atRow: row) as? UEFINode)?.id.description, "0.0",
+            "the file under the caret is the row shown"
+        )
+    }
+
+    /// Revealing answers with the tree and nothing else: the dump is where the
+    /// user is standing, so a selection's start picks the node but the
+    /// published zones and the selection itself are left exactly as they were —
+    /// no republish scrolls the caret away from the byte it asked about.
+    func testRevealingUnderASelectionLeavesTheDumpAlone() throws {
+        let controller = try open(UEFITestImage.make())
+        let outline = try outline()
+        let pane = controller.windowModel.pane1
+
+        XCTAssertTrue(pane.zones.zones.isEmpty, "the parse publishes nothing yet")
+        pane.select(range: 0x4A..<0x4C)
+        try session().revealNodeAtCaret()
+
+        XCTAssertEqual(
+            (outline.item(atRow: outline.selectedRow) as? UEFINode)?.id.description,
+            "0.0", "the node under the selection's start is shown"
+        )
+        // The dump has not moved: the map is still empty and the bytes the
+        // reveal read from are still the ones selected.
+        XCTAssertTrue(pane.zones.zones.isEmpty, "no zone was published")
+        XCTAssertEqual(pane.zones.focus, nil)
+        let selection = pane.hexSelection()
+        XCTAssertEqual(selection.start..<selection.end, 0x4A..<0x4C,
+                       "the selection the reveal answered is untouched")
+    }
+
     /// The file is a lone FFSv2 volume off a chip — the parser invents no image
     /// root around a single top, the volume *is* the root — and a root that
     /// holds the whole file does no work as a row: it folds into the title the
