@@ -256,6 +256,61 @@ final class ToolZonesTests: XCTestCase {
         XCTAssertEqual(parent.submenu?.items.map(\.title), ["#1 Microcode", "FIT table"])
     }
 
+    /// The same zone block offers Save Zone as… for the zone under the pointer —
+    /// one zone is a single item naming it, exactly as Select Zone is.
+    func testARightClickInsideAZoneOffersSavingItByName() throws {
+        let (controller, _) = try makeController()
+        let host = try host(controller)
+        host.publish(ZoneMap(zones: [Zone(id: "fv", name: "FFSv2", range: 0x100..<0x200)]))
+
+        let menu = controller.makeOffsetMenu(for: controller.windowModel.pane1, offset: 0x180)
+
+        XCTAssertTrue(menu.items.contains { $0.title == "Save Zone “FFSv2” as…" })
+    }
+
+    /// Several zones under the pointer mean a choice, so Save Zone as… becomes
+    /// a submenu naming them in the same innermost-first order as Select Zone.
+    func testOverlappingZonesOfferASaveSubmenuInnermostFirst() throws {
+        let (controller, _) = try makeController()
+        let host = try host(controller)
+        host.publish(ZoneMap(zones: [
+            Zone(id: "table", name: "FIT table", range: 0x100..<0x200),
+            Zone(id: "row", name: "#1 Microcode", range: 0x110..<0x120)
+        ]))
+
+        let menu = controller.makeOffsetMenu(for: controller.windowModel.pane1, offset: 0x118)
+        let parent = try XCTUnwrap(menu.items.first { $0.title == "Save Zone as…" })
+        XCTAssertEqual(parent.submenu?.items.map(\.title), ["#1 Microcode", "FIT table"])
+    }
+
+    /// Save Zone as… writes the picked zone's bytes to the URL its Save panel
+    /// returns — a read-only export named after the zone's range, like Save
+    /// Selection as… after the selection's.
+    func testSavingAZoneWritesItsBytes() throws {
+        let (controller, _) = try makeController()
+        let host = try host(controller)
+        host.publish(ZoneMap(zones: [Zone(id: "fv", name: "FFSv2", range: 0x100..<0x180)]))
+
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zone-save-\(UUID().uuidString).bin")
+        files.append(destination)
+        var suggested: String?
+        controller.selectionSavePanel = { panel in
+            suggested = panel.nameFieldStringValue
+            return destination
+        }
+
+        let menu = controller.makeOffsetMenu(for: controller.windowModel.pane1, offset: 0x140)
+        let item = try XCTUnwrap(menu.items.first { $0.title == "Save Zone “FFSv2” as…" })
+        let dispatched = NSApp.sendAction(item.action!, to: item.target, from: item)
+        XCTAssertTrue(dispatched, "the context Save Zone must dispatch")
+        XCTAssertEqual(suggested?.hasSuffix("_00000100-00000180.bin"), true,
+                       "the suggested name carries the zone's range")
+        XCTAssertEqual([UInt8](try Data(contentsOf: destination)),
+                       [UInt8](repeating: 0xAA, count: 0x80),
+                       "the written file holds the zone's bytes")
+    }
+
     /// Picking one selects its bytes — that is the host's own doing — and tells
     /// the tool-module, which is the only side that knows what the zone stands
     /// for.

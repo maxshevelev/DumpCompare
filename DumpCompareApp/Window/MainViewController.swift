@@ -4194,20 +4194,31 @@ final class MainViewController: NSViewController {
         guard !zones.isEmpty else { return }
         menu.addItem(.separator())
 
-        func item(_ title: String, _ zone: Zone) -> NSMenuItem {
-            let item = NSMenuItem(title: title, action: #selector(selectZone(_:)), keyEquivalent: "")
+        func item(_ title: String, _ action: Selector, _ zone: Zone) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
             item.target = self
             item.representedObject = ZoneContextTarget(pane: pane, zone: zone)
             return item
         }
-        guard zones.count > 1 else {
-            menu.addItem(item("Select Zone “\(zones[0].name)”", zones[0]))
-            return
+        // One zone is a single named item — there is nothing to choose between —
+        // and several become a submenu, innermost first, listing every zone.
+        if zones.count > 1 {
+            let parent = menu.addItem(withTitle: "Select Zone", action: nil, keyEquivalent: "")
+            let submenu = NSMenu(title: "Select Zone")
+            for zone in zones { submenu.addItem(item(zone.name, #selector(selectZone(_:)), zone)) }
+            parent.submenu = submenu
+        } else {
+            menu.addItem(item("Select Zone “\(zones[0].name)”", #selector(selectZone(_:)), zones[0]))
         }
-        let parent = menu.addItem(withTitle: "Select Zone", action: nil, keyEquivalent: "")
-        let submenu = NSMenu(title: "Select Zone")
-        for zone in zones { submenu.addItem(item(zone.name, zone)) }
-        parent.submenu = submenu
+        // Save Zone as… mirrors the choice, writing the picked zone's bytes out.
+        if zones.count > 1 {
+            let parent = menu.addItem(withTitle: "Save Zone as…", action: nil, keyEquivalent: "")
+            let submenu = NSMenu(title: "Save Zone as…")
+            for zone in zones { submenu.addItem(item(zone.name, #selector(saveZone(_:)), zone)) }
+            parent.submenu = submenu
+        } else {
+            menu.addItem(item("Save Zone “\(zones[0].name)” as…", #selector(saveZone(_:)), zones[0]))
+        }
     }
 
     /// Selects a zone's bytes, and tells the tool-module that published it —
@@ -4442,18 +4453,33 @@ final class MainViewController: NSViewController {
     @objc func savePaneSelectionAs(_ sender: Any?) {
         guard let target = offsetContextTarget(from: sender), target.pane.isOpen else { return }
         guard let doc = target.pane.document, !doc.selection.isEmpty else { return }
-        let range = doc.selection.start..<doc.selection.end
+        saveRange(doc.selection.start..<doc.selection.end, of: target.pane, purpose: "the selection")
+    }
+
+    /// Context menu > Save Zone as…: writes a zone a tool-module published to a
+    /// file the user names. The same read-only export as Save Selection as…: the
+    /// pane's source is never written, and the bytes saved are what is on
+    /// screen, edits and all.
+    @objc func saveZone(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? ZoneContextTarget, target.pane.isOpen else { return }
+        saveRange(target.zone.range, of: target.pane, purpose: "the zone")
+    }
+
+    /// The tail shared by Save Selection as… and Save Zone as…: reads `range`
+    /// out of `pane`'s document and offers the bytes as a file to save. `purpose`
+    /// names the range in the error strings ("the selection", "the zone").
+    private func saveRange(_ range: Range<UInt64>, of pane: PaneViewModel, purpose: String) {
+        guard let doc = pane.document else { return }
         let bytes: [UInt8]
         do {
             bytes = try doc.read(at: range.lowerBound, length: Int(range.count))
         } catch {
-            presentFileError("Could not read the selection.", error, url: doc.url)
+            presentFileError("Could not read \(purpose).", error, url: doc.url)
             return
         }
 
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = selectionExportName(fileName: target.pane.status.fileName,
-                                                         range: range)
+        panel.nameFieldStringValue = exportName(fileName: pane.status.fileName, range: range)
         panel.canCreateDirectories = true
         let url: URL?
         if let selectionSavePanel {
@@ -4465,14 +4491,14 @@ final class MainViewController: NSViewController {
         do {
             try Data(bytes).write(to: url, options: .atomic)
         } catch {
-            presentFileError("Could not save the selection.", error, url: url)
+            presentFileError("Could not save \(purpose).", error, url: url)
         }
     }
 
-    /// The name the Save panel suggests for an exported selection: the source
-    /// file's name with the exported range appended, so a save of even the whole
-    /// file cannot silently land on the file that is open.
-    private func selectionExportName(fileName: String, range: Range<UInt64>) -> String {
+    /// The name the Save panel suggests for an export: the source file's name
+    /// with the exported range appended, so a save of even the whole file cannot
+    /// silently land on the file that is open.
+    private func exportName(fileName: String, range: Range<UInt64>) -> String {
         let stem = (fileName as NSString).deletingPathExtension
         let bounds = "\(range.lowerBound.bareAddress)-\(range.upperBound.bareAddress)"
         return "\(stem)_\(bounds).bin"
