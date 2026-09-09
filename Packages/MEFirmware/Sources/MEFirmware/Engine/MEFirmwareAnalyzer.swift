@@ -74,6 +74,8 @@ public actor MEFirmwareAnalyzer {
                     version: info.version,
                     redundancy: info.redundancy,
                     checksumValid: info.checksumValid,
+                    fitMajor: info.fitMajor, fitMinor: info.fitMinor,
+                    fitHotfix: info.fitHotfix, fitBuild: info.fitBuild,
                     entries: info.slots.enumerated().map { index, slot in
                         BPDTPartition(id: index, name: slot.name, type: slot.type,
                                       offset: baseOffset + slot.offset,
@@ -703,6 +705,23 @@ public actor MEFirmwareAnalyzer {
         // `ManifestSummary.vcn`) is the top-level fallback.
         let chainHoist = CPDExtensionParser.hoist(codePartition?.extensions ?? [])
 
+        // Row 4 (Type) + row 14 (OEM Configuration): the classifier and the OEM
+        // detector both answer only once identity has named the family/major.
+        // `isIFWI` mirrors upstream's `ifwi_exist` — a non-empty CSE-LT Boot
+        // slot present — independent of whether its BPDT decoded. The classifier
+        // keeps `.unknown` for families outside the Stock/Update/Extracted axis
+        // (Independent, or an ME 2–7 sub-branch the engine has no oracle for);
+        // Summary keeps those rows grey.
+        let isIFWI = fpt?.cseLayout?.slots.contains { slot in
+            slot.name.hasPrefix("Boot") && !slot.empty
+        } == true
+        let firmwareType = FirmwareTypeClassifier.classify(
+            family: identity.family, major: identity.major,
+            isIFWI: isIFWI, fpt: fpt, region: region)
+        let oemCustomized = OEMDetector.oemCustomized(
+            fpt: fpt, bootPartitions: bootPartitions, codePartition: codePartition,
+            in: region, baseOffset: baseOffset)
+
         return FirmwareAnalysis(
             family: identity.family,
             variant: identity.variant,
@@ -712,7 +731,7 @@ public actor MEFirmwareAnalyzer {
                              meHotfix: identity.meHotfix, meBuild: identity.meBuild),
             securityVersion: identity.securityVersion,
             release: identity.release,
-            type: .region,
+            type: firmwareType,
             sku: preCSE?.sku ?? iup?.sku ?? skuText,
             platform: preCSE?.platform ?? iup?.platform ?? "",
             chipsetStepping: iup?.chipsetStepping,
@@ -744,6 +763,7 @@ public actor MEFirmwareAnalyzer {
                                         .filter { !$0.content.isEmpty }
                                         .map(\.index))
             },
+            oemCustomized: oemCustomized,
             issues: issues)
     }
 

@@ -21,12 +21,23 @@ struct FPTParser {
         var offset: Int
         var size: Int
         var flags: UInt32
+        /// Upstream's FPT empty flag (MEA.py 11724 `p_empty`): the raw offset
+        /// field is NA (0 / 0xFFFFFFFF), the size is 0, or — for a bounded
+        /// non-NA size — the whole content is erased to 0xFF.
+        var empty: Bool
     }
 
     struct Result {
         var headerVersion: UInt8
         var resolvedVersion: UInt8   // get_fpt()'s dispatch, incl. the v2.1-with-v2.0-tag quirk
         var fptStart: Int            // upstream's resolved fpt_start (partition base, region-relative)
+        /// The header's FIT fields (u16 @ anchor+0x18..0x1E, MEA.py 193–234).
+        /// Raw values — upstream's `fw_type` tests `FitBuild`/`FitMajor` against
+        /// the 0 / 0xFFFF marker itself (MEA.py 12567), so the marker is kept.
+        var fitMajor: Int
+        var fitMinor: Int
+        var fitHotfix: Int
+        var fitBuild: Int
         var partitions: [Partition]
         var cseLayout: IFWI.LayoutInfo?  // the CSE Layout Table that precedes the $FPT, when present
     }
@@ -96,16 +107,30 @@ struct FPTParser {
             // invalid bytes (e.g. FF fill) and "\0…" for zeroed ones — trim both.
             let raw = String(data: data.subdata(in: entry..<(entry + 4)), encoding: .ascii)
             let name = raw?.trimmingCharacters(in: CharacterSet(charactersIn: "\0")) ?? ""
+            let rawOffset = u32le(data, entry + 0x08)
+            let rawSize = u32le(data, entry + 0x0C)
+            // Upstream's p_empty (MEA.py 11724): NA raw offset/size, a zero
+            // size, or — for a bounded non-NA size — content erased to FF.
+            let empty = rawOffset == 0 || rawOffset == 0xFFFF_FFFF
+                || rawSize == 0
+                || (rawSize != 0xFFFF_FFFF && erasedFF(data,
+                                                     from: start + Int(rawOffset),
+                                                     count: Int(rawSize)))
             partitions.append(Partition(
                 name: name,
                 // Region-relative: upstream's p_offset_spi = fpt_start + Offset.
-                offset: start + Int(u32le(data, entry + 0x08)),
-                size: Int(u32le(data, entry + 0x0C)),
-                flags: u32le(data, entry + 0x1C)
+                offset: start + Int(rawOffset),
+                size: Int(rawSize),
+                flags: u32le(data, entry + 0x1C),
+                empty: empty
             ))
         }
-        return Result(headerVersion: headerVersion, resolvedVersion: resolved,
-                      fptStart: start, partitions: partitions, cseLayout: cseLayout)
+        return Result(
+            headerVersion: headerVersion, resolvedVersion: resolved,
+            fptStart: start,
+            fitMajor: Int(u16le(data, p + 0x18)), fitMinor: Int(u16le(data, p + 0x1A)),
+            fitHotfix: Int(u16le(data, p + 0x1C)), fitBuild: Int(u16le(data, p + 0x1E)),
+            partitions: partitions, cseLayout: cseLayout)
     }
 
     /// Upstream's `fpt_start` resolution (MEA.py 11667–11681): the partition
@@ -163,6 +188,19 @@ struct FPTParser {
         }
         guard let anchor = findAnchor(in: data) else { return nil }
         return decode(data, anchor: anchor)
+    }
+
+    /// True when the `count` bytes at region offset `off` are in range and all
+    /// erased to 0xFF (or the window is empty — upstream treats an empty read
+    /// as erased). Out-of-range content is *not* erased, so a partition whose
+    /// fields point past the region stays non-empty, matching upstream's
+    /// bounded read.
+    private static func erasedFF(_ data: Data, from off: Int, count: Int) -> Bool {
+        let start = data.startIndex
+        guard off >= 0, count > 0 else { return true }
+        guard off + count <= data.count else { return false }
+        for i in off..<(off + count) where data[start + i] != 0xFF { return false }
+        return true
     }
 
     private static func u16le(_ data: Data, _ p: Int) -> UInt16 {

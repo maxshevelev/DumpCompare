@@ -80,6 +80,21 @@ enum MEAText {
                         _ build: Int) -> String {
         "\(major).\(minor).\(hotfix).\(build)"
     }
+    /// The Flash Image Tool (FITC) version a firmware was built with — upstream
+    /// `get_fw_ver` (MEA.py 10094), keyed by family. Only the families that
+    /// carry a real row-19 FIT on an IFWI image reach this helper: the CSE/TXE/
+    /// GSC families format plain `major.minor.hotfix.build`, SPS/CSSPS pad to
+    /// `xx.xx.xx.xxx`. The zero-padded PMC/PCHC/PHY *variant*-prefix branches
+    /// upstream keys off are not replicated — those families produce no FIT.
+    static func firmwareImageTool(family: FirmwareFamily, major: Int, minor: Int,
+                                  hotfix: Int, build: Int) -> String {
+        switch family {
+        case .sps, .cssps:
+            return String(format: "%02d.%02d.%02d.%03d", major, minor, hotfix, build)
+        default:
+            return "\(major).\(minor).\(hotfix).\(build)"
+        }
+    }
     static func date(year: Int, month: Int, day: Int) -> String {
         String(format: "%04d-%02d-%02d", year, month, day)
     }

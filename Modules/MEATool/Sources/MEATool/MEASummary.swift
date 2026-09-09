@@ -97,8 +97,15 @@ public enum MEASummary {
         if analysis.version.build >= 7000 { release += ", Engineering" }
         add("Release", .value(release))
 
-        // 4 · Type — Stock / Update / Extracted classifier not wired yet.
-        if identified { add("Type", .comingSoon) }
+        // 4 · Type — the Stock / Update / Extracted classifier. Only an
+        // image that sits on that axis (`.stock`/`.update`/`.extracted`) shows a
+        // value; a family outside it or an ME 2–7 sub-branch the classifier has
+        // no oracle for stays `.region`/`.unknown` → grey.
+        if identified, let axis = axisType(analysis.type) {
+            add("Type", .value(axis))
+        } else if identified {
+            add("Type", .comingSoon)
+        }
         // 5 · SKU.
         if !analysis.sku.isEmpty {
             add("SKU", .value(analysis.sku))
@@ -139,9 +146,15 @@ public enum MEASummary {
         } else if identified {
             add("Production Ready", .comingSoon)
         }
-        // 14 · OEM Configuration — OEM-signed / partition / UTOK presence.
+        // 14 · OEM Configuration — OEM-signed key / OEMP / UTOK presence. The
+        // OEM detector answers Yes/No for every identified OEM-family image;
+        // nil (a non-OEM family or unidentified) keeps the row grey.
         if isOEMFamily(analysis.family), identified {
-            add("OEM Configuration", .comingSoon)
+            if let oem = analysis.oemCustomized {
+                add("OEM Configuration", .value(MEAText.yesNo(oem)))
+            } else {
+                add("OEM Configuration", .comingSoon)
+            }
         }
         // 15 · FWUpdate Support — needs the independent-image IUP scan.
         if analysis.family == .csme, analysis.version.major >= 12, identified {
@@ -165,9 +178,21 @@ public enum MEASummary {
         }
         // 18 · Size — always.
         add("Size", .value(MEAText.size(analysis.sizeBytes)))
-        // 19 · Flash Image Tool — BPDT FIT version; row only on an IFWI image.
-        if analysis.bootPartitions != nil {
-            add("Flash Image Tool", .comingSoon)
+        // 19 · Flash Image Tool — the FIT version in the first boot BPDT header
+        // that carries one (upstream prints the BPDT header's FIT on an IFWI
+        // image). A boot BPDT whose header FIT words are the 0/0xFFFF no-FIT
+        // marker decodes a nil quartet, and reads "N/A", exactly as upstream's
+        // BPDT header print does.
+        if let boot = analysis.bootPartitions {
+            if let fit = boot.first(where: { $0.fitMajor != nil }),
+               let major = fit.fitMajor, let minor = fit.fitMinor,
+               let hotfix = fit.fitHotfix, let build = fit.fitBuild {
+                add("Flash Image Tool", .value(MEAText.firmwareImageTool(
+                    family: analysis.family, major: major, minor: minor,
+                    hotfix: hotfix, build: build)))
+            } else {
+                add("Flash Image Tool", .value("N/A"))
+            }
         }
 
         var blocks: [MEASummaryBlock] = [MEASummaryBlock(title: nil, rows: rows)]
@@ -201,6 +226,19 @@ public enum MEASummary {
         case .unconfigured, .configured: return .good
         case .initialized: return .caution
         case .error: return .bad
+        }
+    }
+
+    /// The Stock / Update / Extracted axis word for a firmware `type`, nil when
+    /// the type is not on the axis — `.region` (a raw region the engine did not
+    /// classify) or `.unknown` (a family outside the axis, or an ME 2–7
+    /// sub-branch the classifier has no oracle for). Those stay grey.
+    private static func axisType(_ type: FirmwareType) -> String? {
+        switch type {
+        case .stock: return "Stock"
+        case .update: return "Update"
+        case .extracted: return "Extracted"
+        case .region, .unknown: return nil
         }
     }
 

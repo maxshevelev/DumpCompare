@@ -136,6 +136,16 @@ public enum MEACurator {
             append(&header, "Redundancy", MEAText.yesNo(bpdt.redundancy))
             append(&header, "Checksum Valid",
                    bpdt.checksumValid.map(MEAText.yesNo) ?? "— (version 1 has none)")
+            // The FIT version the image was built with (row 19 Flash Image
+            // Tool). The quartet is nil together (a no-FIT marker); when only
+            // part of it decodes, no row is drawn rather than a partial one.
+            if let major = bpdt.fitMajor, let minor = bpdt.fitMinor,
+               let hotfix = bpdt.fitHotfix, let build = bpdt.fitBuild {
+                append(&header, "FIT Version",
+                       MEAText.firmwareImageTool(family: a.family, major: major,
+                                                 minor: minor, hotfix: hotfix,
+                                                 build: build))
+            }
             let entries = bpdt.entries.map { e -> MEANode in
                 var fields: [MEAField] = []
                 append(&fields, "Name", e.name, dropEmpty: true)

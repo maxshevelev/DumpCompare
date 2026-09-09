@@ -59,6 +59,12 @@ public struct FirmwareAnalysis: Codable, Sendable, Equatable, Identifiable {
     /// when a legacy-MFS file-index set says so, else Unconfigured. nil when no
     /// MFS region was found at all.
     public var mfsState: MFSState? = nil
+    /// OEM Configuration (row 14, upstream `oem_signed or oemp_found or
+    /// utok_found`): an OEM-signed image carries a real `oem.key` CPD module or a
+    /// populated `OEMP`/`UTOK`/`STKN` partition, so the row says Yes; a stock
+    /// Intel image is No. nil = the OEM story could not be determined (no
+    /// readable key body to clear or to rule out).
+    public var oemCustomized: Bool? = nil
     public var issues: [Issue]
 }
 
@@ -87,8 +93,13 @@ public enum ReleaseType: String, Codable, Sendable {
     case production, preProduction, romBypass, unknown
 }
 
+/// The kind of firmware image (upstream `fw_type`, MEA.py 12538–12588): an
+/// OEM/stock `extracted` IFWI with a real $FPT, a stock image with no FIT
+/// (`stock`), an update image whose whole firmware is the FTPR/FTUP/NFTP update
+/// trio (`update`), or — on an unidentified region — the raw-partition `region`
+/// placeholder. `.unknown` is the honest answer when nothing decided.
 public enum FirmwareType: String, Codable, Sendable {
-    case region, extracted, update, unknown
+    case region, extracted, update, stock, unknown
 }
 
 /// File System State (upstream `mfs_state`, `MEA.py` 7489–7493): `.initialized`
@@ -1404,15 +1415,28 @@ public struct BPDT: Codable, Sendable, Equatable {
     public var version: Int                // 1 (IFWI 1.6 & 2.0) or 2 (IFWI 1.7)
     public var redundancy: Bool            // 1.7 BPDTConfig bit 0; false for version 1
     public var checksumValid: Bool?        // 1.7 CRC-32 over header+entries; nil for version 1
+    /// The FIT (Flash Image Tool) version fields of the BPDT header (u16 @ base
+    /// +0x10/+0x12/+0x14/+0x16, upstream `FitMajor..FitBuild`, MEA.py 680/720).
+    /// All four are nil together when the header's `FitMajor` is the no-FIT
+    /// marker (0 or 0xFFFF) — the same single-field gate upstream's 'N/A' uses.
+    public var fitMajor: Int?
+    public var fitMinor: Int?
+    public var fitHotfix: Int?
+    public var fitBuild: Int?
     public var entries: [BPDTPartition]
 
     public init(offset: Int, partitionName: String, version: Int, redundancy: Bool,
-                checksumValid: Bool?, entries: [BPDTPartition]) {
+                checksumValid: Bool?, fitMajor: Int?, fitMinor: Int?,
+                fitHotfix: Int?, fitBuild: Int?, entries: [BPDTPartition]) {
         self.offset = offset
         self.partitionName = partitionName
         self.version = version
         self.redundancy = redundancy
         self.checksumValid = checksumValid
+        self.fitMajor = fitMajor
+        self.fitMinor = fitMinor
+        self.fitHotfix = fitHotfix
+        self.fitBuild = fitBuild
         self.entries = entries
     }
 }
@@ -1738,5 +1762,5 @@ public struct Issue: Codable, Sendable, Equatable, Identifiable {
 /// whether to surface the new data (`reference/result-model.md` §Versioning).
 public enum EngineModelRevision {
     /// Current revision of the `FirmwareAnalysis` shape.
-    public static let current = 22
+    public static let current = 23
 }

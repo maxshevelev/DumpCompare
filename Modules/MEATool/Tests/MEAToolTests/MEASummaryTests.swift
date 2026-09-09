@@ -87,8 +87,19 @@ final class MEASummaryTests: XCTestCase {
     }
 
     /// A whole-flash IFWI carries Boot Partitions — the gate for the Flash
-    /// Image Tool row.
+    /// Image Tool row. This boot's BPDT header carries a real FIT version
+    /// (12.0.3.1091), so the row reads it.
     private func bootPartitionsJSON() -> [[String: Any]] {
+        [["offset": 0x100, "partitionName": "Boot 1", "version": 2,
+          "redundancy": true, "checksumValid": true,
+          "fitMajor": 12, "fitMinor": 0, "fitHotfix": 3, "fitBuild": 1091,
+          "entries": []]]
+    }
+
+    /// The same whole-flash shape but with a no-FIT BPDT header — a decoded
+    /// 0/0xFFFF marker yields a nil quartet, which JSON encodes as *absent* —
+    /// so the Flash Image Tool row then reads "N/A".
+    private func bootPartitionsNoFITJSON() -> [[String: Any]] {
         [["offset": 0x100, "partitionName": "Boot 1", "version": 2,
           "redundancy": true, "checksumValid": true, "entries": []]]
     }
@@ -135,9 +146,59 @@ final class MEASummaryTests: XCTestCase {
         XCTAssertEqual(value("File System State", in: rows), .value("Initialized"))
         XCTAssertEqual(value("Size", in: rows),
                        .value("0x200000 (2097152 bytes)"))
-        XCTAssertEqual(value("Flash Image Tool", in: rows), .comingSoon)
+        // Row 19 reads the boot BPDT's FIT version (plain CSME format).
+        XCTAssertEqual(value("Flash Image Tool", in: rows), .value("12.0.3.1091"))
         // A derived stepping letter was not present, so the row is not there.
         XCTAssertNil(value("Chipset Stepping", in: rows))
+    }
+
+    /// Row 4 shows the classifier's Stock / Update / Extracted word when the
+    /// type is on that axis; `.region` and `.unknown` keep the row grey.
+    func testTypeRowReflectsClassifierAxis() throws {
+        func typeRow(_ raw: String) throws -> MEASummaryValue? {
+            value("Type", in: tableRows(try analysis([
+                "manifest": manifestJSON(),
+                "type": raw,
+            ])))
+        }
+        XCTAssertEqual(try typeRow("extracted"), .value("Extracted"))
+        XCTAssertEqual(try typeRow("stock"), .value("Stock"))
+        XCTAssertEqual(try typeRow("update"), .value("Update"))
+        XCTAssertEqual(try typeRow("region"), .comingSoon)
+        XCTAssertEqual(try typeRow("unknown"), .comingSoon)
+        // An unidentified image gets no Type row at all (the identified gate).
+        XCTAssertNil(value("Type", in: tableRows(try analysis(["type": "extracted"]))))
+    }
+
+    /// Row 14 answers the OEM detector's Yes/No — but only for the OEM-axis
+    /// families; an identified image of another family omits the row entirely.
+    func testOEMConfigurationRowSaysYesOrNo() throws {
+        let yes = try analysis(["manifest": manifestJSON(), "oemCustomized": true])
+        XCTAssertEqual(value("OEM Configuration", in: tableRows(yes)),
+                       .value("Yes"))
+        let no = try analysis(["manifest": manifestJSON(), "oemCustomized": false])
+        XCTAssertEqual(value("OEM Configuration", in: tableRows(no)),
+                       .value("No"))
+        // A nil detector story (the fixture omits oemCustomized) stays grey.
+        let nilCase = try analysis(["manifest": manifestJSON()])
+        XCTAssertEqual(value("OEM Configuration", in: tableRows(nilCase)),
+                       .comingSoon)
+        // ME is not an OEM-axis family: even signed, the row is off the table.
+        let me = try analysis([
+            "family": "me", "variant": "ME",
+            "manifest": manifestJSON(), "oemCustomized": true,
+        ])
+        XCTAssertNil(value("OEM Configuration", in: tableRows(me)))
+    }
+
+    /// Row 19 with a boot BPDT whose header carries no real FIT reads "N/A",
+    /// exactly like upstream's BPDT header print.
+    func testFlashImageToolRowShowsNAWithoutARealFIT() throws {
+        let a = try analysis([
+            "manifest": manifestJSON(),
+            "bootPartitions": bootPartitionsNoFITJSON(),
+        ])
+        XCTAssertEqual(value("Flash Image Tool", in: tableRows(a)), .value("N/A"))
     }
 
     /// The File System State row's tone is its status: both settled states read
