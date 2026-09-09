@@ -46,10 +46,11 @@ public enum UEFIDetail {
     public static func build(
         for node: UEFINode,
         image: UEFIImage,
-        reader: ImageReader
+        reader: ImageReader,
+        badFields: Set<UEFIChecksumField> = []
     ) -> UEFINodeDetail {
         var fields = commonFields(for: node, image: image)
-        fields += headerFields(for: node, reader: reader)
+        fields += headerFields(for: node, reader: reader, badFields: badFields)
         let title = node.name.isEmpty ? kindLabel(node.kind) : node.name
         return UEFINodeDetail(title: title, fields: fields)
     }
@@ -91,18 +92,24 @@ public enum UEFIDetail {
 
     // MARK: - What the node's header adds
 
-    private static func headerFields(for node: UEFINode, reader: ImageReader) -> [UEFIDetailField] {
+    private static func headerFields(
+        for node: UEFINode,
+        reader: ImageReader,
+        badFields: Set<UEFIChecksumField>
+    ) -> [UEFIDetailField] {
         let h = node.header.lowerBound
         var fields: [UEFIDetailField] = []
         switch node.kind {
         case .volume:
-            if let length = reader.uint64(at: h + 0x20) { fields.append(.init("Length", hex(length))) }
+            if let length = reader.uint64(at: h + 0x20) { fields.append(.init("Length", sizeText(length))) }
             if let signature = reader.uint32(at: h + 0x28) { fields.append(.init("Signature", hex(signature))) }
             if let attributes = reader.uint32(at: h + 0x2C) {
                 fields.append(.init("Attributes", bits(attributes, [(0x0000_0800, "Erase polarity")])))
             }
-            if let headerLength = reader.uint16(at: h + 0x30) { fields.append(.init("Header length", hex(headerLength))) }
-            if let checksum = reader.uint16(at: h + 0x32) { fields.append(.init("Checksum", hex(checksum))) }
+            if let headerLength = reader.uint16(at: h + 0x30) { fields.append(.init("Header length", sizeText(headerLength))) }
+            if let checksum = reader.uint16(at: h + 0x32) {
+                fields.append(checksumRow("Checksum", checksum, field: .volume, digits: 4, badFields: badFields))
+            }
             if let extOffset = reader.uint16(at: h + 0x34) { fields.append(.init("Ext. header", hex(extOffset))) }
             if let revision = reader.uint8(at: h + 0x37) { fields.append(.init("Revision", "\(revision)")) }
 
@@ -118,15 +125,19 @@ public enum UEFIDetail {
             // A large file keeps its size in a 64-bit field after the base
             // header and leaves the three-byte one at zero (§5.2).
             if let size = reader.uint24(at: h + 0x14), size != 0 {
-                fields.append(.init("Size", hex(size)))
+                fields.append(.init("Size", sizeText(size)))
             } else if let largeSize = reader.uint64(at: h + 0x18) {
-                fields.append(.init("Size", hex(largeSize)))
+                fields.append(.init("Size", sizeText(largeSize)))
             }
             if let state = reader.uint8(at: h + 0x17) {
                 fields.append(.init("State", bits(state, [(0x80, "Erase polarity")])))
             }
-            if let headerChecksum = reader.uint8(at: h + 0x10) { fields.append(.init("Header checksum", hex(headerChecksum))) }
-            if let bodyChecksum = reader.uint8(at: h + 0x11) { fields.append(.init("Body checksum", hex(bodyChecksum))) }
+            if let headerChecksum = reader.uint8(at: h + 0x10) {
+                fields.append(checksumRow("Header checksum", headerChecksum, field: .fileHeader, digits: 2, badFields: badFields))
+            }
+            if let bodyChecksum = reader.uint8(at: h + 0x11) {
+                fields.append(checksumRow("Body checksum", bodyChecksum, field: .fileBody, digits: 2, badFields: badFields))
+            }
 
         case .section:
             // The type is the common "Type" field; the header adds the size.
@@ -134,9 +145,9 @@ public enum UEFIDetail {
             // marker and keeps the real one in 32 bits (§6).
             if let size = reader.uint24(at: h) {
                 if size == 0xFF_FFFF, let extended = reader.uint32(at: h + 0x04) {
-                    fields.append(.init("Size", hex(extended)))
+                    fields.append(.init("Size", sizeText(extended)))
                 } else {
-                    fields.append(.init("Size", hex(size)))
+                    fields.append(.init("Size", sizeText(size)))
                 }
             }
 
@@ -150,22 +161,22 @@ public enum UEFIDetail {
                 fields.append(.init("Update revision", hex(header.updateRevision)))
                 fields.append(.init("Date", header.date))
                 fields.append(.init("Processor signature", hex(header.processorSignature)))
-                fields.append(.init("Checksum", hex(header.checksum)))
+                fields.append(checksumRow("Checksum", header.checksum, field: .microcode, digits: 8, badFields: badFields))
                 // The loader revision is checked by the reader but not kept on
                 // the validated header, so it comes straight off the bytes.
                 if let loaderRevision = reader.uint32(at: h + 0x14) {
                     fields.append(.init("Loader revision", hex(loaderRevision)))
                 }
                 fields.append(.init("Platform IDs", hex(header.platformIDs)))
-                fields.append(.init("Data size", hex(header.dataSize)))
-                fields.append(.init("Total size", hex(header.totalSize)))
+                fields.append(.init("Data size", sizeText(header.dataSize)))
+                fields.append(.init("Total size", sizeText(header.totalSize)))
             }
 
         case .capsule:
             // The capsule GUID is the common "GUID" field.
-            if let headerSize = reader.uint32(at: h + 0x10) { fields.append(.init("Header size", hex(headerSize))) }
+            if let headerSize = reader.uint32(at: h + 0x10) { fields.append(.init("Header size", sizeText(headerSize))) }
             if let flags = reader.uint32(at: h + 0x14) { fields.append(.init("Flags", hex(flags))) }
-            if let imageSize = reader.uint32(at: h + 0x18) { fields.append(.init("Image size", hex(imageSize))) }
+            if let imageSize = reader.uint32(at: h + 0x18) { fields.append(.init("Image size", sizeText(imageSize))) }
 
         case .uefiImage:
             // An empty header and nothing of its own to read: the wrapper's
@@ -250,7 +261,7 @@ public enum UEFIDetail {
             // data and entry types and the region's physical layout.
             if let dataType = reader.uint16(at: h + 16) { fields.append(.init("Data type", hex(dataType))) }
             if let entryType = reader.uint16(at: h + 18) { fields.append(.init("Entry type", hex(entryType))) }
-            if let size = reader.uint32(at: h + 28) { fields.append(.init("Size", hex(size))) }
+            if let size = reader.uint32(at: h + 28) { fields.append(.init("Size", sizeText(size))) }
             if let offset = reader.uint32(at: h + 32) { fields.append(.init("Offset", hex(offset))) }
             if let address = reader.uint64(at: h + 20) { fields.append(.init("Physical address", hex(address))) }
 
@@ -388,6 +399,33 @@ public enum UEFIDetail {
     }
 
     // MARK: - Text
+
+    /// A checksum row whose validity the caller has already decided: the stored
+    /// value reads `0x… (Valid)` or `0x… (Invalid)`, and a checksum that does
+    /// not check out is also marked as the problem it is so the controller can
+    /// colour just that value red.
+    private static func checksumRow(
+        _ label: String,
+        _ stored: some BinaryInteger,
+        field: UEFIChecksumField,
+        digits: Int,
+        badFields: Set<UEFIChecksumField>
+    ) -> UEFIDetailField {
+        let isProblem = badFields.contains(field)
+        return UEFIDetailField(
+            label,
+            Checksums.text(stored, valid: !isProblem, digits: digits),
+            isProblem: isProblem
+        )
+    }
+
+    /// A byte-length field, which a reader wants in decimal as well as hex —
+    /// `0x800 (2048)`, the spelling the FIT panel uses for the same fields.
+    /// Offsets, addresses and codes stay bare hex. Named `sizeText` so it can
+    /// coexist with the local `size` variables the header cases bind.
+    private static func sizeText<T: BinaryInteger>(_ bytes: T) -> String {
+        "\(hex(bytes)) (\(UInt64(truncatingIfNeeded: bytes)))"
+    }
 
     private static func kindLabel(_ kind: UEFINodeKind) -> String {
         switch kind {

@@ -146,6 +146,10 @@ final class UEFIDetailTests: XCTestCase {
         detail.fields.first { $0.label == label }?.value
     }
 
+    private func problem(_ detail: UEFINodeDetail, _ label: String) -> Bool? {
+        detail.fields.first { $0.label == label }?.isProblem
+    }
+
     func testAVolumeSaysWhatItsHeaderSays() {
         let built = TestUEFI.volume()
         let detail = UEFIDetail.build(for: built.node, image: built.image, reader: built.reader)
@@ -158,11 +162,11 @@ final class UEFIDetailTests: XCTestCase {
         XCTAssertEqual(field(detail, "Body"), "0x38 · 0xFC8 bytes")
         XCTAssertEqual(field(detail, "Total"), "0x0 · 0x1000 bytes")
         XCTAssertEqual(field(detail, "Address"), "0xFFFF0000")
-        XCTAssertEqual(field(detail, "Length"), "0x1000")
+        XCTAssertEqual(field(detail, "Length"), "0x1000 (4096)")
         XCTAssertEqual(field(detail, "Signature"), "0x56544152")
         XCTAssertEqual(field(detail, "Attributes"), "0x800 (Erase polarity)")
-        XCTAssertEqual(field(detail, "Header length"), "0x38")
-        XCTAssertEqual(field(detail, "Checksum"), "0x1234")
+        XCTAssertEqual(field(detail, "Header length"), "0x38 (56)")
+        XCTAssertEqual(field(detail, "Checksum"), "0x1234 (Valid)")
         XCTAssertEqual(field(detail, "Ext. header"), "0x0")
         XCTAssertEqual(field(detail, "Revision"), "2")
     }
@@ -186,10 +190,10 @@ final class UEFIDetailTests: XCTestCase {
         XCTAssertEqual(field(detail, "Kind"), "FFS file")
         XCTAssertEqual(field(detail, "Type"), "Driver")
         XCTAssertEqual(field(detail, "Attributes"), "0x4 (Fixed)")
-        XCTAssertEqual(field(detail, "Size"), "0x100")
+        XCTAssertEqual(field(detail, "Size"), "0x100 (256)")
         XCTAssertEqual(field(detail, "State"), "0x80 (Erase polarity)")
-        XCTAssertEqual(field(detail, "Header checksum"), "0xAA")
-        XCTAssertEqual(field(detail, "Body checksum"), "0xBB")
+        XCTAssertEqual(field(detail, "Header checksum"), "0xAA (Valid)")
+        XCTAssertEqual(field(detail, "Body checksum"), "0xBB (Valid)")
         XCTAssertEqual(field(detail, "Header"), "0x0 · 0x18 bytes")
     }
 
@@ -206,7 +210,7 @@ final class UEFIDetailTests: XCTestCase {
         let image = UEFIImage(size: 0x1_0000_0000, roots: [node])
         let detail = UEFIDetail.build(for: node, image: image, reader: ImageReader(bytes))
 
-        XCTAssertEqual(field(detail, "Size"), "0x100000000")
+        XCTAssertEqual(field(detail, "Size"), "0x100000000 (4294967296)")
     }
 
     /// An unknown file type keeps its number in the name — the only thing there
@@ -224,7 +228,7 @@ final class UEFIDetailTests: XCTestCase {
 
         XCTAssertEqual(field(detail, "Kind"), "Section")
         XCTAssertEqual(field(detail, "Type"), "Raw")
-        XCTAssertEqual(field(detail, "Size"), "0x40")
+        XCTAssertEqual(field(detail, "Size"), "0x40 (64)")
         XCTAssertEqual(field(detail, "Header"), "0x0 · 0x4 bytes")
     }
 
@@ -234,7 +238,7 @@ final class UEFIDetailTests: XCTestCase {
         let built = TestUEFI.section(type: 0x19, size: 0xFF_FFFF)
         let detail = UEFIDetail.build(for: built.node, image: built.image, reader: built.reader)
 
-        XCTAssertEqual(field(detail, "Size"), "0x100000")
+        XCTAssertEqual(field(detail, "Size"), "0x100000 (1048576)")
         XCTAssertEqual(field(detail, "Header"), "0x0 · 0x8 bytes")
     }
 
@@ -249,8 +253,8 @@ final class UEFIDetailTests: XCTestCase {
         XCTAssertEqual(field(detail, "Processor signature"), "0x806EA")
         XCTAssertEqual(field(detail, "Loader revision"), "0x1")
         XCTAssertEqual(field(detail, "Platform IDs"), "0x1")
-        XCTAssertEqual(field(detail, "Data size"), "0x40")
-        XCTAssertEqual(field(detail, "Total size"), "0x100")
+        XCTAssertEqual(field(detail, "Data size"), "0x40 (64)")
+        XCTAssertEqual(field(detail, "Total size"), "0x100 (256)")
     }
 
     /// Bytes that are not microcode do not pretend to be: the reader refuses
@@ -515,8 +519,89 @@ final class UEFIDetailTests: XCTestCase {
         XCTAssertEqual(field(detail, "Kind"), "FlashMap entry")
         XCTAssertEqual(field(detail, "Data type"), "0x0")
         XCTAssertEqual(field(detail, "Entry type"), "0x1")
-        XCTAssertEqual(field(detail, "Size"), "0x1000")
+        XCTAssertEqual(field(detail, "Size"), "0x1000 (4096)")
         XCTAssertEqual(field(detail, "Offset"), "0x40")
         XCTAssertEqual(field(detail, "Physical address"), "0xFFF00000")
+    }
+
+    // MARK: - Checksum rows and byte-length sizes
+
+    /// A checksum that is not in the caller's bad fields reads as valid and is
+    /// not a problem. The validity is the caller's word — the detail only
+    /// renders what it is told, so a valid volume shows a calm checksum.
+    func testACleanVolumeChecksumIsValidAndNoProblem() {
+        let built = TestUEFI.volume()
+        let detail = UEFIDetail.build(
+            for: built.node, image: built.image, reader: built.reader, badFields: []
+        )
+
+        XCTAssertEqual(field(detail, "Checksum"), "0x1234 (Valid)")
+        XCTAssertEqual(problem(detail, "Checksum"), false)
+    }
+
+    /// A checksum the caller has flagged as wrong reads `(Invalid)` and is the
+    /// problem the controller colours red — only that row, not the volume's
+    /// other fields.
+    func testAFlaggedVolumeChecksumIsInvalidAndAProblem() {
+        let built = TestUEFI.volume()
+        let detail = UEFIDetail.build(
+            for: built.node, image: built.image, reader: built.reader, badFields: [.volume]
+        )
+
+        XCTAssertEqual(field(detail, "Checksum"), "0x1234 (Invalid)")
+        XCTAssertEqual(problem(detail, "Checksum"), true)
+        XCTAssertEqual(problem(detail, "Length"), false, "only the checksum row is the problem")
+    }
+
+    /// A file's header and body checksums are separate fields: flagging one
+    /// leaves the other reading valid.
+    func testAFileHeaderAndBodyChecksumsAreMarkedIndependently() {
+        let built = TestUEFI.file()
+
+        let headerWrong = UEFIDetail.build(
+            for: built.node, image: built.image, reader: built.reader, badFields: [.fileHeader]
+        )
+        XCTAssertEqual(field(headerWrong, "Header checksum"), "0xAA (Invalid)")
+        XCTAssertEqual(problem(headerWrong, "Header checksum"), true)
+        XCTAssertEqual(field(headerWrong, "Body checksum"), "0xBB (Valid)")
+        XCTAssertEqual(problem(headerWrong, "Body checksum"), false)
+
+        let bodyWrong = UEFIDetail.build(
+            for: built.node, image: built.image, reader: built.reader, badFields: [.fileBody]
+        )
+        XCTAssertEqual(field(bodyWrong, "Header checksum"), "0xAA (Valid)")
+        XCTAssertEqual(field(bodyWrong, "Body checksum"), "0xBB (Invalid)")
+        XCTAssertEqual(problem(bodyWrong, "Body checksum"), true)
+    }
+
+    /// A microcode image carries one checksum dword; flagged or not, the row is
+    /// the same `Checksums.text` spelling the other panels use.
+    func testAMicrocodeChecksumRowFollowsItsBadField() {
+        let built = TestUEFI.microcode()
+
+        let clean = UEFIDetail.build(
+            for: built.node, image: built.image, reader: built.reader, badFields: []
+        )
+        XCTAssertEqual(field(clean, "Checksum"), "0x00000000 (Valid)")
+        XCTAssertEqual(problem(clean, "Checksum"), false)
+
+        let corrupt = UEFIDetail.build(
+            for: built.node, image: built.image, reader: built.reader, badFields: [.microcode]
+        )
+        XCTAssertEqual(field(corrupt, "Checksum"), "0x00000000 (Invalid)")
+        XCTAssertEqual(problem(corrupt, "Checksum"), true)
+    }
+
+    /// A byte-length field reads `0x800 (2048)`, while codes and masks on the
+    /// same node stay bare hex — the decimal is only for the fields a reader
+    /// wants in it.
+    func testByteLengthSizesReadInDecimalAndCodesStayHex() {
+        let built = TestUEFI.microcode(dataSize: 0x800, totalSize: 0x1000)
+        let detail = UEFIDetail.build(for: built.node, image: built.image, reader: built.reader)
+
+        XCTAssertEqual(field(detail, "Data size"), "0x800 (2048)")
+        XCTAssertEqual(field(detail, "Total size"), "0x1000 (4096)")
+        XCTAssertEqual(field(detail, "Processor signature"), "0x806EA")
+        XCTAssertEqual(field(detail, "Update revision"), "0xF0")
     }
 }
