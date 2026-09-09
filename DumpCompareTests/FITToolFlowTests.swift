@@ -805,6 +805,61 @@ final class FITToolFlowTests: XCTestCase {
         XCTAssertNotNil(try session().display.checksumFix)
     }
 
+    /// The menu a right-click earns is where the controller's Fix action is
+    /// wired to the session — and an unwired closure is a Fix Checksum that
+    /// silently does nothing, however well the session's own method works. The
+    /// controller's wiring is not something the seam-driven test above reaches,
+    /// so this one drives the real menu: the entries table answers a
+    /// right-click on the header row — the only row the repair is offered on —
+    /// with the menu AppKit assigns it, and firing the item must reach the
+    /// session and write.
+    ///
+    /// A right click needs no simulated mouse: `menu(for:)` is the very method
+    /// AppKit calls on a right-click, and it resolves the row under the pointer
+    /// and hands back the table's menu; the delegate's `menuNeedsUpdate` —
+    /// what AppKit runs just before showing — then fills it from that row.
+    func testTheContextMenusFixItemReachesTheSessionAndWrites() throws {
+        let controller = try open(FITTestImage.make(checksum: 0xCC))
+        let pane = controller.windowModel.pane1
+        XCTAssertNotNil(try session().display.checksumFix,
+                        "the fixture left the header checksum wrong")
+        let table = try entriesTable()
+        let win = try XCTUnwrap(window)
+
+        // A right-click on the header row — row 0 — through the same
+        // `menu(for:)` AppKit calls, at a point the table maps back to that
+        // row. The menu it hands back is the one the controller assigned.
+        let rect = table.rect(ofRow: 0)
+        let point = table.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil)
+        let event = NSEvent.mouseEvent(
+            with: .rightMouseDown, location: point, modifierFlags: [],
+            timestamp: 0, windowNumber: win.windowNumber, context: nil,
+            eventNumber: 0, clickCount: 1, pressure: 0
+        )!
+        let menu = try XCTUnwrap(table.menu(for: event),
+                                 "a right-click on the header row earns its menu")
+        XCTAssertEqual(table.clickedRow, 0, "the click resolved to the header row")
+
+        // Fill the menu exactly as AppKit does before showing it, then read the
+        // item the repair is offered through.
+        menu.delegate?.menuNeedsUpdate?(menu)
+        let item = try XCTUnwrap(menu.items.first { $0.title == "Fix Checksum" })
+        XCTAssertTrue(item.isEnabled, "a writable file leaves the fix enabled")
+
+        // Fire the item and wait on the re-parse its own write causes — the
+        // same seam the seam-driven test waits on.
+        let fixed = expectation(description: "the menu fix's re-parse lands")
+        try session().onDisplay = { _ in fixed.fulfill() }
+        _ = item.target?.perform(item.action, with: item)
+        wait(for: [fixed], timeout: 5)
+        try session().onDisplay = nil
+
+        XCTAssertEqual(try pane.byteStorage?.read(at: 0x100F, length: 1), [0x5C],
+                       "the click wrote the value the table's checksum expects")
+        XCTAssertNil(try session().display.checksumFix,
+                     "the panel re-read and stopped offering the repair")
+    }
+
     /// The list of problems is not there when there are none: an empty box
     /// under a table that checks out is a box the user has to work out the
     /// meaning of.
