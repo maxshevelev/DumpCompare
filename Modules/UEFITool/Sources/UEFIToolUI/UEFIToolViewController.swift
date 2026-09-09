@@ -251,6 +251,10 @@ import UEFITool
         // the view: a plain menu pops over a clean row too, and this panel's
         // whole contextual menu is the one item a flagged row earns.
         outline.onContextMenu = { [weak self] event in self?.contextMenu(for: event) }
+        // A click on the row that is already the selection publishes its zone,
+        // exactly as a click that moved the selection would — the outline only
+        // reports that second kind itself (see `UEFIOutlineView`).
+        outline.onRowReclick = { [weak self] row in self?.chooseNode(atRow: row) }
 
         let name = NSTableColumn(identifier: Column.name)
         name.title = "Name"
@@ -555,22 +559,64 @@ extension UEFIToolViewController: NSOutlineViewDataSource, NSOutlineViewDelegate
 
     func outlineViewSelectionDidChange(_ notification: Notification) {
         guard !isShowingState else { return }
-        let row = outline.selectedRow
+        chooseNode(atRow: outline.selectedRow)
+    }
+
+    /// A row was chosen — by a selection that moved, or by a click on the row
+    /// that was already the selection. Both publish the row's zone; the outline
+    /// only reports the second kind itself (see `UEFIOutlineView`).
+    private func chooseNode(atRow row: Int) {
         let node = row >= 0 ? outline.item(atRow: row) as? UEFINode : nil
         onSelect?(node?.id)
     }
 }
 
-/// The tree, with one behaviour past NSOutlineView's: it answers a right-click
-/// itself. A plain outline given a `menu` pops it over every row — a flagged
-/// node's Fix Checksum item and a clean row's empty menu alike — but AppKit
-/// asks `menu(for:)` first and shows nothing when it answers nil, which is how
-/// a clean row gets no popup at all. The controller decides per row.
+/// The tree, with two behaviours past NSOutlineView's.
+///
+/// It answers a right-click itself: a plain outline given a `menu` pops it
+/// over every row — a flagged node's Fix Checksum item and a clean row's empty
+/// menu alike — but AppKit asks `menu(for:)` first and shows nothing when it
+/// answers nil, which is how a clean row gets no popup at all. The controller
+/// decides per row.
+///
+/// And it reports a plain click on the row that is already the one selection.
+/// AppKit treats that click as a change of nothing and posts no
+/// `selectionDidChange`, so it would answer nothing — though a click that moved
+/// the selection would publish the row's zone. A row the reveal chose sits in
+/// exactly that state: shown and selected, but deliberately not published (the
+/// dump does not move). A click on it is how the user asks for the zone, so it
+/// chooses the row afresh. The disclosure triangle, a double click and a
+/// modifier click keep their own meanings.
 private final class UEFIOutlineView: NSOutlineView {
     /// What a right-click on this outline offers, decided on the main actor.
     var onContextMenu: ((NSEvent) -> NSMenu?)?
+    /// A plain click landed on the row that was already selected.
+    var onRowReclick: ((Int) -> Void)?
 
     override func menu(for event: NSEvent) -> NSMenu? {
         onContextMenu?(event)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        let clickedRow = row(at: point)
+        let clickedItem = clickedRow >= 0 ? item(atRow: clickedRow) : nil
+        let wasSelected = clickedRow >= 0 && selectedRowIndexes.contains(clickedRow)
+        let wasExpanded = clickedItem.map { isItemExpanded($0) }
+        super.mouseDown(with: event)
+
+        // A click that moved the selection needs no help — the outline reports
+        // it. Only the click on the row that was already selected is answered
+        // here (see the class doc).
+        guard wasSelected, let clickedItem, let wasExpanded else { return }
+        guard clickedRow == selectedRow,
+              event.clickCount == 1,
+              event.modifierFlags.intersection([.shift, .command, .option, .control]).isEmpty,
+              // Not the disclosure triangle: that click folds or unfolds, and
+              // keeps meaning what it always meant.
+              !frameOfOutlineCell(atRow: clickedRow).insetBy(dx: -2, dy: -2).contains(point),
+              isItemExpanded(clickedItem) == wasExpanded
+        else { return }
+        onRowReclick?(clickedRow)
     }
 }

@@ -216,6 +216,35 @@ final class UEFIToolFlowTests: XCTestCase {
                        "the selection the reveal answered is untouched")
     }
 
+    /// After a reveal the row it chose is selected but its zone is not
+    /// published — that is the reveal's point. A normal click on that row is
+    /// how the user then asks for the zone, and it has to work exactly like a
+    /// click that moved the selection would: publishing the row's zone. AppKit
+    /// reports only selection *changes*, and this click changes none, so the
+    /// outline itself notices it.
+    func testAClickOnTheRowARevealChosePublishesItsZone() throws {
+        let controller = try open(UEFITestImage.make())
+        let outline = try outline()
+        let pane = controller.windowModel.pane1
+        let window = try XCTUnwrap(self.window)
+
+        pane.moveCaret(to: 0x4A)
+        try session().revealNodeAtCaret()
+        XCTAssertEqual(outline.selectedRow, 0, "the reveal chose the file's row")
+        XCTAssertTrue(pane.zones.zones.isEmpty, "a reveal publishes nothing")
+
+        // A real click on the selected row — inside the name column, past the
+        // disclosure triangle, so the mouse down is not the fold/unfold click.
+        let rect = outline.rect(ofRow: outline.selectedRow)
+        let point = outline.convert(NSPoint(x: rect.minX + 40, y: rect.midY), to: nil)
+        outline.mouseDown(with: mouse(.leftMouseDown, at: point, window: window))
+
+        let zones = pane.zones
+        XCTAssertEqual(zones.zones.map(\.id), ["0.0", "0.0#body"],
+                       "the click committed the row's zone")
+        XCTAssertEqual(zones.focus, "0.0#body")
+    }
+
     /// The file is a lone FFSv2 volume off a chip — the parser invents no image
     /// root around a single top, the volume *is* the root — and a root that
     /// holds the whole file does no work as a row: it folds into the title the
