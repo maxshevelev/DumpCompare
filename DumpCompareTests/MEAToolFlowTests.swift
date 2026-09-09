@@ -189,6 +189,19 @@ final class MEAToolFlowTests: XCTestCase {
         XCTAssertTrue(text.contains("0x4000 (16384 bytes)"), "\(text)")
     }
 
+    /// "Reading…" is the line under the panel while a parse runs — and only
+    /// while it runs. Once the analysis lands the line returns to empty, as the
+    /// other panels' do, so the busy reading is not mistaken for a result that
+    /// is still coming.
+    func testTheReadingNoticeIsClearedOnceTheAnalysisLands() throws {
+        _ = try open(METestImage.fptFile())
+
+        let panel = try panel()
+        let text = descendants(of: panel, NSTextField.self).map(\.stringValue)
+        XCTAssertFalse(text.contains("Reading…"),
+                       "a finished analysis is not still 'Reading…': \(text)")
+    }
+
     /// An FPT table in a file is a reason the analysis has something to say on
     /// the tree: the regions it lists, each a row standing for real bytes. The
     /// tree opens on the Full Tree tab only.

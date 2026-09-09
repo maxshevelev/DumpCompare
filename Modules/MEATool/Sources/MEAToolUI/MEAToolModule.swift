@@ -128,6 +128,9 @@ struct MEAParkedState: ToolSessionState {
             self.controller.endBusy()
             switch result {
             case .success(let analysis):
+                // The reading is over — the line returns to empty, as the other
+                // panels' do after a successful parse.
+                self.controller.say("")
                 self.present(analysis)
                 self.onDisplay?(analysis)
             case .failure(let error):
