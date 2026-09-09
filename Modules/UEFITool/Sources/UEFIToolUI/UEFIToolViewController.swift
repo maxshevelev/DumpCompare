@@ -8,14 +8,15 @@ import UEFITool
 ///
 /// It decides nothing. The tree is the parse's, the detail is built and tested
 /// in the pure target, and the one zone is the presenter's — so what is on
-/// screen comes from one `show(image:focus:detail:)` over values the panel only
-/// lays out.
+/// screen comes from one `show(...)` over values the panel only lays out.
 @MainActor final class UEFIToolViewController: NSViewController {
     /// The node the user picked in the tree, or nil for nothing.
     var onSelect: ((NodeID?) -> Void)?
     /// The title was clicked. Only ever fired when the summary stands for a
     /// node that has no row of its own.
     var onSelectTop: (() -> Void)?
+    /// A flagged node's Fix Checksum menu item was chosen.
+    var onFixChecksum: ((NodeID) -> Void)?
 
     private var image: UEFIImage?
     /// The tree as it is shown: the outline's top level and the root node the
@@ -37,9 +38,17 @@ import UEFITool
     /// code made is not news, and without this the panel selects, publishes,
     /// re-shows and selects again until the stack runs out.
     private var isShowingState = false
+    /// The nodes whose checksums the last parse found wrong, keyed by node id.
+    /// The red triangle before a name and the Fix Checksum menu item both ask
+    /// it.
+    private var badChecksums: [NodeID: Set<UEFIChecksumField>] = [:]
+    /// Whether the file is open for writing. Without it the Fix Checksum menu
+    /// item stands down — the module would refuse anyway, but a greyed item
+    /// says so before the click.
+    private var canWrite = false
 
     private let summaryLabel = NSTextField(labelWithString: "")
-    private let outline = NSOutlineView()
+    private let outline = UEFIOutlineView()
     private let outlineScroll = NSScrollView()
     private let detail = ToolDetailScroll()
     private let splitter = ALSplitView()
@@ -201,6 +210,10 @@ import UEFITool
         outline.allowsColumnReordering = false
         outline.dataSource = self
         outline.delegate = self
+        // A right-click is answered here rather than with a `menu` assigned to
+        // the view: a plain menu pops over a clean row too, and this panel's
+        // whole contextual menu is the one item a flagged row earns.
+        outline.onContextMenu = { [weak self] event in self?.contextMenu(for: event) }
 
         let name = NSTableColumn(identifier: Column.name)
         name.title = "Name"
@@ -258,10 +271,19 @@ import UEFITool
     }
 
     /// Everything the panel shows, in one call.
-    func show(image: UEFIImage?, focus: NodeID?, detail: UEFINodeDetail, catalogue: GuidsCatalogue) {
+    func show(
+        image: UEFIImage?,
+        focus: NodeID?,
+        detail: UEFINodeDetail,
+        catalogue: GuidsCatalogue,
+        badChecksums: [NodeID: Set<UEFIChecksumField>],
+        canWrite: Bool
+    ) {
         self.image = image
         self.focus = focus
         self.catalogue = catalogue
+        self.badChecksums = badChecksums
+        self.canWrite = canWrite
         isShowingState = true
         defer { isShowingState = false }
 
@@ -354,6 +376,11 @@ import UEFITool
             value.font = field.value.hasPrefix("0x")
                 ? ToolPanelFont.monospacedDigits()
                 : ToolPanelFont.body()
+            // A checksum that does not check out is the one thing in the detail
+            // worth colouring red: it is what the Fix Checksum item would write.
+            if field.isProblem {
+                value.textColor = .systemRed
+            }
             // Selectable, not a dead label: a bench copies an offset or a GUID
             // out of here, and a value it cannot select is one it has to retype.
             value.isSelectable = true
@@ -408,7 +435,11 @@ extension UEFIToolViewController: NSOutlineViewDataSource, NSOutlineViewDelegate
         else { return nil }
         let cell = outlineView.makeView(withIdentifier: identifier, owner: self)
             as? NSTableCellView ?? Self.makeCell(identifier: identifier)
-        cell.textField?.stringValue = text(for: node, in: identifier)
+        // The name is attributed so a wrong checksum can ride a red triangle in
+        // front of it; the other two columns stay plain.
+        cell.textField?.attributedStringValue = identifier == Column.name
+            ? nameText(for: node)
+            : NSAttributedString(string: text(for: node, in: identifier))
         // Set per row, not once when the cell is made: a reused cell carries
         // the font it was made with, and the zoom moves under it.
         cell.textField?.font = ToolPanelFont.body()
@@ -426,6 +457,76 @@ extension UEFIToolViewController: NSOutlineViewDataSource, NSOutlineViewDelegate
         default:
             return UEFITreeDisplay.name(for: node, catalogue: catalogue)
         }
+    }
+
+    /// A name cell's text: the plain name, or a red warning triangle before it
+    /// when the node's checksum is wrong. The triangle is an SF Symbol riding
+    /// inside the text as an attachment, so it follows the row — its size, its
+    /// baseline, its truncation — instead of fighting the cell's layout. Both
+    /// branches build text with the row font embedded, so a recycled cell can
+    /// never show a stale triangle.
+    private func nameText(for node: UEFINode) -> NSAttributedString {
+        let font = ToolPanelFont.body()
+        let name = UEFITreeDisplay.name(for: node, catalogue: catalogue)
+        guard !(badChecksums[node.id]?.isEmpty ?? true),
+              let sized = NSImage(
+                  systemSymbolName: "exclamationmark.triangle.fill",
+                  accessibilityDescription: "Invalid checksum"
+              )?.withSymbolConfiguration(
+                  .init(pointSize: font.pointSize, weight: .regular)
+              ),
+              let symbol = sized.withSymbolConfiguration(
+                  .init(paletteColors: [.systemRed])
+              )
+        else {
+            return NSAttributedString(string: name, attributes: [.font: font])
+        }
+        let attachment = NSTextAttachment()
+        attachment.image = symbol
+        // Drawn below the baseline by the font's descender, the triangle reads
+        // as sitting on it the way a glyph does, not floating above the row.
+        attachment.bounds = NSRect(
+            x: 0, y: font.descender,
+            width: symbol.size.width, height: symbol.size.height
+        )
+        let result = NSMutableAttributedString(attachment: attachment)
+        result.append(NSAttributedString(string: " ", attributes: [.font: font]))
+        result.append(NSAttributedString(string: name, attributes: [.font: font]))
+        return result
+    }
+
+    /// The menu a right-click asks for: one Fix Checksum item on the node under
+    /// the pointer when its checksum is wrong, and nothing at all on any other
+    /// row. The item greys out on a read-only file rather than vanishing, so
+    /// the menu still says what fixing would do.
+    private func contextMenu(for event: NSEvent) -> NSMenu? {
+        let point = outline.convert(event.locationInWindow, from: nil)
+        let row = outline.row(at: point)
+        guard row >= 0,
+              let node = outline.item(atRow: row) as? UEFINode,
+              !(badChecksums[node.id]?.isEmpty ?? true)
+        else { return nil }
+
+        let item = NSMenuItem(
+            title: "Fix Checksum",
+            action: #selector(fixChecksumClicked(_:)),
+            keyEquivalent: ""
+        )
+        item.target = self
+        item.isEnabled = canWrite
+        // The node the click was on, read back when the item fires — by id, not
+        // by node: a parse between the click and the action re-reads the tree,
+        // and the id is what still points at the node.
+        item.representedObject = node.id
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        menu.addItem(item)
+        return menu
+    }
+
+    @objc private func fixChecksumClicked(_ sender: NSMenuItem) {
+        guard let nodeID = sender.representedObject as? NodeID else { return }
+        onFixChecksum?(nodeID)
     }
 
     private static func makeCell(
@@ -454,5 +555,19 @@ extension UEFIToolViewController: NSOutlineViewDataSource, NSOutlineViewDelegate
         let row = outline.selectedRow
         let node = row >= 0 ? outline.item(atRow: row) as? UEFINode : nil
         onSelect?(node?.id)
+    }
+}
+
+/// The tree, with one behaviour past NSOutlineView's: it answers a right-click
+/// itself. A plain outline given a `menu` pops it over every row — a flagged
+/// node's Fix Checksum item and a clean row's empty menu alike — but AppKit
+/// asks `menu(for:)` first and shows nothing when it answers nil, which is how
+/// a clean row gets no popup at all. The controller decides per row.
+private final class UEFIOutlineView: NSOutlineView {
+    /// What a right-click on this outline offers, decided on the main actor.
+    var onContextMenu: ((NSEvent) -> NSMenu?)?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        onContextMenu?(event)
     }
 }

@@ -32,6 +32,14 @@ struct UEFIParkedState: ToolSessionState {
     var focus: NodeID?
 }
 
+/// What a parse hands back: the tree, and which checksums in it are wrong.
+/// Read together off the main actor, because the checksum pass reads every file
+/// body and must never run on show or in a table callback.
+private struct ParseResult: Sendable {
+    let image: UEFIImage
+    let badChecksums: [NodeID: Set<UEFIChecksumField>]
+}
+
 /// The running instrument: parse off the main actor, show the tree, publish the
 /// one zone for the node in focus, and say what that node is.
 @MainActor public final class UEFIToolSession: ToolSession {
@@ -43,6 +51,10 @@ struct UEFIParkedState: ToolSessionState {
     /// came from, so the two cannot drift apart.
     private var image: UEFIImage?
     private var reader: ImageReader?
+    /// Which nodes' checksums the last parse found wrong, keyed by node id.
+    /// Readable from outside so the app's tests can assert on it without
+    /// reaching into a view.
+    public private(set) var checksumProblems: [NodeID: Set<UEFIChecksumField>] = [:]
     /// The node the user is looking at. Nil before a choice, and after a
     /// re-parse that lost it.
     private var focus: NodeID?
@@ -57,6 +69,11 @@ struct UEFIParkedState: ToolSessionState {
     /// Which catalogue download is the current one, so a slow one does not
     /// overwrite a fresh one.
     private var guidsGeneration = 0
+    /// Whether the line under the tree is an answer to something the user asked
+    /// for — a fix that wrote, or a refusal. Such a line survives the re-read
+    /// its own write caused and is wiped by the next re-read that is not its
+    /// own (the check in `reparse()`).
+    private var noticeAnswersTheUser = false
 
     /// Where the fresh catalogue comes from. A test installs its own so the
     /// suite does not reach GitHub.
@@ -106,6 +123,7 @@ struct UEFIParkedState: ToolSessionState {
         } catch {
             image = nil
             reader = nil
+            checksumProblems = [:]
             controller.say("Could not read the file: \(error)", asProblem: true)
             show()
             return
@@ -116,17 +134,26 @@ struct UEFIParkedState: ToolSessionState {
         let generation = self.generation
         // The parse is running: the line under the tree says so, next to the
         // bar. The successful parse clears it in the block below, so the line
-        // is only ever the reading it is still doing.
-        controller.say("Reading…")
+        // is only ever the reading it is still doing — except when the line is
+        // an answer to something the user asked for, which survives the re-read
+        // its own write caused (the noticeAnswersTheUser flag below).
+        if !noticeAnswersTheUser {
+            controller.say("Reading…")
+        }
         controller.showBusy()
         let reporter = progressReporter()
         Task { [weak self] in
             let parsed = await UEFIToolSession.parse(source, progress: reporter)
             guard let self, self.generation == generation else { return }
-            self.image = parsed
+            self.image = parsed.image
+            self.checksumProblems = parsed.badChecksums
             self.reader = ImageReader(source)
             self.controller.endBusy()
-            self.controller.say("")
+            if self.noticeAnswersTheUser {
+                self.noticeAnswersTheUser = false
+            } else {
+                self.controller.say("")
+            }
             self.show()
             self.onDisplay?(self.image)
         }
@@ -165,13 +192,19 @@ struct UEFIParkedState: ToolSessionState {
     }
 
     /// Off the main actor: a 16 MiB image is a full UEFI parse, and the panel
-    /// is on screen while it runs.
+    /// is on screen while it runs. The checksum pass is part of the same task —
+    /// it reads every file body, so it too must never run on show or in a table
+    /// callback.
     private nonisolated static func parse(
         _ source: any ByteSource,
         progress: (@Sendable (Double) -> Void)? = nil
-    ) async -> UEFIImage {
+    ) async -> ParseResult {
         await Task.detached(priority: .userInitiated) {
-            UEFIParser.parse(source, progress: progress)
+            let image = UEFIParser.parse(source, progress: progress)
+            let badChecksums = UEFIChecksumCheck.badFields(
+                in: image, reader: ImageReader(source)
+            )
+            return ParseResult(image: image, badChecksums: badChecksums)
         }.value
     }
 
@@ -179,13 +212,24 @@ struct UEFIParkedState: ToolSessionState {
     /// node in focus, and the one zone that node publishes.
     private func show() {
         guard let image, let reader else {
-            controller.show(image: nil, focus: nil, detail: .empty, catalogue: guids)
+            controller.show(
+                image: nil, focus: nil, detail: .empty, catalogue: guids,
+                badChecksums: checksumProblems, canWrite: !host.isReadOnly
+            )
             host.publish(.empty)
             return
         }
         let node = focus.flatMap { image.node($0) }
-        let detail = node.map { UEFIDetail.build(for: $0, image: image, reader: reader) } ?? .empty
-        controller.show(image: image, focus: focus, detail: detail, catalogue: guids)
+        let detail = node.map {
+            UEFIDetail.build(
+                for: $0, image: image, reader: reader,
+                badFields: checksumProblems[$0.id] ?? []
+            )
+        } ?? .empty
+        controller.show(
+            image: image, focus: focus, detail: detail, catalogue: guids,
+            badChecksums: checksumProblems, canWrite: !host.isReadOnly
+        )
         host.publish(UEFIPresenter.zones(for: node))
     }
 
@@ -221,5 +265,84 @@ struct UEFIParkedState: ToolSessionState {
         guard let nodeID = UEFIPresenter.nodeID(ofZone: id) else { return }
         focus = nodeID
         show()
+    }
+
+    // MARK: - Fix Checksum
+
+    /// Recompute a node's checksum and write the corrected bytes as one
+    /// undoable step. A read-only file refuses; otherwise the node's current
+    /// bytes are re-read off the main actor — it may have moved since the parse
+    /// that flagged it — and whatever still differs is applied, ⌘Z taking it
+    /// back. The write's own re-parse clears the red flag and the icon on their
+    /// own, so the "written" line survives exactly that one re-read.
+    ///
+    /// Public because a right-click cannot be simulated — this is the level the
+    /// app's tests drive, the same way FIT's `fixChecksum()` is.
+    public func fixChecksum(for nodeID: NodeID) {
+        guard !host.isReadOnly else {
+            fail("This file is open read-only.")
+            return
+        }
+        let snapshot: any ToolContentReader
+        do {
+            snapshot = try host.snapshot()
+        } catch {
+            fail("Could not read the file: \(error)")
+            return
+        }
+        controller.showBusy()
+        let reporter = progressReporter()
+        Task { [weak self] in
+            let repairs = await UEFIToolSession.prepareChecksumFix(
+                nodeID, snapshot: snapshot, progress: reporter
+            )
+            guard let self else { return }
+            self.controller.endBusy()
+            guard let repairs, !repairs.isEmpty else {
+                // Nothing to write: the node is gone, or its checksum already
+                // checks out — the flag the click answered was a stale one.
+                return
+            }
+            let transaction = ToolTransaction(
+                name: "Fix Checksum",
+                writes: repairs.map {
+                    ToolTransaction.Write(offset: $0.offset, bytes: $0.bytes)
+                }
+            )
+            do {
+                try self.host.apply(transaction)
+                self.noticeAnswersTheUser = true
+                self.controller.say("Checksum written. ⌘Z takes it back.")
+            } catch {
+                self.fail("Could not write: \(error)")
+            }
+        }
+    }
+
+    /// Re-read the snapshot off the main actor and return the writes that put
+    /// nodeID's checksum right, or nil when the parse no longer finds the node
+    /// or the checksum already checks out.
+    private nonisolated static func prepareChecksumFix(
+        _ nodeID: NodeID,
+        snapshot: any ToolContentReader,
+        progress: (@Sendable (Double) -> Void)? = nil
+    ) async -> [ChecksumRepair]? {
+        await Task.detached(priority: .userInitiated) {
+            let source = ToolContentByteSource(reader: snapshot)
+            let image = UEFIParser.parse(source, progress: progress)
+            guard let node = image.node(nodeID) else { return nil }
+            let revision = UEFIChecksumCheck.volumeRevision(of: node, in: image)
+            let repairs = UEFIChecksumCheck.repairs(
+                for: node, volumeRevision: revision, in: ImageReader(source)
+            )
+            return repairs.isEmpty ? nil : repairs
+        }.value
+    }
+
+    /// Something the user asked for did not happen, said in red. It survives
+    /// the re-read that could otherwise wipe it, exactly like the success note.
+    private func fail(_ text: String) {
+        noticeAnswersTheUser = true
+        controller.say(text, asProblem: true)
     }
 }
