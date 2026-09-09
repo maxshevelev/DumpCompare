@@ -95,6 +95,13 @@ public actor MEFirmwareAnalyzer {
         // bytes once variant/major/minor (both layout selectors) are known.
         var mfsInfo: MFSVolumeInfo? = nil
         var mfsIssues: [Issue] = []
+        // An MFS *backup* area — an FPT partition named "MFSB" (upstream
+        // mfsb_found) or a main "MFS" region in backup state — decodes as MFSB
+        // header/entry records, not as a paged volume. Resolved after the page
+        // decode below: a page-less main region falls back here; a dedicated
+        // "MFSB" partition always lands here.
+        var mfsBackup: MFSBackup? = nil
+        var mfsBackupIssues: [Issue] = []
         if let mfsRegion = regions.first(where: { $0.name == "MFS" }) {
             let volumeOffset = mfsRegion.offset - baseOffset
             if let info = MFSParser.parse(in: region, offset: volumeOffset,
@@ -148,9 +155,94 @@ public actor MEFirmwareAnalyzer {
                             + "(ends early or cycles)."))
                 }
             } else {
-                mfsIssues.append(Issue(id: 8, severity: .warning,
-                    message: "Skipped MFS partition at 0x\(String(mfsRegion.offset, radix: 16)): "
-                        + "unrecognizable format (no MFS pages found)."))
+                // A main MFS region that carries no MFS pages may instead be in
+                // *backup* state — its first bytes are the MFSB signature (a
+                // hot/corrupt volume). Upstream mfs_anl enters the same R0/R1
+                // branches there (MEA.py 7528), so try the backup decode before
+                // declaring the partition unrecognizable.
+                mfsBackup = MFSBackupDecoder.parse(in: region,
+                                                   offset: volumeOffset,
+                                                   size: mfsRegion.size,
+                                                   absoluteOffset: mfsRegion.offset)
+                if mfsBackup == nil {
+                    mfsIssues.append(Issue(id: 8, severity: .warning,
+                        message: "Skipped MFS partition at 0x\(String(mfsRegion.offset, radix: 16)): "
+                            + "unrecognizable format (no MFS pages found)."))
+                }
+            }
+        }
+
+        // A dedicated MFS Backup partition (FPT name "MFSB") is decoded as a
+        // backup area outright; it outranks the main-region fallback above.
+        if mfsBackup == nil,
+           let mfsbRegion = regions.first(where: { $0.name == "MFSB" }) {
+            mfsBackup = MFSBackupDecoder.parse(in: region,
+                                               offset: mfsbRegion.offset - baseOffset,
+                                               size: mfsbRegion.size,
+                                               absoluteOffset: mfsbRegion.offset)
+            if mfsBackup == nil {
+                mfsBackupIssues.append(Issue(id: 8, severity: .warning,
+                    message: "Skipped MFS Backup partition at 0x\(String(mfsbRegion.offset, radix: 16)): "
+                        + "unrecognizable format."))
+            }
+        }
+
+        // Mirror the errors upstream raises for a decoded backup area
+        // (MEA.py 7540–7542 / 7560–7562 / 7569–7572 / 7588–7614) into two
+        // aggregated warnings: one for the header, one for the body/entries.
+        if let backup = mfsBackup {
+            switch backup.format {
+            case .r0:
+                if !backup.headerCRCValid {
+                    mfsBackupIssues.append(Issue(id: 17, severity: .warning,
+                        message: "MFS Backup at 0x\(String(backup.offset, radix: 16)) "
+                            + String(format: "(R0) Header CRC-32 0x%08X is INVALID.",
+                                     backup.headerCRCStored)))
+                }
+                if backup.reconstructedVolumeParses == false {
+                    mfsBackupIssues.append(Issue(id: 18, severity: .warning,
+                        message: "MFS Backup at 0x\(String(backup.offset, radix: 16)) (R0) "
+                            + "body does not reconstruct into a valid MFS volume."))
+                }
+            case .r1:
+                var headerDefects: [String] = []
+                if backup.headerRevisionValid == false {
+                    headerDefects.append(String(format: "Revision %d, expected 1",
+                                                 backup.headerRevision ?? 0))
+                }
+                if !backup.headerCRCValid {
+                    headerDefects.append(String(format: "Header CRC-32 0x%08X is INVALID",
+                                                backup.headerCRCStored))
+                }
+                if !headerDefects.isEmpty {
+                    mfsBackupIssues.append(Issue(id: 17, severity: .warning,
+                        message: "MFS Backup at 0x\(String(backup.offset, radix: 16)) (R1): "
+                            + headerDefects.joined(separator: "; ") + "."))
+                }
+                var entryDefects: [String] = []
+                for entry in backup.entries {
+                    var defects: [String] = []
+                    if !entry.revisionValid {
+                        defects.append(String(format: "Revision %d, expected 1", entry.revision))
+                    }
+                    if !entry.headerCRCValid {
+                        defects.append(String(format: "Entry Header CRC-32 0x%08X is INVALID",
+                                              entry.headerCRCStored))
+                    }
+                    if !entry.dataCRCValid {
+                        defects.append(String(format: "Entry Data CRC-32 0x%08X is INVALID",
+                                              entry.dataCRCStored))
+                    }
+                    if !defects.isEmpty {
+                        entryDefects.append("entry \(entry.fileIndex) "
+                            + defects.joined(separator: ", "))
+                    }
+                }
+                if !entryDefects.isEmpty {
+                    mfsBackupIssues.append(Issue(id: 18, severity: .warning,
+                        message: "MFS Backup at 0x\(String(backup.offset, radix: 16)) (R1): "
+                            + entryDefects.joined(separator: "; ") + "."))
+                }
             }
         }
 
@@ -405,6 +497,7 @@ public actor MEFirmwareAnalyzer {
         }
         issues.append(contentsOf: cpdIssues)
         issues.append(contentsOf: mfsIssues)
+        issues.append(contentsOf: mfsBackupIssues)
         issues.append(contentsOf: fsIssues)
         issues.append(contentsOf: gscInfoIssues)
         issues.append(contentsOf: cseLayoutIssues)
@@ -604,6 +697,7 @@ public actor MEFirmwareAnalyzer {
             manifest: manifestSummary,
             codePartition: codePartition,
             mfsVolume: mfsVolume,
+            mfsBackup: mfsBackup,
             cseLayoutTable: cseLayoutTable,
             bootPartitions: bootPartitions,
             mmeDirectory: moduleInventory,

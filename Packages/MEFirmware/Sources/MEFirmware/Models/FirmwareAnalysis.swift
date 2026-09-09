@@ -37,6 +37,8 @@ public struct FirmwareAnalysis: Codable, Sendable, Equatable, Identifiable {
     public var manifest: ManifestSummary?     // $MN2/$MAN facts + security fields
     public var codePartition: CodePartition?  // $CPD: entries, extensions, modules
     public var mfsVolume: MFSVolume?          // MFS volume facts, when an FPT "MFS" region decodes
+    public var mfsBackup: MFSBackup? = nil    // MFS *backup*-state area decode (FPT "MFSB",
+                                              // or a main "MFS" region in backup state)
     public var cseLayoutTable: CSELayoutTable? = nil  // IFWI 1.6/1.7 CSE Layout Table inventory
     public var bootPartitions: [BPDT]? = nil          // BPDT of each non-empty CSE-LT Boot partition
     public var mmeDirectory: MMEModuleDirectory? = nil  // pre-CSE R0 $MME inventory (ME 2–10)
@@ -786,6 +788,97 @@ public struct MFSVolume: Codable, Sendable, Equatable {
         self.configurations = configurations
         self.homeDirectory = homeDirectory
         self.reservedIntegrity = reservedIntegrity
+    }
+}
+
+/// On-flash format of a CSE MFS *backup* area (upstream `mfs_anl` MEA.py
+/// 7528/7554): a compacted snapshot of an MFS volume used for recovery. An FPT
+/// partition literally named "MFSB" holds one (`mfsb_found`, MEA.py 11764); a
+/// main "MFS" region whose first bytes are the backup signature is itself in
+/// backup state (a hot/corrupt volume) and decodes the same way.
+public enum MFSBackupFormat: String, Codable, Sendable {
+    /// `MFS_Backup_Header_R0`: the reserved bytes [0x8:0x20] are all 0xFF — that
+    /// IS the R0 dispatch. The area after the 0x20 header is a single CRC-32
+    /// (IV-0 raw) protected body of 0x01030204-terminated chunks that
+    /// reconstruct into a normal paged MFS image.
+    case r0
+    /// `MFS_Backup_Header_R1`: a 0x24 header (Revision 1, plain-CRC-32 header
+    /// checksum) giving the offsets/sizes of three low-level-file entries —
+    /// 6 Intel Configuration, 9 Manifest Backup, 7 OEM Configuration — each an
+    /// `MFSBackupEntry` (`MFS_Backup_Entry`).
+    case r1
+}
+
+/// Facts about a decoded CSE MFS backup area. The `.r0` branch carries the
+/// reserved-0xFF marker and whether its compacted body reconstructs into a
+/// paged MFS volume that re-parses with a valid header; the `.r1` branch
+/// carries the header Revision and the per-entry decode (`entries`). Every CRC
+/// is validated against the on-flash bytes; no FileTable.dat involvement.
+public struct MFSBackup: Codable, Sendable, Equatable {
+    public var offset: Int            // absolute region start
+    public var format: MFSBackupFormat
+    public var headerCRCStored: UInt32
+    public var headerCRCValid: Bool
+    /// `.r0`: the R0 Reserved field (6 × u32 @ +0x8) is all 0xFF.
+    public var reservedAllFF: Bool?
+    /// `.r0`: the 0x01030204-terminated body reconstructs (erased 0xFF padding
+    /// reinserted, aligned to the 0x2000 page size) into an image that re-parses
+    /// as a valid MFS volume. nil when the body is too short to reconstruct.
+    public var reconstructedVolumeParses: Bool?
+    /// `.r1`: the header Revision field — must be 1.
+    public var headerRevision: UInt32?
+    public var headerRevisionValid: Bool?
+    /// `.r1`: the decoded low-level-file entries in header order (6, 9, 7).
+    public var entries: [MFSBackupEntry] = []
+
+    public init(offset: Int, format: MFSBackupFormat, headerCRCStored: UInt32,
+                headerCRCValid: Bool, reservedAllFF: Bool?,
+                reconstructedVolumeParses: Bool?, headerRevision: UInt32?,
+                headerRevisionValid: Bool?, entries: [MFSBackupEntry]) {
+        self.offset = offset
+        self.format = format
+        self.headerCRCStored = headerCRCStored
+        self.headerCRCValid = headerCRCValid
+        self.reservedAllFF = reservedAllFF
+        self.reconstructedVolumeParses = reconstructedVolumeParses
+        self.headerRevision = headerRevision
+        self.headerRevisionValid = headerRevisionValid
+        self.entries = entries
+    }
+}
+
+/// One `.r1` backup entry (`MFS_Backup_Entry`, MEA.py 1765): the R1 header gives
+/// the blob's `blobOffset`/`blobSize` within the backup area; the blob opens
+/// with its own 0x10 header — Revision (1), EntryCRC32 (plain CRC-32 over the
+/// header with EntryCRC32 zeroed and DataCRC32 excluded), the entry's own Size
+/// (file-data length after the header) and DataCRC32 (plain CRC-32 over the file
+/// data). `fileIndex` is the low-level-file index: 6 Intel Configuration, 7 OEM
+/// Configuration, 9 Manifest Backup.
+public struct MFSBackupEntry: Codable, Sendable, Equatable {
+    public var fileIndex: Int      // 6 / 7 / 9
+    public var blobOffset: Int     // from the R1 header (Entry{6,9,7}Offset)
+    public var blobSize: Int       // from the R1 header (Entry{6,9,7}Size)
+    public var revision: UInt32    // entry header Revision — must be 1
+    public var revisionValid: Bool
+    public var headerCRCStored: UInt32
+    public var headerCRCValid: Bool
+    public var dataSize: Int       // entry Size: file-data length after the 0x10 header
+    public var dataCRCStored: UInt32
+    public var dataCRCValid: Bool
+
+    public init(fileIndex: Int, blobOffset: Int, blobSize: Int, revision: UInt32,
+                revisionValid: Bool, headerCRCStored: UInt32, headerCRCValid: Bool,
+                dataSize: Int, dataCRCStored: UInt32, dataCRCValid: Bool) {
+        self.fileIndex = fileIndex
+        self.blobOffset = blobOffset
+        self.blobSize = blobSize
+        self.revision = revision
+        self.revisionValid = revisionValid
+        self.headerCRCStored = headerCRCStored
+        self.headerCRCValid = headerCRCValid
+        self.dataSize = dataSize
+        self.dataCRCStored = dataCRCStored
+        self.dataCRCValid = dataCRCValid
     }
 }
 
@@ -1551,5 +1644,5 @@ public struct Issue: Codable, Sendable, Equatable, Identifiable {
 /// whether to surface the new data (`reference/result-model.md` §Versioning).
 public enum EngineModelRevision {
     /// Current revision of the `FirmwareAnalysis` shape.
-    public static let current = 19
+    public static let current = 20
 }
