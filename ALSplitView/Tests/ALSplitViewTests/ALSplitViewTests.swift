@@ -253,6 +253,109 @@ final class ALSplitViewTests: XCTestCase {
         XCTAssertEqual(split.panes[0].frame.width, split.axisAvailable(), accuracy: 0.5)
     }
 
+    /// A pane collapsed by policy to `.fixed(0)` leaves a single pane on
+    /// screen, and its divider is parked with it: it is not drawn, takes no
+    /// strip (the pane above reaches the split's edge — no hairline), and is
+    /// not hit-tested, so the resize cursor and the drag never claim the
+    /// edge.
+    func testCollapsedTrailingPaneDropsItsDivider() {
+        let (split, window) = makeSplit(isVertical: true)
+        split.setPaneLayout(.fill, at: 0)
+        split.setPaneLayout(.fixed(0), at: 1)
+        window.layoutIfNeeded()
+
+        let panes = Set(split.panes.map(ObjectIdentifier.init))
+        let divider = try! XCTUnwrap(
+            split.subviews.first { !panes.contains(ObjectIdentifier($0)) },
+            "a divider is inserted between the two panes")
+
+        XCTAssertTrue(divider.isHidden, "a collapsed pane's divider is not drawn")
+        XCTAssertEqual(split.panes[1].frame.width, 0, accuracy: 0.01)
+        // The fill pane takes the divider's strip and reaches the edge.
+        XCTAssertEqual(split.panes[0].frame.width, 1000, accuracy: 0.01,
+                       "the remaining pane fills the whole axis")
+        XCTAssertEqual(split.panes[0].frame.maxX, 1000, accuracy: 0.01,
+                       "… leaving no hairline of the split's background at the edge")
+
+        // The edge is not a grab: a hit test where the divider's slop used to
+        // be lands on the pane, not on the split view.
+        let hit = split.hitTest(windowPoint(split, NSPoint(x: 999, y: 300)))
+        XCTAssertTrue(hit === split.panes[0] || hit?.isDescendant(of: split.panes[0]) == true,
+                      "the edge belongs to the pane, not the divider")
+
+        // A press on the edge and a drag does not move anything.
+        var moved: [CGFloat] = []
+        split.onDividerMoved = { _, position in moved.append(position) }
+        split.mouseDown(with: mouse(.leftMouseDown, at: windowPoint(split, NSPoint(x: 999, y: 300)), window: window))
+        split.mouseDragged(with: mouse(.leftMouseDragged, at: windowPoint(split, NSPoint(x: 400, y: 300)), window: window))
+        split.mouseUp(with: mouse(.leftMouseUp, at: windowPoint(split, NSPoint(x: 400, y: 300)), window: window))
+        XCTAssertTrue(moved.isEmpty, "a drag on the parked divider is a no-op")
+        XCTAssertEqual(split.panes[1].frame.width, 0, accuracy: 0.01,
+                       "the collapsed pane stays collapsed")
+    }
+
+    /// Opening the collapsed pane restores its divider: it is drawn again,
+    /// the pane above gives the strip back, and it is grabbable once more.
+    func testOpeningTheCollapsedPaneRestoresItsDivider() {
+        let (split, window) = makeSplit(isVertical: true)
+        split.setPaneLayout(.fill, at: 0)
+        split.setPaneLayout(.fixed(0), at: 1)
+        window.layoutIfNeeded()
+
+        split.setPaneLayout(.fixed(200), at: 1)
+        window.layoutIfNeeded()
+
+        let panes = Set(split.panes.map(ObjectIdentifier.init))
+        let divider = try! XCTUnwrap(
+            split.subviews.first { !panes.contains(ObjectIdentifier($0)) },
+            "a divider is inserted between the two panes")
+
+        XCTAssertFalse(divider.isHidden, "the divider comes back when the pane opens")
+        XCTAssertEqual(split.axisAvailable(), 999, accuracy: 0.01,
+                       "the divider's strip is claimed from the axis again")
+        XCTAssertEqual(split.panes[1].frame.width, 200, accuracy: 0.5)
+        XCTAssertEqual(split.panes[0].frame.width, 999 - 200, accuracy: 0.5)
+
+        // The divider is draggable once more.
+        var moved: [CGFloat] = []
+        split.onDividerMoved = { _, position in moved.append(position) }
+        drag(split, divider: 0, to: NSPoint(x: 600, y: 300), window: window)
+        XCTAssertEqual(split.panes[0].frame.width, 600, accuracy: 1,
+                       "a drag moves the restored divider")
+        XCTAssertEqual(split.panes[1].frame.width, 999 - 600, accuracy: 1)
+    }
+
+    /// Opening the collapsed pane through `setDividerPosition` — how the
+    /// results panel shows itself — sizes the pane exactly as asked, not
+    /// `asked + dividerThickness`. The position→size conversion happens while
+    /// the trailing pane is still `.fixed(0)`, when the dropped divider is not
+    /// in `axisAvailable`; sizing against that short axis gave the pane back
+    /// one divider thickness too much.
+    func testOpeningTheCollapsedPaneViaDividerPositionLandsAtTheRequestedSize() {
+        let (split, window) = makeSplit(isVertical: true)
+        split.setPaneLayout(.fill, at: 0)
+        split.setPaneLayout(.fixed(0), at: 1)
+        window.layoutIfNeeded()
+
+        // A 200 pt pane sits at position 1000 - 200 - 1 = 799 in divider space.
+        split.setDividerPosition(799)
+        window.layoutIfNeeded()
+
+        XCTAssertEqual(split.panes[1].frame.width, 200, accuracy: 0.5,
+                       "the opened pane is exactly the requested size — no divider thickness leaked in")
+        XCTAssertEqual(split.panes[0].frame.width, 799, accuracy: 0.5)
+        let panes = Set(split.panes.map(ObjectIdentifier.init))
+        let divider = try! XCTUnwrap(
+            split.subviews.first { !panes.contains(ObjectIdentifier($0)) },
+            "a divider is inserted between the two panes")
+        XCTAssertFalse(divider.isHidden, "opening restores the divider")
+
+        // And collapsing it again through the same path parks it at zero.
+        split.setDividerPosition(999)
+        window.layoutIfNeeded()
+        XCTAssertEqual(split.panes[1].frame.width, 0, accuracy: 0.01)
+    }
+
     // MARK: - Animation
 
     func testAnimateDividerPositionEasesToTheTarget() {
@@ -418,4 +521,5 @@ final class ALSplitViewTests: XCTestCase {
         XCTAssertLessThan(component(divider.layer?.backgroundColor), 0.5,
                           "going dark must repaint the divider, not keep the light bake")
     }
+
 }

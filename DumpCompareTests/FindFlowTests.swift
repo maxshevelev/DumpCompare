@@ -1394,9 +1394,9 @@ final class FindFlowTests: XCTestCase {
             XCTAssertLessThan(view.view.frame.height, 1,
                               "the collapsed panel must survive a resize to \(newHeight)")
             XCTAssertEqual(paneView.scrollView.frame.height,
-                           paneView.searchResultsSplit.bounds.height - paneView.searchResultsSplit.dividerThickness,
+                           paneView.searchResultsSplit.bounds.height,
                            accuracy: 0.5,
-                           "the dump must reclaim the whole pane at \(newHeight)")
+                           "the dump must reclaim the whole pane — its collapsed panel's divider draws no strip — at \(newHeight)")
         }
     }
 
@@ -1911,11 +1911,12 @@ final class FindFlowTests: XCTestCase {
         XCTAssertTrue(pumpUntil(2) { view.view.frame.height < 1 },
                       "hiding the panel must collapse it to zero height")
         window.layoutIfNeeded()
-        // The divider is pinned to the very bottom, so the dump fills the pane
-        // minus the divider's own thickness.
+        // The divider is dropped: a collapsed pane's divider earns a strip only
+        // between two panes that both have room, so the dump fills the pane to
+        // its very edge — no hairline left at the bottom to catch the cursor.
         XCTAssertEqual(paneView.scrollView.frame.height,
-                       split.bounds.height - split.dividerThickness, accuracy: 0.5,
-                       "the dump must reclaim the panel's height")
+                       split.bounds.height, accuracy: 0.5,
+                       "the dump must reclaim the panel's full height, edge to edge")
     }
 
     /// The user's chosen height is restored on the next Search All, verbatim.
