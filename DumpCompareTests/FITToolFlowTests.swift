@@ -823,6 +823,43 @@ final class FITToolFlowTests: XCTestCase {
         XCTAssertEqual(shown.numberOfRows, 1)
     }
 
+    /// The findings list is exactly as tall as its rows, up to eight of them:
+    /// a box taller than the one line in it reads as a box with something
+    /// missing, and the line inside looks pushed off centre. It has no frame
+    /// and no padding — it is a strip of lines under the table — and no
+    /// selection, since nothing acts on a selected finding (the double-click
+    /// reads the row under the pointer).
+    func testTheProblemListIsAsTallAsItsRowsUpToEight() throws {
+        _ = try open(FITTestImage.make(checksum: 0xCC))
+        let panel = try XCTUnwrap(controller?.tools.panel)
+        let problems = descendants(of: panel, NSTableView.self)[1]
+        let scroll = try XCTUnwrap(problems.enclosingScrollView)
+        window?.layoutIfNeeded()
+        let rowHeight = problems.rowHeight + problems.intercellSpacing.height
+
+        XCTAssertEqual(problems.numberOfRows, 1, "the fixture's checksum is the one finding")
+        XCTAssertEqual(scroll.frame.height, rowHeight, accuracy: 1,
+                       "one finding is one row tall, with nothing left over")
+        XCTAssertEqual(scroll.borderType, .noBorder, "no frame around the findings")
+        XCTAssertEqual(scroll.frame.minX, 0, accuracy: 0.5,
+                       "flush with the panel's leading edge")
+        XCTAssertEqual(scroll.frame.maxX, panel.bounds.maxX, accuracy: 1.5,
+                       "and with its trailing edge")
+        XCTAssertEqual(problems.selectionHighlightStyle, .none, "a finding is read, not picked")
+
+        // Enough findings to outgrow the list: it stops at eight rows and
+        // scrolls the rest rather than eating the table above it.
+        _ = try open(FITTestImage.make(brokenMicrocodeRows: 10))
+        let after = try XCTUnwrap(controller?.tools.panel)
+        let longer = descendants(of: after, NSTableView.self)[1]
+        let longerScroll = try XCTUnwrap(longer.enclosingScrollView)
+        window?.layoutIfNeeded()
+
+        XCTAssertGreaterThan(longer.numberOfRows, 8, "the fixture is meant to overflow")
+        XCTAssertEqual(longerScroll.frame.height, 8 * rowHeight, accuracy: 1,
+                       "the list stops at eight rows")
+    }
+
     /// A row the validator complained about wears a red warning where the row
     /// says what it is — one triangle in the Type column, with what is wrong
     /// under the pointer — and its text stays the colour every other row's is.
@@ -896,11 +933,15 @@ final class FITToolFlowTests: XCTestCase {
 /// A 64 KiB image with a FIT in it, built byte by byte — the app suite's own
 /// fixture, since the model package's builder does not ship.
 enum FITTestImage {
+    /// `brokenMicrocodeRows` appends microcode rows whose address is unaligned
+    /// and points at fill — two findings each, which is how a test gets a
+    /// findings list longer than the panel is willing to show.
     static func make(
         checksum: UInt8? = nil,
         microcodeAddress: UInt64? = nil,
         extraACM: Bool = false,
-        extraMicrocode: Bool = false
+        extraMicrocode: Bool = false,
+        brokenMicrocodeRows: Int = 0
     ) -> [UInt8] {
         var image = [UInt8](repeating: 0xFF, count: 0x1_0000)
         let diff: UInt64 = 0x1_0000_0000 - 0x1_0000
@@ -911,11 +952,18 @@ enum FITTestImage {
             )
         }
 
+        // The header counts itself and every row after it (§4), and the rows
+        // never decrease in type (§3) — so the broken microcode rows go in
+        // with the microcode ones, before an ACM row.
+        let rowCount = 2 + (extraMicrocode ? 1 : 0) + brokenMicrocodeRows + (extraACM ? 1 : 0)
         var table = entry(address: 0x2020_205F_5449_465F,
-                          size: extraACM || extraMicrocode ? 3 : 2,
+                          size: UInt32(rowCount),
                           type: 0x00, checksumValid: true)
         table += entry(address: microcodeAddress ?? (0x2000 + diff), size: 0, type: 0x01)
         if extraMicrocode { table += entry(address: 0x2100 + diff, size: 0, type: 0x01) }
+        for index in 0..<brokenMicrocodeRows {
+            table += entry(address: 0x4001 + UInt64(index) * 0x100 + diff, size: 0, type: 0x01)
+        }
         if extraACM { table += entry(address: 0x3000 + diff, size: 0, type: 0x02) }
         table[0x0F] = checksum ?? (0 &- table.reduce(into: UInt8(0)) { $0 = $0 &+ $1 })
         image.replaceSubrange(0x1000..<(0x1000 + table.count), with: table)

@@ -84,6 +84,9 @@ import ToolModuleKit
         (Column.target, "Points at", 300)
     ]
     private static let problemColumnWidth: CGFloat = 420
+    /// How many findings the list shows before it scrolls. Past this it is a
+    /// list to scroll through, and the table above is what the panel is for.
+    private static let maxProblemRows = 8
 
     /// The size the widths on screen were scaled for. A zoom moves them by
     /// what has changed since, so a column the user dragged keeps the width
@@ -116,6 +119,14 @@ import ToolModuleKit
 
         configure(problems, doubleAction: #selector(problemDoubleClicked))
         problems.headerView = nil
+        // A list of findings is read, not picked from: the double-click reads
+        // the row under the pointer, and nothing else acts on a selection — so
+        // a highlighted row would be a selection that means nothing.
+        problems.selectionHighlightStyle = .none
+        // Plain, not inset: the inset style pads its rows away from the edge
+        // and rounds the selection, and this list is a strip of lines under
+        // the table rather than a table of its own.
+        problems.style = .plain
         column(problems, Column.problem, "Problem", Self.problemColumnWidth)
 
         // The rows, the headers and the widths — laid out just above for text
@@ -133,6 +144,10 @@ import ToolModuleKit
             scroll.borderType = .bezelBorder
             scroll.translatesAutoresizingMaskIntoConstraints = false
         }
+        // No frame around the findings: a box that hugs one line reads as an
+        // empty box with a line in it, and there is nothing below it to be
+        // told apart from.
+        problemsScroll.borderType = .noBorder
 
         // Top: the entries. Bottom: the detail for the row in focus. The
         // divider is the user's to move. `ALSplitView` places its panes by
@@ -197,13 +212,14 @@ import ToolModuleKit
         view.addSubview(buttons)
         view.addSubview(bottomRow)
 
-        // As tall as it needs to be, up to half the splitter's height, and no
-        // height at all when there is nothing to say — an empty box under a
+        // As tall as its rows — capped at eight of them by
+        // `problemListHeight`, and at half the splitter's height here — and no
+        // height at all when there is nothing to say: an empty box under a
         // table that checks out is a box the user has to work out the meaning
-        // of, and a half-height box under one line is a lie about how much is
-        // wrong. The cap is on the splitter, not on the entries scroll inside
-        // it: a constraint that reaches into a split view's subview fights the
-        // split view's own layout and is how the detail below loses its height.
+        // of. The panel cap is on the splitter, not on the entries scroll
+        // inside it: a constraint that reaches into a split view's subview
+        // fights the split view's own layout and is how the detail below loses
+        // its height.
         let ratio = problemsScroll.heightAnchor.constraint(
             lessThanOrEqualTo: splitter.heightAnchor, multiplier: 0.5
         )
@@ -233,8 +249,10 @@ import ToolModuleKit
                 equalTo: problemsScroll.topAnchor, constant: -6
             ),
 
-            problemsScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
-            problemsScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
+            // Full width and flush with the panel's edges: without a frame
+            // there is nothing for an inset to hold away from anything.
+            problemsScroll.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            problemsScroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             problemsScroll.bottomAnchor.constraint(equalTo: buttons.topAnchor, constant: -6),
             ratio, content,
 
@@ -432,11 +450,17 @@ import ToolModuleKit
         }
     }
 
-    /// What the problems would take to show without scrolling. Read off the
-    /// table rather than assumed, so a row height set by the system still fits.
+    /// How tall the findings list is: exactly its rows, up to
+    /// `maxProblemRows` of them.
+    ///
+    /// Exactly — no slack. A box taller than the line in it reads as a box
+    /// with something missing, and the row inside it looks pushed off centre.
+    /// The row height is read off the table rather than assumed, so a list at
+    /// any zoom still fits its rows.
     private func problemListHeight() -> CGFloat {
         let row = problems.rowHeight + problems.intercellSpacing.height
-        return CGFloat(display.problems.count) * row + 8
+        let rows = min(display.problems.count, Self.maxProblemRows)
+        return CGFloat(rows) * row
     }
 
     /// A line under the buttons — what happened, or what to do next. The panel
