@@ -384,4 +384,38 @@ final class ALSplitViewTests: XCTestCase {
                        "the two panes' content is evenly split")
         XCTAssertGreaterThan(children[0].frame.width, 0)
     }
+
+    // MARK: - The dividers follow the theme
+
+    /// The dividers' grey is a dynamic `NSColor` resolved onto a layer when
+    /// the divider is added, so it is baked in the theme the split was built
+    /// under — a window that went dark kept its light divider lines (§3.1).
+    /// Re-resolving on the effective appearance change repaints them, the same
+    /// shake a layer-painted view needs for its launch-theme bake.
+    func testDividersFollowTheEffectiveAppearance() throws {
+        let split = ALSplitView()
+        split.addPane(NSView())
+        split.addPane(NSView())
+
+        let panes = Set(split.panes.map(ObjectIdentifier.init))
+        let divider = try XCTUnwrap(
+            split.subviews.first { !panes.contains(ObjectIdentifier($0)) },
+            "a divider is inserted between the two panes")
+
+        func component(_ color: CGColor?) -> CGFloat {
+            guard let color, color.numberOfComponents >= 1 else { return -1 }
+            return color.components?[0] ?? -1
+        }
+
+        // Pin the light bake first, whatever appearance the test host runs in.
+        split.appearance = NSAppearance(named: .aqua)
+        split.viewDidChangeEffectiveAppearance()
+        XCTAssertGreaterThan(component(divider.layer?.backgroundColor), 0.5,
+                             "the divider is a pale grey in light mode")
+
+        split.appearance = NSAppearance(named: .darkAqua)
+        split.viewDidChangeEffectiveAppearance()
+        XCTAssertLessThan(component(divider.layer?.backgroundColor), 0.5,
+                          "going dark must repaint the divider, not keep the light bake")
+    }
 }

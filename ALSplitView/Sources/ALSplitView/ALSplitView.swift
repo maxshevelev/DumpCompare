@@ -153,9 +153,12 @@ public final class ALSplitView: NSView {
             divider.translatesAutoresizingMaskIntoConstraints = true
             divider.autoresizingMask = []
             divider.wantsLayer = true
-            divider.layer?.backgroundColor = (dividerColor ?? Self.defaultDividerColor).cgColor
             dividers.append(divider)
             addSubview(divider)
+            // Painted by the one path `updateDividerColor` uses, so every
+            // divider is filled the same way — and re-filled on an appearance
+            // change rather than keeping the theme it was added in.
+            updateDividerColor()
         }
 
         addSubview(pane)
@@ -163,12 +166,28 @@ public final class ALSplitView: NSView {
     }
 
     /// Applies the current `dividerColor` to all divider subviews.
+    ///
+    /// Resolved as the current drawing appearance, so the layer keeps the
+    /// theme it was painted for rather than a bake from the appearance that
+    /// happened to be current when it ran.
     private func updateDividerColor() {
         let color = dividerColor ?? Self.defaultDividerColor
-        for divider in dividers {
-            divider.wantsLayer = true
-            divider.layer?.backgroundColor = color.cgColor
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            for divider in dividers {
+                divider.wantsLayer = true
+                divider.layer?.backgroundColor = color.cgColor
+            }
         }
+    }
+
+    /// A theme switch arrives through `viewDidChangeEffectiveAppearance`, and
+    /// the dividers re-resolve their fill against the new appearance.
+    ///
+    /// Without this the grey a divider was added under stays on its layer, so a
+    /// window that went dark keeps the light lines it got in light mode (§3.1).
+    override public func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateDividerColor()
     }
 
     // MARK: - Layout policy
