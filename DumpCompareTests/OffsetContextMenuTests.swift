@@ -343,7 +343,7 @@ final class OffsetContextMenuTests: XCTestCase {
         let menu = controller.makeOffsetMenu(for: pane, offset: 0x14)
         let titles = menu.items.map(\.title)
         XCTAssertEqual(titles,
-                       ["Copy", "Fill Selection with…", "Delete Bytes…",
+                       ["Copy", "Save Selection as…", "Fill Selection with…", "Delete Bytes…",
                         "",                     // separator
                         "Copy offset", "",
                         "Select Block from Here at 00000014", "",
@@ -357,10 +357,11 @@ final class OffsetContextMenuTests: XCTestCase {
         let copy = menu.items[0]
         XCTAssertEqual(copy.action, #selector(MainViewController.copyPaneSelection(_:)))
         XCTAssertTrue(copy.target === controller)
-        XCTAssertEqual(menu.items[1].action, #selector(MainViewController.fillPaneSelection(_:)))
-        XCTAssertEqual(menu.items[2].action, #selector(MainViewController.deletePaneSelection(_:)))
-        XCTAssertTrue(menu.items[3].isSeparatorItem)
-        XCTAssertTrue(menu.items[5].isSeparatorItem)
+        XCTAssertEqual(menu.items[1].action, #selector(MainViewController.savePaneSelectionAs(_:)))
+        XCTAssertEqual(menu.items[2].action, #selector(MainViewController.fillPaneSelection(_:)))
+        XCTAssertEqual(menu.items[3].action, #selector(MainViewController.deletePaneSelection(_:)))
+        XCTAssertTrue(menu.items[4].isSeparatorItem)
+        XCTAssertTrue(menu.items[6].isSeparatorItem)
     }
 
     /// Selection membership is half-open: the byte at `start` qualifies, the
@@ -411,5 +412,57 @@ final class OffsetContextMenuTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string),
                        "22222222222222222222222222222222",
                        "the clipboard must hold the right-clicked pane's selection bytes")
+    }
+
+    /// Context menu > Save Selection as… writes the RIGHT-CLICKED pane's
+    /// selected bytes to the URL its Save panel returns — the same pane
+    /// resolution as the context Copy, so a selection in a non-active pane is
+    /// still the one that is saved. The panel suggests a name carrying the
+    /// exported range, so saving even a whole-file selection cannot silently
+    /// land on the file that is open.
+    func testSaveSelectionWritesTheRightClickedPanesBytes() throws {
+        let (_, pane, _, _, url) = try makePane([UInt8](0x30..<0x40))
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.setSelection(SelectionModel(start: 0x04, end: 0x0C, fileSize: 16))
+
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent("selection-save-\(UUID().uuidString).bin")
+        defer { try? FileManager.default.removeItem(at: destination) }
+        var suggested: String?
+        let controller = MainViewController()
+        controller.selectionSavePanel = { panel in
+            suggested = panel.nameFieldStringValue
+            return destination
+        }
+
+        let menu = controller.makeOffsetMenu(for: pane, offset: 0x06)
+        let saveItem = try XCTUnwrap(menu.items.first { $0.title == "Save Selection as…" })
+        let dispatched = NSApp.sendAction(saveItem.action!, to: saveItem.target, from: saveItem)
+        XCTAssertTrue(dispatched, "the context Save Selection must dispatch")
+        XCTAssertEqual(suggested?.hasSuffix("_00000004-0000000C.bin"), true,
+                       "the suggested name carries the exported range")
+        XCTAssertNotEqual(suggested, url.lastPathComponent,
+                          "the export must not offer to overwrite the file it came from")
+        XCTAssertEqual([UInt8](try Data(contentsOf: destination)),
+                       [UInt8](0x34..<0x3C),
+                       "the written file holds the right-clicked pane's selected bytes")
+    }
+
+    /// Cancelling the Save panel writes nothing — the export is a one-shot.
+    func testCancellingTheSaveSelectionWritesNothing() throws {
+        let (_, pane, _, _, url) = try makePane([UInt8](repeating: 0x11, count: 16))
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.setSelection(SelectionModel(start: 0, end: 0x08, fileSize: 16))
+
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent("selection-cancel-\(UUID().uuidString).bin")
+        defer { try? FileManager.default.removeItem(at: destination) }
+        let controller = MainViewController()
+        controller.selectionSavePanel = { _ in nil }
+
+        let menu = controller.makeOffsetMenu(for: pane, offset: 0x02)
+        let saveItem = try XCTUnwrap(menu.items.first { $0.title == "Save Selection as…" })
+        _ = NSApp.sendAction(saveItem.action!, to: saveItem.target, from: saveItem)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
     }
 }

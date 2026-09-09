@@ -565,6 +565,9 @@ final class MainViewController: NSViewController {
     var toolOpenPanel: ((NSOpenPanel) -> URL?)?
     /// Where a tool-module's save panel goes (`ToolHost.exportFile`).
     var toolSavePanel: ((NSSavePanel) -> URL?)?
+    /// Where the context menu's Save Selection as… panel goes; the same shape
+    /// as the tool save panel's, for the right-clicked pane's selected bytes.
+    var selectionSavePanel: ((NSSavePanel) -> URL?)?
     /// Where the join's dirty-pane confirmation goes: the test captures the
     /// alert (its title and its two buttons — the operation's verb and Cancel)
     /// and decides. Returns the alert's response (§22.2).
@@ -4262,6 +4265,11 @@ final class MainViewController: NSViewController {
                                 keyEquivalent: "")
         copy.target = self
         copy.representedObject = target
+        let save = menu.addItem(withTitle: "Save Selection as…",
+                                action: #selector(savePaneSelectionAs(_:)),
+                                keyEquivalent: "")
+        save.target = self
+        save.representedObject = target
         let fill = menu.addItem(withTitle: "Fill Selection with…",
                                 action: #selector(fillPaneSelection(_:)),
                                 keyEquivalent: "")
@@ -4424,6 +4432,50 @@ final class MainViewController: NSViewController {
         pasteboard.clearContents()
         pasteboard.setData(Data(bytes), forType: .rawBytes)  // raw bytes: primary (§12.1)
         pasteboard.setString(ClipboardCodec.hexText(from: bytes), forType: .string)
+    }
+
+    /// Context menu > Save Selection as…: writes the RIGHT-CLICKED pane's
+    /// selected bytes to a file the user names (§10.2). A read of the selection
+    /// only — the source file is never written by this command, so it is offered
+    /// whether or not the pane is writable, and what is saved is what is shown,
+    /// edits and all.
+    @objc func savePaneSelectionAs(_ sender: Any?) {
+        guard let target = offsetContextTarget(from: sender), target.pane.isOpen else { return }
+        guard let doc = target.pane.document, !doc.selection.isEmpty else { return }
+        let range = doc.selection.start..<doc.selection.end
+        let bytes: [UInt8]
+        do {
+            bytes = try doc.read(at: range.lowerBound, length: Int(range.count))
+        } catch {
+            presentFileError("Could not read the selection.", error, url: doc.url)
+            return
+        }
+
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = selectionExportName(fileName: target.pane.status.fileName,
+                                                         range: range)
+        panel.canCreateDirectories = true
+        let url: URL?
+        if let selectionSavePanel {
+            url = selectionSavePanel(panel)
+        } else {
+            url = panel.runModal() == .OK ? panel.url : nil
+        }
+        guard let url else { return }
+        do {
+            try Data(bytes).write(to: url, options: .atomic)
+        } catch {
+            presentFileError("Could not save the selection.", error, url: url)
+        }
+    }
+
+    /// The name the Save panel suggests for an exported selection: the source
+    /// file's name with the exported range appended, so a save of even the whole
+    /// file cannot silently land on the file that is open.
+    private func selectionExportName(fileName: String, range: Range<UInt64>) -> String {
+        let stem = (fileName as NSString).deletingPathExtension
+        let bounds = "\(range.lowerBound.bareAddress)-\(range.upperBound.bareAddress)"
+        return "\(stem)_\(bounds).bin"
     }
 
     /// The standard "Paste" menu item (⌘V → `paste:`) dispatches through the
@@ -6487,6 +6539,7 @@ extension MainViewController: NSMenuItemValidation {
             guard let pane = pane(from: menuItem) else { return false }
             return pane.isOpen && !pane.isUntitled
         case #selector(copyPaneSelection(_:)),
+             #selector(savePaneSelectionAs(_:)),
              #selector(fillPaneSelection(_:)),
              #selector(deletePaneSelection(_:)):
             // Right-click selection actions act on the pane they were built for.
