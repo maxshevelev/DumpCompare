@@ -570,7 +570,8 @@ extension FITToolViewController: NSTableViewDataSource, NSTableViewDelegate {
         let cell = tableView.makeView(withIdentifier: column.identifier, owner: self)
             as? NSTableCellView
             ?? ToolPanelTable.makeCell(identifier: column.identifier,
-                                       warning: column.identifier == Column.type)
+                                       warning: column.identifier == Column.type,
+                                       marker: column.identifier == Column.type)
 
         if tableView === problems {
             guard row < display.problems.count else { return nil }
@@ -586,10 +587,13 @@ extension FITToolViewController: NSTableViewDataSource, NSTableViewDelegate {
         let monospaced = ToolPanelFont.monospacedDigits()
         // The Type column wears the warning for a row the validator complained
         // about — one red triangle where the row says what it is, rather than
-        // the whole row in red.
+        // the whole row in red — and, ahead of it, the microcode row's verdict
+        // against the catalogue. Both are row-wide states worn on the column
+        // the row is named by.
         if column.identifier == Column.type {
             ToolPanelTable.setWarning(entry.hasProblem, on: cell,
                                       explanation: problemText(ofRow: entry.index))
+            markLatest(entry.latestState, on: cell)
         }
         switch column.identifier {
         case Column.index:
@@ -627,6 +631,32 @@ extension FITToolViewController: NSTableViewDataSource, NSTableViewDelegate {
             .filter { $0.entryIndex == index }
             .map(\.message)
         return messages.isEmpty ? nil : messages.joined(separator: "\n")
+    }
+
+    /// Dresses the Type column's "latest" marker for one row: the green seal
+    /// where the catalogue confirms the installed revision is its newest for
+    /// the row's processor and platform, the orange triangle where it lists a
+    /// newer one (which it names), and nothing where there is no basis for a
+    /// verdict — a row with no verdict is dressed by leaving the slot empty,
+    /// the same way a clean row leaves the warning slot empty.
+    private func markLatest(_ state: MicrocodeLatest, on cell: NSTableCellView) {
+        switch state {
+        case .latest:
+            ToolPanelTable.setMarker(
+                symbol: "checkmark.seal.fill", tint: .systemGreen,
+                toolTip: "Newest revision the catalogue lists for this processor and platform",
+                on: cell
+            )
+        case .outdated(let newestRevision):
+            ToolPanelTable.setMarker(
+                symbol: "exclamationmark.triangle", tint: .systemOrange,
+                toolTip: "Catalogue lists a newer revision "
+                    + "(r.\(String(newestRevision, radix: 16, uppercase: true)))",
+                on: cell
+            )
+        case .notRated:
+            ToolPanelTable.setMarker(symbol: nil, on: cell)
+        }
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {

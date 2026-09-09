@@ -62,6 +62,21 @@ struct FITParkedState: ToolSessionState {
     /// The add form while it is on screen.
     private var form: FITAddMicrocodeViewController?
 
+    /// True while a parse is off the main actor reading the file. A catalogue
+    /// that lands in that window is not re-shown over the table mid-read — the
+    /// parse itself applies it when it lands, and a re-show would publish a
+    /// stale zone map over a file that is being re-read.
+    private var isParsing = false
+
+    /// The catalogue of what can be added, read once into the session rather
+    /// than once per sheet: a row's "latest" verdict has its basis, and the
+    /// add form has its list, from one fetch of the whole repository.
+    private var catalogue: [MicrocodeCatalogueEntry] = []
+
+    /// The read in flight, so a form that opens while it runs joins it rather
+    /// than starting a second fetch. Nil once a read has finished.
+    private var catalogueLoad: Task<Void, Never>?
+
     /// Which parse is the current one. A file edited twice in quick succession
     /// starts two, and the one that finishes second is not necessarily the one
     /// that read the newer bytes.
@@ -88,6 +103,10 @@ struct FITParkedState: ToolSessionState {
 
     public func start() {
         controller.say("Reading…")
+        // The catalogue starts loading now — a row's "latest" verdict and the
+        // add form's list are answered from this one fetch, cached for the
+        // session, not fetched again for every sheet.
+        loadCatalogue()
         reparse()
     }
 
@@ -122,13 +141,21 @@ struct FITParkedState: ToolSessionState {
 
         generation += 1
         let generation = self.generation
+        isParsing = true
         controller.showBusy()
         let reporter = progressReporter()
         Task { [weak self] in
             let report = await FITToolSession.parse(snapshot, progress: reporter)
             guard let self, self.generation == generation else { return }
+            self.isParsing = false
             self.controller.endBusy()
-            self.show(FITPresenter.display(report, focus: self.focus))
+            // A catalogue already in hand rates the rows as they are shown; one
+            // that lands later is applied by `catalogueReady`, which re-shows
+            // this display with the verdicts filled in.
+            self.show(
+                FITPresenter.display(report, focus: self.focus)
+                    .ratingLatest(against: self.catalogue)
+            )
             if self.noticeAnswersTheUser {
                 self.noticeAnswersTheUser = false
             } else {
@@ -285,11 +312,61 @@ struct FITParkedState: ToolSessionState {
         host.reveal(offset..<min(offset + 16, host.contentSize), select: true)
     }
 
+    // MARK: - The catalogue
+
+    /// Fetches the catalogue once and caches it in `catalogue`. Called by
+    /// `start()` so the session has its answers early, and by a form that
+    /// opens with neither a cache nor a read to join.
+    private func loadCatalogue() {
+        guard catalogueLoad == nil else { return }
+        let source = FITToolSession.microcodeSource
+        catalogueLoad = Task { [weak self] in
+            do {
+                let entries = try await source.catalogue()
+                self?.catalogueReady(entries)
+            } catch {
+                self?.catalogueFailed(error)
+            }
+        }
+    }
+
+    /// The catalogue is in hand: it is cached, and any table already on screen
+    /// is rated against it — unless a parse is mid-read, which rates its own
+    /// rows when it lands — and a form that opened while the fetch ran is fed
+    /// by its end.
+    private func catalogueReady(_ entries: [MicrocodeCatalogueEntry]) {
+        catalogueLoad = nil
+        catalogue = entries
+        // Nothing to rate before the first parse shows a table: re-showing the
+        // empty display over "Reading…" buys nothing, and the parse's own show
+        // applies the catalogue.
+        if !isParsing && !display.rows.isEmpty {
+            show(display.ratingLatest(against: entries))
+        }
+        if let form, !entries.isEmpty {
+            form.show(entries)
+        }
+        onCatalogueLoaded?(entries)
+    }
+
+    /// The fetch failed. A start-time read failing has nobody to tell — the
+    /// verdicts stay unrated, and a form that opens later tries the fetch
+    /// again. A form already on screen asked for the list, so it is told where
+    /// it is looking.
+    private func catalogueFailed(_ error: Error) {
+        catalogueLoad = nil
+        if form != nil {
+            fail(error.localizedDescription, inTheForm: true)
+        }
+        onCatalogueLoaded?([])
+    }
+
     // MARK: - Adding and removing
 
     /// Opens the form: the catalogue at `github.com/platomav/CPUMicrocodes`,
     /// searchable by CPUID, with the file names doing the describing so nothing
-    /// is downloaded until one is picked.
+    /// is downloaded until one is picked. The list is the session's cached
+    /// catalogue, not a fetch for this sheet.
     private func addMicrocode() {
         let form = FITAddMicrocodeViewController()
         self.form = form
@@ -298,19 +375,24 @@ struct FITParkedState: ToolSessionState {
         form.onAdd = { [weak self] entry in self?.download(entry) }
         form.onChooseFile = { [weak self] in self?.chooseMicrocodeFile() }
         controller.presentAsSheet(form)
+        serveCatalogue(to: form)
+    }
 
-        form.say("Fetching the list from github.com…", busy: true)
-        let source = FITToolSession.microcodeSource
-        Task { [weak self, weak form] in
-            do {
-                let entries = try await source.catalogue()
-                form?.show(entries)
-                self?.onCatalogueLoaded?(entries)
-            } catch {
-                self?.fail(error.localizedDescription, inTheForm: true)
-                self?.onCatalogueLoaded?([])
-            }
+    /// Feeds the form its list from the session's catalogue.
+    ///
+    /// The catalogue is read once, at `start()`, and cached. A form that opens
+    /// with the cache in hand is fed from it on the spot; one that opens while
+    /// the read is still running says so and is fed when the read lands; and
+    /// with neither (a start-time read that failed offline) a read starts now,
+    /// because the form is on screen and the list is what it is for.
+    private func serveCatalogue(to form: FITAddMicrocodeViewController) {
+        if !catalogue.isEmpty {
+            form.show(catalogue)
+            onCatalogueLoaded?(catalogue)
+            return
         }
+        if catalogueLoad == nil { loadCatalogue() }
+        form.say("Fetching the list from github.com…", busy: true)
     }
 
     /// The row's "Replace Microcode": the same catalogue, but the form names
@@ -336,19 +418,7 @@ struct FITParkedState: ToolSessionState {
         form.onReplace = { [weak self] entry in self?.replaceMicrocode(entry, at: index) }
         form.onChooseFile = { [weak self] in self?.chooseMicrocodeFile(at: index) }
         controller.presentAsSheet(form)
-
-        form.say("Fetching the list from github.com…", busy: true)
-        let source = FITToolSession.microcodeSource
-        Task { [weak self, weak form] in
-            do {
-                let entries = try await source.catalogue()
-                form?.show(entries)
-                self?.onCatalogueLoaded?(entries)
-            } catch {
-                self?.fail(error.localizedDescription, inTheForm: true)
-                self?.onCatalogueLoaded?([])
-            }
-        }
+        serveCatalogue(to: form)
     }
 
     private func closeForm() {

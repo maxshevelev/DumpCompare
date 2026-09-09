@@ -27,6 +27,13 @@ public struct FITDisplayRow: Equatable, Sendable {
     /// Something is wrong with this row, and the panel says so by colour as
     /// well as in the list below.
     public var hasProblem: Bool
+    /// How this row's microcode stands against the catalogue, when the row
+    /// leads to one and there is a basis for a verdict: whether a newer
+    /// revision for the same processor and platform is out there. `.notRated`
+    /// before the catalogue arrives, for a row that is not a microcode, and
+    /// wherever nothing the collection holds matches. The Type column wears it
+    /// as an icon ahead of the warning.
+    public var latestState: MicrocodeLatest
     /// The zone for the row itself — sixteen bytes of the table.
     public var zoneID: String
     /// Those sixteen bytes.
@@ -164,6 +171,26 @@ public struct FITDisplay: Equatable, Sendable {
     }
 }
 
+extension FITDisplay {
+    /// The same display with every microcode row's "latest" verdict decided
+    /// against the catalogue — the newest revision it lists for that row's
+    /// processor and platform, or nothing where there is no basis for one.
+    ///
+    /// Applied when the catalogue arrives, and again whenever the table is
+    /// re-read with the catalogue already in hand. It changes the marks, never
+    /// the map: the zones, the focus and the detail ride on untouched, so a
+    /// catalogue landing late does not move the outline the user is looking at.
+    public func ratingLatest(against catalogue: [MicrocodeCatalogueEntry]) -> FITDisplay {
+        guard !catalogue.isEmpty else { return self }
+        var copy = self
+        for index in copy.rows.indices {
+            guard case .microcode(let header) = copy.rows[index].model.target else { continue }
+            copy.rows[index].latestState = MicrocodeCatalogue.latest(of: header, in: catalogue)
+        }
+        return copy
+    }
+}
+
 public enum FITPresenter {
     public static let tableZoneID = "fit.table"
     public static let pointerZoneID = "fit.pointer"
@@ -206,6 +233,10 @@ public enum FITPresenter {
             )
         }
         let problemRows = Set(report.problems.compactMap(\.entryIndex))
+        // No catalogue yet: the "latest" verdict for the microcode rows starts
+        // `.notRated`, and the session's `ratingLatest(against:)` fills the
+        // verdicts in once the catalogue is in hand.
+        let latestState: MicrocodeLatest = .notRated
         // A table needs one microcode entry (§8.7), so the last one cannot go.
         let microcodeCount = table.rows.filter { $0.entry.type == FIT.microcodeType }.count
         // The checksum byte is the header's (§5), so the fix is offered on the
@@ -221,6 +252,7 @@ public enum FITPresenter {
                 targetText: targetText(of: row),
                 cpuidText: cpuidText(of: row),
                 hasProblem: problemRows.contains(row.entry.index),
+                latestState: latestState,
                 zoneID: rowZoneID(row.entry.index),
                 rowRange: row.entry.offset..<(row.entry.offset + FITEntry.size),
                 targetRange: targetRange(of: row),

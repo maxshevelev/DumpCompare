@@ -196,4 +196,74 @@ final class MicrocodeCatalogueTests: XCTestCase {
             ["B27", "7C", "F0"]
         )
     }
+
+    // MARK: - Whether it is the latest
+
+    /// An installed header as it comes off a FIT row: read back out of the same
+    /// bytes a header is really read from.
+    private func header(
+        signature: UInt32, revision: UInt32, platform: UInt32
+    ) throws -> MicrocodeHeader {
+        let bytes = TestFIT.microcode(
+            signature: signature, revision: revision, platformIDs: platform
+        )
+        return try XCTUnwrap(MicrocodeHeader.read(at: 0, in: ImageReader(bytes)))
+    }
+
+    /// The fixture tree holds two 906EB updates, one per platform. A header
+    /// matching the newer of its own platform's pair is the latest there is.
+    func testAHeaderMatchingTheNewestRevisionForItsPlatformIsLatest() throws {
+        // plat02 has a single 7C; plat22 has F0.
+        let installed = try header(signature: 0x906EB, revision: 0x7C, platform: 0x02)
+
+        XCTAssertEqual(
+            MicrocodeCatalogue.latest(of: installed, in: try entries()), .latest
+        )
+    }
+
+    /// An older revision than the catalogue's newest for the same CPUID and
+    /// platform is outdated, and the verdict names the revision it is behind.
+    func testAHeaderBehindTheCataloguesNewestIsOutdated() throws {
+        let installed = try header(signature: 0x906EB, revision: 0x50, platform: 0x02)
+
+        XCTAssertEqual(
+            MicrocodeCatalogue.latest(of: installed, in: try entries()),
+            .outdated(newestRevision: 0x7C)
+        )
+    }
+
+    /// The platform is part of the match, not a refinement of it: a newer
+    /// plat22 update does not outdate a plat02 header, because a plat22 header
+    /// will not load on a plat02 board (§7.1).
+    func testAnotherPlatformsNewerRevisionDoesNotOutdateThisOne() throws {
+        // plat02's newest is 7C, but plat22 carries F0 — neither outdates nor
+        // confirms the other.
+        let installed = try header(signature: 0x906EB, revision: 0xF0, platform: 0x02)
+
+        XCTAssertEqual(
+            MicrocodeCatalogue.latest(of: installed, in: try entries()),
+            .notRated,
+            "the row is newer than anything its own platform lists"
+        )
+    }
+
+    /// A header for a CPUID the catalogue does not list has no verdict: the
+    /// collection cannot speak to a processor it does not name.
+    func testACpuidTheCatalogueDoesNotListIsNotRated() throws {
+        let installed = try header(signature: 0x000A_0000, revision: 0xF0, platform: 0x02)
+
+        XCTAssertEqual(
+            MicrocodeCatalogue.latest(of: installed, in: try entries()), .notRated
+        )
+    }
+
+    /// A header whose platform the catalogue has no entry for is not rated
+    /// either — the CPUID matches, but the platform does not.
+    func testAPlatformTheCatalogueDoesNotListIsNotRated() throws {
+        let installed = try header(signature: 0x906EB, revision: 0x7C, platform: 0x55)
+
+        XCTAssertEqual(
+            MicrocodeCatalogue.latest(of: installed, in: try entries()), .notRated
+        )
+    }
 }

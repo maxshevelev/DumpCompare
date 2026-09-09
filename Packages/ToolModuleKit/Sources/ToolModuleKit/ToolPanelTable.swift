@@ -53,14 +53,21 @@ import AppKit
 
     // MARK: - Cells
 
+    /// The tag a cell's marker wears, so a recycled cell can find the icon it
+    /// was given and restyle or hide it per row. A view, not a pointer to
+    /// remember: cells come back out of the pool without their state.
+    public static let markerTag = 6_001
+
     /// A cell for a view-based table drawn at the panel's size: one line of
-    /// text, cut short at the end, optionally with a red warning triangle at
-    /// the leading edge for the column that marks a bad row.
+    /// text, cut short at the end, optionally with icons at the leading edge —
+    /// a red warning triangle for the column that marks a bad row, and a
+    /// marker slot ahead of it for a row's second verdict.
     ///
     /// One factory for both firmware panels — the cell is the same shape in
     /// each — and the caller sets the font it wants per row afterwards, since
     /// a column of numbers reads in monospaced digits and a column of words
-    /// does not.
+    /// does not. Only the FIT panel's Type column asks for the marker slot;
+    /// every other cell, the UEFI panel's included, is what it always was.
     ///
     /// The text never wraps. A field free to take a second line is a field
     /// taller than its row, and a view does not clip its drawing: the second
@@ -68,7 +75,8 @@ import AppKit
     /// half a GUID over its neighbour's name, the disclosure arrow buried).
     public static func makeCell(
         identifier: NSUserInterfaceItemIdentifier,
-        warning: Bool = false
+        warning: Bool = false,
+        marker: Bool = false
     ) -> NSTableCellView {
         let cell = NSTableCellView()
         cell.identifier = identifier
@@ -85,10 +93,21 @@ import AppKit
         cell.textField = field
 
         let content: NSView
-        if warning {
-            let triangle = makeWarning()
-            cell.imageView = triangle
-            let row = NSStackView(views: [triangle, field])
+        if warning || marker {
+            var leading: [NSView] = []
+            if marker {
+                // Ahead of the warning: a row's "latest" verdict is what the
+                // user is reading the column for, and the warning is the older,
+                // sadder mark.
+                let mark = makeMarker()
+                leading.append(mark)
+            }
+            if warning {
+                let triangle = makeWarning()
+                cell.imageView = triangle
+                leading.append(triangle)
+            }
+            let row = NSStackView(views: leading + [field])
             row.orientation = .horizontal
             row.alignment = .centerY
             row.spacing = 4
@@ -98,7 +117,9 @@ import AppKit
             // the triangle and the name sat against the column's right edge).
             row.distribution = .fill
             field.setContentHuggingPriority(.init(1), for: .horizontal)
-            triangle.setContentHuggingPriority(.required, for: .horizontal)
+            for icon in leading {
+                icon.setContentHuggingPriority(.required, for: .horizontal)
+            }
             row.setHuggingPriority(.defaultLow, for: .horizontal)
             content = row
         } else {
@@ -156,6 +177,58 @@ import AppKit
         warning.setContentCompressionResistancePriority(.required, for: .horizontal)
         warning.translatesAutoresizingMaskIntoConstraints = false
         return warning
+    }
+
+    /// Draws `cell`'s marker as `symbol` in `tint` — or hides it when `symbol`
+    /// is nil — with `toolTip` as what the pointer reads on it.
+    ///
+    /// The marker is a second, leading icon the FIT Type column uses for a
+    /// row's "latest" verdict. It is one per cell — green where the installed
+    /// revision is the newest the catalogue lists, orange where the catalogue
+    /// has a newer one, and hidden entirely (`.notRated`) where there is no
+    /// basis for a verdict. The shared package cannot know what those verdicts
+    /// mean, so it takes the glyph the caller chose and says nothing about it.
+    ///
+    /// Set per row, like `setWarning`; a recycled cell would otherwise wear
+    /// whatever row it last dressed. A nil symbol is how a row with no verdict
+    /// is dressed, and the colour that was there before does not linger: the
+    /// marker comes back hidden and colourless.
+    public static func setMarker(
+        symbol: String?,
+        tint: NSColor? = nil,
+        toolTip: String? = nil,
+        on cell: NSTableCellView
+    ) {
+        guard let marker = cell.viewWithTag(markerTag) as? NSImageView else { return }
+        guard let symbol, let tint else {
+            marker.isHidden = true
+            marker.image = nil
+            marker.toolTip = nil
+            return
+        }
+        marker.isHidden = false
+        marker.image = NSImage(
+            systemSymbolName: symbol,
+            accessibilityDescription: toolTip
+        )
+        marker.image?.isTemplate = true
+        marker.contentTintColor = tint
+        marker.symbolConfiguration = .init(
+            pointSize: ToolPanelFont.size, weight: .regular
+        )
+        marker.toolTip = toolTip
+    }
+
+    /// The blank slot the marker is drawn into, hidden until a row earns it.
+    /// Tagged so `setMarker` can find it on a cell come back out of the pool.
+    private static func makeMarker() -> NSImageView {
+        let marker = NSImageView()
+        marker.tag = markerTag
+        marker.isHidden = true
+        marker.imageScaling = .scaleProportionallyUpOrDown
+        marker.setContentCompressionResistancePriority(.required, for: .horizontal)
+        marker.translatesAutoresizingMaskIntoConstraints = false
+        return marker
     }
 
     /// Draws `table` at the panel's size: the row height, the header's height

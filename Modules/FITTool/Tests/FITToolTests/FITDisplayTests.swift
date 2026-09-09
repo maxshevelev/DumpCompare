@@ -13,19 +13,40 @@ final class FITDisplayTests: XCTestCase {
         checksum: UInt8? = nil,
         checksumValid: Bool = true,
         focus: Int? = nil,
-        pointerAddress: UInt64? = nil
+        pointerAddress: UInt64? = nil,
+        microcodeSignature: UInt32 = 0x0008_06EA,
+        microcodeRevision: UInt32 = 0xF0,
+        microcodePlatform: UInt32 = 1
     ) -> FITDisplay {
         let bytes = TestFIT.image(
             rows: rows,
             pointerAddress: pointerAddress,
             checksum: checksum,
             checksumValid: checksumValid,
-            contents: [microcode: TestFIT.microcode(totalSize: 0x180)]
+            contents: [microcode: TestFIT.microcode(
+                signature: microcodeSignature,
+                revision: microcodeRevision,
+                totalSize: 0x180,
+                platformIDs: microcodePlatform
+            )]
         )
         let parsed = UEFIImage(size: 0x1_0000, roots: [], addressDiff: 0xFFFF_0000)
         return FITPresenter.display(
             FITReader.read(ImageReader(bytes), image: parsed), focus: focus
         )
+    }
+
+    /// One Intel catalogue entry, as the file name would write it — the reading
+    /// of the name is the thing under test, so the name is written plainly.
+    private func catalogueEntry(
+        cpuid: UInt32, platform: UInt32, revision: UInt32
+    ) throws -> MicrocodeCatalogueEntry {
+        let platformText = String(platform, radix: 16, uppercase: true)
+        let padded = platformText.count < 2 ? "0" + platformText : platformText
+        let name = "Intel/cpu\(String(cpuid, radix: 16, uppercase: true))"
+            + "_plat\(padded)_ver\(String(revision, radix: 16, uppercase: true))"
+            + "_2019-01-01_PRD_5046D998.bin"
+        return try XCTUnwrap(MicrocodeCatalogue.entry(at: name, size: 0x100))
     }
 
     private var microcodeRow: TestFIT.Row { TestFIT.Row(FIT.microcodeType, target: microcode) }
@@ -318,5 +339,84 @@ final class FITDisplayTests: XCTestCase {
     func testNothingIsOfferedWhenTheChecksumIsRightOrUnused() {
         XCTAssertNil(display([microcodeRow]).checksumFix)
         XCTAssertNil(display([microcodeRow], checksum: 0xCC, checksumValid: false).checksumFix)
+    }
+
+    // MARK: - "Latest" against the catalogue
+
+    /// Before the catalogue is applied no row has a verdict: a display built
+    /// fresh from a parse does not know what is out there.
+    func testEveryRowStartsWithoutALatestVerdict() {
+        XCTAssertEqual(display([microcodeRow]).rows.map(\.latestState),
+                       [.notRated, .notRated])
+    }
+
+    /// Applying an empty catalogue — nothing fetched, or the fetch failed — is
+    /// a no-op: it must not flip a display into pretending a verdict exists.
+    func testAnEmptyCatalogueLeavesTheVerdictsUnrated() {
+        let shown = display([microcodeRow]).ratingLatest(against: [])
+        XCTAssertEqual(shown.rows.map(\.latestState), [.notRated, .notRated])
+    }
+
+    /// The row whose revision is the newest the catalogue lists for its CPUID
+    /// and platform is the latest one, and only the microcode rows are judged —
+    /// the header is not a microcode, whatever the catalogue holds.
+    func testTheRowMatchingTheCataloguesNewestIsLatest() throws {
+        var shown = display([microcodeRow], microcodePlatform: 0x02)
+        shown = shown.ratingLatest(against: [
+            try catalogueEntry(cpuid: 0x0008_06EA, platform: 0x02, revision: 0x7C),
+            try catalogueEntry(cpuid: 0x0008_06EA, platform: 0x02, revision: 0xF0)
+        ])
+
+        XCTAssertEqual(shown.rows[1].latestState, .latest)
+        XCTAssertEqual(shown.rows[0].latestState, .notRated,
+                       "the header row is not a microcode and has no verdict")
+    }
+
+    /// An installed revision behind the catalogue's newest for the same CPUID
+    /// and platform is outdated, and the verdict names the newer revision.
+    func testARowBehindTheCatalogueIsOutdatedAndNamesTheNewerRevision() throws {
+        var shown = display([microcodeRow], microcodeRevision: 0x7C,
+                            microcodePlatform: 0x02)
+        shown = shown.ratingLatest(against: [
+            try catalogueEntry(cpuid: 0x0008_06EA, platform: 0x02, revision: 0xF0)
+        ])
+
+        XCTAssertEqual(shown.rows[1].latestState, .outdated(newestRevision: 0xF0))
+    }
+
+    /// The platform is part of the match, not a refinement: an update for one
+    /// platform does not outdate an update for another, no matter how its
+    /// revision compares.
+    func testThePlatformIsPartOfTheMatch() throws {
+        // The catalogue's newest 806EA is for plat02; this row is for plat22.
+        var shown = display([microcodeRow], microcodePlatform: 0x22)
+        shown = shown.ratingLatest(against: [
+            try catalogueEntry(cpuid: 0x0008_06EA, platform: 0x02, revision: 0xF0)
+        ])
+
+        XCTAssertEqual(shown.rows[1].latestState, .notRated)
+    }
+
+    /// A CPUID the catalogue holds nothing for has no verdict: the collection
+    /// cannot say anything about a processor it does not list.
+    func testACpuidTheCatalogueDoesNotListIsNotRated() throws {
+        var shown = display([microcodeRow], microcodePlatform: 0x02)
+        shown = shown.ratingLatest(against: [
+            try catalogueEntry(cpuid: 0x0009_06EB, platform: 0x02, revision: 0xF0)
+        ])
+
+        XCTAssertEqual(shown.rows[1].latestState, .notRated)
+    }
+
+    /// A revision newer than anything the catalogue lists is not "latest": the
+    /// collection is behind the board, and a behind catalogue cannot confirm
+    /// what it does not know.
+    func testARowNewerThanTheCatalogueIsNotRatedNotLatest() throws {
+        var shown = display([microcodeRow], microcodeRevision: 0x100)
+        shown = shown.ratingLatest(against: [
+            try catalogueEntry(cpuid: 0x0008_06EA, platform: 0x01, revision: 0xF0)
+        ])
+
+        XCTAssertEqual(shown.rows[1].latestState, .notRated)
     }
 }

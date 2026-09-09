@@ -94,6 +94,42 @@ final class FITToolFlowTests: XCTestCase {
         return try XCTUnwrap(descendants(of: panel, NSTableView.self).first)
     }
 
+    /// Drives the session's catalogue to a deterministic end: the start-time
+    /// load may finish before or after the first parse, so a test cannot wait
+    /// on either alone. Opening the add form serves the cached catalogue or
+    /// joins the load that is still running — whichever it is, the seam fires
+    /// only once the catalogue is in hand — and the sheet is then dismissed.
+    /// When this returns, the table on screen has been rated against the
+    /// catalogue.
+    private func waitForTheCatalogue() throws {
+        let loaded = expectation(description: "the catalogue is in hand")
+        try session().withCatalogueSeam { loaded.fulfill() }
+        try button("Add Microcode…").performClick(nil)
+        wait(for: [loaded], timeout: 5)
+
+        let sheet = try XCTUnwrap(try session().viewController.presentedViewControllers?.first)
+        let cancel = try XCTUnwrap(descendants(of: sheet.view, NSButton.self)
+            .first { $0.title == "Cancel" })
+        cancel.performClick(nil)
+        window?.layoutIfNeeded()
+    }
+
+    /// The Type column cell for a row of the FIT table — the column the
+    /// "latest" marker and the warning both wear.
+    private func typeCell(row: Int) throws -> NSTableCellView {
+        try XCTUnwrap(
+            entriesTable().view(atColumn: 1, row: row, makeIfNecessary: true)
+                as? NSTableCellView
+        )
+    }
+
+    /// The marker slot every Type cell carries, hidden until a row has a
+    /// verdict against the catalogue.
+    private func marker(in cell: NSTableCellView) throws -> NSImageView {
+        try XCTUnwrap(cell.viewWithTag(ToolPanelTable.markerTag) as? NSImageView,
+                      "the Type cell carries the marker slot")
+    }
+
     /// It is in the shipping app, not only in the tests.
     func testTheAppShipsIt() {
         XCTAssertTrue(ToolRegistry.builtIn.contains { $0.identifier == FITToolModule.identifier },
@@ -946,6 +982,62 @@ final class FITToolFlowTests: XCTestCase {
         XCTAssertEqual(clean.textField?.textColor, .labelColor)
     }
 
+    // MARK: - The "latest" marker in the Type column
+
+    /// The marker slot is a second, leading icon in the Type column — every
+    /// Type cell carries one, hidden until its row earns a verdict — and the
+    /// microcode the catalogue confirms is its newest for the CPUID and
+    /// platform wears the green seal.
+    func testTheMicrocodeTheCatalogueConfirmsAsNewestWearsTheGreenSeal() throws {
+        _ = try open(FITTestImage.make(microcodeRevision: 0xF0,
+                                       microcodePlatform: 0x02))
+        try waitForTheCatalogue()
+
+        let mark = try marker(in: typeCell(row: 1))
+        XCTAssertFalse(mark.isHidden, "the confirmed-newest row wears its seal")
+        XCTAssertEqual(mark.contentTintColor, .systemGreen)
+        XCTAssertEqual(mark.toolTip,
+                       "Newest revision the catalogue lists for this processor and platform")
+    }
+
+    /// The header row is not a microcode, so the catalogue has nothing to say
+    /// about it — its marker slot stays empty even when the table is rated.
+    func testTheHeaderRowWearsNoSeal() throws {
+        _ = try open(FITTestImage.make(microcodeRevision: 0xF0,
+                                       microcodePlatform: 0x02))
+        try waitForTheCatalogue()
+
+        XCTAssertTrue(try marker(in: typeCell(row: 0)).isHidden)
+    }
+
+    /// A microcode behind the catalogue's newest for its CPUID and platform
+    /// wears the orange triangle, and the pointer names the revision it is
+    /// behind. The catalogue lists 806EA plat02 at r.F0; a board carrying
+    /// r.E0 is a board behind.
+    func testAMicrocodeBehindTheCatalogueWearsTheOrangeTriangle() throws {
+        _ = try open(FITTestImage.make(microcodeRevision: 0xE0,
+                                       microcodePlatform: 0x02))
+        try waitForTheCatalogue()
+
+        let mark = try marker(in: typeCell(row: 1))
+        XCTAssertFalse(mark.isHidden, "the behind row wears its warning")
+        XCTAssertEqual(mark.contentTintColor, .systemOrange)
+        XCTAssertEqual(mark.toolTip, "Catalogue lists a newer revision (r.F0)")
+    }
+
+    /// A microcode whose platform the catalogue holds no entry for — or whose
+    /// CPUID it does not list — has no basis for a verdict, and a row with no
+    /// verdict wears nothing. The catalogue lists 806EA for plat02 only; a
+    /// plat01 update is not rated by it.
+    func testAMicrocodeTheCatalogueDoesNotMatchIsNotMarked() throws {
+        _ = try open(FITTestImage.make(microcodeRevision: 0xF0,
+                                       microcodePlatform: 0x01))
+        try waitForTheCatalogue()
+
+        XCTAssertTrue(try marker(in: typeCell(row: 1)).isHidden,
+                      "nothing the catalogue holds matches plat01, so no verdict")
+    }
+
     /// A checksum that does not check out reads red in the detail, the way the
     /// UEFI panel's does — the value alone, not the label beside it.
     func testAnInvalidChecksumIsRedInTheDetail() throws {
@@ -999,14 +1091,23 @@ enum FITTestImage {
         microcodeAddress: UInt64? = nil,
         extraACM: Bool = false,
         extraMicrocode: Bool = false,
-        brokenMicrocodeRows: Int = 0
+        brokenMicrocodeRows: Int = 0,
+        microcodeSignature: UInt32 = 0x0008_06EA,
+        microcodeRevision: UInt32 = 0xF0,
+        microcodePlatform: UInt32 = 1
     ) -> [UInt8] {
         var image = [UInt8](repeating: 0xFF, count: 0x1_0000)
         let diff: UInt64 = 0x1_0000_0000 - 0x1_0000
-        image.replaceSubrange(0x2000..<0x2100, with: microcode())
+        image.replaceSubrange(
+            0x2000..<0x2100,
+            with: microcode(signature: microcodeSignature, revision: microcodeRevision,
+                            platformIDs: microcodePlatform)
+        )
         if extraMicrocode {
             image.replaceSubrange(
-                0x2100..<0x2200, with: microcode(signature: 0x0009_06EA, revision: 0xB4)
+                0x2100..<0x2200,
+                with: microcode(signature: 0x0009_06EA, revision: 0xB4,
+                                platformIDs: microcodePlatform)
             )
         }
 
@@ -1076,7 +1177,11 @@ enum FITTestImage {
 
     /// A microcode image with a correct dword checksum — the editor refuses one
     /// without it.
-    static func microcode(signature: UInt32 = 0x0008_06EA, revision: UInt32 = 0xF0) -> [UInt8] {
+    static func microcode(
+        signature: UInt32 = 0x0008_06EA,
+        revision: UInt32 = 0xF0,
+        platformIDs: UInt32 = 1
+    ) -> [UInt8] {
         var bytes: [UInt8] = []
         func u32(_ value: UInt32) {
             bytes += (0..<4).map { UInt8(truncatingIfNeeded: value >> (8 * $0)) }
@@ -1087,7 +1192,7 @@ enum FITTestImage {
         u32(signature)
         u32(0)                       // Checksum, filled in below
         u32(1)                       // LoaderRevision
-        u32(1)                       // PlatformIds
+        u32(platformIDs)             // PlatformIds
         u32(0x40)                    // DataSize
         u32(0x100)                   // TotalSize
         u32(0); u32(0); u32(0)       // MetadataSize, UpdateRevisionMin, Reserved

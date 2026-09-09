@@ -1,4 +1,5 @@
 import Foundation
+import UEFIImage
 
 /// The four kinds of microcode the collection holds, one directory each.
 ///
@@ -66,6 +67,30 @@ public struct MicrocodeCatalogueEntry: Equatable, Sendable, Identifiable {
     }
 
     public var fileName: String { String(path.split(separator: "/").last ?? "") }
+
+    /// The revision as a number, where the file name writes one: `7C` reads as
+    /// 0x7C. Nil for Freescale, whose `2.1` is no hexadecimal — one more way in
+    /// which it is not like the other three.
+    public var revision: UInt32? { UInt32(revisionText, radix: 16) }
+}
+
+/// How one installed microcode stands against the catalogue: is there a newer
+/// revision out there for the same processor and platform?
+///
+/// A value rather than a question asked against a live fetch, so a row's
+/// verdict is decided in the pure target and tested by `swift test`. The panel
+/// turns it into an icon in the Type column — green where the row is newest,
+/// orange where the catalogue has newer — and nothing where there is no basis
+/// for a verdict.
+public enum MicrocodeLatest: Equatable, Sendable {
+    /// The newest revision the catalogue lists for this CPUID and platform.
+    case latest
+    /// The catalogue holds a newer one — which, so the pointer can name it.
+    case outdated(newestRevision: UInt32)
+    /// No basis for a verdict: no catalogue yet, nothing it holds for this
+    /// CPUID and platform, or a revision newer than any it lists (the
+    /// collection is behind the board).
+    case notRated
 }
 
 /// The list of what can be added, read from the repository's file names.
@@ -174,5 +199,34 @@ public enum MicrocodeCatalogue {
         in entries: [MicrocodeCatalogueEntry]
     ) -> [MicrocodeVendor: Int] {
         entries.reduce(into: [:]) { counts, entry in counts[entry.vendor, default: 0] += 1 }
+    }
+
+    /// Whether an installed microcode is the newest the catalogue lists for its
+    /// processor and platform.
+    ///
+    /// The platform is part of the match, not a refinement of it: two updates
+    /// of one CPUID can serve different platforms (§7.1's platform ids, and the
+    /// `plat02`/`plat22` in the names), and a newer `plat22` revision does not
+    /// outdate a `plat02` update. The platform id is compared exactly as the
+    /// file name writes it, because that is the value an update's own header
+    /// stores (§7.1): `plat22` names an update whose header reads 0x22.
+    ///
+    /// A revision newer than anything the catalogue lists is not "latest": the
+    /// collection is behind the board, and a behind catalogue cannot confirm
+    /// what it does not know.
+    public static func latest(
+        of header: MicrocodeHeader,
+        in entries: [MicrocodeCatalogueEntry]
+    ) -> MicrocodeLatest {
+        let revisions = entries.compactMap { entry -> UInt32? in
+            guard entry.cpuid == header.processorSignature,
+                  entry.platformID == header.platformIDs
+            else { return nil }
+            return entry.revision
+        }
+        guard let newest = revisions.max() else { return .notRated }
+        if header.updateRevision > newest { return .notRated }
+        if header.updateRevision == newest { return .latest }
+        return .outdated(newestRevision: newest)
     }
 }
