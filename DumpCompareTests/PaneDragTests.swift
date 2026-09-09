@@ -946,18 +946,24 @@ final class PaneDragTests: XCTestCase {
         XCTAssertNotNil(header.layer?.backgroundColor,
                         "the header fills itself rather than showing what is behind it")
 
-        // The premise, and the reason the obvious colour was not the one taken.
-        // Measured, not assumed: on this OS `windowBackgroundColor` and
-        // `textBackgroundColor` are the same colour in both appearances, so a
-        // header filled with the first would be exactly as flat as no fill.
+        // What must hold on every OS, asserted rather than assumed: the fill
+        // stands off the document, or the strip meant to be grabbed has no
+        // visible edge. A system fill differs from `textBackgroundColor` in
+        // both appearances and adapts on its own.
+        //
+        // The obvious colour, `windowBackgroundColor`, is deliberately not the
+        // one taken — measured on macOS 26 the window grey and the document
+        // white are the same colour in both appearances, so there that fill
+        // would have been exactly as flat as none. That coincidence is not an
+        // invariant: on macOS 15 the window grey is a grey and the two differ,
+        // so pinning it would make this test fail on half the supported OSes
+        // for no fault of the header. What every OS owes us is the difference
+        // asserted below.
         for appearance in [NSAppearance.Name.aqua, .darkAqua] {
             NSAppearance(named: appearance)?.performAsCurrentDrawingAppearance {
-                XCTAssertEqual(NSColor.windowBackgroundColor.cgColor,
-                               NSColor.textBackgroundColor.cgColor,
-                               "\(appearance.rawValue): the window grey is the document white")
                 XCTAssertNotEqual(NSColor.tertiarySystemFill.cgColor,
                                   NSColor.textBackgroundColor.cgColor,
-                                  "\(appearance.rawValue): the fill actually differs")
+                                  "\(appearance.rawValue): the header's fill differs from the document")
             }
         }
 
