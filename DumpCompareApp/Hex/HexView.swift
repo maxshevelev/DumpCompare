@@ -2070,18 +2070,15 @@ final class HexView: NSView, NSViewToolTipOwner {
     /// doesn't fight with the byte highlighting underneath.
     /// Outlines every published zone that reaches the drawn rows.
     ///
-    /// The focused one is stroked at full strength and the rest faintly: a map
-    /// of a dozen regions all drawn as loudly as each other is a cage over the
-    /// bytes, and the tool-module has already said which one the user is
-    /// looking at.
+    /// The focused zone is teal and washed; every other published zone is the
+    /// same line in a fixed khaki yellow. Both are drawn at the same strength,
+    /// so what is being worked on is told from what is merely in the map by
+    /// hue and by the wash — never by how faintly the also-rans are drawn.
     private func drawZoneContours(layout: HexLayout, fileSize: UInt64, rows: Range<Int>) {
         for zone in zoneShapes(layout: layout, fileSize: fileSize, rows: rows) {
-            HexTheme.zoneFrame
-                .withAlphaComponent(zone.isFocused ? Self.zoneFocusedAlpha : Self.zoneAlpha)
-                .setStroke()
-            zone.path.lineWidth = zone.isFocused
-                ? Self.mirrorContourLineWidth
-                : Self.mirrorContourLineWidth / 2
+            let colour = zone.isFocused ? HexTheme.zoneFrame : HexTheme.zoneFrameInactive
+            colour.withAlphaComponent(Self.zoneFocusedAlpha).setStroke()
+            zone.path.lineWidth = Self.mirrorContourLineWidth
             zone.path.stroke()
         }
     }
@@ -2138,11 +2135,10 @@ final class HexView: NSView, NSViewToolTipOwner {
         return shapes
     }
 
-    /// How strongly a published zone's outline is drawn, and the focused one.
-    /// The unfocused line still has to be a line — at a third it read as a
-    /// smudge against the bytes — so the two are told apart by the focused
-    /// one's double width as much as by its strength.
-    static let zoneAlpha: CGFloat = 0.5
+    /// The strength every published zone's outline is drawn at. Focused and
+    /// plain are the same line — the pair are told apart by colour and by the
+    /// focused one's wash, never by strength, so the unfocused ones still read
+    /// as lines rather than smudges.
     static let zoneFocusedAlpha: CGFloat = 0.9
 
     /// And how lightly the focused zone is washed: a tenth, which is enough to
@@ -3437,6 +3433,15 @@ enum HexTheme {
     /// mirror of the other pane — and a zone is something the file *has*, not
     /// something the user is doing.
     static let zoneFrame = NSColor.systemTeal
+
+    /// The outline of a published zone that is not the one in focus — the rest
+    /// of the map around the focused zone. A fixed khaki yellow (#DAD554), the
+    /// mirror image of the focus's teal: teal says "this is the node you are
+    /// looking at", this says "still part of the same map". Fixed rather than
+    /// theme-adaptive, because it is drawn over whatever the dump's own layers
+    /// painted — the same reasoning as `findIndicatorFill`'s fixed yellow.
+    static let zoneFrameInactive = NSColor(
+        srgbRed: 0xDA / 0xFF, green: 0xD5 / 0xFF, blue: 0x54 / 0xFF, alpha: 1)
 
     /// The six segment tints, cycled by label (§21.3): S0 light green, S1 light
     /// pink, S2 pale blue, S3 pale yellow, S4 lavender, S5 peach. A small set of

@@ -247,10 +247,11 @@ final class MinimapZoneTests: XCTestCase {
 
     // MARK: - What a bracket looks like
 
-    /// The brackets are painted in the dump's own zone colour, and the focused
-    /// one louder than the rest — the same hue, the same pair of strengths and
-    /// the same pair of widths the dump uses, because a zone on the map and the
-    /// same zone in the dump are one statement about the file (§19.4.5).
+    /// The brackets are painted in the dump's own zone colours — the focused
+    /// one in `HexTheme.zoneFrame` teal and every other in the fixed yellow of
+    /// `HexTheme.zoneFrameInactive`, at the same strength and width, because a
+    /// zone on the map and the same zone in the dump are one statement about
+    /// the file and must not be told apart by their looks (§19.4.5).
     func testTheBracketsWearTheDumpsZoneColours() throws {
         let (_, window, panel, host) = try makeWindow()
         // Two siblings, so both brackets are in lane 0 and their stems share an
@@ -270,23 +271,28 @@ final class MinimapZoneTests: XCTestCase {
 
         XCTAssertGreaterThan(distance(plain, paper), 0.05,
                              "an unfocused bracket is still a line: \(plain) vs \(paper)")
-        XCTAssertGreaterThan(distance(focused, paper), distance(plain, paper),
-                             "and the focused one is louder: \(focused) vs \(plain)")
+        XCTAssertGreaterThan(distance(plain, focused), 0.3,
+                             "and the two are told apart by hue, not strength: "
+                             + "\(plain) vs \(focused)")
 
-        // The hue is the dump's: both samples move away from the paper in the
-        // direction of `HexTheme.zoneFrame`, channel by channel. Asserting the
-        // blend itself would be asserting how AppKit composites a translucent
-        // stroke.
-        let teal = try XCTUnwrap(HexTheme.zoneFrame.usingColorSpace(.deviceRGB))
-        for (name, channel) in [("red", \NSColor.redComponent),
-                                ("green", \NSColor.greenComponent),
-                                ("blue", \NSColor.blueComponent)]
-            as [(String, KeyPath<NSColor, CGFloat>)] {
-            let toTeal = teal[keyPath: channel] - paper[keyPath: channel]
-            guard abs(toTeal) > 0.1 else { continue }
-            let moved = focused[keyPath: channel] - paper[keyPath: channel]
-            XCTAssertEqual(moved > 0, toTeal > 0,
-                           "the bracket's \(name) moves toward the dump's zone colour")
+        // Each hue is the dump's own: the focused bracket moves away from the
+        // paper toward `HexTheme.zoneFrame`, and an unfocused one toward
+        // `HexTheme.zoneFrameInactive`, channel by channel. Asserting the blend
+        // itself would be asserting how AppKit composites a translucent stroke.
+        for (sample, target, who) in [(focused, HexTheme.zoneFrame, "the focused bracket"),
+                                      (plain, HexTheme.zoneFrameInactive,
+                                       "an unfocused bracket")] {
+            let targetRGB = try XCTUnwrap(target.usingColorSpace(.deviceRGB))
+            for (name, channel) in [("red", \NSColor.redComponent),
+                                    ("green", \NSColor.greenComponent),
+                                    ("blue", \NSColor.blueComponent)]
+                as [(String, KeyPath<NSColor, CGFloat>)] {
+                let toTarget = targetRGB[keyPath: channel] - paper[keyPath: channel]
+                guard abs(toTarget) > 0.1 else { continue }
+                let moved = sample[keyPath: channel] - paper[keyPath: channel]
+                XCTAssertEqual(moved > 0, toTarget > 0,
+                               "\(who)'s \(name) moves toward the dump's zone colour")
+            }
         }
     }
 

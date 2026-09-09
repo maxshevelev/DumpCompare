@@ -272,12 +272,11 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     /// extent — the same trade the viewport band's floor makes (§19.6).
     static let zoneBracketMinHeight: CGFloat = 4
 
-    /// The stem's width, and the focused zone's. Both are the dump's own
-    /// (§19.4.5): a zone in the map and the same zone in the dump are drawn
-    /// with one hue, one pair of strengths and one pair of widths, because they
-    /// are one statement about the file.
-    static let zoneBracketLineWidth: CGFloat = 1
-    static let zoneBracketFocusedLineWidth: CGFloat = 2
+    /// The stem's width. Every bracket is drawn at it — focused and plain alike
+    /// — matching the dump's own zone outline (§19.4.5): a zone in the map and
+    /// the same zone in the dump are one statement about the file and must not
+    /// be told apart by their looks.
+    static let zoneBracketLineWidth: CGFloat = 2
 
     private(set) var mapLayout: MapLayout = .single
     /// The maps currently drawn (file sizes + selections). Readable so tests can
@@ -1736,19 +1735,21 @@ final class MinimapView: NSView, NSViewToolTipOwner {
     }
 
     /// Draws the zone gutters: one bracket per published zone, in the dump's own
-    /// teal (§19.4.5).
+    /// zone colours (§19.4.5).
     ///
-    /// The colours are exactly the dump's: `HexTheme.zoneFrame` at
-    /// `HexView.zoneAlpha`, and the focused zone at `HexView.zoneFocusedAlpha`
-    /// and double width — a zone in the map and the same zone in the dump are
-    /// one statement about the file and must not be told apart by their looks.
-    /// The bracket under the pointer goes to full strength, keeping its own
-    /// width: the same colour, just louder, which is how the segment strip says
-    /// "this is the one you are pointing at" (§19.4.4).
+    /// The colours are exactly the dump's: the focused bracket is
+    /// `HexTheme.zoneFrame` and every other is `HexTheme.zoneFrameInactive`,
+    /// both at `HexView.zoneFocusedAlpha` and the same width — a zone in the
+    /// map and the same zone in the dump are one statement about the file and
+    /// must not be told apart by their looks. The bracket under the pointer
+    /// goes to full strength, keeping its own colour: the same statement, just
+    /// louder, which is how the segment strip says "this is the one you are
+    /// pointing at" (§19.4.4).
     ///
-    /// Faint first, so a focused zone's bracket is never crossed by a
-    /// neighbour's — zones nest, and the inner one is usually the focus, the
-    /// same order `HexView.zoneShapes` draws in.
+    /// Drawn in the dump's order — unfocused first, the focused bracket last —
+    /// so the focused one is never crossed by a neighbour's: zones nest, and
+    /// the inner one is usually the focus, the same order `HexView.zoneShapes`
+    /// draws in.
     private func drawZoneBrackets(dirtyRect: NSRect) {
         for index in zoneBrackets.indices where maps.indices.contains(index) {
             guard let gutter = zoneGutterRect(forMapAt: index),
@@ -1762,13 +1763,9 @@ final class MinimapView: NSView, NSViewToolTipOwner {
                       path.bounds.insetBy(dx: -1, dy: -1).intersects(dirtyRect) else { continue }
                 let isHovered = hoveredZoneBracket?.mapIndex == index
                     && hoveredZoneBracket?.bracketIndex == bracketIndex
-                let alpha = isHovered
-                    ? 1
-                    : (bracket.isFocused ? HexView.zoneFocusedAlpha : HexView.zoneAlpha)
-                HexTheme.zoneFrame.withAlphaComponent(alpha).setStroke()
-                path.lineWidth = bracket.isFocused
-                    ? Self.zoneBracketFocusedLineWidth
-                    : Self.zoneBracketLineWidth
+                let colour = bracket.isFocused ? HexTheme.zoneFrame : HexTheme.zoneFrameInactive
+                colour.withAlphaComponent(isHovered ? 1 : HexView.zoneFocusedAlpha).setStroke()
+                path.lineWidth = Self.zoneBracketLineWidth
                 path.stroke()
             }
         }

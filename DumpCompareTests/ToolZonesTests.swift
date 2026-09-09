@@ -162,10 +162,18 @@ final class ToolZonesTests: XCTestCase {
                        "a row outside the zone is untouched")
     }
 
-    /// A map of a dozen regions drawn as loudly as each other is a cage over
-    /// the bytes, so only the focused one is at full strength.
-    func testTheFocusedZoneIsStrokedMoreStronglyThanTheRest() throws {
-        XCTAssertGreaterThan(HexView.zoneFocusedAlpha, HexView.zoneAlpha)
+    /// Focused and plain zones are drawn as the same line — the tool-module has
+    /// already said which zone the user is looking at, so a plain zone's
+    /// outline is a fixed khaki yellow (#DAD554) rather than the focused teal
+    /// at half strength: the pair are told apart by hue and by the wash.
+    func testAPlainZoneIsOutlinedInItsOwnFixedYellow() throws {
+        let plain = HexTheme.zoneFrameInactive
+        XCTAssertEqual(plain.redComponent, 0xDA / 0xFF, accuracy: 0.001)
+        XCTAssertEqual(plain.greenComponent, 0xD5 / 0xFF, accuracy: 0.001)
+        XCTAssertEqual(plain.blueComponent, 0x54 / 0xFF, accuracy: 0.001)
+        let focused = try XCTUnwrap(HexTheme.zoneFrame.usingColorSpace(.deviceRGB))
+        XCTAssertGreaterThan(abs(plain.redComponent - focused.redComponent), 0.2,
+                             "a plain zone is never mistaken for the focused one")
     }
 
     /// The wash marks the one region being worked on. The others say where they
