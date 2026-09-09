@@ -674,6 +674,23 @@ public actor MEFirmwareAnalyzer {
                 isAFS: false)
         }
 
+        // Phase 9 (identity-gated): the file-6 Intel Configuration's Chipset
+        // Initialization Tables (upstream mphytbl/pch_init_anl). mphytbl* file
+        // records are already sliced out of file 6 by the config decode retained
+        // in `mfsInfo`; only their *stepping letters* are identity-gated
+        // (variant/major/minor/build + manifest date decide absolute vs bitfield
+        // vs build rules), so the decode is deferred past identity. Unlike the
+        // Home Directory it is not gated on `vfs_starts_at_0` — a legacy volume's
+        // config stream is decoded regardless of where its files start. Best-
+        // effort: no mphytbl records → nil, no Issues.
+        if mfsVolume?.usesFTBL == false, let info = mfsInfo {
+            mfsVolume?.pchInit = PCHInitDecoder.decode(
+                files: info.files, configurations: info.configurations,
+                variant: identity.variant, major: identity.major,
+                minor: identity.minor, build: identity.build,
+                year: manifest.year, month: manifest.month, day: manifest.day)
+        }
+
         return FirmwareAnalysis(
             family: identity.family,
             variant: identity.variant,

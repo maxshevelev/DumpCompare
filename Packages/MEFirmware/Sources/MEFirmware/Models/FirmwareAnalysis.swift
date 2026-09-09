@@ -758,6 +758,11 @@ public struct MFSVolume: Codable, Sendable, Equatable {
     public var reservedIntegrity: [MFSReservedFileIntegrity]  // trailing Integrity
                                           // headers of reserved low-level files
                                           // 1–5 (upstream 7901–7929)
+    public var pchInit: MFSPCHInit?       // file-6 Intel Configuration > Chipset
+                                          // Initialization Table decode (upstream
+                                          // mphytbl/pch_init_anl), when the volume
+                                          // carries mphytbl* records and the
+                                          // identity-gated stepping rules apply
 
     public init(offset: Int, pageSize: Int, pageCount: Int,
                 systemPageCount: Int, dataPageCount: Int,
@@ -767,7 +772,8 @@ public struct MFSVolume: Codable, Sendable, Equatable {
                 usesFTBL: Bool, presentFileCount: Int = 0, fileBytes: Int = 0,
                 files: [MFSFile] = [], configurations: [MFSConfiguration] = [],
                 homeDirectory: MFSHomeDirectory? = nil,
-                reservedIntegrity: [MFSReservedFileIntegrity] = []) {
+                reservedIntegrity: [MFSReservedFileIntegrity] = [],
+                pchInit: MFSPCHInit? = nil) {
         self.offset = offset
         self.pageSize = pageSize
         self.pageCount = pageCount
@@ -788,6 +794,66 @@ public struct MFSVolume: Codable, Sendable, Equatable {
         self.configurations = configurations
         self.homeDirectory = homeDirectory
         self.reservedIntegrity = reservedIntegrity
+        self.pchInit = pchInit
+    }
+}
+
+/// The decoded Chipset Initialization Tables carried by a legacy MFS volume's
+/// Intel Configuration (low-level file 6, upstream `mphytbl` MEA.py 8956). Its
+/// file records named `mphytbl*` each hold an initialization-table blob whose
+/// bytes name a chipset platform, its stepping(s) and the table's revision;
+/// those stepping letters are aggregated per unique chipset (`pch_init_anl`,
+/// MEA.py 9097). The stepping *letters* are identity-gated — upstream decides
+/// between absolute/bitfield/build rules from `variant`/`major`/`minor` and the
+/// manifest date — so the decode runs after identification. `records` carries
+/// one entry per mphytbl* table (chipset label, stepping letters, revision);
+/// `chipsets` is the deduplicated per-chipset stepping summary upstream uses
+/// for the CSE Chipset Platform row. `pch_dict` labels (MEA.py 10839) are
+/// compile-time constants, like IUPDescriptor's.
+public struct MFSPCHInit: Codable, Sendable, Equatable {
+    public var records: [MFSPCHInitRecord]
+    public var chipsets: [MFSPCHInitChipset]
+
+    public init(records: [MFSPCHInitRecord], chipsets: [MFSPCHInitChipset]) {
+        self.records = records
+        self.chipsets = chipsets
+    }
+}
+
+/// One decoded `mphytbl*` table (upstream `mphytbl` row `[mfs_file, chipset,
+/// stepping, revision]`, MEA.py 9022). `chipset` is the `pch_dict` platform
+/// label of the table's chipset-ID byte (nibble on the old layout), with the
+/// identity-gated renames applied ('WTL' at CSSPS 4.4, 'CMP-V' at CSME 14.5)
+/// or 'Unknown' when the ID has no entry. `stepping` is the table's decoded
+/// stepping letters — absolute letter, bitfield letters (e.g. "CB" = C+B), or
+/// a build-derived letter — and stays empty when the identity's stepping is
+/// unreliable (pre-2015-05-19 CSME 11 / CSSPS 4). `revision` is the table's
+/// own init-table Revision byte (new layout @+6, old @+2).
+public struct MFSPCHInitRecord: Codable, Sendable, Equatable {
+    public var chipset: String
+    public var stepping: String
+    public var revision: Int
+
+    public init(chipset: String, stepping: String, revision: Int) {
+        self.chipset = chipset
+        self.stepping = stepping
+        self.revision = revision
+    }
+}
+
+/// One row of the per-chipset aggregation (upstream `pch_init_anl` MEA.py
+/// 9097, dropping its trailing display-only total cell): each unique chipset
+/// platform that appeared among the mphytbl* tables, with the concatenation of
+/// every stepping string that tables of that chipset decoded, deduplicated and
+/// sorted in reverse order (e.g. "CB" + "A" → "CBA"). Empty when the first
+/// table's stepping was unreliable (upstream's early return).
+public struct MFSPCHInitChipset: Codable, Sendable, Equatable {
+    public var chipset: String
+    public var steppings: String
+
+    public init(chipset: String, steppings: String) {
+        self.chipset = chipset
+        self.steppings = steppings
     }
 }
 
@@ -1644,5 +1710,5 @@ public struct Issue: Codable, Sendable, Equatable, Identifiable {
 /// whether to surface the new data (`reference/result-model.md` §Versioning).
 public enum EngineModelRevision {
     /// Current revision of the `FirmwareAnalysis` shape.
-    public static let current = 20
+    public static let current = 21
 }
