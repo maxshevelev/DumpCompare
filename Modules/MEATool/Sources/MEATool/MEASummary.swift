@@ -13,15 +13,35 @@ public enum MEASummaryValue: Sendable, Equatable {
     case comingSoon
 }
 
+/// How a row's value is drawn — the colour intent the pure target decides
+/// because only it knows the fact behind a value (e.g. a File System State's
+/// status). The view resolves each tone into a theme-adapted `NSColor`; a row
+/// carries `.standard` unless it says otherwise.
+public enum MEASummaryTone: Sendable, Equatable {
+    /// The ordinary label-colour value most rows carry.
+    case standard
+    /// A settled state — drawn green.
+    case good
+    /// A state in the middle of its lifecycle — drawn brown.
+    case caution
+    /// A failed state — drawn red.
+    case bad
+}
+
 /// One Field/Value row of the summary — the same shape as `MEAField`, with the
 /// not-yet-surfaced value added.
 public struct MEASummaryRow: Sendable, Equatable {
     public var label: String
     public var value: MEASummaryValue
+    /// How the value is drawn; `.standard` for rows with nothing to say in
+    /// colour.
+    public var tone: MEASummaryTone
 
-    public init(_ label: String, _ value: MEASummaryValue) {
+    public init(_ label: String, _ value: MEASummaryValue,
+                tone: MEASummaryTone = .standard) {
         self.label = label
         self.value = value
+        self.tone = tone
     }
 }
 
@@ -136,7 +156,9 @@ public enum MEASummary {
         // 17 · File System State.
         if isMFSFamily(analysis.family) {
             if let state = analysis.mfsState {
-                add("File System State", .value(MEAText.title(state.rawValue)))
+                rows.append(MEASummaryRow("File System State",
+                                          .value(MEAText.title(state.rawValue)),
+                                          tone: Self.tone(for: state)))
             } else if identified {
                 add("File System State", .comingSoon)
             }
@@ -168,6 +190,18 @@ public enum MEASummary {
         }
         let letters = last.steppings.map(String.init).joined(separator: ",")
         return letters.isEmpty ? last.chipset : "\(last.chipset) \(letters)"
+    }
+
+    /// The File System State row's colour tone. The two settled states — the
+    /// volume has no files yet (`unconfigured`) and it is fully set up
+    /// (`configured`) — read as green; a volume mid-lifecycle (`initialized`)
+    /// is brown; a failed decode (`error`) is red.
+    private static func tone(for state: MFSState) -> MEASummaryTone {
+        switch state {
+        case .unconfigured, .configured: return .good
+        case .initialized: return .caution
+        case .error: return .bad
+        }
     }
 
     /// Families whose firmware usually carries an OEM-signed/partition story

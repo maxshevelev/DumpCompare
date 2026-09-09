@@ -394,7 +394,7 @@ import ToolModuleKit
                 ? ToolPanelFont.monospacedDigits()
                 : ToolPanelFont.body()
             value.isSelectable = true
-            value.textColor = .labelColor
+            value.textColor = MEASummaryToneColor.color(for: row.tone)
         case .comingSoon:
             value = NSTextField(labelWithString: "Coming soon")
             value.font = ToolPanelFont.body()
@@ -503,3 +503,44 @@ extension MEAToolViewController: NSOutlineViewDataSource, NSOutlineViewDelegate 
 /// The tree, with no behaviour past NSOutlineView's — kept as its own subclass
 /// so a future context menu (like the UEFI tool's Fix Checksum) has a home.
 private final class MEOutlineView: NSOutlineView {}
+
+/// The colour a summary row's value is drawn in, by its `MEASummaryTone`.
+/// The three status tones are resolved per appearance — a saturated but darker
+/// shade in light mode, a lighter pastel in dark — so each stays legible
+/// against the panel background in both themes.
+private enum MEASummaryToneColor {
+    static func color(for tone: MEASummaryTone) -> NSColor {
+        switch tone {
+        case .standard: return .labelColor
+        case .good: return Self.good
+        case .caution: return Self.caution
+        case .bad: return Self.bad
+        }
+    }
+
+    /// A settled File System State — green in both themes.
+    private static let good = NSColor(name: nil) { appearance in
+        Self.isDark(appearance)
+            ? NSColor(srgbRed: 0.55, green: 0.82, blue: 0.40, alpha: 1)
+            : NSColor(srgbRed: 0.07, green: 0.46, blue: 0.12, alpha: 1)
+    }
+
+    /// A mid-lifecycle File System State — brown, brightened to tan in dark
+    /// mode so it does not sink into the background.
+    private static let caution = NSColor(name: nil) { appearance in
+        Self.isDark(appearance)
+            ? NSColor(srgbRed: 0.86, green: 0.66, blue: 0.36, alpha: 1)
+            : NSColor(srgbRed: 0.55, green: 0.34, blue: 0.04, alpha: 1)
+    }
+
+    /// A failed File System State — red in both themes.
+    private static let bad = NSColor(name: nil) { appearance in
+        Self.isDark(appearance)
+            ? NSColor(srgbRed: 1.0, green: 0.42, blue: 0.40, alpha: 1)
+            : NSColor(srgbRed: 0.72, green: 0.12, blue: 0.12, alpha: 1)
+    }
+
+    private static func isDark(_ appearance: NSAppearance) -> Bool {
+        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    }
+}

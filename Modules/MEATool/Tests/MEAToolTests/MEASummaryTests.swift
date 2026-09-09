@@ -37,6 +37,10 @@ final class MEASummaryTests: XCTestCase {
         rows.first { $0.label == label }?.value
     }
 
+    private func tone(_ label: String, in rows: [MEASummaryRow]) -> MEASummaryTone? {
+        rows.first { $0.label == label }?.tone
+    }
+
     /// Seconds since the Cocoa reference date (the engine's own decode domain)
     /// for a calendar date — what `manufactureDate` carries in a fixture.
     private func referenceInterval(year: Int, month: Int, day: Int) -> Double {
@@ -134,6 +138,35 @@ final class MEASummaryTests: XCTestCase {
         XCTAssertEqual(value("Flash Image Tool", in: rows), .comingSoon)
         // A derived stepping letter was not present, so the row is not there.
         XCTAssertNil(value("Chipset Stepping", in: rows))
+    }
+
+    /// The File System State row's tone is its status: both settled states read
+    /// green, an in-progress volume brown, a failed decode red — every other row
+    /// stays standard.
+    func testFileSystemStateCarriesItsStatusTone() throws {
+        func state(_ raw: String) throws -> [MEASummaryRow] {
+            tableRows(try analysis([
+                "manifest": manifestJSON(),
+                "mfsState": raw,
+            ]))
+        }
+        XCTAssertEqual(value("File System State", in: try state("unconfigured")),
+                       .value("Unconfigured"))
+        XCTAssertEqual(tone("File System State", in: try state("unconfigured")),
+                       .good)
+        XCTAssertEqual(value("File System State", in: try state("configured")),
+                       .value("Configured"))
+        XCTAssertEqual(tone("File System State", in: try state("configured")),
+                       .good)
+        XCTAssertEqual(value("File System State", in: try state("initialized")),
+                       .value("Initialized"))
+        XCTAssertEqual(tone("File System State", in: try state("initialized")),
+                       .caution)
+        XCTAssertEqual(value("File System State", in: try state("error")),
+                       .value("Error"))
+        XCTAssertEqual(tone("File System State", in: try state("error")), .bad)
+        // Rows without a status to say stay standard.
+        XCTAssertEqual(tone("Family", in: try state("configured")), .standard)
     }
 
     /// A chipset with no stepping letters is the plain chipset label, and a
