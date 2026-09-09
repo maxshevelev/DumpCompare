@@ -42,6 +42,11 @@ packages:
   # which both firmware tool-modules link and no target here depends on.
   UEFIContentSource:
     path: Packages/UEFIContentSource
+  # The ME/CSME/TXE/SPS/GSC parser (Swift port of platomav/MEAnalyzer). No
+  # tool-module fronts it yet, so nothing here links it — listing it is what
+  # makes Xcode able to see and edit it.
+  MEFirmware:
+    path: Packages/MEFirmware
   ZoneSketch:
     path: Modules/ZoneSketch
   FITTool:
