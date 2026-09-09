@@ -747,6 +747,13 @@ public struct MFSVolume: Codable, Sendable, Equatable {
     public var files: [MFSFile]         // present low-level files, by index
     public var configurations: [MFSConfiguration]  // decoded legacy (non-FTBL)
                                           // Intel/OEM Configuration record streams
+    public var homeDirectory: MFSHomeDirectory?   // file-8 Home Directory decode
+                                          // (upstream mfs_home_anl), when the volume
+                                          // is a legacy layout whose files don't
+                                          // start at 0 (identity-gated — get_vfs_start_0)
+    public var reservedIntegrity: [MFSReservedFileIntegrity]  // trailing Integrity
+                                          // headers of reserved low-level files
+                                          // 1–5 (upstream 7901–7929)
 
     public init(offset: Int, pageSize: Int, pageCount: Int,
                 systemPageCount: Int, dataPageCount: Int,
@@ -754,7 +761,9 @@ public struct MFSVolume: Codable, Sendable, Equatable {
                 fileRecordCount: Int, usedFileCount: Int,
                 ftblDictionary: Int, ftblPlatform: Int, ftblReserved: Int,
                 usesFTBL: Bool, presentFileCount: Int = 0, fileBytes: Int = 0,
-                files: [MFSFile] = [], configurations: [MFSConfiguration] = []) {
+                files: [MFSFile] = [], configurations: [MFSConfiguration] = [],
+                homeDirectory: MFSHomeDirectory? = nil,
+                reservedIntegrity: [MFSReservedFileIntegrity] = []) {
         self.offset = offset
         self.pageSize = pageSize
         self.pageCount = pageCount
@@ -773,6 +782,8 @@ public struct MFSVolume: Codable, Sendable, Equatable {
         self.fileBytes = fileBytes
         self.files = files
         self.configurations = configurations
+        self.homeDirectory = homeDirectory
+        self.reservedIntegrity = reservedIntegrity
     }
 }
 
@@ -854,6 +865,156 @@ public struct MFSFile: Codable, Sendable, Equatable, Identifiable {
     public init(index: Int, size: Int) {
         self.index = index
         self.size = size
+    }
+}
+
+/// The decoded file-8 Home Directory of a legacy (non-FTBL) MFS volume (upstream
+/// `mfs_home_anl`, MEA.py 8152). File 8 of such a volume names the *home*
+/// file-system tree: its raw content (minus its own trailing Integrity table)
+/// is a sequence of `homeRecordSize`-byte `MFS_Home_Record_0x18`/`0x1C` rows
+/// (MEA.py 1445/1499), each a file or folder entry pointing at another low-level
+/// file; a Folder row's pointed-to file holds that folder's own rows, so the
+/// decode recurses into a tree. `entries` is that tree's top level (Current
+/// `'.'`/Parent `'..'` marker rows are omitted). Only decoded when the identity's
+/// layout starts its files at a non-zero offset (`vfs_starts_at_0` false, MEA.py
+/// 7467) and the volume carries files — on CSME 15 (`vfs_starts_at_0` true) the
+/// FTBL/EFST naming (`mfs_home13_anl`) owns this region instead.
+///
+/// Two documented divergences from a literal upstream transcription, both needed
+/// for the decode to terminate: `FileName` is truncated at its first NUL before
+/// the `'.'`/`'..'` marker test and before naming (a literal `.decode('utf-8')`
+/// keeps the trailing NULs and misclassifies a dirty row such as CSME 12 file-25
+/// record 0 — a self-referencing folder whose name is `.\0faults…` — as a real
+/// folder, recursing forever); and folder recursion carries a path cycle-guard so
+/// a folder whose referenced file is already on the active recursion stack is
+/// logged with empty children rather than re-walked. Termination was verified
+/// against both oracles (CSME 12: 204 records, CSME 11: 552; 0 guards fired).
+public struct MFSHomeDirectory: Codable, Sendable, Equatable {
+    public var homeRecordSize: Int          // detected record struct size (0x18/0x1C)
+    public var rootRecordCount: Int         // file-8 record rows (after its own Integrity tail)
+    public var integrity: MFSIntegrityTable?  // file-8's own trailing Integrity (the root folder's)
+    public var entries: [MFSHomeRecord]     // top-level rows under home (markers skipped)
+
+    public init(homeRecordSize: Int, rootRecordCount: Int,
+                integrity: MFSIntegrityTable?, entries: [MFSHomeRecord]) {
+        self.homeRecordSize = homeRecordSize
+        self.rootRecordCount = rootRecordCount
+        self.integrity = integrity
+        self.entries = entries
+    }
+}
+
+/// One decoded `MFS_Home_Record_0x18`/`0x1C` — a file or folder entry of the MFS
+/// Home Directory. `fileIndex` is the low-level file the row names; for a file
+/// row, `size` is that file's decoded content length (its raw content minus the
+/// trailing Integrity when `integrityProtection`); for a folder row, `children`
+/// are the rows decoded from that folder file's own content. `integrity` is the
+/// pointed-to file's trailing `MFS_Integrity_Table`, decoded when the row is
+/// Integrity-protected and the file is long enough to carry one.
+public struct MFSHomeRecord: Codable, Sendable, Equatable {
+    public var fileIndex: Int
+    public var name: String                  // NUL-truncated FileName
+    public var isFolder: Bool                // AccessMode.RecordType (0 File, 1 Folder)
+    public var fileSystemID: Int             // FileInfo.FileSystemID (0 root, 1 home, …)
+    public var unixRights: Int               // AccessMode.UnixRights (9-bit)
+    public var ownerUserID: Int
+    public var ownerGroupID: Int
+    public var integrityProtection: Bool     // AccessMode.Integrity (HMAC)
+    public var encryptionProtection: Bool    // AccessMode.Encryption
+    public var antiReplayProtection: Bool    // AccessMode.AntiReplay
+    public var accessUnknown0: Bool          // AccessMode.Unknown0
+    public var accessUnknown1: Bool          // AccessMode.Unknown1
+    public var keyType: Int                  // AccessMode.KeyType: 0 Intel, 1 Other
+    public var integritySalt: Int            // FileInfo.IntegritySalt (16-bit)
+    public var unknownSalt: Int              // UnknownSalt (u16 at 0x18, u16[3] LE at 0x1C)
+    public var size: Int                     // decoded content length of the pointed-to file
+    public var integrity: MFSIntegrityTable? // pointed-to file's trailing Integrity, if any
+    public var children: [MFSHomeRecord]     // folder rows decoded from the folder file
+
+    public init(fileIndex: Int, name: String, isFolder: Bool, fileSystemID: Int,
+                unixRights: Int, ownerUserID: Int, ownerGroupID: Int,
+                integrityProtection: Bool, encryptionProtection: Bool,
+                antiReplayProtection: Bool, accessUnknown0: Bool, accessUnknown1: Bool,
+                keyType: Int, integritySalt: Int, unknownSalt: Int, size: Int,
+                integrity: MFSIntegrityTable?, children: [MFSHomeRecord]) {
+        self.fileIndex = fileIndex
+        self.name = name
+        self.isFolder = isFolder
+        self.fileSystemID = fileSystemID
+        self.unixRights = unixRights
+        self.ownerUserID = ownerUserID
+        self.ownerGroupID = ownerGroupID
+        self.integrityProtection = integrityProtection
+        self.encryptionProtection = encryptionProtection
+        self.antiReplayProtection = antiReplayProtection
+        self.accessUnknown0 = accessUnknown0
+        self.accessUnknown1 = accessUnknown1
+        self.keyType = keyType
+        self.integritySalt = integritySalt
+        self.unknownSalt = unknownSalt
+        self.size = size
+        self.integrity = integrity
+        self.children = children
+    }
+}
+
+/// A decoded `MFS_Integrity_Table` — the trailing security header carried by an
+/// MFS low-level file that is Integrity-protected (a reserved file such as
+/// Anti-Replay, or a Home Directory file/folder row with `integrityProtection`).
+/// The structure is either `0x28` (HMAC-MD5, AES-GCM nonce — CSME ≥ 12) or
+/// `0x34` (HMAC-SHA-256, 128-bit AR/CTR nonce — CSME 11). `hmacHex`/`nonceHex`
+/// are the raw stored bytes as uppercase natural-order hex; the Integrity value
+/// itself is a keyed HMAC over file content + table + FileInfo, unverifiable
+/// without Intel's secret key. Flags: Unknown0(1b), AntiReplay, Encryption,
+/// then layout-specific unknown runs, ARIndex (10b), SVN (8b). `arRandom`/
+/// `arCounter` are the raw u32s of the AR nonce region (0x28: dedicated fields
+/// @+0x14/0x18; 0x34: first two words of the @+0x24 region) — meaningful only
+/// when `antiReplayProtection`.
+public struct MFSIntegrityTable: Codable, Sendable, Equatable {
+    public var size: Int                    // 0x28 or 0x34 (the header length)
+    public var hmacHex: String              // HMAC MD5/SHA-256 bytes, uppercase hex
+    public var flagsRaw: Int                // raw Flags u32
+    public var antiReplayProtection: Bool   // Flags bit 1
+    public var encryptionProtection: Bool   // Flags bit 2 (0x34) / bit 3 (0x28)
+    public var antiReplayIndex: Int         // 10-bit AR Index
+    public var securityVersion: Int         // 8-bit SVN
+    public var arRandom: Int                // AR random value (u32 LE)
+    public var arCounter: Int               // AR counter value (u32 LE)
+    public var nonceHex: String             // AES-GCM/CTR nonce bytes, uppercase hex
+
+    public init(size: Int, hmacHex: String, flagsRaw: Int,
+                antiReplayProtection: Bool, encryptionProtection: Bool,
+                antiReplayIndex: Int, securityVersion: Int,
+                arRandom: Int, arCounter: Int, nonceHex: String) {
+        self.size = size
+        self.hmacHex = hmacHex
+        self.flagsRaw = flagsRaw
+        self.antiReplayProtection = antiReplayProtection
+        self.encryptionProtection = encryptionProtection
+        self.antiReplayIndex = antiReplayIndex
+        self.securityVersion = securityVersion
+        self.arRandom = arRandom
+        self.arCounter = arCounter
+        self.nonceHex = nonceHex
+    }
+}
+
+/// The trailing Integrity table of a reserved MFS low-level file (1–5:
+/// Anti-Replay, SVN Migration, Quota Storage — `mfs_dict`, MEA.py 10859),
+/// decoded per the reserved-walk gating (MEA.py 7901–7929): files 1–3 always
+/// carry one; file 4 (SVN Migration) carries one except at CSTXE (AFS); file 5
+/// (Quota Storage) carries one only at CSME ≥ 12. A reserved file whose role
+/// carries no Integrity (or whose content is empty) is not listed. `contentSize`
+/// is that file's data length with the Integrity header removed.
+public struct MFSReservedFileIntegrity: Codable, Sendable, Equatable {
+    public var fileIndex: Int
+    public var contentSize: Int
+    public var integrity: MFSIntegrityTable
+
+    public init(fileIndex: Int, contentSize: Int, integrity: MFSIntegrityTable) {
+        self.fileIndex = fileIndex
+        self.contentSize = contentSize
+        self.integrity = integrity
     }
 }
 
@@ -1282,5 +1443,5 @@ public struct Issue: Codable, Sendable, Equatable, Identifiable {
 /// whether to surface the new data (`reference/result-model.md` §Versioning).
 public enum EngineModelRevision {
     /// Current revision of the `FirmwareAnalysis` shape.
-    public static let current = 17
+    public static let current = 18
 }

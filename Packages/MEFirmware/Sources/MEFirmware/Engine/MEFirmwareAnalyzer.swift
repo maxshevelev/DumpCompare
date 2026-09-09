@@ -90,11 +90,16 @@ public actor MEFirmwareAnalyzer {
         // inside the Huffman vfs/fpf module bodies (needs decompression targets)
         // and is a later increment.
         var mfsVolume: MFSVolume? = nil
+        // The parsed low-level volume facts are retained so the identity-gated
+        // Home-Directory / per-file Integrity decode below can re-walk the file
+        // bytes once variant/major/minor (both layout selectors) are known.
+        var mfsInfo: MFSVolumeInfo? = nil
         var mfsIssues: [Issue] = []
         if let mfsRegion = regions.first(where: { $0.name == "MFS" }) {
             let volumeOffset = mfsRegion.offset - baseOffset
             if let info = MFSParser.parse(in: region, offset: volumeOffset,
                                           size: mfsRegion.size) {
+                mfsInfo = info
                 // The present low-level files are the used records whose FAT chain
                 // assembled real content; upstream lists those, not empty records.
                 let present = info.files.filter { !$0.content.isEmpty }
@@ -456,6 +461,30 @@ public actor MEFirmwareAnalyzer {
                                        minor: identity.minor, dictionaries: dictionaries)
         } else {
             rbePm = nil
+        }
+
+        // Phase 9 (identity-gated): the legacy file-8 Home Directory and the
+        // per-reserved-file Integrity tables of a `vfs_starts_at_0`-false volume
+        // (CSME 11–14 + SPS/TXE analogues), mirroring upstream `mfs_home_anl` and
+        // the reserved walk (get_sec_hdr_size / get_vfs_start_0). Both selectors
+        // need variant/major/minor, so this decode is deferred past identity; a
+        // no-manifest region (guard above) or a volume whose files start at 0 /
+        // that uses the FTBL naming keeps nil. The decode is best-effort and adds
+        // no Issues — a dirty file-8 simply yields no Home Directory.
+        if !MFSHomeDecoder.vfsStartsAtZero(variant: identity.variant,
+                                           major: identity.major,
+                                           minor: identity.minor),
+           mfsVolume?.usesFTBL == false,
+           let info = mfsInfo {
+            mfsVolume?.homeDirectory = MFSHomeDecoder.homeDirectory(
+                files: info.files, variant: identity.variant,
+                major: identity.major, minor: identity.minor,
+                hotfix: identity.hotfix, platform: info.ftblPlatform)
+            mfsVolume?.reservedIntegrity = MFSHomeDecoder.reservedIntegrity(
+                files: info.files, variant: identity.variant,
+                major: identity.major, minor: identity.minor,
+                hotfix: identity.hotfix, platform: info.ftblPlatform,
+                isAFS: false)
         }
 
         return FirmwareAnalysis(

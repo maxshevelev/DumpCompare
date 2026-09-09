@@ -29,8 +29,10 @@ import Foundation
 /// Quota Storage, Intel/OEM Configuration, Manifest Backup — `mfs_dict`, MEA.py
 /// 10859) select the decode over that content: the legacy (non-FTBL) Intel/OEM
 /// Configuration record streams (`mfs_cfg_anl` / `MFS_Config_Record_0x1C`) are
-/// decoded here; the FTBL 0xC naming (FileTable.dat), the file-8 Home Directory
-/// records and the per-file Integrity tables are later increments.
+/// decoded here; the file-8 Home Directory records and the per-file Integrity
+/// tables of a `vfs_starts_at_0`-false volume are decoded by `MFSHomeDecoder`
+/// below. The FTBL 0xC naming (FileTable.dat, upstream `mfs_home13_anl`) is a
+/// later increment.
 struct MFSVolumeInfo {
     var pageSize: Int
     var systemPageCount: Int
@@ -377,5 +379,333 @@ enum MFSParser {
     private static func readUInt16(_ data: Data, at index: Int) -> UInt16 {
         guard index >= 0, index + 2 <= data.count else { return 0 }
         return UInt16(data[index]) | (UInt16(data[index + 1]) << 8)
+    }
+}
+
+/// Legacy (non-FTBL) MFS reserved-file Integrity and file-8 Home Directory
+/// decode (upstream 7887–8301), driven by the identity layout selectors
+/// `get_sec_hdr_size` (MEA.py 7449) / `get_vfs_start_0` (MEA.py 7467). These
+/// run only for a volume whose files do *not* start at offset 0 — CSME 11–14
+/// and their SPS/TXE analogues — because a `vfs_starts_at_0` volume (CSME 15/16)
+/// names its reserved files through the FTBL/EFST tables (`mfs_home13_anl`), not
+/// by raw index. The decoders work over the already-walked low-level file bytes
+/// (`MFSVolumeInfo.files`) and are gated upstream by
+/// `if vfs_starts_at_0 or not mfs_has_files: break` (7888).
+enum MFSHomeDecoder {
+
+    // MARK: Layout selectors (get_sec_hdr_size / get_vfs_start_0)
+
+    /// `get_sec_hdr_size`: the length of the trailing `MFS_Integrity_Table` a
+    /// reserved / Home-Directory file carries — 0x28 (HMAC-MD5 + AES-GCM nonce)
+    /// or 0x34 (HMAC-SHA-256 + 128-bit nonce). Only `variant`/`major`/`minor` and
+    /// `platform` (`vol_ftbl_pl`) influence the choice; `hotfix` is unused
+    /// upstream.
+    static func secHeaderSize(variant: String, major: Int, minor: Int,
+                              platform: Int) -> Int {
+        if (variant, major, minor) == ("CSME", 14, 5) { return 0x34 }
+        if (variant, major, minor) == ("CSSPS", 4, 4)
+            || (variant, major, platform) == ("CSSPS", 5, 10) { return 0x28 }
+        if (variant, major) == ("CSME", 11) || (variant, major) == ("CSTXE", 3)
+            || (variant, major) == ("CSTXE", 4) || (variant, major) == ("CSSPS", 4)
+            || (variant, major) == ("CSSPS", 5) { return 0x34 }
+        if (variant, major) == ("CSME", 12) || (variant, major) == ("CSME", 13)
+            || (variant, major) == ("CSME", 14) || (variant, major) == ("CSME", 15) {
+            return 0x28 }
+        return 0x28
+    }
+
+    /// `get_vfs_start_0`: whether the volume's files start at System offset 0.
+    /// When true, upstream breaks out of the reserved-file walk before decoding
+    /// anything (7888) — those volumes name their files through FTBL/EFST.
+    static func vfsStartsAtZero(variant: String, major: Int, minor: Int) -> Bool {
+        if (variant, major, minor) == ("CSME", 13, 30) { return true }
+        if (variant, major) == ("CSME", 15) || (variant, major) == ("CSME", 16) {
+            return true }
+        if (variant, major) == ("CSME", 11) || (variant, major) == ("CSME", 12)
+            || (variant, major) == ("CSME", 13) || (variant, major) == ("CSME", 14)
+            || (variant, major) == ("CSTXE", 3) || (variant, major) == ("CSTXE", 4)
+            || (variant, major) == ("CSSPS", 4) || (variant, major) == ("CSSPS", 5)
+            || (variant, major) == ("CSSPS", 6) { return false }
+        return true
+    }
+
+    // MARK: Reserved-file Integrity (upstream 7901–7929)
+
+    /// True when a reserved file's *whole* content is data (no trailing
+    /// Integrity table): file 5 (Quota Storage) at CSME < 12 / non-CSME, and
+    /// file 4 (SVN Migration) at AFS/CSTXE (upstream 7914).
+    private static func reservedCarriesNoIntegrity(fileIndex: Int,
+                                                   variant: String,
+                                                   major: Int, isAFS: Bool) -> Bool {
+        (fileIndex == 5 && !(variant == "CSME" && major >= 12))
+            || (fileIndex == 4 && isAFS)
+    }
+
+    /// Decode the trailing Integrity tables of the reserved low-level files a
+    /// non-FTBL volume carries (1–5; 6/7 additionally at AFS). Files whose role
+    /// carries no Integrity — the `reservedCarriesNoIntegrity` exemption — or
+    /// that are absent/empty are omitted. `contentSize` is the file's data length
+    /// with the Integrity header removed (upstream `file_data`).
+    static func reservedIntegrity(files: [MFSLowLevelFile], variant: String,
+                                  major: Int, minor: Int, hotfix: Int,
+                                  platform: Int, isAFS: Bool)
+        -> [MFSReservedFileIntegrity] {
+        let sec = secHeaderSize(variant: variant, major: major, minor: minor,
+                                platform: platform)
+        var result: [MFSReservedFileIntegrity] = []
+        for file in files where !file.content.isEmpty {
+            guard file.index >= 1, file.index <= 5
+                || (isAFS && (file.index == 6 || file.index == 7)) else { continue }
+            guard !reservedCarriesNoIntegrity(fileIndex: file.index,
+                                              variant: variant, major: major,
+                                              isAFS: isAFS) else { continue }
+            guard file.content.count >= sec else { continue }
+            let tail = Data(file.content.suffix(sec))
+            guard let table = integrityTable(tail) else { continue }
+            result.append(MFSReservedFileIntegrity(
+                fileIndex: file.index,
+                contentSize: file.content.count - sec,
+                integrity: table))
+        }
+        return result
+    }
+
+    // MARK: File-8 Home Directory (upstream 8021–8301)
+
+    /// Detect the Home Directory record size by scanning the root buffer for its
+    /// `.`/`..` marker rows, mirroring the upstream regex `\x2E[\x00\xAA]{10}` —
+    /// a dot followed by ten bytes that are each 0x00 (NUL name padding) or 0xAA.
+    /// The first match is the Current `.` name; the `..` name's *second* dot is
+    /// the second match (its first dot is followed by a second dot, which is not
+    /// in the pattern set), so `start₁ − start₀ − 1 == record size`. Returns nil
+    /// when fewer than two markers exist — upstream prints an error and then
+    /// crashes (8029); the engine reports no Home Directory instead.
+    static func homeRecordSize(in content: Data) -> Int? {
+        var matches: [Int] = []
+        var index = 0
+        while index + 11 <= content.count, matches.count < 2 {
+            if content[index] == 0x2E {
+                var isMarker = true
+                for offset in 1...10 where content[index + offset] != 0x00
+                    && content[index + offset] != 0xAA {
+                    isMarker = false
+                    break
+                }
+                if isMarker {
+                    matches.append(index)
+                    index += 11          // matches don't overlap (regex finditer)
+                    continue
+                }
+            }
+            index += 1
+        }
+        guard matches.count == 2 else { return nil }
+        return matches[1] - matches[0] - 1
+    }
+
+    /// Decode the file-8 Home Directory of a legacy volume (upstream
+    /// `mfs_home_anl`, 8152–8301). Returns nil when the volume isn't laid out for
+    /// it (`vfs_starts_at_0` true), file 8 is absent/empty, or its marker pattern
+    /// doesn't resolve (a dirty / non-home file-8). The tree in `entries` is
+    /// decoded from the root buffer — file-8's content minus its own trailing
+    /// Integrity table — with each Folder row's pointed-to file parsed as that
+    /// folder's own rows.
+    static func homeDirectory(files: [MFSLowLevelFile], variant: String,
+                              major: Int, minor: Int, hotfix: Int,
+                              platform: Int) -> MFSHomeDirectory? {
+        guard !vfsStartsAtZero(variant: variant, major: major, minor: minor)
+            else { return nil }
+        let sec = secHeaderSize(variant: variant, major: major, minor: minor,
+                                platform: platform)
+        guard let file8 = files.first(where: { $0.index == 8 }),
+              !file8.content.isEmpty else { return nil }
+        guard let recordSize = homeRecordSize(in: file8.content) else { return nil }
+        let dataLength = file8.content.count >= sec ? file8.content.count - sec : 0
+        let rootBuffer = Data(file8.content.prefix(dataLength))
+        let rootIntegrity = file8.content.count >= sec
+            ? integrityTable(Data(file8.content.suffix(sec))) : nil
+        let contentByIndex = Dictionary(uniqueKeysWithValues:
+            files.map { ($0.index, $0.content) })
+        let entries = walkHome(buffer: rootBuffer, recordSize: recordSize,
+                               secHeaderSize: sec, contentByIndex: contentByIndex,
+                               path: [8])
+        return MFSHomeDirectory(homeRecordSize: recordSize,
+                                rootRecordCount: rootBuffer.count / recordSize,
+                                integrity: rootIntegrity, entries: entries)
+    }
+
+    /// Walk one Home Directory record buffer (the file-8 root, or a folder row's
+    /// pointed-to file content) into the tree of `MFSHomeRecord` rows. `path` is
+    /// the stack of file indexes currently being walked — recursion into a folder
+    /// whose file is already on it would not terminate upstream (a dirty marker
+    /// like CSME 12 file-25's `.\0faults…` self-reference is stopped by the NUL
+    /// truncation below instead), so it yields empty children rather than
+    /// re-walking. This, and truncating `FileName` at its first NUL before the
+    /// marker test / naming, are the two documented divergences from a literal
+    /// transcription (see `MFSHomeDirectory`).
+    private static func walkHome(buffer: Data, recordSize: Int,
+                                 secHeaderSize: Int,
+                                 contentByIndex: [Int: Data],
+                                 path: [Int]) -> [MFSHomeRecord] {
+        guard recordSize > 0, buffer.count >= recordSize else { return [] }
+        var entries: [MFSHomeRecord] = []
+        for i in 0..<(buffer.count / recordSize) {
+            let base = i * recordSize
+            let slice = buffer.subdata(in: base..<(base + recordSize))
+            let flags = homeRecordFlags(slice)
+            let nameOffset = recordSize - 12          // FileName is the last 12 bytes
+            let nameBytes = slice.subdata(in: nameOffset..<(nameOffset + 12))
+            let name = String(decoding: nameBytes.prefix { $0 != 0 }, as: UTF8.self)
+            // Current/Parent markers — never surfaced, never re-walked.
+            if name == "." || name == ".." { continue }
+
+            // The row's pointed-to file content; Integrity-protected rows strip
+            // that file's trailing table (upstream 8203–8205).
+            let raw = contentByIndex[flags.fileIndex] ?? Data()
+            var fileData = raw
+            var fileIntegrity: MFSIntegrityTable? = nil
+            if flags.integrity {
+                if raw.count >= secHeaderSize {
+                    fileData = Data(raw.prefix(raw.count - secHeaderSize))
+                    fileIntegrity = integrityTable(Data(raw.suffix(secHeaderSize)))
+                } else {
+                    fileData = Data()   // upstream content[:-sec] on a short file → empty
+                }
+            }
+
+            var children: [MFSHomeRecord] = []
+            if flags.recordType == 1, fileData.count >= recordSize,
+               !path.contains(flags.fileIndex) {
+                children = walkHome(buffer: fileData, recordSize: recordSize,
+                                    secHeaderSize: secHeaderSize,
+                                    contentByIndex: contentByIndex,
+                                    path: path + [flags.fileIndex])
+            }
+            let saltWidth = recordSize == 0x1C ? 6 : 2      // UnknownSalt u16 vs u16[3]
+            let salt = leInt(slice, at: 0x0A, length: saltWidth)
+            entries.append(MFSHomeRecord(
+                fileIndex: flags.fileIndex, name: name,
+                isFolder: flags.recordType == 1,
+                fileSystemID: flags.fileSystemID,
+                unixRights: flags.unixRights,
+                ownerUserID: Int(le16(slice, at: 6)),
+                ownerGroupID: Int(le16(slice, at: 8)),
+                integrityProtection: flags.integrity,
+                encryptionProtection: flags.encryption,
+                antiReplayProtection: flags.antiReplay,
+                accessUnknown0: flags.unknown0,
+                accessUnknown1: flags.unknown1,
+                keyType: flags.keyType,
+                integritySalt: flags.integritySalt,
+                unknownSalt: salt,
+                size: fileData.count,
+                integrity: fileIntegrity,
+                children: children))
+        }
+        return entries
+    }
+
+    /// The flag bit-fields of one `MFS_Home_Record` (shared by the 0x18/0x1C
+    /// structs): FileInfo u32 — FileIndex 12b / IntegritySalt 16b / FileSystemID
+    /// 4b — and AccessMode u16 — UnixRights 9b / Integrity 1b / Encryption 1b /
+    /// AntiReplay 1b / Unknown0 1b / KeyType 1b / RecordType 1b / Unknown1 1b.
+    private static func homeRecordFlags(_ slice: Data)
+        -> (fileIndex: Int, integritySalt: Int, fileSystemID: Int,
+            unixRights: Int, integrity: Bool, encryption: Bool, antiReplay: Bool,
+            unknown0: Bool, unknown1: Bool, keyType: Int, recordType: Int) {
+        let fileInfo = Int(le32(slice, at: 0))
+        let access = Int(le16(slice, at: 4))
+        return (fileIndex: fileInfo & 0xFFF,
+                integritySalt: (fileInfo >> 12) & 0xFFFF,
+                fileSystemID: (fileInfo >> 28) & 0xF,
+                unixRights: access & 0x1FF,
+                integrity: access & (1 << 9) != 0,
+                encryption: access & (1 << 10) != 0,
+                antiReplay: access & (1 << 11) != 0,
+                unknown0: access & (1 << 12) != 0,
+                unknown1: access & (1 << 15) != 0,
+                keyType: (access >> 13) & 1,
+                recordType: (access >> 14) & 1)
+    }
+
+    // MARK: MFS_Integrity_Table (0x28 / 0x34)
+
+    /// Decode a trailing `MFS_Integrity_Table` — 0x28 (HMAC-MD5: hmac + Flags +
+    /// ARRandom + ARCounter + AES-GCM nonce) or 0x34 (HMAC-SHA-256: hmac + Flags +
+    /// 128-bit ARValues/CTR-nonce region). Returns nil for any other length.
+    static func integrityTable(_ table: Data) -> MFSIntegrityTable? {
+        let flagsRaw: Int
+        let hmacBytes: Data
+        let arRandom: Int
+        let arCounter: Int
+        let nonceBytes: Data
+        let encryptionBit: Int
+        let arIndexShift: Int
+        let svnShift: Int
+        switch table.count {
+        case 0x28:
+            flagsRaw = Int(le32(table, at: 0x10))
+            hmacBytes = table.subdata(in: 0..<16)
+            arRandom = Int(le32(table, at: 0x14))
+            arCounter = Int(le32(table, at: 0x18))
+            nonceBytes = table.subdata(in: 0x1C..<0x28)
+            encryptionBit = 3      // Unknown0/AR/Unknown1 then Encryption
+            arIndexShift = 11
+            svnShift = 22
+        case 0x34:
+            flagsRaw = Int(le32(table, at: 0x20))
+            hmacBytes = table.subdata(in: 0..<32)
+            arRandom = Int(le32(table, at: 0x24))    // ARValues_Nonce word 0
+            arCounter = Int(le32(table, at: 0x28))   // ARValues_Nonce word 1
+            nonceBytes = table.subdata(in: 0x24..<0x34)
+            encryptionBit = 2      // Unknown0/AR then Encryption
+            arIndexShift = 10
+            svnShift = 21
+        default:
+            return nil
+        }
+        return MFSIntegrityTable(
+            size: table.count,
+            hmacHex: hex(hmacBytes),
+            flagsRaw: flagsRaw,
+            antiReplayProtection: flagsRaw & 0x2 != 0,
+            encryptionProtection: flagsRaw & (1 << encryptionBit) != 0,
+            antiReplayIndex: (flagsRaw >> arIndexShift) & 0x3FF,
+            securityVersion: (flagsRaw >> svnShift) & 0xFF,
+            arRandom: arRandom,
+            arCounter: arCounter,
+            nonceHex: hex(nonceBytes))
+    }
+
+    // MARK: - little-endian reads (bounds-checked)
+
+    private static func le16(_ data: Data, at index: Int) -> UInt16 {
+        guard index >= 0, index + 2 <= data.count else { return 0 }
+        return UInt16(data[index]) | (UInt16(data[index + 1]) << 8)
+    }
+
+    private static func le32(_ data: Data, at index: Int) -> UInt32 {
+        guard index >= 0, index + 4 <= data.count else { return 0 }
+        return UInt32(data[index])
+            | (UInt32(data[index + 1]) << 8)
+            | (UInt32(data[index + 2]) << 16)
+            | (UInt32(data[index + 3]) << 24)
+    }
+
+    /// `length` bytes at `index`, little-endian (up to an 8-byte salt's width
+    /// here, so no overflow in an `Int`).
+    private static func leInt(_ data: Data, at index: Int, length: Int) -> Int {
+        var value = 0
+        for byte in data[index..<(index + length)].reversed() {
+            value = value * 256 + Int(byte)
+        }
+        return value
+    }
+
+    /// Uppercase natural-order hex (the codebase's digest-hash convention —
+    /// e.g. `imageHash`, `Digest.sha256Hex`), *not* upstream's
+    /// `int.from_bytes(…, 'little')` byte reversal.
+    private static func hex(_ data: Data) -> String {
+        data.map { String(format: "%02X", $0) }.joined()
     }
 }
