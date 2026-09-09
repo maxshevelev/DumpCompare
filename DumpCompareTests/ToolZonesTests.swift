@@ -304,8 +304,10 @@ final class ToolZonesTests: XCTestCase {
         let item = try XCTUnwrap(menu.items.first { $0.title == "Save Zone “FFSv2” as…" })
         let dispatched = NSApp.sendAction(item.action!, to: item.target, from: item)
         XCTAssertTrue(dispatched, "the context Save Zone must dispatch")
-        XCTAssertEqual(suggested?.hasSuffix("_00000100-00000180.bin"), true,
-                       "the suggested name carries the zone's range")
+        XCTAssertEqual(suggested?.hasSuffix("_FFSv2.bin"), true,
+                       "the suggested name is the source file's name with the zone's name")
+        XCTAssertNotEqual(suggested, controller.windowModel.pane1.status.fileName,
+                          "the export must not offer to overwrite the file it came from")
         XCTAssertEqual([UInt8](try Data(contentsOf: destination)),
                        [UInt8](repeating: 0xAA, count: 0x80),
                        "the written file holds the zone's bytes")

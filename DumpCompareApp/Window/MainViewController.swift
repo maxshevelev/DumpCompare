@@ -4453,22 +4453,31 @@ final class MainViewController: NSViewController {
     @objc func savePaneSelectionAs(_ sender: Any?) {
         guard let target = offsetContextTarget(from: sender), target.pane.isOpen else { return }
         guard let doc = target.pane.document, !doc.selection.isEmpty else { return }
-        saveRange(doc.selection.start..<doc.selection.end, of: target.pane, purpose: "the selection")
+        let range = doc.selection.start..<doc.selection.end
+        saveRange(range, of: target.pane,
+                  suggestedName: exportName(fileName: target.pane.status.fileName, range: range),
+                  purpose: "the selection")
     }
 
     /// Context menu > Save Zone as…: writes a zone a tool-module published to a
     /// file the user names. The same read-only export as Save Selection as…: the
     /// pane's source is never written, and the bytes saved are what is on
-    /// screen, edits and all.
+    /// screen, edits and all. The name leads with the zone's own name — that is
+    /// what the user is looking for — over the offsets.
     @objc func saveZone(_ sender: NSMenuItem) {
         guard let target = sender.representedObject as? ZoneContextTarget, target.pane.isOpen else { return }
-        saveRange(target.zone.range, of: target.pane, purpose: "the zone")
+        let zone = target.zone
+        saveRange(zone.range, of: target.pane,
+                  suggestedName: zoneExportName(fileName: target.pane.status.fileName,
+                                                zoneName: zone.name, range: zone.range),
+                  purpose: "the zone")
     }
 
     /// The tail shared by Save Selection as… and Save Zone as…: reads `range`
     /// out of `pane`'s document and offers the bytes as a file to save. `purpose`
     /// names the range in the error strings ("the selection", "the zone").
-    private func saveRange(_ range: Range<UInt64>, of pane: PaneViewModel, purpose: String) {
+    private func saveRange(_ range: Range<UInt64>, of pane: PaneViewModel,
+                           suggestedName: String, purpose: String) {
         guard let doc = pane.document else { return }
         let bytes: [UInt8]
         do {
@@ -4479,7 +4488,7 @@ final class MainViewController: NSViewController {
         }
 
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = exportName(fileName: pane.status.fileName, range: range)
+        panel.nameFieldStringValue = suggestedName
         panel.canCreateDirectories = true
         let url: URL?
         if let selectionSavePanel {
@@ -4495,13 +4504,23 @@ final class MainViewController: NSViewController {
         }
     }
 
-    /// The name the Save panel suggests for an export: the source file's name
-    /// with the exported range appended, so a save of even the whole file cannot
-    /// silently land on the file that is open.
+    /// The name the Save panel suggests for a saved selection: the source file's
+    /// name with the exported range appended, so a save of even the whole file
+    /// cannot silently land on the file that is open.
     private func exportName(fileName: String, range: Range<UInt64>) -> String {
         let stem = (fileName as NSString).deletingPathExtension
         let bounds = "\(range.lowerBound.bareAddress)-\(range.upperBound.bareAddress)"
         return "\(stem)_\(bounds).bin"
+    }
+
+    /// The name the Save panel suggests for a saved zone: the source file's name
+    /// with the zone's own name appended. A nameless zone falls back to its
+    /// range, so the export still cannot silently land on the file that is open.
+    private func zoneExportName(fileName: String, zoneName: String,
+                                range: Range<UInt64>) -> String {
+        guard !zoneName.isEmpty else { return exportName(fileName: fileName, range: range) }
+        let stem = (fileName as NSString).deletingPathExtension
+        return "\(stem)_\(zoneName).bin"
     }
 
     /// The standard "Paste" menu item (⌘V → `paste:`) dispatches through the
