@@ -73,12 +73,12 @@ final class ChecksumTests: XCTestCase {
     func testAnInvalidChecksumSaysWhatItShouldBe() {
         XCTAssertEqual(
             Checksums.text(0x5C, valid: false, expected: 0x5A),
-            "0x5C (Invalid, should be 0x5A)"
+            "0x5C (Invalid), should be 0x5A"
         )
         // The should-be value is padded to the field's width the same way.
         XCTAssertEqual(
             Checksums.text(0x0C, valid: false, expected: 0x05, digits: 4),
-            "0x000C (Invalid, should be 0x0005)"
+            "0x000C (Invalid), should be 0x0005"
         )
         // A valid checksum is already what it should be, so the words never add
         // the should-be — there is nothing to correct, even when told.

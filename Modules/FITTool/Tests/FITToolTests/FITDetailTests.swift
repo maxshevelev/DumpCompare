@@ -96,7 +96,7 @@ final class FITDetailTests: XCTestCase {
         let shouldBe = wrong.table?.computedChecksum
         XCTAssertEqual(
             field(wrong.detail, "Checksum")?.value,
-            String(format: "0xCC (Invalid, should be 0x%02X)", shouldBe ?? 0)
+            String(format: "0xCC (Invalid), should be 0x%02X", shouldBe ?? 0)
         )
 
         // The fixture's own checksum is the one that makes the table sum to

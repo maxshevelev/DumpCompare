@@ -97,7 +97,7 @@ public enum Checksums {
     /// the value in hex, and the validity in words — `0x5C (Valid)` or
     /// `0x5C (Invalid)`. An invalid one whose correct value is known says what
     /// it should be, so a reader can write it back by hand as well as by Fix:
-    /// `0x5C (Invalid, should be 0x5A)`. One spelling of it, so a checksum
+    /// `0x5C (Invalid), should be 0x5A`. One spelling of it, so a checksum
     /// that carries a validity bit reads the same in every panel that shows it.
     public static func text(
         _ value: some BinaryInteger,
@@ -108,7 +108,7 @@ public enum Checksums {
         let padded = hex(UInt64(truncatingIfNeeded: value), digits: digits)
         if valid { return "\(padded) (Valid)" }
         if let expected {
-            return "\(padded) (Invalid, should be \(hex(expected, digits: digits)))"
+            return "\(padded) (Invalid), should be \(hex(expected, digits: digits))"
         }
         return "\(padded) (Invalid)"
     }

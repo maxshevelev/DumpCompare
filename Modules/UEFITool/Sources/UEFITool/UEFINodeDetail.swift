@@ -422,7 +422,7 @@ public enum UEFIDetail {
     /// A checksum row read at `checksumOffset` whose validity the caller has
     /// decided by the parse-time repairs: the repair sitting at the field's own
     /// offset says the field is wrong, and its bytes are the "should be" value
-    /// the row quotes — `0x… (Invalid, should be 0x…)`. A field with no repair
+    /// the row quotes — `0x… (Invalid), should be 0x…`. A field with no repair
     /// reads `0x… (Valid)`, and a wrong one is marked as the problem it is so
     /// the controller can colour just that value red.
     private static func checksumRow(

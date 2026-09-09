@@ -558,7 +558,7 @@ final class UEFIDetailTests: XCTestCase {
             repairs: [ChecksumRepair(offset: 0x32, bytes: [0xF1, 0xD4])]
         )
 
-        XCTAssertEqual(field(detail, "Checksum"), "0x1234 (Invalid, should be 0xD4F1)")
+        XCTAssertEqual(field(detail, "Checksum"), "0x1234 (Invalid), should be 0xD4F1")
         XCTAssertEqual(problem(detail, "Checksum"), true)
         XCTAssertEqual(problem(detail, "Length"), false, "only the checksum row is the problem")
     }
@@ -573,7 +573,7 @@ final class UEFIDetailTests: XCTestCase {
             for: built.node, image: built.image, reader: built.reader,
             repairs: [ChecksumRepair(offset: 0x10, bytes: [0xFF])]
         )
-        XCTAssertEqual(field(headerWrong, "Header checksum"), "0xAA (Invalid, should be 0xFF)")
+        XCTAssertEqual(field(headerWrong, "Header checksum"), "0xAA (Invalid), should be 0xFF")
         XCTAssertEqual(problem(headerWrong, "Header checksum"), true)
         XCTAssertEqual(field(headerWrong, "Body checksum"), "0xBB (Valid)")
         XCTAssertEqual(problem(headerWrong, "Body checksum"), false)
@@ -583,7 +583,7 @@ final class UEFIDetailTests: XCTestCase {
             repairs: [ChecksumRepair(offset: 0x11, bytes: [0xAA])]
         )
         XCTAssertEqual(field(bodyWrong, "Header checksum"), "0xAA (Valid)")
-        XCTAssertEqual(field(bodyWrong, "Body checksum"), "0xBB (Invalid, should be 0xAA)")
+        XCTAssertEqual(field(bodyWrong, "Body checksum"), "0xBB (Invalid), should be 0xAA")
         XCTAssertEqual(problem(bodyWrong, "Body checksum"), true)
     }
 
@@ -603,7 +603,7 @@ final class UEFIDetailTests: XCTestCase {
             for: built.node, image: built.image, reader: built.reader,
             repairs: [ChecksumRepair(offset: 0x10, bytes: [0xCA, 0xD6, 0xE2, 0xF8])]
         )
-        XCTAssertEqual(field(corrupt, "Checksum"), "0x00000000 (Invalid, should be 0xF8E2D6CA)")
+        XCTAssertEqual(field(corrupt, "Checksum"), "0x00000000 (Invalid), should be 0xF8E2D6CA")
         XCTAssertEqual(problem(corrupt, "Checksum"), true)
     }
 
