@@ -88,6 +88,9 @@ private struct ParseResult: Sendable {
         self.host = host
         controller.onSelect = { [weak self] nodeID in self?.select(nodeID) }
         controller.onSelectTop = { [weak self] in self?.showTopNode() }
+        controller.onFixChecksum = { [weak self] nodeID in
+            self?.fixChecksum(for: nodeID)
+        }
     }
 
     public var viewController: NSViewController { controller }

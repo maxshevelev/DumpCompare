@@ -236,4 +236,48 @@ final class UEFIChecksumFlowTests: XCTestCase {
         XCTAssertNil(clean.attributedStringValue.attribute(.attachment, at: 0, effectiveRange: &range),
                      "a row that checks out shows no triangle")
     }
+
+    /// The menu a right-click earns is where the controller's Fix action is
+    /// wired to the session — and an unwired closure is a Fix Checksum that
+    /// silently does nothing, however well the session's own method works. So
+    /// the click is driven for real: the outline answers a right-click on the
+    /// flagged row with its menu, and firing the item must reach the session
+    /// and write, exactly as AppKit would send it.
+    func testTheContextMenusFixItemReachesTheSessionAndWrites() throws {
+        var image = UEFITestImage.make()
+        image[0x59] = 0 // the file's body checksum field breaks (§5.4)
+        _ = try open(image)
+        let (fileID, _) = try nodeFlagged(with: .fileBody)
+        let outline = try outline()
+        let win = try XCTUnwrap(window)
+
+        // A right-click on the flagged row — the top row — through the same
+        // `menu(for:)` override AppKit calls, at a point the outline maps back
+        // to that row.
+        let rect = outline.rect(ofRow: 0)
+        let point = outline.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil)
+        let event = NSEvent.mouseEvent(
+            with: .rightMouseDown, location: point, modifierFlags: [],
+            timestamp: 0, windowNumber: win.windowNumber, context: nil,
+            eventNumber: 0, clickCount: 1, pressure: 0
+        )!
+        let menu = try XCTUnwrap(outline.menu(for: event),
+                                 "a flagged row earns a Fix Checksum menu")
+        let item = try XCTUnwrap(menu.items.first { $0.title == "Fix Checksum" })
+        XCTAssertTrue(item.isEnabled, "a writable file leaves the fix enabled")
+
+        // Fire the item and wait on the re-parse its own write causes — the
+        // same seam the volume test waits on.
+        let fixed = expectation(description: "the menu fix's re-parse lands")
+        try session().onDisplay = { _ in fixed.fulfill() }
+        _ = item.target?.perform(item.action, with: item)
+        wait(for: [fixed], timeout: 5)
+        try session().onDisplay = nil
+
+        XCTAssertNil(try session().checksumProblems[fileID],
+                     "the flag cleared, so the menu reached the session")
+        XCTAssertEqual(try controller?.windowModel.pane1.byteStorage?.read(at: 0x59, length: 1),
+                       [0xAA],
+                       "the click wrote the value the fixture's volume expects")
+    }
 }
