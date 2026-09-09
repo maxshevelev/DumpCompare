@@ -5,10 +5,21 @@ import UEFIImage
 public struct UEFIDetailField: Equatable, Sendable {
     public var label: String
     public var value: String
+    /// A value that reads as a problem — a checksum that does not check out.
+    /// The controller colours just this row's value with it; everything else
+    /// stays as it is.
+    public var isProblem: Bool
 
     public init(_ label: String, _ value: String) {
         self.label = label
         self.value = value
+        self.isProblem = false
+    }
+
+    public init(_ label: String, _ value: String, isProblem: Bool) {
+        self.label = label
+        self.value = value
+        self.isProblem = isProblem
     }
 }
 
