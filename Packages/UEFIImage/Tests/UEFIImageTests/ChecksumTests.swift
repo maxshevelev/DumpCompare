@@ -67,6 +67,27 @@ final class ChecksumTests: XCTestCase {
         XCTAssertEqual(Checksums.text(0x1, valid: true, digits: 4), "0x0001 (Valid)")
     }
 
+    /// An invalid checksum whose correct value is known says what it should be
+    /// — the point of showing the value at all is that a reader can write it
+    /// back, so leaving it a mystery would say half of the story.
+    func testAnInvalidChecksumSaysWhatItShouldBe() {
+        XCTAssertEqual(
+            Checksums.text(0x5C, valid: false, expected: 0x5A),
+            "0x5C (Invalid, should be 0x5A)"
+        )
+        // The should-be value is padded to the field's width the same way.
+        XCTAssertEqual(
+            Checksums.text(0x0C, valid: false, expected: 0x05, digits: 4),
+            "0x000C (Invalid, should be 0x0005)"
+        )
+        // A valid checksum is already what it should be, so the words never add
+        // the should-be — there is nothing to correct, even when told.
+        XCTAssertEqual(
+            Checksums.text(0x5A, valid: true, expected: 0x5A),
+            "0x5A (Valid)"
+        )
+    }
+
     func testAligningUp() {
         XCTAssertEqual(alignUp(0x11, to: 8), 0x18)
         XCTAssertEqual(alignUp(0x18, to: 8), 0x18)

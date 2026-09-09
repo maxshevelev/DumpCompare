@@ -450,7 +450,14 @@ final class UEFIDetailTests: XCTestCase {
         let built = TestUEFI.nvramSysfStore(crc: 0xDEAD_BEEF)
         let detail = UEFIDetail.build(for: built.node, image: built.image, reader: built.reader)
 
-        XCTAssertEqual(field(detail, "CRC32"), "0xDEADBEEF (Invalid)")
+        // A wrong stored CRC reads with the value it should be — the CRC32 of
+        // everything before the store's final four bytes, which the fixture put
+        // `0xDEADBEEF` in place of.
+        let shouldBe = Checksums.crc32(Array(built.bytes.dropLast(4)))
+        XCTAssertEqual(
+            field(detail, "CRC32"),
+            Checksums.text(0xDEAD_BEEF, valid: false, expected: UInt64(shouldBe), digits: 8)
+        )
     }
 
     /// An EVSA store is an entry of its own whose checksum covers its 20-byte
@@ -526,69 +533,77 @@ final class UEFIDetailTests: XCTestCase {
 
     // MARK: - Checksum rows and byte-length sizes
 
-    /// A checksum that is not in the caller's bad fields reads as valid and is
-    /// not a problem. The validity is the caller's word — the detail only
-    /// renders what it is told, so a valid volume shows a calm checksum.
+    /// A node with nothing to fix reads each checksum as valid and no problem.
+    /// The repairs are the caller's word — the parse's, in the running tool —
+    /// and the detail renders that word rather than re-reading the body to
+    /// second-guess it.
     func testACleanVolumeChecksumIsValidAndNoProblem() {
         let built = TestUEFI.volume()
         let detail = UEFIDetail.build(
-            for: built.node, image: built.image, reader: built.reader, badFields: []
+            for: built.node, image: built.image, reader: built.reader, repairs: []
         )
 
         XCTAssertEqual(field(detail, "Checksum"), "0x1234 (Valid)")
         XCTAssertEqual(problem(detail, "Checksum"), false)
     }
 
-    /// A checksum the caller has flagged as wrong reads `(Invalid)` and is the
-    /// problem the controller colours red — only that row, not the volume's
-    /// other fields.
-    func testAFlaggedVolumeChecksumIsInvalidAndAProblem() {
+    /// A repair sitting on the volume's checksum field reads it as wrong, names
+    /// the value the fix would write, and is the problem the controller colours
+    /// red — only that row, not the volume's other fields. The repair's bytes
+    /// are the fixture's own: this header really does want `0xD4F1`.
+    func testAWrongVolumeChecksumSaysWhatItShouldBe() {
         let built = TestUEFI.volume()
         let detail = UEFIDetail.build(
-            for: built.node, image: built.image, reader: built.reader, badFields: [.volume]
+            for: built.node, image: built.image, reader: built.reader,
+            repairs: [ChecksumRepair(offset: 0x32, bytes: [0xF1, 0xD4])]
         )
 
-        XCTAssertEqual(field(detail, "Checksum"), "0x1234 (Invalid)")
+        XCTAssertEqual(field(detail, "Checksum"), "0x1234 (Invalid, should be 0xD4F1)")
         XCTAssertEqual(problem(detail, "Checksum"), true)
         XCTAssertEqual(problem(detail, "Length"), false, "only the checksum row is the problem")
     }
 
-    /// A file's header and body checksums are separate fields: flagging one
-    /// leaves the other reading valid.
+    /// A file's header and body checksums are separate fields: a repair on one
+    /// reads only that one invalid — a header wants `0xFF`, a body `0xAA`, the
+    /// fixture's own values — and the other keeps reading valid.
     func testAFileHeaderAndBodyChecksumsAreMarkedIndependently() {
         let built = TestUEFI.file()
 
         let headerWrong = UEFIDetail.build(
-            for: built.node, image: built.image, reader: built.reader, badFields: [.fileHeader]
+            for: built.node, image: built.image, reader: built.reader,
+            repairs: [ChecksumRepair(offset: 0x10, bytes: [0xFF])]
         )
-        XCTAssertEqual(field(headerWrong, "Header checksum"), "0xAA (Invalid)")
+        XCTAssertEqual(field(headerWrong, "Header checksum"), "0xAA (Invalid, should be 0xFF)")
         XCTAssertEqual(problem(headerWrong, "Header checksum"), true)
         XCTAssertEqual(field(headerWrong, "Body checksum"), "0xBB (Valid)")
         XCTAssertEqual(problem(headerWrong, "Body checksum"), false)
 
         let bodyWrong = UEFIDetail.build(
-            for: built.node, image: built.image, reader: built.reader, badFields: [.fileBody]
+            for: built.node, image: built.image, reader: built.reader,
+            repairs: [ChecksumRepair(offset: 0x11, bytes: [0xAA])]
         )
         XCTAssertEqual(field(bodyWrong, "Header checksum"), "0xAA (Valid)")
-        XCTAssertEqual(field(bodyWrong, "Body checksum"), "0xBB (Invalid)")
+        XCTAssertEqual(field(bodyWrong, "Body checksum"), "0xBB (Invalid, should be 0xAA)")
         XCTAssertEqual(problem(bodyWrong, "Body checksum"), true)
     }
 
-    /// A microcode image carries one checksum dword; flagged or not, the row is
-    /// the same `Checksums.text` spelling the other panels use.
-    func testAMicrocodeChecksumRowFollowsItsBadField() {
+    /// A microcode image carries one checksum dword; a repair on it reads the
+    /// row as the problem, quoting the dword a fix would write — the fixture
+    /// wants `0xF8E2D6CA`, and the four repair bytes spell it little-endian.
+    func testAMicrocodeChecksumRowSaysWhatItShouldBe() {
         let built = TestUEFI.microcode()
 
         let clean = UEFIDetail.build(
-            for: built.node, image: built.image, reader: built.reader, badFields: []
+            for: built.node, image: built.image, reader: built.reader, repairs: []
         )
         XCTAssertEqual(field(clean, "Checksum"), "0x00000000 (Valid)")
         XCTAssertEqual(problem(clean, "Checksum"), false)
 
         let corrupt = UEFIDetail.build(
-            for: built.node, image: built.image, reader: built.reader, badFields: [.microcode]
+            for: built.node, image: built.image, reader: built.reader,
+            repairs: [ChecksumRepair(offset: 0x10, bytes: [0xCA, 0xD6, 0xE2, 0xF8])]
         )
-        XCTAssertEqual(field(corrupt, "Checksum"), "0x00000000 (Invalid)")
+        XCTAssertEqual(field(corrupt, "Checksum"), "0x00000000 (Invalid, should be 0xF8E2D6CA)")
         XCTAssertEqual(problem(corrupt, "Checksum"), true)
     }
 

@@ -78,21 +78,50 @@ public enum UEFIChecksumCheck {
         }
     }
 
-    /// Which checksum field of every node is wrong, keyed by node id. One pass
-    /// over the three kinds that carry checksums; empty for a node whose
+    /// The writes that put every node's checksum right, keyed by node id. One
+    /// pass over the three kinds that carry checksums, kept so the panel can
+    /// both flag a node *and* say what each wrong checksum should be — the
+    /// repair's own bytes are the value a Fix writes, and the bytes a detail
+    /// row quotes as "should be" (§3.3, §5.4, §7.1). Empty for a node whose
     /// checksums are all right (or unreadable).
-    public static func badFields(
+    public static func repairs(
         in image: UEFIImage,
         reader: ImageReader
-    ) -> [NodeID: Set<UEFIChecksumField>] {
-        var result: [NodeID: Set<UEFIChecksumField>] = [:]
+    ) -> [NodeID: [ChecksumRepair]] {
+        var result: [NodeID: [ChecksumRepair]] = [:]
         for node in image.allNodes {
             guard node.kind == .volume || node.kind == .file || node.kind == .microcode
             else { continue }
             let revision = node.kind == .file ? volumeRevision(of: node, in: image) : nil
-            let repairs = repairs(for: node, volumeRevision: revision, in: reader)
-            guard !repairs.isEmpty else { continue }
-            result[node.id] = fields(of: repairs, for: node)
+            let nodeRepairs = repairs(for: node, volumeRevision: revision, in: reader)
+            guard !nodeRepairs.isEmpty else { continue }
+            result[node.id] = nodeRepairs
+        }
+        return result
+    }
+
+    /// Which checksum field of every node is wrong, keyed by node id — the
+    /// shape the panel's warning and icon key on. Derived from the one heavy
+    /// pass above, so a caller that wants both pays for the body reads once.
+    public static func badFields(
+        in image: UEFIImage,
+        reader: ImageReader
+    ) -> [NodeID: Set<UEFIChecksumField>] {
+        fields(of: repairs(in: image, reader: reader), in: image)
+    }
+
+    /// The checksum fields a set of per-node repairs stand for, keyed by node
+    /// id — the light mapping of `repairs(in:)` a caller that already has them
+    /// applies without a second pass over the bytes.
+    public static func fields(
+        of repairsByNode: [NodeID: [ChecksumRepair]],
+        in image: UEFIImage
+    ) -> [NodeID: Set<UEFIChecksumField>] {
+        var result: [NodeID: Set<UEFIChecksumField>] = [:]
+        for node in image.allNodes {
+            if let repairs = repairsByNode[node.id] {
+                result[node.id] = fields(of: repairs, for: node)
+            }
         }
         return result
     }
@@ -101,7 +130,7 @@ public enum UEFIChecksumCheck {
     /// microcode image's every repair is their one checksum; a file's two
     /// checksum bytes sit at fixed offsets, so which byte was written tells
     /// header from body apart.
-    private static func fields(
+    public static func fields(
         of repairs: [ChecksumRepair],
         for node: UEFINode
     ) -> Set<UEFIChecksumField> {

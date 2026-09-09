@@ -43,14 +43,19 @@ public struct UEFINodeDetail: Equatable, Sendable {
 /// used: a field the header does not hold is absent, not guessed, and the name
 /// tables are `UEFIImage`'s, not re-derived here.
 public enum UEFIDetail {
+    /// - Parameter repairs: the writes that would put this node's checksums
+    ///   right (from the parse-time `UEFIChecksumCheck.repairs`), or [] when
+    ///   they all check out. Each repair is the row's word on a wrong field: its
+    ///   offset picks the checksum row it stands for, and its bytes are the
+    ///   "should be" value the row quotes.
     public static func build(
         for node: UEFINode,
         image: UEFIImage,
         reader: ImageReader,
-        badFields: Set<UEFIChecksumField> = []
+        repairs: [ChecksumRepair] = []
     ) -> UEFINodeDetail {
         var fields = commonFields(for: node, image: image)
-        fields += headerFields(for: node, reader: reader, badFields: badFields)
+        fields += headerFields(for: node, reader: reader, repairs: repairs)
         let title = node.name.isEmpty ? kindLabel(node.kind) : node.name
         return UEFINodeDetail(title: title, fields: fields)
     }
@@ -95,7 +100,7 @@ public enum UEFIDetail {
     private static func headerFields(
         for node: UEFINode,
         reader: ImageReader,
-        badFields: Set<UEFIChecksumField>
+        repairs: [ChecksumRepair]
     ) -> [UEFIDetailField] {
         let h = node.header.lowerBound
         var fields: [UEFIDetailField] = []
@@ -107,8 +112,9 @@ public enum UEFIDetail {
                 fields.append(.init("Attributes", bits(attributes, [(0x0000_0800, "Erase polarity")])))
             }
             if let headerLength = reader.uint16(at: h + 0x30) { fields.append(.init("Header length", sizeText(headerLength))) }
-            if let checksum = reader.uint16(at: h + 0x32) {
-                fields.append(checksumRow("Checksum", checksum, field: .volume, digits: 4, badFields: badFields))
+            let checksumOffset = h + 0x32
+            if let checksum = reader.uint16(at: checksumOffset) {
+                fields.append(checksumRow("Checksum", checksum, digits: 4, repairs: repairs, checksumOffset: checksumOffset))
             }
             if let extOffset = reader.uint16(at: h + 0x34) { fields.append(.init("Ext. header", hex(extOffset))) }
             if let revision = reader.uint8(at: h + 0x37) { fields.append(.init("Revision", "\(revision)")) }
@@ -133,10 +139,10 @@ public enum UEFIDetail {
                 fields.append(.init("State", bits(state, [(0x80, "Erase polarity")])))
             }
             if let headerChecksum = reader.uint8(at: h + 0x10) {
-                fields.append(checksumRow("Header checksum", headerChecksum, field: .fileHeader, digits: 2, badFields: badFields))
+                fields.append(checksumRow("Header checksum", headerChecksum, digits: 2, repairs: repairs, checksumOffset: h + 0x10))
             }
             if let bodyChecksum = reader.uint8(at: h + 0x11) {
-                fields.append(checksumRow("Body checksum", bodyChecksum, field: .fileBody, digits: 2, badFields: badFields))
+                fields.append(checksumRow("Body checksum", bodyChecksum, digits: 2, repairs: repairs, checksumOffset: h + 0x11))
             }
 
         case .section:
@@ -161,7 +167,7 @@ public enum UEFIDetail {
                 fields.append(.init("Update revision", hex(header.updateRevision)))
                 fields.append(.init("Date", header.date))
                 fields.append(.init("Processor signature", hex(header.processorSignature)))
-                fields.append(checksumRow("Checksum", header.checksum, field: .microcode, digits: 8, badFields: badFields))
+                fields.append(checksumRow("Checksum", header.checksum, digits: 8, repairs: repairs, checksumOffset: h + 0x10))
                 // The loader revision is checked by the reader but not kept on
                 // the validated header, so it comes straight off the bytes.
                 if let loaderRevision = reader.uint32(at: h + 0x14) {
@@ -247,7 +253,11 @@ public enum UEFIDetail {
             if node.range.upperBound >= h + 4,
                let stored = reader.uint32(at: node.range.upperBound - 4),
                let bytes = reader.bytes(at: h, count: node.range.upperBound - 4 - h) {
-                fields.append(.init("CRC32", Checksums.text(stored, valid: Checksums.crc32(bytes) == stored, digits: 8)))
+                let computed = Checksums.crc32(bytes)
+                fields.append(.init(
+                    "CRC32",
+                    Checksums.text(stored, valid: computed == stored, expected: UInt64(computed), digits: 8)
+                ))
             }
 
         case .flashMapStore:
@@ -271,7 +281,10 @@ public enum UEFIDetail {
             if let attributes = reader.uint32(at: h + 8) { fields.append(.init("Attributes", hex(attributes))) }
             if let reserved = reader.uint32(at: h + 16) { fields.append(.init("Reserved", hex(reserved))) }
             if let checksum = evsaChecksum(storedAt: h + 1, covering: node.header.upperBound, reader: reader) {
-                fields.append(.init("Checksum", Checksums.text(checksum.value, valid: checksum.valid)))
+                fields.append(.init(
+                    "Checksum",
+                    Checksums.text(checksum.value, valid: checksum.valid, expected: checksum.expected.map(UInt64.init))
+                ))
             }
 
         case .vssEntry:
@@ -304,7 +317,10 @@ public enum UEFIDetail {
                 }
             }
             if let checksum = evsaChecksum(storedAt: h + 1, covering: node.range.upperBound, reader: reader) {
-                fields.append(.init("Checksum", Checksums.text(checksum.value, valid: checksum.valid)))
+                fields.append(.init(
+                    "Checksum",
+                    Checksums.text(checksum.value, valid: checksum.valid, expected: checksum.expected.map(UInt64.init))
+                ))
             }
 
         case .slicData:
@@ -374,21 +390,24 @@ public enum UEFIDetail {
         (0x1000_0000, "ExtendedHeader"),
     ]
 
-    /// The stored checksum of an EVSA record and whether it counts. An EVSA
-    /// record checks itself the sum-to-zero way: everything from the stored
-    /// checksum byte to the record's end adds up to zero (§9). The reference
-    /// parser reads that region from two bytes in, and summing from the
-    /// checksum byte is the same arithmetic.
+    /// The stored checksum of an EVSA record, whether it counts, and what it
+    /// would have to be. An EVSA record checks itself the sum-to-zero way:
+    /// everything from the stored checksum byte to the record's end adds up to
+    /// zero (§9). The reference parser reads that region from two bytes in, and
+    /// summing from the checksum byte is the same arithmetic. When the sum is
+    /// not zero, the byte that would make it zero is `stored &- sum` — what a
+    /// wrong checksum should read, and what the detail quotes. Nil only when the
+    /// record cannot be read whole.
     private static func evsaChecksum(
         storedAt checksumOffset: UInt64,
         covering end: UInt64,
         reader: ImageReader
-    ) -> (value: UInt8, valid: Bool)? {
+    ) -> (value: UInt8, valid: Bool, expected: UInt8?)? {
         guard let stored = reader.uint8(at: checksumOffset),
               end > checksumOffset,
               let sum = Checksums.sum8(of: checksumOffset..<end, in: reader)
         else { return nil }
-        return (stored, sum == 0)
+        return (stored, sum == 0, stored &- sum)
     }
 
     /// Fixed-size bytes that hold an ASCII word: everything up to the first
@@ -400,23 +419,40 @@ public enum UEFIDetail {
 
     // MARK: - Text
 
-    /// A checksum row whose validity the caller has already decided: the stored
-    /// value reads `0x… (Valid)` or `0x… (Invalid)`, and a checksum that does
-    /// not check out is also marked as the problem it is so the controller can
-    /// colour just that value red.
+    /// A checksum row read at `checksumOffset` whose validity the caller has
+    /// decided by the parse-time repairs: the repair sitting at the field's own
+    /// offset says the field is wrong, and its bytes are the "should be" value
+    /// the row quotes — `0x… (Invalid, should be 0x…)`. A field with no repair
+    /// reads `0x… (Valid)`, and a wrong one is marked as the problem it is so
+    /// the controller can colour just that value red.
     private static func checksumRow(
         _ label: String,
         _ stored: some BinaryInteger,
-        field: UEFIChecksumField,
         digits: Int,
-        badFields: Set<UEFIChecksumField>
+        repairs: [ChecksumRepair],
+        checksumOffset: UInt64
     ) -> UEFIDetailField {
-        let isProblem = badFields.contains(field)
+        let repair = repairs.first { $0.offset == checksumOffset }
+        let isProblem = repair != nil
         return UEFIDetailField(
             label,
-            Checksums.text(stored, valid: !isProblem, digits: digits),
+            Checksums.text(
+                stored,
+                valid: !isProblem,
+                expected: repair.map { littleEndian($0.bytes) },
+                digits: digits
+            ),
             isProblem: isProblem
         )
+    }
+
+    /// The bytes of a repair as the number they write, little-endian the way
+    /// every multi-byte value in this format is stored — the value a Fix writes
+    /// and the detail quotes as "should be".
+    private static func littleEndian(_ bytes: [UInt8]) -> UInt64 {
+        bytes.enumerated().reduce(into: UInt64(0)) { result, pair in
+            result |= UInt64(pair.element) << (8 * pair.offset)
+        }
     }
 
     /// A byte-length field, which a reader wants in decimal as well as hex —

@@ -83,43 +83,59 @@ final class FITDetailTests: XCTestCase {
     /// whole table, so this reads the detail the display builds.
     func testAWrongHeaderChecksumIsMarkedAsAProblem() {
         let row = TestFIT.Row(FIT.microcodeType, target: microcode)
-        func headerDetail(_ bytes: [UInt8]) -> FITRowDetail {
-            FITPresenter.display(FITReader.read(ImageReader(bytes), image: nil), focus: 0).detail
+        func header(_ bytes: [UInt8]) -> (table: FITTable?, detail: FITRowDetail) {
+            let report = FITReader.read(ImageReader(bytes), image: nil)
+            return (report.table, FITPresenter.display(report, focus: 0).detail)
         }
 
-        let wrong = headerDetail(TestFIT.image(rows: [row], checksum: 0xCC))
-        XCTAssertEqual(field(wrong, "Checksum")?.value.hasSuffix(" (Invalid)"), true)
-        XCTAssertEqual(field(wrong, "Checksum")?.isProblem, true)
+        let wrongBytes = TestFIT.image(rows: [row], checksum: 0xCC)
+        let wrong = header(wrongBytes)
+        XCTAssertEqual(field(wrong.detail, "Checksum")?.isProblem, true)
+        // The wrong byte says what it should be — the byte the whole table has
+        // to sum to (§8.6) — not just that it is wrong.
+        let shouldBe = wrong.table?.computedChecksum
+        XCTAssertEqual(
+            field(wrong.detail, "Checksum")?.value,
+            String(format: "0xCC (Invalid, should be 0x%02X)", shouldBe ?? 0)
+        )
 
         // The fixture's own checksum is the one that makes the table sum to
         // zero, and a right checksum is not a problem — a detail that reddens
         // every checksum says nothing.
-        let right = headerDetail(TestFIT.image(rows: [row]))
-        XCTAssertEqual(field(right, "Checksum")?.value.hasSuffix(" (Valid)"), true)
-        XCTAssertEqual(field(right, "Checksum")?.isProblem, false)
+        let right = header(TestFIT.image(rows: [row]))
+        XCTAssertEqual(field(right.detail, "Checksum")?.value.hasSuffix(" (Valid)"), true)
+        XCTAssertEqual(field(right.detail, "Checksum")?.isProblem, false)
 
         // A header that says its checksum does not count (§5) says so in as
         // many words: the byte is not wrong, it is not looked at — and
         // "Invalid" is kept for a checksum that really is.
-        let unchecked = headerDetail(
+        let unchecked = header(
             TestFIT.image(rows: [row], checksum: 0xCC, checksumValid: false)
         )
-        XCTAssertEqual(field(unchecked, "Checksum")?.value, "0xCC (Not checked)")
-        XCTAssertEqual(field(unchecked, "Checksum")?.isProblem, false)
+        XCTAssertEqual(field(unchecked.detail, "Checksum")?.value, "0xCC (Not checked)")
+        XCTAssertEqual(field(unchecked.detail, "Checksum")?.isProblem, false)
     }
 
     /// The microcode's own dword checksum is marked the same way — it is read
     /// from the image the row points at, and a wrong one is what a bad edit
-    /// leaves behind.
+    /// leaves behind. It says what it should be too: the dword the fixture put
+    /// in before the edit corrupted it (§7.1).
     func testAWrongMicrocodeChecksumIsMarkedAsAProblem() {
-        var image = TestFIT.microcode(totalSize: 0x180)
+        let good = TestFIT.microcode(totalSize: 0x180)
+        let shouldBe = ImageReader(good).uint32(at: 0x10)
+        var image = good
         image[0x10] ^= 0xFF          // the header's checksum dword (§7.1)
+        let stored = ImageReader(image).uint32(at: 0x10)
         let read = detail(
             [TestFIT.Row(FIT.microcodeType, target: microcode)],
             contents: [microcode: image]
         )
-        XCTAssertEqual(field(read!, "Image checksum")?.value.hasSuffix(" (Invalid)"), true)
         XCTAssertEqual(field(read!, "Image checksum")?.isProblem, true)
+        XCTAssertEqual(
+            field(read!, "Image checksum")?.value,
+            Checksums.text(UInt64(stored ?? 0), valid: false,
+                           expected: shouldBe.map(UInt64.init), digits: 4)
+        )
     }
 
     /// A policy row at version 0 keeps an Index/IO register descriptor in the

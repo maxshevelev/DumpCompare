@@ -43,12 +43,14 @@ public struct FITRowDetail: Equatable, Sendable {
 /// Index/IO descriptor, a named region — so this reads nothing new: it only
 /// puts what was found into the shape the panel draws.
 public enum FITDetail {
-    /// `checksumMismatch` is the validator's word on the table's own checksum
+    /// `checksumShouldBe` is the validator's word on the table's own checksum
     /// (§8.6) — the one thing about the header row that cannot be read off the
-    /// row, and the value the header's Checksum field is coloured by.
-    public static func build(for row: FITRow, checksumMismatch: Bool = false) -> FITRowDetail {
+    /// row, and the value the header's Checksum field is coloured by and quotes
+    /// when it reads wrong. Nil when the checksum checks out (or is not
+    /// checked): the byte is valid then, not a problem.
+    public static func build(for row: FITRow, checksumShouldBe: UInt8? = nil) -> FITRowDetail {
         let entry = row.entry
-        var fields = entryFields(of: entry, checksumMismatch: checksumMismatch)
+        var fields = entryFields(of: entry, checksumShouldBe: checksumShouldBe)
         fields += targetFields(of: row)
         return FITRowDetail(
             // The number the panel shows for the row, counting from one the way
@@ -62,7 +64,7 @@ public enum FITDetail {
     // MARK: - The sixteen bytes of the row itself
 
     private static func entryFields(
-        of entry: FITEntry, checksumMismatch: Bool
+        of entry: FITEntry, checksumShouldBe: UInt8?
     ) -> [FITDetailField] {
         // The type leads: it is what the row is, and the title already says it,
         // so the fields open with it rather than with where it sits.
@@ -81,10 +83,13 @@ public enum FITDetail {
             // can be trusted. A header that says its checksum does not count
             // (the C_V bit, §5) says so in as many words: the byte is not
             // wrong, it is not looked at, and nothing about it is a problem.
+            // A wrong byte says what it should be: the `computed` half of the
+            // mismatch, which is the value a fix would write back (§8.6).
             fields.append(entry.checksumValid
                 ? .init("Checksum",
-                        Checksums.text(entry.checksum, valid: !checksumMismatch),
-                        isProblem: checksumMismatch)
+                        Checksums.text(entry.checksum, valid: checksumShouldBe == nil,
+                                       expected: checksumShouldBe.map(UInt64.init)),
+                        isProblem: checksumShouldBe != nil)
                 : .init("Checksum", "\(hex(entry.checksum, digits: 2)) (Not checked)"))
         }
         return fields
@@ -134,9 +139,13 @@ public enum FITDetail {
                 // The image's own dword checksum, distinct from the header's
                 // checksum byte. Shown with whether the image sums to zero, the
                 // shared spelling, so it reads the same wherever a checksum
-                // carries a validity.
+                // carries a validity — and a wrong one says what it should be
+                // (§7.1). A header whose image cannot be read whole has no sum,
+                // so there is no answer to give, only that it does not count.
                 .init("Image checksum",
-                      Checksums.text(header.checksum, valid: header.checksumIsCorrect, digits: 4),
+                      Checksums.text(header.checksum, valid: header.checksumIsCorrect,
+                                     expected: header.computedChecksum.map(UInt64.init),
+                                     digits: 4),
                       isProblem: !header.checksumIsCorrect)
             ]
         case .emptyMicrocodeSlot(let offset):

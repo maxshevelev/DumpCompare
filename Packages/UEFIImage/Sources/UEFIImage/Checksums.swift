@@ -95,13 +95,28 @@ public enum Checksums {
 
     /// How a checksum and whether the structure says it counts read together:
     /// the value in hex, and the validity in words — `0x5C (Valid)` or
-    /// `0x5C (Invalid)`. One spelling of it, so a checksum that carries a
-    /// validity bit reads the same in every panel that shows it.
-    public static func text(_ value: some BinaryInteger, valid: Bool, digits: Int = 2) -> String {
-        let v = UInt64(truncatingIfNeeded: value)
-        let hexText = String(v, radix: 16, uppercase: true)
-        let padded = "0x" + String(repeating: "0", count: max(0, digits - hexText.count)) + hexText
-        return "\(padded) (\(valid ? "Valid" : "Invalid"))"
+    /// `0x5C (Invalid)`. An invalid one whose correct value is known says what
+    /// it should be, so a reader can write it back by hand as well as by Fix:
+    /// `0x5C (Invalid, should be 0x5A)`. One spelling of it, so a checksum
+    /// that carries a validity bit reads the same in every panel that shows it.
+    public static func text(
+        _ value: some BinaryInteger,
+        valid: Bool,
+        expected: UInt64? = nil,
+        digits: Int = 2
+    ) -> String {
+        let padded = hex(UInt64(truncatingIfNeeded: value), digits: digits)
+        if valid { return "\(padded) (Valid)" }
+        if let expected {
+            return "\(padded) (Invalid, should be \(hex(expected, digits: digits)))"
+        }
+        return "\(padded) (Invalid)"
+    }
+
+    /// A hex value padded to a field's width — `0x0005` for digits 4.
+    private static func hex(_ value: UInt64, digits: Int) -> String {
+        let text = String(value, radix: 16, uppercase: true)
+        return "0x" + String(repeating: "0", count: max(0, digits - text.count)) + text
     }
 }
 

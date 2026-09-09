@@ -234,6 +234,31 @@ final class TopLevelParseTests: XCTestCase {
         XCTAssertFalse(bad?.checksumIsCorrect ?? true)
     }
 
+    /// The header also says what the field would have to be for the sum to come
+    /// out zero — the value a fix writes — so a panel that shows the image's
+    /// checksum wrong can say what it should be. A correct image is already
+    /// that value, and an unreadable one has no answer.
+    func testTheHeaderSaysWhatTheChecksumShouldBe() {
+        // A wrong stored field reads back the correct one the fixture put in
+        // place of `0xDEAD_BEEF` — the value a fix would write back.
+        let good = MicrocodeHeader.read(at: 0, in: ImageReader(TestImage.microcode()))
+        let bad = MicrocodeHeader.read(
+            at: 0, in: ImageReader(TestImage.microcode(checksum: 0xDEAD_BEEF))
+        )
+        XCTAssertEqual(bad?.computedChecksum, good?.checksum)
+        // The stored value of a correct image is the value it should be.
+        XCTAssertEqual(good?.computedChecksum, good?.checksum)
+        XCTAssertNotEqual(bad?.computedChecksum, bad?.checksum)
+
+        // A header whose declared total runs past the image cannot be summed,
+        // so there is nothing to say it should be — not a fabricated answer.
+        var truncated = TestImage.microcode(totalSize: 0x2000)
+        truncated = Array(truncated.prefix(0x100))
+        let ragged = MicrocodeHeader.read(at: 0, in: ImageReader(truncated))
+        XCTAssertFalse(ragged?.checksumIsCorrect ?? true)
+        XCTAssertNil(ragged?.computedChecksum)
+    }
+
     func testBytesThatAreNotMicrocodeReadBackAsNothing() {
         XCTAssertNil(MicrocodeHeader.read(
             at: 0, in: ImageReader([UInt8](repeating: 0xFF, count: 0x100))

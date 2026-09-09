@@ -32,11 +32,15 @@ struct UEFIParkedState: ToolSessionState {
     var focus: NodeID?
 }
 
-/// What a parse hands back: the tree, and which checksums in it are wrong.
-/// Read together off the main actor, because the checksum pass reads every file
-/// body and must never run on show or in a table callback.
+/// What a parse hands back: the tree, and, for every node with a wrong
+/// checksum, the fields that are wrong and the writes that would put them right
+/// — read together off the main actor, because the checksum pass reads every
+/// file body and must never run on show or in a table callback. The repairs are
+/// the half that makes a wrong field say what it should be; the fields are the
+/// half the warning and the icon key on.
 private struct ParseResult: Sendable {
     let image: UEFIImage
+    let nodeRepairs: [NodeID: [ChecksumRepair]]
     let badChecksums: [NodeID: Set<UEFIChecksumField>]
 }
 
@@ -55,6 +59,9 @@ private struct ParseResult: Sendable {
     /// Readable from outside so the app's tests can assert on it without
     /// reaching into a view.
     public private(set) var checksumProblems: [NodeID: Set<UEFIChecksumField>] = [:]
+    /// The same pass's repairs, keyed by node id — what a wrong field should
+    /// read, carried so the detail can quote it without re-reading the body.
+    private var nodeRepairs: [NodeID: [ChecksumRepair]] = [:]
     /// The node the user is looking at. Nil before a choice, and after a
     /// re-parse that lost it.
     private var focus: NodeID?
@@ -127,6 +134,7 @@ private struct ParseResult: Sendable {
             image = nil
             reader = nil
             checksumProblems = [:]
+            nodeRepairs = [:]
             controller.say("Could not read the file: \(error)", asProblem: true)
             show()
             return
@@ -149,6 +157,7 @@ private struct ParseResult: Sendable {
             let parsed = await UEFIToolSession.parse(source, progress: reporter)
             guard let self, self.generation == generation else { return }
             self.image = parsed.image
+            self.nodeRepairs = parsed.nodeRepairs
             self.checksumProblems = parsed.badChecksums
             self.reader = ImageReader(source)
             self.controller.endBusy()
@@ -204,10 +213,12 @@ private struct ParseResult: Sendable {
     ) async -> ParseResult {
         await Task.detached(priority: .userInitiated) {
             let image = UEFIParser.parse(source, progress: progress)
-            let badChecksums = UEFIChecksumCheck.badFields(
-                in: image, reader: ImageReader(source)
+            let nodeRepairs = UEFIChecksumCheck.repairs(in: image, reader: ImageReader(source))
+            return ParseResult(
+                image: image,
+                nodeRepairs: nodeRepairs,
+                badChecksums: UEFIChecksumCheck.fields(of: nodeRepairs, in: image)
             )
-            return ParseResult(image: image, badChecksums: badChecksums)
         }.value
     }
 
@@ -226,7 +237,7 @@ private struct ParseResult: Sendable {
         let detail = node.map {
             UEFIDetail.build(
                 for: $0, image: image, reader: reader,
-                badFields: checksumProblems[$0.id] ?? []
+                repairs: nodeRepairs[$0.id] ?? []
             )
         } ?? .empty
         controller.show(

@@ -123,7 +123,8 @@ final class UEFIChecksumFlowTests: XCTestCase {
     }
 
     /// A corrupted volume checksum reaches the panel as a red reading, not only
-    /// as a private flag: the volume's detail row says `(Invalid)`.
+    /// as a private flag: the volume's detail row says `(Invalid)` and what the
+    /// byte should be.
     func testACorruptedVolumeChecksumIsFlaggedAndReadsInvalid() throws {
         var image = UEFITestImage.make()
         image[0x32] ^= 0xFF
@@ -136,7 +137,10 @@ final class UEFIChecksumFlowTests: XCTestCase {
         try session().showTopNode()
         let text = descendants(of: try XCTUnwrap(controller?.tools.panel), NSTextField.self)
             .map(\.stringValue)
-        XCTAssertTrue(text.contains { $0.hasSuffix("(Invalid)") }, "\(text)")
+        let invalid = text.first { $0.contains("(Invalid") }
+        XCTAssertNotNil(invalid, "the volume's checksum reads as invalid: \(text)")
+        XCTAssertTrue(invalid?.contains("should be 0x") ?? false,
+                      "and says what it should be, not just that it is wrong: \(text)")
     }
 
     /// Fix Checksum recomputes the volume's checksum from the *current* bytes,
@@ -178,7 +182,7 @@ final class UEFIChecksumFlowTests: XCTestCase {
         let note = descendants(of: panel, NSTextField.self).map(\.stringValue)
         XCTAssertTrue(note.contains { $0.contains("Checksum written") }, "\(note)")
         XCTAssertTrue(note.contains { $0.hasSuffix("(Valid)") }, "\(note)")
-        XCTAssertFalse(note.contains { $0.hasSuffix("(Invalid)") }, "\(note)")
+        XCTAssertFalse(note.contains { $0.contains("(Invalid") }, "\(note)")
     }
 
     /// A file the user cannot write is one the tool cannot write either: the

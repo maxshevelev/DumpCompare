@@ -157,7 +157,7 @@ public struct FITDisplay: Equatable, Sendable {
             .flatMap { index in rows.first { $0.index == index } }
             .map {
                 FITDetail.build(for: $0.model,
-                                checksumMismatch: FITPresenter.checksumMismatch(in: problems))
+                                checksumShouldBe: FITPresenter.checksumShouldBe(in: problems))
             }
             ?? .empty
         return copy
@@ -181,15 +181,16 @@ public enum FITPresenter {
         return nil
     }
 
-    /// Whether the validator found the table's own checksum wrong (§8.6) —
-    /// what the header row's Checksum field reads as a problem. It is not
-    /// something the row itself carries: the byte the row holds is checked
-    /// against the whole table.
-    static func checksumMismatch(in problems: [FITProblem]) -> Bool {
-        problems.contains {
-            if case .checksumMismatch = $0.kind { return true }
-            return false
+    /// The byte the table's checksum should hold, as the validator computed it
+    /// (§8.6) — what the header row's Checksum field quotes and is coloured by
+    /// when it reads wrong. Nil when the checksum checks out or is not checked.
+    /// It is not something the row itself carries: the byte the row holds is
+    /// checked against the whole table.
+    static func checksumShouldBe(in problems: [FITProblem]) -> UInt8? {
+        for problem in problems {
+            if case .checksumMismatch(_, let computed) = problem.kind { return computed }
         }
+        return nil
     }
 
     /// What to show for a report. `focus` is the row the user has selected.
@@ -236,7 +237,7 @@ public enum FITPresenter {
             .flatMap { index in rows.first { $0.index == index } }
             .map {
                 FITDetail.build(for: $0.model,
-                                checksumMismatch: checksumMismatch(in: report.problems))
+                                checksumShouldBe: checksumShouldBe(in: report.problems))
             }
             ?? .empty
         return FITDisplay(

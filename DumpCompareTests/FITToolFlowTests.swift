@@ -959,10 +959,13 @@ final class FITToolFlowTests: XCTestCase {
         let panel = try XCTUnwrap(controller?.tools.panel)
         let fields = descendants(of: panel, NSTextField.self)
         let value = try XCTUnwrap(
-            fields.first { $0.stringValue.hasSuffix("(Invalid)") },
+            fields.first { $0.stringValue.contains("(Invalid") },
             "the header's checksum reads as invalid: \(fields.map(\.stringValue))"
         )
         XCTAssertEqual(value.textColor, .systemRed)
+        XCTAssertTrue(value.stringValue.contains("should be 0x"),
+                      "and says what the byte should be, not just that it is wrong: "
+                      + value.stringValue)
 
         let label = try XCTUnwrap(fields.first { $0.stringValue == "Checksum" })
         XCTAssertEqual(label.textColor, .secondaryLabelColor,
