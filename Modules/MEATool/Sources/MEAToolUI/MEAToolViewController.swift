@@ -390,9 +390,12 @@ import ToolModuleKit
         switch row.value {
         case .value(let text):
             value = NSTextField(labelWithString: text)
+            // A status-toned value (File System State) is bold as well as
+            // coloured — the weight makes the state read at a glance.
+            let emphasized = row.tone != .standard
             value.font = text.hasPrefix("0x")
                 ? ToolPanelFont.monospacedDigits()
-                : ToolPanelFont.body()
+                : ToolPanelFont.body(weight: emphasized ? .bold : .regular)
             value.isSelectable = true
             value.textColor = MEASummaryToneColor.color(for: row.tone)
         case .comingSoon:
