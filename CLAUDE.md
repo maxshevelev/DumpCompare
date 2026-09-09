@@ -36,6 +36,22 @@ Packages:
 - After adding a package or a source file: `xcodegen generate`. The test script
   finds a new package by itself.
 
+Skills:
+- Skills live in the repo, committed under `Skills/<name>/` — that is the durable
+  home; a `git clone` carries them. Layout: `SKILL.md` (frontmatter `name` /
+  `description` on line 1) plus optional `scripts/` (deterministic stdlib-only
+  generator) and `reference/` (contract docs the skill ports against).
+- `.claude/` is never committed (gitignored). Skills are not stored there.
+- The Claude Code CLI turns a skill into a slash command only from local
+  `.claude/skills/<name>`; a committed top-level `Skills/` is not auto-discovered.
+  Run a committed skill from any session by pointing the model at
+  `Skills/<name>/SKILL.md`, or by invoking its script directly.
+- For a real `/name` on a machine, add the local gitignored hook once (one line;
+  never commit it):
+  `mkdir -p .claude/skills && ln -s ../../Skills/<name> .claude/skills/<name>`
+- Deterministic and reviewable by default: a skill's script is stdlib-only and a
+  run is a diff to review, never a blind rewrite.
+
 Running the tests:
 - `Scripts/run-tests.sh` — every Swift package, then the app suite in groups,
   one group at a time. `-o <regex>` runs only the classes whose names match;

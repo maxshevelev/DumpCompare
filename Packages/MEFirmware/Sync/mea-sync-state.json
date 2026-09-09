@@ -1,0 +1,6 @@
+{
+  "upstream": {
+    "baselineSHA": "d27ccdba0aadbad490f47b5b631c369b682a7ef5",
+    "baselineTag": "v1.312.0-r378"
+  }
+}
