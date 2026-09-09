@@ -2,6 +2,7 @@ import AppKit
 import MEFirmware
 import MEATool
 import ToolModuleKit
+import UEFIImage
 
 /// The "ME Analyzer" instrument: run `MEFirmware`'s analysis over the open
 /// file and show the result — on the first tab the MEA-style summary, on the
@@ -104,6 +105,15 @@ struct MEAParkedState: ToolSessionState {
 
     // MARK: - Reading
 
+    /// The last analysis's own cache and the tool's shared UEFI tree, reached
+    /// through the host: neither is on the base `ToolHost` seam (which stays
+    /// format-agnostic), so a tool-module that wants them casts for it, the
+    /// same way it would ask for anything else beyond the seam's base
+    /// contract. Nil under a host that offers neither (a test double) — the
+    /// module falls back to its original, self-contained behavior.
+    private var treeProvider: (any UEFITreeProviding)? { host as? any UEFITreeProviding }
+    private var analysisProvider: (any MEAAnalysisProviding)? { host as? any MEAAnalysisProviding }
+
     private func reparse() {
         let snapshot: any ToolContentReader
         do {
@@ -117,13 +127,32 @@ struct MEAParkedState: ToolSessionState {
             return
         }
 
+        // The shared tree already knows the ME region's bounds from the
+        // descriptor — a cheap lookup, not a scan — whether or not the UEFI
+        // tool-module has ever been opened on this file. Handing it to the
+        // engine replaces MEFirmware's own whole-file `$FPT` search with a
+        // read of just those bytes.
+        let meRegion = treeProvider?.uefiTree()?.region(.me)
+        let analysisProvider = self.analysisProvider
+
+        // A cached analysis survives a panel switch untouched: the pane's
+        // holder only drops it when an edit actually lands inside the ME
+        // region (`PaneUEFIState.invalidate`), so reactivating this
+        // tool-module after using another one is instant rather than a
+        // second full analysis of data nothing changed.
+        if let cached = analysisProvider?.cachedMEAnalysis() {
+            present(cached)
+            onDisplay?(cached)
+            return
+        }
+
         generation += 1
         let generation = self.generation
         controller.say("Reading…")
         controller.showBusy()
         let analyzer = self.analyzer
         Task { [weak self] in
-            let result = await MEAToolSession.analyze(snapshot, analyzer: analyzer)
+            let result = await MEAToolSession.analyze(snapshot, analyzer: analyzer, meRegion: meRegion)
             guard let self, self.generation == generation else { return }
             self.controller.endBusy()
             switch result {
@@ -131,6 +160,7 @@ struct MEAParkedState: ToolSessionState {
                 // The reading is over — the line returns to empty, as the other
                 // panels' do after a successful parse.
                 self.controller.say("")
+                analysisProvider?.setCachedMEAnalysis(analysis, meRegion: meRegion)
                 self.present(analysis)
                 self.onDisplay?(analysis)
             case .failure(let error):
@@ -146,17 +176,31 @@ struct MEAParkedState: ToolSessionState {
         }
     }
 
-    /// Off the main actor: materialise the file and hand it to the engine as
-    /// one region (`baseOffset 0`, so every reported offset is already absolute
-    /// in the open file — the thing the panel reveals and zones).
+    /// Off the main actor: materialise just the ME region (when the shared
+    /// tree could resolve it) and hand it to the engine at that region's own
+    /// base offset, so every address the engine reports is still absolute in
+    /// the open file. Falls back to the whole file — exactly today's
+    /// behavior, `baseOffset 0` — when the region is not known (no
+    /// descriptor recognized yet, or a bare ME dump with no descriptor at
+    /// all): MEFirmware's own `$FPT` search over the whole buffer is what
+    /// covers that case, unchanged.
     private nonisolated static func analyze(
         _ snapshot: any ToolContentReader,
-        analyzer: MEFirmwareAnalyzer
+        analyzer: MEFirmwareAnalyzer,
+        meRegion: Range<UInt64>?
     ) async -> Result<FirmwareAnalysis, Error> {
         await Task.detached(priority: .userInitiated) {
             do {
-                let data = try MEAToolSession.readAll(snapshot)
-                let analysis = try await analyzer.analyze(region: data)
+                let data: Data
+                let baseOffset: Int
+                if let meRegion, meRegion.lowerBound < meRegion.upperBound {
+                    data = try MEAToolSession.readRange(snapshot, meRegion)
+                    baseOffset = Int(meRegion.lowerBound)
+                } else {
+                    data = try MEAToolSession.readAll(snapshot)
+                    baseOffset = 0
+                }
+                let analysis = try await analyzer.analyze(region: data, baseOffset: baseOffset)
                 return .success(analysis)
             } catch {
                 return .failure(error)
@@ -170,11 +214,19 @@ struct MEAParkedState: ToolSessionState {
     private nonisolated static func readAll(
         _ snapshot: any ToolContentReader
     ) throws -> Data {
+        try readRange(snapshot, 0..<snapshot.size)
+    }
+
+    /// `range`, as one `Data` — the same chunked-read shape as `readAll`,
+    /// narrowed to just the bytes the engine actually needs.
+    private nonisolated static func readRange(
+        _ snapshot: any ToolContentReader, _ range: Range<UInt64>
+    ) throws -> Data {
         var data = Data()
         let chunk = 1 << 20
-        var offset: UInt64 = 0
-        while offset < snapshot.size {
-            let length = Int(min(UInt64(chunk), snapshot.size - offset))
+        var offset = range.lowerBound
+        while offset < range.upperBound {
+            let length = Int(min(UInt64(chunk), range.upperBound - offset))
             data.append(contentsOf: try snapshot.read(at: offset, length: length))
             offset += UInt64(length)
         }

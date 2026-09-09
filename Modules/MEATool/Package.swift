@@ -27,7 +27,8 @@ let package = Package(
     dependencies: [
         .package(path: "../../Packages/ALSplitView"),
         .package(path: "../../Packages/ToolModuleKit"),
-        .package(path: "../../Packages/MEFirmware")
+        .package(path: "../../Packages/MEFirmware"),
+        .package(path: "../../Packages/UEFIImage")
     ],
     targets: [
         .target(name: "MEATool", dependencies: [
@@ -38,7 +39,8 @@ let package = Package(
             "MEATool",
             .product(name: "MEFirmware", package: "MEFirmware"),
             .product(name: "ALSplitView", package: "ALSplitView"),
-            .product(name: "ToolModuleKit", package: "ToolModuleKit")
+            .product(name: "ToolModuleKit", package: "ToolModuleKit"),
+            .product(name: "UEFIImage", package: "UEFIImage")
         ]),
         .testTarget(name: "MEAToolTests", dependencies: [
             "MEATool",

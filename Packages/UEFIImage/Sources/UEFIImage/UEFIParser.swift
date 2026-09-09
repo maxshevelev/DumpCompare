@@ -55,6 +55,10 @@ final class Parser {
     /// order — a descriptor image parses the BIOS region and then the smaller
     /// region that sits *below* it, and that must not walk the bar backwards.
     private var lastFraction: Double = 0
+    /// Decides which nodes' children are computed immediately vs. left collapsed.
+    /// Defaults to ExpandAllPolicy, preserving eager behavior; a lazy tree passes
+    /// a custom policy to defer expansion.
+    let expansion: ExpansionPolicy
 
     /// What an unwritten byte looks like outside any volume. Inside one it is
     /// the volume's erase polarity that decides (§3.5); out here `0xFF` is what
@@ -64,11 +68,13 @@ final class Parser {
     init(
         reader: ImageReader,
         limits: UEFIParser.Limits,
-        progress: (@Sendable (Double) -> Void)? = nil
+        progress: (@Sendable (Double) -> Void)? = nil,
+        expansion: ExpansionPolicy? = nil
     ) {
         self.reader = reader
         self.limits = limits
         self.onProgress = progress
+        self.expansion = expansion ?? ExpandAllPolicy.shared
     }
 
     /// Reports that the scan has reached `offset`, as a fraction of the whole

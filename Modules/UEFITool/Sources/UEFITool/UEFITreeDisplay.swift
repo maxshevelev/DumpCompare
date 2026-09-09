@@ -71,6 +71,12 @@ public enum UEFITreeDisplay {
     }
 
     public static func present(_ image: UEFIImage) -> PresentedImage {
+        // Deliberately not `root.isExpandable` too: a lazily-collapsed root
+        // (a lone volume nothing has expanded yet) has to stay a row of its
+        // own here — folding it into the title with no children to show
+        // would leave nothing in the outline to click to expand it. Once it
+        // is expanded, the next `show()` folds it in, exactly as the eager
+        // parser's already-expanded root always has.
         guard image.roots.count == 1, let root = image.roots.first,
               !root.children.isEmpty
         else { return PresentedImage(title: nil, rows: image.roots) }

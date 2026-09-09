@@ -44,6 +44,10 @@ public struct UEFINode: Identifiable, Hashable, Sendable {
     public var isCompressed: Bool
     /// Nothing but the erase byte: free space, or padding that was never used.
     public var isErased: Bool
+    /// True when this container node's children were not computed (left collapsed
+    /// by a lazy tree) but *could be non-empty if expanded* — needed to draw the
+    /// disclosure triangle in an outline view. Always false out of `UEFIParser.parse(_:)`.
+    public var isExpandable: Bool = false
 
     public var children: [UEFINode]
 
@@ -59,6 +63,7 @@ public struct UEFINode: Identifiable, Hashable, Sendable {
         isFixed: Bool = false,
         isCompressed: Bool = false,
         isErased: Bool = false,
+        isExpandable: Bool = false,
         children: [UEFINode] = []
     ) {
         self.id = id
@@ -72,6 +77,7 @@ public struct UEFINode: Identifiable, Hashable, Sendable {
         self.isFixed = isFixed
         self.isCompressed = isCompressed
         self.isErased = isErased
+        self.isExpandable = isExpandable
         self.children = children
     }
 

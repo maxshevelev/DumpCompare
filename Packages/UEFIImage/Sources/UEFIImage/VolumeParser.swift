@@ -131,7 +131,8 @@ extension Parser {
 
         let bodyStart = min(offset + header.headerSize, offset + size)
         let body = bodyStart..<(offset + size)
-        let children = volumeChildren(header, body: body, depth: depth)
+        let expand = expansion.shouldExpand(range: body)
+        let children = expand ? volumeChildren(header, body: body, depth: depth) : []
 
         return UEFINode(
             kind: .volume,
@@ -141,6 +142,7 @@ extension Parser {
             header: offset..<bodyStart,
             body: body,
             isFixed: false,
+            isExpandable: !expand && !body.isEmpty,
             children: children
         )
     }
@@ -164,7 +166,10 @@ extension Parser {
         )
     }
 
-    private func volumeChildren(
+    /// Not `private`: `LazyUEFITree` calls this directly to re-derive a
+    /// volume's children when the user expands it, scoped to just that one
+    /// node rather than restarting the parse from the image root.
+    func volumeChildren(
         _ header: VolumeHeader,
         body: Range<UInt64>,
         depth: Int

@@ -115,6 +115,17 @@ extension Parser {
         var range: Range<UInt64>
     }
 
+    /// The range `type` occupies in this image, straight from the descriptor's
+    /// region table — no raw-area scan, whether or not the region has ever
+    /// been expanded. `LazyUEFITree.region(_:)`'s entry point: this is what
+    /// lets MEFirmware ask for the ME region's bytes without either scanning
+    /// the file itself or waiting for the BIOS region's own volumes to be
+    /// walked. Nil when `at` is not the start of a descriptor image, or the
+    /// descriptor's own map cannot be read.
+    func flashRegionRange(_ type: FlashRegionType, descriptorAt base: UInt64, limit: UInt64) -> Range<UInt64>? {
+        readRegions(at: base, limit: limit).first(where: { $0.type == type })?.range
+    }
+
     /// The region section, at `RegionBase << 4`. Empty when the descriptor's
     /// own map cannot be believed — which the caller turns into a raw scan
     /// rather than into nothing.
@@ -161,7 +172,9 @@ extension Parser {
         if region.type == .descriptor {
             return descriptorNode(region.range)
         }
-        let children = region.type.readsAsRawArea
+        let mayScan = region.type.readsAsRawArea
+        let expand = mayScan && expansion.shouldExpand(range: region.range)
+        let children = expand
             ? scanRawArea(region.range, emptyByte: Parser.defaultEmptyByte, depth: depth + 1)
             : []
         return UEFINode(
@@ -173,6 +186,7 @@ extension Parser {
             // Regions are laid out by the descriptor, and moving one means
             // rewriting it (§11).
             isFixed: true,
+            isExpandable: mayScan && !expand,
             children: children
         )
     }

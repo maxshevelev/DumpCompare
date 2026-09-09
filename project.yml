@@ -71,6 +71,17 @@ targets:
       # The app links it; each tool-module package links it too, and that is the
       # whole of what the two sides share.
       - package: ToolModuleKit
+      # The shared, per-pane lazy UEFI tree (`PaneUEFIState`) and its
+      # `ByteSource` adapter over the document's live storage
+      # (`PaneToolHost`'s `UEFITreeProviding` conformance) — both live in the
+      # app, which is why it links this directly rather than only through a
+      # tool-module's transitive graph.
+      - package: UEFIImage
+      # `PaneUEFIState`'s cache of the last `FirmwareAnalysis`
+      # (`MEAAnalysisProviding`) is a value the app stores, not just passes
+      # through, so it needs the type directly.
+      - package: MEFirmware
+        product: MEFirmware
       # One line per tool-module the app ships. The registry lists them; this is
       # what puts them in the binary.
       - package: ZoneSketch

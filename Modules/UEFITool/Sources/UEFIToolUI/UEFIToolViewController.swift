@@ -19,6 +19,16 @@ import UEFITool
     var onFixChecksum: ((NodeID) -> Void)?
 
     private var image: UEFIImage?
+    /// The pane's shared lazy tree, when the host provides one
+    /// (`UEFITreeProviding`) — what the outline's rows and children come
+    /// from below the top level. `image` stays what the summary line, the
+    /// title fold, and the detail panel read (checksums and addresses need
+    /// the whole, eager parse regardless of laziness); `tree` is what lets a
+    /// volume/region row stay collapsed until asked and reuses whatever an
+    /// earlier session already expanded. Nil under a host that offers none —
+    /// everything then falls back to `image`'s own, fully-materialized
+    /// `children`, exactly as before this type existed.
+    private var tree: LazyUEFITree?
     /// The tree as it is shown: the outline's top level and the root node the
     /// summary stands for, decided in the pure target. Kept from one show to
     /// the next so the data source reads the same top level the last show laid
@@ -270,9 +280,14 @@ import UEFITool
         noticeLabel.textColor = asProblem ? .systemRed : .secondaryLabelColor
     }
 
-    /// Everything the panel shows, in one call.
+    /// Everything the panel shows, in one call. `tree` is the pane's shared
+    /// lazy tree when the host has one — what the outline's rows below the
+    /// top level come from; `image` (the eager parse) still drives the
+    /// summary line, the title fold, and the detail panel, which need the
+    /// whole picture regardless of how much of the tree has been expanded.
     func show(
         image: UEFIImage?,
+        tree: LazyUEFITree?,
         focus: NodeID?,
         detail: UEFINodeDetail,
         catalogue: GuidsCatalogue,
@@ -280,6 +295,7 @@ import UEFITool
         canWrite: Bool
     ) {
         self.image = image
+        self.tree = tree
         self.focus = focus
         self.catalogue = catalogue
         self.badChecksums = badChecksums
@@ -287,7 +303,13 @@ import UEFITool
         isShowingState = true
         defer { isShowingState = false }
 
-        presented = image.map(UEFITreeDisplay.present)
+        // The outline's own top level always comes from the tree when there
+        // is one: its immediate structure (an image's regions, a lone
+        // volume's own row) is never itself gated, so this is exactly what
+        // `image` would give, just reachable without depending on the eager
+        // parse having finished.
+        let structuralImage = tree.map { UEFIImage(size: 0, roots: $0.rootNodes) } ?? image
+        presented = structuralImage.map(UEFITreeDisplay.present)
             ?? UEFITreeDisplay.PresentedImage(title: nil, rows: [])
         summaryLabel.stringValue = UEFITreeDisplay.summary(of: image)
         updateSummaryEmphasis()
@@ -302,16 +324,66 @@ import UEFITool
             return
         }
 
-        guard let image, let focus, let node = image.node(focus) else {
+        guard let focus,
+              let node = tree?.node(focus) ?? image?.node(focus)
+        else {
             outline.deselectAll(nil)
             return
         }
-        expandPath(to: focus)
-        let row = outline.row(forItem: node)
-        if row >= 0 {
-            outline.scrollRowToVisible(row)
-            outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        reveal(focus, node: node)
+    }
+
+    /// Selects and scrolls to `nodeID`'s row, expanding every ancestor first —
+    /// through the tree (materializing a collapsed volume/region) and then in
+    /// the outline itself. With a shared tree, an ancestor's expansion may
+    /// finish later than this call (a region's background scan); either way,
+    /// the selection lands once the whole path is as expanded as it can be.
+    private func reveal(_ nodeID: NodeID, node: UEFINode) {
+        guard let tree else {
+            expandPath(to: nodeID)
+            selectAndScroll(to: node)
+            return
         }
+        expandAncestors(of: nodeID, in: tree) { [weak self] in
+            guard let self, let freshNode = tree.node(nodeID) else { return }
+            self.selectAndScroll(to: freshNode)
+        }
+    }
+
+    private func selectAndScroll(to node: UEFINode) {
+        let row = outline.row(forItem: node)
+        guard row >= 0 else { return }
+        outline.scrollRowToVisible(row)
+        outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+    }
+
+    /// Expands, in order, every ancestor of `nodeID` that the tree has not
+    /// already expanded — a volume synchronously, a region once its
+    /// background scan completes — calling `completion` exactly once the
+    /// whole path is as far along as it can go. Stops early, without calling
+    /// `completion` again, if a step's node cannot be found (the path no
+    /// longer resolves — an edit moved or removed it).
+    private func expandAncestors(
+        of nodeID: NodeID, in tree: LazyUEFITree, completion: @escaping () -> Void
+    ) {
+        func step(_ index: Int) {
+            guard index < nodeID.path.count - 1 else { completion(); return }
+            let partialID = NodeID(Array(nodeID.path.prefix(index + 1)))
+            guard let ancestor = tree.node(partialID) else { completion(); return }
+            guard ancestor.isExpandable, ancestor.children.isEmpty else {
+                if outline.row(forItem: ancestor) >= 0 { outline.expandItem(ancestor) }
+                step(index + 1)
+                return
+            }
+            tree.expand(partialID) { [weak self] _ in
+                guard let self else { return }
+                if let onScreen = tree.node(partialID), outline.row(forItem: onScreen) >= 0 {
+                    outline.expandItem(onScreen)
+                }
+                step(index + 1)
+            }
+        }
+        step(0)
     }
 
     /// The title reads as clickable only when it stands for a folded root, and
@@ -403,20 +475,65 @@ import UEFITool
     }
 }
 
+/// A row shown in place of an expanding node's real children while a
+/// region's background scan is still running — its own type, rather than a
+/// `UEFINode` of some new kind, so `UEFIImage` never has to know the UI put
+/// a placeholder in a tree it never produced. One shared instance: nothing
+/// about it is per-row, and the outline only ever asks whether an item *is*
+/// one.
+private final class LoadingPlaceholder {
+    static let shared = LoadingPlaceholder()
+}
+
 extension UEFIToolViewController: NSOutlineViewDataSource, NSOutlineViewDelegate {
+    /// `item`'s children as the outline should see them right now: already
+    /// materialized ones as-is; a collapsed volume/region's real children,
+    /// expanding it first — synchronously for a volume, so this returns the
+    /// real list immediately, or in the background for a region, so this
+    /// returns a single loading placeholder and reloads the row once the scan
+    /// completes. Falls back to `node.children` untouched when there is no
+    /// shared tree (`image`-only host, e.g. a test double).
+    private func childrenList(for node: UEFINode) -> [Any] {
+        guard let tree else { return node.children }
+        if !node.children.isEmpty { return node.children }
+        guard node.isExpandable else { return [] }
+        if tree.isExpanding(node.id) { return [LoadingPlaceholder.shared] }
+
+        var result: [Any] = []
+        var stillSynchronous = true
+        tree.expand(node.id) { [weak self] children in
+            if stillSynchronous {
+                result = children
+            } else {
+                self?.outline.reloadItem(node, reloadChildren: true)
+            }
+        }
+        stillSynchronous = false
+        return tree.isExpanding(node.id) ? [LoadingPlaceholder.shared] : result
+    }
+
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
+        if item is LoadingPlaceholder { return 0 }
         guard !presented.rows.isEmpty else { return 0 }
         guard let node = item as? UEFINode else { return presented.rows.count }
-        return node.children.count
+        return childrenList(for: node).count
     }
 
     func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
         guard let node = item as? UEFINode else { return presented.rows[index] }
-        return node.children[index]
+        return childrenList(for: node)[index]
     }
 
     func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
-        (item as? UEFINode)?.children.isEmpty == false
+        if item is LoadingPlaceholder { return false }
+        guard let node = item as? UEFINode else { return false }
+        return node.isExpandable || !node.children.isEmpty
+    }
+
+    /// The loading row is a placeholder, not a node — nothing to select, no
+    /// zone to publish, no menu to offer.
+    func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
+        !(item is LoadingPlaceholder)
     }
 
     /// A row's cell, view-based and with its text centred.
@@ -431,8 +548,16 @@ extension UEFIToolViewController: NSOutlineViewDataSource, NSOutlineViewDelegate
         viewFor tableColumn: NSTableColumn?,
         item: Any
     ) -> NSView? {
-        guard let node = item as? UEFINode, let identifier = tableColumn?.identifier
-        else { return nil }
+        guard let identifier = tableColumn?.identifier else { return nil }
+        if item is LoadingPlaceholder {
+            let cell = outlineView.makeView(withIdentifier: identifier, owner: self)
+                as? NSTableCellView
+                ?? ToolPanelTable.makeCell(identifier: identifier, warning: false)
+            cell.textField?.stringValue = identifier == Column.name ? "Loading…" : ""
+            cell.textField?.font = ToolPanelFont.body()
+            return cell
+        }
+        guard let node = item as? UEFINode else { return nil }
         let cell = outlineView.makeView(withIdentifier: identifier, owner: self)
             as? NSTableCellView
             ?? ToolPanelTable.makeCell(identifier: identifier,

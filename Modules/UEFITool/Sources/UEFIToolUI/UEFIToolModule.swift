@@ -55,6 +55,10 @@ private struct ParseResult: Sendable {
     /// came from, so the two cannot drift apart.
     private var image: UEFIImage?
     private var reader: ImageReader?
+    /// The pane's shared lazy tree, when the host offers one — what the
+    /// outline reads for its rows below the top level, kept across every
+    /// `show()` so the panel need not re-fetch it on every selection change.
+    private var tree: LazyUEFITree?
     /// Which nodes' checksums the last parse found wrong, keyed by node id.
     /// Readable from outside so the app's tests can assert on it without
     /// reaching into a view.
@@ -126,7 +130,20 @@ private struct ParseResult: Sendable {
 
     // MARK: - Reading
 
+    /// The seam a UEFI-aware tool-module reaches through for the pane's one
+    /// shared tree — the same protocol `MEATool` casts `host` for, defined in
+    /// `UEFIImage` so neither side has to depend on the other or on the app.
+    private var treeProvider: (any UEFITreeProviding)? { host as? any UEFITreeProviding }
+
     private func reparse() {
+        // The shared tree is fetched (built, if this is the first thing to
+        // ask for it this file) up front — cheap even when nothing has been
+        // expanded yet — so the outline can start answering on-demand queries
+        // immediately, without waiting for the full eager parse below (which
+        // checksums and addresses still need, and which alone determines how
+        // long the busy bar runs).
+        tree = treeProvider?.uefiTree()
+
         let snapshot: any ToolContentReader
         do {
             snapshot = try host.snapshot()
@@ -227,7 +244,7 @@ private struct ParseResult: Sendable {
     private func show() {
         guard let image, let reader else {
             controller.show(
-                image: nil, focus: nil, detail: .empty, catalogue: guids,
+                image: nil, tree: tree, focus: nil, detail: .empty, catalogue: guids,
                 badChecksums: checksumProblems, canWrite: !host.isReadOnly
             )
             host.publish(.empty)
@@ -241,7 +258,7 @@ private struct ParseResult: Sendable {
             )
         } ?? .empty
         controller.show(
-            image: image, focus: focus, detail: detail, catalogue: guids,
+            image: image, tree: tree, focus: focus, detail: detail, catalogue: guids,
             badChecksums: checksumProblems, canWrite: !host.isReadOnly
         )
         host.publish(UEFIPresenter.zones(for: node))
