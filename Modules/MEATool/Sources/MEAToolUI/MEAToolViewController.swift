@@ -3,18 +3,19 @@ import AppKit
 import MEATool
 import ToolModuleKit
 
-/// The panel: an Overview / Full Tree switch, the analysis tree over it on
-/// the full-tree tab (a placeholder on the other), and what the row in focus is
-/// below.
+/// The panel: a Summary / Full Tree switch — the MEA-style summary on the
+/// first tab, the analysis tree (with the focused row's detail below it) on the
+/// second.
 ///
-/// It decides nothing. The tree is the curator's and is tested in the pure
-/// target; the analysis runs in the session; the one zone is `MEAZones`. What
-/// is on screen comes from one `show(...)` over values the panel only lays out.
+/// It decides nothing. The summary is the pure target's `MEASummary` and the
+/// tree is the curator's, both tested in the pure target; the analysis runs in
+/// the session; the one zone is `MEAZones`. What is on screen comes from one
+/// `show(...)` over values the panel only lays out.
 @MainActor final class MEAToolViewController: NSViewController {
     /// The user picked a row in the tree, or cleared it. The value is the row's
     /// tree path — the identity a parked session keeps.
     var onSelect: (([Int]?) -> Void)?
-    /// The user picked a tab (0 = Overview, 1 = Full Tree).
+    /// The user picked a tab (0 = Summary, 1 = Full Tree).
     var onTabChanged: ((Int) -> Void)?
     /// The status row's Try Again was pressed, after a failed analysis.
     var onRetry: (() -> Void)?
@@ -24,6 +25,9 @@ import ToolModuleKit
     private var roots: [MEANode] = []
     /// The selected row, as its path in `roots`. Nil for nothing selected.
     private var focusPath: [Int]?
+    /// The summary as it was last built — kept so a re-show with the same
+    /// analysis neither rebuilds the rows nor loses the user's scroll.
+    private var summaryBlocks: [MEASummaryBlock] = []
     /// The tab on screen.
     private var tabIndex = 0
     /// True while state is being shown — a selection the code made is not news,
@@ -31,7 +35,7 @@ import ToolModuleKit
     /// again until the stack ran out.
     private var isShowingState = false
 
-    private let tabs = NSSegmentedControl(labels: ["Overview", "Full Tree"],
+    private let tabs = NSSegmentedControl(labels: ["Summary", "Full Tree"],
                                           trackingMode: .selectOne,
                                           target: nil, action: nil)
     private let contentBox = NSView()
@@ -39,6 +43,7 @@ import ToolModuleKit
     private let outline = MEOutlineView()
     private let outlineScroll = NSScrollView()
     private let detail = ToolDetailScroll()
+    private let summaryScroll = ToolDetailScroll()
     private let splitter = ALSplitView()
     private let noticeLabel = NSTextField(labelWithString: "")
     private let retryButton = NSButton(title: "Try Again", target: nil, action: nil)
@@ -52,6 +57,12 @@ import ToolModuleKit
         static let name = NSUserInterfaceItemIdentifier("name")
         static let summary = NSUserInterfaceItemIdentifier("summary")
     }
+
+    /// What each summary row's label column is wide at
+    /// `ToolPanelFont.designSize` — wider than the detail list's
+    /// (`detailLabelWidth`), because the summary carries long MEA labels
+    /// ("TCB Security Version Number") that would otherwise truncate.
+    private static let summaryLabelWidth: CGFloat = 200
 
     /// What each column was laid out at — a width for text at
     /// `ToolPanelFont.designSize`, scaled from there to the zoom's size. Name is
@@ -94,6 +105,7 @@ import ToolModuleKit
 
         contentBox.translatesAutoresizingMaskIntoConstraints = false
         contentBox.addSubview(placeholderLabel)
+        contentBox.addSubview(summaryScroll)
         contentBox.addSubview(splitter)
         NSLayoutConstraint.activate([
             placeholderLabel.centerXAnchor.constraint(equalTo: contentBox.centerXAnchor),
@@ -102,6 +114,13 @@ import ToolModuleKit
                 greaterThanOrEqualTo: contentBox.leadingAnchor, constant: 16),
             placeholderLabel.trailingAnchor.constraint(
                 lessThanOrEqualTo: contentBox.trailingAnchor, constant: -16),
+            // The summary and the tree both fill the box to its edges; only one
+            // is visible at a time, so overlapping edge-pinned siblings are
+            // fine — visibility is the switch, not geometry.
+            summaryScroll.topAnchor.constraint(equalTo: contentBox.topAnchor),
+            summaryScroll.leadingAnchor.constraint(equalTo: contentBox.leadingAnchor),
+            summaryScroll.trailingAnchor.constraint(equalTo: contentBox.trailingAnchor),
+            summaryScroll.bottomAnchor.constraint(equalTo: contentBox.bottomAnchor),
             splitter.topAnchor.constraint(equalTo: contentBox.topAnchor),
             splitter.leadingAnchor.constraint(equalTo: contentBox.leadingAnchor),
             splitter.trailingAnchor.constraint(equalTo: contentBox.trailingAnchor),
@@ -176,13 +195,14 @@ import ToolModuleKit
     }
 
     /// Re-reads the panel's type size and puts everything on screen at it: the
-    /// tree's rows and header, and the detail's rows — which are views built per
-    /// field, so they have to be rebuilt rather than restyled.
+    /// tree's rows and header, and the summary/detail rows — which are views
+    /// built per field, so they have to be rebuilt rather than restyled.
     private func applyPanelFont() {
         noticeLabel.font = ToolPanelFont.body()
         ToolPanelTable.apply(to: outline)
         applyColumnWidths()
         outline.reloadData()
+        renderSummary()
         renderDetail(focusPath.flatMap { MEATree.node(at: $0, in: roots) })
     }
 
@@ -218,13 +238,16 @@ import ToolModuleKit
         applyColumnWidths()
     }
 
-    /// Which content the selected tab shows: the placeholder for Overview, the
-    /// tree (with its detail below) for Full Tree.
+    /// Which content the selected tab shows: the summary for Summary — or the
+    /// placeholder standing for none — and the tree (with its detail below) for
+    /// Full Tree.
     private func selectTab(_ index: Int) {
         tabIndex = index
         let showTree = index == 1
+        let showSummary = index == 0 && !summaryBlocks.isEmpty
         splitter.isHidden = !showTree
-        placeholderLabel.isHidden = showTree
+        summaryScroll.isHidden = !showSummary
+        placeholderLabel.isHidden = showSummary || showTree
         tabs.selectedSegment = index
     }
 
@@ -301,6 +324,91 @@ import ToolModuleKit
                 outline.expandItem(node)
             }
         }
+    }
+
+    // MARK: - Summary
+
+    /// Hands the Summary tab the analysis's blocks. A re-show with the same
+    /// blocks — a selection move, a parked restore that re-parsed the same
+    /// file — changes nothing, so the user's scroll survives; a *different*
+    /// summary (a fresh analysis, or none after a failure) is rebuilt and, when
+    /// there is something to read, read from the top.
+    func showSummary(_ blocks: [MEASummaryBlock]) {
+        guard blocks != summaryBlocks else { return }
+        summaryBlocks = blocks
+        renderSummary()
+        selectTab(tabIndex)
+        if !blocks.isEmpty {
+            summaryScroll.documentView?.scroll(.zero)
+        }
+    }
+
+    /// Rebuilds the summary's rows — the blocks `showSummary` last accepted,
+    /// at the current zoom. Only label and value views: the values come
+    /// pre-formatted from `MEASummary`, so nothing is decided here.
+    private func renderSummary() {
+        let stack = summaryScroll.content
+        stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        summaryScroll.placeholder.isHidden = true
+
+        let labelWidth = ToolPanelFont.scaled(Self.summaryLabelWidth)
+        for (index, block) in summaryBlocks.enumerated() {
+            // A real gap before each block after the first (the table needs no
+            // title, the messages block does — and both read better apart).
+            if index > 0, let last = stack.arrangedSubviews.last {
+                stack.setCustomSpacing(14, after: last)
+            }
+            if let title = block.title {
+                let heading = NSTextField(labelWithString: title)
+                heading.font = ToolPanelFont.title()
+                heading.translatesAutoresizingMaskIntoConstraints = false
+                stack.addArrangedSubview(heading)
+            }
+            for row in block.rows {
+                stack.addArrangedSubview(Self.summaryRowView(row, labelWidth: labelWidth))
+            }
+        }
+    }
+
+    /// One Field/Value line: a fixed-width label column — wider than the detail
+    /// list's, because summary labels run long ("TCB Security Version
+    /// Number") — and a value. A `.comingSoon` value is drawn grey and
+    /// unselectable, the shape of a row the engine will answer once the bridge
+    /// reaches it.
+    private static func summaryRowView(
+        _ row: MEASummaryRow, labelWidth: CGFloat
+    ) -> NSView {
+        let label = NSTextField(labelWithString: row.label)
+        label.font = ToolPanelFont.body()
+        label.textColor = .secondaryLabelColor
+        label.lineBreakMode = .byTruncatingTail
+        label.translatesAutoresizingMaskIntoConstraints = false
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        label.widthAnchor.constraint(equalToConstant: labelWidth).isActive = true
+
+        let value: NSTextField
+        switch row.value {
+        case .value(let text):
+            value = NSTextField(labelWithString: text)
+            value.font = text.hasPrefix("0x")
+                ? ToolPanelFont.monospacedDigits()
+                : ToolPanelFont.body()
+            value.isSelectable = true
+            value.textColor = .labelColor
+        case .comingSoon:
+            value = NSTextField(labelWithString: "Coming soon")
+            value.font = ToolPanelFont.body()
+            value.textColor = .secondaryLabelColor
+        }
+        value.lineBreakMode = .byTruncatingTail
+        value.translatesAutoresizingMaskIntoConstraints = false
+
+        let line = NSStackView(views: [label, value])
+        line.orientation = .horizontal
+        line.alignment = .firstBaseline
+        line.spacing = 6
+        line.translatesAutoresizingMaskIntoConstraints = false
+        return line
     }
 
     /// Rebuilds the detail list from the focused row's own fields.

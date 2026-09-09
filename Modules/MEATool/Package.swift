@@ -1,7 +1,7 @@
 // swift-tools-version: 5.9
 //
-//  MEATool — the "ME Analyzer" instrument panel: two tabs, Overview (a
-//  placeholder) and Full Tree, a view over `MEFirmware`'s `FirmwareAnalysis`.
+//  MEATool — the "ME Analyzer" instrument panel: two tabs, Summary and Full
+//  Tree, a view over `MEFirmware`'s `FirmwareAnalysis`.
 //
 //  The engine (`MEFirmwareAnalyzer.analyze`) returns one big typed model; this
 //  module turns it into the curated tree the tool shows — hand-named groups in a

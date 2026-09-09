@@ -151,7 +151,7 @@ final class MEAToolFlowTests: XCTestCase {
             descendants(of: panel, NSSegmentedControl.self).first {
                 $0.segmentCount == 2 && $0.label(forSegment: 1) == "Full Tree"
             },
-            "the panel's own Overview / Full Tree switch")
+            "the panel's own Summary / Full Tree switch")
         tabs.selectedSegment = 1
         tabs.sendAction(tabs.action, to: tabs.target)
         window?.layoutIfNeeded()
@@ -167,6 +167,27 @@ final class MEAToolFlowTests: XCTestCase {
     }
 
     // MARK: - A healthy parse
+
+    /// The first tab is the summary: opening a file lands on it with the MEA
+    /// default table's own rows on screen. A pure-FPT file is unidentified, so
+    /// the table is honest — the identity rows only, no "coming soon" roadmap.
+    func testTheSummaryTabShowsTheDefaultTableOnOpen() throws {
+        _ = try open(METestImage.fptFile())
+
+        let panel = try panel()
+        let tabs = try XCTUnwrap(
+            descendants(of: panel, NSSegmentedControl.self).first {
+                $0.segmentCount == 2
+            })
+        XCTAssertEqual(tabs.label(forSegment: 0), "Summary")
+        XCTAssertEqual(tabs.label(forSegment: 1), "Full Tree")
+        XCTAssertEqual(tabs.selectedSegment, 0)
+
+        let text = descendants(of: panel, NSTextField.self).map(\.stringValue)
+        XCTAssertTrue(text.contains("Family"), "\(text)")
+        XCTAssertTrue(text.contains("Size"), "\(text)")
+        XCTAssertTrue(text.contains("0x4000 (16384 bytes)"), "\(text)")
+    }
 
     /// An FPT table in a file is a reason the analysis has something to say on
     /// the tree: the regions it lists, each a row standing for real bytes. The

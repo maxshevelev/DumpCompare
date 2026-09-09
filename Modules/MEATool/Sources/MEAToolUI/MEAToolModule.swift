@@ -4,8 +4,8 @@ import MEATool
 import ToolModuleKit
 
 /// The "ME Analyzer" instrument: run `MEFirmware`'s analysis over the open
-/// file and show the result — on the first tab a placeholder for the summary
-/// that will live there, on the second the full structure the module decoded
+/// file and show the result — on the first tab the MEA-style summary, on the
+/// second the full structure the module decoded
 /// (`Design/ME_ANALYZER_PANEL.md`).
 ///
 /// The panel is a reader, never a writer: it shows what the engine found and
@@ -50,7 +50,7 @@ struct MEAParkedState: ToolSessionState {
     /// The user's selection as a tree path. Nil before a choice, and after a
     /// re-parse that lost the row.
     private var focusPath: [Int]?
-    /// Which tab the panel is on (0 = Overview, 1 = Full Tree).
+    /// Which tab the panel is on (0 = Summary, 1 = Full Tree).
     private var tabIndex = 0
     /// Which parse is the current one. A file edited twice in quick succession
     /// starts two, and the one that finishes second is not necessarily the one
@@ -111,6 +111,7 @@ struct MEAParkedState: ToolSessionState {
         } catch {
             roots = []
             focusPath = nil
+            controller.showSummary([])
             controller.say("Could not read the file: \(error)", asProblem: true)
             show()
             return
@@ -132,6 +133,7 @@ struct MEAParkedState: ToolSessionState {
             case .failure(let error):
                 self.roots = []
                 self.focusPath = nil
+                self.controller.showSummary([])
                 self.controller.say(
                     MEAToolSession.describe(error), asProblem: true)
                 self.controller.showRetry(true)
@@ -184,14 +186,16 @@ struct MEAParkedState: ToolSessionState {
             ?? "The analysis failed: \(error.localizedDescription)"
     }
 
-    /// A successful analysis lands here: present the curated tree and show it,
-    /// keeping whatever selection still resolves after the re-parse.
+    /// A successful analysis lands here: present the summary and the curated
+    /// tree and show them, keeping whatever selection still resolves after the
+    /// re-parse.
     private func present(_ analysis: FirmwareAnalysis) {
         roots = MEACurator.present(analysis)
         if let path = focusPath, MEATree.node(at: path, in: roots) == nil {
             focusPath = nil
         }
         controller.showRetry(false)
+        controller.showSummary(MEASummary.build(analysis))
         show()
     }
 
