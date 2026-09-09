@@ -47,6 +47,18 @@ public struct FirmwareAnalysis: Codable, Sendable, Equatable, Identifiable {
     public var rbePmMetadata: [RBE_PMMetadata]? = nil  // FTPR `pm` / RBEP `rbe` module "Metadata" table (rows 54/55)
     public var efsVolume: EFSVolume? = nil            // EFS paged-volume structural facts (FPT "EFS" region)
     public var oemConfiguration: OEMConfiguration? = nil  // FITC "OEM Configuration" facts (FPT "FITC" region)
+    /// ARB Security Version Number (row 9): hoisted from the operational chain's
+    /// CSE_Ext_0F `SignedPackageExtension.arbSvn` (last such tag seen), nil when
+    /// the chain carries none.
+    public var arbSvn: Int? = nil
+    /// Version Control Number (row 10): CSE_Ext_03 `vcn` preferred, CSE_Ext_0F
+    /// fallback, then a pre-CSE R0 manifest's +0x34 (which already surfaces as
+    /// `ManifestSummary.vcn`).
+    public var vcn: Int? = nil
+    /// File System State (row 17, upstream `mfs_state`): Initialized / Configured
+    /// when a legacy-MFS file-index set says so, else Unconfigured. nil when no
+    /// MFS region was found at all.
+    public var mfsState: MFSState? = nil
     public var issues: [Issue]
 }
 
@@ -65,6 +77,8 @@ public struct Version: Codable, Sendable, Equatable {
     public var build: Int
     public var meMajor: Int?   // MEU fields, when present
     public var meMinor: Int?
+    public var meHotfix: Int?
+    public var meBuild: Int?
 
     public var text: String { "\(major).\(minor).\(hotfix).\(build)" }
 }
@@ -75,6 +89,15 @@ public enum ReleaseType: String, Codable, Sendable {
 
 public enum FirmwareType: String, Codable, Sendable {
     case region, extracted, update, unknown
+}
+
+/// File System State (upstream `mfs_state`, `MEA.py` 7489–7493): `.initialized`
+/// once a reserved/indexed file set appears (any of indices 0–5/8), `.configured`
+/// when the configuration/home files (7/9) do, `.unconfigured` as the default.
+/// `.error` is reserved for a decode upstream would treat as failed — never
+/// produced by the current decoders, kept for enum completeness.
+public enum MFSState: String, Codable, Sendable {
+    case unconfigured, initialized, configured, error
 }
 
 /// One Flash Partition Table row (upstream `FPT_Entry`, `MEA.py` ~0x20 layout).
@@ -117,12 +140,16 @@ public struct ManifestSummary: Codable, Sendable, Equatable {
     /// Version Control Number (`VCN` u32 @ +0x34) of a pre-CSE R0 manifest
     /// (ME 7–10, TXE); nil for R1/R2, whose +0x34 is inside the MEU block.
     public var vcn: Int?
+    /// Production Ready (row 11, upstream `pvbit`): manifest Flags bit 0 for an
+    /// R1/R2 operational manifest; nil for pre-CSE R0, where upstream reads it
+    /// from a different probe (no oracle here).
+    public var productionReady: Bool?
 
     public init(offset: Int, tag: String, format: ManifestFormat,
                 major: Int, minor: Int, hotfix: Int, build: Int, svn: Int,
                 day: Int, month: Int, year: Int,
                 keyHash: String?, signatureHash: String?,
-                vcn: Int? = nil) {
+                vcn: Int? = nil, productionReady: Bool? = nil) {
         self.offset = offset
         self.tag = tag
         self.format = format
@@ -137,6 +164,7 @@ public struct ManifestSummary: Codable, Sendable, Equatable {
         self.keyHash = keyHash
         self.signatureHash = signatureHash
         self.vcn = vcn
+        self.productionReady = productionReady
     }
 }
 
@@ -1710,5 +1738,5 @@ public struct Issue: Codable, Sendable, Equatable, Identifiable {
 /// whether to surface the new data (`reference/result-model.md` §Versioning).
 public enum EngineModelRevision {
     /// Current revision of the `FirmwareAnalysis` shape.
-    public static let current = 21
+    public static let current = 22
 }

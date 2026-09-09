@@ -51,6 +51,8 @@ struct ManifestParser {
         /// MEU version block — present only in R1/R2 (R0 reuses 0x30 as SVN_8/VCN).
         var meMajor: Int?
         var meMinor: Int?
+        var meHotfix: Int?
+        var meBuild: Int?
 
         /// Version Control Number (VCN u32 @ +0x34) of an R0 pre-CSE manifest
         /// (ME 7–10, TXE); nil for R1/R2, whose +0x34 is inside the MEU block.
@@ -145,6 +147,8 @@ struct ManifestParser {
             svn: Int(u32le(data, p + 0x2C)),
             meMajor: nil,
             meMinor: nil,
+            meHotfix: nil,
+            meBuild: nil,
             pvBit: flags & 0x1 != 0,
             debugSigned: flags & 0x8000_0000 != 0,
             rsaPublicKey: nil,
@@ -153,10 +157,15 @@ struct ManifestParser {
         )
 
         if format != .r0 {
-            // R1/R2 carry the MEU block at +0x30; R0 reuses those bytes as
-            // SVN_8/VCN, so `is_meu` (hasattr MEU_Minor) is false there.
+            // R1/R2 carry the MEU block at +0x30 (upstream struct 855–858:
+            // MEU_Major +0x30, MEU_Minor +0x32, MEU_Hotfix +0x34, MEU_Build
+            // +0x36); R0 reuses those bytes as SVN_8/VCN, so `is_meu`
+            // (hasattr MEU_Minor) is false there. The p + 0x80 guard above
+            // already covers +0x38.
             manifest.meMajor = Int(u16le(data, p + 0x30))
             manifest.meMinor = Int(u16le(data, p + 0x32))
+            manifest.meHotfix = Int(u16le(data, p + 0x34))
+            manifest.meBuild = Int(u16le(data, p + 0x36))
         } else {
             // R0 carries VCN (u32) at +0x34 (`hasattr VCN` in the main flow,
             // MEA.py 12189); R1/R2 have no VCN field there. NumModules at +0x20

@@ -764,3 +764,59 @@ final class MFSTests: XCTestCase {
 
 }
 
+/// `MFSStateDecoder.state` — the default-output row 17 File System State,
+/// computed from a volume's present file-index set exactly as upstream decides
+/// on `mfs_parsed_idx` (MEA.py 7489–7493). `usesFTBL` mirrors the
+/// `mfs_found and not param.cse_unpack` gate on a *non*-legacy volume.
+final class MFSStateDecoderTests: XCTestCase {
+    func testLegacyIndexSetMapsToInitialized() {
+        // Any present file in {0,1,2,3,4,5,8} marks a legacy volume Initialized —
+        // the reserved directories exist on it (typical CSME 11–14).
+        for index in [0, 1, 2, 3, 4, 5, 8] {
+            XCTAssertEqual(MFSStateDecoder.state(usesFTBL: false,
+                                                 presentFileIndices: [index]),
+                           .initialized, "index \(index)")
+        }
+    }
+
+    func testConfiguredWhenOnlyFaultOrBackupPresent() {
+        // {7,9} alone (faults log / backup) means the volume is provisioned but
+        // carries none of the Initialized reserved files yet.
+        XCTAssertEqual(MFSStateDecoder.state(usesFTBL: false,
+                                             presentFileIndices: [7]),
+                       .configured)
+        XCTAssertEqual(MFSStateDecoder.state(usesFTBL: false,
+                                             presentFileIndices: [9]),
+                       .configured)
+    }
+
+    func testInitializedWinsOverConfigured() {
+        // Upstream checks the Initialized set first; a volume with both sorts
+        // as Initialized.
+        XCTAssertEqual(MFSStateDecoder.state(usesFTBL: false,
+                                             presentFileIndices: [8, 9]),
+                       .initialized)
+    }
+
+    func testEmptyVolumeStaysUnconfigured() {
+        // A decodable legacy volume with no matching reserved file — no state.
+        XCTAssertEqual(MFSStateDecoder.state(usesFTBL: false,
+                                             presentFileIndices: []),
+                       .unconfigured)
+        XCTAssertEqual(MFSStateDecoder.state(usesFTBL: false,
+                                             presentFileIndices: [10]),
+                       .unconfigured)
+    }
+
+    func testFTBLVolumeAlwaysUnconfigured() {
+        // A vfs_starts_at_0 / FileTable.dat-named volume never maps its raw FAT
+        // indices to the legacy semantic set — the row stays Unconfigured.
+        XCTAssertEqual(MFSStateDecoder.state(usesFTBL: true,
+                                             presentFileIndices: [8]),
+                       .unconfigured)
+        XCTAssertEqual(MFSStateDecoder.state(usesFTBL: true,
+                                             presentFileIndices: [7, 9]),
+                       .unconfigured)
+    }
+}
+

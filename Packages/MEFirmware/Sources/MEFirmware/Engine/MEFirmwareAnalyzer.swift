@@ -382,7 +382,11 @@ public actor MEFirmwareAnalyzer {
                 svn: m.svn, day: m.day, month: m.month, year: m.year,
                 keyHash: m.rsaPublicKey.map { Digest.sha256Hex($0) },
                 signatureHash: m.rsaSignature.map { Digest.sha256Hex($0) },
-                vcn: m.vcn
+                vcn: m.vcn,
+                // Row 11 (Production Ready): R0 pre-CSE reads its own probe
+                // upstream (12652–12655, no oracle); only R1/R2 operational
+                // manifests surface Flags bit0 as the pvbit.
+                productionReady: m.format == .r0 ? nil : m.pvBit
             )
         }
 
@@ -691,12 +695,21 @@ public actor MEFirmwareAnalyzer {
                 year: manifest.year, month: manifest.month, day: manifest.day)
         }
 
+        // Default-output rows 9/10 (ARB Security Version Number / Version
+        // Control Number): hoisted from the operational chain's CSE_Ext_0F
+        // ARBSVN/VCN and CSE_Ext_03 VCN (last seen per tag; upstream 6185 and
+        // 6245–6246, where 0x03 is preferred and 0x0F is the fallback). The
+        // pre-CSE R0 manifest has no extension chain — its +0x34 VCN (already
+        // `ManifestSummary.vcn`) is the top-level fallback.
+        let chainHoist = CPDExtensionParser.hoist(codePartition?.extensions ?? [])
+
         return FirmwareAnalysis(
             family: identity.family,
             variant: identity.variant,
             version: Version(major: identity.major, minor: identity.minor,
                              hotfix: identity.hotfix, build: identity.build,
-                             meMajor: identity.meMajor, meMinor: identity.meMinor),
+                             meMajor: identity.meMajor, meMinor: identity.meMinor,
+                             meHotfix: identity.meHotfix, meBuild: identity.meBuild),
             securityVersion: identity.securityVersion,
             release: identity.release,
             type: .region,
@@ -723,6 +736,14 @@ public actor MEFirmwareAnalyzer {
             rbePmMetadata: rbePm,
             efsVolume: efsVolume,
             oemConfiguration: oemConfiguration,
+            arbSvn: chainHoist.arbSvn,
+            vcn: chainHoist.vcn03 ?? chainHoist.vcn0F ?? manifestSummary?.vcn,
+            mfsState: mfsInfo.map {
+                MFSStateDecoder.state(usesFTBL: $0.usesFTBL,
+                                      presentFileIndices: $0.files
+                                        .filter { !$0.content.isEmpty }
+                                        .map(\.index))
+            },
             issues: issues)
     }
 

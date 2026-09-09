@@ -718,3 +718,83 @@ final class ExtensionWalkerTests: XCTestCase {
         (0..<16).map { String(format: "%02X", 0x80 + $0) }.joined()
     }
 }
+
+/// `CPDExtensionParser.hoist` — the default-output rows 9/10 facts (ARB
+/// Security Version Number / Version Control Number) read off an extension
+/// array, mirroring upstream's last-wins walk of CSE_Ext_0F/0x03 (6185/6245).
+/// The payloads are built straight on the model structs (no bytes needed — the
+/// decode that produces them is covered by `ExtensionWalkerTests`).
+final class ExtensionHoistTests: XCTestCase {
+    /// A CSE_Ext_0F block carrying `arbSvn` and `vcn`.
+    private func ext0F(id: Int, arbSvn: Int, vcn: Int) -> CPDExtension {
+        CPDExtension(id: id, tag: 0x0F, size: 0x34, offset: 0,
+                     signedPackage: SignedPackageExtension(
+                        partitionName: "NVM0", vcn: vcn, usageBitmap: "",
+                        arbSvn: arbSvn, fwType: nil, fwSku: nil,
+                        nvmCompatibility: nil))
+    }
+
+    /// A CSE_Ext_03 block carrying `vcn`.
+    private func ext03(id: Int, vcn: Int) -> CPDExtension {
+        CPDExtension(id: id, tag: 0x03, size: 0x58, offset: 0,
+                     partitionInfo: PartitionInfoExtension(
+                        partitionName: "FTPR", partitionSize: 0, vcn: vcn,
+                        versionMajor: 0, versionMinor: 0, dataFormatMajor: 0,
+                        dataFormatMinor: 0, instanceID: 0, flags: 0, hash: ""))
+    }
+
+    func testHoistReadsArbSvnFrom0FAndVcnFrom03() {
+        // A chain with one 0x0F (arbSvn 5 / vcn 3) and one 0x03 (vcn 7): arbSvn
+        // surfaces from the 0x0F, while the top-level VCN prefers the 0x03.
+        let hoist = CPDExtensionParser.hoist([ext0F(id: 0, arbSvn: 5, vcn: 3),
+                                              ext03(id: 1, vcn: 7)])
+        XCTAssertEqual(hoist.arbSvn, 5)
+        XCTAssertEqual(hoist.vcn03, 7)
+        XCTAssertEqual(hoist.vcn0F, 3)
+    }
+
+    func testHoistFallsBackTo0FVcnWithout03() {
+        let hoist = CPDExtensionParser.hoist([ext0F(id: 0, arbSvn: 9, vcn: 11)])
+        XCTAssertEqual(hoist.arbSvn, 9)
+        XCTAssertEqual(hoist.vcn03, nil)
+        XCTAssertEqual(hoist.vcn0F, 11)
+    }
+
+    func testHoistKeepsLastOfEachTag() {
+        // Multiple 0x0F/0x03 blocks — upstream reads the last of each source
+        // (arbSvn is overwritten per 0x0F, 0x03 VCN overwrites per 0x03).
+        let hoist = CPDExtensionParser.hoist([
+            ext0F(id: 0, arbSvn: 5, vcn: 3),
+            ext03(id: 1, vcn: 7),
+            ext0F(id: 2, arbSvn: 6, vcn: 4),
+            ext03(id: 3, vcn: 8),
+        ])
+        XCTAssertEqual(hoist.arbSvn, 6)
+        XCTAssertEqual(hoist.vcn03, 8)
+        XCTAssertEqual(hoist.vcn0F, 4)
+    }
+
+    func testHoistIgnores016AndEnvelopeOnlyBlocks() {
+        // 0x16 partition info carries no VCN (vcn nil there) and envelope-only
+        // blocks have no payload — neither contributes.
+        let sixteen = CPDExtension(
+            id: 0, tag: 0x16, size: 0x68, offset: 0,
+            partitionInfo: PartitionInfoExtension(
+                partitionName: "FTPR", partitionSize: 0, vcn: nil,
+                versionMajor: 0, versionMinor: 0, dataFormatMajor: 0,
+                dataFormatMinor: 0, instanceID: 0, flags: 0, hash: ""))
+        let empty = CPDExtension(id: 1, tag: 0x00, size: 0x50, offset: 0)
+
+        let hoist = CPDExtensionParser.hoist([sixteen, empty])
+        XCTAssertNil(hoist.arbSvn)
+        XCTAssertNil(hoist.vcn03)
+        XCTAssertNil(hoist.vcn0F)
+    }
+
+    func testHoistEmptyChainIsAllNil() {
+        let hoist = CPDExtensionParser.hoist([])
+        XCTAssertNil(hoist.arbSvn)
+        XCTAssertNil(hoist.vcn03)
+        XCTAssertNil(hoist.vcn0F)
+    }
+}
