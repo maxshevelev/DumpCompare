@@ -1,5 +1,6 @@
 import FITToolUI
 import Foundation
+import MEAToolUI
 import ToolModuleKit
 import UEFIToolUI
 import ZoneSketchUI
@@ -18,7 +19,7 @@ enum ToolRegistry {
     /// The tool-modules of the shipping app, in the order the menu lists them.
     /// One line per module; the package it comes from is a line in
     /// `project.yml`.
-    static let builtIn: [any ToolModule.Type] = [FITToolModule.self, UEFIToolModule.self, ZoneSketchModule.self]
+    static let builtIn: [any ToolModule.Type] = [MEAToolModule.self, FITToolModule.self, UEFIToolModule.self, ZoneSketchModule.self]
 
     /// What the menu is built from. A `var` so a test can install its own
     /// stand-ins without a real tool-module existing, the way the minimap's
