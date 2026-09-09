@@ -178,11 +178,15 @@ public enum MEASummary {
         }
         // 18 · Size — always.
         add("Size", .value(MEAText.size(analysis.sizeBytes)))
-        // 19 · Flash Image Tool — the FIT version in the first boot BPDT header
-        // that carries one (upstream prints the BPDT header's FIT on an IFWI
-        // image). A boot BPDT whose header FIT words are the 0/0xFFFF no-FIT
-        // marker decodes a nil quartet, and reads "N/A", exactly as upstream's
-        // BPDT header print does.
+        // 19 · Flash Image Tool — the FIT the image was built with. On an IFWI
+        // image it is the first boot BPDT that carries a real FIT version
+        // (`fitMajor` outside the 0/0xFFFF marker); a boot with no real FIT
+        // reads "N/A", exactly as upstream's BPDT header print does. On a
+        // non-IFWI image the value is the `$FPT` header's FIT (`fptHeaderFIT`)
+        // — present only when the classifier resolved the image to Extracted
+        // by that real FIT (upstream sets `fitc_ver_found` in that branch
+        // alone, MEA.py 12581–12586), so a Stock / Update / SPS / ME 2–7
+        // image gets no row at all.
         if let boot = analysis.bootPartitions {
             if let fit = boot.first(where: { $0.fitMajor != nil }),
                let major = fit.fitMajor, let minor = fit.fitMinor,
@@ -193,6 +197,10 @@ public enum MEASummary {
             } else {
                 add("Flash Image Tool", .value("N/A"))
             }
+        } else if let fit = analysis.fptHeaderFIT {
+            add("Flash Image Tool", .value(MEAText.firmwareImageTool(
+                family: analysis.family, major: fit.major, minor: fit.minor,
+                hotfix: fit.hotfix, build: fit.build)))
         }
 
         var blocks: [MEASummaryBlock] = [MEASummaryBlock(title: nil, rows: rows)]

@@ -16,11 +16,12 @@ final class FirmwareTypeClassifierTests: XCTestCase {
     }
 
     private func fpt(partitions: [FPTParser.Partition], fitBuild: Int = 0,
+                     fitMajor: Int = 0, fitMinor: Int = 0, fitHotfix: Int = 0,
                      fptStart: Int = 0) -> FPTParser.Result {
         FPTParser.Result(headerVersion: 0x20, resolvedVersion: 0x20,
                          fptStart: fptStart,
-                         fitMajor: 0, fitMinor: 0, fitHotfix: 0,
-                         fitBuild: fitBuild,
+                         fitMajor: fitMajor, fitMinor: fitMinor,
+                         fitHotfix: fitHotfix, fitBuild: fitBuild,
                          partitions: partitions, cseLayout: nil)
     }
 
@@ -118,8 +119,11 @@ final class FirmwareTypeClassifierTests: XCTestCase {
     }
 
     /// A clean stock (CS)ME `$FPT` carries the no-FIT build marker and no dirty
-    /// FOVD → Stock (12567/12577). The CSME 11 whole-flash model (old.bin) sits
-    /// here: no CSE-LT Boot BPDT (isIFWI false), marker FIT, clean FOVD.
+    /// FOVD → Stock (12567/12577). The CSME 11 whole-flash model (old.bin) is
+    /// *not* such an image — its `$FPT` carries a real FIT (11.0.10.1002) and
+    /// classifies Extracted, the fixture pinned by
+    /// `testRealFITHeadersSurfaceOnNonIFWIImage` — so no live oracle exercises
+    /// this Stock branch.
     func testCleanStockMarkerFITIsStock() {
         let result = FirmwareTypeClassifier.classify(
             family: .csme, major: 11, isIFWI: false,
@@ -169,4 +173,87 @@ final class FirmwareTypeClassifierTests: XCTestCase {
         XCTAssertEqual(result, .extracted)
     }
 
+    // MARK: - Row 19's non-IFWI gate (fptHeaderFIT)
+
+    /// The row-19 value of a non-IFWI CSE image whose `$FPT` header carries a
+    /// real FIT — the branch upstream resolves to Extracted *by* (the only
+    /// non-IFWI branch that sets `fitc_ver_found`, 12581–12586) — is that FIT.
+    func testRealFITHeadersSurfaceOnNonIFWIImage() {
+        let f = fpt(partitions: [partition("FTPR", offset: 0x1000, size: 0x1000)],
+                    fitBuild: 1002, fitMajor: 11, fitMinor: 0, fitHotfix: 10)
+        let type = FirmwareTypeClassifier.classify(
+            family: .csme, major: 11, isIFWI: false, fpt: f, region: liveRegion())
+        let fit = FirmwareTypeClassifier.fptHeaderFIT(
+            family: .csme, major: 11, type: type, fpt: f, isIFWI: false)
+        XCTAssertEqual(fit, FITVersion(major: 11, minor: 0, hotfix: 10, build: 1002))
+    }
+
+    /// An Update image — exactly the FTPR/FTUP/NFTP trio — is Update even with a
+    /// real-looking header FIT, and that FIT is *not* surfaced: Check 1 wins
+    /// before the FIT read (12564).
+    func testUpdateTrioHeaderFITIsNotSurfaced() {
+        let f = fpt(partitions: [
+            partition("FTPR", offset: 0x1000, size: 0x1000),
+            partition("FTUP", offset: 0x2000, size: 0x1000),
+            partition("NFTP", offset: 0x3000, size: 0x1000),
+        ], fitBuild: 1091)
+        let type = FirmwareTypeClassifier.classify(
+            family: .csme, major: 12, isIFWI: false, fpt: f, region: liveRegion())
+        XCTAssertEqual(type, .update)
+        let fit = FirmwareTypeClassifier.fptHeaderFIT(
+            family: .csme, major: 12, type: type, fpt: f, isIFWI: false)
+        XCTAssertNil(fit)
+    }
+
+    /// An IFWI image's row 19 comes from each boot BPDT, never the `$FPT`
+    /// header → fptHeaderFIT stays nil even with a real header FIT.
+    func testIFWIHeaderFITIsNotSurfaced() {
+        let f = fpt(partitions: [partition("FTPR", offset: 0x1000, size: 0x1000)],
+                    fitBuild: 1091)
+        let type = FirmwareTypeClassifier.classify(
+            family: .csme, major: 12, isIFWI: true, fpt: f, region: liveRegion())
+        XCTAssertEqual(type, .extracted)
+        let fit = FirmwareTypeClassifier.fptHeaderFIT(
+            family: .csme, major: 12, type: type, fpt: f, isIFWI: true)
+        XCTAssertNil(fit)
+    }
+
+    /// SPS 1–3 are hand-built → Extracted without ever printing a FIT: even a
+    /// real-looking header build is not row 19 (12548).
+    func testSPSHeaderFITIsNotSurfaced() {
+        let f = fpt(partitions: [partition("SPS0", offset: 0x1000, size: 0x1000)],
+                    fitBuild: 1091)
+        let type = FirmwareTypeClassifier.classify(
+            family: .sps, major: 3, isIFWI: false, fpt: f, region: liveRegion())
+        XCTAssertEqual(type, .extracted)
+        let fit = FirmwareTypeClassifier.fptHeaderFIT(
+            family: .sps, major: 3, type: type, fpt: f, isIFWI: false)
+        XCTAssertNil(fit)
+    }
+
+    /// ME 2–7 sits on the older FOVD/KRND axis, never the real-FIT row 19 —
+    /// a header build is not surfaced there either.
+    func testME2to7HeaderFITIsNotSurfaced() {
+        let f = fpt(partitions: [partition("FOVD", offset: 0x1000, size: 0x1000)],
+                    fitBuild: 1091)
+        let type = FirmwareTypeClassifier.classify(
+            family: .me, major: 5, isIFWI: false, fpt: f, region: liveRegion())
+        XCTAssertEqual(type, .extracted)
+        let fit = FirmwareTypeClassifier.fptHeaderFIT(
+            family: .me, major: 5, type: type, fpt: f, isIFWI: false)
+        XCTAssertNil(fit)
+    }
+
+    /// The marker-FIT Extracted legs — dirty FOVD over a marker build — stay
+    /// FIT-less: row 19 needs a real FIT, which a 0/0xFFFF build never is.
+    func testMarkerFITExtractedLegHasNoRow19FIT() {
+        let f = fpt(partitions: [partition("FOVD", offset: 0x1000, size: 0x1000)],
+                    fitBuild: 0)
+        let type = FirmwareTypeClassifier.classify(
+            family: .csme, major: 12, isIFWI: false, fpt: f, region: liveRegion())
+        XCTAssertEqual(type, .extracted)
+        let fit = FirmwareTypeClassifier.fptHeaderFIT(
+            family: .csme, major: 12, type: type, fpt: f, isIFWI: false)
+        XCTAssertNil(fit)
+    }
 }

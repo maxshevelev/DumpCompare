@@ -110,7 +110,36 @@ final class FirmwareAnalysisModelTests: XCTestCase {
     }
 
     func testEngineModelRevisionBumpsWithAdditiveChanges() {
-        XCTAssertEqual(EngineModelRevision.current, 23)
+        XCTAssertEqual(EngineModelRevision.current, 24)
+    }
+
+    /// A non-IFWI image's row-19 FIT (`fptHeaderFIT`) survives a JSON
+    /// round-trip; a payload that omits it decodes to nil (additive contract).
+    func testFPTHeaderFITSurvivesJSON() throws {
+        let payload = """
+        {"family":"me","variant":"ME","version":{"major":11,"minor":0,
+         "hotfix":10,"build":1002},
+         "release":"production","type":"extracted","sku":"","platform":"",
+         "sizeBytes":6291456,"regions":[],"issues":[],
+         "fptHeaderFIT":{"major":11,"minor":0,"hotfix":10,"build":1002}}
+        """
+        let decoded = try JSONDecoder().decode(FirmwareAnalysis.self,
+                                               from: Data(payload.utf8))
+        XCTAssertEqual(decoded.fptHeaderFIT,
+                       FITVersion(major: 11, minor: 0, hotfix: 10, build: 1002))
+        // Round-trip preserves the quartet.
+        let data = try JSONEncoder().encode(decoded)
+        let again = try JSONDecoder().decode(FirmwareAnalysis.self, from: data)
+        XCTAssertEqual(again, decoded)
+        // Absent key → nil, exactly like the other additive fields.
+        let bare = """
+        {"family":"me","variant":"ME","version":{"major":11,"minor":0,
+         "hotfix":10,"build":1002},
+         "release":"production","type":"stock","sku":"","platform":"",
+         "sizeBytes":6291456,"regions":[],"issues":[]}
+        """
+        XCTAssertNil(try JSONDecoder().decode(FirmwareAnalysis.self,
+                                              from: Data(bare.utf8)).fptHeaderFIT)
     }
 }
 

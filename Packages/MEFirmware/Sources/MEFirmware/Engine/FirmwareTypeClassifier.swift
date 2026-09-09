@@ -28,7 +28,7 @@ enum FirmwareTypeClassifier {
         switch family {
         case .me where (2...7).contains(major):
             return me2to7(partitions: fpt.partitions, region: region, major: major)
-        case .me where major >= 8, .csme, .cstxe, .txe, .cssps, .gsc:
+        case _ where Self.isCSMELike(family: family, major: major):
             return csmeLike(fpt: fpt, region: region, variant: family, major: major)
         default:
             // Independent (PMC/PCHC/PHY/OROM) and unknown families do not sit on
@@ -37,6 +37,37 @@ enum FirmwareTypeClassifier {
             // "coming soon" rather than claim an axis it does not model.
             return .unknown
         }
+    }
+
+    /// The csmeLike axis — `(ME, major ≥ 8)` or the CSE/TXE/GSC families — the
+    /// set that reaches upstream's Stock/Update/Extracted branch (the `elif` at
+    /// MEA.py 12560). It is also the only family set whose real-FIT *else*
+    /// branch (12581–12586) sets `fitc_ver_found`, so row 19's non-IFWI gate
+    /// and `fw_type` share one predicate.
+    static func isCSMELike(family: FirmwareFamily, major: Int) -> Bool {
+        (family == .me && major >= 8)
+            || family == .csme || family == .cstxe
+            || family == .txe || family == .cssps || family == .gsc
+    }
+
+    /// The row-19 (Flash Image Tool) FIT of a *non-IFWI* image — the `$FPT`
+    /// header's FIT when the image resolved to Extracted *by it*: the one
+    /// non-IFWI branch that sets `fitc_ver_found` (upstream's else, MEA.py
+    /// 12581–12586). An IFWI image's row 19 comes from the boot BPDT's header
+    /// instead (`BPDT.fit*`); the Update trio (whose real-looking header FIT is
+    /// not surfaced — Check 1 wins before the FIT read, 12564), Stock, SPS,
+    /// ME 2–7, the independent families, and the marker-FIT Extracted legs
+    /// (dirty FOVD / CSTXE placeholder / CSME-13 vectors) never reach this
+    /// branch, so the value stays nil there and on an image with no `$FPT`.
+    static func fptHeaderFIT(family: FirmwareFamily, major: Int,
+                             type: FirmwareType, fpt: FPTParser.Result?,
+                             isIFWI: Bool) -> FITVersion? {
+        guard !isIFWI, let fpt, type == .extracted,
+              isCSMELike(family: family, major: major),
+              fpt.fitBuild != 0, fpt.fitBuild != 0xFFFF
+        else { return nil }
+        return FITVersion(major: fpt.fitMajor, minor: fpt.fitMinor,
+                          hotfix: fpt.fitHotfix, build: fpt.fitBuild)
     }
 
     // MARK: - ME 2–7 (upstream 12550–12559 + fovd_clean)

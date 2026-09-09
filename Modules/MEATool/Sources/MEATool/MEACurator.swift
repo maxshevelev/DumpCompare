@@ -71,6 +71,14 @@ public enum MEACurator {
         append(&fields, "ARB SVN", a.arbSvn)
         append(&fields, "VCN", a.vcn)
         if let state = a.mfsState { append(&fields, "File System State", MEAText.title(state.rawValue)) }
+        // Row 19 for a non-IFWI image: the $FPT header's FIT (an IFWI image's
+        // FIT sits on each boot BPDT, surfaced under "Boot Partitions (BPDT)").
+        if let fit = a.fptHeaderFIT {
+            append(&fields, "Flash Image Tool",
+                   MEAText.firmwareImageTool(family: a.family, major: fit.major,
+                                             minor: fit.minor, hotfix: fit.hotfix,
+                                             build: fit.build))
+        }
         return MEANode(path: [], title: "Firmware",
                        subtitle: "\(MEAText.family(a.family)) · \(a.version.text)",
                        fields: fields)

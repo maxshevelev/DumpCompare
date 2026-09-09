@@ -201,6 +201,28 @@ final class MEASummaryTests: XCTestCase {
         XCTAssertEqual(value("Flash Image Tool", in: tableRows(a)), .value("N/A"))
     }
 
+    /// Row 19 on a *non-IFWI* image (no boot BPDT) reads the `$FPT` header's
+    /// FIT — the value upstream prints from the real-FIT Extracted branch
+    /// (`fptHeaderFIT`, MEA.py 12581–12586). The fixture has no
+    /// `bootPartitions`, so only the header FIT can feed the row.
+    func testFlashImageToolRowReadsNonIFWIFPTHeaderFIT() throws {
+        let a = try analysis([
+            "manifest": manifestJSON(),
+            "fptHeaderFIT": ["major": 11, "minor": 0, "hotfix": 10, "build": 1002],
+        ])
+        XCTAssertEqual(value("Flash Image Tool", in: tableRows(a)),
+                       .value("11.0.10.1002"))
+    }
+
+    /// A non-IFWI image without a header FIT — Stock / Update / SPS / ME 2–7,
+    /// or a marker-FIT Extracted leg — keeps the row off the table entirely:
+    /// upstream never prints row 19 there (no `fitc_ver_found`), unlike the
+    /// IFWI "N/A" a decoded-but-FIT-less boot BPDT reads.
+    func testFlashImageToolRowAbsentOnNonIFWIWithoutFIT() throws {
+        let a = try analysis(["manifest": manifestJSON()])
+        XCTAssertNil(value("Flash Image Tool", in: tableRows(a)))
+    }
+
     /// The File System State row's tone is its status: both settled states read
     /// green, an in-progress volume brown, a failed decode red — every other row
     /// stays standard.

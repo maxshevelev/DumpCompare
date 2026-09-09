@@ -41,6 +41,15 @@ public struct FirmwareAnalysis: Codable, Sendable, Equatable, Identifiable {
                                               // or a main "MFS" region in backup state)
     public var cseLayoutTable: CSELayoutTable? = nil  // IFWI 1.6/1.7 CSE Layout Table inventory
     public var bootPartitions: [BPDT]? = nil          // BPDT of each non-empty CSE-LT Boot partition
+    /// The row-19 (Flash Image Tool) FIT of a *non-IFWI* image, read from the
+    /// `$FPT` header (`FitMajor..FitBuild` u16 @ +0x18..+0x1E, MEA.py 206–209).
+    /// Present only on an image the classifier resolved to Extracted *by that
+    /// real FIT* — the one non-IFWI branch that sets `fitc_ver_found` (MEA.py
+    /// 12581–12586). nil on an IFWI image, whose row 19 then comes from each
+    /// boot BPDT's own `fit*` (`bootPartitions`), and on the Stock / Update /
+    /// SPS / ME 2–7 images and the marker-FIT Extracted legs (dirty FOVD, CSTXE
+    /// placeholder, CSME-13 vectors) that never carry a row-19 FIT.
+    public var fptHeaderFIT: FITVersion? = nil
     public var mmeDirectory: MMEModuleDirectory? = nil  // pre-CSE R0 $MME inventory (ME 2–10)
     public var gscInfo: GSCInfo? = nil                  // GSC "INFO" $FPT partition decode (GSC_Info_FWI/IUP)
     public var oromImages: [GSCOROMImage]? = nil        // GSC OROM/PCIR images decoded by orom_pat (row 30/80)
@@ -87,6 +96,24 @@ public struct Version: Codable, Sendable, Equatable {
     public var meBuild: Int?
 
     public var text: String { "\(major).\(minor).\(hotfix).\(build)" }
+}
+
+/// The four-part Flash Image Tool (FIT) version of a firmware header (row 19,
+/// upstream `fitc_major..fitc_build`) — the version of the FIT the image was
+/// built with, read from the header's `FitMajor`/`FitMinor`/`FitHotfix`/
+/// `FitBuild` u16 words.
+public struct FITVersion: Codable, Sendable, Equatable {
+    public var major: Int
+    public var minor: Int
+    public var hotfix: Int
+    public var build: Int
+
+    public init(major: Int, minor: Int, hotfix: Int, build: Int) {
+        self.major = major
+        self.minor = minor
+        self.hotfix = hotfix
+        self.build = build
+    }
 }
 
 public enum ReleaseType: String, Codable, Sendable {
@@ -1762,5 +1789,5 @@ public struct Issue: Codable, Sendable, Equatable, Identifiable {
 /// whether to surface the new data (`reference/result-model.md` §Versioning).
 public enum EngineModelRevision {
     /// Current revision of the `FirmwareAnalysis` shape.
-    public static let current = 23
+    public static let current = 24
 }

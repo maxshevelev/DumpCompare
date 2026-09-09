@@ -721,6 +721,14 @@ public actor MEFirmwareAnalyzer {
         let oemCustomized = OEMDetector.oemCustomized(
             fpt: fpt, bootPartitions: bootPartitions, codePartition: codePartition,
             in: region, baseOffset: baseOffset)
+        // Row 19's non-IFWI source: the classifier's own `fitc_ver_found`
+        // gate — the $FPT header's FIT, present only on an image resolved to
+        // Extracted by that real FIT (the one non-IFWI branch upstream prints a
+        // row 19 from, MEA.py 12581–12586). The whole decision lives in the
+        // classifier, where fw_type and its FIT share one gate.
+        let fptHeaderFIT = FirmwareTypeClassifier.fptHeaderFIT(
+            family: identity.family, major: identity.major,
+            type: firmwareType, fpt: fpt, isIFWI: isIFWI)
 
         return FirmwareAnalysis(
             family: identity.family,
@@ -749,6 +757,7 @@ public actor MEFirmwareAnalyzer {
             mfsBackup: mfsBackup,
             cseLayoutTable: cseLayoutTable,
             bootPartitions: bootPartitions,
+            fptHeaderFIT: fptHeaderFIT,
             mmeDirectory: moduleInventory,
             gscInfo: gscInfo,
             oromImages: oromImages,
