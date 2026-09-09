@@ -76,7 +76,6 @@ struct UEFIParkedState: ToolSessionState {
     public var viewController: NSViewController { controller }
 
     public func start() {
-        controller.say("Reading…")
         reparse()
         refreshGuids()
     }
@@ -115,6 +114,10 @@ struct UEFIParkedState: ToolSessionState {
         let source = ToolContentByteSource(reader: snapshot)
         generation += 1
         let generation = self.generation
+        // The parse is running: the line under the tree says so, next to the
+        // bar. The successful parse clears it in the block below, so the line
+        // is only ever the reading it is still doing.
+        controller.say("Reading…")
         controller.showBusy()
         let reporter = progressReporter()
         Task { [weak self] in
@@ -123,6 +126,7 @@ struct UEFIParkedState: ToolSessionState {
             self.image = parsed
             self.reader = ImageReader(source)
             self.controller.endBusy()
+            self.controller.say("")
             self.show()
             self.onDisplay?(self.image)
         }
