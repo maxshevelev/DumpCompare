@@ -284,6 +284,7 @@ enum TestUEFI {
             kind: .vssEntry,
             subtype: UEFITypes.Sub.standardVssEntry,
             name: "BootOrder",
+            guid: vendorGuid,
             header: 0..<32,
             body: 32..<32,
             isFixed: true

@@ -264,16 +264,10 @@ public enum UEFIDetail {
             }
 
         case .vssEntry:
-            // A variable's vendor GUID is the common identity the reference
-            // shows; the tree here is named by the decoded name, so the GUID is
-            // a field of its own. Only the standard and Apple forms put it in
-            // the same place in both a VSS and a VSS2 store, so the read is
-            // gated on them. State, reserved and attributes follow.
-            if node.subtype == UEFITypes.Sub.standardVssEntry
-                || node.subtype == UEFITypes.Sub.appleVssEntry,
-               let vendorGuid = reader.guid(at: h + 16) {
-                fields.append(.init("Variable GUID", guidText(vendorGuid)))
-            }
+            // The variable's vendor GUID is the common "GUID" field: the parser
+            // set it on the node, the only place that knows where the store
+            // puts it for the variable's form. State, reserved and attributes
+            // follow.
             if let state = reader.uint8(at: h + 2) { fields.append(.init("State", hex(state))) }
             if let reserved = reader.uint8(at: h + 3) { fields.append(.init("Reserved", hex(reserved))) }
             if let attributes = reader.uint32(at: h + 4) {

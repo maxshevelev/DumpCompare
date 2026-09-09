@@ -401,10 +401,10 @@ final class UEFIDetailTests: XCTestCase {
         XCTAssertEqual(field(detail, "Reserved1"), "0x0")
     }
 
-    /// The tree names a variable by its decoded name and leaves the vendor GUID
-    /// off the node, so the detail has to read the GUID back — and the attribute
-    /// bits read as their words, not just a number.
-    func testAVssVariableNamesItsGuidAndAttributeWords() {
+    /// A variable's vendor GUID is the common GUID field the parser set on the
+    /// node — the same row every GUID-bearing node has — and the attribute bits
+    /// read as their words, not just a number.
+    func testAVssVariableShowsItsVendorGuidAndAttributeWords() {
         let guid = EFIGUID(low: 0x1111_1111, high: 0x2222_2222)
         let built = TestUEFI.nvramVssVariable(attributes: 0x0000_0007, vendorGuid: guid)
         let detail = UEFIDetail.build(for: built.node, image: built.image, reader: built.reader)
@@ -412,7 +412,7 @@ final class UEFIDetailTests: XCTestCase {
         XCTAssertEqual(detail.title, "BootOrder")
         XCTAssertEqual(field(detail, "Kind"), "VSS entry")
         XCTAssertEqual(field(detail, "Type"), "Standard")
-        XCTAssertEqual(field(detail, "Variable GUID"), guid.description)
+        XCTAssertEqual(field(detail, "GUID"), guid.description)
         XCTAssertEqual(field(detail, "State"), "0x7F")
         XCTAssertEqual(field(detail, "Reserved"), "0x0")
         XCTAssertEqual(field(detail, "Attributes"), "0x7 (NonVolatile, BootService, Runtime)")

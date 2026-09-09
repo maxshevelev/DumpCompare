@@ -32,6 +32,9 @@ final class NvramParseTests: XCTestCase {
         XCTAssertEqual(entry.name, "BootOrder")
         XCTAssertEqual(entry.header, 0x58..<0x78)
         XCTAssertEqual(entry.body, 0x78..<0x8E)
+        // The variable's vendor GUID is on the node — the details panel shows
+        // it without reading the bytes back, whatever form the variable is.
+        XCTAssertEqual(entry.guid, TestImage.driverGUID)
     }
 
     func testTheFreeSpaceAfterTheVariablesIsFound() {
@@ -149,7 +152,8 @@ final class NvramParseTests: XCTestCase {
         XCTAssertEqual(vss2.range, 0x48..<0xAC)
     }
 
-    /// A VSS2 variable's header includes its name; the data is the body.
+    /// A VSS2 variable's header includes its name; the data is the body. The
+    /// vendor GUID, right before the name, is on the node.
     func testAVss2VariableIsNamedByItsDecodedName() {
         let store = TestNVRAM.vss2Store(variables: [TestNVRAM.vss2Variable(name: "BootOrder")])
         let parsed = parse(TestNVRAM.nvramVolume(stores: [store]))
@@ -160,6 +164,7 @@ final class NvramParseTests: XCTestCase {
         XCTAssertEqual(entry.name, "BootOrder")
         XCTAssertEqual(entry.header, 0x64..<0x98)
         XCTAssertEqual(entry.body, 0x98..<0x9A)
+        XCTAssertEqual(entry.guid, TestImage.driverGUID)
     }
 
     /// The 4-byte alignment padding after a VSS2 variable is a node of its

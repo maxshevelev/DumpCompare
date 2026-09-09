@@ -127,9 +127,17 @@ public enum UEFITreeDisplay {
     /// it, which is the whole of the first paint before a download lands. A
     /// node without a GUID keeps the name the parser gave it, falling back to
     /// its kind when the parser had nothing to say.
+    ///
+    /// A VSS variable is the one node whose GUID is not its identity: the name
+    /// the parser decoded — "BootOrder", "PK" — is what a reader looks for, and
+    /// many variables share the single vendor GUID that owns them. So its row
+    /// keeps the parser's name; the GUID still shows in the details panel.
     public static func name(for node: UEFINode, catalogue: GuidsCatalogue) -> String {
         guard let guid = node.guid else {
             return node.name.isEmpty ? kindLabel(node.kind) : node.name
+        }
+        if node.kind == .vssEntry, !node.name.isEmpty {
+            return node.name
         }
         // The community catalogue first; the NVRAM classifier names the GUIDs
         // it knows while the catalogue has no name for them; the GUID itself

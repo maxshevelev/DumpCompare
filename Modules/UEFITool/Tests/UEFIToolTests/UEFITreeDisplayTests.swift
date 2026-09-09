@@ -100,6 +100,17 @@ final class UEFITreeDisplayTests: XCTestCase {
         XCTAssertEqual(UEFITreeDisplay.name(for: file, catalogue: named), "Volume Top File")
     }
 
+    /// A VSS variable keeps its decoded name even though it now carries a GUID:
+    /// the name is the variable's identity, and many variables share the one
+    /// vendor GUID that owns them — naming the row by that GUID would blur two
+    /// "BootOrder"-sized variables into one.
+    func testAVssVariableIsNamedByItsNameNotItsVendorGuid() {
+        let built = TestUEFI.nvramVssVariable()
+        let guid = built.node.guid!
+        let named = GuidsCatalogue(names: [guid: "Something else"])
+        XCTAssertEqual(UEFITreeDisplay.name(for: built.node, catalogue: named), "BootOrder")
+    }
+
     /// A node without a GUID keeps the name the parser gave it.
     func testANodeWithoutAGuidKeepsItsParserName() {
         let freeSpace = UEFINode(kind: .freeSpace, name: "Tail", range: 0..<0x100)
