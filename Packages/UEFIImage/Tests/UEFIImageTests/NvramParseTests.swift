@@ -37,6 +37,29 @@ final class NvramParseTests: XCTestCase {
         XCTAssertEqual(entry.guid, TestImage.driverGUID)
     }
 
+    /// An authenticated VSS variable — the shape a secure variable like PK is —
+    /// keeps its vendor GUID in the header's last sixteen bytes (offset 44 of
+    /// its 60-byte header), not at the 16 a standard 32-byte header does. The
+    /// monotonic counter, timestamp and key index in between are zeros or
+    /// noise; reading them as a GUID would show a null or a wrong owner.
+    func testAnAuthenticatedVssVariableKeepsItsVendorGuid() {
+        let efiGlobalVariable = KnownGUIDs.guid("8BE4DF61-93CA-11D2-AA0D-00E098032B8C")
+        let pk = TestNVRAM.authVssVariable(
+            name: "PK",
+            data: Array(repeating: 0xAB, count: 0x3BB),
+            vendorGuid: efiGlobalVariable
+        )
+        let parsed = parse(TestNVRAM.nvramVolume(stores: [TestNVRAM.vssStore(variables: [pk])]))
+        let entry = parsed.roots[0].children[0].children[0]
+
+        XCTAssertEqual(entry.kind, .vssEntry)
+        XCTAssertEqual(entry.subtype, UEFITypes.Sub.authVssEntry)
+        XCTAssertEqual(entry.name, "PK")
+        XCTAssertEqual(entry.header, 0x58..<0x94)
+        XCTAssertEqual(entry.body, 0x94..<0x455)
+        XCTAssertEqual(entry.guid, efiGlobalVariable)
+    }
+
     func testTheFreeSpaceAfterTheVariablesIsFound() {
         let store = TestNVRAM.vssStore(variables: [TestNVRAM.vssVariable(name: "BootOrder")])
         let parsed = parse(TestNVRAM.nvramVolume(stores: [store]))

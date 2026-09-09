@@ -394,12 +394,18 @@ extension Parser {
             subtype = UEFITypes.Sub.invalidVssEntry
         }
 
-        // The vendor GUID at offset 16 is the variable's owner — every header
-        // shape in a VSS store keeps it there — and the fallback name when the
-        // name does not decode. It is read once and set on the node: the
-        // details panel shows the common GUID field for every form, and only
-        // the parser, which knows the store, can say where a form's GUID sits.
-        let vendorGuid = reader.guid(at: offset + 16)
+        // The vendor GUID is the variable's owner, and the last sixteen bytes
+        // of the header before the name in every shape but Apple's — where a
+        // data-CRC word follows the GUID and pushes the name four bytes on.
+        // So an authenticated variable, whose header is 60 bytes long, keeps
+        // its GUID at offset 44, not the 16 a standard 32-byte header does.
+        // The GUID is read where this form's header keeps it and set on the
+        // node: the details panel shows the common GUID field for every form,
+        // and only the parser, which knows the store, can say where a form's
+        // GUID sits.
+        let vendorGuid = headerSize == NVRAM.vssAppleHeaderSize
+            ? reader.guid(at: offset + 16)
+            : reader.guid(at: offset + headerSize - 16)
 
         // The name is the decoded variable name, or the vendor GUID for a
         // variable whose name is not a readable string.

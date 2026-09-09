@@ -47,6 +47,38 @@ enum TestNVRAM {
         return writer.bytes
     }
 
+    /// An authenticated VSS variable: a 60-byte header. Where a standard header
+    /// keeps the name and data sizes and the vendor GUID at offsets 8, 12 and
+    /// 16, an authenticated one puts the two halves of a monotonic counter, a
+    /// timestamp and a key index before the sizes — so the real name and data
+    /// sizes sit at offsets 36 and 40, and the vendor GUID moves down the header
+    /// to its last sixteen bytes, offset 44, just before the name at 60.
+    static func authVssVariable(
+        name: String,
+        data: [UInt8] = [0x01, 0x02],
+        vendorGuid: EFIGUID = TestImage.driverGUID,
+        state: UInt8 = NVRAM.vssVariableAdded,
+        attributes: UInt32 = NVRAM.vssAttributeTimeBasedAuth | 0x0000_0007
+    ) -> [UInt8] {
+        var writer = BinaryWriter()
+        writer.u8(NVRAM.variableMarkerFirst)   // 0xAA
+        writer.u8(NVRAM.variableMarkerLast)    // 0x55
+        writer.u8(state)
+        writer.u8(0)                           // reserved
+        writer.u32(attributes)
+        let nameBytes = ucs2(name)
+        writer.u32(0)                          // monotonic counter, low
+        writer.u32(0)                          // monotonic counter, high
+        writer.fill(16, with: 0)               // timestamp
+        writer.u32(0)                          // key index
+        writer.u32(UInt32(nameBytes.count))    // name size, at offset 36
+        writer.u32(UInt32(data.count))         // data size, at offset 40
+        writer.guid(vendorGuid)                // vendor GUID, at offset 44
+        writer.raw(nameBytes)
+        writer.raw(data)
+        return writer.bytes
+    }
+
     /// A VSS store: the 16-byte header, the variables back to back, and erased
     /// free space after them. `size` defaults to the real size of the store.
     static func vssStore(
