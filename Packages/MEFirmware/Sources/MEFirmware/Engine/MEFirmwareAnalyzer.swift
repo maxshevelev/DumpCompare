@@ -154,6 +154,97 @@ public actor MEFirmwareAnalyzer {
             }
         }
 
+        // Phase 9 (newer FS): the EFS paged filesystem and the FITC
+        // ("OEM Configuration") store appear as raw FPT partitions named "EFS"
+        // and "FITC" on the newest whole-flash layout (CSME 15.0.30 — the 1.bin
+        // dump; EFS @0x267000, FITC @0x1F2000), not inside a Huffman module
+        // body. Their decode is purely on-flash bytes: the EFS page inventory,
+        // System-page header fields, index permutation and the CRC-32s of the
+        // page header / index area / Data Page headers and footers; and the FITC
+        // header/length/checksum facts. The EFS *files* (names + per-file
+        // integrity) and the FITC *config records* are named and checked through
+        // the external FileTable.dat EFST/FTBL rows — a parked DB increment, same
+        // wall as the MFS FTBL naming. The older CSME 11/12 layouts carry no EFS
+        // region → both stay nil there.
+        var efsVolume: EFSVolume? = nil
+        var oemConfiguration: OEMConfiguration? = nil
+        var fsIssues: [Issue] = []
+        if let efsRegion = regions.first(where: { $0.name == "EFS" }) {
+            if let efs = EFSParser.parse(in: region,
+                                         offset: efsRegion.offset - baseOffset,
+                                         size: efsRegion.size,
+                                         absoluteOffset: efsRegion.offset,
+                                         mfsDictionary: mfsInfo?.ftblDictionary) {
+                efsVolume = efs
+                // Mirror the errors upstream raises while still decoding the
+                // structure: fold the non-expected structural/CRC findings into
+                // one warning rather than one Issue per line.
+                var defects: [String] = []
+                if efs.systemPageCount != 1 {
+                    defects.append("detected \(efs.systemPageCount) System "
+                        + "page(s), expected 1")
+                }
+                if !efs.scratchPagesEmpty {
+                    defects.append("data in Empty/Scratch page(s)")
+                }
+                if efs.revision != 1 || efs.unknown1 != 2 {
+                    defects.append(String(format:
+                        "Revision,Unknown1 = 0x%X,0x%X, expected 0x1,0x2",
+                        efs.revision, efs.unknown1))
+                }
+                if !efs.systemHeaderCRCValid {
+                    defects.append("System Page Header CRC-32 is INVALID")
+                }
+                if !efs.firstIndexPaddingEmpty {
+                    defects.append("data in System Page 1st Index Area Padding")
+                }
+                if !efs.indexesCRCValid {
+                    defects.append("System Page Indexes CRC-32 is INVALID")
+                }
+                if !efs.dataPageCountMatchesSystem {
+                    defects.append("detected \(efs.dataPageCount) Data Page(s), "
+                        + "expected \(efs.dataPagesCommitted + efs.dataPagesReserved)")
+                }
+                if !efs.dataPageHeaderCRCsValid {
+                    defects.append("a Data Page Header CRC-32 is INVALID")
+                }
+                if !efs.dataPageFooterCRCsValid {
+                    defects.append("a Data Page Footer CRC-32 is INVALID")
+                }
+                if !defects.isEmpty {
+                    fsIssues.append(Issue(id: 15, severity: .warning,
+                        message: "EFS partition at 0x\(String(efsRegion.offset, radix: 16)): "
+                            + defects.joined(separator: "; ") + "."))
+                }
+            } else {
+                fsIssues.append(Issue(id: 14, severity: .warning,
+                    message: "Skipped EFS partition at 0x\(String(efsRegion.offset, radix: 16)): "
+                        + "unrecognizable format (no leading System page)."))
+            }
+        }
+        if let fitcRegion = regions.first(where: { $0.name == "FITC" }),
+           let cfg = FITCParser.parse(in: region,
+                                      offset: fitcRegion.offset - baseOffset,
+                                      size: fitcRegion.size,
+                                      absoluteOffset: fitcRegion.offset) {
+            oemConfiguration = cfg
+            var defects: [String] = []
+            if cfg.headerCRCValid == false {
+                defects.append("Header CRC-32 is INVALID")
+            }
+            if cfg.dataCRCValid == false {
+                defects.append("Data CRC-32 is INVALID")
+            }
+            if cfg.paddingAllFF == false {
+                defects.append("data in padding, possibly unknown Header revision")
+            }
+            if !defects.isEmpty {
+                fsIssues.append(Issue(id: 16, severity: .warning,
+                    message: "FITC partition at 0x\(String(fitcRegion.offset, radix: 16)): "
+                        + defects.joined(separator: "; ") + "."))
+            }
+        }
+
         // Phase 12 (GSC, upstream-map row 79): a GSC "INFO" $FPT partition.
         // Upstream info_anl (MEA.py 9134) decodes one during the partition walk
         // of a GSC-family image — a u32 revision (must be 1) then a GSC_Info_FWI
@@ -314,6 +405,7 @@ public actor MEFirmwareAnalyzer {
         }
         issues.append(contentsOf: cpdIssues)
         issues.append(contentsOf: mfsIssues)
+        issues.append(contentsOf: fsIssues)
         issues.append(contentsOf: gscInfoIssues)
         issues.append(contentsOf: cseLayoutIssues)
         if rsaSignatureValid == false {
@@ -336,7 +428,9 @@ public actor MEFirmwareAnalyzer {
                 regions: regions, manifest: manifestSummary,
                 codePartition: nil, mfsVolume: mfsVolume,
                 cseLayoutTable: cseLayoutTable, bootPartitions: bootPartitions,
-                mmeDirectory: nil, gscInfo: gscInfo, issues: issues)
+                mmeDirectory: nil, gscInfo: gscInfo,
+                efsVolume: efsVolume, oemConfiguration: oemConfiguration,
+                issues: issues)
         }
 
         // ——— Stage 2: identification — awaits the live MEA.dat once, then
@@ -516,6 +610,8 @@ public actor MEFirmwareAnalyzer {
             gscInfo: gscInfo,
             oromImages: oromImages,
             rbePmMetadata: rbePm,
+            efsVolume: efsVolume,
+            oemConfiguration: oemConfiguration,
             issues: issues)
     }
 

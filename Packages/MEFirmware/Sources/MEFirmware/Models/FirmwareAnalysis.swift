@@ -43,6 +43,8 @@ public struct FirmwareAnalysis: Codable, Sendable, Equatable, Identifiable {
     public var gscInfo: GSCInfo? = nil                  // GSC "INFO" $FPT partition decode (GSC_Info_FWI/IUP)
     public var oromImages: [GSCOROMImage]? = nil        // GSC OROM/PCIR images decoded by orom_pat (row 30/80)
     public var rbePmMetadata: [RBE_PMMetadata]? = nil  // FTPR `pm` / RBEP `rbe` module "Metadata" table (rows 54/55)
+    public var efsVolume: EFSVolume? = nil            // EFS paged-volume structural facts (FPT "EFS" region)
+    public var oemConfiguration: OEMConfiguration? = nil  // FITC "OEM Configuration" facts (FPT "FITC" region)
     public var issues: [Issue]
 }
 
@@ -787,6 +789,112 @@ public struct MFSVolume: Codable, Sendable, Equatable {
     }
 }
 
+/// Facts about a CSE EFS (Extended File System) partition — the paged store of
+/// an MFS volume's low-level files that ships alongside MFS on the newer
+/// (CSME 15) layouts, decoded from an FPT region named "EFS". Surfaced here is
+/// the *structural* decode only (upstream `efs_anl`, MEA.py 8621): the page
+/// inventory, the System Page header fields and the CRC-32 validations of the
+/// page header / index area / Data Page headers and footers. The EFS file
+/// *contents* (names, per-file integrity split) are assembled from the external
+/// FileTable.dat EFST rows — a parked DB-naming increment, never carried here.
+///
+/// The System Page header is self-describing: `dictionary` is its File Table id
+/// and must equal the owning MFS volume's (0x0A on the CSME 15.0.30 dump), and
+/// `dataPageOrder` is the System index permutation mapping each logical Data
+/// page to its physical page. Byte-verified on 1.bin's EFS (dict 0x0A, Revision
+/// 1/Unknown1 2, 14 Data pages == committed+reserved, all CRCs valid).
+public struct EFSVolume: Codable, Sendable, Equatable {
+    public var offset: Int            // absolute volume start
+    public var pageSize: Int          // 0x1000
+    public var systemPageCount: Int   // 1 on real volumes
+    public var dataPageCount: Int
+    public var scratchPageCount: Int
+    public var scratchPagesEmpty: Bool      // Scratch pages must be all 0xFF
+    public var dataPageCountMatchesSystem: Bool  // Data pages == Committed + Reserved
+    public var dictionary: UInt16           // System Page File Table id
+    public var revision: UInt32
+    public var unknown1: UInt8
+    public var dictionaryRevision: UInt8
+    public var dataPagesCommitted: UInt8
+    public var dataPagesReserved: UInt8
+    public var systemHeaderCRCValid: Bool   // CRC-32 (IV 0 raw) over header minus its field
+    public var indexesCRCValid: Bool        // System index area CRC-32
+    public var firstIndexPaddingEmpty: Bool // the 8 zero bytes after the index area
+    public var dataPageOrder: [UInt8]       // System index permutation (logical order)
+    public var dataPageHeaderCRCsValid: Bool
+    public var dataPageFooterCRCsValid: Bool
+    public var matchesMFSDictionary: Bool?  // nil when no MFS volume decoded alongside
+
+    public init(offset: Int, pageSize: Int, systemPageCount: Int,
+                dataPageCount: Int, scratchPageCount: Int,
+                scratchPagesEmpty: Bool, dataPageCountMatchesSystem: Bool,
+                dictionary: UInt16, revision: UInt32, unknown1: UInt8,
+                dictionaryRevision: UInt8, dataPagesCommitted: UInt8,
+                dataPagesReserved: UInt8, systemHeaderCRCValid: Bool,
+                indexesCRCValid: Bool, firstIndexPaddingEmpty: Bool,
+                dataPageOrder: [UInt8], dataPageHeaderCRCsValid: Bool,
+                dataPageFooterCRCsValid: Bool, matchesMFSDictionary: Bool?) {
+        self.offset = offset
+        self.pageSize = pageSize
+        self.systemPageCount = systemPageCount
+        self.dataPageCount = dataPageCount
+        self.scratchPageCount = scratchPageCount
+        self.scratchPagesEmpty = scratchPagesEmpty
+        self.dataPageCountMatchesSystem = dataPageCountMatchesSystem
+        self.dictionary = dictionary
+        self.revision = revision
+        self.unknown1 = unknown1
+        self.dictionaryRevision = dictionaryRevision
+        self.dataPagesCommitted = dataPagesCommitted
+        self.dataPagesReserved = dataPagesReserved
+        self.systemHeaderCRCValid = systemHeaderCRCValid
+        self.indexesCRCValid = indexesCRCValid
+        self.firstIndexPaddingEmpty = firstIndexPaddingEmpty
+        self.dataPageOrder = dataPageOrder
+        self.dataPageHeaderCRCsValid = dataPageHeaderCRCsValid
+        self.dataPageFooterCRCsValid = dataPageFooterCRCsValid
+        self.matchesMFSDictionary = matchesMFSDictionary
+    }
+}
+
+/// Facts about the FITC ("OEM Configuration") partition — the on-flash OEM
+/// Configuration store of the newer layouts, decoded from an FPT region named
+/// "FITC". Upstream `fitc_anl` (MEA.py 8572) reads a `FITC_Header` (revision 1)
+/// whose header and data are each protected by a plain CRC-32, then parses the
+/// data as MFS config *records* — a FileTable.dat-named step that is parked,
+/// never carried here. Only the header/length/integrity facts are on-flash
+/// bytes. A revision ≠ 1 layout (CSME 15 TGP alpha) carries no checksums: the
+/// config length comes from the first u32 and the tail must be 0xFF padding.
+/// Byte-verified on 1.bin's FITC (revision 1, header and data CRC-32 valid).
+public struct OEMConfiguration: Codable, Sendable, Equatable {
+    public var offset: Int
+    public var headerRevision: UInt32
+    /// rev == 1: `DataLength` — config data length at +0x10.
+    public var dataLength: Int?
+    public var headerCRCStored: UInt32?
+    public var headerCRCValid: Bool?
+    public var dataCRCStored: UInt32?
+    public var dataCRCValid: Bool?
+    /// rev != 1: config length from the first u32 and whether the tail is 0xFF.
+    public var configLength: Int?
+    public var paddingAllFF: Bool?
+
+    public init(offset: Int, headerRevision: UInt32, dataLength: Int?,
+                headerCRCStored: UInt32?, headerCRCValid: Bool?,
+                dataCRCStored: UInt32?, dataCRCValid: Bool?,
+                configLength: Int?, paddingAllFF: Bool?) {
+        self.offset = offset
+        self.headerRevision = headerRevision
+        self.dataLength = dataLength
+        self.headerCRCStored = headerCRCStored
+        self.headerCRCValid = headerCRCValid
+        self.dataCRCStored = dataCRCStored
+        self.dataCRCValid = dataCRCValid
+        self.configLength = configLength
+        self.paddingAllFF = paddingAllFF
+    }
+}
+
 /// A decoded legacy MFS Configuration stream (upstream `mfs_cfg_anl` MEA.py
 /// 8467, `MFS_Config_Record_0x1C` MEA.py 1319): the Intel Configuration (low-
 /// level file 6) or OEM Configuration (file 7) of an old-style (non-FTBL) MFS.
@@ -1443,5 +1551,5 @@ public struct Issue: Codable, Sendable, Equatable, Identifiable {
 /// whether to surface the new data (`reference/result-model.md` §Versioning).
 public enum EngineModelRevision {
     /// Current revision of the `FirmwareAnalysis` shape.
-    public static let current = 18
+    public static let current = 19
 }

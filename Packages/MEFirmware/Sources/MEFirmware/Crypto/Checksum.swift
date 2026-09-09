@@ -30,6 +30,23 @@ enum CRC32 {
         }
         return crc ^ 0xFFFF_FFFF
     }
+
+    /// CRC-32 of `data` run from a zero initial register with *no* final XOR —
+    /// the raw register value. Matches upstream `efs_anl`'s
+    /// `~crccheck.crc.Crc32.calc(data, initvalue=0) & 0xFFFFFFFF`: crccheck's
+    /// `calc(_:initvalue: 0)` finalizes a zeroed register (register XOR
+    /// 0xFFFFFFFF), and the outer `~` in MEA.py inverts that back to the raw
+    /// register value. The EFS System Page header, index-area and Data Page
+    /// header/footer checks compare their stored CRC-32 against this — the
+    /// standard `crc32(_:)` does *not* match them. Byte-verified on the CSME
+    /// 15.0.30 EFS region (all stored CRCs equal this of their spans).
+    static func crc32IV0Raw(_ data: Data) -> UInt32 {
+        var crc: UInt32 = 0
+        for byte in data {
+            crc = crc32Table[Int((crc ^ UInt32(byte)) & 0xFF)] ^ (crc >> 8)
+        }
+        return crc
+    }
 }
 
 /// Upstream `Crc16_14` (MEA.py 9027) — the reverse de-obfuscation primitive for
