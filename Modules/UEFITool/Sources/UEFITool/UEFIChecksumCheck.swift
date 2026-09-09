@@ -13,6 +13,18 @@ public enum UEFIChecksumField: String, Hashable, Sendable {
     case fileBody
     /// A microcode image's checksum dword (§7.1).
     case microcode
+
+    /// What to call the field where the panel has to name it — the pointer's
+    /// reading of a flagged row's warning, which says which checksum is wrong
+    /// rather than only that one is.
+    public var label: String {
+        switch self {
+        case .volume: return "volume header"
+        case .fileHeader: return "file header"
+        case .fileBody: return "file body"
+        case .microcode: return "microcode"
+        }
+    }
 }
 
 /// Tells whether a node's checksums are right, using the same `UEFIChecksums`

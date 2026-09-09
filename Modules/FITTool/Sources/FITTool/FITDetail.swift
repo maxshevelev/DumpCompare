@@ -5,10 +5,21 @@ import UEFIImage
 public struct FITDetailField: Equatable, Sendable {
     public var label: String
     public var value: String
+    /// A value that reads as a problem — a checksum that does not check out.
+    /// The controller colours just this row's value with it; everything else
+    /// stays as it is, the same way the UEFI detail marks its own.
+    public var isProblem: Bool
 
     public init(_ label: String, _ value: String) {
         self.label = label
         self.value = value
+        self.isProblem = false
+    }
+
+    public init(_ label: String, _ value: String, isProblem: Bool) {
+        self.label = label
+        self.value = value
+        self.isProblem = isProblem
     }
 }
 
@@ -32,9 +43,12 @@ public struct FITRowDetail: Equatable, Sendable {
 /// Index/IO descriptor, a named region — so this reads nothing new: it only
 /// puts what was found into the shape the panel draws.
 public enum FITDetail {
-    public static func build(for row: FITRow) -> FITRowDetail {
+    /// `checksumMismatch` is the validator's word on the table's own checksum
+    /// (§8.6) — the one thing about the header row that cannot be read off the
+    /// row, and the value the header's Checksum field is coloured by.
+    public static func build(for row: FITRow, checksumMismatch: Bool = false) -> FITRowDetail {
         let entry = row.entry
-        var fields = entryFields(of: entry)
+        var fields = entryFields(of: entry, checksumMismatch: checksumMismatch)
         fields += targetFields(of: row)
         return FITRowDetail(
             // The number the panel shows for the row, counting from one the way
@@ -47,7 +61,9 @@ public enum FITDetail {
 
     // MARK: - The sixteen bytes of the row itself
 
-    private static func entryFields(of entry: FITEntry) -> [FITDetailField] {
+    private static func entryFields(
+        of entry: FITEntry, checksumMismatch: Bool
+    ) -> [FITDetailField] {
         // The type leads: it is what the row is, and the title already says it,
         // so the fields open with it rather than with where it sits.
         var fields: [FITDetailField] = [
@@ -60,10 +76,16 @@ public enum FITDetail {
         // The checksum byte is the header's (§5), so it is shown on the header
         // row and on no other — a row that is not the header does not carry it.
         if entry.isHeader {
-            // The value and whether the header says it counts, in one line — the
-            // shared spelling, so it reads the same wherever a checksum carries
-            // a validity bit.
-            fields.append(.init("Checksum", Checksums.text(entry.checksum, valid: entry.checksumValid)))
+            // Valid means the byte counts *and* checks out — the same thing
+            // "Valid" means everywhere else a checksum is read, so the word
+            // can be trusted. A header that says its checksum does not count
+            // (the C_V bit, §5) says so in as many words: the byte is not
+            // wrong, it is not looked at, and nothing about it is a problem.
+            fields.append(entry.checksumValid
+                ? .init("Checksum",
+                        Checksums.text(entry.checksum, valid: !checksumMismatch),
+                        isProblem: checksumMismatch)
+                : .init("Checksum", "\(hex(entry.checksum, digits: 2)) (Not checked)"))
         }
         return fields
     }
@@ -113,7 +135,9 @@ public enum FITDetail {
                 // checksum byte. Shown with whether the image sums to zero, the
                 // shared spelling, so it reads the same wherever a checksum
                 // carries a validity.
-                .init("Image checksum", Checksums.text(header.checksum, valid: header.checksumIsCorrect, digits: 4))
+                .init("Image checksum",
+                      Checksums.text(header.checksum, valid: header.checksumIsCorrect, digits: 4),
+                      isProblem: !header.checksumIsCorrect)
             ]
         case .emptyMicrocodeSlot(let offset):
             return [

@@ -434,16 +434,31 @@ extension UEFIToolViewController: NSOutlineViewDataSource, NSOutlineViewDelegate
         guard let node = item as? UEFINode, let identifier = tableColumn?.identifier
         else { return nil }
         let cell = outlineView.makeView(withIdentifier: identifier, owner: self)
-            as? NSTableCellView ?? Self.makeCell(identifier: identifier)
-        // The name is attributed so a wrong checksum can ride a red triangle in
-        // front of it; the other two columns stay plain.
-        cell.textField?.attributedStringValue = identifier == Column.name
-            ? nameText(for: node)
-            : NSAttributedString(string: text(for: node, in: identifier))
+            as? NSTableCellView
+            ?? ToolPanelTable.makeCell(identifier: identifier,
+                                       warning: identifier == Column.name)
+        cell.textField?.stringValue = text(for: node, in: identifier)
         // Set per row, not once when the cell is made: a reused cell carries
         // the font it was made with, and the zoom moves under it.
         cell.textField?.font = ToolPanelFont.body()
+        // The Name column wears the warning: a node whose checksums do not
+        // check out, with what is wrong under the pointer.
+        if identifier == Column.name {
+            let bad = badChecksums[node.id] ?? []
+            ToolPanelTable.setWarning(!bad.isEmpty, on: cell,
+                                      explanation: bad.isEmpty ? nil : warningText(for: bad))
+        }
         return cell
+    }
+
+    /// What the pointer reads on a flagged row's triangle: which of the node's
+    /// checksums is wrong, since "invalid" alone leaves the reader to open the
+    /// detail to find out.
+    private func warningText(for fields: Set<UEFIChecksumField>) -> String {
+        let names = fields.map(\.label).sorted()
+        return names.count == 1
+            ? "Invalid \(names[0]) checksum"
+            : "Invalid checksums: \(names.joined(separator: ", "))"
     }
 
     private func text(
@@ -457,42 +472,6 @@ extension UEFIToolViewController: NSOutlineViewDataSource, NSOutlineViewDelegate
         default:
             return UEFITreeDisplay.name(for: node, catalogue: catalogue)
         }
-    }
-
-    /// A name cell's text: the plain name, or a red warning triangle before it
-    /// when the node's checksum is wrong. The triangle is an SF Symbol riding
-    /// inside the text as an attachment, so it follows the row — its size, its
-    /// baseline, its truncation — instead of fighting the cell's layout. Both
-    /// branches build text with the row font embedded, so a recycled cell can
-    /// never show a stale triangle.
-    private func nameText(for node: UEFINode) -> NSAttributedString {
-        let font = ToolPanelFont.body()
-        let name = UEFITreeDisplay.name(for: node, catalogue: catalogue)
-        guard !(badChecksums[node.id]?.isEmpty ?? true),
-              let sized = NSImage(
-                  systemSymbolName: "exclamationmark.triangle.fill",
-                  accessibilityDescription: "Invalid checksum"
-              )?.withSymbolConfiguration(
-                  .init(pointSize: font.pointSize, weight: .regular)
-              ),
-              let symbol = sized.withSymbolConfiguration(
-                  .init(paletteColors: [.systemRed])
-              )
-        else {
-            return NSAttributedString(string: name, attributes: [.font: font])
-        }
-        let attachment = NSTextAttachment()
-        attachment.image = symbol
-        // Drawn below the baseline by the font's descender, the triangle reads
-        // as sitting on it the way a glyph does, not floating above the row.
-        attachment.bounds = NSRect(
-            x: 0, y: font.descender,
-            width: symbol.size.width, height: symbol.size.height
-        )
-        let result = NSMutableAttributedString(attachment: attachment)
-        result.append(NSAttributedString(string: " ", attributes: [.font: font]))
-        result.append(NSAttributedString(string: name, attributes: [.font: font]))
-        return result
     }
 
     /// The menu a right-click asks for: one Fix Checksum item on the node under
@@ -527,27 +506,6 @@ extension UEFIToolViewController: NSOutlineViewDataSource, NSOutlineViewDelegate
     @objc private func fixChecksumClicked(_ sender: NSMenuItem) {
         guard let nodeID = sender.representedObject as? NodeID else { return }
         onFixChecksum?(nodeID)
-    }
-
-    private static func makeCell(
-        identifier: NSUserInterfaceItemIdentifier
-    ) -> NSTableCellView {
-        let cell = NSTableCellView()
-        cell.identifier = identifier
-        let field = NSTextField(labelWithString: "")
-        field.font = ToolPanelFont.body()
-        field.lineBreakMode = .byTruncatingTail
-        field.isBordered = false
-        field.drawsBackground = false
-        field.translatesAutoresizingMaskIntoConstraints = false
-        cell.addSubview(field)
-        cell.textField = field
-        NSLayoutConstraint.activate([
-            field.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
-            field.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -2),
-            field.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
-        ])
-        return cell
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {

@@ -302,8 +302,12 @@ final class UEFIToolFlowTests: XCTestCase {
             "the tree is view-based — cell-based rows have no view here at all"
         )
         let field = try XCTUnwrap(cell.textField, "the cell shows its text in a field")
-        let above = field.frame.minY
-        let below = cell.bounds.height - field.frame.maxY
+        // In the cell's own coordinates: the name shares a row with the
+        // wrong-checksum warning, so its field is not a direct subview of the
+        // cell and its frame is not measured against the cell's bounds.
+        let text = field.convert(field.bounds, to: cell)
+        let above = text.minY
+        let below = cell.bounds.height - text.maxY
 
         XCTAssertEqual(above, below, accuracy: 1,
                        "\(above) above the text and \(below) below it — the row's "

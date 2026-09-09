@@ -412,6 +412,11 @@ import ToolModuleKit
             value.font = field.value.hasPrefix("0x")
                 ? ToolPanelFont.monospacedDigits()
                 : ToolPanelFont.body()
+            // A checksum that does not check out is the one value in here
+            // worth colouring red: it is what Fix Checksum would write.
+            if field.isProblem {
+                value.textColor = .systemRed
+            }
             // Selectable, not a dead label: a bench copies an offset or a CPUID
             // out of here, and a value it cannot select is one it has to retype.
             value.isSelectable = true
@@ -539,7 +544,9 @@ extension FITToolViewController: NSTableViewDataSource, NSTableViewDelegate {
     -> NSView? {
         guard let column = tableColumn else { return nil }
         let cell = tableView.makeView(withIdentifier: column.identifier, owner: self)
-            as? NSTableCellView ?? makeCell(identifier: column.identifier)
+            as? NSTableCellView
+            ?? ToolPanelTable.makeCell(identifier: column.identifier,
+                                       warning: column.identifier == Column.type)
 
         if tableView === problems {
             guard row < display.problems.count else { return nil }
@@ -553,6 +560,13 @@ extension FITToolViewController: NSTableViewDataSource, NSTableViewDelegate {
         guard row < display.rows.count else { return nil }
         let entry = display.rows[row]
         let monospaced = ToolPanelFont.monospacedDigits()
+        // The Type column wears the warning for a row the validator complained
+        // about — one red triangle where the row says what it is, rather than
+        // the whole row in red.
+        if column.identifier == Column.type {
+            ToolPanelTable.setWarning(entry.hasProblem, on: cell,
+                                      explanation: problemText(ofRow: entry.index))
+        }
         switch column.identifier {
         case Column.index:
             // The number the reader counts, from one — not the row's zero-based
@@ -572,9 +586,7 @@ extension FITToolViewController: NSTableViewDataSource, NSTableViewDelegate {
             cell.textField?.stringValue = entry.targetText
             cell.textField?.font = ToolPanelFont.body()
         }
-        // A row the validator complained about is red wherever the eye lands on
-        // it, not only in the list below.
-        cell.textField?.textColor = entry.hasProblem ? .systemRed : .labelColor
+        cell.textField?.textColor = .labelColor
         // The version is a real field and it decides how a policy row's address
         // is read (§7.3), but it is the same 1.00 on almost every row — so it
         // lives where a curious pointer finds it rather than in a column.
@@ -584,28 +596,19 @@ extension FITToolViewController: NSTableViewDataSource, NSTableViewDelegate {
         return cell
     }
 
+    /// What the pointer reads on a flagged row's warning: what the list below
+    /// says about that row, so a triangle can be read where it sits.
+    private func problemText(ofRow index: Int) -> String? {
+        let messages = display.problems
+            .filter { $0.entryIndex == index }
+            .map(\.message)
+        return messages.isEmpty ? nil : messages.joined(separator: "\n")
+    }
+
     func tableViewSelectionDidChange(_ notification: Notification) {
         guard !isShowingState, notification.object as AnyObject? === entries else { return }
         let row = entries.selectedRow
         onSelect?(row >= 0 && row < display.rows.count ? display.rows[row].index : nil)
     }
 
-    private func makeCell(identifier: NSUserInterfaceItemIdentifier) -> NSTableCellView {
-        let cell = NSTableCellView()
-        cell.identifier = identifier
-        let field = NSTextField(labelWithString: "")
-        field.font = ToolPanelFont.body()
-        field.lineBreakMode = .byTruncatingTail
-        field.translatesAutoresizingMaskIntoConstraints = false
-        field.isBordered = false
-        field.drawsBackground = false
-        cell.addSubview(field)
-        cell.textField = field
-        NSLayoutConstraint.activate([
-            field.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
-            field.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -2),
-            field.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
-        ])
-        return cell
-    }
 }

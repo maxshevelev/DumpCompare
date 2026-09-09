@@ -51,6 +51,113 @@ import AppKit
         }
     }
 
+    // MARK: - Cells
+
+    /// A cell for a view-based table drawn at the panel's size: one line of
+    /// text, cut short at the end, optionally with a red warning triangle at
+    /// the leading edge for the column that marks a bad row.
+    ///
+    /// One factory for both firmware panels — the cell is the same shape in
+    /// each — and the caller sets the font it wants per row afterwards, since
+    /// a column of numbers reads in monospaced digits and a column of words
+    /// does not.
+    ///
+    /// The text never wraps. A field free to take a second line is a field
+    /// taller than its row, and a view does not clip its drawing: the second
+    /// line lands on the rows above and below (measured, in the UEFI tree —
+    /// half a GUID over its neighbour's name, the disclosure arrow buried).
+    public static func makeCell(
+        identifier: NSUserInterfaceItemIdentifier,
+        warning: Bool = false
+    ) -> NSTableCellView {
+        let cell = NSTableCellView()
+        cell.identifier = identifier
+        let field = NSTextField(labelWithString: "")
+        field.font = ToolPanelFont.body()
+        field.lineBreakMode = .byTruncatingTail
+        field.maximumNumberOfLines = 1
+        field.isBordered = false
+        field.drawsBackground = false
+        // The column's width wins over the text's: a value wider than the
+        // column is cut short rather than pushing the cell wider.
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        field.translatesAutoresizingMaskIntoConstraints = false
+        cell.textField = field
+
+        let content: NSView
+        if warning {
+            let triangle = makeWarning()
+            cell.imageView = triangle
+            let row = NSStackView(views: [triangle, field])
+            row.orientation = .horizontal
+            row.alignment = .centerY
+            row.spacing = 4
+            // Packed against the leading edge with the text taking the rest:
+            // the stack is as wide as the column, and one that hands its slack
+            // to its views instead reads as a right-aligned column (measured —
+            // the triangle and the name sat against the column's right edge).
+            row.distribution = .fill
+            field.setContentHuggingPriority(.init(1), for: .horizontal)
+            triangle.setContentHuggingPriority(.required, for: .horizontal)
+            row.setHuggingPriority(.defaultLow, for: .horizontal)
+            content = row
+        } else {
+            content = field
+        }
+        content.translatesAutoresizingMaskIntoConstraints = false
+        cell.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 2),
+            content.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -2),
+            content.centerYAnchor.constraint(equalTo: cell.centerYAnchor)
+        ])
+        return cell
+    }
+
+    /// Shows or hides `cell`'s warning and sizes it at the panel's size, with
+    /// `explanation` as what the pointer reads on it.
+    ///
+    /// Set per row, never once when the cell is made: cells are recycled, and
+    /// one that kept its triangle would wear it on a row that is fine.
+    public static func setWarning(
+        _ shown: Bool, on cell: NSTableCellView, explanation: String? = nil
+    ) {
+        guard let triangle = cell.imageView else { return }
+        // A hidden arranged view is detached from the stack, so a clean row's
+        // text starts where it would with no warning at all rather than a
+        // triangle's width in.
+        triangle.isHidden = !shown
+        triangle.symbolConfiguration = .init(
+            pointSize: ToolPanelFont.size, weight: .regular
+        )
+        triangle.toolTip = explanation
+    }
+
+    /// The warning a flagged row wears: a red triangle in an image view of its
+    /// own.
+    ///
+    /// A view, not an `NSTextAttachment` inside the text — an attachment is
+    /// laid out as a glyph, and a glyph taller than the line makes the field
+    /// re-wrap and spill out of its row (measured: the name broke across two
+    /// lines and the triangle drew above the text as a red stub).
+    ///
+    /// The outlined triangle rather than the filled one: a solid red block
+    /// beside a value is louder than the one row it marks.
+    private static func makeWarning() -> NSImageView {
+        let warning = NSImageView()
+        let symbol = NSImage(
+            systemSymbolName: "exclamationmark.triangle",
+            accessibilityDescription: "Invalid"
+        )
+        symbol?.isTemplate = true
+        warning.image = symbol
+        warning.contentTintColor = .systemRed
+        warning.imageScaling = .scaleProportionallyUpOrDown
+        warning.setContentCompressionResistancePriority(.required, for: .horizontal)
+        warning.translatesAutoresizingMaskIntoConstraints = false
+        return warning
+    }
+
     /// Draws `table` at the panel's size: the row height, the header's height
     /// and the font its labels are drawn with. Called once the columns exist,
     /// and again whenever the zoom moves.

@@ -823,21 +823,58 @@ final class FITToolFlowTests: XCTestCase {
         XCTAssertEqual(shown.numberOfRows, 1)
     }
 
-    /// A row the validator complained about is red where the eye lands on it,
-    /// not only in the list underneath.
-    func testARowWithAProblemIsRed() throws {
+    /// A row the validator complained about wears a red warning where the row
+    /// says what it is — one triangle in the Type column, with what is wrong
+    /// under the pointer — and its text stays the colour every other row's is.
+    ///
+    /// Not the whole row in red: a red row reads as red *values*, and the
+    /// values are fine — it is the row the validator has something to say
+    /// about.
+    func testARowWithAProblemWearsAWarningInTheTypeColumn() throws {
         _ = try open(FITTestImage.make(microcodeAddress: 0xFFFF_1000))
         let table = try entriesTable()
 
-        func colour(row: Int) throws -> NSColor? {
-            let view = try XCTUnwrap(
+        func typeCell(row: Int) throws -> NSTableCellView {
+            try XCTUnwrap(
                 table.view(atColumn: 1, row: row, makeIfNecessary: true) as? NSTableCellView
             )
-            return view.textField?.textColor
         }
 
-        XCTAssertEqual(try colour(row: 1), .systemRed)
-        XCTAssertEqual(try colour(row: 0), .labelColor)
+        let flagged = try typeCell(row: 1)
+        let warning = try XCTUnwrap(flagged.imageView, "the Type cell carries the warning")
+        XCTAssertFalse(warning.isHidden, "the flagged row wears its warning")
+        XCTAssertEqual(flagged.textField?.textColor, .labelColor,
+                       "the row's own text is not red any more")
+        XCTAssertEqual(warning.toolTip,
+                       "No microcode header at 0xFFFF1000, and it is not an empty slot",
+                       "the pointer reads what the list below says")
+
+        let clean = try typeCell(row: 0)
+        XCTAssertEqual(clean.imageView?.isHidden, true, "a row with nothing wrong wears none")
+        XCTAssertEqual(clean.textField?.textColor, .labelColor)
+    }
+
+    /// A checksum that does not check out reads red in the detail, the way the
+    /// UEFI panel's does — the value alone, not the label beside it.
+    func testAnInvalidChecksumIsRedInTheDetail() throws {
+        _ = try open(FITTestImage.make(checksum: 0xCC))
+        let table = try entriesTable()
+        // The checksum byte is the header's, so the header row is the one that
+        // shows it.
+        table.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        window?.layoutIfNeeded()
+
+        let panel = try XCTUnwrap(controller?.tools.panel)
+        let fields = descendants(of: panel, NSTextField.self)
+        let value = try XCTUnwrap(
+            fields.first { $0.stringValue.hasSuffix("(Invalid)") },
+            "the header's checksum reads as invalid: \(fields.map(\.stringValue))"
+        )
+        XCTAssertEqual(value.textColor, .systemRed)
+
+        let label = try XCTUnwrap(fields.first { $0.stringValue == "Checksum" })
+        XCTAssertEqual(label.textColor, .secondaryLabelColor,
+                       "the label stays as quiet as every other label")
     }
 
     /// An address off by one hex digit, landing on bytes that are not

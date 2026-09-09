@@ -155,7 +155,11 @@ public struct FITDisplay: Equatable, Sendable {
         copy.detail = zoneID
             .flatMap(FITPresenter.rowIndex(ofZone:))
             .flatMap { index in rows.first { $0.index == index } }
-            .map { FITDetail.build(for: $0.model) } ?? .empty
+            .map {
+                FITDetail.build(for: $0.model,
+                                checksumMismatch: FITPresenter.checksumMismatch(in: problems))
+            }
+            ?? .empty
         return copy
     }
 }
@@ -175,6 +179,17 @@ public enum FITPresenter {
             return Int(id.dropFirst(prefix.count))
         }
         return nil
+    }
+
+    /// Whether the validator found the table's own checksum wrong (§8.6) —
+    /// what the header row's Checksum field reads as a problem. It is not
+    /// something the row itself carries: the byte the row holds is checked
+    /// against the whole table.
+    static func checksumMismatch(in problems: [FITProblem]) -> Bool {
+        problems.contains {
+            if case .checksumMismatch = $0.kind { return true }
+            return false
+        }
     }
 
     /// What to show for a report. `focus` is the row the user has selected.
@@ -219,7 +234,11 @@ public enum FITPresenter {
         // selection would.
         let detail = focus
             .flatMap { index in rows.first { $0.index == index } }
-            .map { FITDetail.build(for: $0.model) } ?? .empty
+            .map {
+                FITDetail.build(for: $0.model,
+                                checksumMismatch: checksumMismatch(in: report.problems))
+            }
+            ?? .empty
         return FITDisplay(
             summary: summary(of: report),
             rows: rows,

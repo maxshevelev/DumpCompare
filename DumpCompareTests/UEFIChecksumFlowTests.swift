@@ -9,10 +9,11 @@ import UEFIToolUI
 /// node the session flags, and the Fix Checksum seam that rewrites the byte as
 /// one undoable step and clears itself on the re-read its own write caused.
 ///
-/// The tree icon and the context menu cannot be simulated — a right-click and
-/// an inline text attachment are not things XCTest can drive — so what is
-/// tested is the state that drives them: the session's `checksumProblems` and
-/// the detail's `(Invalid)`/`(Valid)` text, and the seam the menu item calls.
+/// The context menu cannot be simulated — a right-click is not something
+/// XCTest can drive — so what is tested there is the state that drives it: the
+/// session's `checksumProblems` and the detail's `(Invalid)`/`(Valid)` text,
+/// and the seam the menu item calls. The tree's warning is a view, so it is
+/// read off the cell.
 @MainActor
 final class UEFIChecksumFlowTests: XCTestCase {
     private var files: [URL] = []
@@ -26,6 +27,7 @@ final class UEFIChecksumFlowTests: XCTestCase {
         defaultsName = isolated.name
         ToolController.defaults = isolated.store
         ToolController.changeDelay = 0
+        AppearanceSettings.resetToDefaults()
     }
 
     override func tearDown() {
@@ -34,6 +36,7 @@ final class UEFIChecksumFlowTests: XCTestCase {
         if let defaultsName { discardIsolatedDefaults(defaultsName, ToolController.defaults) }
         ToolController.defaults = .standard
         ToolController.changeDelay = 0.15
+        AppearanceSettings.resetToDefaults()
         controller = nil
         window = nil
         files = []
@@ -200,10 +203,10 @@ final class UEFIChecksumFlowTests: XCTestCase {
                        "no byte changed")
     }
 
-    /// The icon a flagged row wears in the tree is an SF Symbol riding inside
-    /// the name as a text attachment — so a flagged file (a row that exists, a
-    /// file being visible where a folded-away volume is not) shows one, and a
-    /// clean row shows plain text with no stale triangle from a recycled cell.
+    /// The warning a flagged row wears in the tree is a view beside the name:
+    /// a flagged file (a row that exists, a file being visible where a
+    /// folded-away volume is not) shows one, and a clean row beside it shows
+    /// none — no triangle left over from a recycled cell.
     func testAFlaggedFileRowWearsAWarningAndACleanOneDoesNot() throws {
         var image = UEFITestImage.make()
         // The file's body-checksum field is at 0x11 of its header, the file at
@@ -212,29 +215,119 @@ final class UEFIChecksumFlowTests: XCTestCase {
         image[0x59] = 0
         _ = try open(image)
         try nodeFlagged(with: .fileBody)
-        let outline = try outline()
-
-        func nameCell(of row: Int) throws -> NSTextField {
-            let cell = try XCTUnwrap(
-                outline.view(atColumn: 0, row: row, makeIfNecessary: true) as? NSTableCellView,
-                "the tree is view-based"
-            )
-            return try XCTUnwrap(cell.textField, "the cell shows its text in a field")
-        }
 
         // The file is the top row — the volume that held it folded into the
         // title — so its name cell is the flagged one.
         let flagged = try nameCell(of: 0)
-        var range = NSRange(location: 0, length: 0)
-        XCTAssertNotNil(flagged.attributedStringValue.attribute(.attachment, at: 0, effectiveRange: &range),
-                        "the row's name leads with the warning triangle")
+        let warning = try XCTUnwrap(flagged.imageView, "the name cell carries the warning")
+        XCTAssertFalse(warning.isHidden, "the flagged row wears its warning")
+        XCTAssertNotNil(warning.image, "the warning is a symbol, not an empty view")
 
-        // A clean row beside it — the padding under the file — shows plain text
-        // with no stale triangle from a shared cell pool.
+        // The padding under the file checks out and shares the cell pool with
+        // the row above it.
         let clean = try nameCell(of: 1)
-        range = NSRange(location: 0, length: 0)
-        XCTAssertNil(clean.attributedStringValue.attribute(.attachment, at: 0, effectiveRange: &range),
-                     "a row that checks out shows no triangle")
+        XCTAssertEqual(clean.imageView?.isHidden, true,
+                       "a row that checks out shows no triangle")
+    }
+
+    /// A name too long for its column is cut short at the end, never wrapped —
+    /// and a flagged row is no exception.
+    ///
+    /// A wrapped name is what the warning first cost this tree: an
+    /// `NSTextAttachment` in the name made the field re-lay-out over two
+    /// lines, and a field with no height of its own then grew past its row and
+    /// drew over the rows around it — half a GUID under its neighbour's name,
+    /// the disclosure arrow buried.
+    func testALongNameIsTruncatedAndStaysInsideItsRow() throws {
+        var image = UEFITestImage.make()
+        image[0x59] = 0
+        _ = try open(image)
+        let outline = try outline()
+        // Narrower than the GUID the flagged file is named by, so the name has
+        // to give somewhere.
+        try XCTUnwrap(outline.tableColumn(withIdentifier: .init("name"))).width = 70
+        window?.layoutIfNeeded()
+
+        for row in 0..<outline.numberOfRows {
+            let cell = try nameCell(of: row)
+            let field = try XCTUnwrap(cell.textField)
+            XCTAssertEqual(field.maximumNumberOfLines, 1, "row \(row) may take a second line")
+            XCTAssertEqual(field.lineBreakMode, .byTruncatingTail, "row \(row)")
+            XCTAssertLessThanOrEqual(field.frame.height, outline.rowHeight,
+                                     "row \(row)'s name is taller than its row")
+            XCTAssertLessThanOrEqual(field.fittingSize.height, outline.rowHeight,
+                                     "row \(row)'s name asks for more than one row")
+        }
+    }
+
+    /// Both the warning and the name start at the leading edge of their column
+    /// — the row reads left to right whether it is flagged or not.
+    ///
+    /// The name shares its cell with the warning, and a cell that hands its
+    /// slack to those two views instead of to the name reads as a
+    /// right-aligned column: the triangle and the name pushed against the
+    /// column's right edge with the empty space in front of them (measured).
+    func testAFlaggedRowReadsFromTheLeadingEdgeLikeAnyOther() throws {
+        var image = UEFITestImage.make()
+        image[0x59] = 0
+        _ = try open(image)
+        let outline = try outline()
+        // Wider than the GUID the flagged file is named by, so the cell has
+        // slack to put in the wrong place.
+        try XCTUnwrap(outline.tableColumn(withIdentifier: .init("name"))).width = 600
+        window?.layoutIfNeeded()
+
+        let flagged = try nameCell(of: 0)
+        flagged.layoutSubtreeIfNeeded()
+        let warning = try XCTUnwrap(flagged.imageView)
+        let name = try XCTUnwrap(flagged.textField)
+        let icon = warning.convert(warning.bounds, to: flagged)
+        let text = name.convert(name.bounds, to: flagged)
+
+        XCTAssertEqual(icon.minX, 2, accuracy: 1,
+                       "the warning sits at the leading edge of the cell")
+        XCTAssertGreaterThanOrEqual(text.minX, icon.maxX,
+                                    "the name follows the warning rather than "
+                                    + "sitting over it")
+        XCTAssertGreaterThan(text.maxX, flagged.bounds.maxX - 4,
+                             "the name fills the rest of the cell — the slack "
+                             + "goes behind the text, not in front of it")
+
+        // The row under it checks out, and its name starts where the flagged
+        // row's warning does.
+        let clean = try nameCell(of: 1)
+        clean.layoutSubtreeIfNeeded()
+        let cleanName = try XCTUnwrap(clean.textField)
+        XCTAssertLessThanOrEqual(cleanName.convert(cleanName.bounds, to: clean).minX, 2,
+                                 "an unflagged row's name starts at the leading edge")
+    }
+
+    /// The warning reads at the panel's type size like everything else in the
+    /// tree: a 13-point triangle beside 20-point text reads as a blemish.
+    func testTheWarningFollowsTheZoom() throws {
+        var image = UEFITestImage.make()
+        image[0x59] = 0
+        _ = try open(image)
+        let outline = try outline()
+        let before = try XCTUnwrap(try nameCell(of: 0).imageView?.frame.height)
+
+        AppearanceSettings.set(fontFamily: AppearanceSettings.fontFamily,
+                               rowHeightScale: AppearanceSettings.rowHeightScale,
+                               fontSize: 20)
+        window?.layoutIfNeeded()
+
+        let after = try XCTUnwrap(try nameCell(of: 0).imageView?.frame.height)
+        XCTAssertGreaterThan(after, before, "the triangle grew with the text beside it")
+        XCTAssertLessThanOrEqual(after, outline.rowHeight, "and still fits its row")
+    }
+
+    /// The name cell of `row`, view-based like every other table here.
+    private func nameCell(of row: Int) throws -> NSTableCellView {
+        let outline = try outline()
+        return try XCTUnwrap(
+            outline.view(atColumn: 0, row: row, makeIfNecessary: true) as? NSTableCellView,
+            "the tree is view-based"
+        )
     }
 
     /// The menu a right-click earns is where the controller's Fix action is

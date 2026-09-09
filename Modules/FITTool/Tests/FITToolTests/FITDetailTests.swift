@@ -10,7 +10,12 @@ final class FITDetailTests: XCTestCase {
     /// The value of the first field with this label, or nil when the row has
     /// no such field.
     private func value(_ detail: FITRowDetail, _ label: String) -> String? {
-        detail.fields.first { $0.label == label }?.value
+        field(detail, label)?.value
+    }
+
+    /// The first field with this label, or nil when the row has no such field.
+    private func field(_ detail: FITRowDetail, _ label: String) -> FITDetailField? {
+        detail.fields.first { $0.label == label }
     }
 
     private func detail(_ rows: [TestFIT.Row], contents: [UInt64: [UInt8]] = [:]) -> FITRowDetail? {
@@ -59,7 +64,7 @@ final class FITDetailTests: XCTestCase {
     func testTheHeaderRowSaysItsCountAndItsSignature() {
         let bytes = TestFIT.image(rows: [TestFIT.Row(FIT.microcodeType, target: microcode)])
         let header = FITReader.read(ImageReader(bytes), image: nil).table?.rows[0]
-        let detail = header.map(FITDetail.build)
+        let detail = header.map { FITDetail.build(for: $0) }
 
         XCTAssertEqual(detail?.title, "#1 FIT Header")
         XCTAssertEqual(value(detail!, "Address"), "_FIT_")
@@ -70,6 +75,51 @@ final class FITDetailTests: XCTestCase {
         // The header points nowhere, so there are no target fields.
         XCTAssertNil(value(detail!, "Points at"))
         XCTAssertNil(value(detail!, "CPUID"))
+    }
+
+    /// A checksum that does not check out is marked as the problem it is, so
+    /// the panel can colour that one value red — the same contract the UEFI
+    /// detail has. Whether it checks out is the validator's word about the
+    /// whole table, so this reads the detail the display builds.
+    func testAWrongHeaderChecksumIsMarkedAsAProblem() {
+        let row = TestFIT.Row(FIT.microcodeType, target: microcode)
+        func headerDetail(_ bytes: [UInt8]) -> FITRowDetail {
+            FITPresenter.display(FITReader.read(ImageReader(bytes), image: nil), focus: 0).detail
+        }
+
+        let wrong = headerDetail(TestFIT.image(rows: [row], checksum: 0xCC))
+        XCTAssertEqual(field(wrong, "Checksum")?.value.hasSuffix(" (Invalid)"), true)
+        XCTAssertEqual(field(wrong, "Checksum")?.isProblem, true)
+
+        // The fixture's own checksum is the one that makes the table sum to
+        // zero, and a right checksum is not a problem — a detail that reddens
+        // every checksum says nothing.
+        let right = headerDetail(TestFIT.image(rows: [row]))
+        XCTAssertEqual(field(right, "Checksum")?.value.hasSuffix(" (Valid)"), true)
+        XCTAssertEqual(field(right, "Checksum")?.isProblem, false)
+
+        // A header that says its checksum does not count (§5) says so in as
+        // many words: the byte is not wrong, it is not looked at — and
+        // "Invalid" is kept for a checksum that really is.
+        let unchecked = headerDetail(
+            TestFIT.image(rows: [row], checksum: 0xCC, checksumValid: false)
+        )
+        XCTAssertEqual(field(unchecked, "Checksum")?.value, "0xCC (Not checked)")
+        XCTAssertEqual(field(unchecked, "Checksum")?.isProblem, false)
+    }
+
+    /// The microcode's own dword checksum is marked the same way — it is read
+    /// from the image the row points at, and a wrong one is what a bad edit
+    /// leaves behind.
+    func testAWrongMicrocodeChecksumIsMarkedAsAProblem() {
+        var image = TestFIT.microcode(totalSize: 0x180)
+        image[0x10] ^= 0xFF          // the header's checksum dword (§7.1)
+        let read = detail(
+            [TestFIT.Row(FIT.microcodeType, target: microcode)],
+            contents: [microcode: image]
+        )
+        XCTAssertEqual(field(read!, "Image checksum")?.value.hasSuffix(" (Invalid)"), true)
+        XCTAssertEqual(field(read!, "Image checksum")?.isProblem, true)
     }
 
     /// A policy row at version 0 keeps an Index/IO register descriptor in the
