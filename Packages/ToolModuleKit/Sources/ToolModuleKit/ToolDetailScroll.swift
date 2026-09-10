@@ -82,31 +82,65 @@ import AppKit
         )
         fitsTheClip.priority = .defaultLow
 
-        NSLayoutConstraint.activate([
+        // The side insets break rather than fight a panel squeezed to zero
+        // width, which is what a closed tool panel is. Required, the two of
+        // them ask a 0-point-wide list for 20 points, and AppKit recovers by
+        // striking one of them out — for good. The list then had no width to
+        // follow, so a panel later dragged narrower laid its rows out for the
+        // width it used to have.
+        let sideInsets = [
+            content.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 10),
+            content.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -10),
+        ]
+        sideInsets.forEach { $0.priority = .defaultHigh }
+
+        // The placeholder's own margins, breakable for the same reason: it
+        // cannot be kept 10 points clear of both edges of a list that is not
+        // 20 points wide, and a required pair there is a constraint AppKit
+        // strikes out to recover.
+        let placeholderInsets = [
+            placeholder.leadingAnchor.constraint(
+                greaterThanOrEqualTo: document.leadingAnchor, constant: 10
+            ),
+            placeholder.trailingAnchor.constraint(
+                lessThanOrEqualTo: document.trailingAnchor, constant: -10
+            ),
+        ]
+        placeholderInsets.forEach { $0.priority = .defaultHigh }
+
+        // The list follows the clip view's width, down to a floor: a pane of a
+        // split is laid out by frame, and its first one — before the split has
+        // a size of its own — is nothing at all. A row is a name, six points
+        // and a value, which does not fit in nothing however low the
+        // priorities inside it are, so the engine strikes one of the row's own
+        // constraints out to recover. Under the floor a scroll view does what
+        // it is for and clips.
+        let followsTheClip = document.trailingAnchor.constraint(
+            equalTo: contentView.trailingAnchor
+        )
+        followsTheClip.priority = .required - 1
+
+        NSLayoutConstraint.activate(sideInsets + [
             document.topAnchor.constraint(equalTo: contentView.topAnchor),
             document.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            document.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            followsTheClip,
+            document.widthAnchor.constraint(greaterThanOrEqualToConstant: 60),
             document.heightAnchor.constraint(
                 greaterThanOrEqualTo: contentView.heightAnchor
             ),
             fitsTheClip,
 
             content.topAnchor.constraint(equalTo: document.topAnchor, constant: 8),
-            content.leadingAnchor.constraint(equalTo: document.leadingAnchor, constant: 10),
-            content.trailingAnchor.constraint(equalTo: document.trailingAnchor, constant: -10),
+            // What never gives: the rows stay inside the list.
+            content.leadingAnchor.constraint(greaterThanOrEqualTo: document.leadingAnchor),
+            content.trailingAnchor.constraint(lessThanOrEqualTo: document.trailingAnchor),
             document.bottomAnchor.constraint(
                 greaterThanOrEqualTo: content.bottomAnchor, constant: 8
             ),
 
             placeholder.centerXAnchor.constraint(equalTo: document.centerXAnchor),
             placeholder.centerYAnchor.constraint(equalTo: document.centerYAnchor),
-            placeholder.leadingAnchor.constraint(
-                greaterThanOrEqualTo: document.leadingAnchor, constant: 10
-            ),
-            placeholder.trailingAnchor.constraint(
-                lessThanOrEqualTo: document.trailingAnchor, constant: -10
-            )
-        ])
+        ] + placeholderInsets)
 
         zoomObserver = ToolPanelFont.observeZoom { [weak self] in
             self?.placeholder.font = ToolPanelFont.body()

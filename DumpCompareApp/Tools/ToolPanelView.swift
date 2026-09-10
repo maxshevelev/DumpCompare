@@ -46,6 +46,13 @@ final class ToolPanelView: NSView {
     /// starts level with the dump beside it.
     static let headerHeight: CGFloat = 28
 
+    /// The smallest box a tool-module's view is ever laid out in, whatever the
+    /// panel's own size — see the floor in `init`. Well under the narrowest
+    /// panel a user can drag (`ToolController.minPanelWidth`), so it never
+    /// fights a real width; well over the outer margins a module's own layout
+    /// asks for, so those are always satisfiable.
+    static let bodyFloor: CGFloat = 120
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         setUp()
@@ -147,11 +154,54 @@ final class ToolPanelView: NSView {
                                                           constant: -6)
         toClose.priority = .defaultHigh
 
+        // The drop zone's insets break for the same reason, and it is not a
+        // nicety: a collapsed panel is 8 + 8 + the trailing rule narrower than
+        // nothing, so required insets make the zero-width state unsatisfiable
+        // — and what AppKit picks to break to recover is one of the panel's
+        // *own* pins. It broke the rule's, and the body it is measured from
+        // then kept whatever width it last had, so a panel dragged narrower
+        // laid its tool-module out for the old width.
+        let zoneLeading = dropZone.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8)
+        zoneLeading.priority = .defaultHigh
+        let zoneTrailing = dropZone.trailingAnchor.constraint(
+            equalTo: trailingSeparator.leadingAnchor, constant: -8
+        )
+        zoneTrailing.priority = .defaultHigh
+        // The same on the other axis: a collapsed panel is no taller than the
+        // header it does not draw either.
+        let zoneTop = dropZone.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 8)
+        zoneTop.priority = .defaultHigh
+        let zoneBottom = dropZone.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8)
+        zoneBottom.priority = .defaultHigh
+
+        // And the body's own edge against the rule, for the same reason: a
+        // zero-width panel cannot hold a 1-point rule *and* a body beside it.
+        let bodyTrailing = body.trailingAnchor.constraint(
+            equalTo: trailingSeparator.leadingAnchor
+        )
+        bodyTrailing.priority = .required - 1
+
+        // The body follows the panel exactly, and clips: what it holds is a
+        // tool-module's whole layout, and that layout is never asked to solve
+        // itself in a box of nothing (see `setContent`).
+        body.clipsToBounds = true
+        clipsToBounds = true
+
+        // The header's height gives way to a panel with no height at all,
+        // which is what one is before its first layout: 28 points of header
+        // plus a body below it do not fit in none, and what AppKit strikes out
+        // to recover is whichever of the panel's pins it likes.
+        let headerHeight = header.heightAnchor.constraint(equalToConstant: Self.headerHeight)
+        headerHeight.priority = .required - 1
+        let bodyBottom = body.bottomAnchor.constraint(equalTo: bottomAnchor)
+        bodyBottom.priority = .required - 1
+
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: topAnchor),
             header.leadingAnchor.constraint(equalTo: leadingAnchor),
             header.trailingAnchor.constraint(equalTo: trailingAnchor),
-            header.heightAnchor.constraint(equalToConstant: Self.headerHeight),
+            headerHeight,
+            header.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor),
 
             leading, afterIcon, gap, trailing, toClose,
             iconView.centerYAnchor.constraint(equalTo: header.centerYAnchor),
@@ -173,16 +223,15 @@ final class ToolPanelView: NSView {
             trailingSeparator.trailingAnchor.constraint(equalTo: trailingAnchor),
             trailingSeparator.widthAnchor.constraint(equalToConstant: 1),
 
-            dropZone.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 8),
-            dropZone.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            dropZone.trailingAnchor.constraint(equalTo: trailingSeparator.leadingAnchor,
-                                               constant: -8),
-            dropZone.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
+            zoneTop, zoneBottom, zoneLeading, zoneTrailing,
+            dropZone.trailingAnchor.constraint(lessThanOrEqualTo: trailingSeparator.leadingAnchor),
 
             body.topAnchor.constraint(equalTo: header.bottomAnchor),
             body.leadingAnchor.constraint(equalTo: leadingAnchor),
-            body.trailingAnchor.constraint(equalTo: trailingSeparator.leadingAnchor),
-            body.bottomAnchor.constraint(equalTo: bottomAnchor)
+            bodyTrailing,
+            body.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+            bodyBottom,
+            body.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor)
         ])
     }
 
@@ -307,11 +356,33 @@ final class ToolPanelView: NSView {
         guard let view else { return }
         view.translatesAutoresizingMaskIntoConstraints = false
         body.addSubview(view)
-        NSLayoutConstraint.activate([
+
+        // The module fills the body — but never below the floor, whatever the
+        // panel's own size is. A closed panel is zero points wide with a
+        // tool-module still inside it, and a module's layout is full of
+        // required insets: 8 points either side of a box, 10 either side of a
+        // list. Required margins inside a box of nothing are constraints
+        // AppKit *strikes out* to recover, permanently — and the module's
+        // insides then stopped following the panel's width at all, so a panel
+        // dragged narrower laid its rows out for the width it used to have.
+        //
+        // Under the floor the body simply clips: there is nothing to read in a
+        // panel that narrow anyway, and every module's own layout stays
+        // solvable at every size the panel can take.
+        let fills = [
+            view.trailingAnchor.constraint(equalTo: body.trailingAnchor),
+            view.bottomAnchor.constraint(equalTo: body.bottomAnchor),
+        ]
+        // Just under required: these must outrank the ordinary content
+        // priorities inside the module (a label's own 750, say), or the solver
+        // treats a tie as licence to land the module somewhere between the
+        // panel's width and its content's — which is neither.
+        fills.forEach { $0.priority = .required - 1 }
+        NSLayoutConstraint.activate(fills + [
             view.topAnchor.constraint(equalTo: body.topAnchor),
             view.leadingAnchor.constraint(equalTo: body.leadingAnchor),
-            view.trailingAnchor.constraint(equalTo: body.trailingAnchor),
-            view.bottomAnchor.constraint(equalTo: body.bottomAnchor)
+            view.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.bodyFloor),
+            view.heightAnchor.constraint(greaterThanOrEqualToConstant: Self.bodyFloor),
         ])
     }
 

@@ -151,13 +151,20 @@ import ToolModuleKit
         contentBox.addSubview(placeholder)
         contentBox.addSubview(summaryScroll)
         contentBox.addSubview(splitter)
-        NSLayoutConstraint.activate([
-            placeholder.centerXAnchor.constraint(equalTo: contentBox.centerXAnchor),
-            placeholder.centerYAnchor.constraint(equalTo: contentBox.centerYAnchor),
+        // The empty tab's own margins are breakable: a collapsed panel is not
+        // 32 points wide, and a required pair there is one AppKit strikes out
+        // to recover — taking the panel's own edge pins with it.
+        let placeholderInsets = [
             placeholder.leadingAnchor.constraint(
                 greaterThanOrEqualTo: contentBox.leadingAnchor, constant: 16),
             placeholder.trailingAnchor.constraint(
                 lessThanOrEqualTo: contentBox.trailingAnchor, constant: -16),
+        ]
+        placeholderInsets.forEach { $0.priority = .defaultHigh }
+
+        NSLayoutConstraint.activate(placeholderInsets + [
+            placeholder.centerXAnchor.constraint(equalTo: contentBox.centerXAnchor),
+            placeholder.centerYAnchor.constraint(equalTo: contentBox.centerYAnchor),
             // The summary and the tree both fill the box to its edges; only one
             // is visible at a time, so overlapping edge-pinned siblings are
             // fine — visibility is the switch, not geometry.
@@ -240,7 +247,14 @@ import ToolModuleKit
         for label in [placeholderTitle, placeholderCaption] {
             label.alignment = .center
             label.lineBreakMode = .byWordWrapping
-            label.maximumNumberOfLines = 2
+            label.maximumNumberOfLines = 0
+            // A sentence in the middle of the panel must not be what decides
+            // how narrow the panel can be dragged: it gives its width up and
+            // takes another line instead. Without this the caption's own
+            // length became the panel's minimum width, and the tree and the
+            // detail beside it were laid out for a panel wider than the one
+            // on screen.
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             label.translatesAutoresizingMaskIntoConstraints = false
         }
         placeholderTitle.textColor = .secondaryLabelColor
@@ -471,30 +485,40 @@ import ToolModuleKit
                 stack.addArrangedSubview(heading)
             }
             for row in block.rows {
-                let line = Self.summaryRowView(row, labelWidth: labelWidth)
+                let (line, label) = Self.summaryRowView(row)
                 stack.addArrangedSubview(line)
                 // As wide as the list itself, so a long value has a column to
                 // wrap inside rather than a line to run off the side of.
                 line.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+                // The label column, breakable, and capped at half the list.
+                // Required, this width was a floor under the whole panel — at
+                // a large zoom the panel could not be dragged narrower than
+                // one summary label, and what gave way instead was the
+                // panel's own edge pins.
+                let column = label.widthAnchor.constraint(equalToConstant: labelWidth)
+                column.priority = .defaultHigh
+                column.isActive = true
+                label.widthAnchor.constraint(lessThanOrEqualTo: stack.widthAnchor,
+                                             multiplier: 0.5).isActive = true
             }
         }
     }
 
-    /// One Field/Value line: a fixed-width label column — wider than the detail
-    /// list's, because summary labels run long ("TCB Security Version
-    /// Number") — and a value that wraps inside what is left of the width. A
+    /// One Field/Value line: a label column — wider than the detail list's,
+    /// because summary labels run long ("TCB Security Version Number") — and a
+    /// value that wraps inside what is left of the width. The column's width is
+    /// the caller's to constrain, since only it knows the list the row is in. A
     /// `.comingSoon` value is drawn grey and unselectable, the shape of a row
     /// the engine will answer once the bridge reaches it.
     private static func summaryRowView(
-        _ row: MEASummaryRow, labelWidth: CGFloat
-    ) -> NSView {
+        _ row: MEASummaryRow
+    ) -> (line: NSStackView, label: NSTextField) {
         let label = NSTextField(labelWithString: row.label)
         label.font = ToolPanelFont.body()
         label.textColor = .secondaryLabelColor
         label.lineBreakMode = .byTruncatingTail
         label.translatesAutoresizingMaskIntoConstraints = false
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        label.widthAnchor.constraint(equalToConstant: labelWidth).isActive = true
 
         let value: ToolWrappingLabel
         switch row.value {
@@ -519,7 +543,7 @@ import ToolModuleKit
         line.alignment = .firstBaseline
         line.spacing = 6
         line.translatesAutoresizingMaskIntoConstraints = false
-        return line
+        return (line, label)
     }
 
     /// Rebuilds the detail list from the focused row's own fields.
@@ -537,15 +561,25 @@ import ToolModuleKit
         title.translatesAutoresizingMaskIntoConstraints = false
         detail.content.addArrangedSubview(title)
 
-        for field in focus.fields {
-            let label = NSTextField(labelWithString: field.label)
+        // The engine's field names run long — "systemHeaderCRCValid",
+        // "matchesMFSDictionary" — and the shared default column cut them off
+        // mid-word. The column is as wide as the longest name it carries, so
+        // one that fits is shown whole; never narrower than the default, so a
+        // list of short names reads exactly as it did; and never wider than
+        // half the list, where a name that still does not fit wraps rather
+        // than crowding the value out.
+        let labels = focus.fields.map { field -> ToolWrappingLabel in
+            let label = ToolWrappingLabel(string: field.label)
             label.font = ToolPanelFont.body()
             label.textColor = .secondaryLabelColor
-            label.translatesAutoresizingMaskIntoConstraints = false
-            label.widthAnchor.constraint(
-                equalToConstant: ToolPanelFont.detailLabelWidth
-            ).isActive = true
+            return label
+        }
+        // Measured before they are in the hierarchy, where a wrapping label
+        // still reports what it needs on one line.
+        let nameColumn = max(ToolPanelFont.detailLabelWidth,
+                             labels.map(\.intrinsicContentSize.width).max() ?? 0)
 
+        for (field, label) in zip(focus.fields, labels) {
             let value = ToolWrappingLabel(string: field.value)
             value.font = field.value.hasPrefix("0x")
                 ? ToolPanelFont.monospacedDigits()
@@ -558,11 +592,22 @@ import ToolModuleKit
             row.spacing = 6
             row.translatesAutoresizingMaskIntoConstraints = false
             detail.content.addArrangedSubview(row)
+            // Anchored to the list only once the row is in it — a constraint
+            // across two hierarchies is not one the engine will take.
+            //
             // The value column is what is left of the list's width, and a
             // hash or a GUID wraps inside it.
             row.widthAnchor.constraint(
                 equalTo: detail.content.widthAnchor
             ).isActive = true
+            // The name column, breakable, and the cap is the one thing that
+            // breaks it: past half the list the name wraps instead of taking
+            // more.
+            let column = label.widthAnchor.constraint(equalToConstant: nameColumn)
+            column.priority = .defaultHigh
+            column.isActive = true
+            label.widthAnchor.constraint(lessThanOrEqualTo: detail.content.widthAnchor,
+                                         multiplier: 0.5).isActive = true
         }
     }
 }

@@ -19,6 +19,9 @@ final class MEAToolFlowTests: XCTestCase {
     private var controller: MainViewController?
     private var window: NSWindow?
     private var defaultsName: String?
+    /// The zoom as the user left it: one test moves it, and the app's zoom is
+    /// a real preference rather than something this suite may keep.
+    private var zoomSize: CGFloat = ToolPanelFont.defaultSize
 
     /// A stub data source whose database is always reachable. A pure-FPT parse
     /// never reads it (identification needs a manifest), so this is really the
@@ -44,6 +47,7 @@ final class MEAToolFlowTests: XCTestCase {
         ToolController.defaults = isolated.store
         ToolController.changeDelay = 0
         MEAToolSession.dataSource = ReachableSource()
+        zoomSize = AppearanceSettings.fontSize
     }
 
     override func tearDown() {
@@ -53,6 +57,9 @@ final class MEAToolFlowTests: XCTestCase {
         ToolController.defaults = .standard
         ToolController.changeDelay = 0.15
         MEAToolSession.dataSource = MEAGitHubDataRepository()
+        AppearanceSettings.set(fontFamily: AppearanceSettings.fontFamily,
+                               rowHeightScale: AppearanceSettings.rowHeightScale,
+                               fontSize: zoomSize)
         controller = nil
         window = nil
         files = []
@@ -314,6 +321,95 @@ final class MEAToolFlowTests: XCTestCase {
         let inPanel = hash.convert(hash.bounds, to: panel)
         XCTAssertLessThanOrEqual(inPanel.maxX, panel.bounds.maxX,
                                  "the value runs off the side of the panel")
+    }
+
+    /// The engine's field names run long, and the shared default column cut
+    /// them off mid-word ("systemHeaderCRCVa…"). The name column takes the
+    /// width its longest name needs — and when the panel is too narrow for
+    /// that, it stops at half the list and the name wraps instead of being
+    /// cut.
+    func testTheNameColumnWidensForLongFieldNamesAndWrapsAtHalfTheList() throws {
+        _ = try open(METestImage.manifestFile())
+
+        try showFullTree()
+        let tree = try outline()
+        let manifestRow = try XCTUnwrap(row(ofTitle: "Manifest", in: tree))
+        tree.selectRowIndexes(IndexSet(integer: manifestRow), byExtendingSelection: false)
+        window?.layoutIfNeeded()
+
+        let names = try detailNameLabels()
+        let longest = try XCTUnwrap(names.max { textWidth($0) < textWidth($1) },
+                                    "the manifest's detail has named rows")
+        let oneLine = ToolPanelFont.body().boundingRectForFont.height
+
+        // Wide enough for it: the column took the room its longest name needs,
+        // past the default it used to be pinned to, and every row shares that
+        // one width so the values still line up.
+        let widths = Set(names.map { $0.frame.width.rounded() })
+        XCTAssertEqual(widths.count, 1, "one column for every row: \(widths)")
+        let column = try XCTUnwrap(widths.first)
+        XCTAssertGreaterThan(column, ToolPanelFont.detailLabelWidth,
+                             "\"\(longest.stringValue)\" widened the column past the default")
+        XCTAssertGreaterThanOrEqual(column, textWidth(longest),
+                                    "\"\(longest.stringValue)\" is shown whole")
+        XCTAssertLessThan(longest.frame.height, oneLine * 2,
+                          "on one line — there is room for it")
+
+        // Squeezed — the narrowest panel the split allows, zoomed to the
+        // largest type the app offers — and the name no longer fits in half
+        // the list. The column stops there and the name wraps.
+        let controller = try XCTUnwrap(self.controller)
+        controller.setToolPanelWidth(ToolController.minPanelWidth, animated: false)
+        zoom(to: ToolPanelFont.sizeRange.upperBound)
+        window?.layoutIfNeeded()
+
+        let squeezed = try detailNameLabels()
+        let widest = try XCTUnwrap(squeezed.first { $0.stringValue == longest.stringValue })
+        let half = try detailContent().frame.width / 2
+        let zoomedLine = ToolPanelFont.body().boundingRectForFont.height
+        XCTAssertLessThan(half, textWidth(widest),
+                          "the premise: half the list no longer holds the name")
+        // Auto Layout sizes a text field's alignment rect, which is inset from
+        // its frame by a point or two — so that is what the cap is read from.
+        XCTAssertEqual(widest.alignmentRect(forFrame: widest.frame).width, half, accuracy: 1,
+                       "the column stops at half the list")
+        XCTAssertGreaterThan(widest.frame.height, zoomedLine,
+                             "and the name wraps rather than being cut")
+        XCTAssertEqual(widest.lineBreakMode, .byWordWrapping)
+        XCTAssertEqual(widest.maximumNumberOfLines, 0)
+    }
+
+    /// Zooms to `size` the way the View menu does.
+    private func zoom(to size: CGFloat) {
+        AppearanceSettings.set(fontFamily: AppearanceSettings.fontFamily,
+                               rowHeightScale: AppearanceSettings.rowHeightScale,
+                               fontSize: size)
+        window?.layoutIfNeeded()
+    }
+
+    /// The detail list's name column: the leading label of each row. Found by
+    /// the row's shape — a horizontal pair of name and value — rather than by
+    /// its colour, which the list's own placeholder shares.
+    private func detailNameLabels() throws -> [NSTextField] {
+        let panel = try panel()
+        let scroll = try XCTUnwrap(
+            descendants(of: panel, ToolDetailScroll.self).first { !$0.isHidden },
+            "the detail list under the tree")
+        return descendants(of: scroll, NSStackView.self)
+            .filter { $0.orientation == .horizontal && $0.arrangedSubviews.count == 2 }
+            .compactMap { $0.arrangedSubviews.first as? NSTextField }
+    }
+
+    private func detailContent() throws -> NSStackView {
+        let panel = try panel()
+        let scroll = try XCTUnwrap(
+            descendants(of: panel, ToolDetailScroll.self).first { !$0.isHidden })
+        return scroll.content
+    }
+
+    /// What a label's own text needs on one line, in the font it is drawn in.
+    private func textWidth(_ label: NSTextField) -> CGFloat {
+        label.attributedStringValue.size().width
     }
 
     /// A section that holds nothing reads grey in the tree's value column —
