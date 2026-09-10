@@ -2,6 +2,7 @@ import AppKit
 import XCTest
 import MEFirmware
 import MEAToolUI
+import ToolModuleKit
 @testable import DumpCompare
 
 /// The ME Analyzer tool-module end to end in the app: the automatic analysis on
@@ -243,6 +244,39 @@ final class MEAToolFlowTests: XCTestCase {
         let text = descendants(of: try panel(), NSTextField.self).map(\.stringValue)
         XCTAssertTrue(text.contains("FTUE"), "\(text)")
         XCTAssertTrue(text.contains("0x800 (2048 bytes)"), "\(text)")
+    }
+
+    /// A value too long for the column wraps inside it rather than running off
+    /// the side: a manifest's SHA-256 is 64 characters, and there is no
+    /// sideways scroller to reach the rest of it with.
+    func testALongValueWrapsInsideItsColumn() throws {
+        _ = try open(METestImage.manifestFile())
+
+        try showFullTree()
+        let tree = try outline()
+        let manifestRow = try XCTUnwrap(row(ofTitle: "Manifest", in: tree))
+        tree.selectRowIndexes(IndexSet(integer: manifestRow), byExtendingSelection: false)
+        window?.layoutIfNeeded()
+
+        let panel = try panel()
+        let fields = descendants(of: panel, NSTextField.self)
+        // The hash is the longest thing the detail shows.
+        let hash = try XCTUnwrap(
+            fields.first { $0.stringValue.count == 64
+                && $0.stringValue.allSatisfy(\.isHexDigit) },
+            "the manifest's SHA-256 is one of the rows: "
+                + "\(fields.map(\.stringValue))"
+        )
+        let oneLine = ToolPanelFont.body().boundingRectForFont.height
+
+        XCTAssertGreaterThan(hash.frame.height, oneLine,
+                             "64 characters do not fit one line of this column")
+        XCTAssertEqual(hash.lineBreakMode, .byWordWrapping)
+        XCTAssertEqual(hash.maximumNumberOfLines, 0)
+        // And it stays inside the panel rather than reaching past its edge.
+        let inPanel = hash.convert(hash.bounds, to: panel)
+        XCTAssertLessThanOrEqual(inPanel.maxX, panel.bounds.maxX,
+                                 "the value runs off the side of the panel")
     }
 
     /// Any change is a reason to read the file again: the analysis is automatic,

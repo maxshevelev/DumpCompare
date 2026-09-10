@@ -365,16 +365,20 @@ import ToolModuleKit
                 stack.addArrangedSubview(heading)
             }
             for row in block.rows {
-                stack.addArrangedSubview(Self.summaryRowView(row, labelWidth: labelWidth))
+                let line = Self.summaryRowView(row, labelWidth: labelWidth)
+                stack.addArrangedSubview(line)
+                // As wide as the list itself, so a long value has a column to
+                // wrap inside rather than a line to run off the side of.
+                line.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
             }
         }
     }
 
     /// One Field/Value line: a fixed-width label column — wider than the detail
     /// list's, because summary labels run long ("TCB Security Version
-    /// Number") — and a value. A `.comingSoon` value is drawn grey and
-    /// unselectable, the shape of a row the engine will answer once the bridge
-    /// reaches it.
+    /// Number") — and a value that wraps inside what is left of the width. A
+    /// `.comingSoon` value is drawn grey and unselectable, the shape of a row
+    /// the engine will answer once the bridge reaches it.
     private static func summaryRowView(
         _ row: MEASummaryRow, labelWidth: CGFloat
     ) -> NSView {
@@ -386,10 +390,10 @@ import ToolModuleKit
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         label.widthAnchor.constraint(equalToConstant: labelWidth).isActive = true
 
-        let value: NSTextField
+        let value: ToolWrappingLabel
         switch row.value {
         case .value(let text):
-            value = NSTextField(labelWithString: text)
+            value = ToolWrappingLabel(string: text)
             // A status-toned value (File System State) is bold as well as
             // coloured — the weight makes the state read at a glance.
             let emphasized = row.tone != .standard
@@ -399,12 +403,10 @@ import ToolModuleKit
             value.isSelectable = true
             value.textColor = MEASummaryToneColor.color(for: row.tone)
         case .comingSoon:
-            value = NSTextField(labelWithString: "Coming soon")
+            value = ToolWrappingLabel(string: "Coming soon")
             value.font = ToolPanelFont.body()
             value.textColor = .secondaryLabelColor
         }
-        value.lineBreakMode = .byTruncatingTail
-        value.translatesAutoresizingMaskIntoConstraints = false
 
         let line = NSStackView(views: [label, value])
         line.orientation = .horizontal
@@ -438,13 +440,11 @@ import ToolModuleKit
                 equalToConstant: ToolPanelFont.detailLabelWidth
             ).isActive = true
 
-            let value = NSTextField(labelWithString: field.value)
+            let value = ToolWrappingLabel(string: field.value)
             value.font = field.value.hasPrefix("0x")
                 ? ToolPanelFont.monospacedDigits()
                 : ToolPanelFont.body()
             value.isSelectable = true
-            value.lineBreakMode = .byTruncatingTail
-            value.translatesAutoresizingMaskIntoConstraints = false
 
             let row = NSStackView(views: [label, value])
             row.orientation = .horizontal
@@ -452,6 +452,11 @@ import ToolModuleKit
             row.spacing = 6
             row.translatesAutoresizingMaskIntoConstraints = false
             detail.content.addArrangedSubview(row)
+            // The value column is what is left of the list's width, and a
+            // hash or a GUID wraps inside it.
+            row.widthAnchor.constraint(
+                equalTo: detail.content.widthAnchor
+            ).isActive = true
         }
     }
 }
