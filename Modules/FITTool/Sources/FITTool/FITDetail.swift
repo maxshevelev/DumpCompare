@@ -174,7 +174,6 @@ public enum FITDetail {
     // MARK: - Text
 
     /// A size in bytes, said both ways: hex for the dump, decimal for the mind.
-    /// A byte count as the detail shows it: hex with the decimal beside it.
     /// Zero is not worth two spellings — the area holds nothing, and the row
     /// says so.
     private static func size<T: BinaryInteger>(_ bytes: T) -> String {

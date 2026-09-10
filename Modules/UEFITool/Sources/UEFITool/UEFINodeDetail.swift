@@ -456,12 +456,11 @@ public enum UEFIDetail {
     }
 
     /// A byte-length field, which a reader wants in decimal as well as hex —
-    /// `0x800 (2048)`, the spelling the FIT panel uses for the same fields.
-    /// Offsets, addresses and codes stay bare hex. Named `sizeText` so it can
-    /// coexist with the local `size` variables the header cases bind.
-    /// A byte count as the detail shows it: hex with the decimal beside it, so
+    /// `0x800 (2048)`, the spelling the FIT panel uses for the same fields, so
     /// neither has to be worked out from the other. Zero is not worth two
-    /// spellings — the area holds nothing, and the row says so.
+    /// spellings: the area holds nothing, and the row says so. Offsets,
+    /// addresses and codes stay bare hex. Named `sizeText` so it can coexist
+    /// with the local `size` variables the header cases bind.
     private static func sizeText<T: BinaryInteger>(_ bytes: T) -> String {
         let value = UInt64(truncatingIfNeeded: bytes)
         return value == 0 ? "Empty" : "\(hex(bytes)) (\(value))"
@@ -532,9 +531,13 @@ public enum UEFIDetail {
         return guid.description
     }
 
+    /// Where the part starts and how long it is. The length is a size, so it is
+    /// said the way every size in a detail is said — `sizeText` — and a part
+    /// with no bytes is the word that stands for that everywhere, not a dash:
+    /// `0x0 · 0x2000 (8192) bytes`, or `Empty`.
     private static func rangeText(_ range: Range<UInt64>) -> String {
-        guard !range.isEmpty else { return "—" }
-        return "\(hex(range.lowerBound)) · \(hex(range.count)) bytes"
+        guard !range.isEmpty else { return sizeText(0) }
+        return "\(hex(range.lowerBound)) · \(sizeText(range.count)) bytes"
     }
 
     /// The hex value, with the well-known bits named when they are set.

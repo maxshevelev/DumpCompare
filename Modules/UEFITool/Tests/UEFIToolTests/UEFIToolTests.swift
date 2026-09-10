@@ -158,9 +158,9 @@ final class UEFIDetailTests: XCTestCase {
         XCTAssertEqual(field(detail, "Kind"), "Volume")
         XCTAssertEqual(field(detail, "Type"), "Revision 2")
         XCTAssertEqual(field(detail, "GUID"), "\(KnownGUIDs.ffsV2) (FFSv2)")
-        XCTAssertEqual(field(detail, "Header"), "0x0 · 0x38 bytes")
-        XCTAssertEqual(field(detail, "Body"), "0x38 · 0xFC8 bytes")
-        XCTAssertEqual(field(detail, "Total"), "0x0 · 0x1000 bytes")
+        XCTAssertEqual(field(detail, "Header"), "0x0 · 0x38 (56) bytes")
+        XCTAssertEqual(field(detail, "Body"), "0x38 · 0xFC8 (4040) bytes")
+        XCTAssertEqual(field(detail, "Total"), "0x0 · 0x1000 (4096) bytes")
         XCTAssertEqual(field(detail, "Address"), "0xFFFF0000")
         XCTAssertEqual(field(detail, "Length"), "0x1000 (4096)")
         XCTAssertEqual(field(detail, "Signature"), "0x56544152")
@@ -194,7 +194,7 @@ final class UEFIDetailTests: XCTestCase {
         XCTAssertEqual(field(detail, "State"), "0x80 (Erase polarity)")
         XCTAssertEqual(field(detail, "Header checksum"), "0xAA (Valid)")
         XCTAssertEqual(field(detail, "Body checksum"), "0xBB (Valid)")
-        XCTAssertEqual(field(detail, "Header"), "0x0 · 0x18 bytes")
+        XCTAssertEqual(field(detail, "Header"), "0x0 · 0x18 (24) bytes")
     }
 
     /// A large file leaves the three-byte size at zero and keeps the real one
@@ -229,7 +229,7 @@ final class UEFIDetailTests: XCTestCase {
         XCTAssertEqual(field(detail, "Kind"), "Section")
         XCTAssertEqual(field(detail, "Type"), "Raw")
         XCTAssertEqual(field(detail, "Size"), "0x40 (64)")
-        XCTAssertEqual(field(detail, "Header"), "0x0 · 0x4 bytes")
+        XCTAssertEqual(field(detail, "Header"), "0x0 · 0x4 (4) bytes")
     }
 
     /// An extended-size section leaves the three-byte field at the marker and
@@ -239,7 +239,7 @@ final class UEFIDetailTests: XCTestCase {
         let detail = UEFIDetail.build(for: built.node, image: built.image, reader: built.reader)
 
         XCTAssertEqual(field(detail, "Size"), "0x100000 (1048576)")
-        XCTAssertEqual(field(detail, "Header"), "0x0 · 0x8 bytes")
+        XCTAssertEqual(field(detail, "Header"), "0x0 · 0x8 (8) bytes")
     }
 
     func testAMicrocodeHeaderComesBackValidated() {
@@ -279,7 +279,7 @@ final class UEFIDetailTests: XCTestCase {
 
         XCTAssertEqual(detail.title, "Padding")
         XCTAssertEqual(field(detail, "Kind"), "Padding")
-        XCTAssertEqual(field(detail, "Total"), "0x0 · 0x100 bytes")
+        XCTAssertEqual(field(detail, "Total"), "0x0 · 0x100 (256) bytes")
         XCTAssertNil(field(detail, "Length"))
         XCTAssertNil(field(detail, "Signature"))
     }
@@ -317,8 +317,8 @@ final class UEFIDetailTests: XCTestCase {
         XCTAssertEqual(detail.title, "Intel image")
         XCTAssertEqual(field(detail, "Kind"), "Intel image")
         XCTAssertEqual(field(detail, "Type"), "Intel")
-        XCTAssertEqual(field(detail, "Header"), "—")
-        XCTAssertEqual(field(detail, "Body"), "0x0 · 0x1000 bytes")
+        XCTAssertEqual(field(detail, "Header"), "Empty")
+        XCTAssertEqual(field(detail, "Body"), "0x0 · 0x1000 (4096) bytes")
         XCTAssertEqual(field(detail, "Address"), "0xFFFF0000")
         XCTAssertEqual(field(detail, "Flash chips"), "1")
         XCTAssertEqual(field(detail, "Regions"), "1")
@@ -370,9 +370,9 @@ final class UEFIDetailTests: XCTestCase {
         XCTAssertEqual(detail.title, "UEFI image")
         XCTAssertEqual(field(detail, "Kind"), "UEFI image")
         XCTAssertEqual(field(detail, "Type"), "UEFI")
-        XCTAssertEqual(field(detail, "Header"), "—")
-        XCTAssertEqual(field(detail, "Body"), "0x0 · 0x1000 bytes")
-        XCTAssertEqual(field(detail, "Total"), "0x0 · 0x1000 bytes")
+        XCTAssertEqual(field(detail, "Header"), "Empty")
+        XCTAssertEqual(field(detail, "Body"), "0x0 · 0x1000 (4096) bytes")
+        XCTAssertEqual(field(detail, "Total"), "0x0 · 0x1000 (4096) bytes")
         XCTAssertEqual(field(detail, "Flags"), "fixed")
         XCTAssertNil(field(detail, "Flash chips"))
         XCTAssertNil(field(detail, "Regions"))

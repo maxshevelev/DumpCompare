@@ -386,7 +386,7 @@ final class UEFIToolFlowTests: XCTestCase {
 
         // The detail says the node in focus spans the whole file.
         let text = descendants(of: panel, NSTextField.self).map(\.stringValue)
-        XCTAssertTrue(text.contains("0x0 · 0x2000 bytes"), "\(text)")
+        XCTAssertTrue(text.contains("0x0 · 0x2000 (8192) bytes"), "\(text)")
         XCTAssertEqual(title.textColor, .controlAccentColor,
                        "the folded-away root reads as selected in the title")
     }
@@ -723,7 +723,7 @@ final class UEFIToolFlowTests: XCTestCase {
         // The volume is the one top-level row.
         outline.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         var text = descendants(of: panel, NSTextField.self).map(\.stringValue)
-        XCTAssertTrue(text.contains("0x0 · 0x1000 bytes"), "\(text)")
+        XCTAssertTrue(text.contains("0x0 · 0x1000 (4096) bytes"), "\(text)")
         XCTAssertTrue(text.contains("Revision"), "\(text)")
 
         // The file is under it, once the volume is opened: named by its

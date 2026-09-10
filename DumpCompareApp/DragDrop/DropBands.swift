@@ -74,6 +74,10 @@ final class DropTargetView: NSView {
             // width up through the band into the split view's fitting size.
             label.leadingAnchor.constraint(greaterThanOrEqualTo: plate.leadingAnchor, constant: 10),
             label.trailingAnchor.constraint(lessThanOrEqualTo: plate.trailingAnchor, constant: -10),
+            // Whatever width the plate ends up with, the caption sits in the
+            // middle of it. Without this the two inequalities above leave the
+            // label's x free to be anywhere they allow.
+            label.centerXAnchor.constraint(equalTo: plate.centerXAnchor),
             label.topAnchor.constraint(equalTo: plate.topAnchor, constant: 5),
             label.bottomAnchor.constraint(equalTo: plate.bottomAnchor, constant: -5),
 
@@ -92,6 +96,18 @@ final class DropTargetView: NSView {
                                                       constant: -8)] {
             clamp.priority = .defaultHigh
             clamp.isActive = true
+        }
+
+        // What the plate is *for* is hugging the caption, and only inequalities
+        // say that: they bound the plate's width without choosing one, which is
+        // no width at all as far as the engine is concerned — `hasAmbiguousLayout`
+        // on the plate, the label and the icon under it. These say which of the
+        // allowed widths it is, below the clamps above so a squeezed zone still
+        // wins, and below the square a refusal puts on.
+        for hug in [label.leadingAnchor.constraint(equalTo: plate.leadingAnchor, constant: 10),
+                    label.trailingAnchor.constraint(equalTo: plate.trailingAnchor, constant: -10)] {
+            hug.priority = .defaultHigh - 1
+            hug.isActive = true
         }
 
         // A refusal is a symbol, not a sentence, so its plate is a square rather
