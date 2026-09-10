@@ -766,6 +766,7 @@ public actor MEFirmwareAnalyzer {
             oemConfiguration: oemConfiguration,
             arbSvn: chainHoist.arbSvn,
             vcn: chainHoist.vcn03 ?? chainHoist.vcn0F ?? manifestSummary?.vcn,
+            nvmCompatibility: chainHoist.nvm,
             mfsState: mfsInfo.map {
                 MFSStateDecoder.state(usesFTBL: $0.usesFTBL,
                                       presentFileIndices: $0.files

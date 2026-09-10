@@ -95,6 +95,27 @@ enum MEAText {
             return "\(major).\(minor).\(hotfix).\(build)"
         }
     }
+    /// The Manifest Extension Utility version of a manifest's MEU block (row
+    /// 20, upstream `mn2_meu_ver`, MEA.py 12229): the build is padded to four
+    /// digits, so a `1.4.0.14` MEU reads "1.4.0.0014" exactly as the console
+    /// prints it.
+    static func manifestExtensionUtility(major: Int, minor: Int, hotfix: Int,
+                                         build: Int) -> String {
+        String(format: "%d.%d.%d.%04d", major, minor, hotfix, build)
+    }
+    /// The NVM Compatibility label of the raw two-bit field (row 7, upstream
+    /// `ext15_nvm_type`, MEA.py 10536): 0 Undefined, 1 UFS, 2 SPI. The
+    /// reserved value keeps upstream's own wording for a number outside the
+    /// map, so a future revision's third medium reads as unknown rather than
+    /// as one of these two.
+    static func nvmCompatibility(_ raw: Int) -> String {
+        switch raw {
+        case 0: return "Undefined"
+        case 1: return "UFS"
+        case 2: return "SPI"
+        default: return "Unknown (\(raw))"
+        }
+    }
     static func date(year: Int, month: Int, day: Int) -> String {
         String(format: "%04d-%02d-%02d", year, month, day)
     }

@@ -216,6 +216,9 @@ enum CPDExtensionParser {
         var arbSvn: Int?
         var vcn03: Int?
         var vcn0F: Int?
+        /// Row 7: the NVM Compatibility bits of the last `CSE_Ext_0F` whose
+        /// header was the `_R2` revision — the only one that carries the field.
+        var nvm: Int?
     }
 
     /// Walk `extensions` keeping the last 0x0F/0x03 of each — the same
@@ -226,6 +229,11 @@ enum CPDExtensionParser {
             if let sp = ext.signedPackage {
                 out.arbSvn = sp.arbSvn
                 out.vcn0F = sp.vcn
+                // Only an `_R2` header has the NVM field, and upstream writes
+                // `ext15_info[1:4]` from inside that revision's branch alone
+                // (MEA.py 6255) — so an R1 extension later in the chain leaves
+                // whatever an R2 one before it found, rather than clearing it.
+                if let nvm = sp.nvmCompatibility { out.nvm = nvm }
             }
             if let pi = ext.partitionInfo, ext.tag == 0x03, let v = pi.vcn {
                 out.vcn03 = v

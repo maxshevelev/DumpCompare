@@ -112,15 +112,26 @@ public enum MEASummary {
         } else if identified {
             add("SKU", .comingSoon)
         }
-        // 6a · Chipset — the pch_init aggregation's last record, letters
-        // comma-joined ("CNP/CMP-H B,A" from a "BA" record).
-        if let chipset = chipsetCell(analysis.mfsVolume?.pchInit) {
-            add("Chipset", .value(chipset))
+        // 6 · One chipset row, chosen the way upstream chooses: the pch_init
+        // aggregation's last record when there is one (6a), else the derived
+        // stepping letters (6c) — and, for an identified image with neither, a
+        // promise, since the stepping upstream falls back to comes from a
+        // database lookup this engine does not do yet.
+        if hasChipsetRow(analysis) {
+            if let chipset = chipsetCell(analysis.mfsVolume?.pchInit) {
+                add("Chipset", .value(chipset))
+            } else if let stepping = analysis.chipsetStepping, !stepping.isEmpty {
+                add("Chipset Stepping", .value(stepping))
+            } else if identified {
+                add("Chipset Stepping", .comingSoon)
+            }
         }
-        // 6c · Chipset Stepping — a derived stepping letter, when the engine
-        // had one (top-level is PMC-side today; a no-pch_init case is unwired).
-        if let stepping = analysis.chipsetStepping, !stepping.isEmpty {
-            add("Chipset Stepping", .value(stepping))
+        // 7 · NVM Compatibility — the storage medium the firmware is built
+        // for, from the R2 signed-package extension. Undefined (0) prints no
+        // row, exactly as upstream's then-empty `nvm_db` gate does; a chain
+        // with no R2 extension at all carries no fact and no row either.
+        if let nvm = analysis.nvmCompatibility, nvm != 0 {
+            add("NVM Compatibility", .value(MEAText.nvmCompatibility(nvm)))
         }
         // 8 · TCB Security Version Number (manifest `svn`).
         if let tcb = analysis.securityVersion, !tcb.isEmpty {
@@ -203,6 +214,15 @@ public enum MEASummary {
                 hotfix: fit.hotfix, build: fit.build)))
         }
 
+        // 20 · Manifest Extension Utility — the MEU build stamped into the
+        // manifest. R0 manifests reuse those bytes for SVN/VCN and carry none,
+        // and a zero or 0xFFFF major is the "no MEU" marker upstream skips the
+        // row on (MEA.py 12227) — so this row appears only where the console's
+        // does, and is not promised anywhere else.
+        if let meu = meuVersion(analysis.version) {
+            add("Manifest Extension Utility", .value(meu))
+        }
+
         var blocks: [MEASummaryBlock] = [MEASummaryBlock(title: nil, rows: rows)]
         if !analysis.issues.isEmpty {
             let messages = analysis.issues.map { issue in
@@ -212,6 +232,31 @@ public enum MEASummary {
             blocks.append(MEASummaryBlock(title: "Messages", rows: messages))
         }
         return blocks
+    }
+
+    /// The MEU version of a manifest, or nil when it carries none: an R0
+    /// manifest (no MEU block at all — the fields decode as nil) and the
+    /// 0 / 0xFFFF markers both mean "not built by MEU".
+    private static func meuVersion(_ version: Version) -> String? {
+        guard let major = version.meMajor, major != 0, major != 0xFFFF,
+              let minor = version.meMinor,
+              let hotfix = version.meHotfix,
+              let build = version.meBuild
+        else { return nil }
+        return MEAText.manifestExtensionUtility(
+            major: major, minor: minor, hotfix: hotfix, build: build)
+    }
+
+    /// Whether the image gets a Chipset / Chipset Stepping row at all —
+    /// upstream's `variant.startswith(('CS','PMC','GSC'))` minus the `PMCDG`
+    /// exception (MEA.py 13700). A PCHC or PHY image has no chipset row, and
+    /// neither has a pre-CSE ME/TXE/SPS one.
+    private static func hasChipsetRow(_ analysis: FirmwareAnalysis) -> Bool {
+        guard !analysis.variant.hasPrefix("PMCDG") else { return false }
+        switch analysis.family {
+        case .csme, .cstxe, .cssps, .pmc, .gsc: return true
+        case .me, .txe, .sps, .pchc, .phy, .orom, .unknown: return false
+        }
     }
 
     /// The 6a display cell: the last per-chipset aggregate record as

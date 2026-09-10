@@ -64,6 +64,16 @@ public struct FirmwareAnalysis: Codable, Sendable, Equatable, Identifiable {
     /// fallback, then a pre-CSE R0 manifest's +0x34 (which already surfaces as
     /// `ManifestSummary.vcn`).
     public var vcn: Int? = nil
+    /// NVM Compatibility (row 7, upstream `ext15_info[3]`): the raw two-bit
+    /// `CSE_Ext_0F_R2.NVMCompatibility` field (u32 @ +0x26, bits 0–1: 0
+    /// Undefined, 1 UFS, 2 SPI, 3 reserved) of the last `_R2` signed-package
+    /// extension in the operational chain. nil when the chain carried no such
+    /// extension — an R1 header has no NVM field at all — which is upstream's
+    /// empty `ext15_info[3]`, the state that prints no row.
+    ///
+    /// A number, not a label: "UFS"/"SPI" is display text (upstream's
+    /// `ext15_nvm_type` map) and belongs to the UI by the result-model rule.
+    public var nvmCompatibility: Int? = nil
     /// File System State (row 17, upstream `mfs_state`): Initialized / Configured
     /// when a legacy-MFS file-index set says so, else Unconfigured. nil when no
     /// MFS region was found at all.
@@ -1789,5 +1799,5 @@ public struct Issue: Codable, Sendable, Equatable, Identifiable {
 /// whether to surface the new data (`reference/result-model.md` §Versioning).
 public enum EngineModelRevision {
     /// Current revision of the `FirmwareAnalysis` shape.
-    public static let current = 24
+    public static let current = 25
 }

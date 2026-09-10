@@ -725,13 +725,15 @@ final class ExtensionWalkerTests: XCTestCase {
 /// The payloads are built straight on the model structs (no bytes needed — the
 /// decode that produces them is covered by `ExtensionWalkerTests`).
 final class ExtensionHoistTests: XCTestCase {
-    /// A CSE_Ext_0F block carrying `arbSvn` and `vcn`.
-    private func ext0F(id: Int, arbSvn: Int, vcn: Int) -> CPDExtension {
+    /// A CSE_Ext_0F block carrying `arbSvn` and `vcn` — and, for an `_R2`
+    /// header, the NVM Compatibility field only that revision has.
+    private func ext0F(id: Int, arbSvn: Int, vcn: Int,
+                       nvm: Int? = nil) -> CPDExtension {
         CPDExtension(id: id, tag: 0x0F, size: 0x34, offset: 0,
                      signedPackage: SignedPackageExtension(
                         partitionName: "NVM0", vcn: vcn, usageBitmap: "",
                         arbSvn: arbSvn, fwType: nil, fwSku: nil,
-                        nvmCompatibility: nil))
+                        nvmCompatibility: nvm))
     }
 
     /// A CSE_Ext_03 block carrying `vcn`.
@@ -772,6 +774,27 @@ final class ExtensionHoistTests: XCTestCase {
         XCTAssertEqual(hoist.arbSvn, 6)
         XCTAssertEqual(hoist.vcn03, 8)
         XCTAssertEqual(hoist.vcn0F, 4)
+    }
+
+    /// Row 7: the NVM Compatibility of the last `_R2` signed package. An R1
+    /// header has no such field, and upstream writes the fact from inside the
+    /// R2 branch alone (6255) — so an R1 block after an R2 one leaves the
+    /// medium the R2 block named rather than clearing it back to unknown.
+    func testHoistKeepsTheLastNVMAnR2BlockNamed() {
+        XCTAssertEqual(
+            CPDExtensionParser.hoist([ext0F(id: 0, arbSvn: 1, vcn: 1, nvm: 1),
+                                      ext0F(id: 1, arbSvn: 1, vcn: 1, nvm: 2)]).nvm,
+            2, "the last R2 block wins, as it does for ARB SVN and VCN"
+        )
+        XCTAssertEqual(
+            CPDExtensionParser.hoist([ext0F(id: 0, arbSvn: 1, vcn: 1, nvm: 2),
+                                      ext0F(id: 1, arbSvn: 1, vcn: 1)]).nvm,
+            2, "an R1 block carries no NVM field and cannot unsay one"
+        )
+        XCTAssertNil(
+            CPDExtensionParser.hoist([ext0F(id: 0, arbSvn: 1, vcn: 1)]).nvm,
+            "a chain of R1 blocks names no medium at all"
+        )
     }
 
     func testHoistIgnores016AndEnvelopeOnlyBlocks() {

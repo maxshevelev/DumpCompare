@@ -115,20 +115,28 @@ final class MEASummaryTests: XCTestCase {
             "securityVersion": "1",
             "arbSvn": 2,
             "vcn": 7,
+            "nvmCompatibility": 2,
             "sku": "Consumer H",
             "manufactureDate": referenceInterval(year: 2018, month: 5, day: 6),
             "mfsState": "initialized",
             "mfsVolume": mfsJSON(chipset: "CNP/CMP-H", steppings: "BA"),
             "bootPartitions": bootPartitionsJSON(),
+            "version": ["major": 15, "minor": 40, "hotfix": 37, "build": 3121,
+                        "meMajor": 1, "meMinor": 4, "meHotfix": 0,
+                        "meBuild": 14],
         ])
         let rows = tableRows(a)
         XCTAssertEqual(rows.map(\.label), [
             "Family", "Version", "Release", "Type", "SKU", "Chipset",
+            "NVM Compatibility",
             "TCB Security Version Number", "ARB Security Version Number",
             "Version Control Number", "Production Ready", "OEM Configuration",
             "FWUpdate Support", "Date", "File System State", "Size",
-            "Flash Image Tool",
+            "Flash Image Tool", "Manifest Extension Utility",
         ])
+        XCTAssertEqual(value("NVM Compatibility", in: rows), .value("SPI"))
+        XCTAssertEqual(value("Manifest Extension Utility", in: rows),
+                       .value("1.4.0.0014"))
         XCTAssertEqual(value("Family", in: rows), .value("CSME"))
         XCTAssertEqual(value("Version", in: rows), .value("15.40.37.3121"))
         XCTAssertEqual(value("Release", in: rows), .value("Production"))
@@ -268,6 +276,66 @@ final class MEASummaryTests: XCTestCase {
         let rows = tableRows(stepped)
         XCTAssertEqual(value("Chipset Stepping", in: rows), .value("B"))
         XCTAssertNil(value("Chipset", in: rows))
+
+        // Neither fact, but an identified CSE image: the row is promised
+        // rather than guessed — the stepping upstream falls back to is a
+        // database lookup this engine does not do.
+        let neither = try analysis(["manifest": manifestJSON()])
+        XCTAssertEqual(value("Chipset Stepping", in: tableRows(neither)),
+                       .comingSoon)
+        XCTAssertNil(value("Chipset", in: tableRows(neither)))
+
+        // A family with no chipset row at all gets neither, promise included:
+        // upstream gates the whole pair on a CS/PMC/GSC variant.
+        let pchc = try analysis([
+            "family": "pchc", "variant": "PCHC",
+            "manifest": manifestJSON(),
+            "mfsVolume": mfsJSON(chipset: "CNP/CMP-H", steppings: "BA"),
+        ])
+        XCTAssertNil(value("Chipset", in: tableRows(pchc)))
+        XCTAssertNil(value("Chipset Stepping", in: tableRows(pchc)))
+    }
+
+    /// Row 7 names the storage medium the firmware is built for, and only
+    /// when the R2 signed-package extension named one: Undefined and a chain
+    /// with no R2 extension at all leave the row off the table, exactly as the
+    /// console's `nvm_db` gate does.
+    func testNVMCompatibilityRowOnlyWhenAMediumIsNamed() throws {
+        func nvmRow(_ raw: Int?) throws -> MEASummaryValue? {
+            var fields: [String: Any] = ["manifest": manifestJSON()]
+            if let raw { fields["nvmCompatibility"] = raw }
+            return value("NVM Compatibility", in: tableRows(try analysis(fields)))
+        }
+        XCTAssertEqual(try nvmRow(1), .value("UFS"))
+        XCTAssertEqual(try nvmRow(2), .value("SPI"))
+        // Reserved: upstream's own wording for a value outside its map, so a
+        // future medium reads as unknown rather than as UFS or SPI.
+        XCTAssertEqual(try nvmRow(3), .value("Unknown (3)"))
+        XCTAssertNil(try nvmRow(0), "Undefined is the state that prints no row")
+        XCTAssertNil(try nvmRow(nil), "and so is an R1-only extension chain")
+    }
+
+    /// Row 20 appears only for a manifest actually built by MEU: an R0
+    /// manifest carries no MEU block (the fields decode as nil) and the
+    /// 0 / 0xFFFF majors are the markers upstream skips the row on.
+    func testManifestExtensionUtilityRowOnlyForARealMEUStamp() throws {
+        func meuRow(_ major: Int?) throws -> MEASummaryValue? {
+            var version: [String: Any] = ["major": 15, "minor": 40,
+                                          "hotfix": 37, "build": 3121]
+            if let major {
+                version["meMajor"] = major
+                version["meMinor"] = 4
+                version["meHotfix"] = 0
+                version["meBuild"] = 14
+            }
+            return value("Manifest Extension Utility",
+                         in: tableRows(try analysis(["manifest": manifestJSON(),
+                                                     "version": version])))
+        }
+        XCTAssertEqual(try meuRow(1), .value("1.4.0.0014"))
+        XCTAssertNil(try meuRow(0), "a zero major is the no-MEU marker")
+        XCTAssertNil(try meuRow(0xFFFF), "and so is an erased one")
+        XCTAssertNil(try meuRow(nil), "an R0 manifest has no MEU block")
     }
 
     /// Engineering builds say so on the Release row, like MEA.

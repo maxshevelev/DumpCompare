@@ -110,7 +110,28 @@ final class FirmwareAnalysisModelTests: XCTestCase {
     }
 
     func testEngineModelRevisionBumpsWithAdditiveChanges() {
-        XCTAssertEqual(EngineModelRevision.current, 24)
+        XCTAssertEqual(EngineModelRevision.current, 25)
+    }
+
+    /// Row 7's NVM Compatibility is additive like every other field: it
+    /// round-trips as the raw two-bit number, and a payload written before the
+    /// field existed still decodes — to nil, the state that prints no row.
+    func testNVMCompatibilitySurvivesJSON() throws {
+        let payload = """
+        {"family":"csme","variant":"CSME","version":{"major":15,"minor":40,
+         "hotfix":37,"build":3121},
+         "release":"production","type":"extracted","sku":"","platform":"",
+         "sizeBytes":2097152,"regions":[],"issues":[],"nvmCompatibility":2}
+        """
+        let decoded = try JSONDecoder().decode(
+            FirmwareAnalysis.self, from: Data(payload.utf8))
+        XCTAssertEqual(decoded.nvmCompatibility, 2)
+
+        let older = try JSONDecoder().decode(
+            FirmwareAnalysis.self,
+            from: Data(payload.replacingOccurrences(of: ",\"nvmCompatibility\":2",
+                                                    with: "").utf8))
+        XCTAssertNil(older.nvmCompatibility)
     }
 
     /// A non-IFWI image's row-19 FIT (`fptHeaderFIT`) survives a JSON
