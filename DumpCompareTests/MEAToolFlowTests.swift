@@ -244,26 +244,51 @@ final class MEAToolFlowTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), pasted.string,
                        "and a plain-text field gets the same rows")
 
-        // Screenshot: the whole document, not the part on screen. The window is
+        // Screenshot: all of the summary, not the part on screen. The window is
         // made short first, so the summary really does outgrow the area it is
         // shown in and "the whole of it" is a claim with something behind it.
         let window = try XCTUnwrap(self.window)
-        window.setContentSize(NSSize(width: window.frame.width, height: 260))
+        window.setContentSize(NSSize(width: window.frame.width, height: 180))
         zoom(to: ToolPanelFont.sizeRange.upperBound)
         window.layoutIfNeeded()
         let scroll = try XCTUnwrap(
             descendants(of: panel, ToolDetailScroll.self).first { !$0.isHidden })
-        let document = try XCTUnwrap(scroll.documentView)
-        XCTAssertGreaterThan(document.bounds.height, scroll.contentView.bounds.height,
+        XCTAssertGreaterThan(scroll.content.bounds.height, scroll.contentView.bounds.height,
                              "the premise: the summary no longer fits the visible area")
 
         picture.performClick(nil)
         let image = try XCTUnwrap(
             pasteboard.readObjects(forClasses: [NSImage.self])?.first as? NSImage,
             "a picture on the clipboard")
-        XCTAssertEqual(image.size.height, document.bounds.height, accuracy: 1,
-                       "all of the summary, not the visible part of it")
-        XCTAssertEqual(image.size.width, document.bounds.width, accuracy: 1)
+        // Cropped to the rows, with an even margin: the list they scroll in is
+        // as wide as the panel and never shorter than the visible area, so
+        // picturing *it* would be the summary in a field of empty background.
+        XCTAssertEqual(image.size.height - scroll.content.bounds.height,
+                       image.size.width - scroll.content.bounds.width, accuracy: 1,
+                       "the same margin on both axes, and no more")
+        XCTAssertGreaterThan(image.size.height, scroll.content.bounds.height,
+                             "all of the rows are in it")
+        XCTAssertLessThan(image.size.height - scroll.content.bounds.height, 40,
+                          "and little else")
+
+        // And it is a picture, not a wash: opaque, on the background the panel
+        // shows the rows against. A dark panel draws pale rows, so a background
+        // resolved in the wrong appearance pastes them onto white — which is
+        // what the clipboard got before.
+        panel.appearance = NSAppearance(named: .darkAqua)
+        window.layoutIfNeeded()
+        pasteboard.clearContents()
+        picture.performClick(nil)
+        let dark = try XCTUnwrap(
+            pasteboard.readObjects(forClasses: [NSImage.self])?.first as? NSImage)
+        let corner = try XCTUnwrap(
+            (try XCTUnwrap(dark.tiffRepresentation).flatMap { NSBitmapImageRep(data: $0) })?
+                .colorAt(x: 2, y: 2),
+            "the picture's own background pixel")
+        XCTAssertEqual(corner.alphaComponent, 1, accuracy: 0.01, "nothing shows through it")
+        XCTAssertLessThan(corner.usingColorSpace(.deviceRGB)?.brightnessComponent ?? 1, 0.5,
+                          "a dark panel's picture is dark, not white")
+        panel.appearance = nil
 
         // The Full Tree tab has no page to hand over, so they go with the tab.
         try showFullTree()

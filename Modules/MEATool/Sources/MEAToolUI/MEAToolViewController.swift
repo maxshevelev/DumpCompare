@@ -363,7 +363,7 @@ import ToolModuleKit
 
         summaryActions.orientation = .horizontal
         summaryActions.alignment = .centerY
-        summaryActions.spacing = 2
+        summaryActions.spacing = 10
         summaryActions.translatesAutoresizingMaskIntoConstraints = false
         summaryActions.addArrangedSubview(copyButton)
         summaryActions.addArrangedSubview(screenshotButton)
@@ -465,25 +465,43 @@ import ToolModuleKit
         pasteboard.writeObjects([image])
     }
 
-    /// The summary's document view, drawn whole. Nil when there is nothing laid
-    /// out to draw — a panel that has never been on screen has no size.
+    /// A picture of the summary's rows, drawn whole and cropped to them.
+    ///
+    /// The rows rather than the list they scroll in: the list is as wide as the
+    /// panel and at least as tall as the visible area, so picturing it would
+    /// hand over the summary in the middle of a field of empty background.
+    /// `cacheDisplay` draws a view and everything under it whatever an ancestor
+    /// clips, so the rows below the fold come too.
+    ///
+    /// Nil when there is nothing laid out to draw — a panel that has never been
+    /// on screen has no size.
     func summaryPicture() -> NSImage? {
-        guard let document = summaryScroll.documentView else { return nil }
-        let bounds = document.bounds
+        let rows = summaryScroll.content
+        let bounds = rows.bounds
         guard bounds.width >= 1, bounds.height >= 1,
-              let rows = document.bitmapImageRepForCachingDisplay(in: bounds)
+              let cache = rows.bitmapImageRepForCachingDisplay(in: bounds)
         else { return nil }
-        document.cacheDisplay(in: bounds, to: rows)
+        rows.cacheDisplay(in: bounds, to: cache)
+        let cached = NSImage(size: bounds.size)
+        cached.addRepresentation(cache)
 
-        // The rows draw no background of their own — the scroll view behind
-        // them does — so the cache alone would paste as text on nothing.
-        let picture = NSImage(size: bounds.size)
-        let whole = NSRect(origin: .zero, size: bounds.size)
+        let margin: CGFloat = 10
+        let size = NSSize(width: bounds.width + margin * 2, height: bounds.height + margin * 2)
+        let picture = NSImage(size: size)
         picture.lockFocus()
-        (summaryScroll.drawsBackground ? summaryScroll.backgroundColor : .textBackgroundColor)
-            .setFill()
-        whole.fill()
-        rows.draw(in: whole)
+        // Under the theme the rows were *drawn* in, not the one that happens to
+        // be current here. A dark panel's rows are pale, and a background
+        // resolved outside its appearance comes back the light one — pale text
+        // on white, which is a picture of nothing.
+        summaryScroll.effectiveAppearance.performAsCurrentDrawingAppearance {
+            // The rows draw no background of their own; the list behind them
+            // does. Without it the picture would paste as text on nothing.
+            (summaryScroll.drawsBackground ? summaryScroll.backgroundColor : .textBackgroundColor)
+                .setFill()
+            NSRect(origin: .zero, size: size).fill()
+            cached.draw(in: NSRect(x: margin, y: margin,
+                                   width: bounds.width, height: bounds.height))
+        }
         picture.unlockFocus()
         return picture
     }
