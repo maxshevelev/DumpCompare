@@ -150,7 +150,10 @@ extension Parser {
                 continue
             }
             // The store recognisers, in the order the reference parser tries
-            // them: first match wins. VSS before VSS2, because a store GUID
+            // them: first match wins. Each decides on its own cheapest field
+            // before reading anything else — this loop runs at every unclaimed
+            // byte, so a recogniser that reads four fields to reject one byte
+            // costs four reads times the length of the run. VSS before VSS2, because a store GUID
             // whose first dword reads `$VSS` would otherwise misroute. SysF,
             // flash map, EVSA, CMDB and SLIC are the stores of Apple and
             // Phoenix firmware. The last two hand the bytes to parsers of
@@ -232,17 +235,16 @@ extension Parser {
         depth: Int,
         fdcStoreSizeOverride: UInt64? = nil
     ) -> UEFINode? {
-        // The whole header must be in the body.
+        // The whole header must be in the body, and the signature decides
+        // before anything else is read — this runs at every unclaimed byte of
+        // the walk, so what is not a store must cost one dword.
         guard body.upperBound - offset >= NVRAM.vssStoreHeaderSize,
               let signature = reader.uint32(at: offset),
-              var storeSize = reader.uint32(at: offset + 4),
-              let format = reader.uint8(at: offset + 8)
-        else { return nil }
-
-        // The signature and the format are the sanity check.
-        guard signature == NVRAM.vssSignature
+              signature == NVRAM.vssSignature
                 || signature == NVRAM.appleSvsSignature
                 || signature == NVRAM.appleNssSignature,
+              var storeSize = reader.uint32(at: offset + 4),
+              let format = reader.uint8(at: offset + 8),
               format == NVRAM.vssFormatted
         else { return nil }
 
@@ -436,13 +438,13 @@ extension Parser {
     /// and is 28 bytes of header; its variables are 4-byte aligned, so the
     /// padding after each one is a node of its own.
     func parseVss2Store(at offset: UInt64, body: Range<UInt64>, emptyByte: UInt8, depth: Int) -> UEFINode? {
+        // Same order as the `$VSS` walk above: the GUID decides, then the rest
+        // is read.
         guard body.upperBound - offset >= NVRAM.vss2StoreHeaderSize,
               let signature = reader.guid(at: offset),
+              NvramGuids.isVss2Store(signature),
               let storeSize = reader.uint32(at: offset + 16),
-              let format = reader.uint8(at: offset + 20)
-        else { return nil }
-
-        guard NvramGuids.isVss2Store(signature),
+              let format = reader.uint8(at: offset + 20),
               format == NVRAM.vssFormatted
         else { return nil }
 
@@ -596,10 +598,9 @@ extension Parser {
         // The 32-bit header must be in the body.
         guard body.upperBound - offset >= NVRAM.ftwStoreHeaderSize32,
               let signature = reader.guid(at: offset),
+              NvramGuids.isFtwStore(signature),
               let writeQueueSize32 = reader.uint32(at: offset + 24)
         else { return nil }
-
-        guard NvramGuids.isFtwStore(signature) else { return nil }
 
         // The write queue size's low nibble decides the header form: ending in
         // 4 is a 32-bit queue, ending in 0 a 64-bit one, anything else unknown.
@@ -659,11 +660,9 @@ extension Parser {
     func parseFdcStore(at offset: UInt64, body: Range<UInt64>, emptyByte: UInt8, depth: Int) -> UEFINode? {
         // The whole header must be in the body.
         guard body.upperBound - offset >= NVRAM.fdcStoreHeaderSize,
-              let signature = reader.uint32(at: offset),
+              reader.uint32(at: offset) == NVRAM.insydeFdcSignature,
               let storeSize = reader.uint32(at: offset + 4)
         else { return nil }
-
-        guard signature == NVRAM.insydeFdcSignature else { return nil }
 
         // The reference parser refuses a size that is not strictly between the
         // header and 0xFFFFFFFF.
@@ -703,10 +702,8 @@ extension Parser {
     func parseSysFStore(at offset: UInt64, body: Range<UInt64>) -> UEFINode? {
         guard body.upperBound - offset >= NVRAM.sysfStoreHeaderSize + NVRAM.sysfStoreCrcSize,
               let signature = reader.uint32(at: offset),
+              signature == NVRAM.appleSysfSignature || signature == NVRAM.appleDiagSignature,
               let declaredSize = reader.uint16(at: offset + 9)
-        else { return nil }
-
-        guard signature == NVRAM.appleSysfSignature || signature == NVRAM.appleDiagSignature
         else { return nil }
 
         // A store must hold its header and the CRC32 at its end, and a store
@@ -822,10 +819,8 @@ extension Parser {
     func parsePhoenixFlashMapStore(at offset: UInt64, body: Range<UInt64>) -> UEFINode? {
         guard body.upperBound - offset >= NVRAM.phoenixFlashMapHeaderSize,
               let signature = reader.bytes(at: offset, count: UInt64(NVRAM.phoenixFlashMapSignature.count)),
-              let entryCount = reader.uint16(at: offset + 10)
-        else { return nil }
-
-        guard signature == NVRAM.phoenixFlashMapSignature,
+              signature == NVRAM.phoenixFlashMapSignature,
+              let entryCount = reader.uint16(at: offset + 10),
               entryCount <= NVRAM.phoenixFlashMapMaxEntries
         else { return nil }
 
@@ -882,15 +877,10 @@ extension Parser {
     /// what follows is free space or padding.
     func parsePhoenixEvsaStore(at offset: UInt64, body: Range<UInt64>, emptyByte: UInt8) -> UEFINode? {
         guard body.upperBound - offset >= NVRAM.evsaStoreHeaderSize,
-              let type = reader.uint8(at: offset),
-              let headerSize = reader.uint16(at: offset + 2),
-              let signature = reader.uint32(at: offset + 4),
-              let declaredSize = reader.uint32(at: offset + 12)
-        else { return nil }
-
-        guard type == NVRAM.evsaEntryTypeStore,
-              headerSize == UInt16(NVRAM.evsaStoreHeaderSize),
-              signature == NVRAM.evsaSignature,
+              reader.uint8(at: offset) == NVRAM.evsaEntryTypeStore,
+              reader.uint16(at: offset + 2) == UInt16(NVRAM.evsaStoreHeaderSize),
+              reader.uint32(at: offset + 4) == NVRAM.evsaSignature,
+              let declaredSize = reader.uint32(at: offset + 12),
               declaredSize > NVRAM.evsaStoreHeaderSize
         else { return nil }
 
@@ -1021,11 +1011,9 @@ extension Parser {
     /// its header from the store's own total size, and keeps the rest whole.
     func parsePhoenixCmdbStore(at offset: UInt64, body: Range<UInt64>) -> UEFINode? {
         guard body.upperBound - offset >= NVRAM.cmdbStoreSize,
-              let signature = reader.uint32(at: offset),
+              reader.uint32(at: offset) == NVRAM.cmdbSignature,
               let totalSize = reader.uint32(at: offset + 8)
         else { return nil }
-
-        guard signature == NVRAM.cmdbSignature else { return nil }
 
         let storeEnd = offset + NVRAM.cmdbStoreSize
         // The header reaches to the store's total size — never past the store
@@ -1046,14 +1034,9 @@ extension Parser {
     /// `RSA1` magic. The whole record is the store's header.
     func parseSlicPublicKey(at offset: UInt64, body: Range<UInt64>) -> UEFINode? {
         guard body.upperBound - offset >= NVRAM.slicPubkeySize,
-              let type = reader.uint32(at: offset),
-              let size = reader.uint32(at: offset + 4),
-              let magic = reader.uint32(at: offset + 16)
-        else { return nil }
-
-        guard type == NVRAM.slicPubkeyType,
-              size == UInt32(NVRAM.slicPubkeySize),
-              magic == NVRAM.slicPubkeyMagic
+              reader.uint32(at: offset) == NVRAM.slicPubkeyType,
+              reader.uint32(at: offset + 4) == UInt32(NVRAM.slicPubkeySize),
+              reader.uint32(at: offset + 16) == NVRAM.slicPubkeyMagic
         else { return nil }
 
         let storeEnd = offset + NVRAM.slicPubkeySize
@@ -1073,16 +1056,11 @@ extension Parser {
     /// and table id, the eight-byte `WINDOWS ` flag, and sixteen reserved
     /// zero bytes. The whole record is the store's header.
     func parseSlicMarker(at offset: UInt64, body: Range<UInt64>) -> UEFINode? {
-        guard body.upperBound - offset >= NVRAM.slicMarkerSize,
-              let type = reader.uint32(at: offset),
-              let size = reader.uint32(at: offset + 4),
-              let windowsFlag = reader.uint64(at: offset + 26)
-        else { return nil }
-
         // The reserved bytes after the windows flag must all be zero.
-        guard type == NVRAM.slicMarkerType,
-              size == UInt32(NVRAM.slicMarkerSize),
-              windowsFlag == NVRAM.slicMarkerWindowsFlag,
+        guard body.upperBound - offset >= NVRAM.slicMarkerSize,
+              reader.uint32(at: offset) == NVRAM.slicMarkerType,
+              reader.uint32(at: offset + 4) == UInt32(NVRAM.slicMarkerSize),
+              reader.uint64(at: offset + 26) == NVRAM.slicMarkerWindowsFlag,
               reader.isFilled((offset + 38)..<(offset + 54), with: NVRAM.slicMarkerReservedByte)
         else { return nil }
 

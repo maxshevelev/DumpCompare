@@ -95,7 +95,12 @@ final class Parser {
         limits: UEFIParser.Limits,
         progress: ProgressSink? = nil
     ) {
-        self.reader = reader
+        // Through a window of its own. A parser is built, used and dropped
+        // inside one materialization on one thread, which is exactly the
+        // lifetime a read cache needs — and the reads it makes are thousands
+        // of small fields, mostly forward, which is exactly what a window
+        // serves (`WindowedByteSource`).
+        self.reader = ImageReader(WindowedByteSource(reader.source))
         self.limits = limits
         self.onProgress = progress
     }
