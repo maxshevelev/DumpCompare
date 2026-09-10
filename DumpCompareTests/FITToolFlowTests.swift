@@ -171,10 +171,11 @@ final class FITToolFlowTests: XCTestCase {
         session.onDisplay = nil
         session.onTargetsNamed = nil
 
-        // The volume is a top-level find, so the row went up naming *it* — the
-        // most the tree could say without opening anything.
-        XCTAssertEqual(whenTheTableWentUp, "0x2848 (FFSv2)",
-                       "the row went up with what the tree already knew")
+        // The volume covering the address has not been walked yet, so there is
+        // nothing to say about what is *at* it — naming the container it is
+        // somewhere inside would be an answer to a different question.
+        XCTAssertEqual(whenTheTableWentUp, "0x2848",
+                       "the row went up with its address and nothing else")
         let after = try XCTUnwrap(
             session.display.rows.first { $0.typeText == "Startup ACM" }
         )

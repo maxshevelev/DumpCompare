@@ -244,7 +244,17 @@ public enum FITReader {
                 return .emptyMicrocodeSlot(offset: offset)
             }
         }
-        return .bytes(offset: offset, description: image?.innermostNode(containing: offset)?.name)
+        // Named only once the tree has read that far. A node still marked
+        // expandable is not an answer to "what is there" — it is the container
+        // the reading has reached so far, and naming a row after it would put
+        // "BIOS region" in front of an address whose real answer is a file two
+        // levels down. The row says its address alone until the branch under
+        // it has been opened (`FITToolSession.nameTargets`).
+        let node = image?.innermostNode(containing: offset)
+        return .bytes(
+            offset: offset,
+            description: node.flatMap { $0.isExpandable ? nil : $0.name }
+        )
     }
 
     /// Every `_FIT_   ` in the image. Only worth doing when the pointer has
