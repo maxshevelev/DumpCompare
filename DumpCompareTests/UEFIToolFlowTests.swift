@@ -268,19 +268,27 @@ final class UEFIToolFlowTests: XCTestCase {
                        "the folded-away root reads as selected in the title")
     }
 
-    /// Opening a row keeps it open. The branch is read after the click, and
-    /// the row the reader opened must not shut under them when it lands.
-    func testARowStaysOpenWhenItsBranchArrives() throws {
+    /// A row opens once, when its branch is there — not first onto a
+    /// "Loading…" row and again a few milliseconds later.
+    ///
+    /// Two structural changes over the same rows is two animations over them,
+    /// the second landing inside the first, and what that looks like is the
+    /// whole table rippling. So a click on a branch nobody has read starts the
+    /// reading and leaves the row shut; the row opens when there is something
+    /// in it, and stays open.
+    func testARowOpensOnceWhenItsBranchIsThere() throws {
         let controller = try open(UEFITestImage.make())
         let outline = try outline()
 
-        // A click on the disclosure triangle: the branch is not there yet, so
-        // the row opens onto the one "Loading…" row standing in for it.
+        // A click on the disclosure triangle. The branch has not been read, so
+        // nothing opens yet — and nothing stands in for it either.
         outline.expandItem(outline.item(atRow: 0))
         window?.layoutIfNeeded()
-        XCTAssertEqual(outline.numberOfRows, 2, "one Loading… row under the volume")
+        XCTAssertEqual(outline.numberOfRows, 1, "the row waits rather than opening onto nothing")
 
-        // The branch lands — the same expansion the click started, coalesced.
+        // The branch lands — the same reading the click started, coalesced.
+        // The panel's own callback was registered first, so by the time this
+        // one runs the row is open.
         let tree = try XCTUnwrap(controller.windowModel.pane1.uefiState.tree)
         let opened = expectation(description: "the branch is materialized")
         tree.expand(NodeID([0])) { _ in opened.fulfill() }
@@ -288,35 +296,44 @@ final class UEFIToolFlowTests: XCTestCase {
         window?.layoutIfNeeded()
 
         XCTAssertEqual(outline.numberOfRows, 4,
-                       "the volume stayed open and its children took the "
-                       + "placeholder's place")
+                       "the row opened with its children in it")
+        XCTAssertEqual(kinds(of: outline), [.volume, .file, .padding, .freeSpace])
     }
 
-    /// Two branches opening at once are two "Loading…" rows, and they must be
-    /// two *objects*.
+    /// Two branches opened at once both come out right.
     ///
-    /// An outline recognises its items by object, and holds a map from each one
-    /// to its parent. One shared placeholder under two branches is the same
-    /// object in two places at once — a tree it cannot lay out, and what that
-    /// looks like on screen is rows shuffling through each other.
-    func testTwoBranchesOpeningAtOnceGetPlaceholdersOfTheirOwn() throws {
+    /// An outline recognises its items by object and holds a map from each one
+    /// to its parent, so anything shared between two branches — a placeholder,
+    /// a row — is one object in two places at once, which is a tree it cannot
+    /// lay out. What that looks like on screen is rows shuffling through each
+    /// other.
+    func testTwoBranchesOpenedAtOnceBothComeOutRight() throws {
         let controller = try open(UEFITestImage.withTwoVolumes())
         let outline = try outline()
 
-        // Both volumes are top-level rows; open them before either can land.
         XCTAssertEqual(outline.numberOfRows, 2, "two volumes at the top")
         outline.expandItem(outline.item(atRow: 0))
-        outline.expandItem(outline.item(atRow: 2))
+        outline.expandItem(outline.item(atRow: 1))
         window?.layoutIfNeeded()
 
-        let first = try XCTUnwrap(outline.item(atRow: 1) as? UEFITreeRow)
-        let second = try XCTUnwrap(outline.item(atRow: 3) as? UEFITreeRow)
-        XCTAssertTrue(first.isLoading, "the first volume's branch is still being read")
-        XCTAssertTrue(second.isLoading, "and so is the second's")
-        XCTAssertFalse(first === second, "each branch waits under a row of its own")
-        XCTAssertNotEqual(first.id, second.id, "and each names the branch it waits on")
+        let tree = try XCTUnwrap(controller.windowModel.pane1.uefiState.tree)
+        for path in [[0, 0], [0, 1]] {
+            let landed = expectation(description: "branch \(path)")
+            tree.expand(NodeID(path)) { _ in landed.fulfill() }
+            wait(for: [landed], timeout: 5)
+        }
+        window?.layoutIfNeeded()
 
-        _ = controller
+        XCTAssertEqual(kinds(of: outline),
+                       [.volume, .file, .padding, .freeSpace,
+                        .volume, .file, .padding, .freeSpace],
+                       "each volume kept its own children under itself")
+        // And every row is its own object, standing for its own place.
+        let ids = (0..<outline.numberOfRows).compactMap {
+            (outline.item(atRow: $0) as? UEFITreeRow)?.id
+        }
+        XCTAssertEqual(ids.count, outline.numberOfRows)
+        XCTAssertEqual(Set(ids).count, ids.count, "no path is drawn twice: \(ids)")
     }
 
     /// The point of a tree shared per file: what one tool-module opened, the

@@ -219,7 +219,7 @@ private struct ChecksumPass: Sendable {
             controller.say("Reading…")
             controller.showBusy()
         }
-        show()
+        show(rowsChanged: true)
 
         tree.whenReady { [weak self] in
             guard let self, self.tree === tree else { return }
@@ -233,7 +233,7 @@ private struct ChecksumPass: Sendable {
             // level, and its own checksums read. A branch opened later brings
             // its own pass, announced through `onChecksums`.
             self.verifyNewChecksums {
-                self.show()
+                self.show(rowsChanged: true)
                 self.onDisplay?(self.currentImage)
             }
         }
@@ -256,16 +256,23 @@ private struct ChecksumPass: Sendable {
     /// read yet.
     private func treeChanged(_ change: LazyUEFITree.Change) {
         switch change {
-        case .built, .expanded, .addressesResolved:
+        case .built, .invalidated:
+            if case .invalidated = change {
+                generation += 1
+                checkedIDs = []
+                nodeRepairs = [:]
+                checksumProblems = [:]
+                askedForAddresses = false
+            }
             verifyNewChecksums()
-        case .invalidated:
-            generation += 1
-            checkedIDs = []
-            nodeRepairs = [:]
-            checksumProblems = [:]
-            askedForAddresses = false
+            show(rowsChanged: true)
+        case .expanded, .addressesResolved:
+            // A branch appearing does not move the rows on screen: the panel
+            // opens the row it was asked to open, itself, when the branch is
+            // there. What changes here is what the rows *say*.
+            verifyNewChecksums()
+            show(rowsChanged: false)
         }
-        show()
     }
 
     /// The image as the tree has it right now — the top level plus whatever
@@ -362,12 +369,12 @@ private struct ChecksumPass: Sendable {
 
     /// Everything the panel shows, in one call: the tree, the detail for the
     /// node in focus, and the one zone that node publishes.
-    private func show() {
+    private func show(rowsChanged: Bool = false) {
         guard let tree, tree.isReady else {
             controller.show(
                 image: nil, tree: tree, focus: nil, detail: .empty, catalogue: guids,
                 badChecksums: checksumProblems, canWrite: !host.isReadOnly,
-                isBuilding: tree != nil
+                isBuilding: tree != nil, rowsChanged: true
             )
             host.publish(.empty)
             return
@@ -392,7 +399,8 @@ private struct ChecksumPass: Sendable {
         } ?? .empty
         controller.show(
             image: image, tree: tree, focus: focus, detail: detail, catalogue: guids,
-            badChecksums: checksumProblems, canWrite: !host.isReadOnly, isBuilding: false
+            badChecksums: checksumProblems, canWrite: !host.isReadOnly, isBuilding: false,
+            rowsChanged: rowsChanged
         )
         host.publish(UEFIPresenter.zones(for: node))
     }
