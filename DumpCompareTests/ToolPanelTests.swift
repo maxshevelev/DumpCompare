@@ -16,6 +16,10 @@ final class ToolPanelTests: XCTestCase {
         let isolated = isolatedDefaults(for: self)
         defaultsName = isolated.name
         ToolController.defaults = isolated.store
+        // The minimap's stored width shares the isolation: a test that opens
+        // it must not read whatever width this machine's user last dragged it
+        // to, and must not write one back.
+        MainViewController.minimapDefaults = isolated.store
     }
 
     override func tearDown() {
@@ -25,6 +29,7 @@ final class ToolPanelTests: XCTestCase {
             discardIsolatedDefaults(defaultsName, ToolController.defaults)
         }
         ToolController.defaults = .standard
+        MainViewController.minimapDefaults = .standard
         controller = nil
         url = nil
         super.tearDown()
@@ -175,25 +180,96 @@ final class ToolPanelTests: XCTestCase {
 
     // MARK: - The window
 
-    /// Opening the panel grows the window leftwards, so the dump keeps the
-    /// width it had and its right edge does not move — the mirror of what the
-    /// minimap does on the other side (§19).
-    func testOpeningThePanelGrowsTheWindowAndLeavesTheDumpAsWide() throws {
+    /// A window dragged wider than its hex grid has room in it, and the panel
+    /// opens into that room first: the window grows only by what the room
+    /// cannot cover, and the dump gives up its spare width rather than its
+    /// content. Closing the panel puts both back — the room returns to the
+    /// dump, and the window gives up only what it actually gained.
+    func testThePanelSpendsTheDumpsSpareWidthBeforeTheWindowGrows() throws {
         let (controller, window) = try makeController()
         let before = window.frame
         let contentBefore = controller.contentHost.frame.width
+        let slack = controller.dumpAreaSlack()
+        XCTAssertGreaterThan(slack, 0, "the premise: this window is wider than its grid")
+        XCTAssertLessThan(slack, StubToolA.preferredPanelWidth,
+                          "and not so much wider that the panel fits in the room alone")
 
         controller.tools.activate(StubToolA.identifier, animated: false)
         window.layoutIfNeeded()
 
         XCTAssertEqual(window.frame.maxX, before.maxX, accuracy: 1,
                        "the right edge stays put; the left one carries the change")
-        XCTAssertGreaterThan(window.frame.width, before.width)
+        XCTAssertEqual(window.frame.width,
+                       before.width + StubToolA.preferredPanelWidth - slack, accuracy: 2,
+                       "the window grows by the panel's width less the room already there")
+        XCTAssertEqual(controller.contentHost.frame.width, contentBefore - slack, accuracy: 2,
+                       "the dump gave up its spare width, and nothing more")
+        XCTAssertEqual(controller.dumpAreaSlack(), 0, accuracy: 2,
+                       "which is exactly the width its grid needs")
+
+        controller.tools.activate(nil, animated: false)
+        window.layoutIfNeeded()
+
+        XCTAssertEqual(window.frame.width, before.width, accuracy: 2,
+                       "closing gives back what opening took, and no more")
         XCTAssertEqual(controller.contentHost.frame.width, contentBefore, accuracy: 2,
-                       "the dump keeps its width")
+                       "and the dump has its room back")
+    }
+
+    /// With no room to spare the rule is the old one: the window carries the
+    /// whole panel, so the dump keeps the width its content needs.
+    func testWithNoSpareWidthTheWindowCarriesTheWholePanel() throws {
+        let (controller, window) = try makeController()
+
+        // Take the window down to exactly the width the hex grid wants.
+        let content = try XCTUnwrap(window.contentView).frame
+        window.setContentSize(NSSize(width: content.width - controller.dumpAreaSlack(),
+                                     height: content.height))
+        window.layoutIfNeeded()
+        XCTAssertEqual(controller.dumpAreaSlack(), 0, accuracy: 2, "the premise: no room left")
+
+        let before = window.frame
+        let contentBefore = controller.contentHost.frame.width
+        controller.tools.activate(StubToolA.identifier, animated: false)
+        window.layoutIfNeeded()
+
+        XCTAssertEqual(window.frame.width, before.width + StubToolA.preferredPanelWidth,
+                       accuracy: 2, "the window carries all of it")
+        XCTAssertEqual(controller.contentHost.frame.width, contentBefore, accuracy: 2,
+                       "so the dump keeps its width")
     }
 
     // MARK: - Beside the minimap
+
+    /// The same rule on the trailing edge: the minimap opens into the dump's
+    /// spare width before the window's right edge moves. Its width fits inside
+    /// the room this window has, so the window does not move at all — and
+    /// hiding it again leaves the window where it was rather than shrinking it
+    /// by a panel the window never paid for.
+    func testTheMinimapAlsoOpensIntoTheDumpsSpareWidth() throws {
+        let (controller, window) = try makeController()
+        let before = window.frame.width
+        let contentBefore = controller.contentHost.frame.width
+        let width = controller.minimapPreferredPanelWidth + controller.panelSplit.dividerThickness
+        XCTAssertLessThan(width, controller.dumpAreaSlack(),
+                          "the premise: the panel fits in the room the window already has")
+
+        controller.setMinimapPanelVisible(true, animated: false)
+        window.layoutIfNeeded()
+
+        XCTAssertEqual(window.frame.width, before, accuracy: 1,
+                       "the room covered it, so the window did not move")
+        XCTAssertEqual(controller.contentHost.frame.width, contentBefore - width, accuracy: 2,
+                       "the dump gave the panel its spare width")
+
+        controller.setMinimapPanelVisible(false, animated: false)
+        window.layoutIfNeeded()
+
+        XCTAssertEqual(window.frame.width, before, accuracy: 1,
+                       "and hiding it leaves the window where it was")
+        XCTAssertEqual(controller.contentHost.frame.width, contentBefore, accuracy: 2,
+                       "with the room back in the dump")
+    }
 
     /// Both panels open at once, one on each edge, with the dump between them —
     /// the case that broke when the split gained a third pane and every divider

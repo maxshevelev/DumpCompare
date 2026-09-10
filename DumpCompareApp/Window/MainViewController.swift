@@ -1458,6 +1458,50 @@ final class MainViewController: NSViewController {
     static let toolDividerIndex = 0
     static let minimapDividerIndex = 1
 
+    /// How much of the dump's spare width each side panel is borrowing right
+    /// now: the room it opened into instead of pushing the window's edge out.
+    /// Kept so the way out mirrors the way in — a panel gives back what it
+    /// borrowed before the window gives up anything.
+    private var borrowedByToolPanel: CGFloat = 0
+    private var borrowedByMinimap: CGFloat = 0
+
+    /// The dump area's spare width: how much wider it is than the hex grid it
+    /// is showing. A window the user has dragged wider than its content has
+    /// room in it, and a side panel opens into that room before it costs the
+    /// window anything.
+    ///
+    /// Zero when there is no content to measure (the empty state, or a layout
+    /// that has not happened yet) and when the dump is already narrower than
+    /// its grid — there the panel costs the window its full width, as it
+    /// always did.
+    ///
+    /// Internal rather than private so the suite can set a window up with a
+    /// known amount of room, or none.
+    func dumpAreaSlack() -> CGFloat {
+        let needed = standardContentWidth()
+        guard needed > 0 else { return 0 }
+        return max(0, contentHost.frame.width - needed)
+    }
+
+    /// What the window's width must change by for a side panel gaining or
+    /// giving up `delta` points, and the borrow that goes with it.
+    ///
+    /// Growing, the panel spends the dump's spare width first and asks the
+    /// window only for what is left over. Shrinking, it hands that spare width
+    /// back before the window gives up anything: a panel that cost the window
+    /// nothing to open must cost it nothing to close, or the window would end
+    /// up narrower than it was before the panel was ever shown.
+    private func windowDelta(forPanel delta: CGFloat, borrowed: inout CGFloat) -> CGFloat {
+        if delta > 0 {
+            let borrow = min(delta, dumpAreaSlack())
+            borrowed += borrow
+            return delta - borrow
+        }
+        let given = min(-delta, borrowed)
+        borrowed -= given
+        return delta + given
+    }
+
     /// The minimap panel's width as the split currently has it — what the tool
     /// panel's clamp has to leave alone.
     private func currentMinimapWidth() -> CGFloat {
@@ -1497,17 +1541,20 @@ final class MainViewController: NSViewController {
     }
 
     /// The window move that goes with opening or closing the tool panel: the
-    /// window grows or shrinks by the panel's width so the dump keeps the width
-    /// it had. The mirror of the minimap's, and mirrored in the literal sense —
-    /// the window's LEADING edge moves and the trailing one stays put, because
-    /// the panel opens on the left.
+    /// window grows or shrinks by whatever the dump's own spare width cannot
+    /// absorb, so the dump keeps the width its content needs. The mirror of the
+    /// minimap's, and mirrored in the literal sense — the window's LEADING edge
+    /// moves and the trailing one stays put, because the panel opens on the
+    /// left.
     func toolPanelWindowResize(delta: CGFloat) -> ((CGFloat) -> Void)? {
         guard let window = view.window, delta != 0 else { return nil }
-        // Exactly the panel's change: the split keeps its dividers whether a
-        // pane is 400 points wide or none at all, so no seam appears or goes
-        // with the panel and the window's move is the width alone.
+        // The split keeps its dividers whether a pane is 400 points wide or
+        // none at all, so no seam appears or goes with the panel and the
+        // panel's change is the width alone.
+        let move = windowDelta(forPanel: delta, borrowed: &borrowedByToolPanel)
+        guard move != 0 else { return nil }
         let start = window.frame
-        let targetWidth = max(0, start.width + delta)
+        let targetWidth = max(0, start.width + move)
         return { [weak window] progress in
             guard let window else { return }
             var frame = start
@@ -1723,9 +1770,9 @@ final class MainViewController: NSViewController {
     }
 
     /// The window move that goes with showing or hiding the minimap: growing or
-    /// shrinking by the panel's width so the hex content area keeps its width
-    /// (§19). The window grows or shrinks from the right edge; the left edge
-    /// stays put.
+    /// shrinking by whatever the dump's own spare width cannot absorb, so the
+    /// hex content area keeps the width its grid needs (§19). The window grows
+    /// or shrinks from the right edge; the left edge stays put.
     ///
     /// Returns a function of progress rather than doing the move, so the panel's
     /// animation can drive it frame by frame on its own eased clock — a window
@@ -1738,9 +1785,12 @@ final class MainViewController: NSViewController {
     /// the steps.
     private func minimapWindowResize(visible: Bool) -> ((CGFloat) -> Void)? {
         guard let window = view.window else { return nil }
-        let delta = minimapPreferredPanelWidth + panelSplit.dividerThickness
+        let width = minimapPreferredPanelWidth + panelSplit.dividerThickness
+        let move = windowDelta(forPanel: visible ? width : -width,
+                               borrowed: &borrowedByMinimap)
+        guard move != 0 else { return nil }
         let start = window.frame
-        let targetWidth = visible ? start.width + delta : max(0, start.width - delta)
+        let targetWidth = max(0, start.width + move)
         return { [weak window] progress in
             guard let window else { return }
             var frame = start
