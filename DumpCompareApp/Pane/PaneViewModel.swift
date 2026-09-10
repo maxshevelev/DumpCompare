@@ -538,6 +538,22 @@ final class PaneViewModel: HexViewDataSource {
     // MARK: - Document lifecycle
 
     func open(url: URL) throws {
+        // Opening the file that is already here is a *reload*, and the pane
+        // decides that — not each caller. Every route into a pane says the same
+        // thing ("open this url"), so the one place that can tell the two
+        // situations apart is this one; a caller choosing between `open` and
+        // `revert` for itself is how the two came to answer differently about
+        // where the reader was left.
+        //
+        // What differs is only what the situation makes different: the same
+        // file keeps the partition it was cut into and the watcher it already
+        // has, a different file starts as one piece and is watched afresh.
+        // Everything a reader can observe about *where they are* — the caret,
+        // the viewport — is the same either way.
+        if isOpen, FileIdentity(url: url) == document?.identity {
+            try revert()
+            return
+        }
         // Where the reader is, in offsets. A pane is a window on a byte range,
         // and loading another dump into it is usually a way of looking at the
         // same offsets in a different file — so the caret comes over, clamped

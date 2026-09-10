@@ -143,10 +143,16 @@ final class ScrollPreservationTests: XCTestCase {
         let header = try outcome { controller, url in
             controller.openFiles(into: 0, urls: [url])
         }
+        // And opening the file the pane already holds, which is a reload — a
+        // different thing to do, but not a different place to leave the reader.
+        let again = try outcome { controller, _ in
+            controller.openFiles([controller.windowModel.pane1.document!.url])
+        }
 
         XCTAssertGreaterThan(panel.yBefore, 0, "precondition: the pane is scrolled down")
         for (name, result) in [("the Open panel", panel), ("a drop", drop),
-                               ("the pane header", header)] {
+                               ("the pane header", header),
+                               ("opening the same file again", again)] {
             XCTAssertEqual(result.y, result.yBefore, accuracy: 0.5,
                            "\(name) left the viewport where the reader was")
             XCTAssertEqual(result.caret, 0x3F00,

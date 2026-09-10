@@ -3391,7 +3391,11 @@ final class MainViewController: NSViewController {
                 guard response == .alertFirstButtonReturn else { return false }
             }
             do {
-                try pane.revert()
+                // The same `open` every other route takes: the pane knows this
+                // is the file it already holds and reloads it. The question
+                // above is this route's own — asking is the controller's job,
+                // doing is the pane's.
+                try pane.open(url: url)
                 return true
             } catch {
                 presentError("Could not reload file.", error)
