@@ -1,4 +1,6 @@
 import DumpCompareCore
+import UEFIImage
+import UEFIToolUI
 import XCTest
 @testable import DumpCompare
 
@@ -62,6 +64,98 @@ final class ScrollPreservationTests: XCTestCase {
         XCTAssertGreaterThan(yBefore, 0, "precondition: the pane is scrolled down")
 
         let second = try tempFile([UInt8](repeating: 0x22, count: 16384))
+        urls.append(second)
+        try controller.windowModel.pane1.open(url: second)
+        window.layoutIfNeeded()
+
+        XCTAssertEqual(pane.scrollView.contentView.bounds.origin.y, yBefore, accuracy: 0.5,
+                       "the load left the viewport where the reader was")
+    }
+
+    /// The same through the gesture a reader actually uses: a drop on
+    /// "Replace Current File".
+    func testReplacingTheFileByDropPreservesTheScroll() throws {
+        let (controller, window, url, pane, _) =
+            try makeScrolledSingleFile([UInt8](repeating: 0x11, count: 16384))
+        var urls = [url]
+        defer { cleanup(controller, urls) }
+
+        // The caret somewhere the viewport is not — which is the case the
+        // complaint is about: a reveal here drags the dump to the caret.
+        controller.windowModel.pane1.moveCaret(to: 0x3F00)
+        scroll(pane, toY: 400)
+        window.layoutIfNeeded()
+        let yBefore = pane.scrollView.contentView.bounds.origin.y
+        XCTAssertGreaterThan(yBefore, 0, "precondition: the pane is scrolled down")
+
+        let second = try tempFile([UInt8](repeating: 0x22, count: 16384))
+        urls.append(second)
+        controller.handleSingleFileDrop(target: .replace, urls: [second])
+        window.layoutIfNeeded()
+
+        XCTAssertEqual(pane.scrollView.contentView.bounds.origin.y, yBefore, accuracy: 0.5,
+                       "the drop left the viewport where the reader was")
+    }
+
+    /// Re-dropping the file that is already open is a reload (§4.1 rule 5),
+    /// and a reload is not a navigation either: the reader asked for the bytes
+    /// back, not to be taken to wherever the caret happens to be.
+    func testReloadingTheSameFilePreservesTheScroll() throws {
+        let (controller, window, url, pane, _) =
+            try makeScrolledSingleFile([UInt8](repeating: 0x11, count: 16384))
+        defer { cleanup(controller, [url]) }
+
+        controller.windowModel.pane1.moveCaret(to: 0x3F00)
+        scroll(pane, toY: 400)
+        window.layoutIfNeeded()
+        let yBefore = pane.scrollView.contentView.bounds.origin.y
+        XCTAssertGreaterThan(yBefore, 0, "precondition: the pane is scrolled down")
+
+        controller.handleSingleFileDrop(target: .replace, urls: [url])
+        window.layoutIfNeeded()
+
+        XCTAssertEqual(pane.scrollView.contentView.bounds.origin.y, yBefore, accuracy: 0.5,
+                       "the reload left the viewport where the reader was")
+        XCTAssertEqual(controller.windowModel.pane1.caretOffset, 0x3F00,
+                       "and the caret where they left it")
+    }
+
+    /// With a tool panel open, too.
+    ///
+    /// A panel publishes the zone of the node it has in focus, and the host
+    /// scrolls the dump to a zone that has just come into focus — that is what
+    /// a panel is for. But a *replaced file* is not a new focus: the node that
+    /// was in focus belonged to the file that is gone, and republishing it
+    /// drags the dump to wherever that path happens to land in the new one.
+    func testReplacingTheFileWithAToolPanelOpenPreservesTheScroll() throws {
+        let (controller, window, url, pane, _) =
+            try makeScrolledSingleFile(UEFITestImage.make() + UEFITestImage.make())
+        var urls = [url]
+        defer { cleanup(controller, urls) }
+
+        controller.tools.activate(UEFIToolModule.identifier, animated: false)
+        window.layoutIfNeeded()
+        let session = try XCTUnwrap(controller.tools.session as? UEFIToolSession)
+        let shown = expectation(description: "the panel is up")
+        session.onDisplay = { _ in shown.fulfill() }
+        wait(for: [shown], timeout: 5)
+        session.onDisplay = nil
+
+        // Something in focus, so there is a zone to republish.
+        let outline = try XCTUnwrap(
+            descendants(of: try XCTUnwrap(controller.tools.panel), NSOutlineView.self).first
+        )
+        outline.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        window.layoutIfNeeded()
+        XCTAssertFalse(controller.windowModel.pane1.zones.zones.isEmpty,
+                       "precondition: the panel published a zone")
+
+        scroll(pane, toY: 1000)
+        window.layoutIfNeeded()
+        let yBefore = pane.scrollView.contentView.bounds.origin.y
+        XCTAssertGreaterThan(yBefore, 0, "precondition: the pane is scrolled down")
+
+        let second = try tempFile(UEFITestImage.make() + UEFITestImage.make())
         urls.append(second)
         try controller.windowModel.pane1.open(url: second)
         window.layoutIfNeeded()
