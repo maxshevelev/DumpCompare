@@ -207,6 +207,78 @@ final class MEAToolFlowTests: XCTestCase {
         XCTAssertTrue(text.contains("0x4000 (16384 bytes)"), "\(text)")
     }
 
+    /// The Summary tab's two ways out, in its own row against the trailing
+    /// edge: the rows as rich text to paste, and the whole page as a picture.
+    /// They belong to that tab — the tree has no one page to hand over — so
+    /// they go with it.
+    func testTheSummaryTabCopiesItsRowsAndItsPicture() throws {
+        _ = try open(METestImage.fptFile())
+        let panel = try panel()
+        let pasteboard = NSPasteboard.general
+        let restored = pasteboard.string(forType: .string)
+        addTeardownBlock {
+            pasteboard.clearContents()
+            if let restored { pasteboard.setString(restored, forType: .string) }
+        }
+
+        let copy = try button(named: "Copy Summary", in: panel)
+        let picture = try button(named: "Copy Screenshot", in: panel)
+        let tabs = try XCTUnwrap(
+            descendants(of: panel, NSSegmentedControl.self).first { $0.segmentCount == 2 })
+        XCTAssertTrue(isOnScreen(copy, under: panel), "both are up on the Summary tab")
+        XCTAssertTrue(isOnScreen(picture, under: panel))
+        let inPanel = { (view: NSView) in view.convert(view.bounds, to: panel) }
+        XCTAssertGreaterThan(inPanel(copy).minX, inPanel(tabs).maxX,
+                             "they sit after the switch, not over it")
+        XCTAssertEqual(inPanel(picture).maxX, panel.bounds.maxX - 8, accuracy: 2,
+                       "and against the trailing edge")
+        XCTAssertEqual(inPanel(copy).midY, inPanel(tabs).midY, accuracy: 2,
+                       "on the switch's own line")
+
+        // Copy: the rows as rich text, with the plain spelling under it.
+        copy.performClick(nil)
+        let rtf = try XCTUnwrap(pasteboard.data(forType: .rtf), "rich text, not only a string")
+        let pasted = try XCTUnwrap(NSAttributedString(rtf: rtf, documentAttributes: nil))
+        XCTAssertTrue(pasted.string.contains("Family\t"), "a row is a label and its value: \(pasted.string)")
+        XCTAssertTrue(pasted.string.contains("0x4000 (16384 bytes)"), pasted.string)
+        XCTAssertEqual(pasteboard.string(forType: .string), pasted.string,
+                       "and a plain-text field gets the same rows")
+
+        // Screenshot: the whole document, not the part on screen. The window is
+        // made short first, so the summary really does outgrow the area it is
+        // shown in and "the whole of it" is a claim with something behind it.
+        let window = try XCTUnwrap(self.window)
+        window.setContentSize(NSSize(width: window.frame.width, height: 260))
+        zoom(to: ToolPanelFont.sizeRange.upperBound)
+        window.layoutIfNeeded()
+        let scroll = try XCTUnwrap(
+            descendants(of: panel, ToolDetailScroll.self).first { !$0.isHidden })
+        let document = try XCTUnwrap(scroll.documentView)
+        XCTAssertGreaterThan(document.bounds.height, scroll.contentView.bounds.height,
+                             "the premise: the summary no longer fits the visible area")
+
+        picture.performClick(nil)
+        let image = try XCTUnwrap(
+            pasteboard.readObjects(forClasses: [NSImage.self])?.first as? NSImage,
+            "a picture on the clipboard")
+        XCTAssertEqual(image.size.height, document.bounds.height, accuracy: 1,
+                       "all of the summary, not the visible part of it")
+        XCTAssertEqual(image.size.width, document.bounds.width, accuracy: 1)
+
+        // The Full Tree tab has no page to hand over, so they go with the tab.
+        try showFullTree()
+        XCTAssertFalse(isOnScreen(copy, under: panel))
+        XCTAssertFalse(isOnScreen(picture, under: panel))
+    }
+
+    /// The panel's button carrying `name` — the accessibility label, which is
+    /// what an icon-only button says it is.
+    private func button(named name: String, in panel: NSView) throws -> NSButton {
+        try XCTUnwrap(
+            descendants(of: panel, NSButton.self).first { $0.accessibilityLabel() == name },
+            "no button called \"\(name)\" in the panel")
+    }
+
     /// "Reading…" is the line under the panel while a parse runs — and only
     /// while it runs. Once the analysis lands the line returns to empty, as the
     /// other panels' do, so the busy reading is not mistaken for a result that

@@ -38,6 +38,13 @@ import ToolModuleKit
     private let tabs = NSSegmentedControl(labels: ["Summary", "Full Tree"],
                                           trackingMode: .selectOne,
                                           target: nil, action: nil)
+    /// Taking the summary somewhere else: as text to paste into a note or a
+    /// report, or as a picture of the whole of it. They sit in the tab row,
+    /// against its trailing edge, and belong to the Summary tab — the tree has
+    /// its own ways out (a zone, a reveal) and no one page to hand over.
+    private let copyButton = NSButton()
+    private let screenshotButton = NSButton()
+    private let summaryActions = NSStackView()
     private let contentBox = NSView()
     /// The empty Summary tab: an icon over a line saying what the panel is
     /// doing, or why there is nothing to read.
@@ -127,6 +134,7 @@ import ToolModuleKit
         view.translatesAutoresizingMaskIntoConstraints = false
 
         configureTabs()
+        configureSummaryActions()
         configureOutline()
 
         outlineScroll.hasVerticalScroller = true
@@ -204,14 +212,25 @@ import ToolModuleKit
         bottomRow.addArrangedSubview(retryButton)
 
         view.addSubview(tabs)
+        view.addSubview(summaryActions)
         view.addSubview(contentBox)
         view.addSubview(bottomRow)
 
         let barWidth = progressBar.widthAnchor.constraint(equalToConstant: 150)
         barWidth.priority = .defaultHigh
+        // Clear of the tabs, and giving way before them: the switch is what the
+        // row is for.
+        let clearOfTabs = summaryActions.leadingAnchor.constraint(
+            greaterThanOrEqualTo: tabs.trailingAnchor, constant: 8
+        )
+        clearOfTabs.priority = .defaultHigh
         NSLayoutConstraint.activate([
             tabs.topAnchor.constraint(equalTo: view.topAnchor, constant: 8),
             tabs.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
+
+            clearOfTabs,
+            summaryActions.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
+            summaryActions.centerYAnchor.constraint(equalTo: tabs.centerYAnchor),
 
             contentBox.topAnchor.constraint(equalTo: tabs.bottomAnchor, constant: 6),
             contentBox.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 8),
@@ -315,6 +334,39 @@ import ToolModuleKit
         tabs.action = #selector(tabChanged)
         tabs.selectedSegment = 0
         tabs.translatesAutoresizingMaskIntoConstraints = false
+        // The switch keeps its own width whatever else is in the row.
+        tabs.setContentCompressionResistancePriority(.required, for: .horizontal)
+    }
+
+    /// The two ways out of the Summary tab, as icons in its own row: the rows
+    /// as text to paste, and the whole page as a picture.
+    private func configureSummaryActions() {
+        for (button, symbol, name, action) in [
+            (copyButton, "doc.on.doc", "Copy Summary", #selector(copySummary)),
+            (screenshotButton, "camera", "Copy Screenshot", #selector(copyScreenshot)),
+        ] {
+            button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: name)?
+                .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 11, weight: .regular))
+            button.imagePosition = .imageOnly
+            // The panel's own close button's treatment: a plain symbol in the
+            // chrome's colour, not a control with a box around it.
+            button.bezelStyle = .inline
+            button.controlSize = .small
+            button.isBordered = false
+            button.contentTintColor = .secondaryLabelColor
+            button.toolTip = name
+            button.setAccessibilityLabel(name)
+            button.target = self
+            button.action = action
+            button.translatesAutoresizingMaskIntoConstraints = false
+        }
+
+        summaryActions.orientation = .horizontal
+        summaryActions.alignment = .centerY
+        summaryActions.spacing = 2
+        summaryActions.translatesAutoresizingMaskIntoConstraints = false
+        summaryActions.addArrangedSubview(copyButton)
+        summaryActions.addArrangedSubview(screenshotButton)
     }
 
     /// Re-reads the panel's type size and puts everything on screen at it: the
@@ -375,6 +427,8 @@ import ToolModuleKit
         splitter.isHidden = !showTree
         summaryScroll.isHidden = !showSummary
         placeholder.isHidden = showSummary || showTree
+        // Nothing to copy and nothing to picture until the summary is up.
+        summaryActions.isHidden = !showSummary
         tabs.selectedSegment = index
     }
 
@@ -385,6 +439,100 @@ import ToolModuleKit
 
     @objc private func retryClicked() {
         onRetry?()
+    }
+
+    // MARK: - Taking the summary away
+
+    /// The summary as rich text on the clipboard: headings bold, each row a
+    /// label and its value on one tabbed line, so it pastes into a note or a
+    /// report as the table it is on screen rather than as a run-on paragraph.
+    /// An `NSAttributedString` carries both spellings — the RTF and the plain
+    /// text under it — so a plain-text field gets a readable version for free.
+    @objc func copySummary() {
+        guard !summaryBlocks.isEmpty else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.writeObjects([Self.richText(of: summaryBlocks)])
+    }
+
+    /// A picture of the whole summary on the clipboard — all of it, not the
+    /// part that happens to be scrolled into view: the document view is as tall
+    /// as its rows, and that is what is cached.
+    @objc func copyScreenshot() {
+        guard !summaryBlocks.isEmpty, let image = summaryPicture() else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.writeObjects([image])
+    }
+
+    /// The summary's document view, drawn whole. Nil when there is nothing laid
+    /// out to draw — a panel that has never been on screen has no size.
+    func summaryPicture() -> NSImage? {
+        guard let document = summaryScroll.documentView else { return nil }
+        let bounds = document.bounds
+        guard bounds.width >= 1, bounds.height >= 1,
+              let rows = document.bitmapImageRepForCachingDisplay(in: bounds)
+        else { return nil }
+        document.cacheDisplay(in: bounds, to: rows)
+
+        // The rows draw no background of their own — the scroll view behind
+        // them does — so the cache alone would paste as text on nothing.
+        let picture = NSImage(size: bounds.size)
+        let whole = NSRect(origin: .zero, size: bounds.size)
+        picture.lockFocus()
+        (summaryScroll.drawsBackground ? summaryScroll.backgroundColor : .textBackgroundColor)
+            .setFill()
+        whole.fill()
+        rows.draw(in: whole)
+        picture.unlockFocus()
+        return picture
+    }
+
+    /// The blocks as one attributed string. The label column is a tab stop
+    /// rather than padding, so the values line up in whatever font the reader's
+    /// document is in.
+    static func richText(of blocks: [MEASummaryBlock]) -> NSAttributedString {
+        let text = NSMutableAttributedString()
+        let size = ToolPanelFont.size
+        let rowStyle = NSMutableParagraphStyle()
+        rowStyle.tabStops = [NSTextTab(textAlignment: .left, location: size * 16)]
+        rowStyle.defaultTabInterval = size * 16
+        rowStyle.headIndent = size * 16
+
+        for block in blocks {
+            if text.length > 0 { text.append(NSAttributedString(string: "\n")) }
+            if let title = block.title {
+                text.append(NSAttributedString(string: title + "\n", attributes: [
+                    .font: NSFont.systemFont(ofSize: size + 1, weight: .semibold),
+                ]))
+            }
+            for row in block.rows {
+                text.append(NSAttributedString(string: row.label + "\t", attributes: [
+                    .font: NSFont.systemFont(ofSize: size),
+                    .foregroundColor: NSColor.secondaryLabelColor,
+                    .paragraphStyle: rowStyle,
+                ]))
+                let value: String
+                let emphasized: Bool
+                switch row.value {
+                case .value(let shown):
+                    value = shown
+                    // The same weight the panel gives a status-toned value.
+                    emphasized = row.tone != .standard
+                case .comingSoon:
+                    value = "Coming soon"
+                    emphasized = false
+                }
+                text.append(NSAttributedString(string: value + "\n", attributes: [
+                    .font: value.hasPrefix("0x")
+                        ? NSFont.monospacedDigitSystemFont(ofSize: size, weight: .regular)
+                        : NSFont.systemFont(ofSize: size, weight: emphasized ? .bold : .regular),
+                    .foregroundColor: MEASummaryToneColor.color(for: row.tone),
+                    .paragraphStyle: rowStyle,
+                ]))
+            }
+        }
+        return text
     }
 
     // MARK: - A parse's progress
