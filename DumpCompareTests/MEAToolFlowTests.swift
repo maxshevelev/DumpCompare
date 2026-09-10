@@ -220,6 +220,38 @@ final class MEAToolFlowTests: XCTestCase {
                        "a finished analysis is not still 'Reading…': \(text)")
     }
 
+    /// The wait belongs to whichever tab is open, not to Summary alone: on Full
+    /// Tree an analysis that has not landed is an empty outline, which says
+    /// nothing about whether one is coming. The same icon and words stand in
+    /// for the tree until it has rows, and step aside the moment it does.
+    func testTheFullTreeTabSaysTheSameWhileTheAnalysisRuns() throws {
+        _ = try openWithoutWaiting(METestImage.fptFile())
+        try showFullTree()
+        let panel = try panel()
+
+        let waiting = try XCTUnwrap(
+            descendants(of: panel, NSTextField.self)
+                .first { $0.stringValue == "Analyzing the ME firmware…" },
+            "the Full Tree tab waits with the same words: "
+                + "\(descendants(of: panel, NSTextField.self).map(\.stringValue))")
+        XCTAssertTrue(isOnScreen(waiting, under: panel),
+                      "and shows them rather than an empty outline")
+        XCTAssertTrue(
+            descendants(of: panel, NSImageView.self).contains {
+                isOnScreen($0, under: panel)
+                    && $0.image?.accessibilityDescription == "Analyzing the ME firmware…"
+            },
+            "with the same symbol over them")
+        XCTAssertEqual(try outline().numberOfRows, 0, "the premise: no tree yet")
+
+        // The tree lands and takes the tab back.
+        _ = try waitForDisplay(of: session())
+        try showFullTree()
+        XCTAssertGreaterThan(try outline().numberOfRows, 0, "the tree has rows now")
+        XCTAssertFalse(isOnScreen(waiting, under: panel),
+                       "and the wait has stepped aside")
+    }
+
     /// An empty Summary tab is the whole panel while the ME region is read, so
     /// it says what is being waited for — with an icon over the words — rather
     /// than promising a summary in the same sentence it uses for a file that
@@ -405,6 +437,18 @@ final class MEAToolFlowTests: XCTestCase {
         let scroll = try XCTUnwrap(
             descendants(of: panel, ToolDetailScroll.self).first { !$0.isHidden })
         return scroll.content
+    }
+
+    /// Whether `view` is actually shown: a view stays in the hierarchy — and in
+    /// `descendants(of:)` — while it is hidden, and so does everything under a
+    /// hidden ancestor, which is exactly how a tab switch works here.
+    private func isOnScreen(_ view: NSView, under root: NSView) -> Bool {
+        var here: NSView? = view
+        while let step = here, step !== root.superview {
+            if step.isHidden { return false }
+            here = step.superview
+        }
+        return true
     }
 
     /// What a label's own text needs on one line, in the font it is drawn in.

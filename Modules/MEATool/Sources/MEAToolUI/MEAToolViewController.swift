@@ -279,6 +279,10 @@ import ToolModuleKit
     func setPlaceholder(_ state: Placeholder) {
         placeholderState = state
         applyPlaceholder()
+        // A parse starting is news for what is on screen, not only for what the
+        // placeholder says: it is told before any roots arrive, and the tab it
+        // is standing in for is whichever one is open.
+        selectTab(tabIndex)
     }
 
     /// The placeholder as the state and the current zoom make it. The icon is
@@ -358,12 +362,15 @@ import ToolModuleKit
         applyColumnWidths()
     }
 
-    /// Which content the selected tab shows: the summary for Summary — or the
-    /// placeholder standing for none — and the tree (with its detail below) for
-    /// Full Tree.
+    /// Which content the selected tab shows: the summary for Summary, the tree
+    /// (with its detail below) for Full Tree — and, for either of them with
+    /// nothing in it yet, the placeholder saying why. A tab is empty for the
+    /// same three reasons on both sides, and while the ME region is being read
+    /// an empty tree is a wait, not an answer; an empty outline with a spinner
+    /// under it said nothing about which.
     private func selectTab(_ index: Int) {
         tabIndex = index
-        let showTree = index == 1
+        let showTree = index == 1 && !roots.isEmpty
         let showSummary = index == 0 && !summaryBlocks.isEmpty
         splitter.isHidden = !showTree
         summaryScroll.isHidden = !showSummary
