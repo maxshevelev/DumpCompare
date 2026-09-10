@@ -63,6 +63,17 @@ final class MEAToolFlowTests: XCTestCase {
     /// analysis — which runs off the main actor — to land.
     private func open(_ bytes: [UInt8], dataSource: (any MEADataSource)? = nil)
         throws -> MainViewController {
+        let controller = try openWithoutWaiting(bytes, dataSource: dataSource)
+        _ = try waitForDisplay(of: session())
+        return controller
+    }
+
+    /// The same open, stopping the moment the analysis has been asked for. It
+    /// runs off the main actor, so this is the panel as a user sees it *while*
+    /// the ME region is being read — the state the empty tab speaks for.
+    private func openWithoutWaiting(_ bytes: [UInt8],
+                                    dataSource: (any MEADataSource)? = nil)
+        throws -> MainViewController {
         if let dataSource { MEAToolSession.dataSource = dataSource }
         let url = try tempFile(bytes)
         files.append(url)
@@ -77,7 +88,6 @@ final class MEAToolFlowTests: XCTestCase {
         window.layoutIfNeeded()
         controller.tools.activate(MEAToolModule.identifier, animated: false)
         window.layoutIfNeeded()
-        _ = try waitForDisplay(of: session())
         return controller
     }
 
@@ -201,6 +211,33 @@ final class MEAToolFlowTests: XCTestCase {
         let text = descendants(of: panel, NSTextField.self).map(\.stringValue)
         XCTAssertFalse(text.contains("Reading…"),
                        "a finished analysis is not still 'Reading…': \(text)")
+    }
+
+    /// An empty Summary tab is the whole panel while the ME region is read, so
+    /// it says what is being waited for — with an icon over the words — rather
+    /// than promising a summary in the same sentence it uses for a file that
+    /// has none and for an analysis that failed.
+    func testTheEmptyTabSaysWhatItIsWaitingFor() throws {
+        _ = try openWithoutWaiting(METestImage.fptFile())
+        let panel = try panel()
+
+        let waiting = descendants(of: panel, NSTextField.self).map(\.stringValue)
+        XCTAssertTrue(waiting.contains("Analyzing the ME firmware…"),
+                      "the wait says what it is waiting for: \(waiting)")
+        XCTAssertTrue(
+            descendants(of: panel, NSImageView.self).contains {
+                !$0.isHidden && $0.image?.accessibilityDescription == "Analyzing the ME firmware…"
+            },
+            "and wears a system symbol over the words")
+        XCTAssertFalse(anyAmbiguousLayout(under: panel),
+                       "the icon and its two lines have a size the engine can solve")
+
+        // Once the analysis lands the panel is not still saying it is reading:
+        // this file has firmware, so the summary itself takes the tab.
+        _ = try waitForDisplay(of: session())
+        let landed = descendants(of: panel, NSTextField.self).map(\.stringValue)
+        XCTAssertFalse(landed.contains("Analyzing the ME firmware…"),
+                       "a finished analysis is not still analyzing: \(landed)")
     }
 
     /// An FPT table in a file is a reason the analysis has something to say on
@@ -384,6 +421,13 @@ final class MEAToolFlowTests: XCTestCase {
         let retry = try XCTUnwrap(
             descendants(of: panel, NSButton.self).first { $0.title == "Try Again" })
         XCTAssertFalse(retry.isHidden)
+
+        // The empty tab above the line stops promising a summary and points at
+        // the line that says why there is none.
+        let text = descendants(of: panel, NSTextField.self).map(\.stringValue)
+        XCTAssertTrue(text.contains("The analysis did not finish"), "\(text)")
+        XCTAssertFalse(text.contains("Analyzing the ME firmware…"),
+                       "the failure is not still a wait: \(text)")
         XCTAssertEqual(controller?.windowModel.pane1.zones.zones.isEmpty ?? true, true,
                        "no analysis, no zone")
 

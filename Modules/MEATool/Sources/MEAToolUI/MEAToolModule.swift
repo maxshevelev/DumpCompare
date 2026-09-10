@@ -122,6 +122,7 @@ struct MEAParkedState: ToolSessionState {
             roots = []
             focusPath = nil
             controller.showSummary([])
+            controller.setPlaceholder(.failed)
             controller.say("Could not read the file: \(error)", asProblem: true)
             show()
             return
@@ -153,6 +154,9 @@ struct MEAParkedState: ToolSessionState {
         generation += 1
         let generation = self.generation
         controller.say("Reading…")
+        // The empty tab is the whole panel until the analysis lands, so it says
+        // what is being waited for rather than promising a summary.
+        controller.setPlaceholder(.waiting)
         controller.showBusy()
         let analyzer = self.analyzer
         Task { [weak self] in
@@ -171,6 +175,7 @@ struct MEAParkedState: ToolSessionState {
                 self.roots = []
                 self.focusPath = nil
                 self.controller.showSummary([])
+                self.controller.setPlaceholder(.failed)
                 self.controller.say(
                     MEAToolSession.describe(error), asProblem: true)
                 self.controller.showRetry(true)
@@ -254,6 +259,10 @@ struct MEAParkedState: ToolSessionState {
             focusPath = nil
         }
         controller.showRetry(false)
+        // An analysis has landed — fresh or out of the cache — so nothing is
+        // being waited for. If the summary is still empty it is because this
+        // file has no ME firmware, which is what the empty tab now says.
+        controller.setPlaceholder(.empty)
         controller.showSummary(MEASummary.build(analysis))
         show()
     }

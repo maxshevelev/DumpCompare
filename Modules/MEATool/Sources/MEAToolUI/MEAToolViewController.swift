@@ -39,7 +39,15 @@ import ToolModuleKit
                                           trackingMode: .selectOne,
                                           target: nil, action: nil)
     private let contentBox = NSView()
-    private let placeholderLabel = NSTextField(labelWithString: "")
+    /// The empty Summary tab: an icon over a line saying what the panel is
+    /// doing, or why there is nothing to read.
+    private let placeholder = NSStackView()
+    private let placeholderIcon = NSImageView()
+    private let placeholderTitle = NSTextField(labelWithString: "")
+    private let placeholderCaption = NSTextField(labelWithString: "")
+    /// Which of the three things the empty tab is saying, kept so a zoom change
+    /// can re-lay it out without the caller saying it again.
+    private var placeholderState = Placeholder.waiting
     private let outline = MEOutlineView()
     private let outlineScroll = NSScrollView()
     private let detail = ToolDetailScroll()
@@ -56,6 +64,48 @@ import ToolModuleKit
     private enum Column {
         static let name = NSUserInterfaceItemIdentifier("name")
         static let summary = NSUserInterfaceItemIdentifier("summary")
+    }
+
+    /// What an empty Summary tab is: the analysis is running, it finished with
+    /// nothing to summarise, or it did not finish. An empty tab used to say the
+    /// same sentence in all three — "the summary will appear here" — which is a
+    /// promise while a parse runs and a lie once one has failed. The panel is
+    /// the only screen the user is looking at while the ME region is read, so
+    /// this is where it says so.
+    enum Placeholder {
+        case waiting
+        case empty
+        case failed
+
+        /// The system symbol the state wears. A running analysis is the engine
+        /// the panel is about; nothing found is a question; a failure is the
+        /// warning that goes with the red line under the panel.
+        var symbol: String {
+            switch self {
+            case .waiting: return "cpu"
+            case .empty: return "questionmark.circle"
+            case .failed: return "exclamationmark.triangle"
+            }
+        }
+
+        var title: String {
+            switch self {
+            case .waiting: return "Analyzing the ME firmware…"
+            case .empty: return "No ME firmware"
+            case .failed: return "The analysis did not finish"
+            }
+        }
+
+        /// The second line — what the user can do with the wait, or where the
+        /// rest of the answer is. A failure's reason is in the status row, in
+        /// red, so the caption points at it rather than repeating it.
+        var caption: String {
+            switch self {
+            case .waiting: return "Reading the region and its partitions."
+            case .empty: return "Nothing in this file reads as Intel ME firmware."
+            case .failed: return "The line below says what went wrong."
+            }
+        }
     }
 
     /// What each summary row's label column is wide at
@@ -95,24 +145,18 @@ import ToolModuleKit
         splitter.setPaneLayout(.fill, at: 0)
         splitter.setPaneLayout(.proportional(1.0 / 3), at: 1)
 
-        placeholderLabel.font = ToolPanelFont.body()
-        placeholderLabel.textColor = .secondaryLabelColor
-        placeholderLabel.alignment = .center
-        placeholderLabel.lineBreakMode = .byWordWrapping
-        placeholderLabel.maximumNumberOfLines = 3
-        placeholderLabel.stringValue = "The analysis summary will appear here."
-        placeholderLabel.translatesAutoresizingMaskIntoConstraints = false
+        configurePlaceholder()
 
         contentBox.translatesAutoresizingMaskIntoConstraints = false
-        contentBox.addSubview(placeholderLabel)
+        contentBox.addSubview(placeholder)
         contentBox.addSubview(summaryScroll)
         contentBox.addSubview(splitter)
         NSLayoutConstraint.activate([
-            placeholderLabel.centerXAnchor.constraint(equalTo: contentBox.centerXAnchor),
-            placeholderLabel.centerYAnchor.constraint(equalTo: contentBox.centerYAnchor),
-            placeholderLabel.leadingAnchor.constraint(
+            placeholder.centerXAnchor.constraint(equalTo: contentBox.centerXAnchor),
+            placeholder.centerYAnchor.constraint(equalTo: contentBox.centerYAnchor),
+            placeholder.leadingAnchor.constraint(
                 greaterThanOrEqualTo: contentBox.leadingAnchor, constant: 16),
-            placeholderLabel.trailingAnchor.constraint(
+            placeholder.trailingAnchor.constraint(
                 lessThanOrEqualTo: contentBox.trailingAnchor, constant: -16),
             // The summary and the tree both fill the box to its edges; only one
             // is visible at a time, so overlapping edge-pinned siblings are
@@ -185,6 +229,67 @@ import ToolModuleKit
         }
     }
 
+    /// The empty tab's icon and two lines, stacked and centred. The icon is a
+    /// system symbol, so it follows the theme and the accessibility weights on
+    /// its own; a build of macOS without one just shows the words.
+    private func configurePlaceholder() {
+        placeholderIcon.imageScaling = .scaleProportionallyUpOrDown
+        placeholderIcon.contentTintColor = .tertiaryLabelColor
+        placeholderIcon.translatesAutoresizingMaskIntoConstraints = false
+
+        for label in [placeholderTitle, placeholderCaption] {
+            label.alignment = .center
+            label.lineBreakMode = .byWordWrapping
+            label.maximumNumberOfLines = 2
+            label.translatesAutoresizingMaskIntoConstraints = false
+        }
+        placeholderTitle.textColor = .secondaryLabelColor
+        placeholderCaption.textColor = .tertiaryLabelColor
+
+        placeholder.orientation = .vertical
+        placeholder.alignment = .centerX
+        placeholder.spacing = 4
+        placeholder.translatesAutoresizingMaskIntoConstraints = false
+        placeholder.addArrangedSubview(placeholderIcon)
+        placeholder.setCustomSpacing(10, after: placeholderIcon)
+        placeholder.addArrangedSubview(placeholderTitle)
+        placeholder.addArrangedSubview(placeholderCaption)
+
+        applyPlaceholder()
+    }
+
+    /// Says what the empty Summary tab is showing. The three states are the
+    /// three ways there can be no summary, and the panel is told which by the
+    /// module that knows — a parse starting, one ending with nothing, one
+    /// failing.
+    func setPlaceholder(_ state: Placeholder) {
+        placeholderState = state
+        applyPlaceholder()
+    }
+
+    /// The placeholder as the state and the current zoom make it. The icon is
+    /// sized off the panel's type rather than fixed, so it stays the same
+    /// weight beside the words at every zoom.
+    private func applyPlaceholder() {
+        let side = (ToolPanelFont.size * 3).rounded()
+        let icon = NSImage(systemSymbolName: placeholderState.symbol,
+                           accessibilityDescription: placeholderState.title)?
+            .withSymbolConfiguration(
+                NSImage.SymbolConfiguration(pointSize: side, weight: .regular)
+            )
+        // Re-stated: the configuration hands back a new image, and what it
+        // carries over is not promised. The description is what the state is
+        // called, so a screen reader says the same thing the words below do.
+        icon?.accessibilityDescription = placeholderState.title
+        placeholderIcon.image = icon
+        placeholderIcon.isHidden = icon == nil
+
+        placeholderTitle.font = ToolPanelFont.body(weight: .semibold)
+        placeholderTitle.stringValue = placeholderState.title
+        placeholderCaption.font = ToolPanelFont.body()
+        placeholderCaption.stringValue = placeholderState.caption
+    }
+
     private func configureTabs() {
         tabs.controlSize = .small
         tabs.font = .systemFont(ofSize: 10)
@@ -199,6 +304,7 @@ import ToolModuleKit
     /// built per field, so they have to be rebuilt rather than restyled.
     private func applyPanelFont() {
         noticeLabel.font = ToolPanelFont.body()
+        applyPlaceholder()
         ToolPanelTable.apply(to: outline)
         applyColumnWidths()
         outline.reloadData()
@@ -247,7 +353,7 @@ import ToolModuleKit
         let showSummary = index == 0 && !summaryBlocks.isEmpty
         splitter.isHidden = !showTree
         summaryScroll.isHidden = !showSummary
-        placeholderLabel.isHidden = showSummary || showTree
+        placeholder.isHidden = showSummary || showTree
         tabs.selectedSegment = index
     }
 
