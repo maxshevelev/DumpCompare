@@ -755,7 +755,9 @@ public actor MEFirmwareAnalyzer {
             type: firmwareType,
             sku: preCSE?.sku ?? iup?.sku ?? skuText,
             platform: preCSE?.platform ?? iup?.platform ?? "",
-            chipsetStepping: iup?.chipsetStepping,
+            // The main table's stepping: an IUP image's own derived letter,
+            // else what the database records for this firmware.
+            chipsetStepping: iup?.chipsetStepping ?? identity.chipsetStepping,
             manufactureDate: Self.manufactureDate(day: manifest.day,
                                                   month: manifest.month,
                                                   year: manifest.year),
@@ -787,6 +789,13 @@ public actor MEFirmwareAnalyzer {
                                         .filter { !$0.content.isEmpty }
                                         .map(\.index))
             },
+            // Row 12a is CSME 11's alone, the way upstream gates it, so the
+            // token is read only there — a later family's row cell 4 means
+            // something else.
+            powerDownMitigation: (identity.family == .csme && identity.major == 11)
+                ? identity.powerDownMitigation.flatMap(PowerDownMitigation.init(databaseToken:))
+                : nil,
+            workstationSupport: chainHoist.workstation,
             oemCustomized: oemCustomized,
             issues: issues)
     }

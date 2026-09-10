@@ -272,20 +272,27 @@ final class MEASummaryTests: XCTestCase {
         XCTAssertEqual(value("Chipset", in: tableRows(bare)),
                        .value("CNP/CMP-H"))
 
+        // No initialisation table, but a recorded stepping: each letter of it
+        // is a stepping of its own, as the console reads them.
         let stepped = try analysis([
-            "chipsetStepping": "B",
+            "manifest": manifestJSON(),
+            "chipsetStepping": "BA",
         ])
         let rows = tableRows(stepped)
-        XCTAssertEqual(value("Chipset Stepping", in: rows), .value("B"))
+        XCTAssertEqual(value("Chipset Stepping", in: rows), .value("B, A"))
         XCTAssertNil(value("Chipset", in: rows))
 
-        // Neither fact, but an identified CSE image: the row is promised
-        // rather than guessed — the stepping upstream falls back to is a
-        // database lookup this engine does not do.
+        // Neither: upstream's own answer for a firmware whose database row
+        // says nothing about its chipset.
         let neither = try analysis(["manifest": manifestJSON()])
-        XCTAssertEqual(value("Chipset Stepping", in: tableRows(neither)),
-                       .comingSoon)
-        XCTAssertNil(value("Chipset", in: tableRows(neither)))
+        XCTAssertEqual(value("Chipset", in: tableRows(neither)), .value("Unknown"))
+        XCTAssertNil(value("Chipset Stepping", in: tableRows(neither)))
+
+        // And nothing at all on a file the engine could not name — there is no
+        // family to gate the row on.
+        let unnamed = try analysis(["chipsetStepping": "B"])
+        XCTAssertNil(value("Chipset", in: tableRows(unnamed)))
+        XCTAssertNil(value("Chipset Stepping", in: tableRows(unnamed)))
 
         // A family with no chipset row at all gets neither, promise included:
         // upstream gates the whole pair on a CS/PMC/GSC variant.
@@ -355,6 +362,51 @@ final class MEASummaryTests: XCTestCase {
         XCTAssertNil(try meuRow(nil), "an R0 manifest has no MEU block")
     }
 
+    /// Rows 12a and 12b belong to CSME 11 alone: its Power Down Mitigation as
+    /// the database records it, and the Workstation bit of its client
+    /// system-information extension. Any other major prints neither.
+    func testTheCSME11RowsAreCSME11sAlone() throws {
+        let eleven = try analysis([
+            "manifest": manifestJSON(),
+            "version": ["major": 11, "minor": 8, "hotfix": 92, "build": 4222],
+            "powerDownMitigation": "no",
+            "workstationSupport": false,
+        ])
+        let rows = tableRows(eleven)
+        XCTAssertEqual(value("Power Down Mitigation", in: rows), .value("No"))
+        XCTAssertEqual(value("Workstation Support", in: rows), .value("No"))
+
+        // The database's own "does not know" is printed, not hidden.
+        let unsure = try analysis([
+            "manifest": manifestJSON(),
+            "version": ["major": 11, "minor": 8, "hotfix": 92, "build": 4222],
+            "powerDownMitigation": "unknown2",
+        ])
+        XCTAssertEqual(value("Power Down Mitigation", in: tableRows(unsure)),
+                       .value("Unknown 2"))
+
+        // A silent database is a promise: the `bup` scan upstream falls back
+        // to is not ported, so the row must not read "No".
+        let silent = try analysis([
+            "manifest": manifestJSON(),
+            "version": ["major": 11, "minor": 8, "hotfix": 92, "build": 4222],
+        ])
+        XCTAssertEqual(value("Power Down Mitigation", in: tableRows(silent)),
+                       .comingSoon)
+        XCTAssertEqual(value("Workstation Support", in: tableRows(silent)),
+                       .comingSoon)
+
+        // CSME 12 prints neither row, whatever the model happens to carry.
+        let twelve = try analysis([
+            "manifest": manifestJSON(),
+            "version": ["major": 12, "minor": 0, "hotfix": 3, "build": 1091],
+            "powerDownMitigation": "no",
+            "workstationSupport": true,
+        ])
+        XCTAssertNil(value("Power Down Mitigation", in: tableRows(twelve)))
+        XCTAssertNil(value("Workstation Support", in: tableRows(twelve)))
+    }
+
     /// Engineering builds say so on the Release row, like MEA.
     func testEngineeringSuffixOnRelease() throws {
         let a = try analysis([
@@ -392,9 +444,11 @@ final class MEASummaryTests: XCTestCase {
         XCTAssertEqual(value("Production Ready", in: rows), .comingSoon)
         XCTAssertEqual(value("Date", in: rows), .comingSoon)
         XCTAssertEqual(value("File System State", in: rows), .comingSoon)
-        // Rows whose gate the analysis cannot prove are off the table entirely:
-        // no pch_init, no IFWI → no Chipset / Flash Image Tool row.
-        XCTAssertNil(value("Chipset", in: rows))
+        // A chipset row there is: with neither an initialisation table nor a
+        // recorded stepping it reads "Unknown", which is what the console
+        // says. The row whose gate the analysis cannot prove — no IFWI, no
+        // real FIT — stays off the table entirely.
+        XCTAssertEqual(value("Chipset", in: rows), .value("Unknown"))
         XCTAssertNil(value("Flash Image Tool", in: rows))
         XCTAssertEqual(value("Family", in: rows), .value("CSME"))
         XCTAssertEqual(value("Version", in: rows), .value("15.40.37.3121"))

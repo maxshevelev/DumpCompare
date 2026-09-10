@@ -117,13 +117,18 @@ public enum MEASummary {
         // stepping letters (6c) — and, for an identified image with neither, a
         // promise, since the stepping upstream falls back to comes from a
         // database lookup this engine does not do yet.
-        if hasChipsetRow(analysis) {
+        // Only for an image the engine named: upstream gates the pair on the
+        // variant, which an unidentified file has none of.
+        if identified, hasChipsetRow(analysis) {
             if let chipset = chipsetCell(analysis.mfsVolume?.pchInit) {
                 add("Chipset", .value(chipset))
             } else if let stepping = analysis.chipsetStepping, !stepping.isEmpty {
-                add("Chipset Stepping", .value(stepping))
-            } else if identified {
-                add("Chipset Stepping", .comingSoon)
+                add("Chipset Stepping", .value(MEAText.chipsetStepping(stepping)))
+            } else {
+                // Neither an initialisation table nor a recorded stepping:
+                // upstream's own answer for a firmware whose database row says
+                // nothing about its chipset.
+                add("Chipset", .value("Unknown"))
             }
         }
         // 7 · NVM Compatibility — the storage medium the firmware is built
@@ -156,6 +161,22 @@ public enum MEASummary {
             add("Production Ready", .value(MEAText.yesNo(ready)))
         } else if identified {
             add("Production Ready", .comingSoon)
+        }
+        // 12a · Power Down Mitigation and 12b · Workstation Support — CSME 11
+        // and no other: the two rows upstream prints for that one major.
+        if analysis.family == .csme, analysis.version.major == 11 {
+            if let pdm = analysis.powerDownMitigation {
+                add("Power Down Mitigation", .value(MEAText.powerDownMitigation(pdm)))
+            } else if identified {
+                // The database says nothing, and the `bup` scan upstream falls
+                // back to is not ported — so this is a promise, not a "No".
+                add("Power Down Mitigation", .comingSoon)
+            }
+            if let workstation = analysis.workstationSupport {
+                add("Workstation Support", .value(MEAText.yesNo(workstation)))
+            } else if identified {
+                add("Workstation Support", .comingSoon)
+            }
         }
         // 14 · OEM Configuration — OEM-signed key / OEMP / UTOK presence. The
         // OEM detector answers Yes/No for every identified OEM-family image;

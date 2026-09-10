@@ -93,6 +93,64 @@ final class IdentificationTests: XCTestCase {
         XCTAssertTrue(result.issues.isEmpty)
     }
 
+    /// The stepping the database records reaches the analysis, which is what
+    /// the main table's Chipset Stepping row reads when no chipset-init table
+    /// names one. The fixture row's cell 3 is "C".
+    func testTheDatabaseSteppingReachesTheAnalysis() async throws {
+        let result = try await analyze(FixtureDB.csme(), region: Self.region())
+        XCTAssertEqual(result.chipsetStepping, "C")
+        // Cell 4 of that row is "SPI", not a PDM token, so nothing is claimed
+        // about power-down mitigation — and it is a 15.40 firmware anyway,
+        // where upstream prints no such row.
+        XCTAssertNil(result.powerDownMitigation)
+    }
+
+    /// `cseCells` — upstream's `get_cse_db` (MEA.py 10262), read against the
+    /// real rows of the oracle dumps: which cell holds the stepping and the
+    /// PDM token depends on the family, and the `X`/`XX` placeholders mean
+    /// "not recorded".
+    func testDatabaseCellsPerFamily() {
+        func cells(_ row: String, _ family: FirmwareFamily) -> MEADatabase.CSECells? {
+            MEADatabase.parse("""
+            *** ME Analyzer Engine Firmware Repository Database ***
+            *** Revision r378 (2026-09-06 , 14:48) ***
+
+            \(row)
+            """).cseCells(matchingSignatureHash: "ABCD", family: family)
+        }
+
+        // old.bin's own row: Corporate LP, stepping C, no power-down
+        // mitigation.
+        let eleven = cells("11.8.92.4222_COR_LP_C_NPDM_PRD_RGN_ABCD", .csme)
+        XCTAssertEqual(eleven?.sku, "LP")
+        XCTAssertEqual(eleven?.stepping, "C")
+        XCTAssertEqual(eleven?.pdm, "NPDM")
+
+        // DATMAAMBAC0's row: two steppings, and cell 4 is the release rather
+        // than a PDM token — so nothing is claimed about mitigation.
+        let twelve = cells("12.0.3.1091_CON_H_BA_PRD_RGN_ABCD", .csme)
+        XCTAssertEqual(twelve?.stepping, "BA")
+        XCTAssertNil(twelve?.pdm)
+
+        // The placeholder steppings say nothing.
+        XCTAssertNil(cells("12.0.3.1091_CON_H_X_PRD_RGN_ABCD", .csme)?.stepping)
+        XCTAssertNil(cells("12.0.3.1091_CON_H_XX_PRD_RGN_ABCD", .csme)?.stepping)
+
+        // CSTXE keeps its stepping in cell 1.
+        XCTAssertEqual(cells("3.1.55.2333_B_PRD_EXTR_ABCD", .cstxe)?.stepping, "B")
+
+        // A (CS)SPS row's stepping is gated on the row's *last* cell being
+        // `EXTR` — which it never is, since that cell is the signature hash.
+        // Upstream therefore never takes a (CS)SPS stepping from the
+        // database, and neither does this: its output is the oracle.
+        XCTAssertNil(cells("05.01.05.216_ME_SVR_BA_PRD_EXTR_ABCD", .cssps)?.stepping)
+        XCTAssertNil(cells("05.01.05.216_ME_SVR_BA_PRD_RGN_ABCD", .cssps)?.stepping)
+
+        // No row for this firmware at all, and no cells to read.
+        XCTAssertNil(MEADatabase.parse(FixtureDB.unrelated())
+            .cseCells(matchingSignatureHash: "ABCD", family: .csme))
+    }
+
     func testIdentifiesWithBaseOffset() async throws {
         let db = MEADatabase.parse(FixtureDB.csme())
         let analyzer = MEFirmwareAnalyzer(data: StubSource(databaseResult: .success(db)))

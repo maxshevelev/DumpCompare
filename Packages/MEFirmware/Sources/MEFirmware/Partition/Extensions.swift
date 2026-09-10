@@ -219,6 +219,9 @@ enum CPDExtensionParser {
         /// Row 7: the NVM Compatibility bits of the last `CSE_Ext_0F` whose
         /// header was the `_R2` revision — the only one that carries the field.
         var nvm: Int?
+        /// Row 12b: the Workstation bit of the last `CSE_Ext_0C`
+        /// (upstream `ext12_info[2]`, `fw_0C_lbg`).
+        var workstation: Bool?
     }
 
     /// Walk `extensions` keeping the last 0x0F/0x03 of each — the same
@@ -237,6 +240,9 @@ enum CPDExtensionParser {
             }
             if let pi = ext.partitionInfo, ext.tag == 0x03, let v = pi.vcn {
                 out.vcn03 = v
+            }
+            if let client = ext.clientSystemInfo {
+                out.workstation = client.workstation
             }
         }
         return out

@@ -23,6 +23,26 @@ Companion to `upstream-map.md` (the row ledger) and `result-model.md`.
 Every dump decodes cleanly (`issues` empty except the two faithful notes
 below). The engine's numbers reproduced the known oracles exactly on all five.
 
+## Comparing against the original script
+
+The sibling clone `~/Projects/MEAnalyzer` (pinned at the same baseline,
+`v1.312.0-r378`) runs the real thing, so a summary fact can be checked against
+its own output rather than against a remembered value:
+
+```
+python3 -m venv venv && venv/bin/pip install crccheck prettytable colorama
+script -q /dev/null venv/bin/python ~/Projects/MEAnalyzer/MEA.py -skip -exit <dump>
+```
+
+`script` matters: with stdout redirected, colorama tries to convert the
+terminal-title escape and the script dies before printing anything. The five
+oracle dumps live on the user's Desktop.
+
+The row-18 (Size) port was checked this way over all five: 0x27C000, 0x603000,
+0x3DA000, 0x466000, 0x466000 — identical to the engine's `firmwareSizeBytes`.
+The CSME-11 rows (Power Down Mitigation "No", Workstation Support "No") and the
+per-family database steppings (C / A / BA / none) came from the same runs.
+
 ## Cross-check matrix
 
 Facts as printed by the CLI digest (regions are the on-flash / `$FPT` inventory

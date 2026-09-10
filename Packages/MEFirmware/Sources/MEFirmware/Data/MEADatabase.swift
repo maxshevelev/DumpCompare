@@ -59,9 +59,66 @@ public struct MEADatabase: Sendable, Equatable {
         return nil
     }
 
+    /// The manual CSE cells of the firmware row matching `signatureHash`
+    /// (upstream `get_cse_db`, MEA.py 10262): the SKU, the PCH/SoC stepping and
+    /// the Power Down Mitigation token, read from the `_`-separated cells of
+    /// the row — which cell holds what depends on the family, exactly as
+    /// upstream's per-variant branches say.
+    ///
+    /// A stepping cell reading `X`/`XX` is upstream's "not recorded" and comes
+    /// back nil, as does a PDM cell that carries no PDM token. Nil for a
+    /// firmware with no row at all (an unreleased build), which is upstream's
+    /// `sku_stp = 'Unknown'` / `sku_pdm = 'UPDM'` default.
+    public func cseCells(matchingSignatureHash signatureHash: String,
+                         family: FirmwareFamily) -> CSECells? {
+        guard let row = firmwareRow(matchingSignatureHash: signatureHash) else {
+            return nil
+        }
+        let cells = row.split(separator: "_", omittingEmptySubsequences: false)
+            .map(String.init)
+        func cell(_ index: Int) -> String? {
+            guard index < cells.count else { return nil }
+            let value = cells[index]
+            return value.isEmpty ? nil : value
+        }
+        func stepping(_ index: Int) -> String? {
+            guard let value = cell(index), value != "X", value != "XX" else { return nil }
+            return value
+        }
+        switch family {
+        case .csme:
+            let pdm = cell(4).flatMap { value in
+                ["YPDM", "NPDM", "UPDM1", "UPDM2", "UPDM"].first { value.contains($0) }
+            }
+            return CSECells(sku: cell(2), stepping: stepping(3), pdm: pdm)
+        case .cstxe:
+            return CSECells(sku: nil, stepping: stepping(1), pdm: nil)
+        case .cssps:
+            // Upstream reads a (CS)SPS stepping only from a row whose *last*
+            // cell is `EXTR` — and every row's last cell is its signature
+            // hash, so that branch never fires and a (CS)SPS stepping is
+            // never taken from the database (MEA.py 10280). Reproduced as it
+            // is: MEA's own output is what this engine is checked against.
+            guard cells.last == "EXTR" else { return CSECells(sku: nil, stepping: nil, pdm: nil) }
+            return CSECells(sku: nil, stepping: stepping(3), pdm: nil)
+        default:
+            return nil
+        }
+    }
+
     /// True when `publicKeyHash` is a known Pre-Production key (`release_fix`).
     public func isPreProductionKey(_ publicKeyHash: String) -> Bool {
         preProductionKeyHashes.contains(publicKeyHash)
+    }
+
+    /// What `cseCells` read off a firmware row. Each is nil where upstream's
+    /// own filters leave its variable at the default.
+    public struct CSECells: Equatable, Sendable {
+        public var sku: String?
+        public var stepping: String?
+        /// The PDM token as the database spells it — `YPDM`, `NPDM`, `UPDM1`,
+        /// `UPDM2` or `UPDM`. The wording of the row is the UI's.
+        public var pdm: String?
     }
 
     /// The canonical firmware row (a `version_…_<sigHash>` line) whose signature

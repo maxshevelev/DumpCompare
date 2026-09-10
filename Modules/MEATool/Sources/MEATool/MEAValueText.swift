@@ -103,6 +103,25 @@ enum MEAText {
                                          build: Int) -> String {
         String(format: "%d.%d.%d.%04d", major, minor, hotfix, build)
     }
+    /// The Chipset Stepping row's letters (row 6c, upstream
+    /// `', '.join(list(sku_stp))`): each letter of a stepping record read as
+    /// its own stepping, so a firmware recorded as "BA" supports steppings B
+    /// and A.
+    static func chipsetStepping(_ letters: String) -> String {
+        letters.map(String.init).joined(separator: ", ")
+    }
+    /// The Power Down Mitigation row (row 12a, upstream `pdm_status`). The
+    /// unknown answers are the database's own — it recorded that it does not
+    /// know — and upstream prints them as they are.
+    static func powerDownMitigation(_ value: PowerDownMitigation) -> String {
+        switch value {
+        case .yes: return "Yes"
+        case .no: return "No"
+        case .unknown: return "Unknown"
+        case .unknown1: return "Unknown 1"
+        case .unknown2: return "Unknown 2"
+        }
+    }
     /// The NVM Compatibility label of the raw two-bit field (row 7, upstream
     /// `ext15_nvm_type`, MEA.py 10536): 0 Undefined, 1 UFS, 2 SPI. The
     /// reserved value keeps upstream's own wording for a number outside the

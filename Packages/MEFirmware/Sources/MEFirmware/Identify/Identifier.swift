@@ -34,6 +34,12 @@ struct Identifier {
         var meBuild: Int?
         var securityVersion: String?
         var databaseName: String?
+        /// The PCH/SoC stepping the database records for this firmware
+        /// (`get_cse_db` cell 3 / cell 1) — the main table's Chipset Stepping
+        /// where no MFS chipset-init table names one.
+        var chipsetStepping: String?
+        /// The database's Power Down Mitigation token (`sku_pdm`), CSME only.
+        var powerDownMitigation: String?
         var identified: Bool
     }
 
@@ -74,6 +80,13 @@ struct Identifier {
             }
         }
 
+        // The manual CSE cells of the firmware's own database row: the
+        // stepping and the PDM token upstream reads there before it looks at
+        // anything in the image (`get_cse_db`).
+        let cells = sigHash.flatMap {
+            database.cseCells(matchingSignatureHash: $0, family: family)
+        }
+
         return Identity(
             family: family,
             variant: identified ? (token ?? "") : "",
@@ -89,6 +102,8 @@ struct Identifier {
             securityVersion: (manifest.svn != 0 && manifest.svn != 0xFFFF_FFFF)
                 ? "\(manifest.svn)" : nil,
             databaseName: sigHash.flatMap { database.firmwareRow(matchingSignatureHash: $0) },
+            chipsetStepping: cells?.stepping,
+            powerDownMitigation: cells?.pdm,
             identified: identified
         )
     }

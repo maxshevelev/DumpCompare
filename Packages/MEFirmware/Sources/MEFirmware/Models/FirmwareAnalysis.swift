@@ -25,8 +25,12 @@ public struct FirmwareAnalysis: Codable, Sendable, Equatable, Identifiable {
     public var type: FirmwareType
     public var sku: String
     public var platform: String
-    /// PMC chipset stepping letter ("B"), derived like upstream `pmc_anl`.
-    /// nil for families that derive none (PCHC/PHY) or when it is unknown.
+    /// The stepping the main summary table names (upstream `sku_stp`): the
+    /// PCH/SoC stepping letters the database records for this firmware
+    /// (`get_cse_db` cell 3 / cell 1 by family), and for a PMC/PCHC/PHY image
+    /// the stepping its own descriptor derives (upstream `pmc_anl`). nil when
+    /// neither says one — a firmware with no database row, or a family that
+    /// derives none.
     public var chipsetStepping: String? = nil
     public var manufactureDate: Date?
     public var sizeBytes: Int
@@ -87,6 +91,21 @@ public struct FirmwareAnalysis: Codable, Sendable, Equatable, Identifiable {
     /// when a legacy-MFS file-index set says so, else Unconfigured. nil when no
     /// MFS region was found at all.
     public var mfsState: MFSState? = nil
+    /// Power Down Mitigation (row 12a, upstream `pdm_status`): whether a
+    /// CSME 11 firmware carries the power-down mitigation, as its database row
+    /// records it. nil for every other family and major — the row upstream
+    /// prints only for CSME 11 — and for a CSME 11 firmware whose row says
+    /// nothing about it.
+    ///
+    /// `.unknown*` are database answers of their own, not missing data:
+    /// upstream prints them verbatim. The `bup`-module Huffman scan it falls
+    /// back to when the database is silent (MEA.py 13150–13161) is not ported,
+    /// so a silent row stays nil rather than being answered from the image.
+    public var powerDownMitigation: PowerDownMitigation? = nil
+    /// Workstation Support (row 12b, upstream `fw_0C_lbg`): the Workstation
+    /// (HEDT/Lewisburg) bit of the last `CSE_Ext_0C` client-system-information
+    /// extension in the operational chain. nil when the chain carries none.
+    public var workstationSupport: Bool? = nil
     /// OEM Configuration (row 14, upstream `oem_signed or oemp_found or
     /// utok_found`): an OEM-signed image carries a real `oem.key` CPD module or a
     /// populated `OEMP`/`UTOK`/`STKN` partition, so the row says Yes; a stock
@@ -146,6 +165,26 @@ public enum ReleaseType: String, Codable, Sendable {
 /// placeholder. `.unknown` is the honest answer when nothing decided.
 public enum FirmwareType: String, Codable, Sendable {
     case region, extracted, update, stock, unknown
+}
+
+/// Power Down Mitigation (upstream `sku_pdm` → `pdm_status`, MEA.py 13165–
+/// 13169): what the firmware's database row records — `YPDM`/`NPDM` are the
+/// yes/no answers, and the `UPDM*` tokens are the database saying it does not
+/// know, which upstream prints as "Unknown", "Unknown 1" and "Unknown 2".
+public enum PowerDownMitigation: String, Codable, Sendable {
+    case yes, no, unknown, unknown1, unknown2
+
+    /// The token as MEA.dat spells it, or nil for one it does not use.
+    public init?(databaseToken token: String) {
+        switch token {
+        case "YPDM": self = .yes
+        case "NPDM": self = .no
+        case "UPDM1": self = .unknown1
+        case "UPDM2": self = .unknown2
+        case "UPDM": self = .unknown
+        default: return nil
+        }
+    }
 }
 
 /// File System State (upstream `mfs_state`, `MEA.py` 7489–7493): `.initialized`
@@ -1808,5 +1847,5 @@ public struct Issue: Codable, Sendable, Equatable, Identifiable {
 /// whether to surface the new data (`reference/result-model.md` §Versioning).
 public enum EngineModelRevision {
     /// Current revision of the `FirmwareAnalysis` shape.
-    public static let current = 26
+    public static let current = 27
 }
