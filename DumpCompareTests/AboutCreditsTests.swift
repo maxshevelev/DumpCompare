@@ -5,15 +5,28 @@ import AppKit
 /// The About panel's credits — the open-source projects whose data the app
 /// shows, named with the links to follow (`AboutCredits`).
 final class AboutCreditsTests: XCTestCase {
-    /// The panel has to say that data came from outside, and the two projects
-    /// that supplied it have to be named with their authors.
-    func testTheCreditsNameBothProjectsAndTheirAuthors() throws {
+    /// The panel has to say that data came from outside, and every project
+    /// that supplied it has to be named with its author.
+    func testTheCreditsNameEveryProjectAndItsAuthor() throws {
         let text = AboutCredits.text().string
 
         XCTAssertTrue(text.contains("UEFITool"), "the UEFI data project is named")
         XCTAssertTrue(text.contains("LongSoft"), "UEFITool's author is named")
+        XCTAssertTrue(text.contains("MEAnalyzer"), "the ME firmware project is named")
         XCTAssertTrue(text.contains("CPUMicrocodes"), "the microcode project is named")
-        XCTAssertTrue(text.contains("platomav"), "CPUMicrocodes' author is named")
+        XCTAssertTrue(text.contains("platomav"),
+                      "the author of both platomav projects is named")
+    }
+
+    /// What each project gave is said, not just that it gave something: a
+    /// reader following a link deserves to know what they are looking at.
+    func testEachProjectSaysWhatWasTakenFromIt() throws {
+        let text = AboutCredits.text().string
+
+        XCTAssertTrue(text.contains("GUID-name catalogue"), "\(text)")
+        XCTAssertTrue(text.contains("MEA.dat"), "the ME databases are named: \(text)")
+        XCTAssertTrue(text.contains("Huffman.dat"), "\(text)")
+        XCTAssertTrue(text.contains("CPU microcodes"), "\(text)")
     }
 
     /// A project is only *usable* from the About panel if its name is a link —
@@ -27,6 +40,7 @@ final class AboutCreditsTests: XCTestCase {
 
         XCTAssertTrue(links.contains(URL(string: "https://github.com/LongSoft/UEFITool")!))
         XCTAssertTrue(links.contains(URL(string: "https://github.com/LongSoft")!))
+        XCTAssertTrue(links.contains(URL(string: "https://github.com/platomav/MEAnalyzer")!))
         XCTAssertTrue(links.contains(URL(string: "https://github.com/platomav/CPUMicrocodes")!))
         XCTAssertTrue(links.contains(URL(string: "https://github.com/platomav")!))
     }

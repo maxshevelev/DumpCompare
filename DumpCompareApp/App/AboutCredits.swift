@@ -30,6 +30,15 @@ enum AboutCredits {
                 + " and GUID-name catalogue (common/guids.csv)."
         ),
         Project(
+            name: "MEAnalyzer",
+            author: "platomav",
+            repository: URL(string: "https://github.com/platomav/MEAnalyzer")!,
+            profile: URL(string: "https://github.com/platomav")!,
+            taken: "The ME Analyzer tool's reading of Intel ME/CSME firmware,"
+                + " and the databases it checks a dump against (MEA.dat,"
+                + " Huffman.dat), fetched as the project publishes them."
+        ),
+        Project(
             name: "CPUMicrocodes",
             author: "platomav",
             repository: URL(string: "https://github.com/platomav/CPUMicrocodes")!,
