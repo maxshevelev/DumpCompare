@@ -535,6 +535,42 @@ final class PaneViewModelTests: XCTestCase {
         XCTAssertEqual(pane.caretOffset, 1, "the caret clamps to the saved end, not to 0")
     }
 
+    /// Loading another file into the pane keeps the reader where they were.
+    ///
+    /// A pane is a window on a byte range, and putting a second dump into it is
+    /// usually a way of reading the same offsets in a different file. A fresh
+    /// document starts its caret at 0, and the reveal that follows would drag
+    /// the dump to the top — away from the place the reader had just navigated
+    /// to.
+    func testLoadingAnotherFileKeepsTheCaretWhereItWas() throws {
+        let (pane, url) = try openPane([UInt8](repeating: 0xAB, count: 0x100))
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.moveCaret(to: 0x90)
+
+        let second = try tempFile([UInt8](repeating: 0xCD, count: 0x100))
+        defer { try? FileManager.default.removeItem(at: second) }
+        try pane.open(url: second)
+
+        XCTAssertEqual(pane.hexByteStates(in: 0x90..<0x91)[0].byte, 0xCD,
+                       "the second file is the one loaded")
+        XCTAssertEqual(pane.caretOffset, 0x90, "and the reader is where they were")
+    }
+
+    /// As far as the new file reaches: an offset it does not have cannot be
+    /// kept.
+    func testLoadingAShorterFileClampsTheCaretToItsEnd() throws {
+        let (pane, url) = try openPane([UInt8](repeating: 0xAB, count: 0x100))
+        defer { try? FileManager.default.removeItem(at: url) }
+        pane.moveCaret(to: 0x90)
+
+        let shorter = try tempFile([0x01, 0x02])
+        defer { try? FileManager.default.removeItem(at: shorter) }
+        try pane.open(url: shorter)
+
+        XCTAssertEqual(pane.fileSize, 2)
+        XCTAssertEqual(pane.caretOffset, 2, "clamped to the end, not dropped to 0")
+    }
+
     func testModifiedByteDetection() throws {
         let (pane, url) = try openPane([0x00, 0x11, 0x22])
         defer { try? FileManager.default.removeItem(at: url) }

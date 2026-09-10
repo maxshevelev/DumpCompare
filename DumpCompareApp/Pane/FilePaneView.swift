@@ -598,8 +598,8 @@ final class FilePaneView: NSView {
         hexView.onVisibleRangeChanged = { [weak self] range in
             self?.onHexViewportChanged?(range)
         }
-        viewModel.onChange = { [weak self] center in
-            self?.refresh(center: center)
+        viewModel.onChange = { [weak self] reveal in
+            self?.refresh(reveal: reveal)
         }
         // A pure selection move (drag, click, keyboard): the bytes are
         // unchanged, so redraw only the rows the selection now covers
@@ -927,13 +927,19 @@ final class FilePaneView: NSView {
         statusStack.isHidden = !fits
     }
 
-    private func refresh(center: Bool = false) {
+    private func refresh(reveal: PaneViewModel.SelectionReveal = .follow) {
         hexView.textDecoder = viewModel.textDecoder
         hexView.reloadData()
         // The layout may have changed (offset digits, word size) — redraw the
         // header so its labels track the columns.
         columnHeader.needsDisplay = true
-        hexView.revealCaret(center: center)
+        switch reveal {
+        case .follow: hexView.revealCaret(center: false)
+        case .center: hexView.revealCaret(center: true)
+        // A load is not a navigation: the viewport stays on the offsets the
+        // reader was looking at rather than chasing a caret they did not move.
+        case .stay: break
+        }
         updateHeader()
         updateStatus()
         // Structural changes (open/revert/undo/redo/insert/delete, save) can

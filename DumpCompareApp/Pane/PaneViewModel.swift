@@ -235,7 +235,7 @@ final class PaneViewModel: HexViewDataSource {
     /// Carries the caret-reveal mode (§10.4): `true` when a navigation command
     /// jumped the caret (centre it if it landed off-screen), `false` for an
     /// incremental move (the minimum scroll that keeps it on screen).
-    var onChange: ((Bool) -> Void)?
+    var onChange: ((SelectionReveal) -> Void)?
 
     /// Fired when only the caret/selection moved (no bytes changed), so the
     /// view can redraw just the rows the selection now covers differently — the
@@ -538,6 +538,14 @@ final class PaneViewModel: HexViewDataSource {
     // MARK: - Document lifecycle
 
     func open(url: URL) throws {
+        // Where the reader is, in offsets. A pane is a window on a byte range,
+        // and loading another dump into it is usually a way of looking at the
+        // same offsets in a different file — so the caret comes over, clamped
+        // to what the new file has, and the viewport is left where it is
+        // (`notify(reveal: .stay)` below). A fresh document would otherwise put
+        // the caret at 0 and the reveal would drag the dump to the top, which
+        // is the place the reader had just navigated away from.
+        let caret = document?.selection.start ?? 0
         let doc = try BinaryDocument(url: url)
         document = doc
         // A real file on disk is never untitled — opening one must clear the
@@ -560,14 +568,19 @@ final class PaneViewModel: HexViewDataSource {
         clearMatches()
         // The lazy tree and MEA cache belonged to the file that was here too.
         uefiState.reset()
+        // The offset the reader was on, as far as this file reaches.
+        doc.setSelection(.empty(at: min(caret, doc.size), fileSize: doc.size))
         startWatching(url)
         // Opening a new file replaces the storage wholesale, like a revert —
         // the comparison must re-read, even when the mode is unchanged (both
         // panes already open), which is the one path that skips `apply(mode:)`.
         onFullInvalidation?()
         // Announce the new document so the header glyph/name and the hex view
-        // update immediately, not only on the next user action.
-        notify()
+        // update immediately, not only on the next user action. Without
+        // scrolling: the viewport stays on the offsets the reader was looking
+        // at, as far as the new file reaches, and the scroll view clamps the
+        // rest when it is shorter.
+        notify(reveal: .stay)
         notifyCompanionContentFullyChanged()
     }
 
@@ -2088,7 +2101,7 @@ final class PaneViewModel: HexViewDataSource {
             // now covers differently instead of the whole pane (§3.3).
             onSelectionChanged?(reveal)
         } else {
-            onChange?(reveal == .center)
+            onChange?(reveal)
         }
         onCaretChanged?()
     }

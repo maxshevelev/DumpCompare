@@ -48,6 +48,47 @@ final class ScrollPreservationTests: XCTestCase {
         return (controller, window, url, pane, y)
     }
 
+    /// Loading another file into a pane leaves the viewport where it was.
+    ///
+    /// A load is not a navigation: the reader scrolled somewhere on purpose,
+    /// and putting a second dump into the pane is usually a way of reading the
+    /// same offsets in a different file. The fresh document used to put its
+    /// caret at 0 and the reveal that followed dragged the dump to the top.
+    func testLoadingAnotherFileIntoThePanePreservesItsScroll() throws {
+        let (controller, window, url, pane, yBefore) =
+            try makeScrolledSingleFile([UInt8](repeating: 0x11, count: 16384))
+        var urls = [url]
+        defer { cleanup(controller, urls) }
+        XCTAssertGreaterThan(yBefore, 0, "precondition: the pane is scrolled down")
+
+        let second = try tempFile([UInt8](repeating: 0x22, count: 16384))
+        urls.append(second)
+        try controller.windowModel.pane1.open(url: second)
+        window.layoutIfNeeded()
+
+        XCTAssertEqual(pane.scrollView.contentView.bounds.origin.y, yBefore, accuracy: 0.5,
+                       "the load left the viewport where the reader was")
+    }
+
+    /// The room the file leaves is the limit: a shorter file cannot hold the
+    /// old scroll, and the view clamps to its end rather than refusing to load.
+    func testLoadingAShorterFileClampsTheScrollToItsEnd() throws {
+        let (controller, window, url, pane, yBefore) =
+            try makeScrolledSingleFile([UInt8](repeating: 0x11, count: 16384))
+        var urls = [url]
+        defer { cleanup(controller, urls) }
+        XCTAssertGreaterThan(yBefore, 0, "precondition: the pane is scrolled down")
+
+        let shorter = try tempFile([UInt8](repeating: 0x22, count: 32))
+        urls.append(shorter)
+        try controller.windowModel.pane1.open(url: shorter)
+        window.layoutIfNeeded()
+
+        let y = pane.scrollView.contentView.bounds.origin.y
+        XCTAssertLessThan(y, yBefore, "there is no such offset in the new file")
+        XCTAssertGreaterThanOrEqual(y, 0)
+    }
+
     /// Opening the second file (single-file → comparison) must leave the first
     /// pane's view — and its scroll — exactly where they were.
     func testOpeningSecondFilePreservesFirstPaneScroll() throws {
