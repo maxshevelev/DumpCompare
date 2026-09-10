@@ -102,7 +102,9 @@ public enum FITDetail {
         if entry.isHeader {
             return "\(entry.size) rows"
         }
-        if entry.size == 0 { return "0" }
+        // A row with no size of its own says so in the same word every empty
+        // area does.
+        if entry.size == 0 { return "Empty" }
         return size(entry.sizeInBytes)
     }
 
@@ -172,9 +174,12 @@ public enum FITDetail {
     // MARK: - Text
 
     /// A size in bytes, said both ways: hex for the dump, decimal for the mind.
+    /// A byte count as the detail shows it: hex with the decimal beside it.
+    /// Zero is not worth two spellings — the area holds nothing, and the row
+    /// says so.
     private static func size<T: BinaryInteger>(_ bytes: T) -> String {
         let value = UInt64(truncatingIfNeeded: bytes)
-        return "\(hex(value)) (\(value))"
+        return value == 0 ? "Empty" : "\(hex(value)) (\(value))"
     }
 
     private static func hex<T: BinaryInteger>(_ value: T, digits: Int = 0) -> String {

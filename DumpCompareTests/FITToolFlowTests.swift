@@ -1004,6 +1004,30 @@ final class FITToolFlowTests: XCTestCase {
                        "the list stops at eight rows")
     }
 
+    /// A value too long for the detail's column wraps inside it rather than
+    /// running off the side — the panel has no sideways scroller.
+    func testALongDetailValueWrapsInsideItsColumn() throws {
+        _ = try open(FITTestImage.make())
+        let table = try entriesTable()
+        // The microcode row's detail is the one with long values in it.
+        table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        window?.layoutIfNeeded()
+
+        let panel = try XCTUnwrap(controller?.tools.panel)
+        let splitter = try XCTUnwrap(descendants(of: panel, ALSplitView.self).first)
+        let detail = try XCTUnwrap(splitter.panes.last)
+        // Every value of the list is a wrapping label; the labels beside them
+        // keep their fixed column and truncate.
+        let wrapping = descendants(of: detail, ToolWrappingLabel.self)
+        XCTAssertFalse(wrapping.isEmpty, "the detail's values are wrapping labels")
+        for value in wrapping {
+            XCTAssertEqual(value.lineBreakMode, .byWordWrapping)
+            XCTAssertLessThanOrEqual(value.convert(value.bounds, to: panel).maxX,
+                                     panel.bounds.maxX,
+                                     "\(value.stringValue) runs off the side")
+        }
+    }
+
     /// A row the validator complained about wears a red warning where the row
     /// says what it is — one triangle in the Type column, with what is wrong
     /// under the pointer — and its text stays the colour every other row's is.

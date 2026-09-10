@@ -134,6 +134,42 @@ final class MEACuratorTests: XCTestCase {
         XCTAssertEqual(field("Flags", in: ftpr), "0x00008000")
     }
 
+    /// A section that holds nothing says so where a size would go — in the
+    /// row's own value and in its detail — and is marked as empty so the panel
+    /// can draw that value grey.
+    func testAnEmptySectionSaysEmptyAndIsMarkedAsOne() throws {
+        let a = try analysis([
+            "regions": [regionJSON(name: "FTPR", offset: 0x1000, size: 0x125000),
+                        regionJSON(name: "FTUP", offset: 0x5000, size: 0)],
+            "cseLayoutTable": ["offset": 0x0, "version": 0x17, "redundancy": false,
+                               "checksumValid": true,
+                               "partitions": [["id": 0, "name": "Boot 2",
+                                               "offset": 0x1000, "size": 0x400,
+                                               "empty": true]]],
+        ])
+        let roots = MEACurator.present(a)
+
+        let regions = try XCTUnwrap(roots.first { $0.title == "Regions (FPT)" })
+        let empty = try XCTUnwrap(child("FTUP", of: regions))
+        XCTAssertEqual(empty.subtitle, "0x5000 · Empty")
+        XCTAssertEqual(field("Size", in: empty), "Empty")
+        XCTAssertTrue(empty.isEmptySection)
+        XCTAssertNil(empty.range, "there are no bytes to reveal")
+
+        // A region with a size is untouched by any of that.
+        let real = try XCTUnwrap(child("FTPR", of: regions))
+        XCTAssertEqual(real.subtitle, "0x1000 · 0x125000")
+        XCTAssertFalse(real.isEmptySection)
+
+        // A layout slot the table itself marks erased is empty too, whatever
+        // size it claims.
+        let cse = try XCTUnwrap(roots.first { $0.title == "CSE Layout Table" })
+        let slot = try XCTUnwrap(child("Boot 2", of: cse))
+        XCTAssertTrue(slot.isEmptySection)
+        XCTAssertEqual(field("Size", in: slot), "0x400 (1024 bytes)",
+                       "its claimed size is still what the row says")
+    }
+
     // MARK: - CSE Layout / BPDT
 
     func testCseLayoutRowsAndBootPartitionNesting() throws {

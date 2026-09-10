@@ -459,8 +459,12 @@ public enum UEFIDetail {
     /// `0x800 (2048)`, the spelling the FIT panel uses for the same fields.
     /// Offsets, addresses and codes stay bare hex. Named `sizeText` so it can
     /// coexist with the local `size` variables the header cases bind.
+    /// A byte count as the detail shows it: hex with the decimal beside it, so
+    /// neither has to be worked out from the other. Zero is not worth two
+    /// spellings — the area holds nothing, and the row says so.
     private static func sizeText<T: BinaryInteger>(_ bytes: T) -> String {
-        "\(hex(bytes)) (\(UInt64(truncatingIfNeeded: bytes)))"
+        let value = UInt64(truncatingIfNeeded: bytes)
+        return value == 0 ? "Empty" : "\(hex(bytes)) (\(value))"
     }
 
     private static func kindLabel(_ kind: UEFINodeKind) -> String {

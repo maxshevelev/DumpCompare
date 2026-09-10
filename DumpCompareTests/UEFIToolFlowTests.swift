@@ -635,6 +635,34 @@ final class UEFIToolFlowTests: XCTestCase {
                        + "text is not centred")
     }
 
+    /// A value too long for the detail's column wraps inside it: a GUID is 36
+    /// characters and there is no sideways scroller to reach the rest of one
+    /// with.
+    func testALongDetailValueWrapsInsideItsColumn() throws {
+        _ = try open(UEFITestImage.make())
+        let outline = try outline()
+        // The top row is the FFS file, whose detail names it by its GUID.
+        outline.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        window?.layoutIfNeeded()
+
+        let panel = try XCTUnwrap(controller?.tools.panel)
+        // Inside the detail pane, not the tree above it: a tree cell shows the
+        // same GUID and truncates it, as a table cell must.
+        let splitter = try XCTUnwrap(descendants(of: panel, ALSplitView.self).first)
+        let detail = try XCTUnwrap(splitter.panes.last)
+        let fields = descendants(of: detail, NSTextField.self)
+        let guid = try XCTUnwrap(
+            fields.first { $0.stringValue.hasPrefix("8C8CE578-8A3D-4F1C") },
+            "the detail names the volume by its file system GUID: "
+                + "\(fields.map(\.stringValue))"
+        )
+        XCTAssertEqual(guid.lineBreakMode, .byWordWrapping)
+        XCTAssertEqual(guid.maximumNumberOfLines, 0)
+        let inPanel = guid.convert(guid.bounds, to: panel)
+        XCTAssertLessThanOrEqual(inPanel.maxX, panel.bounds.maxX,
+                                 "the value runs off the side of the panel")
+    }
+
     /// The detail is the lower pane of the splitter, at the panel's full
     /// width and with height of its own. Position, not only height: while the
     /// split was side by side the detail was a zero-width column down the

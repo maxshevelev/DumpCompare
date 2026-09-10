@@ -279,6 +279,39 @@ final class MEAToolFlowTests: XCTestCase {
                                  "the value runs off the side of the panel")
     }
 
+    /// A section that holds nothing reads grey in the tree's value column —
+    /// it is a place in the layout, not something to go and look at — while
+    /// its name stays as readable as any other row's.
+    func testAnEmptySectionsValueIsGreyInTheTree() throws {
+        _ = try open(METestImage.fptFileWithEmptyRegion())
+
+        try showFullTree()
+        let tree = try outline()
+        let regionsRow = try XCTUnwrap(row(ofTitle: "Regions (FPT)", in: tree))
+        tree.expandItem(tree.item(atRow: regionsRow))
+        window?.layoutIfNeeded()
+
+        func colours(row: Int) throws -> (name: NSColor?, value: NSColor?) {
+            let name = try XCTUnwrap(
+                tree.view(atColumn: 0, row: row, makeIfNecessary: true) as? NSTableCellView)
+            let value = try XCTUnwrap(
+                tree.view(atColumn: 1, row: row, makeIfNecessary: true) as? NSTableCellView)
+            return (name.textField?.textColor, value.textField?.textColor)
+        }
+
+        let emptyRow = try XCTUnwrap(row(ofTitle: "FTUP", in: tree))
+        XCTAssertEqual(subtitleText(tree, row: emptyRow), "0x3000 · Empty",
+                       "the value says the section holds nothing")
+        let empty = try colours(row: emptyRow)
+        XCTAssertEqual(empty.value, .secondaryLabelColor)
+        XCTAssertEqual(empty.name, .labelColor, "the row is still worth finding")
+
+        // A region with bytes in it is drawn as before.
+        let real = try colours(row: try XCTUnwrap(row(ofTitle: "FTUE", in: tree)))
+        XCTAssertEqual(real.value, .labelColor)
+        XCTAssertEqual(real.name, .labelColor)
+    }
+
     /// Any change is a reason to read the file again: the analysis is automatic,
     /// and it runs afresh on a content change exactly as on a first open.
     func testAChangeToTheContentRunsTheAnalysisAgain() throws {
@@ -412,6 +445,20 @@ enum METestImage {
         u32(0x200, into: &bytes, at: rbe + 0x0C)
         u32(0, into: &bytes, at: rbe + 0x1C)
 
+        return bytes
+    }
+
+    /// The same table with a third region that claims a place and no bytes —
+    /// `FTUP` at 0x3000, size 0. What an image looks like where the layout
+    /// leaves a slot unused.
+    static func fptFileWithEmptyRegion() -> [UInt8] {
+        var bytes = fptFile()
+        u32(3, into: &bytes, at: 0x04)              // NumPartitions
+        let ftup = 0x60
+        for (index, byte) in "FTUP".utf8.enumerated() { bytes[ftup + index] = byte }
+        u32(0x3000, into: &bytes, at: ftup + 0x08)  // Offset
+        u32(0, into: &bytes, at: ftup + 0x0C)       // Size — none
+        u32(0x01, into: &bytes, at: ftup + 0x1C)
         return bytes
     }
 

@@ -635,7 +635,7 @@ import UEFITool
                 equalToConstant: ToolPanelFont.detailLabelWidth
             ).isActive = true
 
-            let value = NSTextField(labelWithString: field.value)
+            let value = ToolWrappingLabel(string: field.value)
             value.font = field.value.hasPrefix("0x")
                 ? ToolPanelFont.monospacedDigits()
                 : ToolPanelFont.body()
@@ -647,8 +647,6 @@ import UEFITool
             // Selectable, not a dead label: a bench copies an offset or a GUID
             // out of here, and a value it cannot select is one it has to retype.
             value.isSelectable = true
-            value.lineBreakMode = .byTruncatingTail
-            value.translatesAutoresizingMaskIntoConstraints = false
 
             let row = NSStackView(views: [label, value])
             row.orientation = .horizontal
@@ -656,6 +654,11 @@ import UEFITool
             row.spacing = 6
             row.translatesAutoresizingMaskIntoConstraints = false
             detail.content.addArrangedSubview(row)
+            // As wide as the list, so a value too long for the column — a
+            // GUID, a hash — wraps inside it instead of running off the side.
+            row.widthAnchor.constraint(
+                equalTo: detail.content.widthAnchor
+            ).isActive = true
         }
     }
 

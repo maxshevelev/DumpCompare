@@ -98,7 +98,8 @@ public enum MEACurator {
                            title: region.name.isEmpty ? "(unnamed)" : region.name,
                            subtitle: MEAText.range(region.offset, region.size),
                            range: MEAText.rangeValue(region.offset, region.size),
-                           fields: fields)
+                           fields: fields,
+                           isEmptySection: region.size == 0)
         }
         return MEANode(path: [], title: "Regions (FPT)",
                        subtitle: MEAText.count(rows.count, "region"),
@@ -125,7 +126,10 @@ public enum MEACurator {
                            title: p.name.isEmpty ? "(unnamed)" : p.name,
                            subtitle: MEAText.range(p.offset, p.size),
                            range: p.empty ? nil : MEAText.rangeValue(p.offset, p.size),
-                           fields: fields)
+                           fields: fields,
+                           // The layout's own flag: a slot with no offset or
+                           // size, or one whose content is erased.
+                           isEmptySection: p.empty)
         }
         return MEANode(path: [], title: "CSE Layout Table",
                        subtitle: MEAText.count(table.partitions.count, "partition"),
@@ -165,7 +169,8 @@ public enum MEACurator {
                                title: e.name.isEmpty ? "(unnamed)" : e.name,
                                subtitle: MEAText.range(e.offset, e.size),
                                range: e.empty ? nil : MEAText.rangeValue(e.offset, e.size),
-                               fields: fields)
+                               fields: fields,
+                               isEmptySection: e.empty)
             }
             return MEANode(path: [], title: bpdt.partitionName,
                            subtitle: MEAText.count(bpdt.entries.count, "entry"),
@@ -208,7 +213,8 @@ public enum MEACurator {
                                    ? MEAText.size(m.size)
                                    : MEAText.range(absolute, m.size),
                                range: m.isHuffman ? nil : MEAText.rangeValue(absolute, m.size),
-                               fields: fields)
+                               fields: fields,
+                               isEmptySection: m.size == 0)
             }
             children.append(MEANode(path: [], title: "Modules",
                                     subtitle: MEAText.count(moduleRows.count, "module"),
@@ -241,7 +247,8 @@ public enum MEACurator {
                        title: known ?? "CSE_Ext \(MEAText.hexByte(ext.tag))",
                        subtitle: MEAText.range(ext.offset, ext.size),
                        range: MEAText.rangeValue(ext.offset, ext.size),
-                       fields: fields)
+                       fields: fields,
+                       isEmptySection: ext.size == 0)
     }
 
     /// The decoded payload group of an extension block, if its tag carries one.
@@ -323,7 +330,8 @@ public enum MEACurator {
                 // A present file has content, but its byte position is the FAT
                 // chain walk the engine does not expose — no reliable range.
                 return MEANode(path: [], title: "File \(f.index)",
-                               subtitle: MEAText.size(f.size), fields: fields)
+                               subtitle: MEAText.size(f.size), fields: fields,
+                               isEmptySection: f.size == 0)
             }
             children.append(MEANode(path: [], title: "Files",
                                     subtitle: MEAText.count(rows.count, "file"),

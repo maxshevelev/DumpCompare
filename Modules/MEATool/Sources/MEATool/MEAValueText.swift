@@ -20,11 +20,17 @@ enum MEAText {
 
     /// The detail value for a byte offset.
     static func offset(_ v: Int) -> String { hex(v) }
-    /// The detail value for a byte count: hex plus the decimal bytes.
-    static func size(_ v: Int) -> String { String(format: "0x%X (%d bytes)", v, v) }
-    /// The compact row subtitle `0x… · 0x…` (offset · size).
+    /// The detail value for a byte count: hex plus the decimal bytes, so a
+    /// reader never has to convert one to check the other. A count of zero is
+    /// not a number worth two spellings — the area holds nothing, and the row
+    /// says so.
+    static func size(_ v: Int) -> String {
+        v == 0 ? "Empty" : String(format: "0x%X (%d bytes)", v, v)
+    }
+    /// The compact row subtitle `0x… · 0x…` (offset · size), with the same
+    /// word for a section that holds nothing.
     static func range(_ offset: Int, _ size: Int) -> String {
-        "\(hex(offset)) · \(hex(size))"
+        "\(hex(offset)) · \(size == 0 ? "Empty" : hex(size))"
     }
     /// The file range a row stands for; nil when the size is empty or negative.
     static func rangeValue(_ offset: Int, _ size: Int) -> Range<UInt64>? {

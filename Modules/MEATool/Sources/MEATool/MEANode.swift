@@ -47,6 +47,10 @@ public struct MEANode: Sendable, Equatable, Hashable, Identifiable {
     public var fields: [MEAField]
     /// Rows under a group node. Empty for a leaf.
     public var children: [MEANode]
+    /// The row stands for a section that holds nothing — a zero-size region,
+    /// or one the layout marks erased. The panel draws such a row's value
+    /// grey: it is a place in the layout rather than something to read.
+    public var isEmptySection: Bool
 
     public var id: [Int] { path }
 
@@ -61,7 +65,8 @@ public struct MEANode: Sendable, Equatable, Hashable, Identifiable {
         subtitle: String = "",
         range: Range<UInt64>? = nil,
         fields: [MEAField] = [],
-        children: [MEANode] = []
+        children: [MEANode] = [],
+        isEmptySection: Bool = false
     ) {
         self.path = path
         self.title = title
@@ -69,6 +74,7 @@ public struct MEANode: Sendable, Equatable, Hashable, Identifiable {
         self.range = range
         self.fields = fields
         self.children = children
+        self.isEmptySection = isEmptySection
     }
 }
 
