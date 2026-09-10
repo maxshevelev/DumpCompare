@@ -22,6 +22,15 @@ public actor MEFirmwareAnalyzer {
     /// position inside the caller's larger file; reported partition offsets are
     /// shifted by it.
     public func analyze(region: Data, baseOffset: Int = 0) async throws -> FirmwareAnalysis {
+        try await analyze(region: region, baseOffset: baseOffset,
+                          findsIndependentFirmware: true)
+    }
+
+    /// The analysis proper. `findsIndependentFirmware` is false for the nested
+    /// runs over the IUP partitions this one finds, so an image cannot send the
+    /// analyzer looking inside its own sub-firmware forever.
+    private func analyze(region: Data, baseOffset: Int,
+                         findsIndependentFirmware: Bool) async throws -> FirmwareAnalysis {
         // ——— Stage 1: container decode that needs no database. ———
         // FPT and the $MN2/$MAN manifest are the ported links of the spine
         // (upstream-map "Flash & IFWI layout", "CSE manifest & partitions").
@@ -539,9 +548,9 @@ public actor MEFirmwareAnalyzer {
             $0.name == "ROMB" && $0.size != 0 && $0.size != 0xFFFF_FFFF
                 && $0.offset != 0xFFFF_FFFF
         }
-        let identity = Identifier.identify(manifest: manifest,
-                                           database: database,
-                                           hasRomBypass: hasRomBypass)
+        let identity = Identifier.identify(
+            manifest: manifest, database: database, hasRomBypass: hasRomBypass,
+            moduleNames: codePartition?.modules.map(\.name) ?? [])
 
         if !identity.identified {
             // var_rsa_db == False path of get_variant: key matched nothing usable.
@@ -752,6 +761,30 @@ public actor MEFirmwareAnalyzer {
                 ignores4KAlignment: identity.family == .csme && identity.major >= 16)
         } ?? nil
 
+        // The independent (IUP) firmware stitched into this image: each such
+        // partition is a firmware in its own right, so it is analysed by this
+        // same pipeline over its own bytes — which is what makes its table
+        // read like the engine's (version, release, chipset SKU and stepping,
+        // the security numbers, the date and its own size).
+        var independent: [FirmwareAnalysis] = []
+        if findsIndependentFirmware {
+            for slot in Self.independentSlots(fpt: fpt, bootPartitions: bootPartitions,
+                                              baseOffset: baseOffset,
+                                              regionCount: region.count) {
+                let start = region.startIndex + slot.lowerBound
+                let slice = region.subdata(in: start..<(region.startIndex + slot.upperBound))
+                // A partition that does not decode is left out rather than
+                // reported as an empty table: upstream collects a block only
+                // for what its own analysis could read.
+                guard let analysis = try? await analyze(
+                    region: slice, baseOffset: baseOffset + slot.lowerBound,
+                    findsIndependentFirmware: false),
+                    analysis.manifest != nil
+                else { continue }
+                independent.append(analysis)
+            }
+        }
+
         return FirmwareAnalysis(
             family: identity.family,
             variant: identity.variant,
@@ -825,7 +858,57 @@ public actor MEFirmwareAnalyzer {
                 ? Self.downgradeBlacklist(in: region, manifest: manifest)
                 : nil,
             oemCustomized: oemCustomized,
+            independentFirmware: independent.isEmpty ? nil : independent,
             issues: issues)
+    }
+
+    /// Where the independent (IUP) firmware of an image sits, in the order the
+    /// console prints their tables: every Power Management Controller, then
+    /// every Platform Controller Hub Configuration, then every USB Type C
+    /// Physical.
+    ///
+    /// Both inventories are searched, as upstream searches both: the region's
+    /// own `$FPT` (MEA.py 12427–12456) and, on an IFWI image, each boot
+    /// partition's `BPDT` (11930–11960) — a stitched PMC lives in one or the
+    /// other depending on how the image was built. Region-relative ranges,
+    /// clamped to what was actually handed over.
+    private nonisolated static func independentSlots(
+        fpt: FPTParser.Result?, bootPartitions: [BPDT]?,
+        baseOffset: Int, regionCount: Int
+    ) -> [Range<Int>] {
+        /// The partition names of each family, upstream's own sets.
+        let families: [[String]] = [
+            ["PMCP", "PCOD"],                    // Power Management Controller
+            ["PCHC"],                            // Platform Controller Hub Configuration
+            ["PPHY", "NPHY", "SPHY", "PHYP"],    // USB Type C Physical
+        ]
+        // (name, region-relative offset, size) of every non-empty partition of
+        // both inventories.
+        var candidates: [(name: String, offset: Int, size: Int)] = []
+        for part in fpt?.partitions ?? [] where !part.empty {
+            candidates.append((part.name, part.offset, part.size))
+        }
+        for boot in bootPartitions ?? [] {
+            for entry in boot.entries where !entry.empty {
+                // BPDT entry offsets are absolute in the analysed image.
+                candidates.append((entry.name, entry.offset - baseOffset, entry.size))
+            }
+        }
+
+        var slots: [Range<Int>] = []
+        for names in families {
+            for candidate in candidates where names.contains(candidate.name) {
+                let start = candidate.offset
+                let end = candidate.offset + candidate.size
+                guard start >= 0, candidate.size > 0, start < regionCount else { continue }
+                let range = start..<min(end, regionCount)
+                // The same partition can be listed twice (a $FPT entry that
+                // also appears in a boot BPDT); one table per firmware.
+                guard !slots.contains(range) else { continue }
+                slots.append(range)
+            }
+        }
+        return slots
     }
 
     /// The two Downgrade Blacklist entries of an ME 7 manifest, as the model

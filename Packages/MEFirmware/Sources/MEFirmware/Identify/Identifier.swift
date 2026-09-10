@@ -48,9 +48,13 @@ struct Identifier {
     /// Internal (not private) so tests can drive `preKeyOverride` against it.
     static let sharedMEKeyHash = "86C0E5EF0CFEFF6D810D68D83D8C6ECB68306A644C03C0446B646A3971D37894"
 
+    /// `moduleNames` are the modules of the manifest's own `$CPD`, in
+    /// directory order — what `get_variant` falls back to when no database key
+    /// claims the manifest (see `VariantByModule`).
     static func identify(manifest: ManifestParser.Manifest,
                          database: MEADatabase,
-                         hasRomBypass: Bool) -> Identity {
+                         hasRomBypass: Bool,
+                         moduleNames: [String] = []) -> Identity {
         let keyHash = manifest.rsaPublicKey.map { Digest.sha256Hex($0) }
         let sigHash = manifest.rsaSignature.map { Digest.sha256Hex($0) }
 
@@ -60,6 +64,18 @@ struct Identifier {
         // get_variant step 2: the shared ME/TXE pre-key, split by firmware major.
         if let override = Self.preKeyOverride(keyHash: keyHash, major: manifest.major) {
             token = override
+        }
+
+        // get_variant step 3: the modules of the firmware's own `$CPD` name
+        // it. This is what recognises the stitched independent firmware, whose
+        // keys the database does not list.
+        if token == nil || token == "Unknown" || token == "TBD" {
+            if let byModule = VariantByModule.variant(
+                moduleNames: moduleNames, major: manifest.major,
+                minor: manifest.minor, year: manifest.year,
+                meuMajor: manifest.meMajor, meuMinor: manifest.meMinor) {
+                token = byModule
+            }
         }
 
         let family = Self.family(for: token ?? "Unknown")
@@ -99,8 +115,10 @@ struct Identifier {
             meMinor: manifest.meMinor,
             meHotfix: manifest.meHotfix,
             meBuild: manifest.meBuild,
-            securityVersion: (manifest.svn != 0 && manifest.svn != 0xFFFF_FFFF)
-                ? "\(manifest.svn)" : nil,
+            // Zero is a security version like any other — the console prints
+            // it, and every stitched independent firmware has one. Only the
+            // erased word says nothing.
+            securityVersion: manifest.svn != 0xFFFF_FFFF ? "\(manifest.svn)" : nil,
             databaseName: sigHash.flatMap { database.firmwareRow(matchingSignatureHash: $0) },
             chipsetStepping: cells?.stepping,
             powerDownMitigation: cells?.pdm,

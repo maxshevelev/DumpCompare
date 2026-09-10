@@ -121,6 +121,22 @@ public struct FirmwareAnalysis: Codable, Sendable, Equatable, Identifiable {
     /// Intel image is No. nil = the OEM story could not be determined (no
     /// readable key body to clear or to rule out).
     public var oemCustomized: Bool? = nil
+    /// The independent (IUP) firmware stitched into this image — a Power
+    /// Management Controller, a Platform Controller Hub Configuration, a USB
+    /// Type C Physical — each analysed in its own right, exactly as this
+    /// struct describes the engine around them (upstream's independent
+    /// `Field/Value` tables, `default-output-map.md` §4).
+    ///
+    /// Each entry is the analysis of one partition's own bytes: its manifest,
+    /// its extensions, its descriptor-derived chipset SKU and stepping, and
+    /// `sizeBytes` = the partition's size, which is the Size row upstream
+    /// prints for it. Their `type` is not meaningful — the console calls every
+    /// one of them "Independent" — and their `issues` stay with them rather
+    /// than joining the engine's.
+    ///
+    /// nil when nothing of the sort is stitched in. Never recursive in
+    /// practice: only the image handed to the analyzer looks for these.
+    public var independentFirmware: [FirmwareAnalysis]? = nil
     public var issues: [Issue]
 }
 
@@ -1884,5 +1900,5 @@ public struct Issue: Codable, Sendable, Equatable, Identifiable {
 /// whether to surface the new data (`reference/result-model.md` §Versioning).
 public enum EngineModelRevision {
     /// Current revision of the `FirmwareAnalysis` shape.
-    public static let current = 28
+    public static let current = 29
 }
