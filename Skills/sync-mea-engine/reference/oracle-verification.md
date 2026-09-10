@@ -19,6 +19,9 @@ Companion to `upstream-map.md` (the row ledger) and `result-model.md`.
 | `DATMAAMBAC0.BIN` | 16 MiB | csme CSME **12.0.3.1091** prod whole-flash | R1-`$CPD` + legacy (non-FTBL) MFS oracle — 210 files, config + home |
 | `old.bin` | 16 MiB | csme CSME **11.8.92.4222** prod whole-flash (FD) | Oldest CSE case; pre-IFWI (no CSE-LT) → `fpt_start = marker − 0x10`; legacy MFS oracle — 524 files |
 | `new.bin` | 24 MiB | csme CSME **16.1.25.2020** prod whole-flash | Newest whole-flash oracle; CSME-16 regions (CDMD, ELog), unpermuted EFS, FTBL-mode MFS with 0 used files |
+| `ME 7.bin` | 8 MiB | me ME **7.0.0.1193** prod (Slim, CPT) | The pre-CSE oracle, added 2026-09-10: the only dump that exercises rows 13 (Patsburg Support No) and 21 (Downgrade Blacklist 7.0 `<= 7.0.0.1172`, 7.1 Empty), the pre-CSE `$FPT` leg of row 18 (0x17D000) and the ME-7 platform table (CPT) |
+
+The dumps now live in `~/Desktop/ME` (they moved there on 2026-09-10).
 
 Every dump decodes cleanly (`issues` empty except the two faithful notes
 below). The engine's numbers reproduced the known oracles exactly on all five.
@@ -42,6 +45,14 @@ The row-18 (Size) port was checked this way over all five: 0x27C000, 0x603000,
 0x3DA000, 0x466000, 0x466000 — identical to the engine's `firmwareSizeBytes`.
 The CSME-11 rows (Power Down Mitigation "No", Workstation Support "No") and the
 per-family database steppings (C / A / BA / none) came from the same runs.
+
+Since the panel reproduces the whole default output, the check is now a diff of
+the two texts rather than a fact at a time: decode a CLI analysis JSON, run
+`MEASummary.build` over it, print `label: value` per row, and diff against the
+console. On 2026-09-10 that came out identical over `ME 7.bin` (11 rows),
+`CSME 12.BIN` (30) and `CSME 16.bin` (74) — bar the three deliberate
+differences: the family reads `CSME` not `CSE ME`, every hex size carries its
+decimal in brackets, and the trailing message is worded by the panel.
 
 ## Cross-check matrix
 

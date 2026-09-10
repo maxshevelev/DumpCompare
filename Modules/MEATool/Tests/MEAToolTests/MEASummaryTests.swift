@@ -418,6 +418,46 @@ final class MEASummaryTests: XCTestCase {
                            in: tableRows(try analysis(["manifest": manifestJSON()]))))
     }
 
+    /// The security-number rows and the production bit belong to the families
+    /// whose firmware carries them: an ME 7 has none of the four, an ME 8 has
+    /// the TCB and VCN pair but no anti-rollback number, and a CSME 12 has all
+    /// of them — which is exactly the row set the console prints.
+    func testTheSecurityRowsFollowTheFamilyAndMajor() throws {
+        func labels(family: String, major: Int) throws -> [String] {
+            tableRows(try analysis([
+                "family": family, "variant": family.uppercased(),
+                "manifest": manifestJSON(),
+                "securityVersion": "0", "arbSvn": 0, "vcn": 0,
+                "version": ["major": major, "minor": 0, "hotfix": 0, "build": 1],
+            ])).map(\.label)
+        }
+
+        let seven = try labels(family: "me", major: 7)
+        XCTAssertFalse(seven.contains("TCB Security Version Number"))
+        XCTAssertFalse(seven.contains("ARB Security Version Number"))
+        XCTAssertFalse(seven.contains("Version Control Number"))
+        XCTAssertFalse(seven.contains("Production Ready"),
+                       "an ME 7 carries no production bit at all")
+
+        let eight = try labels(family: "me", major: 8)
+        XCTAssertTrue(eight.contains("TCB Security Version Number"))
+        XCTAssertTrue(eight.contains("Version Control Number"))
+        XCTAssertTrue(eight.contains("Production Ready"))
+        XCTAssertFalse(eight.contains("ARB Security Version Number"),
+                       "the anti-rollback number arrived with CSME 12")
+
+        let twelve = try labels(family: "csme", major: 12)
+        XCTAssertTrue(twelve.contains("TCB Security Version Number"))
+        XCTAssertTrue(twelve.contains("ARB Security Version Number"))
+        XCTAssertTrue(twelve.contains("Version Control Number"))
+        XCTAssertTrue(twelve.contains("Production Ready"))
+
+        // CSME 11 has the pair but not the anti-rollback number either.
+        let eleven = try labels(family: "csme", major: 11)
+        XCTAssertTrue(eleven.contains("TCB Security Version Number"))
+        XCTAssertFalse(eleven.contains("ARB Security Version Number"))
+    }
+
     /// Rows 12a and 12b belong to CSME 11 alone: its Power Down Mitigation as
     /// the database records it, and the Workstation bit of its client
     /// system-information extension. Any other major prints neither.

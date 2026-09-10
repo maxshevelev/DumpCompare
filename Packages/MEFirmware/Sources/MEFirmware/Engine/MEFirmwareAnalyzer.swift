@@ -394,10 +394,14 @@ public actor MEFirmwareAnalyzer {
                 keyHash: m.rsaPublicKey.map { Digest.sha256Hex($0) },
                 signatureHash: m.rsaSignature.map { Digest.sha256Hex($0) },
                 vcn: m.vcn,
-                // Row 11 (Production Ready): R0 pre-CSE reads its own probe
-                // upstream (12652–12655, no oracle); only R1/R2 operational
-                // manifests surface Flags bit0 as the pvbit.
-                productionReady: m.format == .r0 ? nil : m.pvBit
+                // Row 11 (Production Ready): a pre-CSE (R0) ME 8–10 / TXE
+                // image keeps this bit in a `$DAT` marker past the manifest
+                // rather than in the manifest's own flags — and an ME 2–7 has
+                // none at all, which is why the console prints no such row
+                // for one. An R1/R2 manifest carries it in Flags bit 0.
+                productionReady: m.format == .r0
+                    ? PreCSEME.productionReady(in: region, manifestBase: m.base)
+                    : m.pvBit
             )
         }
 

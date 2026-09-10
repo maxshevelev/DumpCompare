@@ -142,29 +142,43 @@ public enum MEASummary {
         if let nvm = analysis.nvmCompatibility, nvm != 0 {
             add("NVM Compatibility", .value(MEAText.nvmCompatibility(nvm)))
         }
-        // 8 · TCB Security Version Number (manifest `svn`).
-        if let tcb = analysis.securityVersion, !tcb.isEmpty {
-            add("TCB Security Version Number", .value(tcb))
-        } else if identified {
-            add("TCB Security Version Number", .comingSoon)
+        // 8 · TCB Security Version Number (manifest `svn`) — for the families
+        // whose manifest carries one at all: a pre-CSE ME only from major 8,
+        // and every TXE / CSE / GSC / IUP firmware.
+        if hasSecurityVersionRow(analysis) {
+            if let tcb = analysis.securityVersion, !tcb.isEmpty {
+                add("TCB Security Version Number", .value(tcb))
+            } else if identified {
+                add("TCB Security Version Number", .comingSoon)
+            }
         }
-        // 9 · ARB Security Version Number.
-        if let arb = analysis.arbSvn {
-            add("ARB Security Version Number", .value(String(arb)))
-        } else if identified {
-            add("ARB Security Version Number", .comingSoon)
+        // 9 · ARB Security Version Number — the anti-rollback number, which
+        // arrived with CSME 12 and the families beside it.
+        if hasARBRow(analysis) {
+            if let arb = analysis.arbSvn {
+                add("ARB Security Version Number", .value(String(arb)))
+            } else if identified {
+                add("ARB Security Version Number", .comingSoon)
+            }
         }
-        // 10 · Version Control Number.
-        if let vcn = analysis.vcn {
-            add("Version Control Number", .value(String(vcn)))
-        } else if identified {
-            add("Version Control Number", .comingSoon)
+        // 10 · Version Control Number — the same gate as the TCB row.
+        if hasSecurityVersionRow(analysis) {
+            if let vcn = analysis.vcn {
+                add("Version Control Number", .value(String(vcn)))
+            } else if identified {
+                add("Version Control Number", .comingSoon)
+            }
         }
-        // 11 · Production Ready (manifest production-ready flag).
-        if let ready = analysis.manifest?.productionReady {
-            add("Production Ready", .value(MEAText.yesNo(ready)))
-        } else if identified {
-            add("Production Ready", .comingSoon)
+        // 11 · Production Ready — for the families that carry the bit at all:
+        // a pre-CSE ME has one only from major 8 (in a `$DAT` marker past the
+        // manifest), a plain SPS never, and the CSE ones in their manifest
+        // flags.
+        if hasProductionReadyRow(analysis) {
+            if let ready = analysis.manifest?.productionReady {
+                add("Production Ready", .value(MEAText.yesNo(ready)))
+            } else if identified {
+                add("Production Ready", .comingSoon)
+            }
         }
         // 12a · Power Down Mitigation and 12b · Workstation Support — CSME 11
         // and no other: the two rows upstream prints for that one major.
@@ -400,6 +414,44 @@ public enum MEASummary {
         else { return nil }
         return MEAText.manifestExtensionUtility(
             major: major, minor: minor, hotfix: hotfix, build: build)
+    }
+
+    /// Whether the image gets the TCB Security Version Number and Version
+    /// Control Number rows (upstream's shared gate for rows 8 and 10): a
+    /// pre-CSE `ME` carries neither before major 8, a plain `SPS` never does,
+    /// and every other family does.
+    private static func hasSecurityVersionRow(_ analysis: FirmwareAnalysis) -> Bool {
+        switch analysis.family {
+        case .me: return analysis.version.major >= 8
+        case .sps: return false
+        case .txe, .cstxe, .csme, .cssps, .gsc, .pmc, .pchc, .phy, .orom:
+            return true
+        case .unknown: return false
+        }
+    }
+
+    /// Whether the image gets the ARB Security Version Number row (row 9's own
+    /// gate): the anti-rollback number arrived with CSME 12, and every family
+    /// that came after it has one.
+    private static func hasARBRow(_ analysis: FirmwareAnalysis) -> Bool {
+        switch analysis.family {
+        case .csme: return analysis.version.major >= 12
+        case .cstxe, .cssps, .gsc, .pmc, .pchc, .phy, .orom: return true
+        case .me, .txe, .sps, .unknown: return false
+        }
+    }
+
+    /// Whether the image carries a production-ready bit to show (row 11's
+    /// gate is the fact's own existence, upstream 12654–12659): an ME before
+    /// major 8 has no such marker, and a plain SPS none either.
+    private static func hasProductionReadyRow(_ analysis: FirmwareAnalysis) -> Bool {
+        switch analysis.family {
+        case .me: return analysis.version.major >= 8
+        case .sps: return false
+        case .txe, .cstxe, .csme, .cssps, .gsc, .pmc, .pchc, .phy, .orom:
+            return true
+        case .unknown: return false
+        }
     }
 
     /// Whether the image gets a Chipset / Chipset Stepping row at all —

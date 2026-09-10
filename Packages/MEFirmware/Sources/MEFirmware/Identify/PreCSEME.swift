@@ -60,6 +60,33 @@ enum PreCSEME {
         return (entry(in: region, at: tag + 0x6DF), entry(in: region, at: tag + 0x6EB))
     }
 
+    /// The production-ready (pv/pc) bit of a pre-CSE `ME` 8–10 or `TXE` image
+    /// (upstream 12655–12657): past the manifest sits a `$DAT` marker — the
+    /// tag, twenty bytes, then `IFRP` — and the byte 0x10 into that match is
+    /// the bit. nil when the marker is not there.
+    ///
+    /// ME 2–7 carry no such marker and no such fact: upstream tests the major
+    /// before it looks, and prints no Production Ready row for them at all.
+    /// The CSE families read the bit from their manifest flags instead.
+    static func productionReady(in region: Data, manifestBase: Int) -> Bool? {
+        let tagOffset = manifestBase + 0x1B
+        guard tagOffset >= 0, tagOffset < region.count else { return nil }
+        let dat = Data("$DAT".utf8)
+        let ifrp = Data("IFRP".utf8)
+        var scan = region.startIndex + tagOffset
+        while let found = region.range(of: dat, in: scan..<region.endIndex) {
+            let start = found.lowerBound
+            let tail = start + 4 + 20
+            guard tail + 4 <= region.endIndex else { return nil }
+            if region[tail..<(tail + 4)].elementsEqual(ifrp) {
+                // The bit is a byte inside the twenty between the two tags.
+                return region[start + 0x10] != 0
+            }
+            scan = start + 1
+        }
+        return nil
+    }
+
     /// One blacklist entry: three u16 words — minor, hotfix, build.
     struct BlacklistEntry: Equatable {
         var minor: Int

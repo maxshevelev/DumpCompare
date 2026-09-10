@@ -63,6 +63,35 @@ final class PreCSEDecodeTests: XCTestCase {
             .patsburgSupport)
     }
 
+    /// Row 11 for a pre-CSE image: the production-ready bit rides in a `$DAT`
+    /// marker past the manifest — the tag, twenty bytes, then `IFRP` — and the
+    /// byte 0x10 into that match is the bit.
+    func testTheProductionReadyBitOfAPreCSEImage() {
+        func region(_ bit: UInt8?, trailing: Data = Data("IFRP".utf8)) -> Data {
+            var data = Data(repeating: 0xFF, count: 0x200)
+            guard let bit else { return data }
+            let marker = 0x100
+            data.replaceSubrange(marker..<(marker + 4), with: Data("$DAT".utf8))
+            data.replaceSubrange((marker + 4)..<(marker + 4 + 20),
+                                 with: Data(repeating: 0, count: 20))
+            data[marker + 0x10] = bit
+            data.replaceSubrange((marker + 24)..<(marker + 24 + trailing.count),
+                                 with: trailing)
+            return data
+        }
+        XCTAssertEqual(PreCSEME.productionReady(in: region(1), manifestBase: 0), true)
+        XCTAssertEqual(PreCSEME.productionReady(in: region(0), manifestBase: 0), false)
+        // No marker at all — an ME 2–7 image, where the console prints no such
+        // row either.
+        XCTAssertNil(PreCSEME.productionReady(in: region(nil), manifestBase: 0))
+        // A `$DAT` that is not followed by `IFRP` is not the marker.
+        XCTAssertNil(PreCSEME.productionReady(
+            in: region(1, trailing: Data("XXXX".utf8)), manifestBase: 0))
+        // The search starts at the manifest, so a marker before it is not this
+        // manifest's.
+        XCTAssertNil(PreCSEME.productionReady(in: region(1), manifestBase: 0x180))
+    }
+
     /// The blacklist words: minor/hotfix/build at 0x6DF and 0x6EB past the
     /// manifest's tag, and a zero build is the "Empty" line upstream prints.
     func testTheDowngradeBlacklistReadsBothLines() {
