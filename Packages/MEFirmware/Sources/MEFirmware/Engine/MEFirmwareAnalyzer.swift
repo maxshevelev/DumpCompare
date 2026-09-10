@@ -718,6 +718,15 @@ public actor MEFirmwareAnalyzer {
         let firmwareType = FirmwareTypeClassifier.classify(
             family: identity.family, major: identity.major,
             isIFWI: isIFWI, fpt: fpt, region: region)
+        // The four things that raise the File System State to Configured
+        // (upstream `oem_config or fitc_found or mfsb_found or cdmd_found`):
+        // the Flash Image Tool's own configuration module, and the three
+        // configuration partitions.
+        let configurationPresent = OEMDetector.fitConfiguration(
+            codePartition, in: region, baseOffset: baseOffset)
+            || (fpt?.partitions.contains { part in
+                ["FITC", "CDMD", "MFSB"].contains(part.name) && !part.empty
+            } ?? false)
         let oemCustomized = OEMDetector.oemCustomized(
             fpt: fpt, bootPartitions: bootPartitions, codePartition: codePartition,
             in: region, baseOffset: baseOffset)
@@ -792,12 +801,16 @@ public actor MEFirmwareAnalyzer {
             arbSvn: chainHoist.arbSvn,
             vcn: chainHoist.vcn03 ?? chainHoist.vcn0F ?? manifestSummary?.vcn,
             nvmCompatibility: chainHoist.nvm,
-            mfsState: mfsInfo.map {
-                MFSStateDecoder.state(usesFTBL: $0.usesFTBL,
-                                      presentFileIndices: $0.files
-                                        .filter { !$0.content.isEmpty }
-                                        .map(\.index))
-            },
+            // Row 17: what the file system says about itself, then the two
+            // raises upstream applies after it — a written EFS volume, and any
+            // configuration partition at all. Answered for every image, as
+            // upstream's own variable is; the row's family gate is the panel's.
+            mfsState: MFSStateDecoder.state(
+                usesFTBL: mfsInfo?.usesFTBL ?? false,
+                presentFileIndices: mfsInfo?.files
+                    .filter { !$0.content.isEmpty }
+                    .map(\.index) ?? [],
+                hasConfiguration: configurationPresent),
             // Row 12a is CSME 11's alone, the way upstream gates it, so the
             // token is read only there — a later family's row cell 4 means
             // something else.

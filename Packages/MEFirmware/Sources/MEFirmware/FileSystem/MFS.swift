@@ -398,15 +398,41 @@ enum MFSParser {
 /// EFS/OEM-config/CDMD upgrade rules of MEA.py 13050–13051 are likewise out of
 /// this row's scope. Both decisions are recorded in the increment plan.
 enum MFSStateDecoder {
-    static func state(usesFTBL: Bool, presentFileIndices: [Int]) -> MFSState {
-        guard !usesFTBL else { return .unconfigured }
-        if presentFileIndices.contains(where: { [0, 1, 2, 3, 4, 5, 8].contains($0) }) {
-            return .initialized
+    /// The File System State (row 17), in upstream's three steps:
+    ///
+    /// 1. the reserved low-level files the volume holds — indices 0–5/8 mean
+    ///    the file system has been initialised, 7/9 that it has been
+    ///    configured (`get_mfs_anl`, MEA.py 7489–7490). A volume whose files
+    ///    start at offset 0 (CSME 15/16, `usesFTBL`) has no reserved files by
+    ///    index at all: upstream's own loop breaks out on `vfs_starts_at_0`
+    ///    before reading one, so nothing is claimed from indices there;
+    /// 2. failing that, a configuration partition of any kind — a `fitc.cfg`
+    ///    module, a FITC / CDMD / MFSB partition — means the firmware has at
+    ///    least been configured (13051).
+    ///
+    /// One step between the two is not ported: an EFS volume that holds file
+    /// contents raises the state to Initialized from any state (13050,
+    /// `efs_init`). Which bytes of an EFS are a file is a question only the
+    /// `FileTable.dat` EFST table answers — it names each entry's offset in
+    /// the volume's assembled data area — and that table is not parsed here
+    /// yet. So a CSME 15/16 image whose file system is written but whose
+    /// configuration partitions are present reads Configured where the console
+    /// reads Initialized: one step short, from a rule that does hold, rather
+    /// than a guess at the one that is missing.
+    static func state(usesFTBL: Bool, presentFileIndices: [Int],
+                      hasConfiguration: Bool) -> MFSState {
+        var state = MFSState.unconfigured
+        if !usesFTBL {
+            if presentFileIndices.contains(where: { [0, 1, 2, 3, 4, 5, 8].contains($0) }) {
+                state = .initialized
+            } else if presentFileIndices.contains(where: { [7, 9].contains($0) }) {
+                state = .configured
+            }
         }
-        if presentFileIndices.contains(where: { [7, 9].contains($0) }) {
-            return .configured
+        if state == .unconfigured, hasConfiguration {
+            state = .configured
         }
-        return .unconfigured
+        return state
     }
 }
 

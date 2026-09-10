@@ -51,6 +51,36 @@ enum OEMDetector {
                 in: region, baseOffset: baseOffset)
     }
 
+    /// Upstream `oem_config` (MEA.py 6014): the operational `$CPD` carries a
+    /// non-empty `fitc.cfg` module — the configuration the Flash Image Tool
+    /// writes. It is *not* part of row 14's answer, which folds only
+    /// `oem_signed or oemp_found or utok_found`; it is one of the four things
+    /// that raise the File System State to Configured (13051).
+    static func fitConfiguration(_ codePartition: CodePartition?,
+                                 in region: Data, baseOffset: Int) -> Bool {
+        guard let cp = codePartition else { return false }
+        return cp.modules.contains { module in
+            module.name == "fitc.cfg"
+                && populatedBody(of: module, in: cp, region: region,
+                                 baseOffset: baseOffset) != nil
+        }
+    }
+
+    /// The region range of a `$CPD` module's stored body, or nil when the
+    /// module is upstream's `entry_empty` (5981): a zero size, an offset past
+    /// the end of the image, or an entirely erased full-size body. A body
+    /// truncated at EOF is not erased — Python's short-slice comparison never
+    /// equals the `FF * size` fill either.
+    private static func populatedBody(of module: CPDModule, in cp: CodePartition,
+                                      region: Data, baseOffset: Int) -> Range<Int>? {
+        guard module.size > 0 else { return nil }
+        let base = cp.offset - baseOffset + module.offset
+        guard base >= 0, base < region.count else { return nil }
+        let end = min(base + module.size, region.count)
+        if end - base == module.size, allErased(region, base..<end) { return nil }
+        return base..<end
+    }
+
     // MARK: - oem_signed (the oem.key module)
 
     /// Upstream 6015–6016: an `oem.key` `$CPD` module is a signing key when it
@@ -67,18 +97,14 @@ enum OEMDetector {
         for module in cp.modules where module.name == "oem.key" {
             // entry_empty (5981): a zero size, an all-erased body, or an offset
             // at/past the end of the file → empty, no signing key.
-            guard module.size > 0 else { continue }
-            let base = cp.offset - baseOffset + module.offset
-            guard base >= 0, base < region.count else { continue }
-            let end = min(base + module.size, region.count)
-            // entry_empty compares the *full-size* slice against `FF * size`; a
-            // body truncated at EOF never equals that fill, so it stays a
-            // candidate (mirroring Python's short-slice inequality).
-            let erased = end - base == module.size && allErased(region, base..<end)
-            guard !erased else { continue }
+            guard let body = populatedBody(of: module, in: cp, region: region,
+                                           baseOffset: baseOffset)
+            else { continue }
 
             // A real key body does not open with the placeholder signature.
-            if containsPlaceholder(region, base..<min(base + 0x50, end)) {
+            if containsPlaceholder(region,
+                                   body.lowerBound..<min(body.lowerBound + 0x50,
+                                                         body.upperBound)) {
                 continue
             }
             return true
