@@ -204,14 +204,28 @@ final class LazyUEFITreeTests: XCTestCase {
         XCTAssertEqual(tree.addressDiff, UEFIParser.parse(bytes).addressDiff)
         XCTAssertNotNil(tree.resetVector)
         XCTAssertEqual(tree.resetVector, UEFIParser.parse(bytes).resetVector)
+        // Nothing was opened to learn it: the VTF ends the image, so the tail
+        // is where it was found.
+        let bios = tree.rootNodes[0].children.first { $0.name == "BIOS region" }
+        XCTAssertEqual(bios?.children, [], "the BIOS region was never scanned")
     }
 
-    func testResolvingAddressesMarksTheVtfFixed() async {
+    /// The anchor is marked wherever the tree reaches it — which, since the
+    /// mapping is worked out from the tail without opening anything, is only
+    /// once the volume holding the VTF has been walked.
+    func testTheVtfIsMarkedFixedOnceItsBranchIsOpen() async {
         let tree = await built(anchoredImage())
         await resolvedAddresses(tree)
+        XCTAssertNotNil(tree.addressDiff, "the tail answered without opening anything")
+        XCTAssertNil(tree.image().allNodes.first { $0.guid == KnownGUIDs.volumeTopFile },
+                     "and the VTF's own node is not in the tree yet")
+
+        // Open the branch it lives in.
+        _ = await chain(tree, containing: 0x7F80)
 
         let vtf = tree.image().allNodes.first { $0.guid == KnownGUIDs.volumeTopFile }
-        XCTAssertEqual(vtf?.isFixed, true)
+        XCTAssertEqual(vtf?.isFixed, true,
+                       "the node the mapping is anchored on says it cannot move")
     }
 
     /// No VTF is not a defect — a dump of one region has none — and the
@@ -393,15 +407,16 @@ final class LazyUEFITreeTests: XCTestCase {
     }
 
     /// The same for the mapping: a descent an edit cut short still resumes
-    /// whoever was waiting on it.
+    /// whoever was waiting on it. An image with no VTF in its tail is the one
+    /// that has to walk, so it is the one that can be cut short.
     func testAnEditAnswersWhoeverWasWaitingOnTheMapping() async {
-        let tree = await built(anchoredImage())
+        let tree = await built(twoVolumeImage())
 
         var answered = false
         tree.resolveAddresses { answered = true }
         XCTAssertFalse(answered, "the descent has containers to open first")
 
-        tree.invalidate(editedRange: 0x7000..<0x7004, sizeDelta: 0)
+        tree.invalidate(editedRange: 0x4000..<0x4004, sizeDelta: 0)
 
         XCTAssertTrue(answered, "the abandoned descent answered its caller")
         XCTAssertFalse(tree.addressesResolved)

@@ -89,6 +89,12 @@ public final class LazyUEFITree {
     /// show.
     private var cachedImage: UEFIImage?
 
+    /// Where the Volume Top File starts, once the mapping has been worked out.
+    /// Kept because the tail look finds it without opening the containers
+    /// around it, so the node itself may not be in the tree yet — and has to
+    /// be marked fixed when it arrives.
+    private var fixedAnchor: UInt64?
+
     /// Who to tell when the tree has grown or been cut back. A panel keeps one
     /// of these to reload its rows; a session keeps one to check the checksums
     /// of whatever just appeared. Tokens rather than a single slot because two
@@ -317,13 +323,19 @@ public final class LazyUEFITree {
     /// (§10) — then calls `done`, immediately when it has already been worked
     /// out since the last edit.
     ///
-    /// The anchor is the Volume Top File, whose final byte is at the top of
-    /// the address space, so it is at the end of the last volume of the image.
-    /// Finding it is therefore a descent down the chain of nodes that reaches
-    /// the last byte, expanding the three or four containers on the way — not
-    /// a parse of the image. No VTF is not a defect: a dump of one BIOS region,
-    /// or of an EC, has none, and `addressDiff` staying nil is the whole of
-    /// what that means.
+    /// The anchor is the Volume Top File, whose final byte is the last byte of
+    /// the address space — so on an image mapped flush to the top of it, the
+    /// VTF is what the image *ends with*, and a look at the tail finds it
+    /// without opening anything at all. That is the fast path, and the common
+    /// one: measured on a 24 MiB dump it is the difference between an address
+    /// that is there and one that is half a second late.
+    ///
+    /// Where the tail says nothing — an image mapped some other way, a region
+    /// cut out of one — it falls back to walking: down the chain of nodes that
+    /// reaches the last byte, opening the three or four containers on the way.
+    /// No VTF at all is not a defect either: a dump of one BIOS region, or of
+    /// an EC, has none, and `addressDiff` staying nil is the whole of what
+    /// that means.
     public func resolveAddresses(_ done: @escaping @MainActor () -> Void) {
         whenReady { [weak self] in
             guard let self else { return }
@@ -334,6 +346,18 @@ public final class LazyUEFITree {
             self.addressCallbacks.append(done)
             guard !self.isResolvingAddresses else { return }
             self.isResolvingAddresses = true
+
+            let parser = Parser(reader: self.reader, limits: self.limits)
+            if let vtf = parser.volumeTopFileInTail() {
+                let second = parser.secondPass(anchoredOn: vtf)
+                if second.addressDiff != nil {
+                    self.landAddresses(
+                        second, anchor: vtf.range.lowerBound,
+                        diagnostics: parser.diagnostics
+                    )
+                    return
+                }
+            }
             self.descendToTheLastNode(from: .root) { [weak self] in
                 self?.finishResolvingAddresses()
             }
@@ -377,20 +401,63 @@ public final class LazyUEFITree {
     /// that is what says this answer is about a tree that no longer exists.
     private func finishResolvingAddresses() {
         guard isResolvingAddresses else { return }
-        isResolvingAddresses = false
         let parser = Parser(reader: reader, limits: limits)
         var updated = roots
         let second = updated.isEmpty ? Parser.SecondPass() : parser.runSecondPass(&updated)
         roots = updated
-        diagnostics += parser.diagnostics
+        let anchor = second.addressDiff.map { 0x1_0000_0000 - $0 }
+        landAddresses(
+            second,
+            anchor: anchor.flatMap { top in
+                findNode(in: roots) { $0.range.upperBound == top && $0.guid == KnownGUIDs.volumeTopFile }
+            }?.range.lowerBound,
+            diagnostics: parser.diagnostics
+        )
+    }
+
+    /// Publishes a mapping, however it was arrived at: the anchor is marked
+    /// where the tree already reaches it, remembered for the branches that
+    /// have yet to be opened, and everyone waiting is told.
+    private func landAddresses(
+        _ second: Parser.SecondPass, anchor: UInt64?, diagnostics newDiagnostics: [UEFIDiagnostic]
+    ) {
+        guard isResolvingAddresses else { return }
+        isResolvingAddresses = false
+        diagnostics += newDiagnostics
         addressDiff = second.addressDiff
         resetVector = second.resetVector
         addressesResolved = true
+        fixedAnchor = anchor
+        markTheAnchor()
         cachedImage = nil
         let waiting = addressCallbacks
         addressCallbacks.removeAll()
         announce(.addressesResolved)
         for callback in waiting { callback() }
+    }
+
+    /// The VTF is the anchor for every address in the image, so moving it moves
+    /// everything (§11) — and its node says so. It is marked wherever the tree
+    /// already reaches it, and again each time a branch that might contain it
+    /// is opened, because the mapping is usually known long before the volume
+    /// holding the VTF has been walked.
+    private func markTheAnchor() {
+        guard let fixedAnchor else { return }
+        let parser = Parser(reader: reader, limits: limits)
+        var updated = roots
+        parser.markFixed(&updated, at: fixedAnchor)
+        roots = updated
+        cachedImage = nil
+    }
+
+    private func findNode(
+        in nodes: [UEFINode], where matches: (UEFINode) -> Bool
+    ) -> UEFINode? {
+        for node in nodes {
+            if matches(node) { return node }
+            if let found = findNode(in: node.children, where: matches) { return found }
+        }
+        return nil
     }
 
     // MARK: - Invalidation
@@ -430,6 +497,7 @@ public final class LazyUEFITree {
         addressesResolved = false
         addressDiff = nil
         resetVector = nil
+        fixedAnchor = nil
         isResolvingAddresses = false
         addressCallbacks.removeAll()
         // The diagnostics of the subtrees being dropped go with them; what is
@@ -515,6 +583,7 @@ public final class LazyUEFITree {
         applyExpansion(id, children: stamped)
         diagnostics += result.diagnostics
         cachedImage = nil
+        markTheAnchor()
         let callbacks = expandingCallbacks.removeValue(forKey: id) ?? []
         expandingIDs.remove(id)
         announce(.expanded(id))

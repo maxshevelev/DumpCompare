@@ -55,21 +55,73 @@ extension Parser {
         // No VTF is not a defect: a dump of one BIOS region, or of an EC, has
         // none, and `addressDiff` staying nil is the whole of what that means.
         guard let vtf = lastVolumeTopFile(in: roots) else { return SecondPass() }
+        let second = secondPass(anchoredOn: vtf)
+        // The VTF is the anchor for every address in the image, so moving it
+        // moves everything (§11).
+        if second.addressDiff != nil { markFixed(&roots, at: vtf.range.lowerBound) }
+        return second
+    }
+
+    /// The mapping a given Volume Top File fixes, and what can be read with it.
+    /// Separated from finding one because there are two ways to find one — the
+    /// walk above, and the tail look below.
+    func secondPass(anchoredOn vtf: UEFINode) -> SecondPass {
         let top = vtf.range.upperBound
         guard top <= 0x1_0000_0000 else {
             note(.addressesUnknown, at: vtf.range.lowerBound)
             return SecondPass()
         }
         let addressDiff = 0x1_0000_0000 - top
-
-        // The VTF is the anchor for every address in the image, so moving it
-        // moves everything (§11).
-        markFixed(&roots, at: vtf.range.lowerBound)
-
         return SecondPass(
             addressDiff: addressDiff,
             resetVector: readResetVector(addressDiff: addressDiff, within: vtf)
         )
+    }
+
+    /// The Volume Top File found where the format says it has to be, rather
+    /// than by walking to it.
+    ///
+    /// Its last byte is the last byte of the address space (§5.7), so an image
+    /// mapped flush to the top of it ends *with* the VTF. Looking for the
+    /// file's GUID in the last few tens of kilobytes is a couple of reads;
+    /// walking to it means scanning the whole BIOS region for volume
+    /// signatures and then walking the last volume's files, which on a 24 MiB
+    /// dump measured half a second — and every panel that wants an address
+    /// waits for it.
+    ///
+    /// Nil when the tail holds no VTF whose size lands it exactly at the end:
+    /// an image mapped some other way, a region cut out of one, a dump with
+    /// bytes appended. The caller then walks, and gets the same answer the
+    /// slow way.
+    func volumeTopFileInTail(window: UInt64 = 0x10000) -> UEFINode? {
+        let count = reader.count
+        guard count > FFS.headerSize else { return nil }
+        let start = count > window ? count - window : 0
+        guard let bytes = reader.bytes(start..<count) else { return nil }
+
+        let guid = KnownGUIDs.volumeTopFile.bytes
+        var found: UEFINode?
+        var index = 0
+        while index + guid.count <= bytes.count {
+            defer { index += 1 }
+            guard Array(bytes[index..<(index + guid.count)]) == guid else { continue }
+            let header = start + UInt64(index)
+            // The size field of the FFS header this GUID would be the name of
+            // (§5.1). It has to land the file's last byte on the image's.
+            guard let size = reader.uint24(at: header + 0x14),
+                  UInt64(size) > FFS.headerSize,
+                  header + UInt64(size) == count
+            else { continue }
+            found = UEFINode(
+                kind: .file,
+                name: KnownGUIDs.name(of: KnownGUIDs.volumeTopFile) ?? "Volume Top File",
+                guid: KnownGUIDs.volumeTopFile,
+                header: header..<(header + FFS.headerSize),
+                body: (header + FFS.headerSize)..<count,
+                isFixed: true
+            )
+        }
+        return found
     }
 
     /// The *last* one: an image can hold several, and only the last is at the
@@ -108,7 +160,7 @@ extension Parser {
     /// Marks the node starting at `offset`, wherever it is in the tree. By
     /// offset and not by id, because ids are stamped only once the tree is
     /// finished and the second pass runs before that.
-    private func markFixed(_ nodes: inout [UEFINode], at offset: UInt64) {
+    func markFixed(_ nodes: inout [UEFINode], at offset: UInt64) {
         for index in nodes.indices {
             if nodes[index].range.lowerBound == offset {
                 nodes[index].isFixed = true
