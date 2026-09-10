@@ -632,6 +632,40 @@ final class PaneViewModel: HexViewDataSource {
         notifyCompanionContentFullyChanged()
     }
 
+    /// Adopts `bytes` as this pane's document: an untitled, never-saved one,
+    /// exactly as `openUntitled` leaves the pane, but holding what it was given.
+    ///
+    /// What opens a *part* of a file on its own — a zone taken out into a tab of
+    /// its own. The bytes are already read by the time they arrive: reading a
+    /// range out of a document is the reader's business, and a pane that took a
+    /// range and a source would have to know about both.
+    func openBytes(_ bytes: [UInt8], named name: String?) {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(name ?? "Untitled")
+        let doc = BinaryDocument(
+            storage: EditOverlayStorage(base: MemoryBackedStorage(bytes: bytes)),
+            url: url,
+            readOnly: false
+        )
+        document = doc
+        // Nothing on disk to compare against, so no byte reads as modified (§6)
+        // until it is saved and edited.
+        savedStorage = nil
+        isUntitled = true
+        untitledName = name
+        hasWarnedInsertShift = false
+        resetEditingState()
+        // A piece of a file is one piece of its own, named after itself.
+        resetSegments(for: doc)
+        clearMatches()
+        uefiState.reset()
+        changeWatcher?.stop()
+        changeWatcher = nil
+        onFullInvalidation?()
+        notify()
+        notifyCompanionContentFullyChanged()
+    }
+
     /// Adopts a copy of `source`'s content as this pane's document (§23
     /// Duplicate). The result is an untitled, never-saved document, exactly as
     /// `openUntitled` leaves the pane — no watcher, no on-disk reference, Save

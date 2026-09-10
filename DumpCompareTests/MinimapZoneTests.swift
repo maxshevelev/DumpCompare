@@ -509,9 +509,10 @@ final class MinimapZoneTests: XCTestCase {
     // MARK: - The menu
 
     /// A right-click on a bracket offers what acts on that zone. One item for
-    /// now — Select — which names the zone, selects its whole range, and tells
-    /// the tool-module that published it, because what the zone stands for is
-    /// only the tool-module's to know (§19.4.5).
+    /// Select — which names the zone, selects its whole range, and tells the
+    /// tool-module that published it, because what the zone stands for is only
+    /// the tool-module's to know (§19.4.5). What the menu offers beside it is
+    /// `ToolZonesTests`' to say; this is about what Select does.
     func testTheMenuSelectsTheZoneAndTellsTheToolModule() throws {
         let (controller, window, panel, host) = try makeWindow()
         publish(ZoneMap(zones: [zone("bios", "BIOS region", 0x100..<0x300)]), to: host, window)
@@ -523,8 +524,7 @@ final class MinimapZoneTests: XCTestCase {
 
         let menu = try XCTUnwrap(panel.zoneBracketMenu?(0, "bios"),
                                  "a bracket offers a menu")
-        XCTAssertEqual(menu.items.count, 1, "one action for now")
-        let item = menu.items[0]
+        let item = try XCTUnwrap(menu.items.first { $0.title.hasPrefix("Select Zone") })
         XCTAssertTrue(item.title.contains("BIOS region"),
                       "the item names the zone it will act on: \(item.title)")
 

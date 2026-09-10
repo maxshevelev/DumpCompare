@@ -2965,26 +2965,44 @@ final class MainViewController: NSViewController {
     /// The right-click menu the zone gutter offers for a bracket: what acts on
     /// the zone under the pointer (§19.4.5).
     ///
-    /// One item for now — Select — which is the one thing every zone can do
-    /// whatever published it. Saving a zone to a file, replacing it from one,
-    /// and the rest of `Design/ZONES_IDEA.md` belong to the tool-module that
-    /// knows what the zone *is*, and each of them wants a tool-module with
-    /// something to say first (`Zone.kind`).
+    /// The same two things the dump's own zone menu offers, because the reader
+    /// asking from the gutter is asking about the same zone: select it, or take
+    /// it out into a tab of its own. What is left of `Design/ZONES_IDEA.md` —
+    /// replacing a zone from a file, and the rest — belongs to the tool-module
+    /// that knows what the zone *is*, and wants a tool-module with something to
+    /// say first (`Zone.kind`).
     private func makeMinimapZoneMenu(mapIndex: Int, zoneID: Zone.ID) -> NSMenu? {
         guard let pane = minimapPane(at: mapIndex), pane.isOpen,
               let zone = pane.zones.zones.first(where: { $0.id == zoneID }) else { return nil }
         let menu = NSMenu()
-        // The zone's name is in the title, so the menu says what it will act on
+        // The zone's name is in each title, so the menu says what it will act on
         // — the same rule the strip's items follow with their labels (§21.3). An
         // unnamed zone is named by where it starts, which is all there is.
-        let title = zone.name.isEmpty
-            ? "Select Zone at \(zone.range.lowerBound.bareAddress)"
-            : "Select Zone “\(zone.name)”"
-        let select = menu.addItem(withTitle: title,
-                                  action: #selector(minimapMenuSelectZone(_:)), keyEquivalent: "")
-        select.target = self
-        select.representedObject = ZoneMenuTarget(mapIndex: mapIndex, zoneID: zoneID)
+        let named = zone.name.isEmpty
+            ? "at \(zone.range.lowerBound.bareAddress)"
+            : "“\(zone.name)”"
+
+        func item(_ title: String, _ action: Selector) -> NSMenuItem {
+            let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.representedObject = ZoneMenuTarget(mapIndex: mapIndex, zoneID: zoneID)
+            return item
+        }
+        _ = item("Select Zone \(named)", #selector(minimapMenuSelectZone(_:)))
+        _ = item("Open Zone \(named) in a New Tab",
+                 #selector(minimapMenuOpenZoneInNewTab(_:)))
         return menu
+    }
+
+    /// Open in a New Tab from the gutter's menu: the same act the dump's own
+    /// menu performs, on the zone looked up again — a tool-module may have
+    /// republished between the menu opening and the item being picked.
+    @objc private func minimapMenuOpenZoneInNewTab(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? ZoneMenuTarget,
+              let pane = minimapPane(at: target.mapIndex),
+              let zone = pane.zones.zones.first(where: { $0.id == target.zoneID })
+        else { return }
+        openZone(zone, of: pane)
     }
 
     /// Select from the gutter's menu: the zone's whole range is selected and the
@@ -4235,6 +4253,20 @@ final class MainViewController: NSViewController {
         } else {
             menu.addItem(item("Select Zone “\(zones[0].name)”", #selector(selectZone(_:)), zones[0]))
         }
+        // Open in a New Tab mirrors the choice, taking the picked zone's bytes
+        // out into a document of their own.
+        if zones.count > 1 {
+            let parent = menu.addItem(withTitle: "Open Zone in a New Tab",
+                                      action: nil, keyEquivalent: "")
+            let submenu = NSMenu(title: "Open Zone in a New Tab")
+            for zone in zones {
+                submenu.addItem(item(zone.name, #selector(openZoneInNewTab(_:)), zone))
+            }
+            parent.submenu = submenu
+        } else {
+            menu.addItem(item("Open Zone “\(zones[0].name)” in a New Tab",
+                              #selector(openZoneInNewTab(_:)), zones[0]))
+        }
         // Save Zone as… mirrors the choice, writing the picked zone's bytes out.
         if zones.count > 1 {
             let parent = menu.addItem(withTitle: "Save Zone as…", action: nil, keyEquivalent: "")
@@ -4498,6 +4530,40 @@ final class MainViewController: NSViewController {
                   suggestedName: zoneExportName(fileName: target.pane.status.fileName,
                                                 zoneName: zone.name, range: zone.range),
                   purpose: "the zone")
+    }
+
+    /// Takes a zone's bytes out into a tab of their own.
+    ///
+    /// A zone is a structure somebody found in the file — a volume, a FIT table,
+    /// a microcode — and the way to study one is often to look at it as a file
+    /// rather than at its offsets inside a bigger one. The tab holds a copy: it
+    /// is untitled and unsaved, so editing it cannot reach back into the dump it
+    /// was taken from, and Save routes through Save As.
+    @objc func openZoneInNewTab(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? ZoneContextTarget else { return }
+        openZone(target.zone, of: target.pane)
+    }
+
+    /// The act both zone menus perform — the dump's and the minimap gutter's.
+    /// One reading of the bytes, one tab, one set of rules about what the copy
+    /// is, wherever the reader asked from.
+    private func openZone(_ zone: Zone, of pane: PaneViewModel) {
+        guard pane.isOpen, let doc = pane.document else { return }
+        let bytes: [UInt8]
+        do {
+            bytes = try doc.read(at: zone.range.lowerBound, length: Int(zone.range.count))
+        } catch {
+            presentFileError("Could not read the zone.", error, url: doc.url)
+            return
+        }
+        guard let tab = makeSiblingTab?() else { return }
+        tab.windowModel.pane1.openBytes(
+            bytes,
+            named: zoneExportName(fileName: pane.status.fileName,
+                                  zoneName: zone.name, range: zone.range)
+        )
+        tab.windowModel.bookmarkStore.seed(windowModel.bookmarkStore.bookmarks)
+        tab.apply(mode: .singleFile)
     }
 
     /// The tail shared by Save Selection as… and Save Zone as…: reads `range`

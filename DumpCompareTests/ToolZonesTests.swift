@@ -256,6 +256,78 @@ final class ToolZonesTests: XCTestCase {
         XCTAssertEqual(parent.submenu?.items.map(\.title), ["#1 Microcode", "FIT table"])
     }
 
+    /// The same zone block offers Open Zone in a New Tab, and it takes the
+    /// zone's bytes there.
+    ///
+    /// A zone is a structure somebody found in the file — a volume, a table, a
+    /// microcode — and the way to study one is often to read it as a file
+    /// rather than as offsets inside a bigger one.
+    func testARightClickInsideAZoneOffersOpeningItInATab() throws {
+        let (controller, _) = try makeController()
+        let host = try host(controller)
+        host.publish(ZoneMap(zones: [Zone(id: "fv", name: "FFSv2", range: 0x100..<0x180)]))
+
+        let menu = controller.makeOffsetMenu(for: controller.windowModel.pane1, offset: 0x120)
+        let item = try XCTUnwrap(
+            menu.items.first { $0.title == "Open Zone “FFSv2” in a New Tab" }
+        )
+
+        let tab = MainViewController()
+        defer { tab.windowModel.pane1.close() }
+        controller.makeSiblingTab = { tab }
+        _ = item.target?.perform(item.action, with: item)
+
+        XCTAssertEqual(tab.windowModel.pane1.fileSize, 0x80, "the zone's bytes, and only those")
+        XCTAssertTrue(tab.windowModel.pane1.isUntitled,
+                      "a copy, so editing it cannot reach back into the dump")
+        XCTAssertTrue(tab.windowModel.pane1.status.fileName.hasSuffix("_FFSv2.bin"),
+                      "named after the file it came out of and the zone it is: "
+                      + tab.windowModel.pane1.status.fileName)
+    }
+
+    /// Nested zones give it the same submenu Select Zone gets: the choice is
+    /// the same choice.
+    func testOpeningInATabOffersEveryZoneUnderThePointer() throws {
+        let (controller, _) = try makeController()
+        let host = try host(controller)
+        host.publish(ZoneMap(zones: [
+            Zone(id: "table", name: "FIT table", range: 0x100..<0x200),
+            Zone(id: "row", name: "#1 Microcode", range: 0x110..<0x120)
+        ]))
+
+        let menu = controller.makeOffsetMenu(for: controller.windowModel.pane1, offset: 0x118)
+        let parent = try XCTUnwrap(menu.items.first { $0.title == "Open Zone in a New Tab" })
+
+        XCTAssertEqual(parent.submenu?.items.map(\.title), ["#1 Microcode", "FIT table"])
+    }
+
+    /// The gutter's own menu offers both, because the reader asking from the
+    /// minimap is asking about the same zone.
+    func testTheMinimapGutterOffersTheSameTwoThings() throws {
+        let (controller, window) = try makeController()
+        let host = try host(controller)
+        host.publish(ZoneMap(zones: [Zone(id: "fv", name: "FFSv2", range: 0x100..<0x180)]))
+        window.layoutIfNeeded()
+
+        let minimap = try XCTUnwrap(
+            descendants(of: window.contentView!, MinimapView.self).first
+        )
+        let menu = try XCTUnwrap(minimap.zoneBracketMenu?(0, "fv"),
+                                 "the bracket has a menu")
+
+        XCTAssertEqual(menu.items.map(\.title),
+                       ["Select Zone “FFSv2”", "Open Zone “FFSv2” in a New Tab"])
+
+        let item = try XCTUnwrap(menu.items.last)
+        let tab = MainViewController()
+        defer { tab.windowModel.pane1.close() }
+        controller.makeSiblingTab = { tab }
+        _ = item.target?.perform(item.action, with: item)
+
+        XCTAssertEqual(tab.windowModel.pane1.fileSize, 0x80,
+                       "and it takes the same bytes there")
+    }
+
     /// The same zone block offers Save Zone as… for the zone under the pointer —
     /// one zone is a single item naming it, exactly as Select Zone is.
     func testARightClickInsideAZoneOffersSavingItByName() throws {
