@@ -84,7 +84,7 @@ import UEFITool
     /// How long a branch may take before the reader is told it is being read.
     /// Under this, the row simply opens when it is ready and no placeholder is
     /// ever drawn — which is the common case and the one that used to ripple.
-    private static let placeholderDelay: TimeInterval = 0.2
+    private static var placeholderDelay: TimeInterval { UEFIToolModule.loadingRowDelay }
     /// How long the outline's own expand animation runs. Nothing observable
     /// says when it ends, and replacing rows inside it is the defect this is
     /// here to avoid, so a branch that lands within this of its row opening is
@@ -561,11 +561,17 @@ extension UEFIToolViewController: NSOutlineViewDataSource, NSOutlineViewDelegate
     }
 
     /// A row the reader clicked open whose branch has not been read yet stays
-    /// shut, and the reading starts. The row opens in
-    /// `branchArrived(_:)` — once, with what is actually in it.
+    /// shut, and the reading starts. The row opens in `branchArrived(_:)` —
+    /// once, with what is actually in it.
+    ///
+    /// Except once the branch has been slow enough to earn a "Loading…" row:
+    /// this is asked for a programmatic `expandItem` too, so refusing then
+    /// would refuse the panel's own attempt to put that row up, and the branch
+    /// would never open at all.
     func outlineView(_ outlineView: NSOutlineView, shouldExpandItem item: Any) -> Bool {
         guard let row = item as? UEFITreeRow, !row.isLoading, let tree,
-              let node = tree.node(row.id), node.children.isEmpty, node.isExpandable
+              let node = tree.node(row.id), node.children.isEmpty, node.isExpandable,
+              !showingPlaceholder.contains(row.id)
         else { return true }
         beginOpening(row.id)
         return false

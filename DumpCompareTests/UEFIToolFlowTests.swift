@@ -300,6 +300,37 @@ final class UEFIToolFlowTests: XCTestCase {
         XCTAssertEqual(kinds(of: outline), [.volume, .file, .padding, .freeSpace])
     }
 
+    /// The click and nothing else: no second caller waiting on the branch, the
+    /// way the app has it.
+    func testAClickAloneOpensTheRow() throws {
+        _ = try open(UEFITestImage.make())
+        let outline = try outline()
+
+        outline.expandItem(outline.item(atRow: 0))
+        XCTAssertTrue(pumpUntil(5) { outline.numberOfRows == 4 },
+                      "the row opened on its own: \(outline.numberOfRows) rows")
+    }
+
+    /// The same click down the *slow* path — the one that puts a "Loading…"
+    /// row up first. The row still ends up open.
+    ///
+    /// The panel opens that row itself, which means asking its own
+    /// `shouldExpandItem` again; a guard that refuses a branch not yet read
+    /// refuses this too, and then the branch never opens at all — the reader
+    /// clicks, nothing happens, and only a second click works.
+    func testASlowBranchOpensThroughItsLoadingRow() throws {
+        UEFIToolModule.loadingRowDelay = 0
+        defer { UEFIToolModule.loadingRowDelay = 0.2 }
+
+        _ = try open(UEFITestImage.make())
+        let outline = try outline()
+
+        outline.expandItem(outline.item(atRow: 0))
+        XCTAssertTrue(pumpUntil(5) { outline.numberOfRows == 4 },
+                      "the row opened: \(outline.numberOfRows) rows")
+        XCTAssertEqual(kinds(of: outline), [.volume, .file, .padding, .freeSpace])
+    }
+
     /// Two branches opened at once both come out right.
     ///
     /// An outline recognises its items by object and holds a map from each one

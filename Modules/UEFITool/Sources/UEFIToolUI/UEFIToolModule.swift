@@ -19,6 +19,15 @@ public enum UEFIToolModule: ToolModule {
     /// the same room the FIT table takes, more than the minimap's 120.
     public static let preferredPanelWidth: CGFloat = 480
 
+    /// How long a branch may take to be read before the row waiting on it says
+    /// "Loading…". Under this the row simply opens when it is ready, and no
+    /// placeholder is drawn at all — which is what keeps a fast branch from
+    /// costing two animations over the same rows.
+    ///
+    /// Settable so a test can take the timing out of the picture and drive the
+    /// slow path on demand.
+    @MainActor public static var loadingRowDelay: TimeInterval = 0.2
+
     @MainActor public static func makeSession(host: any ToolHost) -> any ToolSession {
         UEFIToolSession(host: host)
     }
