@@ -289,14 +289,12 @@ final class UEFIToolFlowTests: XCTestCase {
         // The branch lands — the same reading the click started, coalesced.
         // The panel's own callback was registered first, so by the time this
         // one runs the row is open.
-        let tree = try XCTUnwrap(controller.windowModel.pane1.uefiState.tree)
-        let opened = expectation(description: "the branch is materialized")
-        tree.expand(NodeID([0])) { _ in opened.fulfill() }
-        wait(for: [opened], timeout: 5)
-        window?.layoutIfNeeded()
-
-        XCTAssertEqual(outline.numberOfRows, 4,
-                       "the row opened with its children in it")
+        // The panel opens the row itself, animated and behind whatever the
+        // table is already moving, so this waits for it to settle rather than
+        // for the branch alone.
+        XCTAssertTrue(pumpUntil(5) { outline.numberOfRows == 4 },
+                      "the row opened with its children in it: "
+                      + "\(outline.numberOfRows) rows")
         XCTAssertEqual(kinds(of: outline), [.volume, .file, .padding, .freeSpace])
     }
 
@@ -347,13 +345,8 @@ final class UEFIToolFlowTests: XCTestCase {
         outline.expandItem(outline.item(atRow: 1))
         window?.layoutIfNeeded()
 
-        let tree = try XCTUnwrap(controller.windowModel.pane1.uefiState.tree)
-        for path in [[0, 0], [0, 1]] {
-            let landed = expectation(description: "branch \(path)")
-            tree.expand(NodeID(path)) { _ in landed.fulfill() }
-            wait(for: [landed], timeout: 5)
-        }
-        window?.layoutIfNeeded()
+        XCTAssertTrue(pumpUntil(5) { outline.numberOfRows == 8 },
+                      "both rows opened: \(outline.numberOfRows) rows")
 
         XCTAssertEqual(kinds(of: outline),
                        [.volume, .file, .padding, .freeSpace,
@@ -365,6 +358,7 @@ final class UEFIToolFlowTests: XCTestCase {
         }
         XCTAssertEqual(ids.count, outline.numberOfRows)
         XCTAssertEqual(Set(ids).count, ids.count, "no path is drawn twice: \(ids)")
+        _ = controller
     }
 
     /// The point of a tree shared per file: what one tool-module opened, the

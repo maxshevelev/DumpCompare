@@ -77,19 +77,30 @@ import UEFITool
     private var opening: [NodeID: Date] = [:]
     /// The branches slow enough to have earned a "Loading…" row.
     private var showingPlaceholder: Set<NodeID> = []
-    /// When the outline last animated a row open, so a branch that lands while
-    /// its own placeholder is still sliding in waits for that to finish.
-    private var expandedAt: [NodeID: Date] = [:]
-
     /// How long a branch may take before the reader is told it is being read.
     /// Under this, the row simply opens when it is ready and no placeholder is
     /// ever drawn — which is the common case and the one that used to ripple.
     private static var placeholderDelay: TimeInterval { UEFIToolModule.loadingRowDelay }
-    /// How long the outline's own expand animation runs. Nothing observable
-    /// says when it ends, and replacing rows inside it is the defect this is
-    /// here to avoid, so a branch that lands within this of its row opening is
-    /// held until it has passed.
-    private static let expandAnimation: TimeInterval = 0.35
+    /// How long a row takes to open. Ours to choose, because every expansion
+    /// here is the panel's own (`outlineView(_:shouldExpandItem:)` refuses the
+    /// click and the panel opens the row when there is something in it), and
+    /// it is the window during which nothing else may touch the table.
+    private static let expandAnimation: TimeInterval = 0.25
+
+    /// Changes to the table, run one at a time.
+    ///
+    /// A row opening is an animation, and so is a "Loading…" row giving way to
+    /// what was under it. A change that lands on rows another is still moving
+    /// leaves the outline animating towards a layout that no longer exists,
+    /// and what that looks like is a wave running through the whole table. So
+    /// they queue: each runs inside its own animation group, and the next
+    /// starts when that group is done.
+    private var queued: [(animated: Bool, body: @MainActor () -> Void)] = []
+    private var isAnimating = false
+    /// Whether a refresh is already queued, and whether any of the shows it
+    /// stands for moved rows. One refresh serves however many shows land while
+    /// an animation runs.
+    private var queuedRefresh: Bool?
 
     private let summaryLabel = NSTextField(labelWithString: "")
     private let outline = UEFIOutlineView()
@@ -352,20 +363,44 @@ import UEFITool
             ?? UEFITreeDisplay.PresentedImage(title: nil, rows: [])
         summaryLabel.stringValue = UEFITreeDisplay.summary(of: image)
         updateSummaryEmphasis()
+        renderDetail(detail, subject: focus?.description ?? "")
+        queueRefresh(rowsChanged: rowsChanged)
+    }
+
+    /// The table half of a show, queued behind whatever the outline is
+    /// animating. Everything it reads is already stored above, so a refresh
+    /// that runs a moment later draws the latest state rather than the state
+    /// its own show was called with — which is why several shows arriving
+    /// during one animation collapse into one refresh.
+    private func queueRefresh(rowsChanged: Bool) {
+        if let already = queuedRefresh {
+            queuedRefresh = already || rowsChanged
+            return
+        }
+        queuedRefresh = rowsChanged
+        enqueue(animated: false) { [weak self] in
+            guard let self else { return }
+            let rowsChanged = self.queuedRefresh ?? false
+            self.queuedRefresh = nil
+            self.refreshTheOutline(rowsChanged: rowsChanged)
+        }
+    }
+
+    private func refreshTheOutline(rowsChanged: Bool) {
+        isShowingState = true
+        defer { isShowingState = false }
+
         if rowsChanged {
             outline.reloadData()
         } else {
             // Only what the rows *say* changed — a checksum pass landing, the
             // GUID catalogue arriving, a new selection. Re-rendering the cells
-            // leaves the row set alone, which matters because a `reloadData`
-            // landing inside the outline's own expand animation is what makes
-            // the table ripple.
+            // leaves the row set alone.
             outline.reloadData(
                 forRowIndexes: IndexSet(integersIn: 0..<outline.numberOfRows),
                 columnIndexes: IndexSet(integersIn: 0..<outline.numberOfColumns)
             )
         }
-        renderDetail(detail, subject: focus?.description ?? "")
 
         // The focus is the root the tree folded into the title: it has no row
         // to select, and the title already stands for it in accent colour, so
@@ -380,6 +415,29 @@ import UEFITool
             return
         }
         reveal(focus, in: tree)
+    }
+
+    // MARK: - One change to the table at a time
+
+    private func enqueue(animated: Bool, _ body: @escaping @MainActor () -> Void) {
+        queued.append((animated, body))
+        runTheNextChange()
+    }
+
+    private func runTheNextChange() {
+        guard !isAnimating, !queued.isEmpty else { return }
+        let change = queued.removeFirst()
+        isAnimating = true
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = change.animated ? Self.expandAnimation : 0
+            change.body()
+        } completionHandler: { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.isAnimating = false
+                self.runTheNextChange()
+            }
+        }
     }
 
     /// Selects and scrolls to `nodeID`'s row, expanding every ancestor first —
@@ -401,14 +459,17 @@ import UEFITool
         outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
     }
 
-    /// Opens `id`'s row, when it has one.
+    /// Opens `id`'s row, when it has one — animated, and behind whatever the
+    /// outline is already animating.
     ///
-    /// Through the outline's own item: an outline recognises only the object it
-    /// is itself holding, and answers `row(forItem:)` for a copy that compares
-    /// equal but quietly does nothing when asked to expand one.
+    /// Through the outline's own item, resolved when the change runs rather
+    /// than when it is queued: an outline recognises only the object it is
+    /// itself holding, and by the time this runs the rows may have moved.
     private func expandRow(_ id: NodeID) {
-        guard let item = outlineItem(for: id) else { return }
-        outline.expandItem(item)
+        enqueue(animated: true) { [weak self] in
+            guard let self, let item = self.outlineItem(for: id) else { return }
+            self.outline.animator().expandItem(item)
+        }
     }
 
     /// Expands, in order, every ancestor of `nodeID` that the tree has not
@@ -577,11 +638,6 @@ extension UEFIToolViewController: NSOutlineViewDataSource, NSOutlineViewDelegate
         return false
     }
 
-    func outlineViewItemDidExpand(_ notification: Notification) {
-        guard let row = notification.userInfo?["NSObject"] as? UEFITreeRow else { return }
-        expandedAt[row.id] = Date()
-    }
-
     /// Starts reading a branch, and — only if it turns out to be slow — puts a
     /// "Loading…" row up to say so.
     private func beginOpening(_ id: NodeID) {
@@ -610,19 +666,9 @@ extension UEFIToolViewController: NSOutlineViewDataSource, NSOutlineViewDelegate
             expandRow(id)
             return
         }
-        afterTheExpandAnimation(of: id) { [weak self] in
+        enqueue(animated: true) { [weak self] in
             guard let self, let item = self.outlineItem(for: id) else { return }
             self.outline.reloadItem(item, reloadChildren: true)
-        }
-    }
-
-    private func afterTheExpandAnimation(of id: NodeID, _ body: @escaping @MainActor () -> Void) {
-        guard let at = expandedAt[id] else { body(); return }
-        let left = Self.expandAnimation - Date().timeIntervalSince(at)
-        guard left > 0 else { body(); return }
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: UInt64(left * 1_000_000_000))
-            body()
         }
     }
 
