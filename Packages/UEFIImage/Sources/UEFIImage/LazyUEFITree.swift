@@ -1,27 +1,27 @@
 import Foundation
 
-/// One shared, incrementally-materialized parse of an image: the same tree
-/// `UEFIParser.parse(_:)` would produce, but with a volume's file list and a
-/// raw-area region's signature scan computed only when something asks for
-/// them — driven by an outline view's on-demand `NSOutlineViewDataSource`
-/// calls — and kept from then on, until `invalidate` drops what an edit has
-/// made stale.
+/// One shared, incrementally-materialized parse of an image: the tree every
+/// UEFI-aware tool-module reads, built once per open file and kept for as long
+/// as the file is open.
 ///
-/// Everything else (a file's sections, a section's nested content) is always
-/// computed as soon as its containing volume is expanded: that walk is driven
-/// by each file/section's own recorded size field, not a byte-by-byte scan,
-/// and stays fast even for a few hundred files — the two genuinely expensive
-/// operations in this parser are a raw-area region's linear scan for volume
-/// signatures (`Parser.scanRawArea`) and, at one further remove, a volume's
-/// own file walk once found; deferring both is what buys the laziness this
-/// type exists for, deferring the rest would only cost correctness (a file's
-/// name, when it comes from a UI section, would otherwise show differently
-/// before and after its own expansion).
+/// Nothing here is parsed before something asks for it. Building the tree
+/// yields the top level and no more — an Intel image's regions, a capsule's
+/// envelope, or the raw-area scan that decides what the top level of a plain
+/// chip dump even is — and every container below that is left closed, with
+/// `isExpandable` set, until an outline row is opened, an address is resolved,
+/// or a FIT row's target is looked up. `invalidate` then narrows an edit down
+/// to the volume or region it landed in, so a byte typed in one volume never
+/// costs the file its other volumes' already-materialized files.
 ///
-/// Not `Sendable`: it is mutable, per-pane, main-actor-confined state. Unlike
-/// `UEFIImage`, which is a `Sendable` value returned by the still-fully-eager
-/// `UEFIParser.parse(_:)` — used unchanged by consumers that need the whole
-/// tree at once (`UEFIChecksumCheck`, `SecondPass`).
+/// That is what makes switching tool panels free: the second panel to ask
+/// finds the first one's work already done, and asks only for whatever more it
+/// needs.
+///
+/// Not `Sendable`: it is mutable, per-pane, main-actor-confined state. The
+/// heavy half of every expansion runs off the main actor as a
+/// `TreeMaterialization` call over the (Sendable) reader, and only the result
+/// comes back here to be written into the tree.
+///
 /// A `ByteSource` this tree is built against is expected to be *live*: it
 /// should read whatever bytes are currently in the underlying storage, not a
 /// point-in-time snapshot — the app wraps the open file's actual, mutable
@@ -32,42 +32,111 @@ import Foundation
 /// it is at that moment, collapsed or not.
 @MainActor
 public final class LazyUEFITree {
-    private let source: any ByteSource
+    /// The bytes, reachable without the main actor so a background
+    /// materialization — and a tool-module reading a header of its own — works
+    /// from exactly the content this tree was built against.
+    public nonisolated let source: any ByteSource
+    public nonisolated var imageReader: ImageReader { ImageReader(source) }
+
     private let reader: ImageReader
     private let limits: UEFIParser.Limits
 
-    /// The whole tree materialized so far. Root-level and every node reached
-    /// by `stampIDs` at build time; a collapsed volume/region node's own
-    /// `children` is `[]` with `isExpandable == true` until `expand` fills it
-    /// in, at which point that one node's `children` is replaced in place.
+    /// The whole tree materialized so far. A closed container's own `children`
+    /// is `[]` with `isExpandable == true` until an expansion fills it in, at
+    /// which point that one node's `children` is replaced in place.
     private var roots: [UEFINode] = []
+    /// What the parses so far had to complain about, in the order they were
+    /// found. Grows as the tree does — a volume's "unknown file system" is not
+    /// known until something opens that volume.
+    private var diagnostics: [UEFIDiagnostic] = []
 
-    /// Generation, bumped on every `invalidate`/`reset`, so a background
-    /// region-scan that finishes after the tree has moved on is discarded
-    /// instead of being written into a now-stale path.
+    /// `address = offset + addressDiff`, from the Volume Top File (§5.7), once
+    /// `resolveAddresses` has looked for it. Nil while it has not been asked
+    /// for, and nil afterwards when the image has no VTF to anchor it.
+    public private(set) var addressDiff: UInt64?
+    /// The image's own statement of where it is loaded, read alongside the
+    /// address mapping (§5.7).
+    public private(set) var resetVector: ResetVector?
+    /// Whether the VTF descent has been run since the tree was last
+    /// invalidated. Told apart from `addressDiff == nil`, which is also the
+    /// answer for an image that genuinely has no VTF.
+    public private(set) var addressesResolved = false
+
+    /// Whether the top level is there yet. False only between `init` and the
+    /// end of the background build — which on a plain chip dump is a scan of
+    /// the whole file, and on an Intel image is instant.
+    public private(set) var isReady = false
+
+    /// Generation, bumped on every `invalidate`, so a background scan that
+    /// finishes after the tree has moved on is discarded instead of being
+    /// written into a now-stale path.
     private var generation = 0
 
-    /// Region ids with a `Task.detached` scan in flight, and the callbacks
-    /// waiting on it — a second `expand` call on the same id while one is
-    /// already running coalesces onto it rather than starting a duplicate.
+    /// Ids with a materialization in flight, and the callbacks waiting on it —
+    /// a second `expand` on the same id while one is already running coalesces
+    /// onto it rather than starting a duplicate.
     private var expandingIDs: Set<NodeID> = []
     private var expandingCallbacks: [NodeID: [@MainActor ([UEFINode]) -> Void]] = [:]
+    /// Waiting on the top level, for callers that arrived before the build
+    /// finished.
+    private var readyCallbacks: [@MainActor () -> Void] = []
+    /// Waiting on the VTF descent, likewise.
+    private var addressCallbacks: [@MainActor () -> Void] = []
+    private var isResolvingAddresses = false
+
+    /// The last `image()`, held until something changes the tree. Building one
+    /// walks every node materialized so far, and a panel asks for it on every
+    /// show.
+    private var cachedImage: UEFIImage?
+
+    /// Who to tell when the tree has grown or been cut back. A panel keeps one
+    /// of these to reload its rows; a session keeps one to check the checksums
+    /// of whatever just appeared. Tokens rather than a single slot because two
+    /// tool-module sessions can be alive at once — one on screen, one parked —
+    /// and the parked one must not be able to unsubscribe the other.
+    public struct ObserverToken: Hashable, Sendable {
+        fileprivate let value: Int
+    }
+    private var observers: [ObserverToken: @MainActor (Change) -> Void] = [:]
+    private var nextObserverToken = 0
+
+    /// What an observer is told. `nodeID` is nil for the top level itself —
+    /// the build landing, or an invalidation that cut somewhere unknowable
+    /// from here.
+    public enum Change: Sendable {
+        /// The top level is there; the tree can be read.
+        case built
+        /// This node's children were materialized.
+        case expanded(NodeID)
+        /// The VTF descent landed: the mapping is known, and the chain it
+        /// opened on the way is now part of the tree.
+        case addressesResolved
+        /// An edit dropped memoized subtrees; everything below is suspect.
+        case invalidated
+    }
 
     public init(_ source: any ByteSource, limits: UEFIParser.Limits = .init()) {
         self.source = source
         self.reader = ImageReader(source)
         self.limits = limits
-        rebuildRoots()
+        build()
     }
 
-    /// The top level — always available, computed once in `init`/`reset`.
+    // MARK: - Reading what is there
+
+    /// The top level. Empty until `isReady`.
     public var rootNodes: [UEFINode] {
         roots
     }
 
+    /// What the parses so far had to complain about.
+    public var currentDiagnostics: [UEFIDiagnostic] {
+        diagnostics
+    }
+
     /// Looks the node up by its path from the root, descending through
     /// whatever has been expanded so far. Nil past the point the tree is
-    /// still collapsed, or for a path that never existed.
+    /// still closed, or for a path that never existed.
     public func node(_ id: NodeID) -> UEFINode? {
         var nodes = roots
         var found: UEFINode?
@@ -81,48 +150,90 @@ public final class LazyUEFITree {
 
     /// This node's immediate children as currently materialized — empty for a
     /// node that has not been expanded yet (or is expanding in the
-    /// background), whatever was last computed otherwise. Never triggers
-    /// work by itself.
+    /// background), whatever was last computed otherwise. Never triggers work
+    /// by itself.
     public func children(of id: NodeID) -> [UEFINode] {
         node(id)?.children ?? []
     }
 
     /// Whether the outline should draw a disclosure triangle for this node —
-    /// either it has children already, or it is a collapsed volume/region
-    /// that would if expanded.
+    /// either it has children already, or it is a closed container that would
+    /// if expanded.
     public func isExpandable(_ id: NodeID) -> Bool {
         guard let node = node(id) else { return false }
         return node.isExpandable || !node.children.isEmpty
     }
 
-    /// Whether a background scan for this node's children is currently
-    /// running (`expand` was called on a region and has not returned yet).
+    /// Whether a background materialization for this node's children is
+    /// currently running.
     public func isExpanding(_ id: NodeID) -> Bool {
         expandingIDs.contains(id)
     }
 
+    /// The tree so far as one `Sendable` value — what a pure consumer
+    /// (`UEFIDetail`, `FITReader`, `UEFIChecksumCheck`) reads, and what a
+    /// background task can be handed. It is the whole tree only if everything
+    /// has been expanded; otherwise it is exactly as much of the image as has
+    /// been asked for, with the addresses resolved so far.
+    public func image() -> UEFIImage {
+        if let cachedImage { return cachedImage }
+        let image = UEFIImage(
+            size: reader.count,
+            roots: roots,
+            diagnostics: diagnostics,
+            addressDiff: addressDiff,
+            resetVector: resetVector
+        )
+        // Kept until the tree next changes: building one copies every node
+        // materialized so far, and a panel asks for it on every selection.
+        cachedImage = image
+        return image
+    }
+
     /// The descriptor's region range, without expanding anything: a plain
     /// re-read of the fixed-offset region table, independent of whether the
-    /// region itself (or anything else) has ever been expanded. The entry
-    /// point for MEA's ME-region lookup — cheap even the first time it is
-    /// called on a freshly-built tree.
+    /// region itself — or the tree at all — has been built yet. The entry
+    /// point for MEA's ME-region lookup, and cheap even on a tree that is
+    /// still building its top level.
     public func region(_ type: FlashRegionType) -> Range<UInt64>? {
-        guard let intelRoot = roots.first(where: { $0.kind == .intelImage }) else { return nil }
-        let parser = Parser(reader: reader, limits: limits, expansion: NeverExpandPolicy.shared)
+        let parser = Parser(reader: reader, limits: limits)
+        let body: Range<UInt64>
+        if let intelRoot = roots.first(where: { $0.kind == .intelImage }) {
+            body = intelRoot.body
+        } else if parser.hasDescriptorSignature(at: 0) {
+            body = reader.all
+        } else {
+            return nil
+        }
         return parser.flashRegionRange(
-            type, descriptorAt: intelRoot.body.lowerBound, limit: intelRoot.body.upperBound
+            type, descriptorAt: body.lowerBound, limit: body.upperBound
         )
     }
 
+    // MARK: - Waiting
+
+    /// Calls `body` once the top level is there — immediately when it already
+    /// is. A panel that wants to draw its first rows starts here.
+    public func whenReady(_ body: @escaping @MainActor () -> Void) {
+        if isReady {
+            body()
+        } else {
+            readyCallbacks.append(body)
+        }
+    }
+
+    // MARK: - Growing the tree
+
     /// Expands `id`: materializes its children if they are not already known,
-    /// and calls `onReady` with them either way. A volume's file list is
-    /// cheap (header-driven, no scanning) and is computed synchronously,
-    /// before `expand` returns. A region's raw-area scan is the one
-    /// genuinely expensive operation this type defers, and runs in a
-    /// background `Task.detached`; `onReady` is called later, on the main
-    /// actor, once it completes. Calling `expand` again on an id already
-    /// expanding coalesces the new callback onto the one in flight rather
-    /// than starting a second scan.
+    /// and calls `onReady` with them either way.
+    ///
+    /// Always asynchronous when there is work to do — the file walk of a
+    /// volume and the signature scan of a raw-area region are both off the
+    /// main actor, and both leave `isExpanding(id)` true until they land, so a
+    /// panel can put a "Loading…" row where the children will go. A node whose
+    /// children are already known answers before this returns. Calling
+    /// `expand` again on an id already expanding coalesces the new callback
+    /// onto the one in flight rather than starting a second scan.
     public func expand(_ id: NodeID, onReady: @escaping @MainActor ([UEFINode]) -> Void) {
         guard let target = node(id) else {
             onReady([])
@@ -141,45 +252,148 @@ public final class LazyUEFITree {
             return
         }
 
-        switch target.kind {
-        case .volume:
-            let parser = Parser(reader: reader, limits: limits, expansion: NeverExpandPolicy.shared)
-            var stamped: [UEFINode] = []
-            if let header = parser.readVolumeHeader(at: target.header.lowerBound) {
-                let raw = parser.volumeChildren(header, body: target.body, depth: id.path.count)
-                stamped = LazyUEFITree.stampIDs(raw, under: id)
-            }
-            applyExpansion(id, children: stamped)
-            onReady(stamped)
-
-        case .region:
-            guard let subtype = target.subtype, FlashRegionType(rawValue: Int(subtype)) != nil else {
-                applyExpansion(id, children: [])
-                onReady([])
-                return
-            }
-            expandingIDs.insert(id)
-            expandingCallbacks[id] = [onReady]
-            let capturedGeneration = generation
-            let capturedReader = reader
-            let capturedLimits = limits
-            let range = target.body
-            let depth = id.path.count
-            Task.detached(priority: .userInitiated) { [weak self] in
-                let parser = Parser(
-                    reader: capturedReader, limits: capturedLimits, expansion: NeverExpandPolicy.shared
-                )
-                let raw = parser.scanRawArea(range, emptyByte: Parser.defaultEmptyByte, depth: depth + 1)
-                await self?.completeRegionExpansion(id, raw: raw, expectedGeneration: capturedGeneration)
-            }
-
-        default:
-            // Nothing else is ever left collapsed (isExpandable == false for
-            // every other kind), so this should not be reached in practice.
-            applyExpansion(id, children: [])
-            onReady([])
+        expandingIDs.insert(id)
+        expandingCallbacks[id] = [onReady]
+        let capturedGeneration = generation
+        let capturedReader = reader
+        let capturedLimits = limits
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let result = TreeMaterialization.children(
+                of: target, reader: capturedReader, limits: capturedLimits
+            )
+            await self?.completeExpansion(
+                id, result: result, expectedGeneration: capturedGeneration
+            )
         }
     }
+
+    /// Expands every container on the way down to `offset` and hands back the
+    /// chain that covers it, outermost first.
+    ///
+    /// What a caller with an address rather than a row asks: a FIT entry's
+    /// target, the element a microcode run lives in. It costs one expansion
+    /// per level of the chain and nothing at all for the rest of the image.
+    public func materialize(
+        containing offset: UInt64,
+        _ done: @escaping @MainActor ([UEFINode]) -> Void
+    ) {
+        whenReady { [weak self] in
+            guard let self else { return }
+            self.step(containing: offset, from: .root, chain: [], done: done)
+        }
+    }
+
+    private func step(
+        containing offset: UInt64,
+        from parent: NodeID,
+        chain: [UEFINode],
+        done: @escaping @MainActor ([UEFINode]) -> Void
+    ) {
+        let siblings = parent.path.isEmpty ? roots : children(of: parent)
+        guard let index = siblings.firstIndex(where: { $0.range.contains(offset) }) else {
+            done(chain)
+            return
+        }
+        let id = parent.child(index)
+        let found = siblings[index]
+        let chain = chain + [found]
+        guard found.children.isEmpty, found.isExpandable else {
+            step(containing: offset, from: id, chain: chain, done: done)
+            return
+        }
+        expand(id) { [weak self] _ in
+            guard let self else { return }
+            // The node was replaced in place by the expansion; the chain keeps
+            // the version that now has children.
+            let refreshed = self.node(id) ?? found
+            self.step(
+                containing: offset, from: id,
+                chain: Array(chain.dropLast()) + [refreshed], done: done
+            )
+        }
+    }
+
+    /// Works out where the image is mapped, and reads the reset vector with it
+    /// (§10) — then calls `done`, immediately when it has already been worked
+    /// out since the last edit.
+    ///
+    /// The anchor is the Volume Top File, whose final byte is at the top of
+    /// the address space, so it is at the end of the last volume of the image.
+    /// Finding it is therefore a descent down the chain of nodes that reaches
+    /// the last byte, expanding the three or four containers on the way — not
+    /// a parse of the image. No VTF is not a defect: a dump of one BIOS region,
+    /// or of an EC, has none, and `addressDiff` staying nil is the whole of
+    /// what that means.
+    public func resolveAddresses(_ done: @escaping @MainActor () -> Void) {
+        whenReady { [weak self] in
+            guard let self else { return }
+            if self.addressesResolved {
+                done()
+                return
+            }
+            self.addressCallbacks.append(done)
+            guard !self.isResolvingAddresses else { return }
+            self.isResolvingAddresses = true
+            self.descendToTheLastNode(from: .root) { [weak self] in
+                self?.finishResolvingAddresses()
+            }
+        }
+    }
+
+    /// Opens the container that reaches furthest into the image, then the one
+    /// inside that, and so on to the bottom — through `expand`, one node at a
+    /// time, rather than over a copy of the tree in the background.
+    ///
+    /// Through `expand` on purpose: a copy would have to be written back
+    /// wholesale when it landed, and a branch somebody opened meanwhile —
+    /// while this descent was running — would be thrown away with it.
+    private func descendToTheLastNode(
+        from parent: NodeID, _ done: @escaping @MainActor () -> Void
+    ) {
+        let siblings = parent.path.isEmpty ? roots : children(of: parent)
+        guard let index = siblings.indices.max(by: {
+            siblings[$0].range.upperBound < siblings[$1].range.upperBound
+        }) else {
+            done()
+            return
+        }
+        let id = parent.child(index)
+        let node = siblings[index]
+        guard node.children.isEmpty else {
+            descendToTheLastNode(from: id, done)
+            return
+        }
+        guard node.isExpandable else {
+            done()
+            return
+        }
+        expand(id) { [weak self] _ in
+            self?.descendToTheLastNode(from: id, done)
+        }
+    }
+
+    /// Reads the mapping off whatever the descent found. An edit that landed
+    /// while it was running has already cleared `isResolvingAddresses`, and
+    /// that is what says this answer is about a tree that no longer exists.
+    private func finishResolvingAddresses() {
+        guard isResolvingAddresses else { return }
+        isResolvingAddresses = false
+        let parser = Parser(reader: reader, limits: limits)
+        var updated = roots
+        let second = updated.isEmpty ? Parser.SecondPass() : parser.runSecondPass(&updated)
+        roots = updated
+        diagnostics += parser.diagnostics
+        addressDiff = second.addressDiff
+        resetVector = second.resetVector
+        addressesResolved = true
+        cachedImage = nil
+        let waiting = addressCallbacks
+        addressCallbacks.removeAll()
+        announce(.addressesResolved)
+        for callback in waiting { callback() }
+    }
+
+    // MARK: - Invalidation
 
     /// Invalidates the parts of the tree an edit may have made stale. There is
     /// no wholesale `reset` — a caller whose file was replaced outright
@@ -203,32 +417,108 @@ public final class LazyUEFITree {
     /// call or not) reads current bytes regardless.
     public func invalidate(editedRange: Range<UInt64>, sizeDelta: Int64) {
         generation += 1
+        // Whoever was waiting on work this edit has just made pointless is
+        // told so at the end of this call rather than left waiting: a caller
+        // suspended on one of these — a tool-module awaiting a branch or the
+        // mapping — would otherwise never be resumed at all.
+        let abandonedExpansions = expandingCallbacks
+        let abandonedAddresses = addressCallbacks
         expandingIDs.removeAll()
         expandingCallbacks.removeAll()
+        // The mapping is anchored on a node that may have just moved, and the
+        // reset vector is bytes that may have just been typed over.
+        addressesResolved = false
+        addressDiff = nil
+        resetVector = nil
+        isResolvingAddresses = false
+        addressCallbacks.removeAll()
+        // The diagnostics of the subtrees being dropped go with them; what is
+        // left is re-collected as those subtrees are expanded again.
+        diagnostics.removeAll()
+        cachedImage = nil
 
         if sizeDelta == 0 {
             roots = LazyUEFITree.collapsingOverlapping(roots, range: editedRange)
         } else {
             roots = LazyUEFITree.collapsingFrom(roots, offset: editedRange.lowerBound)
         }
+        // An edit that lands before the top level is even there has just made
+        // the build in flight stale — its result is dropped by the generation
+        // bump above, so without a fresh one the tree would never become
+        // readable at all.
+        if !isReady { build() }
+        announce(.invalidated)
+
+        for callbacks in abandonedExpansions.values {
+            for callback in callbacks { callback([]) }
+        }
+        for callback in abandonedAddresses { callback() }
     }
 
-    /// Applies a background region scan's result, unless the tree has moved
-    /// on (another edit landed, or the tree was reset) since it started.
-    private func completeRegionExpansion(_ id: NodeID, raw: [UEFINode], expectedGeneration: Int) {
-        guard generation == expectedGeneration else { return }
-        let stamped = LazyUEFITree.stampIDs(raw, under: id)
-        applyExpansion(id, children: stamped)
-        let callbacks = expandingCallbacks.removeValue(forKey: id) ?? []
-        expandingIDs.remove(id)
-        for callback in callbacks { callback(stamped) }
+    // MARK: - Observers
+
+    /// Registers `observer` and hands back the token that removes it again.
+    @discardableResult
+    public func addObserver(_ observer: @escaping @MainActor (Change) -> Void) -> ObserverToken {
+        nextObserverToken += 1
+        let token = ObserverToken(value: nextObserverToken)
+        observers[token] = observer
+        return token
+    }
+
+    public func removeObserver(_ token: ObserverToken) {
+        observers.removeValue(forKey: token)
+    }
+
+    private func announce(_ change: Change) {
+        for observer in observers.values { observer(change) }
     }
 
     // MARK: - Private
 
-    private func rebuildRoots() {
-        let parser = Parser(reader: reader, limits: limits, expansion: NeverExpandPolicy.shared)
-        roots = parser.run().roots
+    /// The top level, off the main actor: on a plain chip dump this is the
+    /// signature scan of the whole file, which is the one thing about opening
+    /// an image that is never free.
+    private func build() {
+        let capturedReader = reader
+        let capturedLimits = limits
+        let capturedGeneration = generation
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let result = TreeMaterialization.roots(
+                reader: capturedReader, limits: capturedLimits
+            )
+            await self?.completeBuild(result, expectedGeneration: capturedGeneration)
+        }
+    }
+
+    private func completeBuild(
+        _ result: TreeMaterialization.Result, expectedGeneration: Int
+    ) {
+        guard generation == expectedGeneration else { return }
+        roots = TreeMaterialization.stampIDs(result.nodes, under: .root)
+        diagnostics = result.diagnostics
+        cachedImage = nil
+        isReady = true
+        let waiting = readyCallbacks
+        readyCallbacks.removeAll()
+        announce(.built)
+        for callback in waiting { callback() }
+    }
+
+    /// Applies a background materialization's result, unless the tree has
+    /// moved on (an edit landed) since it started.
+    private func completeExpansion(
+        _ id: NodeID, result: TreeMaterialization.Result, expectedGeneration: Int
+    ) {
+        guard generation == expectedGeneration else { return }
+        let stamped = TreeMaterialization.stampIDs(result.nodes, under: id)
+        applyExpansion(id, children: stamped)
+        diagnostics += result.diagnostics
+        cachedImage = nil
+        let callbacks = expandingCallbacks.removeValue(forKey: id) ?? []
+        expandingIDs.remove(id)
+        announce(.expanded(id))
+        for callback in callbacks { callback(stamped) }
     }
 
     /// Replaces the children of the node at `id.path` with `children`, and
@@ -315,17 +605,5 @@ public final class LazyUEFITree {
             return (node, true)
         }
         return (node, false)
-    }
-
-    /// Ids are stamped relative to `parent` the same way `UEFIImage` stamps a
-    /// freshly-built tree — the parser itself never carries a counter, a
-    /// node's place is only known once its parent has decided to keep it.
-    private static func stampIDs(_ nodes: [UEFINode], under parent: NodeID) -> [UEFINode] {
-        nodes.enumerated().map { index, node in
-            var stamped = node
-            stamped.id = parent.child(index)
-            stamped.children = stampIDs(node.children, under: stamped.id)
-            return stamped
-        }
     }
 }

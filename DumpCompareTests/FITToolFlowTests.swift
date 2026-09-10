@@ -133,6 +133,56 @@ final class FITToolFlowTests: XCTestCase {
         XCTAssertTrue(display.problems.filter { $0.severity == .error }.isEmpty)
     }
 
+    /// A row's target name comes *after* the table, never before it.
+    ///
+    /// Naming what a row points into means opening the branch its address
+    /// lands in, which is the slow half of a reading and the least of what the
+    /// row says — the address, the type and the size are all already there. So
+    /// the rows go up with their addresses and the names join them in front
+    /// when the branches have been read.
+    func testATargetsNameArrivesAfterTheTable() throws {
+        let url = try tempFile(FITTestImage.make(acmInsideAVolume: true))
+        files.append(url)
+        let controller = MainViewController()
+        self.controller = controller
+        let window = makeTestWindow(width: 1200, height: 700)
+        self.window = window
+        window.contentViewController = controller
+        window.setContentSize(NSSize(width: 1200, height: 700))
+        try controller.windowModel.pane1.open(url: url)
+        controller.apply(mode: .singleFile)
+        window.layoutIfNeeded()
+        controller.tools.activate(FITToolModule.identifier, animated: false)
+        window.layoutIfNeeded()
+
+        // Both seams are installed before the reading can land, so what the
+        // row said when the table went up is read rather than raced for.
+        let session = try session()
+        var whenTheTableWentUp: String?
+        let shown = expectation(description: "the table is up")
+        let named = expectation(description: "the Points-at column is filled in")
+        session.onDisplay = { [weak session] _ in
+            whenTheTableWentUp = session?.display.rows
+                .first { $0.typeText == "Startup ACM" }?.targetText
+            shown.fulfill()
+        }
+        session.onTargetsNamed = { named.fulfill() }
+        wait(for: [shown, named], timeout: 5)
+        session.onDisplay = nil
+        session.onTargetsNamed = nil
+
+        // The volume is a top-level find, so the row went up naming *it* — the
+        // most the tree could say without opening anything.
+        XCTAssertEqual(whenTheTableWentUp, "FFSv2 · 0x2848",
+                       "the row went up with what the tree already knew")
+        let after = try XCTUnwrap(
+            session.display.rows.first { $0.typeText == "Startup ACM" }
+        )
+        XCTAssertEqual(after.targetText, "MyDriver · 0x2848",
+                       "and the file inside it named the row once the volume "
+                       + "had been walked")
+    }
+
     /// An image with no table at all is a sentence in the panel, not an empty
     /// list the user has to interpret.
     func testAnImageWithNoTableSaysSo() throws {
@@ -318,21 +368,25 @@ final class FITToolFlowTests: XCTestCase {
 
     // MARK: - A parse's progress
 
-    /// The shape the user asked for: while a parse runs, the module's own
-    /// bottom row — the line where the notice lives — carries a determinate
-    /// bar, and the status bar of the hex pane beside it stays quiet. A parse
-    /// runs off the main actor, so seeing the scan's fractions reach the bar
-    /// also proves the report found its way back across.
-    func testAParseShowsItsProgressInTheModulesOwnRow() throws {
+    /// The shape the user asked for: while a reading runs, the module's own
+    /// bottom row — the line where the notice lives — carries the bar, and the
+    /// status bar of the hex pane beside it stays quiet.
+    ///
+    /// The bar is indeterminate now, and honestly so: what the panel waits for
+    /// is the tree working out the top level and then opening the branches its
+    /// rows point into, and neither is a fraction of the image the reader
+    /// would recognise.
+    func testAReadingShowsItselfInTheModulesOwnRow() throws {
         let controller = MainViewController()
         self.controller = controller
         let window = makeTestWindow(width: 1200, height: 700)
         self.window = window
         window.contentViewController = controller
         window.setContentSize(NSSize(width: 1200, height: 700))
-        // No descriptor and no FIT: the whole image is walked byte by byte —
-        // the one slow path in a UEFI parse. 8 MiB keeps it on screen long
-        // enough to watch.
+        // No descriptor and no FIT: nothing announces the top level but the
+        // signatures in the bytes, so the whole image is walked byte by byte —
+        // the one slow path left. 8 MiB keeps it on screen long enough to
+        // watch.
         let url = try tempFile([UInt8](repeating: 0xFF, count: 8 << 20))
         files.append(url)
         try controller.windowModel.pane1.open(url: url)
@@ -342,25 +396,23 @@ final class FITToolFlowTests: XCTestCase {
         window.layoutIfNeeded()
 
         let panel = try XCTUnwrap(controller.tools.panel)
-        // The bar is in the module's row from the moment the parse starts, and
-        // the scan reports each MiB it crosses — so it is moving off zero by
-        // the time a few windows have gone.
+        // The bar is in the module's row from the moment the reading starts.
         XCTAssertTrue(pumpUntil(8) {
             descendants(of: panel, NSProgressIndicator.self).first.map {
-                !$0.isHidden && $0.doubleValue > 0
+                !$0.isHidden && $0.isIndeterminate
             } ?? false
-        }, "a parse must show a moving, determinate bar in the module's own row")
+        }, "a reading must show a bar in the module's own row")
 
         // Not the hex pane's status bar: that one stays quiet.
         let paneView = try XCTUnwrap(descendants(
             of: window.contentView!, FilePaneView.self).first)
         XCTAssertTrue(paneView.operationView.isHidden,
-                      "the hex pane's status bar must not host the module's parse")
+                      "the hex pane's status bar must not host the module's reading")
 
-        // The parse ends: the bar leaves the row, and the pane is still quiet.
+        // The reading ends: the bar leaves the row, and the pane is still quiet.
         XCTAssertTrue(pumpUntil(8) {
             descendants(of: panel, NSProgressIndicator.self).isEmpty
-        }, "the bar must leave the module's row when the parse finishes")
+        }, "the bar must leave the module's row when the reading finishes")
         XCTAssertEqual(try session().display.summary, "No FIT table in this file.")
         XCTAssertTrue(paneView.operationView.isHidden)
     }
@@ -372,7 +424,7 @@ final class FITToolFlowTests: XCTestCase {
         let panel = try XCTUnwrap(controller?.tools.panel)
 
         XCTAssertTrue(descendants(of: panel, NSProgressIndicator.self).isEmpty,
-                      "no parse running means no bar in the module's row")
+                      "no reading running means no bar in the module's row")
     }
 
     /// The parse that owns the bottom row stands the Add button down for the
@@ -994,16 +1046,30 @@ enum FITTestImage {
     /// `brokenMicrocodeRows` appends microcode rows whose address is unaligned
     /// and points at fill — two findings each, which is how a test gets a
     /// findings list longer than the panel is willing to show.
+    /// Where the volume `acmInsideAVolume` puts in the image starts, and where
+    /// the one file in it lands — `UEFITestImage`'s own layout, moved here.
+    static let volumeStart: UInt64 = 0x2800
+    static let fileInTheVolume: UInt64 = volumeStart + 0x48
+
     static func make(
         checksum: UInt8? = nil,
         microcodeAddress: UInt64? = nil,
         extraACM: Bool = false,
         extraMicrocode: Bool = false,
-        brokenMicrocodeRows: Int = 0
+        brokenMicrocodeRows: Int = 0,
+        acmInsideAVolume: Bool = false
     ) -> [UInt8] {
         var image = [UInt8](repeating: 0xFF, count: 0x1_0000)
         let diff: UInt64 = 0x1_0000_0000 - 0x1_0000
         image.replaceSubrange(0x2000..<0x2100, with: microcode())
+        if acmInsideAVolume {
+            // A real FFSv2 volume, so what the ACM row points at is a *file*
+            // inside it — a name the tree only has once the volume's own walk
+            // has been asked for.
+            let volume = UEFITestImage.make()
+            let start = Int(volumeStart)
+            image.replaceSubrange(start..<(start + volume.count), with: volume)
+        }
         if extraMicrocode {
             image.replaceSubrange(
                 0x2100..<0x2200, with: microcode(signature: 0x0009_06EA, revision: 0xB4)
@@ -1013,7 +1079,8 @@ enum FITTestImage {
         // The header counts itself and every row after it (§4), and the rows
         // never decrease in type (§3) — so the broken microcode rows go in
         // with the microcode ones, before an ACM row.
-        let rowCount = 2 + (extraMicrocode ? 1 : 0) + brokenMicrocodeRows + (extraACM ? 1 : 0)
+        let rowCount = 2 + (extraMicrocode ? 1 : 0) + brokenMicrocodeRows
+            + (extraACM ? 1 : 0) + (acmInsideAVolume ? 1 : 0)
         var table = entry(address: 0x2020_205F_5449_465F,
                           size: UInt32(rowCount),
                           type: 0x00, checksumValid: true)
@@ -1023,6 +1090,9 @@ enum FITTestImage {
             table += entry(address: 0x4001 + UInt64(index) * 0x100 + diff, size: 0, type: 0x01)
         }
         if extraACM { table += entry(address: 0x3000 + diff, size: 0, type: 0x02) }
+        if acmInsideAVolume {
+            table += entry(address: fileInTheVolume + diff, size: 0, type: 0x02)
+        }
         table[0x0F] = checksum ?? (0 &- table.reduce(into: UInt8(0)) { $0 = $0 &+ $1 })
         image.replaceSubrange(0x1000..<(0x1000 + table.count), with: table)
 

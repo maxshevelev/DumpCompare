@@ -163,12 +163,12 @@ final class UEFITreeDisplayTests: XCTestCase {
         XCTAssertEqual(presented.rows.map(\.kind), [.volume])
     }
 
-    /// A lone real root the file already had — a volume off a chip — folds the
-    /// same way the invented image root does, whatever its header: the predicate
-    /// is purely structural, one root with children of its own. Its children
-    /// open the tree, and the title names it by its type, the words its row
-    /// would have shown.
-    func testALoneRealRootWithChildrenIsFoldedIntoTheTitle() {
+    /// A lone real root the file already had — a volume off a chip — keeps its
+    /// row, where an invented image root would have folded. It is a container
+    /// the tree opens on demand, and folding it would mean deciding again the
+    /// moment somebody opened it: the row they had just clicked would vanish
+    /// and its children would jump a level.
+    func testALoneRealRootKeepsItsRow() {
         let volume = UEFINode(
             kind: .volume,
             subtype: 2,
@@ -184,17 +184,13 @@ final class UEFITreeDisplayTests: XCTestCase {
 
         let presented = UEFITreeDisplay.present(image)
 
-        XCTAssertEqual(presented.title?.kind, .volume)
-        XCTAssertEqual(presented.rows.map(\.kind), [.file])
-        XCTAssertEqual(
-            UEFITreeDisplay.summary(of: image),
-            "Volume · FFSv2 · 2 nodes · 1 volume · 1 file"
-        )
+        XCTAssertNil(presented.title)
+        XCTAssertEqual(presented.rows.map(\.kind), [.volume])
+        XCTAssertEqual(UEFITreeDisplay.summary(of: image), "Volume · FFSv2")
     }
 
-    /// A root with nothing under it has no tree to open and no children to put
-    /// in its place, so it stays the one row — the fold keys off the children,
-    /// not off the kind or the header.
+    /// A wrapper with nothing under it has no children to put in the tree's
+    /// place, so it stays the one row — the fold needs both halves.
     func testALeafRootIsNotFoldedAway() {
         let volume = volumeNode()
         let image = UEFIImage(size: 0x1000, roots: [volume])
@@ -203,7 +199,7 @@ final class UEFITreeDisplayTests: XCTestCase {
 
         XCTAssertNil(presented.title)
         XCTAssertEqual(presented.rows.map(\.kind), [.volume])
-        XCTAssertEqual(UEFITreeDisplay.summary(of: image), "Volume · FFSv2 · 1 node · 1 volume")
+        XCTAssertEqual(UEFITreeDisplay.summary(of: image), "Volume · FFSv2")
     }
 
     /// A file with several roots has no single top to stand for — each row earns
@@ -220,7 +216,7 @@ final class UEFITreeDisplayTests: XCTestCase {
 
         XCTAssertNil(presented.title)
         XCTAssertEqual(presented.rows.map(\.kind), [.capsule, .padding])
-        XCTAssertEqual(UEFITreeDisplay.summary(of: image), "Capsule · 2 nodes")
+        XCTAssertEqual(UEFITreeDisplay.summary(of: image), "Capsule")
     }
 
     /// A single wrapper-shaped root with nothing under it is the leaf case above
@@ -232,22 +228,23 @@ final class UEFITreeDisplayTests: XCTestCase {
 
         XCTAssertNil(presented.title)
         XCTAssertEqual(presented.rows.count, 1)
-        XCTAssertEqual(UEFITreeDisplay.summary(of: image), "Image · UEFI · 1 node")
+        XCTAssertEqual(UEFITreeDisplay.summary(of: image), "Image · UEFI")
     }
 
-    /// An image with nothing in it at all is not an image, and the summary says
-    /// so instead of counting zero nodes.
+    /// An image with nothing in it at all is not an image, and the summary
+    /// says so rather than leaving the line blank.
     func testAnEmptyImageSummarySaysNothingLooksLikeFirmware() {
         XCTAssertEqual(UEFITreeDisplay.summary(of: UEFIImage(size: 0, roots: [])), "Nothing here looks like a firmware image.")
         XCTAssertEqual(UEFITreeDisplay.summary(of: nil), "")
     }
 
-    /// The summary's lead is the folded root's name, and the count of what the
-    /// tree accounts for follows it.
-    func testASummaryLeadsWithTheRootNameAndCounts() {
+    /// The summary is the folded root's name and nothing else. It counts no
+    /// nodes on purpose: the tree behind it is materialized branch by branch
+    /// as the reader opens it, so any count would be a count of clicks.
+    func testASummaryIsTheRootNameAlone() {
         XCTAssertEqual(
             UEFITreeDisplay.summary(of: wrapperImage([volumeNode()])),
-            "UEFI image · 2 nodes · 1 volume"
+            "UEFI image"
         )
     }
 

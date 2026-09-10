@@ -25,25 +25,38 @@ public enum FITToolModule: ToolModule {
 }
 
 /// What a parked session hands back: the row the user was looking at, and
-/// nothing else. The parse is worth doing again — it is milliseconds — and a
-/// tree of thousands of nodes per parked tool-module is how an app comes to
-/// hold four copies of an image it is not showing (`ToolSession.parkedState`).
+/// nothing else. The reading is worth doing again — it is a handful of lookups
+/// over the pane's own tree — and a tree of thousands of nodes per parked
+/// tool-module is how an app comes to hold four copies of an image it is not
+/// showing (`ToolSession.parkedState`).
 struct FITParkedState: ToolSessionState {
     var focus: Int?
 }
 
-/// The running instrument: parse off the main actor, show what came back,
-/// publish the zones, and offer the one repair this tool makes.
+/// The running instrument: read the table through the pane's shared tree, show
+/// what came back, publish the zones, and offer the one repair this tool makes.
+///
+/// It never parses the image. The mapping every address here is measured
+/// against comes from the tree's one descent to the Volume Top File, and what
+/// a row points *into* is named by opening that row's own chain — so opening
+/// this panel after the UEFI one costs nothing the UEFI one has already paid
+/// for, and neither of them ever walks the whole file.
 @MainActor public final class FITToolSession: ToolSession {
     private let host: any ToolHost
     private let controller = FITToolViewController()
     /// What the panel is showing. Readable from outside so the app's tests can
     /// assert on it without reaching into a view.
     public private(set) var display = FITDisplay.empty
-    /// Called on the main actor once a parse has landed and the panel has been
-    /// shown. The parse runs off the main actor, so a test that waited for it
-    /// on the clock would be a test that fails on a busy machine.
+    /// Called on the main actor once a reading has landed and the panel has
+    /// been shown. It runs off the main actor, so a test that waited for it on
+    /// the clock would be a test that fails on a busy machine.
     public var onDisplay: ((FITDisplay) -> Void)?
+    /// Called on the main actor once the Points-at column has been filled in —
+    /// the pass that runs behind the table rather than in front of it. Not
+    /// `onDisplay`: that one means "the table is up", and a test waiting for it
+    /// must not be answered twice.
+    public var onTargetsNamed: (() -> Void)?
+
     /// Called once the add form's catalogue has arrived — empty when it could
     /// not be fetched. Another seam for the app's tests, which wait on it
     /// rather than on the clock.
@@ -62,10 +75,15 @@ struct FITParkedState: ToolSessionState {
     /// The add form while it is on screen.
     private var form: FITAddMicrocodeViewController?
 
-    /// Which parse is the current one. A file edited twice in quick succession
-    /// starts two, and the one that finishes second is not necessarily the one
-    /// that read the newer bytes.
+    /// Which reading is the current one. A file edited twice in quick
+    /// succession starts two, and the one that finishes second is not
+    /// necessarily the one that read the newer bytes.
     private var generation = 0
+
+    /// The tree this session built for itself, under a host that offers no
+    /// shared one — a test double. Dropped whenever the content changes, since
+    /// it is over a frozen snapshot rather than the live file.
+    private var ownTree: LazyUEFITree?
 
     /// Where microcode comes from. Swappable, because a test suite that
     /// reaches GitHub is a suite that fails on a train.
@@ -92,10 +110,14 @@ struct FITParkedState: ToolSessionState {
     }
 
     /// Any change is a reason to read again. The table is 128 bytes and the
-    /// parse is milliseconds, so patching what we hold would buy nothing and
-    /// cost the one thing this tool sells: that what it shows is what is in the
-    /// file.
+    /// read is a handful of lookups, so patching what we hold would buy
+    /// nothing and cost the one thing this tool sells: that what it shows is
+    /// what is in the file. The tree behind it is the pane's, and has already
+    /// been told which of its branches the edit made stale.
     public func contentChanged(_ change: ToolContentChange) {
+        // A tree of our own is over a frozen snapshot and cannot be told about
+        // an edit; the shared one can, and was.
+        ownTree = nil
         reparse()
     }
 
@@ -110,23 +132,43 @@ struct FITParkedState: ToolSessionState {
 
     // MARK: - Reading
 
-    private func reparse() {
-        let snapshot: any ToolContentReader
-        do {
-            snapshot = try host.snapshot()
-        } catch {
-            show(.empty)
-            fail("Could not read the file: \(error)")
-            return
-        }
+    /// The seam a UEFI-aware tool-module reaches through for the pane's one
+    /// shared tree — the same protocol `UEFITool` and `MEATool` cast `host`
+    /// for, defined in `UEFIImage` so neither side has to depend on the other
+    /// or on the app.
+    private var treeProvider: (any UEFITreeProviding)? { host as? any UEFITreeProviding }
 
+    /// Reads the table and shows it, then names what its rows point into.
+    ///
+    /// The table itself needs one thing from the tree — the address mapping,
+    /// which is a descent to the Volume Top File — and a handful of point
+    /// reads over 128 bytes. That is the panel, and it goes up as soon as it
+    /// is read.
+    ///
+    /// What a row points *into* is a second question and a slower one: it
+    /// means opening the branch each address lands in. It is also the least of
+    /// what the row says — the address, the type and the size are all already
+    /// there — so it is never allowed to hold the table back. The rows go up
+    /// with their addresses, and the names join them in front when the
+    /// branches have been read.
+    private func reparse() {
         generation += 1
         let generation = self.generation
         controller.showBusy()
-        let reporter = progressReporter()
         Task { [weak self] in
-            let report = await FITToolSession.parse(snapshot, progress: reporter)
-            guard let self, self.generation == generation else { return }
+            guard let self else { return }
+            guard let tree = await self.readyTree() else {
+                guard self.generation == generation else { return }
+                self.controller.endBusy()
+                self.show(.empty)
+                self.fail("Could not read the file.")
+                return
+            }
+            guard self.generation == generation else { return }
+
+            let report = await FITToolSession.read(tree.imageReader, image: tree.image())
+            guard self.generation == generation else { return }
+
             self.controller.endBusy()
             self.show(FITPresenter.display(report, focus: self.focus))
             if self.noticeAnswersTheUser {
@@ -135,35 +177,105 @@ struct FITParkedState: ToolSessionState {
                 self.controller.say(FITToolSession.advice(for: report))
             }
             self.onDisplay?(self.display)
+
+            self.nameTargets(of: report, in: tree, generation: generation)
         }
     }
 
-    /// What a parse reports through: a hop back to the main actor that lands on
-    /// the module's own bottom-row bar — the line under the buttons, where the
-    /// notice lives, not in a strip the panel has to grow to host. Built per
-    /// parse, so the detached task only ever moves the bar of the parse it ran.
-    private func progressReporter() -> @Sendable (Double) -> Void {
-        { [weak self] fraction in
+    /// Opens the branches the rows point into and re-reads the table with them
+    /// open, so the Points-at column can say what is there rather than only
+    /// where. Behind the table rather than in front of it, and silent when
+    /// there is nothing to name.
+    private func nameTargets(of report: FITReport, in tree: LazyUEFITree, generation: Int) {
+        let targets = FITToolSession.offsetsWorthNaming(in: report)
+        guard !targets.isEmpty else { return }
+        Task { [weak self] in
             guard let self else { return }
-            Task { @MainActor in self.controller.updateProgress(fraction) }
+            await self.materialize(targets, in: tree)
+            guard self.generation == generation else { return }
+            let named = await FITToolSession.read(tree.imageReader, image: tree.image())
+            guard self.generation == generation else { return }
+            self.show(FITPresenter.display(named, focus: self.focus))
+            self.onTargetsNamed?()
         }
     }
 
-    /// Off the main actor: a 16 MiB image is a full UEFI parse, and the panel
-    /// is on screen while it runs. `progress`, when given, is what the scan
-    /// reports to as it crosses the image — the `@Sendable (Double) -> Void`
-    /// the session built to land back on the main actor's bottom-row bar.
-    private nonisolated static func parse(
-        _ snapshot: any ToolContentReader,
-        progress: (@Sendable (Double) -> Void)? = nil
+    /// The pane's shared tree with its top level built and its address mapping
+    /// worked out — the two things a FIT read cannot start without. Nil when
+    /// there is no file to read.
+    ///
+    /// Under a host that offers no shared tree — a test double — one of our
+    /// own over a frozen snapshot stands in, dropped whenever the content
+    /// changes.
+    private func readyTree() async -> LazyUEFITree? {
+        let tree: LazyUEFITree
+        if let shared = treeProvider?.uefiTree() {
+            tree = shared
+        } else if let ownTree {
+            tree = ownTree
+        } else if let snapshot = try? host.snapshot() {
+            tree = LazyUEFITree(ToolContentByteSource(reader: snapshot))
+            ownTree = tree
+        } else {
+            return nil
+        }
+        await withCheckedContinuation { continuation in
+            tree.whenReady { continuation.resume() }
+        }
+        await withCheckedContinuation { continuation in
+            tree.resolveAddresses { continuation.resume() }
+        }
+        return tree
+    }
+
+    /// Opens the chain of nodes covering each offset, one at a time — what
+    /// makes a row able to name what it points into instead of leaving it
+    /// blank.
+    private func materialize(_ offsets: [UInt64], in tree: LazyUEFITree) async {
+        for offset in offsets {
+            await withCheckedContinuation { continuation in
+                tree.materialize(containing: offset) { _ in continuation.resume() }
+            }
+        }
+    }
+
+    /// The offsets a reading of this report wants named: the ones a row points
+    /// at and nothing else is able to say what is there.
+    ///
+    /// A microcode row is not one of them — its target is read from the
+    /// component's own header, which needs no tree at all — and on most images
+    /// that is every row there is, so most tables want nothing opened.
+    private nonisolated static func offsetsWorthNaming(in report: FITReport) -> [UInt64] {
+        guard let table = report.table else { return [] }
+        var offsets = Set<UInt64>()
+        for row in table.rows {
+            if case .bytes(let offset, _) = row.target { offsets.insert(offset) }
+        }
+        return offsets.sorted()
+    }
+
+    /// The same, for an edit: the editor reasons about what holds each
+    /// component and what sits behind it, so it wants the table's own
+    /// surroundings and every row's target opened, microcode included.
+    private nonisolated static func offsetsWorthOpening(in report: FITReport) -> [UInt64] {
+        guard let table = report.table else { return [] }
+        var offsets = Set([table.range.lowerBound])
+        offsets.formUnion(table.rows.compactMap(\.target.offset))
+        return offsets.sorted()
+    }
+
+    /// Off the main actor: the reads are small, but a table whose pointer does
+    /// not check out is answered by a scan of the whole image for `_FIT_   `,
+    /// and the panel is on screen while that runs.
+    private nonisolated static func read(
+        _ reader: ImageReader,
+        image: UEFIImage
     ) async -> FITReport {
         await Task.detached(priority: .userInitiated) {
-            let source = ToolContentByteSource(reader: snapshot)
             // The tree is read for one thing this tool cannot work out for
             // itself — where an address lands in the file — and for one that
             // makes it readable: what the bytes at that address belong to.
-            let image = UEFIParser.parse(source, progress: progress)
-            return FITReader.read(ImageReader(source), image: image)
+            FITReader.read(reader, image: image)
         }.value
     }
 
@@ -415,15 +527,15 @@ struct FITParkedState: ToolSessionState {
             fail("This file is open read-only.")
             return
         }
-        guard let snapshot = try? host.snapshot() else {
-            fail("Could not read the file.")
-            return
-        }
         controller.showBusy()
-        let reporter = progressReporter()
         Task { [weak self] in
-            let prepared = await FITToolSession.prepareAdd(component, snapshot: snapshot, progress: reporter)
             guard let self else { return }
+            guard let tree = await self.readyTree() else {
+                self.controller.endBusy()
+                self.fail("Could not read the file.")
+                return
+            }
+            let prepared = await self.prepareAdd(component, in: tree)
             self.controller.endBusy()
             switch prepared {
             case .failure(let problem):
@@ -446,17 +558,15 @@ struct FITParkedState: ToolSessionState {
             fail("This file is open read-only.")
             return
         }
-        guard let snapshot = try? host.snapshot() else {
-            fail("Could not read the file.")
-            return
-        }
         controller.showBusy()
-        let reporter = progressReporter()
         Task { [weak self] in
-            let prepared = await FITToolSession.prepareReplace(
-                index, component, snapshot: snapshot, progress: reporter
-            )
             guard let self else { return }
+            guard let tree = await self.readyTree() else {
+                self.controller.endBusy()
+                self.fail("Could not read the file.")
+                return
+            }
+            let prepared = await self.prepareReplace(index, component, in: tree)
             self.controller.endBusy()
             switch prepared {
             case .failure(let problem):
@@ -477,15 +587,15 @@ struct FITParkedState: ToolSessionState {
             fail("This file is open read-only.")
             return
         }
-        guard let snapshot = try? host.snapshot() else {
-            fail("Could not read the file.")
-            return
-        }
         controller.showBusy()
-        let reporter = progressReporter()
         Task { [weak self] in
-            let prepared = await FITToolSession.prepareRemove(index, snapshot: snapshot, progress: reporter)
             guard let self else { return }
+            guard let tree = await self.readyTree() else {
+                self.controller.endBusy()
+                self.fail("Could not read the file.")
+                return
+            }
+            let prepared = await self.prepareRemove(index, in: tree)
             self.controller.endBusy()
             switch prepared {
             case .failure(let problem):
@@ -508,41 +618,37 @@ struct FITParkedState: ToolSessionState {
 
     /// Off the main actor, and from the file as it is now rather than from the
     /// parse the panel is showing: the user may have typed in the dump since.
-    private nonisolated static func prepareAdd(
+    private func prepareAdd(
         _ component: [UInt8],
-        snapshot: any ToolContentReader,
-        progress: (@Sendable (Double) -> Void)? = nil
+        in tree: LazyUEFITree
     ) async -> Result<(ToolTransaction, FITEditOutcome), FITEditProblem> {
-        await Task.detached(priority: .userInitiated) {
-            let source = ToolContentByteSource(reader: snapshot)
-            let reader = ImageReader(source)
-            let image = UEFIParser.parse(source, progress: progress)
-            let report = FITReader.read(reader, image: image)
-            guard let table = report.table else { return .failure(.noTable) }
-            return FITEditor.addOrReplaceMicrocode(
+        let reader = tree.imageReader
+        guard let table = await placementTable(in: tree) else { return .failure(.noTable) }
+        let image = tree.image()
+        let addressDiff = image.addressDiff ?? (0x1_0000_0000 &- reader.count)
+        return await Task.detached(priority: .userInitiated) {
+            FITEditor.addOrReplaceMicrocode(
                 component, in: table, image: image, reader: reader,
-                addressDiff: report.addressDiff
+                addressDiff: addressDiff
             )
         }.value
     }
 
-    /// Off the main actor, and from the file as it is now rather than from the
-    /// parse the panel is showing: the user may have typed in the dump since.
-    private nonisolated static func prepareReplace(
+    /// From the file as it is now rather than from the reading the panel is
+    /// showing: the user may have typed in the dump since.
+    private func prepareReplace(
         _ index: Int,
         _ component: [UInt8],
-        snapshot: any ToolContentReader,
-        progress: (@Sendable (Double) -> Void)? = nil
+        in tree: LazyUEFITree
     ) async -> Result<(ToolTransaction, FITEditOutcome), FITEditProblem> {
-        await Task.detached(priority: .userInitiated) {
-            let source = ToolContentByteSource(reader: snapshot)
-            let reader = ImageReader(source)
-            let image = UEFIParser.parse(source, progress: progress)
-            let report = FITReader.read(reader, image: image)
-            guard let table = report.table else { return .failure(.noTable) }
-            return FITEditor.replaceMicrocode(
+        let reader = tree.imageReader
+        guard let table = await placementTable(in: tree) else { return .failure(.noTable) }
+        let image = tree.image()
+        let addressDiff = image.addressDiff ?? (0x1_0000_0000 &- reader.count)
+        return await Task.detached(priority: .userInitiated) {
+            FITEditor.replaceMicrocode(
                 at: index, component, in: table, image: image, reader: reader,
-                addressDiff: report.addressDiff
+                addressDiff: addressDiff
             )
         }.value
     }
@@ -566,24 +672,36 @@ struct FITParkedState: ToolSessionState {
         return note + "." + caveat
     }
 
-    private nonisolated static func prepareRemove(
+    private func prepareRemove(
         _ index: Int,
-        snapshot: any ToolContentReader,
-        progress: (@Sendable (Double) -> Void)? = nil
+        in tree: LazyUEFITree
     ) async -> Result<(ToolTransaction, FITRemovalOutcome), FITEditProblem> {
-        await Task.detached(priority: .userInitiated) {
-            let source = ToolContentByteSource(reader: snapshot)
-            let reader = ImageReader(source)
-            // The tree, because a removal moves microcode up into the space the
-            // removed one leaves, and the addresses that names them come from
-            // the same mapping every other address here does.
-            let image = UEFIParser.parse(source, progress: progress)
-            let report = FITReader.read(reader, image: image)
-            guard let table = report.table else { return .failure(.noTable) }
-            return FITEditor.removeMicrocode(
-                index, from: table, image: image, in: reader, addressDiff: report.addressDiff
+        let reader = tree.imageReader
+        guard let table = await placementTable(in: tree) else { return .failure(.noTable) }
+        // The tree, because a removal moves microcode up into the space the
+        // removed one leaves, and the addresses that name them come from the
+        // same mapping every other address here does.
+        let image = tree.image()
+        let addressDiff = image.addressDiff ?? (0x1_0000_0000 &- reader.count)
+        return await Task.detached(priority: .userInitiated) {
+            FITEditor.removeMicrocode(
+                index, from: table, image: image, in: reader, addressDiff: addressDiff
             )
         }.value
+    }
+
+    /// Reads the table from the file as it is now, and opens the branches the
+    /// editor is going to reason about: what element each component lives in,
+    /// and what free space sits behind it. Those are the chains covering the
+    /// table and every row's target — the same ones a reading opens, asked for
+    /// again because the file may have changed since.
+    ///
+    /// Nil when there is no table to edit.
+    private func placementTable(in tree: LazyUEFITree) async -> FITTable? {
+        let first = await FITToolSession.read(tree.imageReader, image: tree.image())
+        guard first.table != nil else { return nil }
+        await materialize(FITToolSession.offsetsWorthOpening(in: first), in: tree)
+        return await FITToolSession.read(tree.imageReader, image: tree.image()).table
     }
 
     /// What the panel says after a removal. Moving a component changes its

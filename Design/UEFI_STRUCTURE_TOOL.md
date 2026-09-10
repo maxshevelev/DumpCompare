@@ -1,9 +1,9 @@
 # UEFI Structure — tool-module plan
 
-A **structure browser** for a UEFI firmware image: it parses the open file into
-the tree `UEFIImage` already builds, shows that tree in an expandable outline,
-and — for the one node the user has selected — draws its bytes in the dump and
-explains what they are.
+A **structure browser** for a UEFI firmware image: it reads the open file
+through the pane's shared `LazyUEFITree`, shows that tree in an expandable
+outline, and — for the one node the user has selected — draws its bytes in the
+dump and explains what they are.
 
 This is the "structure browser" `Design/TOOL_MODULES_PLAN.md` named but did not
 build. It stands on the same seam as the FIT tool-module and reads the same
@@ -21,19 +21,30 @@ persistence beyond the session's parked selection.
 
 The panel is two halves, split by a vertical splitter:
 
-- **Top — the tree.** An `NSOutlineView` over the parsed image. Every node is a
-  row; a node with children expands. The row is the node's name, with its kind
-  and size in a secondary column. Nothing here is built up ahead of time — the
-  outline reads the tree the parse produced, and the parse is the one thing this
-  tool cannot do for itself cheaply.
+- **Top — the tree.** An `NSOutlineView` over the pane's shared `LazyUEFITree`.
+  Every node is a row; a container expands. The row is the node's name, with its
+  kind and size in a secondary column. Nothing here is built up ahead of time,
+  and nothing below the top level is even read: opening the panel yields the
+  top level, and a row the reader opens materializes that one branch off the
+  main actor, with a "Loading…" row in its place while it does.
 - **Bottom — the detail.** A label/value list describing the *selected* node,
   by its type. A volume shows its file system, length and attributes; a file its
   name GUID, type and state; a microcode its signature and revision; and so on.
   The fields come from the node's header, read through the same `ImageReader`
   the parser used, so what the detail says is what the bytes say.
 
-A line under the tree carries the parse's progress while it runs, the way the
-FIT panel does.
+A line under the tree says when something is being read, the way the FIT panel
+does. The bar beside it is indeterminate: what the panel waits for is a branch
+of the tree or a node's checksums, and neither is a fraction of the image the
+reader would recognise.
+
+**The title.** The summary line names what the image *is* and counts nothing —
+the tree behind it is materialized branch by branch, so a node count would be a
+count of clicks. A wrapper root (an Intel image, the "UEFI image" the parser
+groups several tops under, a capsule) folds into that title and its children
+open the outline; a real root the file already had — a lone volume off a chip —
+keeps its row, because folding it would mean deciding again the moment somebody
+opened it.
 
 ## The one zone
 
@@ -80,14 +91,34 @@ decisions are made and tested by `swift test` over hand-built images:
 
 - **`UEFITool`** (pure): the zone for a node, the trip back from a zone id to a
   node id, and the detail for a node. No AppKit.
-- **`UEFIToolUI`**: the module, the session (parse off the main actor over
-  `host.snapshot()`, show, publish, park the selection), and the view
-  controller (the outline, the splitter, the detail).
+- **`UEFIToolUI`**: the module, the session (read the pane's tree, show,
+  publish, park the selection), and the view controller (the outline, the
+  splitter, the detail).
 
-The session holds the parsed `UEFIImage` and the selected `NodeID`. A content
-change re-parses — the tree is cheap to rebuild and expensive to keep in sync,
-and the selection is kept by path, so it survives a re-parse of the same image
-and is dropped when the node is gone.
+The session holds no tree of its own. It reads the pane's `LazyUEFITree` — one
+per open file, shared with the FIT and ME Analyzer tool-modules, and kept for as
+long as the file is — and subscribes to it, so a branch any of them opens
+reaches this panel's rows. Only the selected `NodeID` is the session's, kept by
+path so it survives an edit that left its node where it was.
+
+Three things the panel needs are asked for rather than computed up front:
+
+- **A branch**, when a row is opened. `LazyUEFITree.expand` runs the volume's
+  file walk or the region's signature scan off the main actor and coalesces a
+  second request onto one already in flight.
+- **The mapping**, the first time a node is in focus. It is what the detail's
+  Address row reads, and it comes from the Volume Top File — whose last byte is
+  at the top of the address space, so it is at the end of the last container of
+  the image. One descent down the chain that reaches the last byte finds it; a
+  panel nobody has clicked in pays for none of it.
+- **Checksums**, per branch, as each one appears. A pass reads whole file
+  bodies, so each branch is read exactly once and a reader who never opens a
+  volume never pays for its files.
+
+A content change does not re-read the file. `PaneUEFIState.invalidate` has
+already told the tree which of its branches the edit made stale — the volume or
+region it landed in, and nothing beside it — so the panel shows what is left and
+the reader re-opens whatever they want back.
 
 ## Stages
 
@@ -100,8 +131,8 @@ Each stage builds, tests, and is committable on its own.
    builder for every kind, with a `swift test` suite over images built byte by
    byte (the `UEFIImage` `TestImage` builders, reused).
 3. **The view.** The outline over the tree, the splitter, the detail list, and
-   the progress line. The session that parses off the main actor and publishes
-   the one zone.
+   the progress line. The session that reads the pane's tree and publishes the
+   one zone.
 4. **The app.** The module in the registry, the package in the binary, and the
    app's flow tests: open an image, select a node, and check the zone and the
    detail.

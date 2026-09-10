@@ -359,7 +359,12 @@ public enum FITPresenter {
         case .emptyMicrocodeSlot:
             parts = ["empty slot"]
         case .bytes(_, let description):
-            parts = [description ?? "unrecognised bytes"]
+            // No description is "nothing has read there yet", not "there is
+            // nothing there": the tree names an offset only once the branch
+            // covering it has been opened, and that happens after the table is
+            // on screen. The address alone is what the row says in the
+            // meantime, and the name joins it in front when it arrives.
+            parts = description.map { [$0] } ?? []
         }
         if let offset = row.target.offset {
             parts.append(hex(offset))

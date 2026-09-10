@@ -37,7 +37,9 @@ public struct ResetVector: Equatable, Sendable {
 }
 
 extension Parser {
-    struct SecondPass {
+    /// `Sendable` because the VTF descent runs off the main actor and hands
+    /// this back to `LazyUEFITree` when it lands.
+    struct SecondPass: Sendable {
         var addressDiff: UInt64?
         var resetVector: ResetVector?
     }

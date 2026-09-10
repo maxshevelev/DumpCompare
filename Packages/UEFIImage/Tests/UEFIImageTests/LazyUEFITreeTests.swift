@@ -29,13 +29,35 @@ final class LazyUEFITreeTests: XCTestCase {
         )
     }
 
-    /// Awaits `expand`, whether it resolves synchronously (a volume) or in
-    /// the background (a region).
+    /// Awaits `expand`, which is asynchronous for every container that has
+    /// work to do and immediate for one already materialized.
     private func expandAsync(_ tree: LazyUEFITree, _ id: NodeID) async -> [UEFINode] {
         await withCheckedContinuation { continuation in
             tree.expand(id) { children in
                 continuation.resume(returning: children)
             }
+        }
+    }
+
+    /// The top level is built off the main actor, so every test that reads
+    /// `rootNodes` waits for it first.
+    private func built(_ bytes: any ByteSource) async -> LazyUEFITree {
+        let tree = LazyUEFITree(bytes)
+        await withCheckedContinuation { continuation in
+            tree.whenReady { continuation.resume() }
+        }
+        return tree
+    }
+
+    private func resolvedAddresses(_ tree: LazyUEFITree) async {
+        await withCheckedContinuation { continuation in
+            tree.resolveAddresses { continuation.resume() }
+        }
+    }
+
+    private func chain(_ tree: LazyUEFITree, containing offset: UInt64) async -> [UEFINode] {
+        await withCheckedContinuation { continuation in
+            tree.materialize(containing: offset) { continuation.resume(returning: $0) }
         }
     }
 
@@ -57,8 +79,8 @@ final class LazyUEFITreeTests: XCTestCase {
 
     // MARK: - Roots and region-level laziness
 
-    func testRootsAreAvailableImmediatelyWithoutExpandingRegions() {
-        let tree = LazyUEFITree(twoVolumeImage())
+    func testRootsAreAvailableImmediatelyWithoutExpandingRegions() async {
+        let tree = await built(twoVolumeImage())
         XCTAssertEqual(tree.rootNodes.map(\.kind), [.intelImage])
         let intelChildren = tree.rootNodes[0].children
         XCTAssertEqual(intelChildren.map(\.kind), [.flashDescriptor, .region, .padding, .region])
@@ -69,7 +91,7 @@ final class LazyUEFITreeTests: XCTestCase {
     }
 
     func testExpandingARegionRunsInTheBackgroundAndFillsInVolumes() async {
-        let tree = LazyUEFITree(twoVolumeImage())
+        let tree = await built(twoVolumeImage())
         let bios = tree.rootNodes[0].children.first { $0.name == "BIOS region" }!
 
         XCTAssertFalse(tree.isExpanding(bios.id))
@@ -81,8 +103,8 @@ final class LazyUEFITreeTests: XCTestCase {
         XCTAssertEqual(tree.children(of: bios.id).filter { $0.kind == .volume }.count, 2)
     }
 
-    func testAnMERegionThatIsNotReadFurtherIsNeverExpandable() {
-        let tree = LazyUEFITree(twoVolumeImage())
+    func testAnMERegionThatIsNotReadFurtherIsNeverExpandable() async {
+        let tree = await built(twoVolumeImage())
         let me = tree.rootNodes[0].children.first { $0.name == "ME region" }!
         XCTAssertFalse(me.isExpandable)
         XCTAssertEqual(me.children, [])
@@ -90,8 +112,8 @@ final class LazyUEFITreeTests: XCTestCase {
 
     // MARK: - region(_:) — cheap, never triggers a scan
 
-    func testRegionLookupWorksBeforeAnyExpansion() {
-        let tree = LazyUEFITree(twoVolumeImage())
+    func testRegionLookupWorksBeforeAnyExpansion() async {
+        let tree = await built(twoVolumeImage())
         XCTAssertEqual(tree.region(.me), 0x1000..<0x2000)
         XCTAssertEqual(tree.region(.bios), 0x4000..<0x8000)
         XCTAssertEqual(tree.region(.descriptor), 0..<0x1000)
@@ -100,15 +122,15 @@ final class LazyUEFITreeTests: XCTestCase {
         XCTAssertEqual(bios.children, [])
     }
 
-    func testRegionLookupIsNilForARegionTheDescriptorDidNotMap() {
-        let tree = LazyUEFITree(twoVolumeImage())
+    func testRegionLookupIsNilForARegionTheDescriptorDidNotMap() async {
+        let tree = await built(twoVolumeImage())
         XCTAssertNil(tree.region(.gbe))
     }
 
     // MARK: - Volume-level laziness
 
-    func testExpandingAVolumeIsSynchronousAndFillsInFiles() async {
-        let tree = LazyUEFITree(twoVolumeImage())
+    func testExpandingAVolumeRunsInTheBackgroundAndFillsInFiles() async {
+        let tree = await built(twoVolumeImage())
         let bios = tree.rootNodes[0].children.first { $0.name == "BIOS region" }!
         _ = await expandAsync(tree, bios.id)
         let firstVolume = tree.children(of: bios.id)[0]
@@ -116,18 +138,24 @@ final class LazyUEFITreeTests: XCTestCase {
         XCTAssertTrue(firstVolume.isExpandable)
         XCTAssertEqual(firstVolume.children, [])
 
-        // A volume never goes through the async path: expand() resolves
-        // before this call returns, via the synchronous branch.
-        var resolvedSynchronously = false
-        tree.expand(firstVolume.id) { _ in resolvedSynchronously = true }
-        XCTAssertTrue(resolvedSynchronously)
+        // A volume's file walk is deferred exactly as a region's scan is: the
+        // callback lands later, and until it does the node reads as expanding
+        // — which is what puts a "Loading…" row where its files will go.
+        var landed = false
+        tree.expand(firstVolume.id) { _ in landed = true }
+        XCTAssertFalse(landed)
+        XCTAssertTrue(tree.isExpanding(firstVolume.id))
+
+        _ = await expandAsync(tree, firstVolume.id)
+        XCTAssertTrue(landed)
+        XCTAssertFalse(tree.isExpanding(firstVolume.id))
 
         let files = tree.children(of: firstVolume.id)
         XCTAssertEqual(files.filter { $0.kind == .file }.count, 1)
     }
 
     func testExpandingOneVolumeDoesNotDisturbItsSibling() async {
-        let tree = LazyUEFITree(twoVolumeImage())
+        let tree = await built(twoVolumeImage())
         let bios = tree.rootNodes[0].children.first { $0.name == "BIOS region" }!
         let volumes = await expandAsync(tree, bios.id).filter { $0.kind == .volume }
         XCTAssertEqual(volumes.count, 2)
@@ -139,13 +167,101 @@ final class LazyUEFITreeTests: XCTestCase {
         XCTAssertEqual(sibling.children, [])
     }
 
+    // MARK: - Addresses, from the VTF and nothing else
+
+    /// The image the second pass is written for: a BIOS region whose last
+    /// volume ends at the top of the file and holds a Volume Top File.
+    private func anchoredImage() -> [UInt8] {
+        let volume = TestImage.volume(
+            length: 0x1000,
+            // Eight bytes, so the file ends eight-byte aligned and the pad
+            // file in front of the VTF starts where the walk looks for it.
+            files: [TestImage.file(body: [1, 2, 3, 4, 5, 6, 7, 8])],
+            lastFile: TestImage.volumeTopFile(size: 0x100)
+        )
+        return TestImage.intelImage(
+            size: 0x8000,
+            regions: [
+                (.descriptor, 0..<0x1000),
+                (.me, 0x1000..<0x2000),
+                (.bios, 0x7000..<0x8000)
+            ],
+            contents: [.bios: volume]
+        )
+    }
+
+    /// The mapping is worked out by opening the containers on the way to the
+    /// last byte and no others: the sibling ME region is still whole, and the
+    /// answer matches what a full parse of the same bytes says.
+    func testResolvingAddressesFindsTheVtfWithoutParsingTheImage() async {
+        let bytes = anchoredImage()
+        let tree = await built(bytes)
+        XCTAssertFalse(tree.addressesResolved)
+
+        await resolvedAddresses(tree)
+
+        XCTAssertTrue(tree.addressesResolved)
+        XCTAssertEqual(tree.addressDiff, UEFIParser.parse(bytes).addressDiff)
+        XCTAssertNotNil(tree.resetVector)
+        XCTAssertEqual(tree.resetVector, UEFIParser.parse(bytes).resetVector)
+    }
+
+    func testResolvingAddressesMarksTheVtfFixed() async {
+        let tree = await built(anchoredImage())
+        await resolvedAddresses(tree)
+
+        let vtf = tree.image().allNodes.first { $0.guid == KnownGUIDs.volumeTopFile }
+        XCTAssertEqual(vtf?.isFixed, true)
+    }
+
+    /// No VTF is not a defect — a dump of one region has none — and the
+    /// mapping staying unknown is the whole of what that means.
+    func testAnImageWithNoVtfResolvesToNoMapping() async {
+        let tree = await built(twoVolumeImage())
+        await resolvedAddresses(tree)
+
+        XCTAssertTrue(tree.addressesResolved)
+        XCTAssertNil(tree.addressDiff)
+    }
+
+    /// An edit re-opens the question: the anchor may have moved, and the reset
+    /// vector may be the bytes that were just typed over.
+    func testAnEditMakesTheMappingUnresolvedAgain() async {
+        let tree = await built(anchoredImage())
+        await resolvedAddresses(tree)
+        XCTAssertNotNil(tree.addressDiff)
+
+        tree.invalidate(editedRange: 0x7000..<0x7004, sizeDelta: 0)
+
+        XCTAssertFalse(tree.addressesResolved)
+        XCTAssertNil(tree.addressDiff)
+    }
+
+    // MARK: - materialize(containing:)
+
+    func testMaterializingAnOffsetOpensOnlyItsOwnChain() async {
+        let tree = await built(twoVolumeImage())
+        let bios = tree.rootNodes[0].children.first { $0.name == "BIOS region" }!
+        let insideFirstVolume = bios.range.lowerBound + 0x40
+
+        let chain = await chain(tree, containing: insideFirstVolume)
+
+        XCTAssertEqual(chain.first?.kind, .intelImage)
+        XCTAssertTrue(chain.contains { $0.kind == .region })
+        XCTAssertTrue(chain.contains { $0.kind == .volume })
+        // The sibling volume, which the chain never touched, is still closed.
+        let sibling = tree.children(of: bios.id)[1]
+        XCTAssertTrue(sibling.isExpandable)
+        XCTAssertEqual(sibling.children, [])
+    }
+
     // MARK: - Eager/lazy equivalence once fully expanded
 
     func testFullyExpandedMatchesTheEagerParse() async {
         let bytes = twoVolumeImage()
         let eager = UEFIParser.parse(bytes)
 
-        let tree = LazyUEFITree(bytes)
+        let tree = await built(bytes)
         await expandEverything(tree, id: nil, nodes: tree.rootNodes)
 
         XCTAssertEqual(collectAll(tree.rootNodes).map(\.range), collectAll(eager.roots).map(\.range))
@@ -172,7 +288,7 @@ final class LazyUEFITreeTests: XCTestCase {
     // MARK: - invalidate — sizeDelta == 0
 
     func testInvalidateWithNoOverlapLeavesAnExpandedVolumeAlone() async {
-        let tree = LazyUEFITree(twoVolumeImage())
+        let tree = await built(twoVolumeImage())
         let bios = tree.rootNodes[0].children.first { $0.name == "BIOS region" }!
         let volumes = await expandAsync(tree, bios.id).filter { $0.kind == .volume }
         _ = await expandAsync(tree, volumes[0].id)
@@ -190,7 +306,7 @@ final class LazyUEFITreeTests: XCTestCase {
 
     func testInvalidateWithOverlapCollapsesOnlyTheAffectedVolume() async {
         let source = MutableByteSource(twoVolumeImage())
-        let tree = LazyUEFITree(source)
+        let tree = await built(source)
         let bios = tree.rootNodes[0].children.first { $0.name == "BIOS region" }!
         let volumes = await expandAsync(tree, bios.id).filter { $0.kind == .volume }
         _ = await expandAsync(tree, volumes[0].id)
@@ -215,7 +331,7 @@ final class LazyUEFITreeTests: XCTestCase {
     /// without `invalidate` needing to be handed anything fresh itself.
     func testAReExpandedNodeReadsCurrentBytes() async {
         let source = MutableByteSource(twoVolumeImage())
-        let tree = LazyUEFITree(source)
+        let tree = await built(source)
         let bios = tree.rootNodes[0].children.first { $0.name == "BIOS region" }!
         let volumes = await expandAsync(tree, bios.id).filter { $0.kind == .volume }
         let firstVolumeID = volumes[0].id
@@ -239,7 +355,7 @@ final class LazyUEFITreeTests: XCTestCase {
     // MARK: - invalidate — sizeDelta != 0
 
     func testSizeChangingInvalidateCollapsesFromTheEditPointOnward() async {
-        let tree = LazyUEFITree(twoVolumeImage())
+        let tree = await built(twoVolumeImage())
         let bios = tree.rootNodes[0].children.first { $0.name == "BIOS region" }!
         let volumes = await expandAsync(tree, bios.id).filter { $0.kind == .volume }
         _ = await expandAsync(tree, volumes[0].id)
@@ -259,10 +375,42 @@ final class LazyUEFITreeTests: XCTestCase {
         XCTAssertEqual(refreshedVolumes[1].children, [])
     }
 
+    /// An edit lands while a branch is still being read. Whoever asked for it
+    /// is answered rather than left waiting — a caller suspended on that
+    /// callback would otherwise hang for the life of the session.
+    func testAnEditAnswersWhoeverWasWaitingOnTheWorkItDropped() async {
+        let tree = await built(twoVolumeImage())
+        let bios = tree.rootNodes[0].children.first { $0.name == "BIOS region" }!
+
+        var answered = false
+        tree.expand(bios.id) { _ in answered = true }
+        XCTAssertTrue(tree.isExpanding(bios.id))
+
+        tree.invalidate(editedRange: 0x4000..<0x4004, sizeDelta: 0)
+
+        XCTAssertTrue(answered, "the abandoned expansion answered its caller")
+        XCTAssertFalse(tree.isExpanding(bios.id))
+    }
+
+    /// The same for the mapping: a descent an edit cut short still resumes
+    /// whoever was waiting on it.
+    func testAnEditAnswersWhoeverWasWaitingOnTheMapping() async {
+        let tree = await built(anchoredImage())
+
+        var answered = false
+        tree.resolveAddresses { answered = true }
+        XCTAssertFalse(answered, "the descent has containers to open first")
+
+        tree.invalidate(editedRange: 0x7000..<0x7004, sizeDelta: 0)
+
+        XCTAssertTrue(answered, "the abandoned descent answered its caller")
+        XCTAssertFalse(tree.addressesResolved)
+    }
+
     // MARK: - Coalescing a second expand while one is already running
 
     func testASecondExpandWhileOneIsInFlightCoalescesOntoIt() async {
-        let tree = LazyUEFITree(twoVolumeImage())
+        let tree = await built(twoVolumeImage())
         let bios = tree.rootNodes[0].children.first { $0.name == "BIOS region" }!
 
         async let first = expandAsync(tree, bios.id)

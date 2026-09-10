@@ -1,5 +1,6 @@
 import XCTest
 import ALSplitView
+import FITToolUI
 import ToolModuleKit
 import UEFIImage
 import UEFIToolUI
@@ -72,6 +73,37 @@ final class UEFIToolFlowTests: XCTestCase {
         try XCTUnwrap(controller?.tools.session as? UEFIToolSession)
     }
 
+    /// What a row stands for. The outline holds `UEFITreeRow` items — a place
+    /// in the tree, not a node — so reading a row means asking the tree what
+    /// is there, the way the panel does.
+    private func node(atRow row: Int) throws -> UEFINode {
+        let outline = try outline()
+        let id = try XCTUnwrap((outline.item(atRow: row) as? UEFITreeRow)?.id,
+                               "row \(row) stands for a node")
+        let tree = try XCTUnwrap(controller?.windowModel.pane1.uefiState.tree)
+        return try XCTUnwrap(tree.node(id), "the tree still has \(id)")
+    }
+
+    private func kinds(of outline: NSOutlineView) -> [UEFINodeKind] {
+        (0..<outline.numberOfRows).compactMap { try? node(atRow: $0).kind }
+    }
+
+    /// Opens a row's branch. The tree materializes it off the main actor, so
+    /// this waits on the tree's own callback rather than on the clock, then
+    /// lets the outline show what arrived.
+    @discardableResult
+    private func expandRow(_ row: Int) throws -> NSOutlineView {
+        let outline = try outline()
+        let id = try node(atRow: row).id
+        let tree = try XCTUnwrap(controller?.windowModel.pane1.uefiState.tree)
+        let opened = expectation(description: "the branch is materialized")
+        tree.expand(id) { _ in opened.fulfill() }
+        wait(for: [opened], timeout: 5)
+        outline.expandItem(outline.item(atRow: row))
+        window?.layoutIfNeeded()
+        return outline
+    }
+
     private func outline() throws -> NSOutlineView {
         let panel = try XCTUnwrap(controller?.tools.panel)
         return try XCTUnwrap(descendants(of: panel, NSOutlineView.self).first)
@@ -109,13 +141,16 @@ final class UEFIToolFlowTests: XCTestCase {
         let controller = try open(UEFITestImage.make())
         let outline = try outline()
 
-        // The volume is the one root of the whole file, so it folded into the
-        // title; its children — the file, the padding that aligns it and the
-        // free space — open the outline, and the file is the top row.
-        XCTAssertEqual(outline.numberOfRows, 3, "the volume is not a row — its "
-                       + "children are the top of the tree")
+        // The volume is the one root of the whole file and keeps its row; its
+        // files are not read until something opens it.
+        XCTAssertEqual(outline.numberOfRows, 1, "only the top level is read")
         XCTAssertEqual(outline.selectedRow, -1, "nothing chosen yet")
-        outline.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+
+        // Opened, it shows the file, the padding that aligns it and the free
+        // space — and the file is the first of them.
+        try expandRow(0)
+        XCTAssertEqual(outline.numberOfRows, 4, "the volume and its three children")
+        outline.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
 
         // The file is 0x48..<0x8C: a 0x18-byte FFS header, then its sections.
         let zones = controller.windowModel.pane1.zones
@@ -138,10 +173,11 @@ final class UEFIToolFlowTests: XCTestCase {
         let outline = try outline()
         let pane = controller.windowModel.pane1
 
-        // Publish the file's zones by selecting it — the file is the top row,
-        // the volume that held it having folded into the title — then pick one
-        // back in the dump the way the right-click menu does.
-        outline.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        // Publish the file's zones by selecting it — the file is the volume's
+        // first child, so the volume is opened first — then pick one back in
+        // the dump the way the right-click menu does.
+        try expandRow(0)
+        outline.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
 
         // 0x60 is the first byte of the file's body (the file is 0x48..<0x8C).
         let menu = controller.makeOffsetMenu(for: pane, offset: 0x60)
@@ -152,58 +188,60 @@ final class UEFIToolFlowTests: XCTestCase {
 
         controller.selectZone(submenu.items[0])
         XCTAssertEqual(pane.zones.focus, "0.0#body")
-        XCTAssertEqual(outline.selectedRow, 0)
+        XCTAssertEqual(outline.selectedRow, 1)
         var selection = pane.hexSelection()
         XCTAssertEqual(selection.start..<selection.end, 0x60..<0x8C,
                        "the body's bytes, not the whole file's")
 
         // The node's own zone from the same menu: the same row, the whole of it.
         controller.selectZone(submenu.items[1])
-        XCTAssertEqual(outline.selectedRow, 0)
+        XCTAssertEqual(outline.selectedRow, 1)
         selection = pane.hexSelection()
         XCTAssertEqual(selection.start..<selection.end, 0x48..<0x8C)
     }
 
     /// The file is a lone FFSv2 volume off a chip — the parser invents no image
-    /// root around a single top, the volume *is* the root — and a root that
-    /// holds the whole file does no work as a row: it folds into the title the
-    /// way any single root with children does, whatever its kind or its header.
-    /// Its children open the tree, and the title names the root by the words
-    /// its row would have shown.
-    func testALoneVolumeFoldsIntoTheTitleAndItsChildrenOpenTheTree() throws {
+    /// root around a single top, the volume *is* the root — and a real root
+    /// keeps its row. Opening the panel reads the top level and nothing else;
+    /// the volume's files arrive when somebody opens it, and the row they came
+    /// from stays where it was.
+    func testALoneVolumeKeepsItsRowAndOpensOnDemand() throws {
         let controller = try open(UEFITestImage.make())
         let outline = try outline()
         let panel = try XCTUnwrap(controller.tools.panel)
 
-        // The volume's children — the file, the padding that aligns it, and the
-        // free space — are the top of the tree. No row reads the volume.
-        XCTAssertEqual(outline.numberOfRows, 3)
-        let kinds = (0..<outline.numberOfRows).compactMap {
-            (outline.item(atRow: $0) as? UEFINode)?.kind
-        }
-        XCTAssertEqual(kinds, [.file, .padding, .freeSpace],
-                       "the volume folded into the title, leaving its children "
-                       + "as the top of the tree")
+        XCTAssertEqual(outline.numberOfRows, 1, "the top level is the volume alone")
+        let root = try node(atRow: 0)
+        XCTAssertEqual(root.kind, .volume)
+        XCTAssertTrue(root.isExpandable, "its files have not been read yet")
+        XCTAssertTrue(outline.isExpandable(try XCTUnwrap(outline.item(atRow: 0))),
+                      "and the tree offers to read them")
 
-        // The title names the folded root by its type, and is the clickable
-        // handle to it.
-        let title = try summary(panel, prefix: "Volume · FFSv2 ·")
-        XCTAssertEqual(title.toolTip, "Show the whole image in the dump")
+        // The title says what the image is and stands for no row of its own,
+        // so it is not a handle to anything.
+        let title = try summary(panel, prefix: "Volume · FFSv2")
+        XCTAssertNil(title.toolTip)
+
+        try expandRow(0)
+
+        XCTAssertEqual(kinds(of: outline), [.volume, .file, .padding, .freeSpace],
+                       "the volume kept its row and its children came in under it")
     }
 
-    /// The folded root's one job is to say what the image is, and the title now
-    /// says it: clicking the title behaves exactly like a click on the root's
-    /// row would — its zones, its detail. The root has no row, so nothing in
-    /// the tree is selected, and the title itself reads as selected.
+    /// A wrapper root — the "UEFI image" the parser groups several tops under —
+    /// does no work as a row, so it folds into the title: clicking the title
+    /// behaves exactly like a click on that root's row would, its zones and its
+    /// detail. It has no row, so nothing in the tree is selected, and the title
+    /// itself reads as selected.
     func testClickingTheTitleSelectsTheFoldedRoot() throws {
-        let controller = try open(UEFITestImage.make())
+        let controller = try open(UEFITestImage.withTrailingPadding())
         let pane = controller.windowModel.pane1
         let outline = try outline()
         let panel = try XCTUnwrap(controller.tools.panel)
 
         // The title is the summary label, and it is the one thing in the panel
         // that is clickable.
-        let title = try summary(panel, prefix: "Volume · FFSv2 ·")
+        let title = try summary(panel, prefix: "UEFI image")
         XCTAssertTrue(
             (title.gestureRecognizers ?? []).contains(where: { $0 is NSClickGestureRecognizer }),
             "the title must be clickable"
@@ -213,20 +251,67 @@ final class UEFIToolFlowTests: XCTestCase {
         // this drives what the click calls.
         try session().showTopNode()
 
-        // The folded root is the volume, a real node with a header of its own:
-        // selecting it publishes the volume and its body, with the body in
-        // focus — exactly what the volume's row used to publish.
-        XCTAssertEqual(pane.zones.zones.map(\.id), ["0", "0#body"])
-        XCTAssertEqual(pane.zones.zones.map(\.range), [0..<0x1000, 0x48..<0x1000])
-        XCTAssertEqual(pane.zones.focus, "0#body")
+        // The folded root spans the whole file, and its body is the whole of it
+        // too — an invented wrapper has no header of its own, so there is one
+        // zone rather than two.
+        XCTAssertEqual(pane.zones.zones.map(\.id), ["0"])
+        XCTAssertEqual(pane.zones.zones.map(\.range), [0..<0x2000])
+        XCTAssertEqual(pane.zones.focus, "0")
         XCTAssertEqual(outline.selectedRow, -1, "the folded root has no row to select")
+        XCTAssertEqual(kinds(of: outline), [.volume, .padding],
+                       "the wrapper's children are the top of the tree")
 
-        // The detail says the node in focus is the volume, which spans the
-        // whole file.
+        // The detail says the node in focus spans the whole file.
         let text = descendants(of: panel, NSTextField.self).map(\.stringValue)
-        XCTAssertTrue(text.contains("0x0 · 0x1000 bytes"), "\(text)")
+        XCTAssertTrue(text.contains("0x0 · 0x2000 bytes"), "\(text)")
         XCTAssertEqual(title.textColor, .controlAccentColor,
                        "the folded-away root reads as selected in the title")
+    }
+
+    /// Opening a row keeps it open. The branch is read after the click, and
+    /// the row the reader opened must not shut under them when it lands.
+    func testARowStaysOpenWhenItsBranchArrives() throws {
+        let controller = try open(UEFITestImage.make())
+        let outline = try outline()
+
+        // A click on the disclosure triangle: the branch is not there yet, so
+        // the row opens onto the one "Loading…" row standing in for it.
+        outline.expandItem(outline.item(atRow: 0))
+        window?.layoutIfNeeded()
+        XCTAssertEqual(outline.numberOfRows, 2, "one Loading… row under the volume")
+
+        // The branch lands — the same expansion the click started, coalesced.
+        let tree = try XCTUnwrap(controller.windowModel.pane1.uefiState.tree)
+        let opened = expectation(description: "the branch is materialized")
+        tree.expand(NodeID([0])) { _ in opened.fulfill() }
+        wait(for: [opened], timeout: 5)
+        window?.layoutIfNeeded()
+
+        XCTAssertEqual(outline.numberOfRows, 4,
+                       "the volume stayed open and its children took the "
+                       + "placeholder's place")
+    }
+
+    /// The point of a tree shared per file: what one tool-module opened, the
+    /// next one finds open. Switching panels re-reads nothing.
+    func testABranchOpenedStaysOpenAcrossAPanelSwitch() throws {
+        let controller = try open(UEFITestImage.make())
+        try expandRow(0)
+        XCTAssertEqual(try outline().numberOfRows, 4, "the volume is open")
+
+        // Away to the FIT panel — which reads the same tree — and back.
+        controller.tools.activate(FITToolModule.identifier, animated: false)
+        window?.layoutIfNeeded()
+        controller.tools.activate(UEFIToolModule.identifier, animated: false)
+        window?.layoutIfNeeded()
+        try waitForParse()
+
+        let tree = try XCTUnwrap(controller.windowModel.pane1.uefiState.tree)
+        let root = try XCTUnwrap(tree.rootNodes.first)
+        XCTAssertFalse(root.children.isEmpty,
+                       "the branch the first session opened is still open")
+        XCTAssertFalse(root.isExpandable,
+                       "so the second session has nothing left to read there")
     }
 
     /// A file with no root to fold — one that is a single leaf, padding the
@@ -371,17 +456,16 @@ final class UEFIToolFlowTests: XCTestCase {
         let outline = try outline()
         let panel = try XCTUnwrap(controller.tools.panel)
 
-        // The volume is the root the tree folded into the title — it has no
-        // row — so it is read the way its row would be read, through the click
-        // the title stands in for.
-        try session().showTopNode()
+        // The volume is the one top-level row.
+        outline.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         var text = descendants(of: panel, NSTextField.self).map(\.stringValue)
         XCTAssertTrue(text.contains("0x0 · 0x1000 bytes"), "\(text)")
         XCTAssertTrue(text.contains("Revision"), "\(text)")
 
-        // The file is a top row of its own: named by its user-interface
-        // section, typed by the code in its header.
-        outline.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        // The file is under it, once the volume is opened: named by its
+        // user-interface section, typed by the code in its header.
+        try expandRow(0)
+        outline.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
         text = descendants(of: panel, NSTextField.self).map(\.stringValue)
         XCTAssertTrue(text.contains("MyDriver"), "\(text)")
         XCTAssertTrue(text.contains("Driver"), "\(text)")
@@ -436,6 +520,14 @@ enum UEFITestImage {
         // The file: a driver, named by its user-interface section.
         image.replaceSubrange(0x48..<0x8C, with: file())
         return image
+    }
+
+    /// The same volume with 4 KiB of erased bytes behind it. Two things at the
+    /// top level rather than one, so the parser groups them under the "UEFI
+    /// image" root it invents for exactly that case — which is the shape the
+    /// panel folds into its title.
+    static func withTrailingPadding() -> [UInt8] {
+        make() + [UInt8](repeating: 0xFF, count: 0x1000)
     }
 
     /// The one file in the volume: a 0x44-byte driver whose body is a name

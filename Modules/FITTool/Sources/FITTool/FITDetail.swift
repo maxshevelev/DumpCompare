@@ -154,10 +154,14 @@ public enum FITDetail {
                 .init("Component", hex(offset, digits: 8))
             ]
         case .bytes(let offset, let description):
-            var fields: [FITDetailField] = [
-                .init("Points at", description ?? "unrecognised bytes"),
-                .init("Component", hex(offset, digits: 8))
-            ]
+            // "Points at" only once something has read there — see
+            // `FITDisplay.targetText`. The Component row below says where it
+            // is either way.
+            var fields: [FITDetailField] = []
+            if let description {
+                fields.append(.init("Points at", description))
+            }
+            fields.append(.init("Component", hex(offset, digits: 8)))
             if let length = row.effectiveSize {
                 fields.append(.init("Length", size(length)))
             }

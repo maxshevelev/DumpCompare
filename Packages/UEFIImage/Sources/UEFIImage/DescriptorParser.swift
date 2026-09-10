@@ -168,15 +168,16 @@ extension Parser {
         return regions
     }
 
+    /// A region as the descriptor lays it out, and nothing of what is inside
+    /// it: the linear signature scan of a BIOS region is one of the two
+    /// genuinely expensive things in this parser, so it is always left for
+    /// `TreeMaterialization` to run when something actually asks. A region
+    /// that is a format of its own — ME, GbE — is not expandable at all: it
+    /// has no raw area to scan.
     private func regionNode(_ region: Region, depth: Int) -> UEFINode {
         if region.type == .descriptor {
             return descriptorNode(region.range)
         }
-        let mayScan = region.type.readsAsRawArea
-        let expand = mayScan && expansion.shouldExpand(range: region.range)
-        let children = expand
-            ? scanRawArea(region.range, emptyByte: Parser.defaultEmptyByte, depth: depth + 1)
-            : []
         return UEFINode(
             kind: .region,
             subtype: UInt8(region.type.rawValue),
@@ -186,8 +187,8 @@ extension Parser {
             // Regions are laid out by the descriptor, and moving one means
             // rewriting it (§11).
             isFixed: true,
-            isExpandable: mayScan && !expand,
-            children: children
+            isExpandable: region.type.readsAsRawArea,
+            childDepth: depth + 1
         )
     }
 

@@ -84,14 +84,22 @@ public enum UEFIChecksumCheck {
     /// repair's own bytes are the value a Fix writes, and the bytes a detail
     /// row quotes as "should be" (§3.3, §5.4, §7.1). Empty for a node whose
     /// checksums are all right (or unreadable).
+    ///
+    /// `only`, when given, is the set of node ids worth reading — everything
+    /// else in the image is left alone. That is what lets a panel over a
+    /// lazily-materialized tree check each branch once, as it opens, instead
+    /// of re-reading every file body it has ever seen each time one more
+    /// branch appears.
     public static func repairs(
         in image: UEFIImage,
+        only: Set<NodeID>? = nil,
         reader: ImageReader
     ) -> [NodeID: [ChecksumRepair]] {
         var result: [NodeID: [ChecksumRepair]] = [:]
         for node in image.allNodes {
             guard node.kind == .volume || node.kind == .file || node.kind == .microcode
             else { continue }
+            if let only, !only.contains(node.id) { continue }
             let revision = node.kind == .file ? volumeRevision(of: node, in: image) : nil
             let nodeRepairs = repairs(for: node, volumeRevision: revision, in: reader)
             guard !nodeRepairs.isEmpty else { continue }

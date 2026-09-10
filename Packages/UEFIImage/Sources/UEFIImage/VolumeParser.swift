@@ -131,9 +131,12 @@ extension Parser {
 
         let bodyStart = min(offset + header.headerSize, offset + size)
         let body = bodyStart..<(offset + size)
-        let expand = expansion.shouldExpand(range: body)
-        let children = expand ? volumeChildren(header, body: body, depth: depth) : []
 
+        // The file walk of the body is the other expensive half of this parser
+        // — a few hundred files, each read back for its own sections — and is
+        // always left for `TreeMaterialization` to run when something asks for
+        // this volume's children. The header, which is what says the volume is
+        // a volume at all, has already been read and checked above.
         return UEFINode(
             kind: .volume,
             subtype: header.revision,
@@ -142,8 +145,8 @@ extension Parser {
             header: offset..<bodyStart,
             body: body,
             isFixed: false,
-            isExpandable: !expand && !body.isEmpty,
-            children: children
+            isExpandable: !body.isEmpty,
+            childDepth: depth
         )
     }
 
@@ -166,8 +169,8 @@ extension Parser {
         )
     }
 
-    /// Not `private`: `LazyUEFITree` calls this directly to re-derive a
-    /// volume's children when the user expands it, scoped to just that one
+    /// Not `private`: `TreeMaterialization` calls this directly to derive a
+    /// volume's children when something expands it, scoped to just that one
     /// node rather than restarting the parse from the image root.
     func volumeChildren(
         _ header: VolumeHeader,

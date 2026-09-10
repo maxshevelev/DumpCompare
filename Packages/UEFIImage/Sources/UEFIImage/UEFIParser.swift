@@ -21,22 +21,54 @@ public enum UEFIParser {
         }
     }
 
-    /// Parses `source` into a tree. When `progress` is given it is called, on
-    /// whichever thread the parse happens to be running on, with how far the
-    /// scan has got through the image — monotonically, from just above 0 up to
-    /// 1. Nothing calls it with the parse finished; whoever asked for progress
-    /// decides what "done" means and announces it itself.
+    /// Parses `source` into a whole tree, every container opened, in one call.
     ///
-    /// A 16 MiB flash dump takes about a second to scan, which is the one
-    /// parse in this tool slow enough that a caller wants to show it. `progress`
-    /// is `@Sendable` because a caller runs the parse off its main actor and
-    /// must be able to hand the callback across to the scanning thread.
+    /// The same materialization a `LazyUEFITree` performs one node at a time,
+    /// driven straight through instead of on demand: build the top level, open
+    /// every collapsed node under it, then work out where the image is mapped.
+    /// There is no second implementation of the parse behind this — a tree
+    /// built here and a tree a user expanded by hand come out of the same
+    /// `TreeMaterialization` calls.
+    ///
+    /// Deliberately not what the app uses: opening a 16 MiB image this way
+    /// takes about a second and reads every file body in it, which is exactly
+    /// the wait `LazyUEFITree` exists to remove. What wants a finished tree in
+    /// one value — this package's own tests, an oracle comparison against
+    /// UEFITool's output — asks here.
+    ///
+    /// When `progress` is given it is called, on whichever thread the parse
+    /// happens to be running on, with how far the scan has got through the
+    /// image — monotonically, from just above 0 up to 1. Nothing calls it with
+    /// the parse finished; whoever asked for progress decides what "done"
+    /// means and announces it itself. It is `@Sendable` because a caller runs
+    /// the parse off its main actor and must be able to hand the callback
+    /// across to the scanning thread.
     public static func parse(
         _ source: ByteSource,
         limits: Limits = Limits(),
         progress: (@Sendable (Double) -> Void)? = nil
     ) -> UEFIImage {
-        Parser(reader: ImageReader(source), limits: limits, progress: progress).run()
+        let reader = ImageReader(source)
+        let sink = progress.map { report in
+            ProgressSink(total: reader.count, report: { report($0) })
+        }
+
+        let built = TreeMaterialization.roots(reader: reader, limits: limits, progress: sink)
+        var roots = built.nodes
+        var diagnostics = built.diagnostics
+        TreeMaterialization.materializeAll(
+            &roots, reader: reader, limits: limits, diagnostics: &diagnostics, progress: sink
+        )
+
+        let parser = Parser(reader: reader, limits: limits)
+        let second = roots.isEmpty ? Parser.SecondPass() : parser.runSecondPass(&roots)
+        return UEFIImage(
+            size: reader.count,
+            roots: roots,
+            diagnostics: diagnostics + parser.diagnostics,
+            addressDiff: second.addressDiff,
+            resetVector: second.resetVector
+        )
     }
 }
 
@@ -48,17 +80,10 @@ final class Parser {
     let reader: ImageReader
     let limits: UEFIParser.Limits
     private(set) var diagnostics: [UEFIDiagnostic] = []
-    /// Who the scan tells how far it has got, or nil to scan quietly.
-    private let onProgress: (@Sendable (Double) -> Void)?
-    /// The last fraction handed to `onProgress`. Progress only moves forward:
-    /// the bar is one line, and the parser does not always visit the image in
-    /// order — a descriptor image parses the BIOS region and then the smaller
-    /// region that sits *below* it, and that must not walk the bar backwards.
-    private var lastFraction: Double = 0
-    /// Decides which nodes' children are computed immediately vs. left collapsed.
-    /// Defaults to ExpandAllPolicy, preserving eager behavior; a lazy tree passes
-    /// a custom policy to defer expansion.
-    let expansion: ExpansionPolicy
+    /// Who the scan tells how far it has got, or nil to scan quietly. Shared
+    /// with every other `Parser` of the same materialization, so the fractions
+    /// move forward across the whole job rather than restarting per node.
+    private let onProgress: ProgressSink?
 
     /// What an unwritten byte looks like outside any volume. Inside one it is
     /// the volume's erase polarity that decides (§3.5); out here `0xFF` is what
@@ -68,41 +93,21 @@ final class Parser {
     init(
         reader: ImageReader,
         limits: UEFIParser.Limits,
-        progress: (@Sendable (Double) -> Void)? = nil,
-        expansion: ExpansionPolicy? = nil
+        progress: ProgressSink? = nil
     ) {
         self.reader = reader
         self.limits = limits
         self.onProgress = progress
-        self.expansion = expansion ?? ExpandAllPolicy.shared
     }
 
     /// Reports that the scan has reached `offset`, as a fraction of the whole
-    /// image. Drops anything that would move the bar backwards or not at all.
+    /// image.
     private func progressed(to offset: UInt64) {
-        guard let onProgress else { return }
-        let size = reader.count
-        guard size > 0 else { return }
-        let fraction = min(Double(offset) / Double(size), 1)
-        guard fraction > lastFraction else { return }
-        lastFraction = fraction
-        onProgress(fraction)
+        onProgress?.reached(offset)
     }
 
     func note(_ kind: UEFIDiagnostic.Kind, at offset: UInt64) {
         diagnostics.append(UEFIDiagnostic(kind, at: offset))
-    }
-
-    func run() -> UEFIImage {
-        var roots = reader.count == 0 ? [] : parseTopLevel(reader.all, depth: 0)
-        let second = roots.isEmpty ? SecondPass() : runSecondPass(&roots)
-        return UEFIImage(
-            size: reader.count,
-            roots: roots,
-            diagnostics: diagnostics,
-            addressDiff: second.addressDiff,
-            resetVector: second.resetVector
-        )
     }
 
     /// What kind of thing this is (§1): an update capsule, a full flash dump

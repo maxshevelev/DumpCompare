@@ -142,7 +142,11 @@ struct MEAParkedState: ToolSessionState {
         // second full analysis of data nothing changed.
         if let cached = analysisProvider?.cachedMEAnalysis() {
             present(cached)
-            onDisplay?(cached)
+            // Announced on the next turn rather than from inside this call: a
+            // caller that has only just asked for this session — `start()` runs
+            // during activation — has had no chance to listen yet, and a cached
+            // analysis would otherwise be the one reading it never hears about.
+            Task { @MainActor [weak self] in self?.onDisplay?(cached) }
             return
         }
 

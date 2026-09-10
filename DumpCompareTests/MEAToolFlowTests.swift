@@ -279,7 +279,7 @@ final class MEAToolFlowTests: XCTestCase {
                        [MEAToolModule.identifier])
         controller?.tools.activate(MEAToolModule.identifier, animated: false)
         let restored = try waitForDisplay(of: session())
-        XCTAssertNotNil(restored, "coming back parses the file again")
+        XCTAssertNotNil(restored, "coming back shows the analysis again")
 
         // The restored session is on the same tab, with the same row chosen —
         // re-found by its path after the re-parse, so the row is selected again
