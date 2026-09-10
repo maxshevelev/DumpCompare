@@ -99,7 +99,8 @@ python3 Skills/sync-mea-engine/scripts/mea_sync.py bootstrap
 python3 Skills/sync-mea-engine/scripts/mea_sync.py baseline --sha <upstream-sha>
 ```
 
-Flags: `--no-fetch` (work offline against the local clone), `--source <path>`
+Flags: `--no-fetch` (work offline against the local clone; accepted on either
+side of the subcommand), `--source <path>`
 and `--app-root <path>` override the resolved upstream clone and DumpCompare
 root, `--pkg <path>` overrides the engine package. The script is stdlib-only
 and deterministic; run it yourself (python3 is allowed in this project).
@@ -110,6 +111,38 @@ diff** (`git -C ../MEAnalyzer diff <baseline>..HEAD -- MEA.py`) before
 writing any Swift — the report's change index is a heuristic reducer, not a
 substitute for reading.
 
+### How the report names a change
+
+`MEA.py` keeps only its first ~10.5k lines inside a `class`/`def`; the
+remaining ~3.4k are module-level — the lookup tables, the anchor regexes, and
+the per-file analysis loop that upstream's whole default output is printed
+from, which is also the region this port leans on hardest (`eng_fw_end`, the
+firmware-type and release passes, the per-variant blocks). Keyed by top-level
+symbol alone that tail collapses into whichever `def` comes last, so the
+script segments it as well, using the structure upstream already wrote into
+the file rather than a phase list kept here (which would rot at the next
+release):
+
+| Key | Opened by |
+|---|---|
+| `class:X` / `def:x` | a column-0 `class`/`def`, as before |
+| `module:<comment>` | a column-0 comment — the table and regex sections |
+| `main:<comment or condition>` | inside a column-0 compound statement (the analysis loop, the CLI ifs): every indent-4 comment or block-opening compound |
+
+Every line of the file belongs to exactly one segment. A compound opening
+directly under its own comment continues that comment's segment (the comment
+is the better name); a one-line `elif` chain row opens nothing (it is a table
+row, not a phase); a bare `else`/`except` borrows the label of the chain it
+continues. Names are elided in the middle, because upstream edits its comment
+text at the end.
+
+`code_locations` then attributes each hunk of the range to the segment holding
+it, so a run points at `11419-11453  main:Detect Intel Engine/Graphics/…`
+rather than at a name three thousand lines away. A segment renamed upstream
+(its anchor comment reworded) shows up as one `code_added` plus one
+`code_removed` with the same line range — that is the honest reading, not a
+bug.
+
 ## Change taxonomy → action
 
 `mea_sync.py` classifies each upstream change; act on the class:
@@ -117,14 +150,15 @@ substitute for reading.
 | Upstream change | Kind | Action |
 |---|---|---|
 | Lines added inside `MEA.dat` / `Huffman.dat` / `FileTable.dat` only | **data** | **No repo action.** The module fetches these live; the next run has them. If a *new grammar* appears (new line format, new section) that the Swift `MEADatabase` parser cannot read, that is a parser change — port it like `code`. |
-| A new `MEA.py` top-level block or class added | **format** | Port the new structure(s) (see Porting). New CSE generation usually = new `MN2_Manifest_R*`, `CPD_Header_R*`, `CSE_Ext_*` decode + a version-dispatch case. |
-| `MEA.py` block *changed* | **logic/format** | Read the hunk diff; port the delta. If it only widens a branch table (a `get_variant`-style elif, a SKU/platform mapping), mirror it — prefer a Swift lookup table over a new if-chain so the next port is data. |
-| `MEA.py` block removed | **removal** | Delete the Swift counterpart and its tests; confirm nothing else referenced it. |
+| A new `MEA.py` segment or class added | **format** | Port the new structure(s) (see Porting). New CSE generation usually = new `MN2_Manifest_R*`, `CPD_Header_R*`, `CSE_Ext_*` decode + a version-dispatch case. |
+| `MEA.py` segment *changed* | **logic/format** | Read the hunk diff; port the delta. If it only widens a branch table (a `get_variant`-style elif, a SKU/platform mapping), mirror it — prefer a Swift lookup table over a new if-chain so the next port is data. |
+| `MEA.py` segment removed | **removal** | Delete the Swift counterpart and its tests; confirm nothing else referenced it. |
 | `Changelog.txt` / `README.md` only | **noise** | Record, no code action. New firmware families listed there but not yet in code are a heads-up, not a change to port yet. |
 | Crypto/checksum core (`rsa_sig_val`, `pss_*`, hashes) changed | **crypto** | Effectively never. If it does, port carefully — it is the least-testable part; validate against a real signed firmware. |
 
 Report fields (`db`, `code_added`, `code_changed`, `code_removed`, `noise`)
-map 1:1 to this table. A `db`-only report means a clean sync: nothing to port.
+map 1:1 to this table, and `code_locations` says where each of them landed. A
+`db`-only report means a clean sync: nothing to port.
 
 ## Porting a change (model work)
 
@@ -183,7 +217,9 @@ the model grows so the UI can adapt deliberately.
   `baseline` after a manual reconcile. Never guess a baseline.
 - **`code_changed` huge or empty parse** — the change index heuristics failed
   or upstream restructured the file; read the real diff and update the
-  script's block parser, then re-run. Do not loosen it blind.
+  script's segmenter, then re-run. Do not loosen it blind. The cheap sanity
+  check is coverage: every line of `MEA.py` must fall in exactly one segment,
+  and no segment should be named for a keyword alone.
 - **New CSE generation with an unknown RSA key** — no DB entry and no
   module-name match: this is genuinely new format knowledge. Port the structs
   and add the fallback branch by hand; the live DB alone cannot tell you the
