@@ -160,9 +160,10 @@ final class ToolPanelZoomTests: XCTestCase {
         try waitForUEFIParse()
         let panel = try XCTUnwrap(controller.tools.panel)
         let outline = try XCTUnwrap(descendants(of: panel, NSOutlineView.self).first)
-        if let root = outline.item(atRow: 0) { outline.expandItem(root) }
-        window?.layoutIfNeeded()
-        outline.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
+        // The top-level row — the volume — is the one node that is there
+        // without opening anything: a branch is materialized on demand, and
+        // what this test is about is the type size, not the tree.
+        outline.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
         window?.layoutIfNeeded()
 
         let splitter = try XCTUnwrap(descendants(of: panel, ALSplitView.self).first)

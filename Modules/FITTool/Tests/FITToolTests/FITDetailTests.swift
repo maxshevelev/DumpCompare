@@ -153,13 +153,18 @@ final class FITDetailTests: XCTestCase {
 
     /// A row that points into the image but not at microcode says where, and
     /// how long, when the row's own size field is the only size there is.
+    ///
+    /// Nothing has read at that offset here — no tree was handed over — so
+    /// there is no "Points at" line to draw. The name of what is there is the
+    /// tree's to give, and it arrives once the branch covering the address has
+    /// been opened (`FITToolSession.nameTargets`).
     func testARowThatLeadsSomewhereElseSaysWhere() {
         let detail = detail([TestFIT.Row(FIT.startupACMType, target: 0x3000, size: 0x10)])
 
         // The row's own size field, in bytes.
         XCTAssertEqual(value(detail!, "Size"), "0x100 (256)")
-        // What it points at: where in the file, and how long.
-        XCTAssertEqual(value(detail!, "Points at"), "unrecognised bytes")
+        // Where in the file, and how long.
+        XCTAssertNil(value(detail!, "Points at"))
         XCTAssertEqual(value(detail!, "Component"), "0x00003000")
         XCTAssertEqual(value(detail!, "Length"), "0x100 (256)")
     }

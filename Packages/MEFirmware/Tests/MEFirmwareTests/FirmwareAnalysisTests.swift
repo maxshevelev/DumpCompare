@@ -7,10 +7,11 @@ final class FirmwareAnalysisModelTests: XCTestCase {
         let model = FirmwareAnalysis(
             family: .csme,
             variant: "CSME",
-            version: Version(major: 15, minor: 40, hotfix: 37, build: 3121),
+            version: Version(major: 15, minor: 40, hotfix: 37, build: 3121,
+                             meMajor: 15, meMinor: 40, meHotfix: 37, meBuild: 3121),
             securityVersion: "3",
             release: .production,
-            type: .region,
+            type: .stock,
             sku: "5C",
             platform: "Consumer",
             manufactureDate: Date(timeIntervalSince1970: 1_700_000_000),
@@ -21,7 +22,12 @@ final class FirmwareAnalysisModelTests: XCTestCase {
             regions: [
                 FPTRegion(id: 0, name: "FTUE", offset: 0x1000, size: 0x800, flags: 0x01)
             ],
-            manifest: nil,
+            manifest: ManifestSummary(
+                offset: 0x1000, tag: "$MN2", format: .r1,
+                major: 15, minor: 40, hotfix: 37, build: 3121, svn: 3,
+                day: 24, month: 3, year: 2021,
+                keyHash: "K", signatureHash: "S",
+                productionReady: true),
             codePartition: nil,
             mfsVolume: nil,
             cseLayoutTable: CSELayoutTable(
@@ -33,11 +39,16 @@ final class FirmwareAnalysisModelTests: XCTestCase {
             bootPartitions: [
                 BPDT(offset: 0x3000, partitionName: "Boot 1", version: 2, redundancy: true,
                      checksumValid: true,
+                     fitMajor: 12, fitMinor: 0, fitHotfix: 3, fitBuild: 1091,
                      entries: [
                         BPDTPartition(id: 0, name: "RBEP", type: 1, offset: 0x4000, size: 0x18000, empty: false),
                         BPDTPartition(id: 1, name: "FTPR", type: 2, offset: 0x59000, size: 0x125000, empty: false),
                      ]),
             ],
+            arbSvn: 6,
+            vcn: 8,
+            mfsState: .initialized,
+            oemCustomized: true,
             issues: [Issue(id: 1, severity: .warning, message: "something odd")]
         )
 
@@ -47,6 +58,16 @@ final class FirmwareAnalysisModelTests: XCTestCase {
         XCTAssertEqual(decoded, model)
         XCTAssertEqual(decoded.id, "csme-CSME-15.40.37.3121")
         XCTAssertEqual(decoded.version.text, "15.40.37.3121")
+        // Row 4 (Type) and row 14 (OEM Configuration) facts survive a round-trip.
+        XCTAssertEqual(decoded.type, .stock)
+        XCTAssertEqual(decoded.oemCustomized, true)
+        // New row 9/10/11/17/20 facts survive a JSON round-trip.
+        XCTAssertEqual(decoded.version.meHotfix, 37)
+        XCTAssertEqual(decoded.version.meBuild, 3121)
+        XCTAssertEqual(decoded.manifest?.productionReady, true)
+        XCTAssertEqual(decoded.arbSvn, 6)
+        XCTAssertEqual(decoded.vcn, 8)
+        XCTAssertEqual(decoded.mfsState, .initialized)
         XCTAssertEqual(decoded.regions[0].name, "FTUE")
         XCTAssertEqual(decoded.cseLayoutTable?.offset, 0x1000)
         XCTAssertEqual(decoded.cseLayoutTable?.partitions.count, 2)
@@ -56,6 +77,11 @@ final class FirmwareAnalysisModelTests: XCTestCase {
         XCTAssertEqual(decoded.bootPartitions?[0].version, 2)
         XCTAssertEqual(decoded.bootPartitions?[0].entries[0].name, "RBEP")
         XCTAssertEqual(decoded.bootPartitions?[0].entries[1].offset, 0x59000)
+        // Row 19 Flash Image Tool facts survive a JSON round-trip.
+        XCTAssertEqual(decoded.bootPartitions?[0].fitMajor, 12)
+        XCTAssertEqual(decoded.bootPartitions?[0].fitMinor, 0)
+        XCTAssertEqual(decoded.bootPartitions?[0].fitHotfix, 3)
+        XCTAssertEqual(decoded.bootPartitions?[0].fitBuild, 1091)
     }
 
     func testDecodingOmitsNewerOptionalFields() throws {
@@ -84,7 +110,36 @@ final class FirmwareAnalysisModelTests: XCTestCase {
     }
 
     func testEngineModelRevisionBumpsWithAdditiveChanges() {
-        XCTAssertEqual(EngineModelRevision.current, 21)
+        XCTAssertEqual(EngineModelRevision.current, 24)
+    }
+
+    /// A non-IFWI image's row-19 FIT (`fptHeaderFIT`) survives a JSON
+    /// round-trip; a payload that omits it decodes to nil (additive contract).
+    func testFPTHeaderFITSurvivesJSON() throws {
+        let payload = """
+        {"family":"me","variant":"ME","version":{"major":11,"minor":0,
+         "hotfix":10,"build":1002},
+         "release":"production","type":"extracted","sku":"","platform":"",
+         "sizeBytes":6291456,"regions":[],"issues":[],
+         "fptHeaderFIT":{"major":11,"minor":0,"hotfix":10,"build":1002}}
+        """
+        let decoded = try JSONDecoder().decode(FirmwareAnalysis.self,
+                                               from: Data(payload.utf8))
+        XCTAssertEqual(decoded.fptHeaderFIT,
+                       FITVersion(major: 11, minor: 0, hotfix: 10, build: 1002))
+        // Round-trip preserves the quartet.
+        let data = try JSONEncoder().encode(decoded)
+        let again = try JSONDecoder().decode(FirmwareAnalysis.self, from: data)
+        XCTAssertEqual(again, decoded)
+        // Absent key → nil, exactly like the other additive fields.
+        let bare = """
+        {"family":"me","variant":"ME","version":{"major":11,"minor":0,
+         "hotfix":10,"build":1002},
+         "release":"production","type":"stock","sku":"","platform":"",
+         "sizeBytes":6291456,"regions":[],"issues":[]}
+        """
+        XCTAssertNil(try JSONDecoder().decode(FirmwareAnalysis.self,
+                                              from: Data(bare.utf8)).fptHeaderFIT)
     }
 }
 
@@ -318,5 +373,85 @@ final class AnalyzerTests: XCTestCase {
 
         XCTAssertNotNil(result.manifest)
         XCTAssertNil(result.codePartition)
+    }
+
+    func testAnalyzeHoistsArbSvnAndVcnFromOperationalChain() async throws {
+        // A self-consistent FTPR region whose manifest module carries a chain of
+        // CSE_Ext_0F (ARBSVN 5 / VCN 3), CSE_Ext_03 (VCN 3) and CSE_Ext_16 (no
+        // VCN). Row 9 surfaces the 0x0F ARBSVN; row 10 prefers the 0x03 VCN over
+        // the 0x0F fallback; the 0x16 contributes nothing.
+        let chain = ExtFixture.concat([
+            ExtFixture.signedPackage(r2: true),
+            ExtFixture.partitionInfo(tag: 0x03, r2: true),
+            ExtFixture.partitionInfo(tag: 0x16, r2: true),
+        ])
+        let manifest = ManifestFixture.manifest()              // 0x284 bytes, csme15
+        let manifestBase = 0x10 + 1 * 0x18                     // $CPD R1 header + one entry
+        let moduleSize = manifest.count + chain.count
+        var region = CPDFixture.make(name: "FTPR", moduleNames: ["$MN2"],
+                                     moduleLayout: [(offset: UInt32(manifestBase),
+                                                     size: UInt32(moduleSize))])
+        XCTAssertEqual(region.count, manifestBase)
+        region.append(manifest)
+        region.append(chain)
+        let analyzer = MEFirmwareAnalyzer(data: StubSource(databaseResult: .success(MEADatabase(revision: 378))))
+
+        let result = try await analyzer.analyze(region: region, baseOffset: 0x1000)
+
+        let cp = try XCTUnwrap(result.codePartition)
+        XCTAssertEqual(cp.extensions?.map(\.tag), [0x0F, 0x03, 0x16])
+        XCTAssertEqual(result.arbSvn, 5)                       // row 9: CSE_Ext_0F ARBSVN
+        XCTAssertEqual(result.vcn, 3)                          // row 10: 0x03 preferred
+        XCTAssertEqual(result.manifest?.productionReady, true)
+    }
+
+    func testAnalyzeR0ManifestFallsBackVcnToSummary() async throws {
+        // A pre-CSE R0 manifest has no extension chain; its +0x34 VCN (already
+        // ManifestSummary.vcn) becomes the top-level VCN and row 11 stays nil
+        // (R0 has no pvbit on this probe). Production Ready only reads R1/R2.
+        var params = ManifestFixture.Params()
+        params.format = .r0
+        let fpt = FPTFixture.fptRegion(entries: [
+            ("FTPR", 0x1000, 0x2000, 0)
+        ])
+        var region = fpt
+        region.append(Data(repeating: 0xFF, count: 0x1000 - fpt.count))
+        region.append(ManifestFixture.manifest(params))
+        let analyzer = MEFirmwareAnalyzer(data: StubSource(databaseResult: .success(MEADatabase(revision: 378))))
+
+        let result = try await analyzer.analyze(region: region, baseOffset: 0)
+
+        let summary = try XCTUnwrap(result.manifest)
+        XCTAssertEqual(summary.format, .r0)
+        XCTAssertEqual(summary.vcn, 2)
+        XCTAssertNil(summary.productionReady)
+        XCTAssertEqual(result.vcn, 2)                          // summary fallback
+        XCTAssertNil(result.arbSvn)                            // no chain to hoist
+        XCTAssertNil(result.codePartition)
+    }
+
+    func testAnalyzeSurfacesProductionReadyFromR1PVBit() async throws {
+        // Row 11 (Production Ready) mirrors manifest Flags bit0 (upstream pvbit)
+        // for an R1 operational manifest; the fixture's flags toggle it. The FPT
+        // path is skipped so no $CPD framing is needed — summary-only region.
+        func bareR1(flags: UInt32) -> Data {
+            var params = ManifestFixture.Params()
+            params.flags = flags
+            let fpt = FPTFixture.fptRegion(entries: [
+                ("FTPR", 0x1000, 0x2000, 0)
+            ])
+            var region = fpt
+            region.append(Data(repeating: 0xFF, count: 0x1000 - fpt.count))
+            region.append(ManifestFixture.manifest(params))
+            return region
+        }
+        let analyzer = MEFirmwareAnalyzer(data: StubSource(databaseResult: .success(MEADatabase(revision: 378))))
+
+        let ready = try await analyzer.analyze(region: bareR1(flags: 0x1), baseOffset: 0)
+        XCTAssertEqual(ready.manifest?.format, .r1)
+        XCTAssertEqual(ready.manifest?.productionReady, true)
+
+        let notReady = try await analyzer.analyze(region: bareR1(flags: 0x2), baseOffset: 0)
+        XCTAssertEqual(notReady.manifest?.productionReady, false)
     }
 }

@@ -222,12 +222,19 @@ enum IFWI {
     /// (IFWI 1.6 & 2.0, `BPDT_Header_1`) or 2 (IFWI 1.7, `BPDT_Header_2`).
     /// `redundancy` is the 1.7 `BPDTConfig` bit 0; `checksumValid` is the 1.7
     /// CRC-32 of header+entries (signature + stored checksum excluded).
+    /// `fitMajor`/`fitMinor`/`fitHotfix`/`fitBuild` are the header's FIT fields
+    /// (u16 @ base+0x10..0x16), all nil together when `FitMajor` is the no-FIT
+    /// marker 0 or 0xFFFF (upstream's 'N/A' gate).
     struct BPDTInfo {
         let base: Int
         let partitionName: String
         let version: Int
         let redundancy: Bool
         let checksumValid: Bool?
+        let fitMajor: Int?
+        let fitMinor: Int?
+        let fitHotfix: Int?
+        let fitBuild: Int?
         let slots: [BPDTSlot]
     }
 
@@ -275,6 +282,17 @@ enum IFWI {
         // Version 1's Checksum is an XOR redundancy value, not a flag → false.
         let redundancy = ver == 2 && (data[start + base + 0x07] & 0x01) != 0
 
+        // FIT fields (both header versions put them at +0x10..0x16). One gate
+        // for all four, exactly like upstream's 'N/A' test on `FitMajor` (MEA.py
+        // 680/720): a marker 0 / 0xFFFF means the header carries no real FIT, so
+        // the whole quartet reads nil; otherwise the raw fields are kept.
+        let noFIT = { (raw: UInt16) in raw == 0 || raw == 0xFFFF }
+        let fitRaw = le16(data, base + 0x10)
+        let fitMajor = noFIT(fitRaw) ? nil : Int(fitRaw)
+        let fitMinor = fitMajor == nil ? nil : Int(le16(data, base + 0x12))
+        let fitHotfix = fitMajor == nil ? nil : Int(le16(data, base + 0x14))
+        let fitBuild = fitMajor == nil ? nil : Int(le16(data, base + 0x16))
+
         // 1.7 CRC-32 (field comment at MEA.py 691): whole table without the
         // Signature, checksum field zeroed — [base+0x04:base+0x08] + 4×\0 +
         // [base+0x0C : end]. Version 1 stores an XOR value → nil.
@@ -317,7 +335,10 @@ enum IFWI {
         }
         return BPDTInfo(base: base, partitionName: partitionName,
                         version: Int(ver), redundancy: redundancy,
-                        checksumValid: checksumValid, slots: slots)
+                        checksumValid: checksumValid,
+                        fitMajor: fitMajor, fitMinor: fitMinor,
+                        fitHotfix: fitHotfix, fitBuild: fitBuild,
+                        slots: slots)
     }
 
     /// True when the 12-byte blocks at `p`, `p+12`, `p+24` each hold 0x00 at

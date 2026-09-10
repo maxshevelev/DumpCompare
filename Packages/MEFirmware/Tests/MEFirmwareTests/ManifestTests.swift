@@ -31,6 +31,8 @@ enum ManifestFixture {
         var svn: UInt32 = 3
         var meMajor: UInt16 = 15
         var meMinor: UInt16 = 40
+        var meHotfix: UInt16 = 0
+        var meBuild: UInt16 = 0
         /// R0 VCN (u32 @ +0x34); R1/R2 reuse +0x34 as part of the MEU block, so
         /// the fixture only writes it for `.r0`.
         var vcn: UInt32 = 2
@@ -77,6 +79,9 @@ enum ManifestFixture {
         u16(params.meMinor, at: 0x32)                      // MEU_Minor (R1/R2)
         if params.format == .r0 {
             u32(params.vcn, at: 0x34)                      // R0 VCN (ME 7-10)
+        } else {
+            u16(params.meHotfix, at: 0x34)                 // MEU_Hotfix (R1/R2)
+            u16(params.meBuild, at: 0x36)                  // MEU_Build (R1/R2)
         }
         u32(params.publicKeySize, at: 0x78)                // PublicKeySize (dwords)
         u32(1, at: 0x7C)                                   // ExponentSize (1 dword)
@@ -139,8 +144,27 @@ final class ManifestParserTests: XCTestCase {
         XCTAssertEqual(manifest.format, .r0)
         XCTAssertNil(manifest.meMajor)            // R0 reuses 0x30 as SVN_8/VCN
         XCTAssertNil(manifest.meMinor)
+        XCTAssertNil(manifest.meHotfix)           // the whole MEU block is R1/R2-only
+        XCTAssertNil(manifest.meBuild)
         XCTAssertEqual(manifest.vcn, 2)           // R0 VCN read from +0x34
         XCTAssertEqual(manifest.numModules, 4)    // R0 NumModules read from +0x20
+    }
+
+    func testR1AndR2ReadMEUHotfixAndBuild() throws {
+        // MEU_Hotfix (+0x34) / MEU_Build (+0x36) complete the R1/R2 MEU block
+        // (upstream struct 855–858); the two formats read them identically.
+        for format in [ManifestFixture.Format.r1, ManifestFixture.Format.r2] {
+            var params = ManifestFixture.Params()
+            params.format = format
+            params.meHotfix = 0x001A
+            params.meBuild = 0x12B4
+            let manifest = try XCTUnwrap(
+                ManifestParser.parseFirst(in: ManifestFixture.manifest(params)))
+            XCTAssertEqual(manifest.meMajor, 15, "\(format)")
+            XCTAssertEqual(manifest.meMinor, 40, "\(format)")
+            XCTAssertEqual(manifest.meHotfix, 0x001A, "\(format)")
+            XCTAssertEqual(manifest.meBuild, 0x12B4, "\(format)")
+        }
     }
 
     func testR0NumModulesCoversDirectory() throws {

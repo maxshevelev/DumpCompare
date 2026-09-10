@@ -102,6 +102,34 @@ final class UEFIChecksumFlowTests: XCTestCase {
         return try XCTUnwrap(descendants(of: panel, NSOutlineView.self).first)
     }
 
+    /// Opens the one top-level row — the volume — so its files are rows of
+    /// their own. The tree materializes the branch off the main actor and
+    /// reads its checksums after it lands, so this waits on both rather than
+    /// on the clock.
+    private func openTheVolume() throws {
+        let outline = try outline()
+        let id = try XCTUnwrap((outline.item(atRow: 0) as? UEFITreeRow)?.id,
+                               "the top row stands for a node")
+        let tree = try XCTUnwrap(controller?.windowModel.pane1.uefiState.tree)
+        let session = try session()
+        let checked = expectation(description: "the branch's checksums are read")
+        checked.assertForOverFulfill = false
+        session.onChecksums = { checked.fulfill() }
+        let opened = expectation(description: "the branch is materialized")
+        tree.expand(id) { _ in opened.fulfill() }
+        wait(for: [opened, checked], timeout: 5)
+        session.onChecksums = nil
+        // The outline recognises only the item object it holds itself, and the
+        // reload the branch caused has replaced the one read above.
+        outline.expandItem(outline.item(atRow: 0))
+        window?.layoutIfNeeded()
+    }
+
+    /// Selects a row the way a click would.
+    private func selectRow(_ row: Int) throws {
+        try outline().selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+    }
+
     /// The detail's checksum rows read `(Valid)`/`(Invalid)` after the value.
     /// The fixture is a valid volume, so `make()` is the value a fix must
     /// restore.
@@ -132,9 +160,8 @@ final class UEFIChecksumFlowTests: XCTestCase {
         let (_, fields) = try nodeFlagged(with: .volume)
         XCTAssertEqual(fields, [.volume])
 
-        // The volume is the root the tree folded into the title, so it is read
-        // through the click the title stands in for.
-        try session().showTopNode()
+        // The volume is the one top-level row.
+        try selectRow(0)
         let text = descendants(of: try XCTUnwrap(controller?.tools.panel), NSTextField.self)
             .map(\.stringValue)
         let invalid = text.first { $0.contains("(Invalid") }
@@ -174,10 +201,10 @@ final class UEFIChecksumFlowTests: XCTestCase {
         _ = controller.validateMenuItem(item)
         XCTAssertEqual(item.title, "Undo Fix Checksum")
 
-        // Focus the volume — the root the tree folded into the title — and the
-        // detail now reads the checksum as right, while the notice the fix
-        // earned survives the very re-read its own write caused.
-        try session().showTopNode()
+        // Focus the volume — the one top-level row — and the detail now reads
+        // the checksum as right, while the notice the fix earned survives the
+        // very re-read its own write caused.
+        try selectRow(0)
         let panel = try XCTUnwrap(controller.tools.panel)
         let note = descendants(of: panel, NSTextField.self).map(\.stringValue)
         XCTAssertTrue(note.contains { $0.contains("Checksum written") }, "\(note)")
@@ -218,18 +245,19 @@ final class UEFIChecksumFlowTests: XCTestCase {
         // field must read the fixed 0xAA, so a 0 breaks it (§5.4).
         image[0x59] = 0
         _ = try open(image)
-        try nodeFlagged(with: .fileBody)
 
-        // The file is the top row — the volume that held it folded into the
-        // title — so its name cell is the flagged one.
-        let flagged = try nameCell(of: 0)
+        // The file is the volume's first child, so the volume is opened first:
+        // its files — and their checksums — are not read until it is.
+        try openTheVolume()
+        try nodeFlagged(with: .fileBody)
+        let flagged = try nameCell(of: 1)
         let warning = try XCTUnwrap(flagged.imageView, "the name cell carries the warning")
         XCTAssertFalse(warning.isHidden, "the flagged row wears its warning")
         XCTAssertNotNil(warning.image, "the warning is a symbol, not an empty view")
 
         // The padding under the file checks out and shares the cell pool with
         // the row above it.
-        let clean = try nameCell(of: 1)
+        let clean = try nameCell(of: 2)
         XCTAssertEqual(clean.imageView?.isHidden, true,
                        "a row that checks out shows no triangle")
     }
@@ -246,6 +274,7 @@ final class UEFIChecksumFlowTests: XCTestCase {
         var image = UEFITestImage.make()
         image[0x59] = 0
         _ = try open(image)
+        try openTheVolume()
         let outline = try outline()
         // Narrower than the GUID the flagged file is named by, so the name has
         // to give somewhere.
@@ -275,13 +304,14 @@ final class UEFIChecksumFlowTests: XCTestCase {
         var image = UEFITestImage.make()
         image[0x59] = 0
         _ = try open(image)
+        try openTheVolume()
         let outline = try outline()
         // Wider than the GUID the flagged file is named by, so the cell has
         // slack to put in the wrong place.
         try XCTUnwrap(outline.tableColumn(withIdentifier: .init("name"))).width = 600
         window?.layoutIfNeeded()
 
-        let flagged = try nameCell(of: 0)
+        let flagged = try nameCell(of: 1)
         flagged.layoutSubtreeIfNeeded()
         let warning = try XCTUnwrap(flagged.imageView)
         let name = try XCTUnwrap(flagged.textField)
@@ -299,7 +329,7 @@ final class UEFIChecksumFlowTests: XCTestCase {
 
         // The row under it checks out, and its name starts where the flagged
         // row's warning does.
-        let clean = try nameCell(of: 1)
+        let clean = try nameCell(of: 2)
         clean.layoutSubtreeIfNeeded()
         let cleanName = try XCTUnwrap(clean.textField)
         XCTAssertLessThanOrEqual(cleanName.convert(cleanName.bounds, to: clean).minX, 2,
@@ -312,15 +342,16 @@ final class UEFIChecksumFlowTests: XCTestCase {
         var image = UEFITestImage.make()
         image[0x59] = 0
         _ = try open(image)
+        try openTheVolume()
         let outline = try outline()
-        let before = try XCTUnwrap(try nameCell(of: 0).imageView?.frame.height)
+        let before = try XCTUnwrap(try nameCell(of: 1).imageView?.frame.height)
 
         AppearanceSettings.set(fontFamily: AppearanceSettings.fontFamily,
                                rowHeightScale: AppearanceSettings.rowHeightScale,
                                fontSize: 20)
         window?.layoutIfNeeded()
 
-        let after = try XCTUnwrap(try nameCell(of: 0).imageView?.frame.height)
+        let after = try XCTUnwrap(try nameCell(of: 1).imageView?.frame.height)
         XCTAssertGreaterThan(after, before, "the triangle grew with the text beside it")
         XCTAssertLessThanOrEqual(after, outline.rowHeight, "and still fits its row")
     }
@@ -344,14 +375,15 @@ final class UEFIChecksumFlowTests: XCTestCase {
         var image = UEFITestImage.make()
         image[0x59] = 0 // the file's body checksum field breaks (§5.4)
         _ = try open(image)
+        try openTheVolume()
         let (fileID, _) = try nodeFlagged(with: .fileBody)
         let outline = try outline()
         let win = try XCTUnwrap(window)
 
-        // A right-click on the flagged row — the top row — through the same
-        // `menu(for:)` override AppKit calls, at a point the outline maps back
-        // to that row.
-        let rect = outline.rect(ofRow: 0)
+        // A right-click on the flagged row — the file, under the volume that
+        // holds it — through the same `menu(for:)` override AppKit calls, at a
+        // point the outline maps back to that row.
+        let rect = outline.rect(ofRow: 1)
         let point = outline.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil)
         let event = NSEvent.mouseEvent(
             with: .rightMouseDown, location: point, modifierFlags: [],

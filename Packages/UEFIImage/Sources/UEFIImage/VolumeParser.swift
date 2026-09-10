@@ -46,9 +46,18 @@ extension Parser {
     /// defect in the image — and an image with a hundred of them would
     /// otherwise arrive with a hundred complaints.
     func readVolumeHeader(at offset: UInt64) -> VolumeHeader? {
+        // The signature first, and on its own. This is asked at every
+        // unclaimed byte of an NVRAM walk (§9) — twelve recognisers a byte,
+        // and this is the last of them — so the seven reads below it must not
+        // be paid by the bytes that are not a volume at all. Measured on a
+        // 16 MiB image with a 258 KiB run of written-over padding in its NVRAM
+        // volume: 409 ms of the walk's 473 was this function reading a GUID, a
+        // length and five more fields before looking at the four bytes that
+        // decide.
+        guard reader.uint32(at: offset + FV.signatureOffset) == FV.signature else { return nil }
+
         guard let fileSystem = reader.guid(at: offset + 0x10),
               let fvLength = reader.uint64(at: offset + 0x20),
-              let signature = reader.uint32(at: offset + FV.signatureOffset),
               let attributes = reader.uint32(at: offset + 0x2C),
               let headerLength = reader.uint16(at: offset + 0x30),
               let checksum = reader.uint16(at: offset + 0x32),
@@ -56,8 +65,7 @@ extension Parser {
               let revision = reader.uint8(at: offset + 0x37)
         else { return nil }
 
-        guard signature == FV.signature,
-              revision == 1 || revision == 2,
+        guard revision == 1 || revision == 2,
               fvLength >= FV.headerSize + 2 * FV.blockMapEntrySize,
               fvLength < UInt64(UInt32.max),
               UInt64(headerLength) >= FV.headerSize,
@@ -131,8 +139,12 @@ extension Parser {
 
         let bodyStart = min(offset + header.headerSize, offset + size)
         let body = bodyStart..<(offset + size)
-        let children = volumeChildren(header, body: body, depth: depth)
 
+        // The file walk of the body is the other expensive half of this parser
+        // — a few hundred files, each read back for its own sections — and is
+        // always left for `TreeMaterialization` to run when something asks for
+        // this volume's children. The header, which is what says the volume is
+        // a volume at all, has already been read and checked above.
         return UEFINode(
             kind: .volume,
             subtype: header.revision,
@@ -141,7 +153,8 @@ extension Parser {
             header: offset..<bodyStart,
             body: body,
             isFixed: false,
-            children: children
+            isExpandable: !body.isEmpty,
+            childDepth: depth
         )
     }
 
@@ -164,7 +177,10 @@ extension Parser {
         )
     }
 
-    private func volumeChildren(
+    /// Not `private`: `TreeMaterialization` calls this directly to derive a
+    /// volume's children when something expands it, scoped to just that one
+    /// node rather than restarting the parse from the image root.
+    func volumeChildren(
         _ header: VolumeHeader,
         body: Range<UInt64>,
         depth: Int

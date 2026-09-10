@@ -382,6 +382,34 @@ enum MFSParser {
     }
 }
 
+/// Default-output **File System State** (row 17): the `mfs_state` value of
+/// upstream `get_mfs_anl` (MEA.py 7480–7493). Once an MFS volume is decoded,
+/// the *semantic* low-level file indices it carries decide the state — any of
+/// the reserved/indexed set {0–5, 8} → Initialized (the volume was initialised),
+/// else any of {7, 9} (OEM Configuration / Home Directory) → Configured, else
+/// the upstream default Unconfigured (init 11075). `.error` is never derived
+/// here — upstream raises it only when `mfs_anl` throws, which the engine's
+/// decoders do not.
+///
+/// Deliberately scoped to the *legacy* membership rule: an FTBL-mode volume
+/// (CSME 15/16) names its files through the FileTable.dat tables (a later
+/// increment), so its raw FAT indices do not map to upstream's semantic set and
+/// the row stays Unconfigured even when the volume carries files. The CSME
+/// EFS/OEM-config/CDMD upgrade rules of MEA.py 13050–13051 are likewise out of
+/// this row's scope. Both decisions are recorded in the increment plan.
+enum MFSStateDecoder {
+    static func state(usesFTBL: Bool, presentFileIndices: [Int]) -> MFSState {
+        guard !usesFTBL else { return .unconfigured }
+        if presentFileIndices.contains(where: { [0, 1, 2, 3, 4, 5, 8].contains($0) }) {
+            return .initialized
+        }
+        if presentFileIndices.contains(where: { [7, 9].contains($0) }) {
+            return .configured
+        }
+        return .unconfigured
+    }
+}
+
 /// Legacy (non-FTBL) MFS reserved-file Integrity and file-8 Home Directory
 /// decode (upstream 7887–8301), driven by the identity layout selectors
 /// `get_sec_hdr_size` (MEA.py 7449) / `get_vfs_start_0` (MEA.py 7467). These

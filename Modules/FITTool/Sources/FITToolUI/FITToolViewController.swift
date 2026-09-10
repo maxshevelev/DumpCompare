@@ -190,13 +190,13 @@ import ToolModuleKit
         // the notice is one short sentence, and there is no bar when it is not.
         noticeLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        // The parse's bar, not in the row yet — a session puts it there with
+        // The reading's bar, not in the row yet — a session puts it there with
         // `showBusy()` and takes it away with `endBusy()`, so the notice owns
-        // the whole row the rest of the time.
+        // the whole row the rest of the time. Indeterminate: what the panel
+        // waits for is the tree opening the branches its rows point into, and
+        // that is a handful of chains rather than a fraction of the image.
         progressBar.style = .bar
-        progressBar.isIndeterminate = false
-        progressBar.minValue = 0
-        progressBar.maxValue = 1
+        progressBar.isIndeterminate = true
         progressBar.controlSize = .small
         progressBar.translatesAutoresizingMaskIntoConstraints = false
 
@@ -311,23 +311,18 @@ import ToolModuleKit
     func showBusy() {
         busy = true
         updateButtons()
-        progressBar.doubleValue = 0
         guard progressBar.superview == nil else { return }
         bottomRow.addArrangedSubview(progressBar)
+        progressBar.startAnimation(nil)
     }
 
-    /// How far the parse has got, a fraction in 0…1. Reported from a detached
-    /// task; the session hops it here.
-    func updateProgress(_ fraction: Double) {
-        progressBar.doubleValue = fraction
-    }
-
-    /// The parse is done: the bar leaves the row and the buttons come back as
+    /// The reading is done: the bar leaves the row and the buttons come back as
     /// the last reading said they should.
     func endBusy() {
         busy = false
         updateButtons()
         guard progressBar.superview != nil else { return }
+        progressBar.stopAnimation(nil)
         bottomRow.removeArrangedSubview(progressBar)
         progressBar.removeFromSuperview()
     }

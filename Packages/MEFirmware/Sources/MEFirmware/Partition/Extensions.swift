@@ -205,6 +205,35 @@ enum CPDExtensionParser {
         return out
     }
 
+    // MARK: - Chain fact hoist (default-output rows 9/10)
+
+    /// Last-seen hoisted facts of an extension chain, read like upstream's
+    /// main-flow walk (rows 9/10 of the default-output map): the ARB SVN and VCN
+    /// of the last `CSE_Ext_0F` (`SignedPackageExtension.arbSvn`/`.vcn`) and the
+    /// VCN of the last `CSE_Ext_03` (`PartitionInfoExtension.vcn` — 0x03 only;
+    /// the 0x16 variant carries no VCN).
+    struct Hoist: Equatable {
+        var arbSvn: Int?
+        var vcn03: Int?
+        var vcn0F: Int?
+    }
+
+    /// Walk `extensions` keeping the last 0x0F/0x03 of each — the same
+    /// last-wins iteration `skuText` uses for its 0x0C/0x0F payloads.
+    static func hoist(_ extensions: [CPDExtension]) -> Hoist {
+        var out = Hoist()
+        for ext in extensions {
+            if let sp = ext.signedPackage {
+                out.arbSvn = sp.arbSvn
+                out.vcn0F = sp.vcn
+            }
+            if let pi = ext.partitionInfo, ext.tag == 0x03, let v = pi.vcn {
+                out.vcn03 = v
+            }
+        }
+        return out
+    }
+
     // MARK: - Header revision tag
 
     /// Header revision suffix ("" = original R1 struct) per upstream's

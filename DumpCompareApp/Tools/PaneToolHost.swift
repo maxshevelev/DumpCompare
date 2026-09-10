@@ -1,6 +1,8 @@
 import Cocoa
 import DumpCompareCore
 import ToolModuleKit
+import UEFIImage
+import MEFirmware
 
 /// One open pane, as the tool-module bound to it is allowed to see it — the
 /// app's side of `ToolHost` (`Design/TOOL_MODULES_PLAN.md`).
@@ -109,6 +111,45 @@ import ToolModuleKit
     func exportFile(_ bytes: [UInt8], suggestedName: String) async -> Bool {
         guard let owner else { return false }
         return owner.exportFileForTool(bytes, suggestedName: suggestedName)
+    }
+}
+
+/// The seam a UEFI-aware tool-module (`UEFITool`, `MEATool`) reaches through
+/// to get at the pane's one shared, lazily-built tree — built on first use
+/// and, from then on, reused across every activation of every tool-module
+/// that asks for it, not rebuilt per session the way `PaneToolHost` itself
+/// is.
+extension PaneToolHost: UEFITreeProviding {
+    func uefiTree() -> LazyUEFITree? {
+        guard let storage = pane?.document?.storage else { return nil }
+        return pane?.uefiState.tree(makeSource: { LiveDocumentByteSource(storage: storage) })
+    }
+}
+
+/// Wraps the document's own editable storage — a thread-safe reference type
+/// — as a `UEFIImage.ByteSource`, so the shared tree reads whatever is
+/// currently in the file rather than a point-in-time snapshot. This is what
+/// lets `LazyUEFITree.invalidate` be told only which memoized subtrees to
+/// forget, never handed fresher bytes of its own.
+private struct LiveDocumentByteSource: ByteSource {
+    let storage: any DumpCompareCore.ByteStorage
+    var byteCount: UInt64 { storage.size }
+    func bytes(in range: Range<UInt64>) -> [UInt8] {
+        (try? storage.read(at: range.lowerBound, length: Int(range.count)))
+            ?? [UInt8](repeating: 0, count: Int(range.count))
+    }
+}
+
+/// `MEATool`'s own whole-region analysis cache, reached the same way as
+/// `UEFITreeProviding` — through the pane's persistent `PaneUEFIState`
+/// rather than this (per-session) host.
+extension PaneToolHost: MEAAnalysisProviding {
+    func cachedMEAnalysis() -> FirmwareAnalysis? {
+        pane?.uefiState.cachedMEAnalysis()
+    }
+
+    func setCachedMEAnalysis(_ analysis: FirmwareAnalysis?, meRegion: Range<UInt64>?) {
+        pane?.uefiState.setCachedMEAnalysis(analysis, meRegion: meRegion)
     }
 }
 

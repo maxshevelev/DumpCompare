@@ -41,12 +41,39 @@ public struct FirmwareAnalysis: Codable, Sendable, Equatable, Identifiable {
                                               // or a main "MFS" region in backup state)
     public var cseLayoutTable: CSELayoutTable? = nil  // IFWI 1.6/1.7 CSE Layout Table inventory
     public var bootPartitions: [BPDT]? = nil          // BPDT of each non-empty CSE-LT Boot partition
+    /// The row-19 (Flash Image Tool) FIT of a *non-IFWI* image, read from the
+    /// `$FPT` header (`FitMajor..FitBuild` u16 @ +0x18..+0x1E, MEA.py 206–209).
+    /// Present only on an image the classifier resolved to Extracted *by that
+    /// real FIT* — the one non-IFWI branch that sets `fitc_ver_found` (MEA.py
+    /// 12581–12586). nil on an IFWI image, whose row 19 then comes from each
+    /// boot BPDT's own `fit*` (`bootPartitions`), and on the Stock / Update /
+    /// SPS / ME 2–7 images and the marker-FIT Extracted legs (dirty FOVD, CSTXE
+    /// placeholder, CSME-13 vectors) that never carry a row-19 FIT.
+    public var fptHeaderFIT: FITVersion? = nil
     public var mmeDirectory: MMEModuleDirectory? = nil  // pre-CSE R0 $MME inventory (ME 2–10)
     public var gscInfo: GSCInfo? = nil                  // GSC "INFO" $FPT partition decode (GSC_Info_FWI/IUP)
     public var oromImages: [GSCOROMImage]? = nil        // GSC OROM/PCIR images decoded by orom_pat (row 30/80)
     public var rbePmMetadata: [RBE_PMMetadata]? = nil  // FTPR `pm` / RBEP `rbe` module "Metadata" table (rows 54/55)
     public var efsVolume: EFSVolume? = nil            // EFS paged-volume structural facts (FPT "EFS" region)
     public var oemConfiguration: OEMConfiguration? = nil  // FITC "OEM Configuration" facts (FPT "FITC" region)
+    /// ARB Security Version Number (row 9): hoisted from the operational chain's
+    /// CSE_Ext_0F `SignedPackageExtension.arbSvn` (last such tag seen), nil when
+    /// the chain carries none.
+    public var arbSvn: Int? = nil
+    /// Version Control Number (row 10): CSE_Ext_03 `vcn` preferred, CSE_Ext_0F
+    /// fallback, then a pre-CSE R0 manifest's +0x34 (which already surfaces as
+    /// `ManifestSummary.vcn`).
+    public var vcn: Int? = nil
+    /// File System State (row 17, upstream `mfs_state`): Initialized / Configured
+    /// when a legacy-MFS file-index set says so, else Unconfigured. nil when no
+    /// MFS region was found at all.
+    public var mfsState: MFSState? = nil
+    /// OEM Configuration (row 14, upstream `oem_signed or oemp_found or
+    /// utok_found`): an OEM-signed image carries a real `oem.key` CPD module or a
+    /// populated `OEMP`/`UTOK`/`STKN` partition, so the row says Yes; a stock
+    /// Intel image is No. nil = the OEM story could not be determined (no
+    /// readable key body to clear or to rule out).
+    public var oemCustomized: Bool? = nil
     public var issues: [Issue]
 }
 
@@ -65,16 +92,50 @@ public struct Version: Codable, Sendable, Equatable {
     public var build: Int
     public var meMajor: Int?   // MEU fields, when present
     public var meMinor: Int?
+    public var meHotfix: Int?
+    public var meBuild: Int?
 
     public var text: String { "\(major).\(minor).\(hotfix).\(build)" }
+}
+
+/// The four-part Flash Image Tool (FIT) version of a firmware header (row 19,
+/// upstream `fitc_major..fitc_build`) — the version of the FIT the image was
+/// built with, read from the header's `FitMajor`/`FitMinor`/`FitHotfix`/
+/// `FitBuild` u16 words.
+public struct FITVersion: Codable, Sendable, Equatable {
+    public var major: Int
+    public var minor: Int
+    public var hotfix: Int
+    public var build: Int
+
+    public init(major: Int, minor: Int, hotfix: Int, build: Int) {
+        self.major = major
+        self.minor = minor
+        self.hotfix = hotfix
+        self.build = build
+    }
 }
 
 public enum ReleaseType: String, Codable, Sendable {
     case production, preProduction, romBypass, unknown
 }
 
+/// The kind of firmware image (upstream `fw_type`, MEA.py 12538–12588): an
+/// OEM/stock `extracted` IFWI with a real $FPT, a stock image with no FIT
+/// (`stock`), an update image whose whole firmware is the FTPR/FTUP/NFTP update
+/// trio (`update`), or — on an unidentified region — the raw-partition `region`
+/// placeholder. `.unknown` is the honest answer when nothing decided.
 public enum FirmwareType: String, Codable, Sendable {
-    case region, extracted, update, unknown
+    case region, extracted, update, stock, unknown
+}
+
+/// File System State (upstream `mfs_state`, `MEA.py` 7489–7493): `.initialized`
+/// once a reserved/indexed file set appears (any of indices 0–5/8), `.configured`
+/// when the configuration/home files (7/9) do, `.unconfigured` as the default.
+/// `.error` is reserved for a decode upstream would treat as failed — never
+/// produced by the current decoders, kept for enum completeness.
+public enum MFSState: String, Codable, Sendable {
+    case unconfigured, initialized, configured, error
 }
 
 /// One Flash Partition Table row (upstream `FPT_Entry`, `MEA.py` ~0x20 layout).
@@ -117,12 +178,16 @@ public struct ManifestSummary: Codable, Sendable, Equatable {
     /// Version Control Number (`VCN` u32 @ +0x34) of a pre-CSE R0 manifest
     /// (ME 7–10, TXE); nil for R1/R2, whose +0x34 is inside the MEU block.
     public var vcn: Int?
+    /// Production Ready (row 11, upstream `pvbit`): manifest Flags bit 0 for an
+    /// R1/R2 operational manifest; nil for pre-CSE R0, where upstream reads it
+    /// from a different probe (no oracle here).
+    public var productionReady: Bool?
 
     public init(offset: Int, tag: String, format: ManifestFormat,
                 major: Int, minor: Int, hotfix: Int, build: Int, svn: Int,
                 day: Int, month: Int, year: Int,
                 keyHash: String?, signatureHash: String?,
-                vcn: Int? = nil) {
+                vcn: Int? = nil, productionReady: Bool? = nil) {
         self.offset = offset
         self.tag = tag
         self.format = format
@@ -137,6 +202,7 @@ public struct ManifestSummary: Codable, Sendable, Equatable {
         self.keyHash = keyHash
         self.signatureHash = signatureHash
         self.vcn = vcn
+        self.productionReady = productionReady
     }
 }
 
@@ -1376,15 +1442,28 @@ public struct BPDT: Codable, Sendable, Equatable {
     public var version: Int                // 1 (IFWI 1.6 & 2.0) or 2 (IFWI 1.7)
     public var redundancy: Bool            // 1.7 BPDTConfig bit 0; false for version 1
     public var checksumValid: Bool?        // 1.7 CRC-32 over header+entries; nil for version 1
+    /// The FIT (Flash Image Tool) version fields of the BPDT header (u16 @ base
+    /// +0x10/+0x12/+0x14/+0x16, upstream `FitMajor..FitBuild`, MEA.py 680/720).
+    /// All four are nil together when the header's `FitMajor` is the no-FIT
+    /// marker (0 or 0xFFFF) — the same single-field gate upstream's 'N/A' uses.
+    public var fitMajor: Int?
+    public var fitMinor: Int?
+    public var fitHotfix: Int?
+    public var fitBuild: Int?
     public var entries: [BPDTPartition]
 
     public init(offset: Int, partitionName: String, version: Int, redundancy: Bool,
-                checksumValid: Bool?, entries: [BPDTPartition]) {
+                checksumValid: Bool?, fitMajor: Int?, fitMinor: Int?,
+                fitHotfix: Int?, fitBuild: Int?, entries: [BPDTPartition]) {
         self.offset = offset
         self.partitionName = partitionName
         self.version = version
         self.redundancy = redundancy
         self.checksumValid = checksumValid
+        self.fitMajor = fitMajor
+        self.fitMinor = fitMinor
+        self.fitHotfix = fitHotfix
+        self.fitBuild = fitBuild
         self.entries = entries
     }
 }
@@ -1710,5 +1789,5 @@ public struct Issue: Codable, Sendable, Equatable, Identifiable {
 /// whether to surface the new data (`reference/result-model.md` §Versioning).
 public enum EngineModelRevision {
     /// Current revision of the `FirmwareAnalysis` shape.
-    public static let current = 21
+    public static let current = 24
 }

@@ -46,16 +46,18 @@ public enum UEFITreeDisplay {
     /// The tree as it is shown: the outline's top level, and the node the
     /// summary stands for when the tree's root has been taken out of the tree.
     ///
-    /// The parser hands over a single-rooted tree — that root is either a real
-    /// node of the file (a lone volume) or an image node the parser grouped the
-    /// file under. Whichever it is, it does no work as a row: its one job is to
-    /// say what the whole image is, so it is moved up into the panel title and
-    /// its children become the top of the outline. The predicate is purely
-    /// structural — one root with children of its own — so it never has to know
-    /// whether the root is a volume, a capsule or an invented image: the title
-    /// always names the root, and the tree always opens with what is inside it.
-    /// The image that is a single node with nothing inside — a file of padding
-    /// — keeps that node as its one row.
+    /// The parser hands over a single-rooted tree — that root is either a
+    /// wrapper (an Intel image, the "UEFI image" the parser groups several
+    /// tops under, a capsule's envelope) or a real node the file already had,
+    /// a lone volume off a chip. A wrapper does no work as a row: its one job
+    /// is to say what the whole image is, so it moves up into the panel title
+    /// and its children become the top of the outline.
+    ///
+    /// A real root stays a row. It is a container the tree opens on demand,
+    /// and folding it would mean deciding again — differently — the moment
+    /// somebody opened it: the row a reader had just clicked would vanish and
+    /// its children would jump a level. A row that stays where it is is worth
+    /// more than a title that names it.
     public struct PresentedImage {
         /// The hidden root the summary leads with, or nil when nothing was
         /// folded away.
@@ -72,13 +74,24 @@ public enum UEFITreeDisplay {
 
     public static func present(_ image: UEFIImage) -> PresentedImage {
         guard image.roots.count == 1, let root = image.roots.first,
-              !root.children.isEmpty
+              isWrapper(root), !root.children.isEmpty
         else { return PresentedImage(title: nil, rows: image.roots) }
         return PresentedImage(title: root, rows: root.children)
     }
 
-    /// What the tree is, in one line: what the image is, and how much of it the
-    /// tree accounts for.
+    /// Whether this root is an envelope around the image rather than a part of
+    /// it. These three are the only kinds the parser ever puts at the top with
+    /// something else inside them, and none is a container the tree opens
+    /// lazily — so whether one folds is decided once, at the first paint, and
+    /// never changes under the reader.
+    private static func isWrapper(_ node: UEFINode) -> Bool {
+        switch node.kind {
+        case .intelImage, .uefiImage, .capsule: return true
+        default: return false
+        }
+    }
+
+    /// What the tree is, in one line: what the image is.
     ///
     /// The title leads with what the hidden root *is*. An invented image root —
     /// "UEFI image", "Intel image" — reads by the name the parser gave it, the
@@ -87,20 +100,16 @@ public enum UEFITreeDisplay {
     /// have shown. Either way it is the same decision the outline shows, so the
     /// title and the tree agree. Without a root to fold — an empty image, one
     /// with several roots — it leads with the first root's image type.
+    ///
+    /// It counts nothing. The tree the panel reads is materialized branch by
+    /// branch as the user opens it, so a node count would be the count of what
+    /// happens to have been opened — a number that starts at four on a 16 MiB
+    /// dump and climbs as the reader clicks. What the line has to say is what
+    /// the image is, which is known from the top level alone.
     public static func summary(of image: UEFIImage?) -> String {
         guard let image else { return "" }
-        let nodes = image.allNodes
-        let count = nodes.count
-        guard count > 0 else { return "Nothing here looks like a firmware image." }
-        let volumes = nodes.filter { $0.kind == .volume }.count
-        let files = nodes.filter { $0.kind == .file }.count
-        var parts: [String] = []
-        let lead = titleLead(of: image)
-        if !lead.isEmpty { parts.append(lead) }
-        parts.append("\(count) " + (count == 1 ? "node" : "nodes"))
-        if volumes > 0 { parts.append("\(volumes) volume" + (volumes == 1 ? "" : "s")) }
-        if files > 0 { parts.append("\(files) file" + (files == 1 ? "" : "s")) }
-        return parts.joined(separator: " · ")
+        guard !image.roots.isEmpty else { return "Nothing here looks like a firmware image." }
+        return titleLead(of: image)
     }
 
     /// The word the title leads with: the hidden root, named the way it reads

@@ -390,8 +390,16 @@ public enum FITPresenter {
             return parts.joined(separator: " · ")
         case .emptyMicrocodeSlot:
             parts = ["empty slot"]
-        case .bytes(_, let description):
-            parts = [description ?? "unrecognised bytes"]
+        case .bytes(let offset, let description):
+            // The address leads, and the name of what is there follows it in
+            // brackets — because the name arrives second. The tree names an
+            // offset only once the branch covering it has been opened, and
+            // that happens behind the table rather than in front of it: the
+            // row goes up as "0x2848" and becomes "0x2848 (MyDriver)" when the
+            // branch has been read. Leading with the name instead would move
+            // the address sideways under the reader's eye.
+            guard let description else { return hex(offset) }
+            return "\(hex(offset)) (\(description))"
         }
         if let offset = row.target.offset {
             parts.append(hex(offset))

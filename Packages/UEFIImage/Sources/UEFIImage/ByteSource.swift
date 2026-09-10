@@ -16,6 +16,33 @@ public protocol ByteSource: Sendable {
     /// conform without colliding with the `Int` count they already have.
     var byteCount: UInt64 { get }
     func bytes(in range: Range<UInt64>) -> [UInt8]
+
+    /// `count` bytes at `offset`, little-endian, as one number — `count` is
+    /// 1 to 8 and the range is the caller's to have checked, exactly as for
+    /// `bytes(in:)`.
+    ///
+    /// Every field this parser reads is one of these, and there are millions
+    /// of them in a walk that steps byte by byte, so a source that can answer
+    /// without building an array says so here. The default does build one, so
+    /// conforming to this protocol still costs one method.
+    func word(at offset: UInt64, count: Int) -> UInt64
+}
+
+extension ByteSource {
+    public func word(at offset: UInt64, count: Int) -> UInt64 {
+        ByteSourceWord.assemble(bytes(in: offset..<(offset + UInt64(count))))
+    }
+}
+
+/// The little-endian assembly every `word(at:count:)` ends in, in one place.
+public enum ByteSourceWord {
+    public static func assemble(_ bytes: [UInt8]) -> UInt64 {
+        var value: UInt64 = 0
+        for index in (0..<bytes.count).reversed() {
+            value = value << 8 | UInt64(bytes[index])
+        }
+        return value
+    }
 }
 
 extension Data: ByteSource {
@@ -26,6 +53,14 @@ extension Data: ByteSource {
         let end = index(startIndex, offsetBy: Int(range.upperBound))
         return [UInt8](self[start..<end])
     }
+
+    public func word(at offset: UInt64, count: Int) -> UInt64 {
+        var value: UInt64 = 0
+        for step in (0..<count).reversed() {
+            value = value << 8 | UInt64(self[index(startIndex, offsetBy: Int(offset) + step)])
+        }
+        return value
+    }
 }
 
 extension Array: ByteSource where Element == UInt8 {
@@ -33,6 +68,14 @@ extension Array: ByteSource where Element == UInt8 {
 
     public func bytes(in range: Range<UInt64>) -> [UInt8] {
         Array(self[Int(range.lowerBound)..<Int(range.upperBound)])
+    }
+
+    public func word(at offset: UInt64, count: Int) -> UInt64 {
+        var value: UInt64 = 0
+        for step in (0..<count).reversed() {
+            value = value << 8 | UInt64(self[Int(offset) + step])
+        }
+        return value
     }
 }
 
@@ -83,33 +126,35 @@ public struct ImageReader: Sendable {
         return bytes(range)
     }
 
+    /// The fields, all through `ByteSource.word(at:count:)`: bounds-checked
+    /// here, assembled by whoever can do it cheapest. A source with the bytes
+    /// already in hand answers without building an array, which is what keeps
+    /// a walk that reads a dword at every byte from allocating millions of
+    /// them.
     public func uint8(at offset: UInt64) -> UInt8? {
-        bytes(at: offset, count: 1)?.first
+        guard range(at: offset, count: 1) != nil else { return nil }
+        return UInt8(truncatingIfNeeded: source.word(at: offset, count: 1))
     }
 
     public func uint16(at offset: UInt64) -> UInt16? {
-        guard let bytes = bytes(at: offset, count: 2) else { return nil }
-        return UInt16(bytes[0]) | UInt16(bytes[1]) << 8
+        guard range(at: offset, count: 2) != nil else { return nil }
+        return UInt16(truncatingIfNeeded: source.word(at: offset, count: 2))
     }
 
     /// The three-byte size field FFS files and sections use (§0).
     public func uint24(at offset: UInt64) -> UInt32? {
-        guard let bytes = bytes(at: offset, count: 3) else { return nil }
-        return UInt32(bytes[0]) | UInt32(bytes[1]) << 8 | UInt32(bytes[2]) << 16
+        guard range(at: offset, count: 3) != nil else { return nil }
+        return UInt32(truncatingIfNeeded: source.word(at: offset, count: 3))
     }
 
     public func uint32(at offset: UInt64) -> UInt32? {
-        guard let bytes = bytes(at: offset, count: 4) else { return nil }
-        var value: UInt32 = 0
-        for index in (0..<4).reversed() { value = value << 8 | UInt32(bytes[index]) }
-        return value
+        guard range(at: offset, count: 4) != nil else { return nil }
+        return UInt32(truncatingIfNeeded: source.word(at: offset, count: 4))
     }
 
     public func uint64(at offset: UInt64) -> UInt64? {
-        guard let bytes = bytes(at: offset, count: 8) else { return nil }
-        var value: UInt64 = 0
-        for index in (0..<8).reversed() { value = value << 8 | UInt64(bytes[index]) }
-        return value
+        guard range(at: offset, count: 8) != nil else { return nil }
+        return source.word(at: offset, count: 8)
     }
 
     public func guid(at offset: UInt64) -> EFIGUID? {

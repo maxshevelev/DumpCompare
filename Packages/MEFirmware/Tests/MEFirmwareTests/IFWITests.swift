@@ -187,6 +187,7 @@ final class IFWITests: XCTestCase {
         d[0x07] = 0x01                          // BPDTConfig: bit0 redundancy
         le(0, &d, at: 0x0C)                     // IFWIVersion
         le(15, &d, at: 0x10)                    // FitMajor
+        le(0, &d, at: 0x12)                     // FitMinor
         le(0x1E, &d, at: 0x14)                  // FitHotfix
         le(0x06B4, &d, at: 0x16)                // FitBuild
         // Entries at 0x18, stride 0xC: le() writes the 4-byte type+flags word.
@@ -213,6 +214,10 @@ final class IFWITests: XCTestCase {
         d.replaceSubrange(0..<4, with: Data([0xAA, 0x55, 0x00, 0x00]))
         d[0x04] = 0x02; d[0x05] = 0x00          // DescCount = 2
         d[0x06] = 0x01; d[0x07] = 0x00          // BPDT version 1 (u16 low byte)
+        le(12, &d, at: 0x10)                    // FitMajor
+        le(0, &d, at: 0x12)                     // FitMinor
+        le(3, &d, at: 0x14)                     // FitHotfix
+        le(1091, &d, at: 0x16)                  // FitBuild
         le(2, &d, at: 0x18); le(0x1000, &d, at: 0x1C); le(0x100, &d, at: 0x20)   // FTPR
         le(1, &d, at: 0x24); le(0, &d, at: 0x28); le(0, &d, at: 0x2C)             // RBEP empty
         d.replaceSubrange(0x1000..<0x1008, with: Data(repeating: 0x00, count: 8))
@@ -232,6 +237,11 @@ final class IFWITests: XCTestCase {
         XCTAssertEqual(info.version, 2)                 // IFWI 1.7
         XCTAssertEqual(info.redundancy, true)           // BPDTConfig bit 0
         XCTAssertEqual(info.checksumValid, true)        // real CRC-32 over the table
+        // The header's FIT words (15.0.30.1716) survive the decode.
+        XCTAssertEqual(info.fitMajor, 15)
+        XCTAssertEqual(info.fitMinor, 0)
+        XCTAssertEqual(info.fitHotfix, 0x1E)
+        XCTAssertEqual(info.fitBuild, 0x06B4)
         XCTAssertEqual(info.slots.map(\.name), ["RBEP", "ISIF", "PCHC"])
         XCTAssertEqual(info.slots[0].type, 1)
         XCTAssertEqual(info.slots[0].offset, 0x1000)    // base + raw offset
@@ -252,10 +262,28 @@ final class IFWITests: XCTestCase {
         XCTAssertEqual(info.version, 1)                 // IFWI 1.6 & 2.0
         XCTAssertEqual(info.redundancy, false)          // no config byte on v1
         XCTAssertNil(info.checksumValid)                // v1 stores an XOR value
+        // The header's FIT words (12.0.3.1091, the DATMAAMBAC0 oracle) survive.
+        XCTAssertEqual(info.fitMajor, 12)
+        XCTAssertEqual(info.fitMinor, 0)
+        XCTAssertEqual(info.fitHotfix, 3)
+        XCTAssertEqual(info.fitBuild, 1091)
         XCTAssertEqual(info.slots.map(\.name), ["FTPR", "RBEP"])
         XCTAssertEqual(info.slots[0].offset, 0x1000)
         XCTAssertEqual(info.slots[0].empty, false)
         XCTAssertEqual(info.slots[1].empty, true)
+    }
+
+    /// A valid BPDT whose FIT words are erased back to 0xFF reads the no-FIT
+    /// marker — the whole quartet decodes to nil, never a bogus 65535.
+    func testNoFITWhenHeaderFITErased() {
+        var d = bpdt16Buffer()
+        for i in 0x10..<0x18 { d[i] = 0xFF }            // erase the FIT words
+        let info = try! XCTUnwrap(IFWI.bpdtTable(in: d, at: 0, partitionName: "Boot 1"))
+        XCTAssertNil(info.fitMajor)
+        XCTAssertNil(info.fitMinor)
+        XCTAssertNil(info.fitHotfix)
+        XCTAssertNil(info.fitBuild)
+        XCTAssertEqual(info.version, 1)                 // the rest still decodes
     }
 
     func testNoBPDTOnErasedOrTruncated() {

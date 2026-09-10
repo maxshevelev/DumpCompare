@@ -171,6 +171,14 @@ final class PaneViewModel: HexViewDataSource {
     /// open, close, and revert.
     private(set) var segmentStore: SegmentStore
 
+    /// The pane's shared, lazily-built UEFI tree and MEA analysis cache — one
+    /// instance for as long as this pane holds its current file, reached by
+    /// every tool-module session through `PaneToolHost` rather than each
+    /// building (and re-building, on every activation) its own. Reset
+    /// wherever the pane's content is replaced wholesale, beside
+    /// `segmentStore`/`onFullInvalidation`.
+    let uefiState = PaneUEFIState()
+
     /// Fired when the pane's segment partition changes — the Segments form
     /// follows it this way (§21.4), the way the Go To form follows the window's
     /// bookmark store (§20.5). Set by the form while it is open; the pane's own
@@ -194,6 +202,17 @@ final class PaneViewModel: HexViewDataSource {
     /// (§8.3). Not fired for selection-only changes or undo/redo/revert (those
     /// use `onFullInvalidation`).
     var onEdit: ((DiffEdit) -> Void)?
+
+    /// Every byte-mutating edit's one choke point, regardless of which of
+    /// this file's many editing commands produced it. `uefiState` is
+    /// invalidated here rather than downstream in `ToolController` because
+    /// `ToolController` only hears about edits while some tool-module session
+    /// is bound to this pane — the shared tree and MEA cache have to stay
+    /// correct even while the tool panel is on None.
+    private func signalEdit(_ edit: DiffEdit) {
+        uefiState.invalidate(edit)
+        onEdit?(edit)
+    }
 
     /// Fired after an edit that the coordinator cannot represent as a
     /// `DiffEdit` (undo/redo/revert replace the storage wholesale) so it can
@@ -539,6 +558,8 @@ final class PaneViewModel: HexViewDataSource {
         resetSegments(for: doc)
         // The matches belonged to the file that was here (§11).
         clearMatches()
+        // The lazy tree and MEA cache belonged to the file that was here too.
+        uefiState.reset()
         startWatching(url)
         // Opening a new file replaces the storage wholesale, like a revert —
         // the comparison must re-read, even when the mode is unchanged (both
@@ -572,6 +593,7 @@ final class PaneViewModel: HexViewDataSource {
         // A new (empty) file is one piece, named after the (placeholder) file.
         resetSegments(for: doc)
         clearMatches()
+        uefiState.reset()
         changeWatcher?.stop()
         changeWatcher = nil
         // A new document replaces the storage wholesale, like a revert — the
@@ -647,6 +669,7 @@ final class PaneViewModel: HexViewDataSource {
         segmentStore.restore(source.segmentStore.snapshot())
         // The copy is a different document: it was never searched.
         clearMatches()
+        uefiState.reset()
         changeWatcher?.stop()
         changeWatcher = nil
         // A new document replaces the storage wholesale, like a revert — the
@@ -671,6 +694,7 @@ final class PaneViewModel: HexViewDataSource {
         segmentStore.reset(size: 0, name: "")
         // So does the search session: there is nothing left to highlight (§11).
         clearMatches()
+        uefiState.reset()
         segmentUndoStack.removeAll()
         segmentRedoStack.removeAll()
         pendingSegmentSnapshot = nil
@@ -726,6 +750,9 @@ final class PaneViewModel: HexViewDataSource {
         preserveSegments(for: doc)
         // The matches do not: a revert replaces the bytes they were found in.
         clearMatches()
+        // Nor does the lazy tree/MEA cache: a revert replaces the storage
+        // wholesale, exactly like an open.
+        uefiState.reset()
         notify()
         notifyCompanionContentFullyChanged()
     }
@@ -1207,7 +1234,7 @@ final class PaneViewModel: HexViewDataSource {
                 nibble = 1
                 pendingInsertOffset = offset
                 lastTypingTime = Self.clock()
-                onEdit?(.insert(at: offset, length: 1))
+                signalEdit(.insert(at: offset, length: 1))
                 applySegmentEdit(.insert(at: offset, length: 1))
                 notifyAfterEdit(range: offset..<offset + 1, sizeBefore: sizeBefore)
                 notifyCompanionContentFullyChanged()
@@ -1223,7 +1250,7 @@ final class PaneViewModel: HexViewDataSource {
                 endTypingGroup()
                 advanceAfterByte()
                 lastTypingTime = Self.clock()
-                onEdit?(.overwrite(range: offset..<offset + 1))
+                signalEdit(.overwrite(range: offset..<offset + 1))
                 applySegmentEdit(.overwrite(range: offset..<offset + 1))
                 notifyAfterEdit(range: offset..<offset + 1, sizeBefore: sizeBefore)
                 return
@@ -1241,7 +1268,7 @@ final class PaneViewModel: HexViewDataSource {
             try? doc.overwrite(range: offset..<offset + 1, with: [(UInt8(digit) << 4) | (old & 0x0F)])
             nibble = 1
             lastTypingTime = Self.clock()
-            onEdit?(.overwrite(range: offset..<offset + 1))
+            signalEdit(.overwrite(range: offset..<offset + 1))
             applySegmentEdit(.overwrite(range: offset..<offset + 1))
         } else {
             offset = typingOffset(doc)
@@ -1252,7 +1279,7 @@ final class PaneViewModel: HexViewDataSource {
             endTypingGroup()
             advanceAfterByte()
             lastTypingTime = Self.clock()
-            onEdit?(.overwrite(range: offset..<offset + 1))
+            signalEdit(.overwrite(range: offset..<offset + 1))
             applySegmentEdit(.overwrite(range: offset..<offset + 1))
         }
         notifyAfterEdit(range: offset..<offset + 1, sizeBefore: sizeBefore)
@@ -1278,7 +1305,7 @@ final class PaneViewModel: HexViewDataSource {
             nibble = 0
             advanceAfterByte()
             lastTypingTime = Self.clock()
-            onEdit?(.insert(at: offset, length: 1))
+            signalEdit(.insert(at: offset, length: 1))
             applySegmentEdit(.insert(at: offset, length: 1))
             notifyAfterEdit(range: offset..<offset + 1, sizeBefore: sizeBefore)
             notifyCompanionContentFullyChanged()
@@ -1292,7 +1319,7 @@ final class PaneViewModel: HexViewDataSource {
         nibble = 0
         advanceAfterByte()
         lastTypingTime = Self.clock()
-        onEdit?(.overwrite(range: offset..<offset + 1))
+        signalEdit(.overwrite(range: offset..<offset + 1))
         applySegmentEdit(.overwrite(range: offset..<offset + 1))
         notifyAfterEdit(range: offset..<offset + 1, sizeBefore: sizeBefore)
     }
@@ -1322,7 +1349,7 @@ final class PaneViewModel: HexViewDataSource {
         beginSegmentEdit()
         try? doc.fillZero(in: caret..<caret + 1, caretAfter: caret)
         nibble = 0
-        onEdit?(.overwrite(range: caret..<caret + 1))
+        signalEdit(.overwrite(range: caret..<caret + 1))
         applySegmentEdit(.overwrite(range: caret..<caret + 1))
         notifyAfterEdit(range: caret..<caret + 1, sizeBefore: sizeBefore)
     }
@@ -1365,7 +1392,7 @@ final class PaneViewModel: HexViewDataSource {
         try? doc.fillZero(in: (caret - 1)..<caret, caretAfter: caret - 1)
         doc.setSelection(SelectionModel.empty(at: caret - 1, fileSize: doc.size))
         nibble = 0
-        onEdit?(.overwrite(range: (caret - 1)..<caret))
+        signalEdit(.overwrite(range: (caret - 1)..<caret))
         applySegmentEdit(.overwrite(range: (caret - 1)..<caret))
         notifyAfterEdit(range: (caret - 1)..<caret, sizeBefore: sizeBefore)
     }
@@ -1400,7 +1427,7 @@ final class PaneViewModel: HexViewDataSource {
         nibble = 0
         overwriteSelection = nil
         pendingInsertOffset = nil
-        onEdit?(.delete(range: range))
+        signalEdit(.delete(range: range))
         applySegmentEdit(.delete(range: range))
         notifyAfterEdit(range: range, sizeBefore: sizeBefore)
         notifyCompanionContentFullyChanged()
@@ -1424,7 +1451,7 @@ final class PaneViewModel: HexViewDataSource {
         typingGroupOpen = false
         pendingInsertOffset = nil
         nibble = 0
-        onEdit?(.delete(range: offset..<offset + 1))
+        signalEdit(.delete(range: offset..<offset + 1))
         // Revert the high-nibble insert in the partition, then drop the captured
         // snapshot: the group was cancelled, so no transaction committed and the
         // snapshot must not leak into the next edit.
@@ -1453,7 +1480,7 @@ final class PaneViewModel: HexViewDataSource {
         doc.noteSelectionAfterEdit()
         nibble = 0
         overwriteSelection = nil
-        onEdit?(.delete(range: range))
+        signalEdit(.delete(range: range))
         applySegmentEdit(.delete(range: range))
         notify()
         notifyCompanionContentFullyChanged()
@@ -1475,7 +1502,7 @@ final class PaneViewModel: HexViewDataSource {
         resetEditingState()
         // The engine's `.overwrite` recomputes `[start, end)`, which covers the
         // paste even when it extends past EOF (the recompute reads current bytes).
-        onEdit?(.overwrite(range: range))
+        signalEdit(.overwrite(range: range))
         applySegmentEdit(.overwrite(range: range))
         // A paste that extends past EOF grows the file, so the layout (frame
         // height, caret row) must rebuild — `notifyAfterEdit` handles that.
@@ -1521,7 +1548,7 @@ final class PaneViewModel: HexViewDataSource {
         // is recomputed from the current bytes, so a gap inside the span costs
         // a rescan and nothing else.
         let touched = lower..<upper
-        onEdit?(.overwrite(range: touched))
+        signalEdit(.overwrite(range: touched))
         applySegmentEdit(.overwrite(range: touched))
         notifyAfterEdit(range: touched, sizeBefore: sizeBefore)
     }
@@ -1543,7 +1570,7 @@ final class PaneViewModel: HexViewDataSource {
         doc.setSelection(SelectionModel.empty(at: at + UInt64(bytes.count), fileSize: doc.size))
         doc.noteSelectionAfterEdit()
         resetEditingState()
-        onEdit?(.insert(at: at, length: UInt64(bytes.count)))
+        signalEdit(.insert(at: at, length: UInt64(bytes.count)))
         applySegmentEdit(.insert(at: at, length: UInt64(bytes.count)))
         notify()
         notifyCompanionContentFullyChanged()
@@ -1579,7 +1606,7 @@ final class PaneViewModel: HexViewDataSource {
         }
         // The engine's `.overwrite` recomputes the range, which covers the swap
         // (a same-length overwrite, so the size is unchanged).
-        onEdit?(.overwrite(range: piece.range))
+        signalEdit(.overwrite(range: piece.range))
         notifyAfterEdit(range: piece.range, sizeBefore: sizeBefore)
         notifyCompanionContentFullyChanged()
     }
@@ -1691,7 +1718,7 @@ final class PaneViewModel: HexViewDataSource {
         // comparison index shifts for the insert, and the companion's diff
         // background re-reads. It is a navigation command: the seam (the caret)
         // is centred if it landed outside the viewport (§10.4).
-        onEdit?(edit)
+        signalEdit(edit)
         notify(reveal: .center)
         notifyCompanionContentFullyChanged()
     }
@@ -1830,7 +1857,7 @@ final class PaneViewModel: HexViewDataSource {
             undoSegments(step: depthBefore - doc.undoHistory.undoDepth)
             // Undo mutates the storage in place, so the net DiffEdit updates the
             // comparison incrementally — no full-file re-scan (§8.3).
-            onEdit?(edit)
+            signalEdit(edit)
             notifyCompanionContentChanged(edit)
         }
         // Undoing the join's transaction re-attaches the document (§22.2); the
@@ -1856,7 +1883,7 @@ final class PaneViewModel: HexViewDataSource {
         let edit = try doc.redo()   // restores the caret to where the edit left it
         if let edit {
             redoSegments(step: doc.undoHistory.undoDepth - depthBefore)
-            onEdit?(edit)
+            signalEdit(edit)
             notifyCompanionContentChanged(edit)
         }
         // Redoing the join's transaction re-detaches the document (§22.2); the
@@ -2013,7 +2040,7 @@ final class PaneViewModel: HexViewDataSource {
         doc.setSelection(SelectionModel.empty(at: start, fileSize: doc.size))
         nibble = 0
         overwriteSelection = nil
-        onEdit?(.overwrite(range: start..<end))
+        signalEdit(.overwrite(range: start..<end))
         applySegmentEdit(.overwrite(range: start..<end))
         notifyAfterEdit(range: start..<end, sizeBefore: sizeBefore)
     }

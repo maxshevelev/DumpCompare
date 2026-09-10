@@ -30,6 +30,8 @@ struct Identifier {
         var build: Int
         var meMajor: Int?
         var meMinor: Int?
+        var meHotfix: Int?
+        var meBuild: Int?
         var securityVersion: String?
         var databaseName: String?
         var identified: Bool
@@ -82,6 +84,8 @@ struct Identifier {
             build: manifest.build,
             meMajor: manifest.meMajor,
             meMinor: manifest.meMinor,
+            meHotfix: manifest.meHotfix,
+            meBuild: manifest.meBuild,
             securityVersion: (manifest.svn != 0 && manifest.svn != 0xFFFF_FFFF)
                 ? "\(manifest.svn)" : nil,
             databaseName: sigHash.flatMap { database.firmwareRow(matchingSignatureHash: $0) },

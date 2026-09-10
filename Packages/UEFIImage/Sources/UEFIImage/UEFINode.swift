@@ -14,6 +14,14 @@ import Foundation
 /// is the whole shape of this format: almost every level is a header followed
 /// by a body that the next level parses. `tail` is used only by FFSv1 files
 /// with `FFS_ATTRIB_TAIL_PRESENT` and is empty everywhere else.
+/// `Hashable` is fully synthesized, `==` and `hash` together. It once hashed
+/// by `id` alone, because `NSOutlineView` was handed nodes as its items and a
+/// node hashed through its whole subtree made every item lookup a stall. That
+/// left a hash and an equality that disagreed about what "the same node" meant
+/// — same `id`, different `children` — and an outline believing those were two
+/// different items is exactly what closed a row again the moment its branch
+/// arrived. The panel now hands the outline a row object per path
+/// (`UEFITreeRow`), so a node is a plain value again and its two halves agree.
 public struct UEFINode: Identifiable, Hashable, Sendable {
     /// Where the node sits in the tree. Stamped by `UEFIImage` once the tree is
     /// built, so the parser never has to carry a counter around.
@@ -44,6 +52,20 @@ public struct UEFINode: Identifiable, Hashable, Sendable {
     public var isCompressed: Bool
     /// Nothing but the erase byte: free space, or padding that was never used.
     public var isErased: Bool
+    /// True when this container's children have not been computed yet but
+    /// *could be non-empty if they were* — a volume whose files nobody has
+    /// asked for, a raw-area region nobody has scanned. It is what draws the
+    /// disclosure triangle in an outline view, and it goes false the moment
+    /// the children are materialized, whether or not any turned up.
+    public var isExpandable: Bool = false
+    /// The parser's own recursion depth for this node's children, recorded
+    /// where the node was left closed so that expanding it later lands at the
+    /// same depth an all-at-once parse would have reached (§11's limit is
+    /// measured in parser recursions, and the tree's path depth is not the
+    /// same number — an Intel image's root and its regions cost a path level
+    /// each and no recursion at all). Meaningless on a node that is not
+    /// `isExpandable`.
+    public var childDepth: Int = 0
 
     public var children: [UEFINode]
 
@@ -59,6 +81,8 @@ public struct UEFINode: Identifiable, Hashable, Sendable {
         isFixed: Bool = false,
         isCompressed: Bool = false,
         isErased: Bool = false,
+        isExpandable: Bool = false,
+        childDepth: Int = 0,
         children: [UEFINode] = []
     ) {
         self.id = id
@@ -72,6 +96,8 @@ public struct UEFINode: Identifiable, Hashable, Sendable {
         self.isFixed = isFixed
         self.isCompressed = isCompressed
         self.isErased = isErased
+        self.isExpandable = isExpandable
+        self.childDepth = childDepth
         self.children = children
     }
 
@@ -104,26 +130,6 @@ public struct UEFINode: Identifiable, Hashable, Sendable {
         [self] + children.flatMap(\.flattened)
     }
 
-    /// Hashed by `id` alone, and deliberately not by anything else.
-    ///
-    /// `Hashable` is here for `NSOutlineView`, which is handed nodes as its
-    /// items. An item has to be an object, so each one is bridged into a fresh
-    /// box, and the outline's item map keys those boxes by `hash` and
-    /// `isEqual:`. A Swift value with no `Hashable` conformance gets an
-    /// identity hash from the bridge, so two boxes over the same node land in
-    /// different buckets and every lookup degrades into a linear scan —
-    /// invisible while expanding, which only inserts, and a stall while
-    /// collapsing, which has to find and drop every descendant. Measured on a
-    /// 400-child NVRAM store: 1.28 s to collapse without this, 0.00 s with it.
-    ///
-    /// `id` is the whole hash because it already identifies the node in the
-    /// tree, and because the synthesized alternative would walk `children` —
-    /// hashing a subtree on every lookup, which is the cost this is here to
-    /// avoid. Equal nodes agree on `id`, so this stays consistent with the
-    /// synthesized `==`.
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
-    }
 }
 
 /// What an element *is*. No associated values: the fields behind each kind stay

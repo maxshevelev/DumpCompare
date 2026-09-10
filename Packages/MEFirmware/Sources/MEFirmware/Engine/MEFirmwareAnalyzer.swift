@@ -74,6 +74,8 @@ public actor MEFirmwareAnalyzer {
                     version: info.version,
                     redundancy: info.redundancy,
                     checksumValid: info.checksumValid,
+                    fitMajor: info.fitMajor, fitMinor: info.fitMinor,
+                    fitHotfix: info.fitHotfix, fitBuild: info.fitBuild,
                     entries: info.slots.enumerated().map { index, slot in
                         BPDTPartition(id: index, name: slot.name, type: slot.type,
                                       offset: baseOffset + slot.offset,
@@ -382,7 +384,11 @@ public actor MEFirmwareAnalyzer {
                 svn: m.svn, day: m.day, month: m.month, year: m.year,
                 keyHash: m.rsaPublicKey.map { Digest.sha256Hex($0) },
                 signatureHash: m.rsaSignature.map { Digest.sha256Hex($0) },
-                vcn: m.vcn
+                vcn: m.vcn,
+                // Row 11 (Production Ready): R0 pre-CSE reads its own probe
+                // upstream (12652–12655, no oracle); only R1/R2 operational
+                // manifests surface Flags bit0 as the pvbit.
+                productionReady: m.format == .r0 ? nil : m.pvBit
             )
         }
 
@@ -691,15 +697,49 @@ public actor MEFirmwareAnalyzer {
                 year: manifest.year, month: manifest.month, day: manifest.day)
         }
 
+        // Default-output rows 9/10 (ARB Security Version Number / Version
+        // Control Number): hoisted from the operational chain's CSE_Ext_0F
+        // ARBSVN/VCN and CSE_Ext_03 VCN (last seen per tag; upstream 6185 and
+        // 6245–6246, where 0x03 is preferred and 0x0F is the fallback). The
+        // pre-CSE R0 manifest has no extension chain — its +0x34 VCN (already
+        // `ManifestSummary.vcn`) is the top-level fallback.
+        let chainHoist = CPDExtensionParser.hoist(codePartition?.extensions ?? [])
+
+        // Row 4 (Type) + row 14 (OEM Configuration): the classifier and the OEM
+        // detector both answer only once identity has named the family/major.
+        // `isIFWI` mirrors upstream's `ifwi_exist` — a non-empty CSE-LT Boot
+        // slot present — independent of whether its BPDT decoded. The classifier
+        // keeps `.unknown` for families outside the Stock/Update/Extracted axis
+        // (Independent, or an ME 2–7 sub-branch the engine has no oracle for);
+        // Summary keeps those rows grey.
+        let isIFWI = fpt?.cseLayout?.slots.contains { slot in
+            slot.name.hasPrefix("Boot") && !slot.empty
+        } == true
+        let firmwareType = FirmwareTypeClassifier.classify(
+            family: identity.family, major: identity.major,
+            isIFWI: isIFWI, fpt: fpt, region: region)
+        let oemCustomized = OEMDetector.oemCustomized(
+            fpt: fpt, bootPartitions: bootPartitions, codePartition: codePartition,
+            in: region, baseOffset: baseOffset)
+        // Row 19's non-IFWI source: the classifier's own `fitc_ver_found`
+        // gate — the $FPT header's FIT, present only on an image resolved to
+        // Extracted by that real FIT (the one non-IFWI branch upstream prints a
+        // row 19 from, MEA.py 12581–12586). The whole decision lives in the
+        // classifier, where fw_type and its FIT share one gate.
+        let fptHeaderFIT = FirmwareTypeClassifier.fptHeaderFIT(
+            family: identity.family, major: identity.major,
+            type: firmwareType, fpt: fpt, isIFWI: isIFWI)
+
         return FirmwareAnalysis(
             family: identity.family,
             variant: identity.variant,
             version: Version(major: identity.major, minor: identity.minor,
                              hotfix: identity.hotfix, build: identity.build,
-                             meMajor: identity.meMajor, meMinor: identity.meMinor),
+                             meMajor: identity.meMajor, meMinor: identity.meMinor,
+                             meHotfix: identity.meHotfix, meBuild: identity.meBuild),
             securityVersion: identity.securityVersion,
             release: identity.release,
-            type: .region,
+            type: firmwareType,
             sku: preCSE?.sku ?? iup?.sku ?? skuText,
             platform: preCSE?.platform ?? iup?.platform ?? "",
             chipsetStepping: iup?.chipsetStepping,
@@ -717,12 +757,22 @@ public actor MEFirmwareAnalyzer {
             mfsBackup: mfsBackup,
             cseLayoutTable: cseLayoutTable,
             bootPartitions: bootPartitions,
+            fptHeaderFIT: fptHeaderFIT,
             mmeDirectory: moduleInventory,
             gscInfo: gscInfo,
             oromImages: oromImages,
             rbePmMetadata: rbePm,
             efsVolume: efsVolume,
             oemConfiguration: oemConfiguration,
+            arbSvn: chainHoist.arbSvn,
+            vcn: chainHoist.vcn03 ?? chainHoist.vcn0F ?? manifestSummary?.vcn,
+            mfsState: mfsInfo.map {
+                MFSStateDecoder.state(usesFTBL: $0.usesFTBL,
+                                      presentFileIndices: $0.files
+                                        .filter { !$0.content.isEmpty }
+                                        .map(\.index))
+            },
+            oemCustomized: oemCustomized,
             issues: issues)
     }
 
