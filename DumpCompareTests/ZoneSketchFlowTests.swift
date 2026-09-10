@@ -64,10 +64,15 @@ final class ZoneSketchFlowTests: XCTestCase {
         return try XCTUnwrap(descendants(of: panel, NSTableView.self).first)
     }
 
-    /// It is in the shipping app, not only in the tests.
-    func testTheAppShipsIt() {
+    /// A demonstration panel, and only that: this build lists it because it is
+    /// the build the seam is worked on in. A shipping build does not.
+    func testItIsOfferedByADebugBuildAndNotByAShippingOne() {
         XCTAssertTrue(ToolRegistry.builtIn.contains { $0.identifier == ZoneSketchModule.identifier },
-                      "the registry ships Zone Sketch")
+                      "a debug build lists Zone Sketch")
+        XCTAssertFalse(ToolRegistry.shipping.contains { $0.identifier == ZoneSketchModule.identifier },
+                       "a shipping build does not")
+        XCTAssertEqual(ToolRegistry.builtIn.count, ToolRegistry.shipping.count + 1,
+                       "and the demonstration is the whole of the difference")
     }
 
     func testAddingFromTheSelectionMarksTheDump() throws {
