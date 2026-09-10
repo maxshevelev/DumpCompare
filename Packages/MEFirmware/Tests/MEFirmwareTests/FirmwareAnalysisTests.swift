@@ -110,7 +110,30 @@ final class FirmwareAnalysisModelTests: XCTestCase {
     }
 
     func testEngineModelRevisionBumpsWithAdditiveChanges() {
-        XCTAssertEqual(EngineModelRevision.current, 25)
+        XCTAssertEqual(EngineModelRevision.current, 26)
+    }
+
+    /// Row 18's firmware size is additive too, and it is *not* `sizeBytes`: a
+    /// payload from before the field decodes to nil, and the panel then falls
+    /// back to how much was analysed.
+    func testFirmwareSizeSurvivesJSON() throws {
+        let payload = """
+        {"family":"csme","variant":"CSME","version":{"major":12,"minor":0,
+         "hotfix":3,"build":1091},
+         "release":"production","type":"extracted","sku":"","platform":"",
+         "sizeBytes":16777216,"firmwareSizeBytes":2605056,
+         "regions":[],"issues":[]}
+        """
+        let decoded = try JSONDecoder().decode(
+            FirmwareAnalysis.self, from: Data(payload.utf8))
+        XCTAssertEqual(decoded.firmwareSizeBytes, 0x27C000)
+        XCTAssertEqual(decoded.sizeBytes, 0x100_0000)
+
+        let older = try JSONDecoder().decode(
+            FirmwareAnalysis.self,
+            from: Data(payload.replacingOccurrences(
+                of: "\"firmwareSizeBytes\":2605056,", with: "").utf8))
+        XCTAssertNil(older.firmwareSizeBytes)
     }
 
     /// Row 7's NVM Compatibility is additive like every other field: it

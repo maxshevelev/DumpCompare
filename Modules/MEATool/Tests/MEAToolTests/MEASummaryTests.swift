@@ -121,6 +121,7 @@ final class MEASummaryTests: XCTestCase {
             "mfsState": "initialized",
             "mfsVolume": mfsJSON(chipset: "CNP/CMP-H", steppings: "BA"),
             "bootPartitions": bootPartitionsJSON(),
+            "firmwareSizeBytes": 0x27C000,
             "version": ["major": 15, "minor": 40, "hotfix": 37, "build": 3121,
                         "meMajor": 1, "meMinor": 4, "meHotfix": 0,
                         "meBuild": 14],
@@ -153,7 +154,8 @@ final class MEASummaryTests: XCTestCase {
         XCTAssertEqual(value("Date", in: rows), .value("2018-05-06"))
         XCTAssertEqual(value("File System State", in: rows), .value("Initialized"))
         XCTAssertEqual(value("Size", in: rows),
-                       .value("0x200000 (2097152 bytes)"))
+                       .value("0x27C000 (2605056 bytes)"),
+                       "the firmware's own end, not the region it sits in")
         // Row 19 reads the boot BPDT's FIT version (plain CSME format).
         XCTAssertEqual(value("Flash Image Tool", in: rows), .value("12.0.3.1091"))
         // A derived stepping letter was not present, so the row is not there.
@@ -294,6 +296,21 @@ final class MEASummaryTests: XCTestCase {
         ])
         XCTAssertNil(value("Chipset", in: tableRows(pchc)))
         XCTAssertNil(value("Chipset Stepping", in: tableRows(pchc)))
+    }
+
+    /// Row 18 is the firmware's own size — where it ends inside whatever
+    /// carries it — and falls back to the analysed region's length only when
+    /// the engine could not work that out.
+    func testSizeRowPrefersTheFirmwaresOwnEnd() throws {
+        let known = try analysis(["manifest": manifestJSON(),
+                                  "firmwareSizeBytes": 0x27C000])
+        XCTAssertEqual(value("Size", in: tableRows(known)),
+                       .value("0x27C000 (2605056 bytes)"))
+
+        let unknown = try analysis(["manifest": manifestJSON()])
+        XCTAssertEqual(value("Size", in: tableRows(unknown)),
+                       .value("0x200000 (2097152 bytes)"),
+                       "no firmware end to read, so the row says how much was analysed")
     }
 
     /// Row 7 names the storage medium the firmware is built for, and only

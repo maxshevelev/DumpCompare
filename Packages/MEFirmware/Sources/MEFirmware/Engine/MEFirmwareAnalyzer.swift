@@ -730,6 +730,19 @@ public actor MEFirmwareAnalyzer {
             family: identity.family, major: identity.major,
             type: firmwareType, fpt: fpt, isIFWI: isIFWI)
 
+        // Row 18: how far the firmware reaches from its `$FPT`, which is what
+        // upstream prints as Size — not the size of the buffer it was handed.
+        // CSME 16 dropped the 4 KiB rounding for MFIT-built images.
+        let firmwareSize = fpt.map { fpt in
+            FirmwareEndCalculator.firmwareSize(
+                in: region,
+                partitions: fpt.partitions,
+                fptStart: fpt.fptStart,
+                cseLayout: fpt.cseLayout,
+                hasFlashDescriptor: FlashDescriptor.meRegion(in: region) != nil,
+                ignores4KAlignment: identity.family == .csme && identity.major >= 16)
+        } ?? nil
+
         return FirmwareAnalysis(
             family: identity.family,
             variant: identity.variant,
@@ -747,6 +760,7 @@ public actor MEFirmwareAnalyzer {
                                                   month: manifest.month,
                                                   year: manifest.year),
             sizeBytes: region.count,
+            firmwareSizeBytes: firmwareSize,
             databaseName: identity.databaseName,
             rsaSignatureValid: rsaSignatureValid,
             checksums: checksums,

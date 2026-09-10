@@ -45,6 +45,10 @@ enum IFWI {
         let slots: [LayoutSlot]
     }
 
+    /// The Data partition's own label — the one slot the firmware-size total
+    /// treats differently from the Boot/Temp/ELog ones.
+    static let dataSlotName = "Data"
+
     /// IFWI 1.6/1.7 Layout Table / 2.0 Boot Partition Descriptor signatures.
     static let bpdtSignatures: Set<Data> = [
         Data([0xAA, 0x55, 0x00, 0x00]),

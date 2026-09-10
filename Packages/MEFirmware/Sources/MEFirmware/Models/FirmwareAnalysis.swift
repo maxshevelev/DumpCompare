@@ -30,6 +30,15 @@ public struct FirmwareAnalysis: Codable, Sendable, Equatable, Identifiable {
     public var chipsetStepping: String? = nil
     public var manufactureDate: Date?
     public var sizeBytes: Int
+    /// Row 18's Size (upstream `eng_fw_end`): how far the *firmware* reaches
+    /// from its `$FPT` start — 0x27C000 for the CSME-12 oracle, whose region
+    /// is 0x6E0000 long and whose file is 16 MiB. Distinct from `sizeBytes`,
+    /// which is how much was handed to the engine.
+    ///
+    /// nil when the number would need a leg of upstream's calculation that is
+    /// not ported (an ME 2–6 last partition with no size) or when there is no
+    /// `$FPT` to measure from — see `FirmwareEndCalculator`.
+    public var firmwareSizeBytes: Int? = nil
     public var databaseName: String?          // unique name when found in MEA.dat
     public var rsaSignatureValid: Bool?       // nil when not checkable
     public var checksums: Checksums?
@@ -1799,5 +1808,5 @@ public struct Issue: Codable, Sendable, Equatable, Identifiable {
 /// whether to surface the new data (`reference/result-model.md` §Versioning).
 public enum EngineModelRevision {
     /// Current revision of the `FirmwareAnalysis` shape.
-    public static let current = 25
+    public static let current = 26
 }

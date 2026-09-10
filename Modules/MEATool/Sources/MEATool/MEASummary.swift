@@ -187,8 +187,14 @@ public enum MEASummary {
                 add("File System State", .comingSoon)
             }
         }
-        // 18 · Size — always.
-        add("Size", .value(MEAText.size(analysis.sizeBytes)))
+        // 18 · Size — how far the firmware itself reaches from its `$FPT`,
+        // which is the number the console prints and not the size of what was
+        // handed to the engine (0x27C000 of firmware inside a 16 MiB dump).
+        // Where that cannot be worked out — no `$FPT`, or an ME 2–6 table that
+        // leaves the last partition's size out — the row falls back to the
+        // length of the region analysed, which is the only size there is.
+        add("Size", .value(MEAText.size(analysis.firmwareSizeBytes
+                                        ?? analysis.sizeBytes)))
         // 19 · Flash Image Tool — the FIT the image was built with. On an IFWI
         // image it is the first boot BPDT that carries a real FIT version
         // (`fitMajor` outside the 0/0xFFFF marker); a boot with no real FIT
