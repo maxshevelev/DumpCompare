@@ -197,9 +197,15 @@ public enum MEASummary {
                 add("OEM Configuration", .comingSoon)
             }
         }
-        // 15 · FWUpdate Support — needs the independent-image IUP scan.
-        if analysis.family == .csme, analysis.version.major >= 12, identified {
-            add("FWUpdate Support", .comingSoon)
+        // 15 · FWUpdate Support — whether Intel's own updater can rewrite
+        // this image in place, which turns on where the independent firmware
+        // beside the engine sits.
+        if analysis.family == .csme, analysis.version.major >= 12 {
+            if let support = analysis.fwUpdateSupport {
+                add("FWUpdate Support", .value(MEAText.fwUpdateSupport(support)))
+            } else if identified {
+                add("FWUpdate Support", .comingSoon)
+            }
         }
         // 16 · Date (manifest date).
         if let date = analysis.manufactureDate {

@@ -121,6 +121,12 @@ public struct FirmwareAnalysis: Codable, Sendable, Equatable, Identifiable {
     /// Intel image is No. nil = the OEM story could not be determined (no
     /// readable key body to clear or to rule out).
     public var oemCustomized: Bool? = nil
+    /// FWUpdate Support (row 15, upstream `fwu_iup_result`): whether Intel's
+    /// FWUpdate tool can update this image in place — which depends on the
+    /// independent firmware beside the engine sitting where FWUpdate leaves it
+    /// alone (see `FWUpdateSupportDecider`). nil for every family and major
+    /// the console prints no such row for.
+    public var fwUpdateSupport: FWUpdateSupport? = nil
     /// The independent (IUP) firmware stitched into this image — a Power
     /// Management Controller, a Platform Controller Hub Configuration, a USB
     /// Type C Physical — each analysed in its own right, exactly as this
@@ -218,6 +224,13 @@ public struct Version3: Codable, Sendable, Equatable {
         self.hotfix = hotfix
         self.build = build
     }
+}
+
+/// FWUpdate Support (upstream `fwu_iup_result`, MEA.py 13600–13611): whether
+/// Intel's FWUpdate tool can update the image in place. `.impossible` is
+/// upstream's own answer for an image no added partition would make updatable.
+public enum FWUpdateSupport: String, Codable, Sendable {
+    case yes, no, impossible
 }
 
 /// Power Down Mitigation (upstream `sku_pdm` → `pdm_status`, MEA.py 13165–
@@ -1900,5 +1913,5 @@ public struct Issue: Codable, Sendable, Equatable, Identifiable {
 /// whether to surface the new data (`reference/result-model.md` §Versioning).
 public enum EngineModelRevision {
     /// Current revision of the `FirmwareAnalysis` shape.
-    public static let current = 29
+    public static let current = 30
 }

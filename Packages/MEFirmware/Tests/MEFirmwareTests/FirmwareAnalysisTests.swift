@@ -110,7 +110,7 @@ final class FirmwareAnalysisModelTests: XCTestCase {
     }
 
     func testEngineModelRevisionBumpsWithAdditiveChanges() {
-        XCTAssertEqual(EngineModelRevision.current, 29)
+        XCTAssertEqual(EngineModelRevision.current, 30)
     }
 
     /// Row 18's firmware size is additive too, and it is *not* `sizeBytes`: a

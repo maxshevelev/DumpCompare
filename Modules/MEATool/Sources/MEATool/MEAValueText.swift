@@ -129,6 +129,16 @@ enum MEAText {
     static func downgradeBlacklist(_ entry: Version3) -> String {
         "<= 7.\(entry.minor).\(entry.hotfix).\(entry.build)"
     }
+    /// The FWUpdate Support row (row 15, upstream `fwu_iup_result`).
+    /// "Impossible" is upstream's own word for an image no added partition
+    /// would make updatable.
+    static func fwUpdateSupport(_ value: FWUpdateSupport) -> String {
+        switch value {
+        case .yes: return "Yes"
+        case .no: return "No"
+        case .impossible: return "Impossible"
+        }
+    }
     /// The NVM Compatibility label of the raw two-bit field (row 7, upstream
     /// `ext15_nvm_type`, MEA.py 10536): 0 Undefined, 1 UFS, 2 SPI. The
     /// reserved value keeps upstream's own wording for a number outside the

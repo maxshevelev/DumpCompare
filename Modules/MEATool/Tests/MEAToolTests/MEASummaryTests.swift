@@ -122,6 +122,7 @@ final class MEASummaryTests: XCTestCase {
             "mfsVolume": mfsJSON(chipset: "CNP/CMP-H", steppings: "BA"),
             "bootPartitions": bootPartitionsJSON(),
             "firmwareSizeBytes": 0x27C000,
+            "fwUpdateSupport": "no",
             "version": ["major": 15, "minor": 40, "hotfix": 37, "build": 3121,
                         "meMajor": 1, "meMinor": 4, "meHotfix": 0,
                         "meBuild": 14],
@@ -150,7 +151,7 @@ final class MEASummaryTests: XCTestCase {
         XCTAssertEqual(value("Version Control Number", in: rows), .value("7"))
         XCTAssertEqual(value("Production Ready", in: rows), .value("Yes"))
         XCTAssertEqual(value("OEM Configuration", in: rows), .comingSoon)
-        XCTAssertEqual(value("FWUpdate Support", in: rows), .comingSoon)
+        XCTAssertEqual(value("FWUpdate Support", in: rows), .value("No"))
         XCTAssertEqual(value("Date", in: rows), .value("2018-05-06"))
         XCTAssertEqual(value("File System State", in: rows), .value("Initialized"))
         XCTAssertEqual(value("Size", in: rows),
@@ -523,6 +524,28 @@ final class MEASummaryTests: XCTestCase {
                 return XCTFail("unidentified row \(row.label) is promised: \(row.value)")
             }
         }
+    }
+
+    /// Row 15 says whether Intel's updater can rewrite the image in place —
+    /// including upstream's third answer, and nothing at all for a family or
+    /// major the console prints no such row for.
+    func testFWUpdateSupportRowReadsAllThreeAnswers() throws {
+        func row(_ support: String?, major: Int = 12) throws -> MEASummaryValue? {
+            var fields: [String: Any] = [
+                "manifest": manifestJSON(),
+                "version": ["major": major, "minor": 0, "hotfix": 3, "build": 1091],
+            ]
+            if let support { fields["fwUpdateSupport"] = support }
+            return value("FWUpdate Support", in: tableRows(try analysis(fields)))
+        }
+        XCTAssertEqual(try row("yes"), .value("Yes"))
+        XCTAssertEqual(try row("no"), .value("No"))
+        XCTAssertEqual(try row("impossible"), .value("Impossible"))
+        // An identified CSME 12+ image the engine could not decide for keeps
+        // the row grey rather than reading "No".
+        XCTAssertEqual(try row(nil), .comingSoon)
+        // And CSME 11 has no such row at all.
+        XCTAssertNil(try row("no", major: 11))
     }
 
     // MARK: - The independent firmware's own tables

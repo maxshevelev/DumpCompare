@@ -750,16 +750,31 @@ public actor MEFirmwareAnalyzer {
 
         // Row 18: how far the firmware reaches from its `$FPT`, which is what
         // upstream prints as Size — not the size of the buffer it was handed.
-        // CSME 16 dropped the 4 KiB rounding for MFIT-built images.
-        let firmwareSize = fpt.map { fpt in
-            FirmwareEndCalculator.firmwareSize(
+        // CSME 16 dropped the 4 KiB rounding for MFIT-built images. The same
+        // walk answers what row 15 needs to know about the image's tail.
+        let layout = fpt.map { fpt in
+            FirmwareEndCalculator.layout(
                 in: region,
                 partitions: fpt.partitions,
                 fptStart: fpt.fptStart,
                 cseLayout: fpt.cseLayout,
                 hasFlashDescriptor: FlashDescriptor.meRegion(in: region) != nil,
                 ignores4KAlignment: identity.family == .csme && identity.major >= 16)
-        } ?? nil
+        }
+        let firmwareSize = layout?.firmwareSize
+
+        // Row 15: FWUpdate rewrites the engine's partitions and leaves the
+        // independent ones alone, so it needs each one the platform requires
+        // to be in the region's own `$FPT` — not inside a boot partition.
+        let fwUpdateSupport = layout.flatMap { layout in
+            FWUpdateSupportDecider.result(
+                family: identity.family, major: identity.major,
+                minor: identity.minor, type: firmwareType,
+                sku: preCSE?.sku ?? iup?.sku ?? skuText,
+                iup: FWUpdateSupportDecider.IUPPresence(
+                    partitions: fpt?.partitions ?? []),
+                layout: layout, fptStart: fpt?.fptStart ?? 0)
+        }
 
         // The independent (IUP) firmware stitched into this image: each such
         // partition is a firmware in its own right, so it is analysed by this
@@ -858,6 +873,7 @@ public actor MEFirmwareAnalyzer {
                 ? Self.downgradeBlacklist(in: region, manifest: manifest)
                 : nil,
             oemCustomized: oemCustomized,
+            fwUpdateSupport: fwUpdateSupport,
             independentFirmware: independent.isEmpty ? nil : independent,
             issues: issues)
     }

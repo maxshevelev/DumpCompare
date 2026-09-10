@@ -43,6 +43,29 @@ enum FirmwareEndCalculator {
     /// The 4 KiB the firmware is padded to (upstream `eng_fw_align`).
     static let alignment = 0x1000
 
+    /// What the walk above learns about an image's tail, beyond the size
+    /// itself: the facts row 15 (FWUpdate Support) is decided from, which come
+    /// out of this same arithmetic rather than being worked out twice.
+    struct Layout: Equatable {
+        /// Upstream `eng_fw_end` — see `firmwareSize`. nil when the
+        /// calculation does not apply.
+        var firmwareSize: Int?
+        /// Upstream `fwu_iup_exist` (MEA.py 12412 over the walk at 12371): an
+        /// uncharted `$CPD` partition follows the last charted one. Only such
+        /// a partition can hold the independent firmware a FWUpdate image
+        /// needs.
+        var hasUnchartedPartition: Bool
+        /// Upstream `uncharted_match` (12308): the probe that *searched* for an
+        /// uncharted `$CPD` in the 8 KiB after the last charted partition and
+        /// found one further along, rather than right at the end. Only ever
+        /// run on an image with neither a flash descriptor nor a Layout Table.
+        var unchartedProbeHit: Bool
+        /// Upstream `file_has_align` (12474): how much of the 4 KiB padding the
+        /// firmware wants is actually present in what was handed over. Zero
+        /// when the firmware already ends on a 4 KiB boundary.
+        var alignmentPresent: Int
+    }
+
     static func firmwareSize(
         in region: Data,
         partitions: [FPTParser.Partition],
@@ -51,7 +74,22 @@ enum FirmwareEndCalculator {
         hasFlashDescriptor: Bool,
         ignores4KAlignment: Bool
     ) -> Int? {
-        guard !partitions.isEmpty else { return nil }
+        layout(in: region, partitions: partitions, fptStart: fptStart,
+               cseLayout: cseLayout, hasFlashDescriptor: hasFlashDescriptor,
+               ignores4KAlignment: ignores4KAlignment).firmwareSize
+    }
+
+    static func layout(
+        in region: Data,
+        partitions: [FPTParser.Partition],
+        fptStart: Int,
+        cseLayout: IFWI.LayoutInfo?,
+        hasFlashDescriptor: Bool,
+        ignores4KAlignment: Bool
+    ) -> Layout {
+        var facts = Layout(firmwareSize: nil, hasUnchartedPartition: false,
+                           unchartedProbeHit: false, alignmentPresent: 0)
+        guard !partitions.isEmpty else { return facts }
 
         // The partition that starts last, and its own end.
         var offsetLast = 0
@@ -69,7 +107,7 @@ enum FirmwareEndCalculator {
         // The ME 2–6 leg: no size on the last entry, so the end is only
         // knowable by walking its submodules. Not ported — and a 4 GiB answer
         // would be worse than none.
-        guard endLast > 0, endLast != maxSize else { return nil }
+        guard endLast > 0, endLast != maxSize else { return facts }
 
         // An uncharted partition can start up to 4 KiB past the last charted
         // one, so upstream looks for its `$CPD` there and moves the end to it
@@ -79,18 +117,30 @@ enum FirmwareEndCalculator {
         if !hasFlashDescriptor, cseLayout == nil,
            !startsWithCPD(region, at: endLast),
            let uncharted = firstCPD(in: region, from: endLast, length: 0x200B) {
+            facts.unchartedProbeHit = true
             endLast = uncharted
         }
+        // Whether one is there at all — right at the end, or where the probe
+        // just moved the end to.
+        facts.hasUnchartedPartition = startsWithCPD(region, at: endLast)
 
         if let cseLayout {
             endLast = layoutTotal(cseLayout, fptEnd: endLast)
         }
 
         let size = endLast - fptStart
-        guard size > 0 else { return nil }
+        guard size > 0 else { return facts }
         let remainder = size % alignment
-        guard remainder != 0, !ignores4KAlignment else { return size }
-        return size + (alignment - remainder)
+        guard remainder != 0 else {
+            facts.firmwareSize = size
+            return facts
+        }
+        // The firmware wants padding to the next 4 KiB; this is how much of it
+        // the image actually carries.
+        facts.alignmentPresent = max(0, min(alignment - remainder,
+                                            region.count - endLast))
+        facts.firmwareSize = ignores4KAlignment ? size : size + (alignment - remainder)
+        return facts
     }
 
     /// Upstream's IFWI total (12467–12468): the Layout Table, the larger of the
