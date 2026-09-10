@@ -80,20 +80,41 @@ enum MEAText {
                         _ build: Int) -> String {
         "\(major).\(minor).\(hotfix).\(build)"
     }
-    /// The Flash Image Tool (FITC) version a firmware was built with — upstream
-    /// `get_fw_ver` (MEA.py 10094), keyed by family. Only the families that
-    /// carry a real row-19 FIT on an IFWI image reach this helper: the CSE/TXE/
-    /// GSC families format plain `major.minor.hotfix.build`, SPS/CSSPS pad to
-    /// `xx.xx.xx.xxx`. The zero-padded PMC/PCHC/PHY *variant*-prefix branches
-    /// upstream keys off are not replicated — those families produce no FIT.
-    static func firmwareImageTool(family: FirmwareFamily, major: Int, minor: Int,
-                                  hotfix: Int, build: Int) -> String {
-        switch family {
-        case .sps, .cssps:
+    /// A firmware version as upstream writes it (`get_fw_ver`, MEA.py 10094),
+    /// which is not the same shape for every family: a (CS)SPS version pads
+    /// every field, a PMC pads whichever field its own platform generation
+    /// keeps at two digits — a Comet-and-later PMC its hotfix (`160.2.00.1040`)
+    /// and a Cannon-era one its major — and a PCHC or PHY pads its build to
+    /// four. Everything else reads plainly.
+    ///
+    /// Keyed by the *variant* token rather than the family, because that is
+    /// what upstream keys on and what tells `PMCADP` from `PMCDG2`.
+    static func firmwareVersion(variant: String, major: Int, minor: Int,
+                                hotfix: Int, build: Int) -> String {
+        if variant == "SPS" || variant == "CSSPS" {
             return String(format: "%02d.%02d.%02d.%03d", major, minor, hotfix, build)
-        default:
+        }
+        if ["PMCAPL", "PMCBXT", "PMCGLK", "PMCDG"].contains(where: variant.hasPrefix) {
             return "\(major).\(minor).\(hotfix).\(build)"
         }
+        if ["PMCCNP", "PMCWTL", "PMCIDV"].contains(where: variant.hasPrefix),
+           major < 30 || major == 3232 {
+            return String(format: "%02d.%d.%d.%d", major, minor, hotfix, build)
+        }
+        if variant.hasPrefix("PMC") {
+            return String(format: "%d.%d.%02d.%d", major, minor, hotfix, build)
+        }
+        if variant.hasPrefix("PCHC") || variant.hasPrefix("PHY") {
+            return String(format: "%d.%d.%d.%04d", major, minor, hotfix, build)
+        }
+        return "\(major).\(minor).\(hotfix).\(build)"
+    }
+    /// The Flash Image Tool (FITC) version a firmware was built with — the
+    /// same `get_fw_ver` shaping, over the FIT's own four fields.
+    static func firmwareImageTool(variant: String, major: Int, minor: Int,
+                                  hotfix: Int, build: Int) -> String {
+        firmwareVersion(variant: variant, major: major, minor: minor,
+                        hotfix: hotfix, build: build)
     }
     /// The Manifest Extension Utility version of a manifest's MEU block (row
     /// 20, upstream `mn2_meu_ver`, MEA.py 12229): the build is padded to four

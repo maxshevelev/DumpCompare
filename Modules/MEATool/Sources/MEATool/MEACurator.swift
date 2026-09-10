@@ -75,7 +75,7 @@ public enum MEACurator {
         // FIT sits on each boot BPDT, surfaced under "Boot Partitions (BPDT)").
         if let fit = a.fptHeaderFIT {
             append(&fields, "Flash Image Tool",
-                   MEAText.firmwareImageTool(family: a.family, major: fit.major,
+                   MEAText.firmwareImageTool(variant: a.variant, major: fit.major,
                                              minor: fit.minor, hotfix: fit.hotfix,
                                              build: fit.build))
         }
@@ -150,7 +150,7 @@ public enum MEACurator {
             if let major = bpdt.fitMajor, let minor = bpdt.fitMinor,
                let hotfix = bpdt.fitHotfix, let build = bpdt.fitBuild {
                 append(&header, "FIT Version",
-                       MEAText.firmwareImageTool(family: a.family, major: major,
+                       MEAText.firmwareImageTool(variant: a.variant, major: major,
                                                  minor: minor, hotfix: hotfix,
                                                  build: build))
             }

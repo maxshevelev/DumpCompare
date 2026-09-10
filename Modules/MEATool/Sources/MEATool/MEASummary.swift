@@ -90,8 +90,12 @@ public enum MEASummary {
 
         // 1 · Family — always.
         add("Family", .value(MEAText.family(analysis.family)))
-        // 2 · Version — always.
-        add("Version", .value(analysis.version.text))
+        // 2 · Version — always, in the shape this family writes it (a PMC or
+        // PCHC image analysed on its own pads a field; an engine does not).
+        add("Version", .value(MEAText.firmwareVersion(
+            variant: analysis.variant, major: analysis.version.major,
+            minor: analysis.version.minor, hotfix: analysis.version.hotfix,
+            build: analysis.version.build)))
         // 3 · Release — always; engineering builds say so.
         var release = MEAText.title(analysis.release.rawValue)
         if analysis.version.build >= 7000 { release += ", Engineering" }
@@ -245,14 +249,14 @@ public enum MEASummary {
                let major = fit.fitMajor, let minor = fit.fitMinor,
                let hotfix = fit.fitHotfix, let build = fit.fitBuild {
                 add("Flash Image Tool", .value(MEAText.firmwareImageTool(
-                    family: analysis.family, major: major, minor: minor,
+                    variant: analysis.variant, major: major, minor: minor,
                     hotfix: hotfix, build: build)))
             } else {
                 add("Flash Image Tool", .value("N/A"))
             }
         } else if let fit = analysis.fptHeaderFIT {
             add("Flash Image Tool", .value(MEAText.firmwareImageTool(
-                family: analysis.family, major: fit.major, minor: fit.minor,
+                variant: analysis.variant, major: fit.major, minor: fit.minor,
                 hotfix: fit.hotfix, build: fit.build)))
         }
 
@@ -321,7 +325,10 @@ public enum MEASummary {
         }
 
         add("Family", .value(MEAText.family(firmware.family)))
-        add("Version", .value(firmware.version.text))
+        add("Version", .value(MEAText.firmwareVersion(
+            variant: firmware.variant, major: firmware.version.major,
+            minor: firmware.version.minor, hotfix: firmware.version.hotfix,
+            build: firmware.version.build)))
         var release = MEAText.title(firmware.release.rawValue)
         if firmware.version.build >= 7000 { release += ", Engineering" }
         add("Release", .value(release))

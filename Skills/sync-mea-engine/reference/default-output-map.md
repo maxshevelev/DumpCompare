@@ -71,7 +71,7 @@ yet surfaced · **[F]** add — byte-core but no real-dump oracle (fixture-only)
 | # | Row label | Gate (row added when …) | Value · MEA source | Swift |
 |---|---|---|---|---|
 | 1 | Family | always | `variant_p` — family *print* name (e.g. "CSE ME"), mapped at 10406–10437 | [E] `family` (enum) + `variant`; "CSE ME" is the DB/UI label of `variant` |
-| 2 | Version | always | `fw_ver` — `major.minor.hotfix.build` (manifest / BPDT FIT) | [E] `version.text` |
+| 2 | Version | always | `fw_ver` — `major.minor.hotfix.build` (manifest / BPDT FIT) | [E] `MEAText.firmwareVersion(variant:…)` — `get_fw_ver`'s per-variant shaping (MEA.py 10094): a (CS)SPS version pads every field, a modern PMC its hotfix (`160.2.00.1040`), a Cannon-era one its major, a PCHC/PHY its build to four digits, and everything else reads plainly |
 | 3 | Release | always | `release` + `", Engineering"` when `build >= 7000` (13691); scalar from 12641–12649 (`rel_signed` + `release_fix`, e.g. Pre-Production demotion at 10255) | [E/P] `release` enum; the Engineering suffix rule (`build>=7000`) not surfaced |
 | 4 | Type | always | `fw_type` — Stock / Update / Extracted classifier at 12538–12588 (IFWI ⇒ "Extracted"; else `$FPT`-partition/FOVD/`FitBuild` heuristics) | [E] `type` = `FirmwareTypeClassifier.classify`: IFWI ⇒ `.extracted`; no `$FPT` ⇒ `.update`; SPS ⇒ `.extracted`; ME 2–7 FOVD/`KRND` axis; csmeLike ⇒ exactly `[FTPR,FTUP,NFTP]` ⇒ `.update`, marker-FIT ⇒ `.stock`/Extracted legs, real FIT ⇒ `.extracted`. Only unidentified (no-manifest) images keep `.region` (see §6) |
 | 5 | SKU | **hidden** for (CSTXE & `'Unknown' in sku`) · (SPS,`'NaN'`) · variant starts `PMCAPL/PMCBXT/PMCGLK/PCHC/PMCDG/OROM` (13694–13698) | `sku` — per-family SKU block (legacy literal tables 12680–13231; CSME≥12 via `get_csme12_sku` 10287 / FW-SKU decode 13120–13127) | [E] `sku` (engine value matches the row, e.g. "Consumer H") |
@@ -99,6 +99,24 @@ yet surfaced · **[F]** add — byte-core but no real-dump oracle (fixture-only)
 **After `print` (export-only, never in console):** `MEA Database Name`
 (`name_db.rsplit('_',1)[0]`), `MEA Support Status` (`['Yes','No'][is_unsupported]`),
 `RSA Signature Hash` (`rsa_sig_hash`) — 13752–13755.
+
+### Row-for-row check against the real thing (2026-09-10)
+
+With rows 15/17/18/22 and the independent tables in, the panel's summary was
+diffed against the original script's console output over the two dumps in
+`~/Desktop/ME Samples`:
+
+- **CSME 12.BIN** — identical, all 30 lines: the 16 main rows and the whole
+  Power Management Controller block.
+- **CSME 16.bin** — identical, all 73 lines: the 17 main rows and four
+  independent blocks (PMC, PCHC and two PHY).
+
+Two deliberate differences, normalised for the diff: the panel writes the
+family as `CSME` where the console writes `CSE ME`, and it appends the decimal
+byte count after every hex size. The trailing message differs in wording
+(`Note: This firmware is not in the database.` against
+`Error: Unsupported Intel Engine, Graphics and/or Independent firmware!`),
+which is the display-only latitude §5 already grants.
 
 ## 3. Worked example — real CSME-12 console output
 
