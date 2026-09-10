@@ -86,6 +86,30 @@ import ToolModuleKit
     /// `start()` is called after the view is in the panel rather than inside
     /// `makeSession`, so a slow first parse runs against a panel the user can
     /// already see.
+    /// Moves the running tool-module onto `pane` — what dropping a pane on the
+    /// panel means. The same session machinery an activation uses, so the tool
+    /// arrives on the new file exactly as it would have if it had been opened
+    /// there.
+    func rebind(to pane: PaneViewModel) {
+        guard let module = activeModule, pane !== boundPane, pane.isOpen else { return }
+        endSession()
+        startSession(module, on: pane)
+    }
+
+    /// What dropping the pane with `dragID` on the panel would say, or nil for
+    /// one the panel will not take. Its own pane is the one it will not: the
+    /// tool is already reading that file, and a drop that changes nothing is a
+    /// gesture that looks broken.
+    func paneDropTitle(forPaneWith dragID: UUID) -> String? {
+        guard let module = activeModule,
+              let owner,
+              let index = owner.paneIndex(withDragID: dragID)
+        else { return nil }
+        let pane = index == 0 ? owner.windowModel.pane1 : owner.windowModel.pane2
+        guard pane.isOpen, pane !== boundPane else { return nil }
+        return "Show \(module.title) for \(pane.status.fileName)"
+    }
+
     private func startSession(_ module: any ToolModule.Type, on pane: PaneViewModel) {
         guard let owner else { return }
         let host = PaneToolHost(pane: pane, owner: owner, tools: self)

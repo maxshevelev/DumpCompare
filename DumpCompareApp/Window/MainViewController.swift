@@ -367,6 +367,12 @@ final class MainViewController: NSViewController {
         return DuplicateName.next(after: source.status.fileName, taken: taken)
     }
 
+    /// Which of this window's two panes this is. Pane 2 only when it *is* pane
+    /// 2; anything else is pane 1, which is the one a single-file window has.
+    func paneIndex(of pane: PaneViewModel) -> Int {
+        pane === windowModel.pane2 ? 1 : 0
+    }
+
     /// The index of this window's pane with `dragID`, if either has it — the
     /// pane half of the registry's question, beside the file half below.
     /// Internal so the registry can ask it of every window.
@@ -470,6 +476,21 @@ final class MainViewController: NSViewController {
         controller.owner = self
         // The panel's ✕ is Tools ▸ None by another route.
         controller.panel.onClose = { [weak self] in self?.tools.activate(nil) }
+        // A file dropped on the panel replaces the file the panel is reading —
+        // the same thing, through the same door, as dropping it on that pane's
+        // Replace Current File band.
+        controller.panel.onDropFiles = { [weak self] urls in
+            guard let self, let pane = self.tools.boundPane else { return }
+            self.openFiles(into: self.paneIndex(of: pane), urls: urls)
+        }
+        // A pane dropped on the panel moves the tool onto it.
+        controller.panel.onDropPane = { [weak self] dragID in
+            guard let self, let index = self.paneIndex(withDragID: dragID) else { return }
+            self.tools.rebind(to: index == 0 ? self.windowModel.pane1 : self.windowModel.pane2)
+        }
+        controller.panel.paneDropTitle = { [weak self] dragID in
+            self?.tools.paneDropTitle(forPaneWith: dragID)
+        }
         return controller
     }()
 

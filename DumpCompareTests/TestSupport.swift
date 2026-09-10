@@ -194,6 +194,16 @@ final class FakeDraggingInfo: NSObject, NSDraggingInfo {
         draggingLocation = location
     }
 
+    /// A session carrying files, the way Finder hands them over.
+    init(fileURLs: [URL], at location: NSPoint = .zero) {
+        let board = NSPasteboard(name: NSPasteboard.Name("FakeDrag-\(UUID().uuidString)"))
+        board.clearContents()
+        board.writeObjects(fileURLs as [NSURL])
+        draggingPasteboard = board
+        draggingSourceOperationMask = .copy
+        draggingLocation = location
+    }
+
     /// Option pressed or released mid-drag: AppKit re-narrows the mask and sends
     /// another update, which is the whole shape of the bug this exists for.
     func setCopying(_ copying: Bool) {

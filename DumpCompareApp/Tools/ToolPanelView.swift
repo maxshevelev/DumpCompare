@@ -16,6 +16,15 @@ final class ToolPanelView: NSView {
     /// Fired by the header's ✕. The same thing as Tools ▸ None.
     var onClose: (() -> Void)?
 
+    /// Files were dropped on the panel: the same thing as dropping them on the
+    /// pane's Replace Current File band, for the pane this panel is reading.
+    var onDropFiles: (([URL]) -> Void)?
+    /// A pane was dropped on the panel: the tool moves to it.
+    var onDropPane: ((UUID) -> Void)?
+    /// What dropping the pane with this id would do, for the caption — nil for
+    /// a pane the panel will not take, which is its own.
+    var paneDropTitle: ((UUID) -> String?)?
+
     private let header = NSView()
     /// The same wrench the toolbar's Tools button carries, so the panel and the
     /// button that opened it read as one thing.
@@ -27,6 +36,11 @@ final class ToolPanelView: NSView {
     private let trailingSeparator = NSView()
     /// Where the tool-module's view goes.
     private let body = NSView()
+    /// The drop zone, over the body and only for the length of a drag. The
+    /// tool-module's own view keeps the mouse the rest of the time.
+    private let dropZone = DropTargetView(title: SingleFileDropTarget.replace.title)
+    /// The pane in flight, while one is.
+    private var draggedPaneID: UUID?
 
     /// The chrome's height, matching the pane's title bar so the panel's body
     /// starts level with the dump beside it.
@@ -96,9 +110,19 @@ final class ToolPanelView: NSView {
 
         body.translatesAutoresizingMaskIntoConstraints = false
 
+        dropZone.translatesAutoresizingMaskIntoConstraints = false
+        dropZone.isHidden = true
+
         addSubview(header)
         addSubview(body)
+        addSubview(dropZone)
         addSubview(trailingSeparator)
+
+        // A file dropped here replaces the file the panel is reading; a pane
+        // dropped here moves the tool onto it. Both are things the panel is
+        // *about*, which is why they are offered on the panel rather than only
+        // over the dump.
+        registerForDraggedTypes([.fileURL, .fileNames, .pane])
         header.addSubview(iconView)
         header.addSubview(titleLabel)
         header.addSubview(fileLabel)
@@ -149,6 +173,12 @@ final class ToolPanelView: NSView {
             trailingSeparator.trailingAnchor.constraint(equalTo: trailingAnchor),
             trailingSeparator.widthAnchor.constraint(equalToConstant: 1),
 
+            dropZone.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 8),
+            dropZone.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            dropZone.trailingAnchor.constraint(equalTo: trailingSeparator.leadingAnchor,
+                                               constant: -8),
+            dropZone.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
+
             body.topAnchor.constraint(equalTo: header.bottomAnchor),
             body.leadingAnchor.constraint(equalTo: leadingAnchor),
             body.trailingAnchor.constraint(equalTo: trailingSeparator.leadingAnchor),
@@ -180,6 +210,83 @@ final class ToolPanelView: NSView {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             applyChromeColors()
         }
+    }
+
+    // MARK: - Dropping on the panel
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if let paneID = sender.draggingPasteboard.draggedPaneID {
+            draggedPaneID = paneID
+            guard let title = paneDropTitle?(paneID) else {
+                // Its own pane. The zone still appears, wearing the refusal —
+                // an area that stays blank says nothing about why nothing will
+                // happen (§4.3).
+                show(dropZone: true, refused: true)
+                return []
+            }
+            dropZone.setTitle(title)
+            show(dropZone: true, refused: false)
+            return .move
+        }
+        guard !sender.draggingPasteboard.droppedFileURLs.isEmpty else { return [] }
+        dropZone.setTitle(SingleFileDropTarget.replace.title)
+        show(dropZone: true, refused: false)
+        return .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if let paneID = draggedPaneID {
+            return paneDropTitle?(paneID) == nil ? [] : .move
+        }
+        return sender.draggingPasteboard.droppedFileURLs.isEmpty ? [] : .copy
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        endDrag()
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        endDrag()
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        true
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if let paneID = sender.draggingPasteboard.draggedPaneID {
+            let accepted = paneDropTitle?(paneID) != nil
+            endDrag()
+            guard accepted else { return false }
+            onDropPane?(paneID)
+            return true
+        }
+        let urls = sender.draggingPasteboard.droppedFileURLs
+        endDrag()
+        guard !urls.isEmpty else { return false }
+        onDropFiles?(urls)
+        return true
+    }
+
+    private func show(dropZone shown: Bool, refused: Bool) {
+        dropZone.isHidden = !shown
+        dropZone.setHighlighted(shown && !refused)
+        if refused { dropZone.setRefused() }
+    }
+
+    private func endDrag() {
+        draggedPaneID = nil
+        show(dropZone: false, refused: false)
+    }
+
+    /// What the drop zone is saying, for tests. Nil while it is not shown.
+    var dropZoneCaption: String? {
+        dropZone.isHidden ? nil : dropZone.titleForTesting
+    }
+
+    /// Whether the zone is refusing what is being carried, for tests.
+    var dropZoneIsRefusing: Bool {
+        !dropZone.isHidden && dropZone.isShowingRefusal
     }
 
     @objc private func closeClicked() {
