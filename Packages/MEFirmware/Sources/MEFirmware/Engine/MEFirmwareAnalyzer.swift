@@ -1113,7 +1113,7 @@ public actor MEFirmwareAnalyzer {
     private static func skuText(identity: Identifier.Identity,
                                 codePartition: CodePartition?,
                                 year: Int, month: Int) -> String {
-        guard identity.identified, identity.family == .csme, identity.major >= 12,
+        guard identity.identified, identity.family == .csme, identity.major >= 11,
               codePartition != nil else { return "" }
         // The walker surfaces one payload per tag; multiple 0x0C/0x0F blocks are
         // possible, and upstream keeps the last of each seen.

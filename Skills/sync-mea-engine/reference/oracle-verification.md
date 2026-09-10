@@ -50,9 +50,10 @@ Since the panel reproduces the whole default output, the check is now a diff of
 the two texts rather than a fact at a time: decode a CLI analysis JSON, run
 `MEASummary.build` over it, print `label: value` per row, and diff against the
 console. On 2026-09-10 that came out identical over `ME 7.bin` (11 rows),
-`CSME 12.BIN` (30) and `CSME 16.bin` (74) — bar the three deliberate
-differences: the family reads `CSME` not `CSE ME`, every hex size carries its
-decimal in brackets, and the trailing message is worded by the panel.
+`CSME 11.bin` (16), `CSME 12.BIN` (30) and `CSME 16.bin` (74) — bar the three
+deliberate differences: the family reads `CSME` not `CSE ME`, every hex size
+carries its decimal in brackets, and the trailing message is worded by the
+panel.
 
 ## Cross-check matrix
 

@@ -80,14 +80,64 @@ final class SKUTests: XCTestCase {
                        "Slim N")
     }
 
-    func testNilOutsideCSME12Scope() {
+    func testNilOutsideCSMEScope() {
         // Non-CSME variant → nil (family handled elsewhere or not at all).
         var nonCSME = Self.facts()
         nonCSME.variant = "CSTXE"
         XCTAssertNil(SKU.csme(nonCSME))
-        // CSME < 12 (11 has its own methodology) → nil.
-        XCTAssertNil(SKU.csme(Self.facts(major: 11, minor: 8, build: 1183, year: 2017)))
+        // CSME 10 and older are not this decode's business.
+        XCTAssertNil(SKU.csme(Self.facts(major: 10, minor: 0)))
         // No 0x0C and no 0x0F → nothing to name the SKU with.
         XCTAssertNil(SKU.csme(Self.facts(skuType: nil, skuCaps: nil, fwSku: nil)))
+    }
+
+    // MARK: - CSME 11
+
+    /// The real CSME-11 dump: 0x0C says Corporate (SKU Type 0) and its SKU
+    /// Platform field says Low Power, which is the whole answer — the console
+    /// prints "Corporate LP".
+    func testCSME11ReadsItsPlatformFromTheExtension() {
+        let facts = Self.facts(major: 11, minor: 8, hotfix: 92, build: 4222,
+                               year: 2022, month: 2, skuType: 0,
+                               skuCaps: 0xFFFF_FFDF, skuPlatform: 1)
+        XCTAssertEqual(SKU.csme(facts), "Corporate LP")
+
+        var halo = facts
+        halo.skuPlatform = 0
+        XCTAssertEqual(SKU.csme(halo), "Corporate H")
+    }
+
+    /// The extension only speaks from 11.0.0.1205 on. Before that upstream
+    /// reads the letter out of the Huffman-decompressed `kernel` module — a
+    /// scan that is not ported — so such a firmware falls back to its database
+    /// row, and says nothing at all without one.
+    func testCSME11FallsBackToTheDatabaseRowOnOlderBuilds() {
+        let row = "11.0.0.1180_COR_LP_C_NPDM_PRD_RGN_ABCD"
+        let old = Self.facts(major: 11, minor: 0, hotfix: 0, build: 1180,
+                             skuType: 0, skuPlatform: 1, databaseRow: row)
+        XCTAssertEqual(SKU.csme(old), "Corporate LP",
+                       "the platform comes from the row, not the extension")
+
+        var unrecorded = old
+        unrecorded.databaseRow = nil
+        XCTAssertNil(SKU.csme(unrecorded))
+
+        // 11.0.0.1205 is where the extension starts being read — and 7101 is
+        // the one build past it that upstream excludes.
+        var atTheCut = old
+        atTheCut.build = 1205
+        atTheCut.databaseRow = nil
+        XCTAssertEqual(SKU.csme(atTheCut), "Corporate LP")
+        var excluded = atTheCut
+        excluded.build = 7101
+        XCTAssertNil(SKU.csme(excluded))
+    }
+
+    /// A CSME 11 whose SKU Platform field carries something outside the two
+    /// documented values is not guessed at.
+    func testCSME11WithAnUnreadablePlatformSaysNothing() {
+        XCTAssertNil(SKU.csme(Self.facts(major: 11, minor: 8, hotfix: 92,
+                                         build: 4222, skuType: 0,
+                                         skuPlatform: 3)))
     }
 }

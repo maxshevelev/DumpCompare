@@ -19,10 +19,18 @@ import Foundation
 ///   `FWSKUCaps` bit 8 `H` / bit 9 `LP` labels (`skuc_dict`), with the CSME
 ///   14.5 `H→V` and 13 Slim-`LP→N` corrections applied on that last path.
 ///
-/// Only the CSME 12+ path is ported here; other families (and CSME 11, whose
-/// SKU needs a kernel/Huffman scan) are left to a future increment. The inputs
-/// are the *decoded* `CSE_Ext_0C`/`CSE_Ext_0F_R2` facts plus the canonical
-/// MEA.dat row — no byte reading, so every branch is unit-testable.
+/// CSME 11 composes the same label with a platform letter of its own
+/// (MEA.py 13091–13130): from 11.0.0.1205 the `CSE_Ext_0C` SKU Platform field
+/// says it outright (0 Halo, 1 Low Power), and only an older build sends
+/// upstream into the Huffman-decompressed `kernel` module for a byte pattern —
+/// that scan is not ported, and such a firmware falls back to the database row
+/// as upstream's last resort does. Note the order is the other way round from
+/// CSME 12+: there the database *overrides* the extensions, here it only fills
+/// in for them.
+///
+/// Other families are left to a future increment. The inputs are the *decoded*
+/// `CSE_Ext_0C`/`CSE_Ext_0F_R2` facts plus the canonical MEA.dat row — no byte
+/// reading, so every branch is unit-testable.
 enum SKU {
     /// A pair of human label + short database code.
     typealias Label = (display: String, code: String)
@@ -78,7 +86,7 @@ enum SKU {
     /// Compose the CSME 12+ `SKU` string, or nil when there is no determinate
     /// value (non-CSME / CSME 11 / no SKU-type source to name the SKU with).
     static func csme(_ f: Facts) -> String? {
-        guard f.variant == "CSME", f.major >= 12 else { return nil }
+        guard f.variant == "CSME", f.major >= 11 else { return nil }
 
         // ——— SKU-Type label (main flow 13061): 0x0C unless 0x0F_R2 differs
         // meaningfully. Absent blocks read as an empty label, so a genuine
@@ -96,13 +104,18 @@ enum SKU {
         }
         guard !type.display.isEmpty else { return nil }
 
+        // ——— CSME 11's own platform letter, extension first.
+        if f.major == 11 {
+            guard let letter = csme11Platform(f) else { return nil }
+            return "\(type.display) \(letter)"
+        }
+
         // ——— Platform letter (`get_cse_db` + `get_csme12_sku`).
         var platform: String
         if let row = f.databaseRow {
             // A DB match sets sku != 'NaN', so the DB's PCH platform overrides
             // every extension/MFS source (get_cse_db CSME cell 2).
-            let cells = row.split(separator: "_", omittingEmptySubsequences: false)
-            platform = cells.count > 2 ? String(cells[2]) : "Unknown"
+            platform = platformCell(row) ?? "Unknown"
         } else if isCSME12Alpha(f) {
             // CSME 12.0.0 alpha only: SKUPlatform 00 = H, 01 = LP.
             platform = [0: "H", 1: "LP"][f.skuPlatform ?? -1] ?? "Unknown"
@@ -122,6 +135,28 @@ enum SKU {
         }
 
         return "\(type.display) \(platform)"
+    }
+
+    /// CSME 11's platform letter: the `CSE_Ext_0C` SKU Platform field on
+    /// 11.0.0.1205 and later (0 Halo, 1 Low Power), else the database row's
+    /// own cell. nil when neither says one — an older build, whose letter
+    /// upstream reads out of the decompressed `kernel` module, a scan that is
+    /// not ported.
+    private static func csme11Platform(_ f: Facts) -> String? {
+        let extensionSaysIt = f.minor > 0
+            || f.hotfix > 0
+            || (f.build >= 1205 && f.build != 7101)
+        if extensionSaysIt, let letter = [0: "H", 1: "LP"][f.skuPlatform ?? -1] {
+            return letter
+        }
+        return f.databaseRow.flatMap(platformCell)
+    }
+
+    /// The PCH platform cell of a CSME database row (`get_cse_db` cell 2).
+    private static func platformCell(_ row: String) -> String? {
+        let cells = row.split(separator: "_", omittingEmptySubsequences: false)
+        guard cells.count > 2, !cells[2].isEmpty else { return nil }
+        return String(cells[2])
     }
 
     /// CSME 12.0.0-alpha gate of `get_csme12_sku`: pre-2018-08 engineering
