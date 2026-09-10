@@ -482,8 +482,16 @@ private struct ChecksumPass: Sendable {
         // row, so it is also the one that has to open the branches on the way
         // to it: the node under the caret may sit inside a volume nobody has
         // read yet, and a tree that has not read it has nothing to reveal.
+        //
+        // Which means this answers later, and can take as long as opening that
+        // branch does. The bar says so for the whole of it — a button that
+        // answers a moment later and says nothing in between is a button the
+        // reader takes for broken and presses again.
+        controller.showBusy()
         tree.materialize(containing: offset) { [weak self] chain in
-            guard let self, let node = chain.last else { return }
+            guard let self else { return }
+            self.controller.endBusy()
+            guard let node = chain.last else { return }
             self.focus = node.id
             self.show(publish: false)
         }

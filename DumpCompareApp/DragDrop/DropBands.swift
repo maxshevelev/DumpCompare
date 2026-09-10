@@ -16,16 +16,19 @@ final class DropTargetView: NSView {
     /// The side of the square plate a refusal wears.
     static let refusalPlateSide: CGFloat = 56
 
+    /// Whether the zone is showing its hover fill. Held so a theme switch can
+    /// repaint the plate without forgetting whether it was lit (§3.1).
+    private var highlighted = false
+
     init(title: String) {
         super.init(frame: .zero)
         wantsLayer = true
         // While idle the zone is a quiet milky plate; the blue fill appears on
         // hover only (§4.3). The caption sits on its own frosted plate, so
         // neither fill ever bleeds into the text.
-        layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.9).cgColor
         layer?.cornerRadius = 8
-        layer?.borderColor = NSColor.separatorColor.cgColor
         layer?.borderWidth = 1
+        applyPlateColors()
 
         // The frosted plate: the standard popover material, rounded, hugging
         // the caption. It is a dynamic material — it adapts to the theme and
@@ -128,15 +131,39 @@ final class DropTargetView: NSView {
     var titleForTesting: String { label.stringValue }
 
     func setHighlighted(_ highlighted: Bool) {
-        // Hover floods the zone with a translucent accent-blue fill; idle keeps
-        // the quiet milky plate. Hover is also signalled by the accent border
-        // and a thicker stroke. The caption's frosted plate is untouched — its
-        // material and label adapt on their own (§4.3).
-        layer?.backgroundColor = (highlighted
-            ? NSColor.controlAccentColor.withAlphaComponent(0.25)
-            : NSColor.windowBackgroundColor.withAlphaComponent(0.9)).cgColor
-        layer?.borderColor = (highlighted ? NSColor.controlAccentColor : NSColor.separatorColor).cgColor
+        self.highlighted = highlighted
+        // Hover is also signalled by the accent border and a thicker stroke.
         layer?.borderWidth = highlighted ? 2 : 1
+        // Hover floods the zone with a translucent accent-blue fill; idle keeps
+        // the quiet milky plate. The caption's frosted plate is untouched — its
+        // material and label adapt on their own (§4.3).
+        applyPlateColors()
+    }
+
+    /// A theme switch arrives through `viewDidChangeEffectiveAppearance`, and the
+    /// plate's colours are resolved through the *effective* appearance — not the
+    /// one that happened to be current when the zone was built. Without this the
+    /// launch theme's bake would stay on the layer, and a zone that is never
+    /// re-painted by a hover — a strip the pointer merely passes, the New Tab
+    /// plate — keeps a light milky plate in a dark window (§3.1). The caption's
+    /// frosted material needs nothing: it is dynamic and adapts on its own.
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyPlateColors()
+    }
+
+    /// Paints the plate's fill and border from `highlighted`, resolving the
+    /// colours as the current drawing appearance so the bake matches the theme
+    /// it is painted for (§3.1).
+    private func applyPlateColors() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.backgroundColor = (highlighted
+                ? NSColor.controlAccentColor.withAlphaComponent(0.25)
+                : NSColor.windowBackgroundColor.withAlphaComponent(0.9)).cgColor
+            layer?.borderColor = (highlighted
+                ? NSColor.controlAccentColor
+                : NSColor.separatorColor).cgColor
+        }
     }
 }
 

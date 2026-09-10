@@ -76,4 +76,27 @@ final class PanelAppearanceTests: XCTestCase {
         XCTAssertGreaterThan(backgroundComponent(minimap.layer?.backgroundColor), 0.5,
                             "the minimap must return to the light paper in light mode")
     }
+
+    /// A drop zone paints its idle "milky" plate onto a layer from
+    /// `windowBackgroundColor`, the same layer-bake that left the find bar
+    /// white in dark mode (§3.1). The colour is captured when the zone is built
+    /// and only re-resolved here — so a zone the pointer never hovers (a thin
+    /// insert/append strip, the New Tab plate) keeps the launch theme's plate
+    /// in a dark window. All five zones are the same view; Replace and Open-as-
+    /// Second merely get re-painted by a hover more often, which is why only
+    /// the strips looked wrong.
+    func testDropZonePlateFollowsAppearance() {
+        let zone = DropTargetView(title: SingleFileDropTarget.replace.title)
+        defer { zone.removeFromSuperview() }
+
+        zone.appearance = NSAppearance(named: .darkAqua)
+        zone.viewDidChangeEffectiveAppearance()
+        XCTAssertLessThan(backgroundComponent(zone.layer?.backgroundColor), 0.5,
+                          "the idle zone must use the dark plate in dark mode, not a light launch bake")
+
+        zone.appearance = NSAppearance(named: .aqua)
+        zone.viewDidChangeEffectiveAppearance()
+        XCTAssertGreaterThan(backgroundComponent(zone.layer?.backgroundColor), 0.5,
+                            "the idle zone must return to the light plate in light mode")
+    }
 }

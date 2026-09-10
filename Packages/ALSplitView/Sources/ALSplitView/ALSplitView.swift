@@ -30,6 +30,13 @@ import Cocoa
 /// render in the normal subview order and never show through a pane's
 /// chrome.
 ///
+/// A divider only earns a strip between two panes that both have room. A
+/// pane collapsed by its policy to `.fixed(0)` — a hidden minimap or
+/// results panel — drops its divider entirely: nothing is drawn at the
+/// pane's edge, the pane above takes the strip and reaches the split's
+/// edge, and the cursor and drags pass over that edge as if it were not
+/// there.
+///
 /// ## Layout
 ///
 /// The panes and dividers are placed in order along the axis:
@@ -153,9 +160,12 @@ public final class ALSplitView: NSView {
             divider.translatesAutoresizingMaskIntoConstraints = true
             divider.autoresizingMask = []
             divider.wantsLayer = true
-            divider.layer?.backgroundColor = (dividerColor ?? Self.defaultDividerColor).cgColor
             dividers.append(divider)
             addSubview(divider)
+            // Painted by the one path `updateDividerColor` uses, so every
+            // divider is filled the same way — and re-filled on an appearance
+            // change rather than keeping the theme it was added in.
+            updateDividerColor()
         }
 
         addSubview(pane)
@@ -163,12 +173,28 @@ public final class ALSplitView: NSView {
     }
 
     /// Applies the current `dividerColor` to all divider subviews.
+    ///
+    /// Resolved as the current drawing appearance, so the layer keeps the
+    /// theme it was painted for rather than a bake from the appearance that
+    /// happened to be current when it ran.
     private func updateDividerColor() {
         let color = dividerColor ?? Self.defaultDividerColor
-        for divider in dividers {
-            divider.wantsLayer = true
-            divider.layer?.backgroundColor = color.cgColor
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            for divider in dividers {
+                divider.wantsLayer = true
+                divider.layer?.backgroundColor = color.cgColor
+            }
         }
+    }
+
+    /// A theme switch arrives through `viewDidChangeEffectiveAppearance`, and
+    /// the dividers re-resolve their fill against the new appearance.
+    ///
+    /// Without this the grey a divider was added under stays on its layer, so a
+    /// window that went dark keeps the light lines it got in light mode (§3.1).
+    override public func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateDividerColor()
     }
 
     // MARK: - Layout policy
@@ -199,16 +225,20 @@ public final class ALSplitView: NSView {
 
     /// The position of the divider between panes `index` and `index + 1`,
     /// measured from the axis origin (the leading edge, or the top edge
-    /// when stacked): the combined thickness of the panes above it.
+    /// when stacked): the combined thickness of the panes above it and the
+    /// live dividers between them. A collapsed trailing pane's parked
+    /// divider contributes no thickness.
     public func dividerPosition(at index: Int) -> CGFloat {
         guard index >= 0, index < panes.count - 1 else { return 0 }
         let sizes = paneSizes(available: axisAvailable())
         var position: CGFloat = 0
         for i in 0...index {
             position += sizes[i]
+        }
+        for d in 0..<index where !(trailingPaneCollapsed && d == panes.count - 2) {
             position += dividerThickness
         }
-        return position - dividerThickness
+        return position
     }
 
     /// The furthest the divider at `index` can go along the axis: every pane
@@ -263,7 +293,18 @@ public final class ALSplitView: NSView {
     private func applyDividerPosition(_ position: CGFloat, at index: Int) {
         let available = axisAvailable()
         guard available > 0 else { return }
-        let sizes = paneSizes(available: available)
+        // A divider position describes the axis once the divider is live — but
+        // moving a collapsed trailing pane's own divider starts with that
+        // divider dropped, so `axisAvailable()` (which gives the strip to the
+        // pane above) under-counts the room by one divider thickness. Sizing
+        // the panes against that short axis is what made a panel opened from
+        // collapse come out `requested + dividerThickness`. The conversion
+        // below uses the axis as the move leaves it: the moved divider's
+        // thickness back in.
+        let conversionAvailable = available
+            - (trailingPaneCollapsed && index == panes.count - 2 ? dividerThickness : 0)
+        guard conversionAvailable > 0 else { return }
+        let sizes = paneSizes(available: conversionAvailable)
         let above = index
         let below = index + 1
         // A position is measured from the leading edge and therefore counts the
@@ -275,15 +316,15 @@ public final class ALSplitView: NSView {
         let aboveSize = max(0, contentAbove - sizes.prefix(index).reduce(0, +))
         switch paneLayouts[above] {
         case .proportional:
-            setPaneLayout(.proportional(aboveSize / available), at: above)
+            setPaneLayout(.proportional(aboveSize / conversionAvailable), at: above)
         case .fixed:
             setPaneLayout(.fixed(aboveSize), at: above)
         case .fill:
             let furtherBelow = sizes.suffix(from: below + 1).reduce(0, +)
-            let belowSize = max(0, available - contentAbove - furtherBelow)
+            let belowSize = max(0, conversionAvailable - contentAbove - furtherBelow)
             switch paneLayouts[below] {
             case .proportional:
-                setPaneLayout(.proportional(belowSize / available), at: below)
+                setPaneLayout(.proportional(belowSize / conversionAvailable), at: below)
             default:
                 setPaneLayout(.fixed(belowSize), at: below)
             }
@@ -291,6 +332,24 @@ public final class ALSplitView: NSView {
     }
 
     // MARK: - Animation
+
+    /// Whether the last pane is collapsed to zero by its policy — the
+    /// `.fixed(0)` a hidden minimap or results panel collapses to, leaving
+    /// a single pane on screen.
+    ///
+    /// A divider parked at a collapsed pane's edge earns its keep only
+    /// between two panes that both have room: as a bare strip it is a thin
+    /// line the clamp will not let move, and it still claims the resize
+    /// cursor and the drag over its slop. So while the last pane is
+    /// collapsed its divider is dropped — not drawn, given no thickness
+    /// (the pane above reaches the split's edge via `axisAvailable`), and
+    /// not hit-tested. Opening the pane again (`.fixed(size > 0)`) restores
+    /// it.
+    private var trailingPaneCollapsed: Bool {
+        guard panes.count >= 2 else { return false }
+        if case .fixed(let size) = paneLayouts[panes.count - 1], size <= 0 { return true }
+        return false
+    }
 
     /// Whether a divider animation is currently running.
     public private(set) var isAnimatingDivider = false
@@ -525,10 +584,23 @@ public final class ALSplitView: NSView {
             offset += size
             if i < count - 1 {
                 let divider = dividers[i]
-                divider.frame = isVertical
-                    ? NSRect(x: offset, y: 0, width: dividerThickness, height: bounds.height)
-                    : NSRect(x: 0, y: offset, width: bounds.width, height: dividerThickness)
-                offset += dividerThickness
+                if trailingPaneCollapsed && i == count - 2 {
+                    // The collapsed pane's divider is parked: it draws nothing
+                    // and catches no cursor. Its strip was already given back
+                    // to the pane above (`axisAvailable` counts only live
+                    // dividers), so no thickness is added to the offset and
+                    // the collapsed pane sits at the edge.
+                    divider.isHidden = true
+                    divider.frame = isVertical
+                        ? NSRect(x: offset, y: 0, width: 0, height: bounds.height)
+                        : NSRect(x: 0, y: offset, width: bounds.width, height: 0)
+                } else {
+                    divider.isHidden = false
+                    divider.frame = isVertical
+                        ? NSRect(x: offset, y: 0, width: dividerThickness, height: bounds.height)
+                        : NSRect(x: 0, y: offset, width: bounds.width, height: dividerThickness)
+                    offset += dividerThickness
+                }
             }
         }
         // The divider grab areas moved, so the resize-cursor rects that
@@ -577,6 +649,9 @@ public final class ALSplitView: NSView {
         guard count >= 2 else { return }
         let slop = dividerHitSlop
         for i in 0..<(count - 1) {
+            // A collapsed pane's parked divider gets no cursor: it is not
+            // there to grab.
+            if trailingPaneCollapsed && i == count - 2 { continue }
             let position = dividerPosition(at: i)
             let rect: NSRect
             if isVertical {
@@ -606,6 +681,9 @@ public final class ALSplitView: NSView {
         guard count >= 2 else { return nil }
         let slop = dividerHitSlop
         for i in 0..<(count - 1) {
+            // A collapsed pane's parked divider is not grabbable: it is not
+            // there to drag.
+            if trailingPaneCollapsed && i == count - 2 { continue }
             let position = dividerPosition(at: i)
             let extent = dividerThickness + slop * 2
             let value = isVertical ? point.x : point.y
@@ -672,11 +750,16 @@ public final class ALSplitView: NSView {
 
     // MARK: - Axis math
 
-    /// The free axis length: the bounds' axis minus all the dividers.
+    /// The free axis length: the bounds' axis minus the *live* dividers.
+    ///
+    /// A collapsed trailing pane's divider is dropped (`trailingPaneCollapsed`),
+    /// so its thickness is not claimed here either: the pane it borders takes
+    /// the strip and reaches the split's edge, instead of stopping a hairline
+    /// short of it.
     public func axisAvailable() -> CGFloat {
         let total = isVertical ? bounds.width : bounds.height
-        let dividers = dividerThickness * CGFloat(max(0, panes.count - 1))
-        return max(0, total - dividers)
+        let liveDividers = max(0, panes.count - 1) - (trailingPaneCollapsed ? 1 : 0)
+        return max(0, total - dividerThickness * CGFloat(liveDividers))
     }
 
     deinit {

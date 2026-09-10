@@ -5500,6 +5500,25 @@ final class MainViewController: NSViewController {
         focusActiveHexView()
     }
 
+    /// Escape pressed while the dump has the focus — not the pattern field — is
+    /// the same "I am done searching" as Escape in the bar: it closes the bar
+    /// and ends the highlighting, but the set, and a results panel listing it,
+    /// survive, exactly as `Done` and the bar's own Escape leave them (§11).
+    ///
+    /// The pattern field is the one place Escape must NOT close the bar: there
+    /// it is the field's own key (it clears the field, which ends the search as
+    /// a text change). The field sits in the bar's subtree, so its Escape is
+    /// consumed before it climbs to here; this only ever sees the Escape the
+    /// dump lets through. With no bar up, Escape has nothing to dismiss, so it
+    /// passes on untouched.
+    override func cancelOperation(_ sender: Any?) {
+        if !findBar.isHidden {
+            hideFindBar()
+        } else {
+            super.cancelOperation(sender)
+        }
+    }
+
     /// A press of Find Next / Find Previous (§11).
     ///
     /// There are two ways to find the next occurrence, and the model owns both:

@@ -739,6 +739,14 @@ final class PaneViewModel: HexViewDataSource {
 
     func revert() throws {
         guard let doc = document else { return }
+        // Where the user is looking is not an edit, so a revert keeps it: the
+        // caret comes back where it was, clamped to the saved size, and the
+        // reveal after the reload below therefore leaves the viewport put too.
+        // The document resets its selection to 0 on its own — that would scroll
+        // the dump to the top for the crime of reverting, and throw away the
+        // place the user was reading. (Set after `clearMatches` and before
+        // `notify`, so the reload renders the caret where the user left it.)
+        let caret = doc.selection.start
         try doc.revert()
         refreshSavedStorage()
         resetEditingState()
@@ -753,6 +761,7 @@ final class PaneViewModel: HexViewDataSource {
         // Nor does the lazy tree/MEA cache: a revert replaces the storage
         // wholesale, exactly like an open.
         uefiState.reset()
+        doc.setSelection(.empty(at: min(caret, doc.size), fileSize: doc.size))
         notify()
         notifyCompanionContentFullyChanged()
     }
