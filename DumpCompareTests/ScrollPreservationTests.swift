@@ -97,6 +97,63 @@ final class ScrollPreservationTests: XCTestCase {
                        "the drop left the viewport where the reader was")
     }
 
+    /// Every way of opening a file into a pane is the same way.
+    ///
+    /// The Open panel and Launch Services (`openFiles`), a drop on Replace
+    /// Current File, and the pane header's own Open (`openFiles(into:)`) are
+    /// three gestures, not three behaviours: each is a route into
+    /// `openIntoPane`, and below it there is one `PaneViewModel.open` in the
+    /// whole app. What that has to mean to a reader is that they answer
+    /// identically — the caret comes over, and the viewport stays. Driving all
+    /// three over one setup is what stops a fourth entry point from quietly
+    /// growing rules of its own.
+    func testEveryRouteIntoAPaneLandsTheSameWay() throws {
+        var urls: [URL] = []
+        defer { for url in urls { try? FileManager.default.removeItem(at: url) } }
+
+        /// Opens a file the given way over a pane scrolled away from its
+        /// caret, and reports where the reader was left.
+        func outcome(
+            of route: (MainViewController, URL) -> Void
+        ) throws -> (y: CGFloat, caret: UInt64, yBefore: CGFloat) {
+            let (controller, window, url, pane, _) =
+                try makeScrolledSingleFile([UInt8](repeating: 0x11, count: 16384))
+            defer { cleanup(controller, [url]) }
+            urls.append(url)
+
+            controller.windowModel.pane1.moveCaret(to: 0x3F00)
+            scroll(pane, toY: 400)
+            window.layoutIfNeeded()
+            let yBefore = pane.scrollView.contentView.bounds.origin.y
+
+            let second = try tempFile([UInt8](repeating: 0x22, count: 16384))
+            urls.append(second)
+            route(controller, second)
+            window.layoutIfNeeded()
+
+            return (pane.scrollView.contentView.bounds.origin.y,
+                    controller.windowModel.pane1.caretOffset,
+                    yBefore)
+        }
+
+        let panel = try outcome { controller, url in controller.openFiles([url]) }
+        let drop = try outcome { controller, url in
+            controller.handleSingleFileDrop(target: .replace, urls: [url])
+        }
+        let header = try outcome { controller, url in
+            controller.openFiles(into: 0, urls: [url])
+        }
+
+        XCTAssertGreaterThan(panel.yBefore, 0, "precondition: the pane is scrolled down")
+        for (name, result) in [("the Open panel", panel), ("a drop", drop),
+                               ("the pane header", header)] {
+            XCTAssertEqual(result.y, result.yBefore, accuracy: 0.5,
+                           "\(name) left the viewport where the reader was")
+            XCTAssertEqual(result.caret, 0x3F00,
+                           "\(name) carried the caret over")
+        }
+    }
+
     /// Re-dropping the file that is already open is a reload (§4.1 rule 5),
     /// and a reload is not a navigation either: the reader asked for the bytes
     /// back, not to be taken to wherever the caret happens to be.

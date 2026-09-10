@@ -4380,7 +4380,9 @@ final class MainViewController: NSViewController {
     /// Opens the first chosen file into the pane at `index` (its header's pane),
     /// a second into the other pane only when that one is empty; extras (and an
     /// unplaceable second) are ignored. Mirrors the drop rules of §4.3.
-    private func openFiles(into index: Int, urls: [URL]) {
+    /// Internal (not private) so a test can drive this route the way it drives
+    /// the others — every entry point deserves the same proof.
+    func openFiles(into index: Int, urls: [URL]) {
         let files = openableFiles(from: urls)
         guard let first = files.first else { return }
         guard openIntoPane(index: index, url: first) else { return }
