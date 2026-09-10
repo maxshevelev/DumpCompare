@@ -38,6 +38,59 @@ final class PreCSEDecodeTests: XCTestCase {
                          major: major, minor: minor, hotfix: hotfix, build: build)
     }
 
+    /// Row 13 and row 21 — the two things only an ME 7 image says.
+    ///
+    /// The Patsburg bit rides in the same `$SKU` byte as the SKU size, and the
+    /// blacklist entries sit at fixed offsets from the manifest's tag, which is
+    /// upstream's `start_man_match` (the byte before the tag) — the manifest
+    /// base plus 0x1B here.
+    func testME7SaysPatsburgSupportAndItsDowngradeBlacklist() throws {
+        // SKUSize 3 (1.5 MB) with the Patsburg bit set: byte 4 = 0x83.
+        let patsburg = skuRegion(blockOffset: 0x40,
+                                 attrib: [0, 0, 0, 0, 0x83, 0, 0, 0])
+        let supported = try XCTUnwrap(summary(in: patsburg, at: 0, major: 7, minor: 1))
+        XCTAssertEqual(supported.patsburgSupport, true)
+        XCTAssertEqual(supported.platform, "CPT/PBG", "and the platform says so too")
+
+        let plain = skuRegion(blockOffset: 0x40, attrib: [0, 0, 0, 0, 0x03, 0, 0, 0])
+        let unsupported = try XCTUnwrap(summary(in: plain, at: 0, major: 7, minor: 1))
+        XCTAssertEqual(unsupported.patsburgSupport, false)
+        XCTAssertEqual(unsupported.platform, "CPT")
+
+        // A major whose `$SKU` byte means something else says nothing about
+        // Patsburg.
+        XCTAssertNil(try XCTUnwrap(summary(in: patsburg, at: 0, major: 10, minor: 0))
+            .patsburgSupport)
+    }
+
+    /// The blacklist words: minor/hotfix/build at 0x6DF and 0x6EB past the
+    /// manifest's tag, and a zero build is the "Empty" line upstream prints.
+    func testTheDowngradeBlacklistReadsBothLines() {
+        var region = Data(repeating: 0, count: 0x2000)
+        func write(_ words: [Int], at offset: Int) {
+            for (index, word) in words.enumerated() {
+                region[offset + index * 2] = UInt8(word & 0xFF)
+                region[offset + index * 2 + 1] = UInt8((word >> 8) & 0xFF)
+            }
+        }
+        let base = 0x100
+        let tag = base + 0x1B
+        write([1, 2, 1000], at: tag + 0x6DF)   // <= 7.1.2.1000
+        write([0, 0, 0], at: tag + 0x6EB)      // Empty
+
+        let entries = PreCSEME.downgradeBlacklist(in: region, manifestBase: base)
+        XCTAssertEqual(entries.sevenZero,
+                       PreCSEME.BlacklistEntry(minor: 1, hotfix: 2, build: 1000))
+        XCTAssertNil(entries.sevenOne, "a zero build word blacklists nothing")
+
+        // Past the end of the region there is nothing to read, and nothing is
+        // claimed.
+        let short = PreCSEME.downgradeBlacklist(in: Data(repeating: 0, count: 0x100),
+                                                manifestBase: 0)
+        XCTAssertNil(short.sevenZero)
+        XCTAssertNil(short.sevenOne)
+    }
+
     // MARK: - Byte split (scan)
 
     func testScanSplitsT450OracleBytesExactly() throws {

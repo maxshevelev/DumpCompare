@@ -754,7 +754,16 @@ public actor MEFirmwareAnalyzer {
             release: identity.release,
             type: firmwareType,
             sku: preCSE?.sku ?? iup?.sku ?? skuText,
-            platform: preCSE?.platform ?? iup?.platform ?? "",
+            // Row 22: a pre-CSE family and an IUP image name their own
+            // platform; a CSE one is named from its version, and only where
+            // no chipset initialisation table already says which chipset it
+            // initialises.
+            platform: preCSE?.platform ?? iup?.platform
+                ?? CSEPlatformNames.name(
+                    family: identity.family, major: identity.major,
+                    minor: identity.minor,
+                    chipsetInitTable: Self.chipsetInitTable(of: mfsVolume))
+                ?? "",
             // The main table's stepping: an IUP image's own derived letter,
             // else what the database records for this firmware.
             chipsetStepping: iup?.chipsetStepping ?? identity.chipsetStepping,
@@ -796,8 +805,43 @@ public actor MEFirmwareAnalyzer {
                 ? identity.powerDownMitigation.flatMap(PowerDownMitigation.init(databaseToken:))
                 : nil,
             workstationSupport: chainHoist.workstation,
+            patsburgSupport: preCSE?.patsburgSupport,
+            // Row 21: ME 7 alone carries the two blacklist entries, at fixed
+            // offsets in its own manifest.
+            downgradeBlacklist: (identity.family == .me && identity.major == 7)
+                ? Self.downgradeBlacklist(in: region, manifest: manifest)
+                : nil,
             oemCustomized: oemCustomized,
             issues: issues)
+    }
+
+    /// The two Downgrade Blacklist entries of an ME 7 manifest, as the model
+    /// carries them — nil when neither line blacklists anything.
+    private static func downgradeBlacklist(
+        in region: Data, manifest: ManifestParser.Manifest
+    ) -> DowngradeBlacklist? {
+        let entries = PreCSEME.downgradeBlacklist(in: region,
+                                                  manifestBase: manifest.base)
+        guard entries.sevenZero != nil || entries.sevenOne != nil else { return nil }
+        func version(_ entry: PreCSEME.BlacklistEntry?) -> Version3? {
+            entry.map { Version3(minor: $0.minor, hotfix: $0.hotfix, build: $0.build) }
+        }
+        return DowngradeBlacklist(sevenZero: version(entries.sevenZero),
+                                  sevenOne: version(entries.sevenOne))
+    }
+
+    /// What is known about an image's chipset initialisation table: the
+    /// decoded aggregate when there is one, "absent" when the volume was read
+    /// and holds none — and "unknown" for a file-table volume with files in
+    /// it, whose configuration this engine cannot read yet (it needs
+    /// `FileTable.dat` naming) and which may well carry one.
+    private static func chipsetInitTable(of volume: MFSVolume?)
+        -> CSEPlatformNames.ChipsetInitTable {
+        if volume?.pchInit?.chipsets.isEmpty == false { return .present }
+        if volume?.usesFTBL == true, (volume?.presentFileCount ?? 0) > 0 {
+            return .unknown
+        }
+        return .absent
     }
 
     /// Validate the chosen manifest's RSA signature against its protected-data

@@ -106,6 +106,15 @@ public struct FirmwareAnalysis: Codable, Sendable, Equatable, Identifiable {
     /// (HEDT/Lewisburg) bit of the last `CSE_Ext_0C` client-system-information
     /// extension in the operational chain. nil when the chain carries none.
     public var workstationSupport: Bool? = nil
+    /// Patsburg Support (row 13, upstream `is_patsburg`): whether an ME 7
+    /// firmware supports the Patsburg (X79/C600) chipset, from the `$SKU`
+    /// attributes' Patsburg bit. nil for a family or major whose `$SKU` byte
+    /// means something else, and for an image with no `$SKU` at all.
+    public var patsburgSupport: Bool? = nil
+    /// Downgrade Blacklist 7.0 / 7.1 (row 21, upstream `me7_blist_1` /
+    /// `me7_blist_2`): the newest firmware of each ME 7 line this image
+    /// refuses to be downgraded to. nil for anything but ME 7.
+    public var downgradeBlacklist: DowngradeBlacklist? = nil
     /// OEM Configuration (row 14, upstream `oem_signed or oemp_found or
     /// utok_found`): an OEM-signed image carries a real `oem.key` CPD module or a
     /// populated `OEMP`/`UTOK`/`STKN` partition, so the row says Yes; a stock
@@ -165,6 +174,34 @@ public enum ReleaseType: String, Codable, Sendable {
 /// placeholder. `.unknown` is the honest answer when nothing decided.
 public enum FirmwareType: String, Codable, Sendable {
     case region, extracted, update, stock, unknown
+}
+
+/// The two Downgrade Blacklist entries an ME 7 manifest carries (upstream
+/// `me7_blist_1` / `me7_blist_2`): the newest 7.0 and 7.1 firmware the image
+/// refuses to be downgraded to. Either is nil where the manifest's build word
+/// is zero — upstream's "Empty", nothing blacklisted on that line.
+public struct DowngradeBlacklist: Codable, Sendable, Equatable {
+    public var sevenZero: Version3?
+    public var sevenOne: Version3?
+
+    public init(sevenZero: Version3?, sevenOne: Version3?) {
+        self.sevenZero = sevenZero
+        self.sevenOne = sevenOne
+    }
+}
+
+/// The three lower words of an ME version — what a blacklist entry records,
+/// its major being the 7 the row's own label names.
+public struct Version3: Codable, Sendable, Equatable {
+    public var minor: Int
+    public var hotfix: Int
+    public var build: Int
+
+    public init(minor: Int, hotfix: Int, build: Int) {
+        self.minor = minor
+        self.hotfix = hotfix
+        self.build = build
+    }
 }
 
 /// Power Down Mitigation (upstream `sku_pdm` → `pdm_status`, MEA.py 13165–
@@ -1847,5 +1884,5 @@ public struct Issue: Codable, Sendable, Equatable, Identifiable {
 /// whether to surface the new data (`reference/result-model.md` §Versioning).
 public enum EngineModelRevision {
     /// Current revision of the `FirmwareAnalysis` shape.
-    public static let current = 27
+    public static let current = 28
 }

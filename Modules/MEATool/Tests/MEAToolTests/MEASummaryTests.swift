@@ -362,6 +362,61 @@ final class MEASummaryTests: XCTestCase {
         XCTAssertNil(try meuRow(nil), "an R0 manifest has no MEU block")
     }
 
+    /// Rows 13 and 21 are ME 7's: Patsburg support, and the two downgrade
+    /// blacklists — where "Empty" is an answer, not a missing value.
+    func testTheME7RowsAreME7s() throws {
+        let seven = try analysis([
+            "family": "me", "variant": "ME",
+            "manifest": manifestJSON(),
+            "version": ["major": 7, "minor": 1, "hotfix": 40, "build": 1214],
+            "patsburgSupport": true,
+            "downgradeBlacklist": ["sevenZero": ["minor": 0, "hotfix": 10,
+                                                 "build": 1200]],
+        ])
+        let rows = tableRows(seven)
+        XCTAssertEqual(value("Patsburg Support", in: rows), .value("Yes"))
+        XCTAssertEqual(value("Downgrade Blacklist 7.0", in: rows),
+                       .value("<= 7.0.10.1200"))
+        XCTAssertEqual(value("Downgrade Blacklist 7.1", in: rows), .value("Empty"),
+                       "nothing blacklisted on that line, which is what Empty says")
+
+        // An ME 7 image the engine read no `$SKU` from promises the row rather
+        // than answering "No".
+        let unread = try analysis([
+            "family": "me", "variant": "ME",
+            "manifest": manifestJSON(),
+            "version": ["major": 7, "minor": 1, "hotfix": 40, "build": 1214],
+        ])
+        XCTAssertEqual(value("Patsburg Support", in: tableRows(unread)), .comingSoon)
+        XCTAssertEqual(value("Downgrade Blacklist 7.0", in: tableRows(unread)),
+                       .value("Empty"))
+
+        // ME 8 prints none of the three.
+        let eight = try analysis([
+            "family": "me", "variant": "ME",
+            "manifest": manifestJSON(),
+            "version": ["major": 8, "minor": 1, "hotfix": 40, "build": 1214],
+            "patsburgSupport": true,
+        ])
+        XCTAssertNil(value("Patsburg Support", in: tableRows(eight)))
+        XCTAssertNil(value("Downgrade Blacklist 7.0", in: tableRows(eight)))
+    }
+
+    /// Row 22 names the platform when the engine could name one, and is
+    /// absent otherwise — the row the console prints only for a firmware whose
+    /// chipset it did not learn from an initialisation table.
+    func testChipsetSupportRowNamesThePlatformWhenThereIsOne() throws {
+        let named = try analysis(["manifest": manifestJSON(),
+                                  "platform": "ADP/RPP"])
+        let rows = tableRows(named)
+        XCTAssertEqual(value("Chipset Support", in: rows), .value("ADP/RPP"))
+        XCTAssertEqual(rows.last?.label, "Chipset Support",
+                       "and it closes the table, as it does in the console")
+
+        XCTAssertNil(value("Chipset Support",
+                           in: tableRows(try analysis(["manifest": manifestJSON()]))))
+    }
+
     /// Rows 12a and 12b belong to CSME 11 alone: its Power Down Mitigation as
     /// the database records it, and the Workstation bit of its client
     /// system-information extension. Any other major prints neither.

@@ -178,6 +178,15 @@ public enum MEASummary {
                 add("Workstation Support", .comingSoon)
             }
         }
+        // 13 · Patsburg Support — ME 7's own row: whether the firmware
+        // supports the X79/C600 chipset.
+        if analysis.family == .me, analysis.version.major == 7 {
+            if let patsburg = analysis.patsburgSupport {
+                add("Patsburg Support", .value(MEAText.yesNo(patsburg)))
+            } else if identified {
+                add("Patsburg Support", .comingSoon)
+            }
+        }
         // 14 · OEM Configuration — OEM-signed key / OEMP / UTOK presence. The
         // OEM detector answers Yes/No for every identified OEM-family image;
         // nil (a non-OEM family or unidentified) keeps the row grey.
@@ -248,6 +257,26 @@ public enum MEASummary {
         // does, and is not promised anywhere else.
         if let meu = meuVersion(analysis.version) {
             add("Manifest Extension Utility", .value(meu))
+        }
+
+        // 21 · Downgrade Blacklist 7.0 / 7.1 — ME 7 again: the newest
+        // firmware of each line this image refuses to be downgraded to. Both
+        // rows are always there for an ME 7 image, "Empty" being an answer of
+        // its own — the line blacklists nothing.
+        if analysis.family == .me, analysis.version.major == 7 {
+            let blacklist = analysis.downgradeBlacklist
+            add("Downgrade Blacklist 7.0", .value(blacklist?.sevenZero
+                .map(MEAText.downgradeBlacklist) ?? "Empty"))
+            add("Downgrade Blacklist 7.1", .value(blacklist?.sevenOne
+                .map(MEAText.downgradeBlacklist) ?? "Empty"))
+        }
+        // 22 · Chipset Support — the PCH or SoC the firmware is built for,
+        // shown only where the engine could name one (upstream's `platform !=
+        // 'NaN'`). On an image whose chipset initialisation table already
+        // names its chipset, the Chipset row above is the answer and this one
+        // is absent, exactly as in the console.
+        if !analysis.platform.isEmpty {
+            add("Chipset Support", .value(analysis.platform))
         }
 
         var blocks: [MEASummaryBlock] = [MEASummaryBlock(title: nil, rows: rows)]

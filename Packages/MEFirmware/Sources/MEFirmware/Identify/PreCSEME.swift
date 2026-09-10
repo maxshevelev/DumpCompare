@@ -39,6 +39,42 @@ enum PreCSEME {
     struct Summary: Equatable {
         var sku: String?
         var platform: String?
+        /// Row 13's Patsburg Support (upstream `is_patsburg`): the `$SKU`
+        /// Patsburg bit, which only ME 7–8 carries a meaning for. nil for
+        /// every other major, whose byte holds something else.
+        var patsburgSupport: Bool? = nil
+    }
+
+    /// Rows 21's two Downgrade Blacklist entries (upstream `me7_blist_1` /
+    /// `me7_blist_2`, MEA.py 12965–12972): the newest 7.0 and 7.1 firmware an
+    /// ME 7 image refuses to be downgraded to. Two `minor/hotfix/build` triples
+    /// read straight out of the manifest, at fixed offsets from the manifest's
+    /// tag — 0x6DF and 0x6EB, upstream's `start_man_match` being the byte
+    /// before that tag, i.e. this engine's manifest base plus 0x1B.
+    ///
+    /// A zero build word is upstream's "Empty": nothing is blacklisted, so the
+    /// entry comes back nil rather than as `<= 7.0.0.0`.
+    static func downgradeBlacklist(in region: Data, manifestBase: Int)
+        -> (sevenZero: BlacklistEntry?, sevenOne: BlacklistEntry?) {
+        let tag = manifestBase + 0x1B
+        return (entry(in: region, at: tag + 0x6DF), entry(in: region, at: tag + 0x6EB))
+    }
+
+    /// One blacklist entry: three u16 words — minor, hotfix, build.
+    struct BlacklistEntry: Equatable {
+        var minor: Int
+        var hotfix: Int
+        var build: Int
+    }
+
+    private static func entry(in region: Data, at p: Int) -> BlacklistEntry? {
+        guard p >= 0, p + 6 <= region.count else { return nil }
+        func u16(_ at: Int) -> Int {
+            Int(region[region.startIndex + at]) | Int(region[region.startIndex + at + 1]) << 8
+        }
+        let build = u16(p + 4)
+        guard build != 0 else { return nil }
+        return BlacklistEntry(minor: u16(p), hotfix: u16(p + 2), build: build)
     }
 
     /// Decode the first `$SKU` SKU_Attributes that follows the manifest at
@@ -142,13 +178,15 @@ enum PreCSEME {
                         || (build == 1041 && hotfix == 0 && minor == 0 && a.skuSize == 1) {
                 sku = "5MB"
             } else { sku = nil }
-            return Summary(sku: sku, platform: a.patsburg ? "CPT/PBG" : "CPT")
+            return Summary(sku: sku, platform: a.patsburg ? "CPT/PBG" : "CPT",
+                           patsburgSupport: a.patsburg)
         case 8:   // Panther Point
             let sku: String?
             if a.skuSize == 3 { sku = "1.5MB" }
             else if a.skuSize == 10 { sku = "5MB" }
             else { sku = nil }
-            return Summary(sku: sku, platform: "CPT/PBG/PPT")
+            return Summary(sku: sku, platform: "CPT/PBG/PPT",
+                           patsburgSupport: a.patsburg)
         case 9:   // Lynx Point / Wildcat Point / Lynx Point-LP
             let sku = skuTypeLabel(a.skuType)
             let platform: String?

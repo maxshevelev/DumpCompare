@@ -122,6 +122,13 @@ enum MEAText {
         case .unknown2: return "Unknown 2"
         }
     }
+    /// A Downgrade Blacklist row (row 21, upstream `me7_blist_1`/`_2`): the
+    /// newest firmware of that ME 7 line the image refuses to be downgraded
+    /// to, written as upstream writes it — `<= 7.1.2.1000`. The label of the
+    /// row names the line, so the major is always the 7.
+    static func downgradeBlacklist(_ entry: Version3) -> String {
+        "<= 7.\(entry.minor).\(entry.hotfix).\(entry.build)"
+    }
     /// The NVM Compatibility label of the raw two-bit field (row 7, upstream
     /// `ext15_nvm_type`, MEA.py 10536): 0 Undefined, 1 UFS, 2 SPI. The
     /// reserved value keeps upstream's own wording for a number outside the
