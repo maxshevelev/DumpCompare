@@ -79,7 +79,7 @@ yet surfaced · **[F]** add — byte-core but no real-dump oracle (fixture-only)
 | 6b | Chipset | same gate & `sku_stp == 'Unknown'` | literal `"Unknown"` | [E] the summary's third leg, reached when neither a chipset-init table nor a recorded stepping says anything |
 | 6c | Chipset Stepping | same gate & otherwise | `", ".join(sku_stp)` — stepping letters from DB (`sku_stp`, 10275–10280) or `pch_init_final[-1][1]` fallback (10308) | [E] `chipsetStepping` — `MEADatabase.cseCells` reads the firmware row's stepping cell per family (CSME 3, CSTXE 1; the CSSPS branch never fires upstream and does not here either), an IUP image keeps its descriptor letter, and the row splits the letters as upstream does ("BA" → "B, A"). Verified: old.bin C, 1.bin A, DATMAAMBAC0 BA, new.bin none (→ 6b "Unknown", as the console prints) |
 | 7 | NVM Compatibility | `nvm_db` truthy — which is set from the value itself (13614: any `ext15_info[3]` other than `''`/`'Undefined'`), not from the database | `ext15_info[3]` — CSE_Ext_0F_R2 `NVMCompatibility` (SPI/UFS, 6246–6248 via `ext15_nvm_type`) | [E] `nvmCompatibility` — the raw two bits hoisted from the last `_R2` 0x0F of the operational chain (an R1 block carries no field and cannot clear one); the `ext15_nvm_type` label map is `MEAText.nvmCompatibility` |
-| 8 | TCB Security Version Number | (ME & major≥8) or variant starts `TXE/CS/GSC/PMC/PCHC/PHY/OROM` | `svn` — manifest security version | [E] `securityVersion` (= manifest `svn`) |
+| 8 | TCB Security Version Number | (ME & major≥8) or variant starts `TXE/CS/GSC/PMC/PCHC/PHY/OROM` | `svn` — manifest security version | [E] `securityVersion` (= manifest `svn`, zero included — only the erased word reads as nothing) |
 | 9 | ARB Security Version Number | (CSME & major≥12) or variant starts `CSTXE/CSSPS/GSC/PMC/PCHC/PHY/OROM` | `ext15_info[0]` — CSE_Ext_0F `ARBSVN` (6246–6247) | [A] ARB SVN not surfaced (see §5) |
 | 10 | Version Control Number | same gate as #8 | `vcn` — **CSE_Ext_03** `VCN` preferred (6185), CSE_Ext_0F fallback (6245), FTPR-manifest-header fallback (12189) | [A] top-level VCN absent; `ManifestSummary.vcn` is the R0-only `+0x34` field, not the CSE-ext VCN |
 | 11 | Production Ready | `pvbit is not None` | `['No','Yes'][pvbit]` — FTPR manifest header production-ready flag (`mn2_flags_pvbit`, 12659; ME/TXE use the `$DAT…IFRP` probe 12652–12655) | [A] pv bit not surfaced (see §5) |
@@ -132,14 +132,25 @@ The trailing `Power Management Controller` block (§4) follows the main table.
 
 ## 4. Blocks 2–4 — independent PMC / PCHC / PHY tables
 
-Each block's loop runs only when the whole-input scan found a matching
-independent sub-firmware *beyond* the primary ME region (producers `pmc_anl`
-9259 / `pmc_parse` 9263; append sites 13083 / 13318 / 13413 / 13474; PCHC and PHY
-analogues). A block's ~18 sub-fields come from that independent firmware's *own*
-manifest / CSE-ext / SKU decode — the same machinery as the primary table, over a
-different image — so this map traces provenance at block level rather than
-re-deriving every sub-field. `name_db` / `mn2_signed_db` cells in each tuple are
-DB text (support-status / signing), parked per the result-model rule.
+Each block's loop runs once per independent sub-firmware the analysis found.
+Those are **not** outside the ME region, as an earlier reading of this map had
+it: they are partitions *inside* it, collected from the region's own `$FPT`
+(12427–12456) and from each IFWI boot partition's `BPDT` (11930–11960) — a
+stitched PMC lives in one or the other depending on how the image was built.
+A block's ~18 sub-fields come from that firmware's *own* manifest / CSE-ext /
+SKU decode — the same machinery as the primary table, over a different image.
+`name_db` / `mn2_signed_db` cells in each tuple are DB text (support-status /
+signing), parked per the result-model rule.
+
+**Swift**: done. The engine runs the same pipeline over each such partition's
+bytes and returns the results as `FirmwareAnalysis.independentFirmware`
+(`EngineModelRevision` 29), and `MEASummary` renders one titled block per
+entry with the row sets below. Recognising them needed `get_variant`'s
+module-name fallback (`VariantByModule`, MEA.py 10344–10396), since Intel
+publishes no database key line for a stitched IUP. Verified against the
+original script on the CSME-12 oracle (PMC 300.2.11.1012, SKU H, stepping B,
+TCB 1, ARB 1, VCN 0, not production ready, 0x14000, CNP) and on the CSME-15 /
+CSME-16 ones (PMC + PCHC + PHY each).
 
 ### PMC — title "Power Management Controller" (13770; rows 13778–13792)
 
@@ -207,7 +218,7 @@ console strings — texts are display-only, no 1:1 text requirement.
 
 Consolidated status of every row for a future renderer. Grouped by what must be
 done in the engine/model (additive-only `Codable` model; every additive change
-bumps `EngineModelRevision`, currently **28** — see `result-model.md`).
+bumps `EngineModelRevision`, currently **29** — see `result-model.md`).
 
 | Status | Row(s) | Detail |
 |---|---|---|
@@ -215,7 +226,7 @@ bumps `EngineModelRevision`, currently **28** — see `result-model.md`).
 | **PARTIAL — mapping/formatting** | — | The three chipset legs (6a/6b/6c) all read now, and the summary picks between them the way the console does. |
 | **ADD — byte-core fact** | File System State's EFS leg (17) | `efs_init` needs the `FileTable.dat` EFST table to know where each EFS entry starts in the assembled data area; until it is parsed, a written CSME 15/16 file system reads Configured rather than Initialized. Everything else in this class is done: rows 9, 10, 11, 17, 18 and 20 are all surfaced (`arbSvn`, `vcn`, `ManifestSummary.productionReady`, `mfsState`, `firmwareSizeBytes`, `version.me*`). |
 | **ADD — fixture-only later** | — | Rows 13 and 21 are ported (`patsburgSupport`, `downgradeBlacklist`), verified by fixture only: there is still no ME-7 dump in the oracle set, so an ME 7.0/7.1 image (Cougar Point, and an X79/C600 one for a Patsburg "Yes") would confirm them. The CSME-11 rows 12a/12b are done — `old.bin` turned out to be a CSME 11.8 oracle for both. |
-| **DEFERRED — whole new scan** | FWUpdate Support (15) + the three independent tables (§4) | The engine decodes only the CSME ME region. Reproducing PMC/PCHC/PHY (and FWUpdate's IUP-presence answer) needs a whole-flash multi-sub-image scan for independent `$FPT`/manifest images past the ME region — not implemented. |
+| **DEFERRED** | FWUpdate Support (15) | The three independent tables (§4) are done — they never needed a whole-flash scan, only the IUP partitions inside the region. Row 15 still needs: which of PMCP/PCHC/PHY sit in the `$FPT` rather than a boot `BPDT` (only the former makes FWUpdate possible), `fwu_iup_exist` (the `$FPT` lists more partitions than its header declares), the uncharted-`$CPD` probe, and the CSME-16 alignment rule — then the per-version `pmcp && pchc && phy` table. |
 | **PARKED — DB/UI display text** | the three export-only DB rows | `name_db`/support-status/RSA-hash rows never reach the console (`databaseName`/`signatureHash` exist in the model for other reasons). |
 | **≈ `issues`** | Message list (§5) | Severity classes align; texts are display-only. |
 

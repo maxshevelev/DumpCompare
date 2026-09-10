@@ -525,6 +525,140 @@ final class MEASummaryTests: XCTestCase {
         }
     }
 
+    // MARK: - The independent firmware's own tables
+
+    /// The console prints a table of its own for every independent firmware
+    /// stitched into the image. This is the CSME-12 oracle's Power Management
+    /// Controller, row for row and value for value as the original script
+    /// prints it.
+    func testThePMCBlockReadsAsTheConsolePrintsIt() throws {
+        let pmc: [String: Any] = [
+            "family": "pmc", "variant": "PMCCNP",
+            "version": ["major": 300, "minor": 2, "hotfix": 11, "build": 1012],
+            "release": "production", "type": "region",
+            "sku": "H", "platform": "CNP", "chipsetStepping": "B",
+            "securityVersion": "1", "arbSvn": 1, "vcn": 0,
+            "manifest": manifestJSON(productionReady: false),
+            "manufactureDate": referenceInterval(year: 2018, month: 3, day: 8),
+            "sizeBytes": 0x14000,
+            "regions": [], "issues": [],
+        ]
+        let a = try analysis(["manifest": manifestJSON(),
+                              "version": ["major": 12, "minor": 0,
+                                          "hotfix": 3, "build": 1091],
+                              "independentFirmware": [pmc]])
+        let blocks = MEASummary.build(a)
+        XCTAssertEqual(blocks.count, 2, "the engine's table, then the PMC's")
+        let block = blocks[1]
+        XCTAssertEqual(block.title, "Power Management Controller")
+        XCTAssertEqual(block.rows.map(\.label), [
+            "Family", "Version", "Release", "Type", "Chipset SKU",
+            "Chipset Stepping", "TCB Security Version Number",
+            "ARB Security Version Number", "Version Control Number",
+            "Production Ready", "Date", "Size", "Chipset Support",
+        ])
+        XCTAssertEqual(block.rows.map(\.value), [
+            .value("PMC"), .value("300.2.11.1012"), .value("Production"),
+            .value("Independent"), .value("H"), .value("B"), .value("1"),
+            .value("1"), .value("0"), .value("No"), .value("2018-03-08"),
+            .value("0x14000 (81920 bytes)"), .value("CNP"),
+        ])
+    }
+
+    /// A PCHC has no SKU or stepping row; a PHY's SKU row is labelled just
+    /// "SKU"; and both close with their own MEU stamp and chipset.
+    func testThePCHCAndPHYBlocksKeepTheirOwnRowSets() throws {
+        func firmware(_ family: String, _ variant: String, sku: String,
+                      meu: Bool) -> [String: Any] {
+            var version: [String: Any] = ["major": 15, "minor": 0,
+                                          "hotfix": 0, "build": 1020]
+            if meu {
+                version["meMajor"] = 15
+                version["meMinor"] = 0
+                version["meHotfix"] = 30
+                version["meBuild"] = 1659
+            }
+            return [
+                "family": family, "variant": variant, "version": version,
+                "release": "production", "type": "region",
+                "sku": sku, "platform": "TGP",
+                "securityVersion": "0", "arbSvn": 0, "vcn": 0,
+                "manifest": manifestJSON(),
+                "manufactureDate": referenceInterval(year: 2021, month: 3, day: 5),
+                "sizeBytes": 0x1000, "regions": [], "issues": [],
+            ]
+        }
+        let a = try analysis([
+            "manifest": manifestJSON(),
+            "independentFirmware": [
+                firmware("pchc", "PCHCTGP", sku: "", meu: true),
+                firmware("phy", "PHYNTGP", sku: "N", meu: false),
+            ],
+        ])
+        let blocks = MEASummary.build(a)
+        XCTAssertEqual(blocks.count, 3)
+
+        XCTAssertEqual(blocks[1].title, "Platform Controller Hub Configuration")
+        XCTAssertEqual(blocks[1].rows.map(\.label), [
+            "Family", "Version", "Release", "Type",
+            "TCB Security Version Number", "ARB Security Version Number",
+            "Version Control Number", "Production Ready", "Date", "Size",
+            "Manifest Extension Utility", "Chipset Support",
+        ])
+        XCTAssertEqual(value("Manifest Extension Utility", in: blocks[1].rows),
+                       .value("15.0.30.1659"))
+
+        XCTAssertEqual(blocks[2].title, "USB Type C Physical")
+        XCTAssertEqual(value("SKU", in: blocks[2].rows), .value("N"))
+        XCTAssertNil(value("Chipset SKU", in: blocks[2].rows))
+        XCTAssertNil(value("Chipset Stepping", in: blocks[2].rows),
+                     "a PHY has no stepping row")
+        XCTAssertNil(value("Manifest Extension Utility", in: blocks[2].rows),
+                     "and no MEU stamp on this one")
+    }
+
+    /// A discrete-graphics PMC has neither of the chipset rows, and a PMC
+    /// whose stepping letter the engine could not read says so rather than
+    /// leaving the row out.
+    func testTheChipsetRowsOfAPMCFollowItsPlatform() throws {
+        func rows(platform: String, stepping: String?,
+                  hostMajor: Int = 12) throws -> [MEASummaryRow] {
+            var pmc: [String: Any] = [
+                "family": "pmc", "variant": "PMCDG2",
+                "version": ["major": 4, "minor": 2, "hotfix": 0, "build": 1000],
+                "release": "production", "type": "region",
+                "sku": "H", "platform": platform,
+                "manifest": manifestJSON(),
+                "manufactureDate": referenceInterval(year: 2021, month: 3, day: 5),
+                "sizeBytes": 0x1000, "regions": [], "issues": [],
+            ]
+            if let stepping { pmc["chipsetStepping"] = stepping }
+            return MEASummary.build(try analysis([
+                "manifest": manifestJSON(),
+                "version": ["major": hostMajor, "minor": 0,
+                            "hotfix": 3, "build": 1091],
+                "independentFirmware": [pmc],
+            ]))[1].rows
+        }
+
+        // A discrete-graphics PMC has no stepping row at all — but a CSME 12
+        // or newer host prints the SKU row regardless of the platform, which
+        // is upstream's own first leg of that gate.
+        let discrete = try rows(platform: "DG2", stepping: "A")
+        XCTAssertNil(value("Chipset Stepping", in: discrete))
+        XCTAssertEqual(value("Chipset SKU", in: discrete), .value("H"))
+
+        // Under an older host the platform decides, and a DG one has a single
+        // chipset to say nothing about.
+        let olderHost = try rows(platform: "DG2", stepping: "A", hostMajor: 11)
+        XCTAssertNil(value("Chipset SKU", in: olderHost))
+        XCTAssertNil(value("Chipset Stepping", in: olderHost))
+
+        let unread = try rows(platform: "TGP", stepping: nil)
+        XCTAssertEqual(value("Chipset Stepping", in: unread), .value("Unknown"))
+        XCTAssertEqual(value("Chipset SKU", in: unread), .value("H"))
+    }
+
     // MARK: - The messages block
 
     func testIssuesBecomeAMessagesBlockAfterTheTable() throws {

@@ -280,6 +280,14 @@ public enum MEASummary {
         }
 
         var blocks: [MEASummaryBlock] = [MEASummaryBlock(title: nil, rows: rows)]
+        // A table of its own for every independent firmware stitched into the
+        // image, in the order the console prints them — the engine hands them
+        // over PMC first, then PCHC, then PHY.
+        for firmware in analysis.independentFirmware ?? [] {
+            if let block = independentBlock(firmware, host: analysis) {
+                blocks.append(block)
+            }
+        }
         if !analysis.issues.isEmpty {
             let messages = analysis.issues.map { issue in
                 MEASummaryRow(MEAText.title(issue.severity.rawValue),
@@ -288,6 +296,84 @@ public enum MEASummary {
             blocks.append(MEASummaryBlock(title: "Messages", rows: messages))
         }
         return blocks
+    }
+
+    /// One independent firmware's own Field/Value table (`default-output-map`
+    /// §4): the same reading as the engine's, over that firmware's own bytes.
+    /// Its Type is the constant "Independent" — the console does not classify
+    /// these on the Stock / Update / Extracted axis — and its Size is the
+    /// partition's own.
+    ///
+    /// nil for a family that has no table of its own, so a firmware the engine
+    /// could not name is left out rather than titled "Unknown".
+    private static func independentBlock(_ firmware: FirmwareAnalysis,
+                                         host: FirmwareAnalysis) -> MEASummaryBlock? {
+        guard let title = independentTitle(firmware.family) else { return nil }
+        var rows: [MEASummaryRow] = []
+        let add = { (label: String, value: MEASummaryValue) in
+            rows.append(MEASummaryRow(label, value))
+        }
+
+        add("Family", .value(MEAText.family(firmware.family)))
+        add("Version", .value(firmware.version.text))
+        var release = MEAText.title(firmware.release.rawValue)
+        if firmware.version.build >= 7000 { release += ", Engineering" }
+        add("Release", .value(release))
+        add("Type", .value("Independent"))
+
+        switch firmware.family {
+        case .pmc:
+            // The chipset SKU of a PMC is worth a row for the platforms that
+            // have more than one — a discrete-graphics or Apollo/Broxton/
+            // Gemini Lake PMC has none — and upstream lets a modern host say
+            // so regardless (MEA.py 13783).
+            let hostSaysSo = (host.family == .csme && host.version.major >= 12)
+                || (host.family == .cssps && host.version.major >= 5)
+            let onePlatform = ["APL", "BXT", "GLK", "DG"]
+                .contains { firmware.platform.hasPrefix($0) }
+            if hostSaysSo || !onePlatform, !firmware.sku.isEmpty {
+                add("Chipset SKU", .value(firmware.sku))
+            }
+            // A discrete-graphics PMC has no stepping row at all; anything
+            // else shows the letter, or says it is unknown.
+            if !firmware.platform.hasPrefix("DG") {
+                let stepping = firmware.chipsetStepping
+                add("Chipset Stepping",
+                    .value(stepping == nil || stepping == "U" ? "Unknown" : stepping!))
+            }
+        case .phy:
+            if !firmware.sku.isEmpty { add("SKU", .value(firmware.sku)) }
+        default:
+            break
+        }
+
+        add("TCB Security Version Number", .value(firmware.securityVersion ?? "0"))
+        add("ARB Security Version Number", .value(String(firmware.arbSvn ?? 0)))
+        add("Version Control Number", .value(String(firmware.vcn ?? 0)))
+        if let ready = firmware.manifest?.productionReady {
+            add("Production Ready", .value(MEAText.yesNo(ready)))
+        }
+        if let date = firmware.manufactureDate {
+            add("Date", .value(MEAText.date(date)))
+        }
+        add("Size", .value(MEAText.size(firmware.sizeBytes)))
+        if let meu = meuVersion(firmware.version) {
+            add("Manifest Extension Utility", .value(meu))
+        }
+        if !firmware.platform.isEmpty {
+            add("Chipset Support", .value(firmware.platform))
+        }
+        return MEASummaryBlock(title: title, rows: rows)
+    }
+
+    /// What the console titles an independent firmware's table.
+    private static func independentTitle(_ family: FirmwareFamily) -> String? {
+        switch family {
+        case .pmc: return "Power Management Controller"
+        case .pchc: return "Platform Controller Hub Configuration"
+        case .phy: return "USB Type C Physical"
+        default: return nil
+        }
     }
 
     /// The MEU version of a manifest, or nil when it carries none: an R0
