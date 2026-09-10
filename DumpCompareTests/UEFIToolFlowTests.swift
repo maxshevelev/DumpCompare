@@ -292,6 +292,33 @@ final class UEFIToolFlowTests: XCTestCase {
                        + "placeholder's place")
     }
 
+    /// Two branches opening at once are two "Loading…" rows, and they must be
+    /// two *objects*.
+    ///
+    /// An outline recognises its items by object, and holds a map from each one
+    /// to its parent. One shared placeholder under two branches is the same
+    /// object in two places at once — a tree it cannot lay out, and what that
+    /// looks like on screen is rows shuffling through each other.
+    func testTwoBranchesOpeningAtOnceGetPlaceholdersOfTheirOwn() throws {
+        let controller = try open(UEFITestImage.withTwoVolumes())
+        let outline = try outline()
+
+        // Both volumes are top-level rows; open them before either can land.
+        XCTAssertEqual(outline.numberOfRows, 2, "two volumes at the top")
+        outline.expandItem(outline.item(atRow: 0))
+        outline.expandItem(outline.item(atRow: 2))
+        window?.layoutIfNeeded()
+
+        let first = try XCTUnwrap(outline.item(atRow: 1) as? UEFITreeRow)
+        let second = try XCTUnwrap(outline.item(atRow: 3) as? UEFITreeRow)
+        XCTAssertTrue(first.isLoading, "the first volume's branch is still being read")
+        XCTAssertTrue(second.isLoading, "and so is the second's")
+        XCTAssertFalse(first === second, "each branch waits under a row of its own")
+        XCTAssertNotEqual(first.id, second.id, "and each names the branch it waits on")
+
+        _ = controller
+    }
+
     /// The point of a tree shared per file: what one tool-module opened, the
     /// next one finds open. Switching panels re-reads nothing.
     func testABranchOpenedStaysOpenAcrossAPanelSwitch() throws {
@@ -528,6 +555,11 @@ enum UEFITestImage {
     /// panel folds into its title.
     static func withTrailingPadding() -> [UInt8] {
         make() + [UInt8](repeating: 0xFF, count: 0x1000)
+    }
+
+    /// Two volumes back to back: two branches a reader can open at once.
+    static func withTwoVolumes() -> [UInt8] {
+        make() + make()
     }
 
     /// The one file in the volume: a 0x44-byte driver whose body is a name

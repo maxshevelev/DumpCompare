@@ -66,6 +66,13 @@ import UEFITool
     /// or cut back, which is also when the outline's own expansion state stops
     /// meaning anything.
     private var rows: [NodeID: UEFITreeRow] = [:]
+    /// The "Loading…" rows, one per branch being read, kept apart from the
+    /// rows above so the two never hand out the same object for the same path.
+    private var loadingRows: [NodeID: UEFITreeRow] = [:]
+    /// The branches whose rows are showing a "Loading…" placeholder *this*
+    /// reload. A branch that lands is only worth redrawing if its row is still
+    /// one of them — see `childrenList(for:)`.
+    private var pendingPlaceholders: Set<NodeID> = []
 
     private let summaryLabel = NSTextField(labelWithString: "")
     private let outline = UEFIOutlineView()
@@ -304,7 +311,10 @@ import UEFITool
         // A different tree is a different file: the rows standing for the old
         // one's paths mean nothing now, and the outline's memory of which of
         // them were open means nothing either.
-        if tree !== self.tree { rows.removeAll() }
+        if tree !== self.tree {
+            rows.removeAll()
+            loadingRows.removeAll()
+        }
         self.image = image
         self.tree = tree
         self.focus = focus
@@ -319,6 +329,9 @@ import UEFITool
             ?? UEFITreeDisplay.PresentedImage(title: nil, rows: [])
         summaryLabel.stringValue = UEFITreeDisplay.summary(of: image)
         updateSummaryEmphasis()
+        // Whatever was waiting to redraw a placeholder row is answered by this
+        // reload instead.
+        pendingPlaceholders.removeAll()
         outline.reloadData()
         renderDetail(detail, subject: focus?.description ?? "")
 
@@ -473,16 +486,17 @@ import UEFITool
 /// long as the tree holds it.
 public final class UEFITreeRow {
     public let id: NodeID
-    init(_ id: NodeID) { self.id = id }
-}
+    /// True for the "Loading…" row standing in for a branch still being read.
+    /// `id` is that branch's, so every opening branch gets a placeholder of its
+    /// own — an outline needs each of its items to be a distinct object, and
+    /// one shared placeholder under two branches opening at once is the same
+    /// object in two places, which is a tree the outline cannot lay out.
+    public let isLoading: Bool
 
-/// A row shown in place of an expanding node's real children while its branch
-/// is still being read — its own type, rather than a `UEFINode` of some new
-/// kind, so `UEFIImage` never has to know the UI put a placeholder in a tree
-/// it never produced. One shared instance: nothing about it is per-row, and
-/// the outline only ever asks whether an item *is* one.
-private final class LoadingPlaceholder {
-    static let shared = LoadingPlaceholder()
+    init(_ id: NodeID, isLoading: Bool = false) {
+        self.id = id
+        self.isLoading = isLoading
+    }
 }
 
 extension UEFIToolViewController: NSOutlineViewDataSource, NSOutlineViewDelegate {
@@ -498,16 +512,32 @@ extension UEFIToolViewController: NSOutlineViewDataSource, NSOutlineViewDelegate
             return node.children.map { row($0.id) }
         }
         guard node.isExpandable else { return [] }
-        if tree.isExpanding(id) { return [LoadingPlaceholder.shared] }
+        if tree.isExpanding(id) { return [placeholder(under: id)] }
 
         tree.expand(id) { [weak self] _ in
             guard let self else { return }
+            // Only when this row is still showing a placeholder. The tree tells
+            // its observers before it answers whoever asked, so the session's
+            // own redraw usually lands first — and reloading on top of it
+            // rebuilds rows the outline has only just laid out, which is what a
+            // wave running through the table looks like. Several callers can be
+            // waiting on one branch, too, and one redraw serves all of them.
+            guard self.pendingPlaceholders.remove(id) != nil else { return }
             // The same row object the outline is already holding, so what it
             // knows about it — that the reader opened it — survives the branch
             // taking the placeholder's place.
             self.outline.reloadItem(self.row(id), reloadChildren: true)
         }
-        return tree.isExpanding(id) ? [LoadingPlaceholder.shared] : []
+        return tree.isExpanding(id) ? [placeholder(under: id)] : []
+    }
+
+    /// The one "Loading…" row standing in for `id`'s branch.
+    private func placeholder(under id: NodeID) -> UEFITreeRow {
+        pendingPlaceholders.insert(id)
+        if let row = loadingRows[id] { return row }
+        let row = UEFITreeRow(id, isLoading: true)
+        loadingRows[id] = row
+        return row
     }
 
     /// The one row object standing for this place in the tree.
@@ -518,26 +548,29 @@ extension UEFIToolViewController: NSOutlineViewDataSource, NSOutlineViewDelegate
         return row
     }
 
-    /// The node an outline item stands for, as the tree has it now.
+    /// The node an outline item stands for, as the tree has it now. A
+    /// "Loading…" row stands for no node at all — its `id` is the branch it is
+    /// waiting on, not something to select, name or publish.
     private func node(of item: Any) -> UEFINode? {
-        guard let row = item as? UEFITreeRow else { return nil }
+        guard let row = item as? UEFITreeRow, !row.isLoading else { return nil }
         return tree?.node(row.id)
     }
 
     /// The outline's own top level: one "Loading…" row while the tree is still
     /// working out what the top level is, and the presented rows once it has.
     private var topLevelRows: [Any] {
-        isBuilding ? [LoadingPlaceholder.shared] : presented.rows.map { row($0.id) }
+        isBuilding ? [placeholder(under: .root)] : presented.rows.map { row($0.id) }
     }
 
     func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
         guard let item else { return topLevelRows.count }
-        guard let row = item as? UEFITreeRow else { return 0 }
+        guard let row = item as? UEFITreeRow, !row.isLoading else { return 0 }
         return childrenList(for: row.id).count
     }
 
     func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
-        guard let item, let row = item as? UEFITreeRow else { return topLevelRows[index] }
+        guard let item, let row = item as? UEFITreeRow, !row.isLoading
+        else { return topLevelRows[index] }
         return childrenList(for: row.id)[index]
     }
 
@@ -549,7 +582,7 @@ extension UEFIToolViewController: NSOutlineViewDataSource, NSOutlineViewDelegate
     /// The loading row is a placeholder, not a node — nothing to select, no
     /// zone to publish, no menu to offer.
     func outlineView(_ outlineView: NSOutlineView, shouldSelectItem item: Any) -> Bool {
-        !(item is LoadingPlaceholder)
+        (item as? UEFITreeRow)?.isLoading == false
     }
 
     /// A row's cell, view-based and with its text centred.
@@ -565,7 +598,7 @@ extension UEFIToolViewController: NSOutlineViewDataSource, NSOutlineViewDelegate
         item: Any
     ) -> NSView? {
         guard let identifier = tableColumn?.identifier else { return nil }
-        if item is LoadingPlaceholder {
+        if (item as? UEFITreeRow)?.isLoading == true {
             // Built the same way a real row's cell is, warning view included:
             // cells go back into one reuse pool per column, and a placeholder
             // that made a Name cell without the warning would hand it on to
