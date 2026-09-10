@@ -227,6 +227,44 @@ final class UEFIToolFlowTests: XCTestCase {
                        "the file under the caret is the row shown")
     }
 
+    /// The same reveal into a branch that has already been read.
+    ///
+    /// Nothing is left to read there, so nothing else will redraw the table
+    /// afterwards — which makes this the case that says whether the reveal
+    /// selects the row *itself*. It opens the row and then selects it, and a
+    /// selection made before the opening has had its turn selects nothing.
+    func testRevealingIntoAnAlreadyReadBranchStillSelectsItsRow() throws {
+        let controller = try open(UEFITestImage.make())
+        let outline = try outline()
+        let pane = controller.windowModel.pane1
+
+        // Read the branch *and* let the checksum pass it starts land, so
+        // there is nothing left in flight that would redraw the table after
+        // the reveal and select the row on its behalf.
+        let panel = try session()
+        let checked = expectation(description: "the branch's checksums are read")
+        checked.assertForOverFulfill = false
+        panel.onChecksums = { checked.fulfill() }
+        try expandRow(0)
+        wait(for: [checked], timeout: 5)
+        panel.onChecksums = nil
+
+        outline.collapseItem(outline.item(atRow: 0))
+        window?.layoutIfNeeded()
+        XCTAssertEqual(outline.numberOfRows, 1, "the volume alone again")
+
+        pane.moveCaret(to: 0x4A)
+        try session().revealNodeAtCaret()
+
+        // As soon as the rows it opened are there, the row is selected: the
+        // selection happens inside the same change to the table, not in some
+        // later redraw that happens to come along.
+        XCTAssertTrue(pumpUntil(5) { outline.numberOfRows == 4 },
+                      "the reveal opened the tree to the file")
+        XCTAssertEqual(try node(atRow: outline.selectedRow).id.description, "0.0",
+                       "and selected it in the same breath")
+    }
+
     /// Revealing answers with the tree and nothing else: the dump is where the
     /// user is standing, so a selection's start picks the node but the
     /// published zones and the selection itself are left exactly as they were —

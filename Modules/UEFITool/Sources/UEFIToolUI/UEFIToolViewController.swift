@@ -491,6 +491,11 @@ import UEFITool
     private func reveal(_ nodeID: NodeID, in tree: LazyUEFITree) {
         expandAncestors(of: nodeID, in: tree) { [weak self] in
             guard let self, tree.node(nodeID) != nil else { return }
+            // The selection is the panel's own doing, not the reader's, so it
+            // must not read back as a click — that would publish a zone and
+            // scroll the dump away from the byte a reveal was asked about.
+            self.isShowingState = true
+            defer { self.isShowingState = false }
             self.selectAndScroll(to: nodeID)
         }
     }
@@ -508,10 +513,17 @@ import UEFITool
     /// Through the outline's own item, resolved when the change runs rather
     /// than when it is queued: an outline recognises only the object it is
     /// itself holding, and by the time this runs the rows may have moved.
-    private func expandRow(_ id: NodeID) {
+    private func expandRow(_ id: NodeID, then done: (@MainActor () -> Void)? = nil) {
         enqueue(animated: true) { [weak self] in
-            guard let self, let item = self.outlineItem(for: id) else { return }
-            self.outline.animator().expandItem(item)
+            guard let self else { return }
+            if let item = self.outlineItem(for: id) {
+                self.outline.animator().expandItem(item)
+            }
+            // Inside the same step, so whatever follows an opening sees the
+            // rows it opened. A caller that runs when the opening is merely
+            // *queued* is a caller looking at a table that has not changed yet
+            // — which is how a reveal came to open the tree and select nothing.
+            done?()
         }
     }
 
@@ -529,14 +541,12 @@ import UEFITool
             let partialID = NodeID(Array(nodeID.path.prefix(index + 1)))
             guard let ancestor = tree.node(partialID) else { completion(); return }
             guard ancestor.isExpandable, ancestor.children.isEmpty else {
-                expandRow(partialID)
-                step(index + 1)
+                expandRow(partialID) { step(index + 1) }
                 return
             }
             tree.expand(partialID) { [weak self] _ in
                 guard let self else { return }
-                self.expandRow(partialID)
-                step(index + 1)
+                self.expandRow(partialID) { step(index + 1) }
             }
         }
         step(0)
