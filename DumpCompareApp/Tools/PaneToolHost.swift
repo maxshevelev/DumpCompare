@@ -124,6 +124,14 @@ extension PaneToolHost: UEFITreeProviding {
         guard let storage = pane?.document?.storage else { return nil }
         return pane?.uefiState.tree(makeSource: { LiveDocumentByteSource(storage: storage) })
     }
+
+    func openUEFIRows() -> Set<NodeID> {
+        pane?.uefiState.openUEFIRows ?? []
+    }
+
+    func setOpenUEFIRows(_ rows: Set<NodeID>) {
+        pane?.uefiState.openUEFIRows = rows
+    }
 }
 
 /// Wraps the document's own editable storage — a thread-safe reference type

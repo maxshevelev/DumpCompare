@@ -484,6 +484,50 @@ final class UEFIToolFlowTests: XCTestCase {
         _ = controller
     }
 
+    /// Coming back to the panel finds the tree as it was left.
+    ///
+    /// The panel is built again on every activation, so its own memory of what
+    /// was open goes with the old one — but what was open is about the *file*,
+    /// and the branches are still read. A reader who opens a volume, goes to
+    /// another panel and comes back should not have to open it again.
+    func testTheRowsLeftOpenAreOpenAgainOnComingBack() throws {
+        let controller = try open(UEFITestImage.make())
+        try expandRow(0)
+        XCTAssertEqual(try outline().numberOfRows, 4, "the volume is open")
+
+        // Away to the FIT panel and back — a new session, a new outline.
+        controller.tools.activate(FITToolModule.identifier, animated: false)
+        window?.layoutIfNeeded()
+        controller.tools.activate(UEFIToolModule.identifier, animated: false)
+        window?.layoutIfNeeded()
+        try waitForParse()
+
+        let outline = try outline()
+        XCTAssertTrue(pumpUntil(5) { outline.numberOfRows == 4 },
+                      "the row is open again: \(outline.numberOfRows) rows")
+        XCTAssertEqual(kinds(of: outline), [.volume, .file, .padding, .freeSpace])
+    }
+
+    /// And a row the reader *shut* stays shut.
+    func testARowShutBeforeLeavingIsShutOnComingBack() throws {
+        let controller = try open(UEFITestImage.make())
+        let first = try outline()
+        try expandRow(0)
+        first.collapseItem(first.item(atRow: 0))
+        window?.layoutIfNeeded()
+        XCTAssertEqual(first.numberOfRows, 1, "the volume is shut")
+
+        controller.tools.activate(FITToolModule.identifier, animated: false)
+        window?.layoutIfNeeded()
+        controller.tools.activate(UEFIToolModule.identifier, animated: false)
+        window?.layoutIfNeeded()
+        try waitForParse()
+
+        let outline = try outline()
+        XCTAssertEqual(outline.numberOfRows, 1,
+                       "nothing was put back that the reader had closed")
+    }
+
     /// The point of a tree shared per file: what one tool-module opened, the
     /// next one finds open. Switching panels re-reads nothing.
     func testABranchOpenedStaysOpenAcrossAPanelSwitch() throws {

@@ -22,6 +22,10 @@ import UEFITool
     var onRevealAtCaret: (() -> Void)?
     /// A flagged node's Fix Checksum menu item was chosen.
     var onFixChecksum: ((NodeID) -> Void)?
+    /// A row was opened or shut. What is open belongs to the file rather than
+    /// to this panel, so the session writes it through to where the tree
+    /// lives (`UEFITreeProviding.setOpenUEFIRows`).
+    var onOpenRowsChanged: (() -> Void)?
 
     /// The tree as one value, for everything that reads it rather than walks
     /// it: the summary line, the title fold, the detail panel. It is the
@@ -507,6 +511,44 @@ import UEFITool
         outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
     }
 
+    /// The rows that are open, by the place in the tree each stands for.
+    var openRows: Set<NodeID> {
+        var open: Set<NodeID> = []
+        for row in 0..<outline.numberOfRows {
+            guard let item = outline.item(atRow: row), outline.isItemExpanded(item),
+                  let treeRow = item as? UEFITreeRow, !treeRow.isLoading
+            else { continue }
+            open.insert(treeRow.id)
+        }
+        return open
+    }
+
+    /// Puts back the rows that were open when the reader last looked at this
+    /// file, outermost first — a row cannot be opened before the row holding
+    /// it is, and a branch that has been dropped since is read again on the
+    /// way. Each waits for the one before it, so every row exists by the time
+    /// its own turn comes.
+    func restoreOpenRows(_ rows: Set<NodeID>) {
+        openInTurn(rows.sorted { $0.path.count < $1.path.count }, from: 0)
+    }
+
+    private func openInTurn(_ rows: [NodeID], from index: Int) {
+        guard index < rows.count else { return }
+        let id = rows[index]
+        guard let tree, let node = tree.node(id) else {
+            openInTurn(rows, from: index + 1)
+            return
+        }
+        guard node.children.isEmpty, node.isExpandable else {
+            expandRow(id) { [weak self] in self?.openInTurn(rows, from: index + 1) }
+            return
+        }
+        tree.expand(id) { [weak self] _ in
+            guard let self else { return }
+            self.expandRow(id) { [weak self] in self?.openInTurn(rows, from: index + 1) }
+        }
+    }
+
     /// Opens `id`'s row, when it has one — animated, and behind whatever the
     /// outline is already animating.
     ///
@@ -896,6 +938,16 @@ extension UEFIToolViewController: NSOutlineViewDataSource, NSOutlineViewDelegate
     @objc private func fixChecksumClicked(_ sender: NSMenuItem) {
         guard let nodeID = sender.representedObject as? NodeID else { return }
         onFixChecksum?(nodeID)
+    }
+
+    func outlineViewItemDidExpand(_ notification: Notification) {
+        guard !isShowingState else { return }
+        onOpenRowsChanged?()
+    }
+
+    func outlineViewItemDidCollapse(_ notification: Notification) {
+        guard !isShowingState else { return }
+        onOpenRowsChanged?()
     }
 
     func outlineViewSelectionDidChange(_ notification: Notification) {

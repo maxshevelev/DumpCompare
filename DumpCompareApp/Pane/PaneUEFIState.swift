@@ -22,6 +22,11 @@ import DumpCompareCore
 /// invalidation cannot depend on one being open.
 @MainActor final class PaneUEFIState {
     private(set) var tree: LazyUEFITree?
+    /// Which rows the UEFI panel had open. Kept here rather than in the
+    /// panel's parked state because it is about the *file*: the panel is built
+    /// again on every activation, and this outlives it exactly as the tree
+    /// does.
+    var openUEFIRows: Set<NodeID> = []
     private var cachedAnalysis: FirmwareAnalysis?
     /// The byte range `cachedAnalysis` was computed for — an edit landing
     /// inside it is what drops the cache; one outside it leaves the analysis
@@ -85,6 +90,7 @@ import DumpCompareCore
     /// worth keeping.
     func reset() {
         tree = nil
+        openUEFIRows = []
         cachedAnalysis = nil
         cachedAnalysisRegion = nil
     }

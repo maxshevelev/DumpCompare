@@ -148,6 +148,7 @@ private struct ChecksumPass: Sendable {
         controller.onFixChecksum = { [weak self] nodeID in
             self?.fixChecksum(for: nodeID)
         }
+        controller.onOpenRowsChanged = { [weak self] in self?.rememberOpenRows() }
     }
 
     public var viewController: NSViewController { controller }
@@ -239,6 +240,10 @@ private struct ChecksumPass: Sendable {
             } else {
                 self.controller.say("")
             }
+            // What the reader had open on this file, put back before anything
+            // is announced — coming back to a panel and finding the tree shut
+            // is coming back to a panel that forgot.
+            self.controller.restoreOpenRows(self.treeProvider?.openUEFIRows() ?? [])
             // `onDisplay` means "the panel is showing this file": the top
             // level, and its own checksums read. A branch opened later brings
             // its own pass, announced through `onChecksums`.
@@ -283,6 +288,13 @@ private struct ChecksumPass: Sendable {
             verifyNewChecksums()
             show(rowsChanged: false)
         }
+    }
+
+    /// What the reader has open, written through to where the tree lives. It
+    /// is about the file, not about this session: the panel is built again on
+    /// every activation, and the branches are still read.
+    private func rememberOpenRows() {
+        treeProvider?.setOpenUEFIRows(controller.openRows)
     }
 
     /// The image as the tree has it right now — the top level plus whatever
