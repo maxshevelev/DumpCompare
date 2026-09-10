@@ -85,7 +85,11 @@ public struct HuffmanDictionaries: Sendable, Equatable {
 
     /// Parse `Huffman.dat` (JSON: `{"<version>": {"code": {bits: hex}, "data": {...}}}`).
     /// Throws `.malformed` when the JSON is not that shape.
-    static func parse(_ text: String) throws -> HuffmanDictionaries {
+    /// Parse `Huffman.dat`. Public for the same reason `MEADatabase.parse` is:
+    /// `MEADataSource` is a public protocol returning this type, so an outside
+    /// implementation — a local-file provider, a test double — has to be able
+    /// to build one from the file's text rather than only an empty value.
+    public static func parse(_ text: String) throws -> HuffmanDictionaries {
         guard let root = try? JSONSerialization.jsonObject(with: Data(text.utf8))
             as? [String: Any] else {
             throw MEADataError.malformed(file: "Huffman.dat")

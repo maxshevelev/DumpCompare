@@ -84,17 +84,35 @@ struct ManifestParser {
     /// Every `$MN2`/`$MAN` VEN-anchor offset in file order. A flash image can
     /// carry many manifests — one per engine/IUP partition plus recovery copies
     /// — so identification needs all of them to pick the operational copy.
+    /// One pass over raw bytes: this walks every offset in the region, and
+    /// through `Data`'s subscript (which re-reads `_offset`/`_bytes` per access)
+    /// plus a `subdata` allocation per VEN hit it was the single most expensive
+    /// function in a parse. The predicate is unchanged — VEN `0x8086`, a zero
+    /// at +0x0B, and `$MN2`/`$MAN` at +0x0C.
     static func anchors(in data: Data) -> [Int] {
         guard data.count >= 16 else { return [] }
-        let tagMN2 = Data("$MN2".utf8)
-        let tagMAN = Data("$MAN".utf8)
         var out: [Int] = []
-        for off in 0...(data.count - 16) {
-            guard data[data.startIndex + off] == 0x86,
-                  data[data.startIndex + off + 1] == 0x80,
-                  data[data.startIndex + off + 11] == 0x00 else { continue }
-            let tag = data.subdata(in: (data.startIndex + off + 12)..<(data.startIndex + off + 16))
-            if tag == tagMN2 || tag == tagMAN { out.append(off) }
+        let limit = data.count - 16
+        data.withUnsafeBytes { raw in
+            guard let base = raw.bindMemory(to: UInt8.self).baseAddress else { return }
+            var off = 0
+            while off <= limit {
+                // 0x86 is the first byte of VEN_ID 0x8086 little-endian. Let
+                // memchr find the next one — it is vectorised, where a Swift
+                // byte loop over a whole flash image is not, and the byte is
+                // rare enough (~1 in 256) that the skip dominates.
+                guard let hit = memchr(base + off, 0x86, limit - off + 1) else { break }
+                off = UnsafeRawPointer(hit) - UnsafeRawPointer(base)
+                if base[off + 1] == 0x80, base[off + 11] == 0x00 {
+                    let tag = base + off + 12
+                    // "$MN2" and "$MAN" share "$M"; they differ at +2/+3.
+                    if tag[0] == 0x24, tag[1] == 0x4D,
+                       (tag[2] == 0x4E && tag[3] == 0x32) || (tag[2] == 0x41 && tag[3] == 0x4E) {
+                        out.append(off)
+                    }
+                }
+                off += 1
+            }
         }
         return out
     }

@@ -503,10 +503,9 @@ public actor MEFirmwareAnalyzer {
         // fit the region, or a degenerate modulus (synthetic fixtures) — and that
         // stays nil rather than raising an issue (upstream's "Empty RSA block"
         // is reported *valid*, its pow crash is a different, non-real edge).
-        let checksums: Checksums? = region.isEmpty ? nil : Checksums(
-            sha256: Digest.sha256Hex(region),
-            sha384: Digest.sha384Hex(region),
-            crc32: CRC32.crc32(region))
+        let checksums: Checksums? = region.isEmpty
+            ? nil
+            : await Self.regionChecksums(of: region)
         let rsaSignatureValid = manifest.flatMap { Self.rsaSignatureValid(for: $0, in: region) }
 
         var issues: [Issue] = []
@@ -967,6 +966,21 @@ public actor MEFirmwareAnalyzer {
     /// decoded, the struct is not fully in the region, or the modulus is
     /// degenerate (RSA.validate returns nil there; a synthetic even modulus is
     /// "not checkable", not "invalid").
+    /// The three whole-region checksums of phase 11, computed side by side.
+    ///
+    /// Each is an independent pass over the same buffer, and together they were
+    /// two thirds of a parse — a 32 MiB region read three times over. As child
+    /// tasks they run on separate cores instead of end to end; the region is
+    /// immutable, so nothing is shared but the read.
+    private static func regionChecksums(of region: Data) async -> Checksums {
+        async let sha256 = Digest.sha256Hex(region)
+        async let sha384 = Digest.sha384Hex(region)
+        async let crc32 = CRC32.crc32(region)
+        return Checksums(sha256: await sha256,
+                         sha384: await sha384,
+                         crc32: await crc32)
+    }
+
     private static func rsaSignatureValid(for m: ManifestParser.Manifest,
                                           in region: Data) -> Bool? {
         guard let key = m.rsaPublicKey, let signature = m.rsaSignature,

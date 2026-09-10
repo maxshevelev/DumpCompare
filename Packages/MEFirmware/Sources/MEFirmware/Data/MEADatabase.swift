@@ -21,11 +21,27 @@ public struct MEADatabase: Sendable, Equatable {
     public var revision: Int?
 
     /// Every non-empty line of MEA.dat, verbatim (the search corpus).
-    public var lines: [String]
+    /// Read-only from outside: `haystack` below is derived from it at init, so
+    /// a caller replacing the corpus behind its back would leave the two out
+    /// of step. Build a new database instead.
+    public private(set) var lines: [String]
 
     /// The `rsa_pre_keys` JSON list from the `Structures` section: SHA-256
     /// public-key hashes known to be Pre-Production keys.
     public var preProductionKeyHashes: Set<String>
+
+    /// `lines` flattened into one newline-separated ASCII buffer, with each
+    /// line's start offset alongside.
+    ///
+    /// Every DB lookup here is "the first line containing this hash", and
+    /// `String.contains` is grapheme-aware: Foundation walks character
+    /// boundaries through `_opaqueCharacterStride` for every candidate
+    /// position, which measured at ~30% of a whole firmware parse — the corpus
+    /// is ~3900 lines and identification searches it several times per image.
+    /// Searching the bytes instead is the same answer for the ASCII hex hashes
+    /// these are called with, at a fraction of the cost.
+    private var haystack: Data
+    private var lineStarts: [Int]
 
     public init(revision: Int? = nil,
                 lines: [String] = [],
@@ -33,6 +49,34 @@ public struct MEADatabase: Sendable, Equatable {
         self.revision = revision
         self.lines = lines
         self.preProductionKeyHashes = preProductionKeyHashes
+        var buffer = Data()
+        var starts = [Int]()
+        starts.reserveCapacity(lines.count)
+        for line in lines {
+            starts.append(buffer.count)
+            buffer.append(contentsOf: line.utf8)
+            buffer.append(0x0A)
+        }
+        self.haystack = buffer
+        self.lineStarts = starts
+    }
+
+    /// The first line containing `needle`, as an index into `lines`.
+    private func firstLineIndex(containing needle: String) -> Int? {
+        let pattern = Data(needle.utf8)
+        guard !pattern.isEmpty,
+              let found = haystack.range(of: pattern) else { return nil }
+        let hit = found.lowerBound - haystack.startIndex
+        // The line whose span holds `hit`: the last start at or before it. A
+        // match never straddles a line, since the separator is a newline and
+        // no needle carries one.
+        var low = 0
+        var high = lineStarts.count - 1
+        while low < high {
+            let mid = (low + high + 1) / 2
+            if lineStarts[mid] <= hit { low = mid } else { high = mid - 1 }
+        }
+        return lineStarts.isEmpty ? nil : low
     }
 
     /// Deterministic parser: revision header, the line corpus, and the
@@ -52,11 +96,9 @@ public struct MEADatabase: Sendable, Equatable {
     /// (`get_variant` DB step): split the matched line on `_`, index 1. First
     /// hit wins; nil when no line carries the hash (unknown key).
     public func variant(matchingKeyHash publicKeyHash: String) -> String? {
-        for line in lines where line.contains(publicKeyHash) {
-            let parts = line.split(separator: "_", omittingEmptySubsequences: false)
-            if parts.count > 1 { return String(parts[1]) }
-        }
-        return nil
+        guard let index = firstLineIndex(containing: publicKeyHash) else { return nil }
+        let parts = lines[index].split(separator: "_", omittingEmptySubsequences: false)
+        return parts.count > 1 ? String(parts[1]) : nil
     }
 
     /// The manual CSE cells of the firmware row matching `signatureHash`
@@ -125,7 +167,7 @@ public struct MEADatabase: Sendable, Equatable {
     /// hash is `signatureHash`, verbatim. Mirrors the DB membership search; nil
     /// when the firmware is not in the database.
     public func firmwareRow(matchingSignatureHash signatureHash: String) -> String? {
-        lines.first { $0.contains(signatureHash) }
+        firstLineIndex(containing: signatureHash).map { lines[$0] }
     }
 
     // MARK: - Grammar

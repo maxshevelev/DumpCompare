@@ -25,6 +25,12 @@ struct MEFirmwareCLI {
         let args = CommandLine.arguments
         guard args.count >= 2 else { usage() }
 
+        if args[1] == "--bench" {
+            guard args.count >= 3 else { usage() }
+            await bench(dumps: args[2], dat: args.count >= 4 ? args[3] : nil)
+            return
+        }
+
         let path = args[1]
         var baseOffset = 0
         if args.count >= 3 {
@@ -54,6 +60,65 @@ struct MEFirmwareCLI {
         }
         print("--- FirmwareAnalysis JSON ---")
         print(json(result))
+    }
+
+    // MARK: - Bench
+
+    /// A data source reading the three databases off disk, so a timing run
+    /// measures parsing and not the network. Anything missing is left at the
+    /// protocol default, which throws — the legs needing it are then skipped,
+    /// so point `--dat` at a MEAnalyzer clone for a representative number.
+    private struct LocalData: MEADataSource {
+        var db = MEADatabase()
+        var huffman: HuffmanDictionaries?
+
+        func database() async throws -> MEADatabase { db }
+        func huffmanDictionaries() async throws -> HuffmanDictionaries {
+            guard let huffman else {
+                throw MEADataError.malformed(file: "Huffman.dat (not supplied)")
+            }
+            return huffman
+        }
+    }
+
+    /// Time `analyze` over every file in `dumps`, five runs each after a warm-up.
+    /// Reports the best run, which is the one least polluted by other load.
+    static func bench(dumps: String, dat: String?) async {
+        var source = LocalData()
+        if let dat {
+            if let text = try? String(contentsOfFile: dat + "/MEA.dat", encoding: .utf8) {
+                source.db = MEADatabase.parse(text)
+            } else {
+                print("warning: no MEA.dat under \(dat) — identification will be empty")
+            }
+            if let text = try? String(contentsOfFile: dat + "/Huffman.dat", encoding: .utf8) {
+                source.huffman = try? HuffmanDictionaries.parse(text)
+            }
+        }
+        let files = ((try? FileManager.default.contentsOfDirectory(atPath: dumps)) ?? [])
+            .sorted()
+            .filter { !$0.hasPrefix(".") }
+        guard !files.isEmpty else { fail("no files in \(dumps)") }
+
+        let runs = 5
+        for name in files {
+            guard let data = try? Data(contentsOf: URL(fileURLWithPath: dumps + "/" + name),
+                                       options: .mappedIfSafe) else { continue }
+            _ = try? await MEFirmwareAnalyzer(data: source).analyze(region: data)
+            var best = Double.infinity
+            var total = 0.0
+            for _ in 0..<runs {
+                let start = Date()
+                _ = try? await MEFirmwareAnalyzer(data: source).analyze(region: data)
+                let elapsed = Date().timeIntervalSince(start)
+                best = min(best, elapsed)
+                total += elapsed
+            }
+            let label = name.padding(toLength: 18, withPad: " ", startingAt: 0)
+            print(label + String(format: "%7.1f MiB   best %7.1f ms   mean %7.1f ms",
+                                 Double(data.count) / 1_048_576,
+                                 best * 1000, total / Double(runs) * 1000))
+        }
     }
 
     static func printSummary(_ result: FirmwareAnalysis, path: String, size: Int) {
@@ -106,12 +171,16 @@ struct MEFirmwareCLI {
     static func usage() -> Never {
         FileHandle.standardError.write(Data("""
         Usage: MEFirmwareCLI <image> [baseOffset]
+               MEFirmwareCLI --bench <dumps-dir> [dat-dir]
           <image>      engine region whose bytes start at $FPT (e.g. ME partition)
           [baseOffset] offset of <image> inside a larger dump, decimal or 0x-hex (default 0)
+          --bench      time analyze() over every file in <dumps-dir>, no network;
+                       [dat-dir] holds MEA.dat/Huffman.dat (a MEAnalyzer clone)
 
         Examples:
           swift run MEFirmwareCLI ~/dumps/me_region.bin
           swift run MEFirmwareCLI ~/dumps/full.bin 0x1000
+          swift run -c release MEFirmwareCLI --bench ~/Desktop/ME ~/Projects/MEAnalyzer
         """.utf8))
         exit(2)
     }

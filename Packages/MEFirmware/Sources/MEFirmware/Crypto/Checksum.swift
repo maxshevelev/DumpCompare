@@ -1,16 +1,33 @@
 import Foundation
 
-private let crc32Table: [UInt32] = {
-    var table = [UInt32](repeating: 0, count: 256)
+/// Slice-by-8 CRC-32 tables, flattened: slice `k` occupies
+/// `[k * 256 ..< (k + 1) * 256]`, and holds the contribution of a byte `k`
+/// positions further back in the stream. Eight input bytes then cost eight
+/// independent table lookups instead of eight dependent register updates — the
+/// byte-at-a-time walk was ~50% of a whole firmware parse, because a
+/// region-wide CRC-32 runs over the entire image. Same polynomial
+/// (0xEDB88320, reflected), so the same answer.
+private let crc32Slices: [UInt32] = {
+    var slices = [UInt32](repeating: 0, count: 8 * 256)
     for n in 0..<256 {
         var value = UInt32(n)
         for _ in 0..<8 {
             value = (value & 1) != 0 ? (0xEDB8_8320 ^ (value >> 1)) : (value >> 1)
         }
-        table[n] = value
+        slices[n] = value
     }
-    return table
+    for k in 1..<8 {
+        for n in 0..<256 {
+            let previous = slices[(k - 1) * 256 + n]
+            slices[k * 256 + n] = (previous >> 8) ^ slices[Int(previous & 0xFF)]
+        }
+    }
+    return slices
 }()
+
+/// Slice 0 on its own — the short-span callers below stay on the simple walk,
+/// where the wide loop's setup would cost more than it saves.
+private let crc32Table: [UInt32] = Array(crc32Slices[0..<256])
 
 /// CRC-32 checksums.
 ///
@@ -24,11 +41,7 @@ private let crc32Table: [UInt32] = {
 enum CRC32 {
     /// Standard CRC-32 of `data`.
     static func crc32(_ data: Data) -> UInt32 {
-        var crc: UInt32 = 0xFFFF_FFFF
-        for byte in data {
-            crc = crc32Table[Int((crc ^ UInt32(byte)) & 0xFF)] ^ (crc >> 8)
-        }
-        return crc ^ 0xFFFF_FFFF
+        register(over: data, from: 0xFFFF_FFFF) ^ 0xFFFF_FFFF
     }
 
     /// CRC-32 of `data` run from a zero initial register with *no* final XOR —
@@ -41,11 +54,52 @@ enum CRC32 {
     /// standard `crc32(_:)` does *not* match them. Byte-verified on the CSME
     /// 15.0.30 EFS region (all stored CRCs equal this of their spans).
     static func crc32IV0Raw(_ data: Data) -> UInt32 {
-        var crc: UInt32 = 0
-        for byte in data {
-            crc = crc32Table[Int((crc ^ UInt32(byte)) & 0xFF)] ^ (crc >> 8)
+        register(over: data, from: 0)
+    }
+
+    /// The table walk both spellings share, slice-by-8 over raw bytes rather
+    /// than `for byte in data` (`Data.Iterator` was one of the hottest frames
+    /// in a parse, and these run over whole regions and module bodies).
+    private static func register(over data: Data, from initial: UInt32) -> UInt32 {
+        var crc = initial
+        data.withUnsafeBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            guard let base = bytes.baseAddress else { return }
+            crc32Slices.withUnsafeBufferPointer { table in
+                let count = bytes.count
+                var offset = 0
+                let blockEnd = count - (count % 8)
+                while offset < blockEnd {
+                    // The running register is folded into the first four bytes;
+                    // the next four ride the higher slices.
+                    let folded: UInt32 = crc ^ le32(base + offset)
+                    let high: UInt32 = le32(base + offset + 4)
+                    var next: UInt32 = table[1792 + Int(folded & 0xFF)]
+                    next ^= table[1536 + Int((folded >> 8) & 0xFF)]
+                    next ^= table[1280 + Int((folded >> 16) & 0xFF)]
+                    next ^= table[1024 + Int((folded >> 24) & 0xFF)]
+                    next ^= table[768 + Int(high & 0xFF)]
+                    next ^= table[512 + Int((high >> 8) & 0xFF)]
+                    next ^= table[256 + Int((high >> 16) & 0xFF)]
+                    next ^= table[Int((high >> 24) & 0xFF)]
+                    crc = next
+                    offset += 8
+                }
+                while offset < count {
+                    crc = table[Int((crc ^ UInt32(base[offset])) & 0xFF)] ^ (crc >> 8)
+                    offset += 1
+                }
+            }
         }
         return crc
+    }
+
+    /// Four bytes at `pointer` as a little-endian word, unaligned-safe.
+    private static func le32(_ pointer: UnsafePointer<UInt8>) -> UInt32 {
+        UInt32(pointer[0])
+            | UInt32(pointer[1]) << 8
+            | UInt32(pointer[2]) << 16
+            | UInt32(pointer[3]) << 24
     }
 }
 
