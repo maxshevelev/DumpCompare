@@ -173,12 +173,12 @@ final class FITToolFlowTests: XCTestCase {
 
         // The volume is a top-level find, so the row went up naming *it* — the
         // most the tree could say without opening anything.
-        XCTAssertEqual(whenTheTableWentUp, "FFSv2 · 0x2848",
+        XCTAssertEqual(whenTheTableWentUp, "0x2848 (FFSv2)",
                        "the row went up with what the tree already knew")
         let after = try XCTUnwrap(
             session.display.rows.first { $0.typeText == "Startup ACM" }
         )
-        XCTAssertEqual(after.targetText, "MyDriver · 0x2848",
+        XCTAssertEqual(after.targetText, "0x2848 (MyDriver)",
                        "and the file inside it named the row once the volume "
                        + "had been walked")
     }

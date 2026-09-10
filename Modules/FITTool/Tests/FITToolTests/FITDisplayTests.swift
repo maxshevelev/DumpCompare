@@ -114,7 +114,10 @@ final class FITDisplayTests: XCTestCase {
         ).rows[1]
 
         XCTAssertNil(row.cpuidText)
-        XCTAssertEqual(row.targetText, "FFSv2 · 0x3000")
+        // The address leads and the name follows it in brackets: the name is
+        // the half that arrives second, once the branch covering the address
+        // has been read, so it must not push the address sideways when it does.
+        XCTAssertEqual(row.targetText, "0x3000 (FFSv2)")
     }
 
     /// The header's `Size` counts entries, not bytes — the field everyone reads
