@@ -4,12 +4,14 @@ A macOS hex editor and binary-file comparator, written in Swift/AppKit for macOS
 
 DumpCompare grew out of bench work on BIOS and EC dumps, so the comparison model stays deliberately simple: a byte at offset N is compared to the byte at offset N, nothing more. That is exactly the question a repair bench asks — *is this chip's content the same as the one that works?* — and the app is built around answering it fast, on files of the size a programmer clip actually pulls off a board.
 
+Beside the dump there is a **tool panel**: the same image read as the structure it is — the UEFI tree, the FIT table, the Intel ME region — so the other half of a bench's questions can be answered without leaving the editor. See [The tool panel](#the-tool-panel).
+
 <img width="1541" height="799" alt="Screenshot 2026-08-21 at 23 15 39" src="https://github.com/user-attachments/assets/0ff1c54c-78b5-4f7c-94e4-53a005a782ed" />
 
 
 ## Download
 
-[**DumpCompare 0.7.1**](https://github.com/maxshevelev/DumpCompare/releases/latest) — a universal `.dmg` (Apple silicon and Intel), macOS 14 or later.
+[**DumpCompare 0.8**](https://github.com/maxshevelev/DumpCompare/releases/latest) — a universal `.dmg` (Apple silicon and Intel), macOS 14 or later.
 
 The build is ad-hoc signed and not notarized, so Gatekeeper stops the first launch: right-click the app and choose **Open**, or clear the quarantine flag once.
 
@@ -28,6 +30,44 @@ The workflows the app is shaped around:
 - **Two chips, one image.** Plenty of boards split the BIOS region across two SPI flashes. Read both, **File ▸ Append File…** to join them in order, work on the whole image as one dump — compare, search, patch — then **Save All as Separate Files…** to split it back at the same seam and flash each half.
 - **More than one comparison at a time.** A board rarely gives you one question. ⌘T opens another tab — its own two panes, its own bookmarks, its own comparison — so the donor pair stays open while you look at the second chip, and ⌃Tab goes back.
 - **Chip-sized files, not toy files.** Files are read in chunks and never loaded whole, so a 16 MB SPI dump — or a 1 GB image — opens immediately and stays within a low double-digit megabyte working set.
+
+## The tool panel
+
+Half of what a bench needs to know about a dump is not in the bytes but in the *structure* over them. Which region is this offset in. Whether this volume's checksum still holds after a patch. What microcode the board carries, and whether it is the one the CPU on it wants. Whether the ME region is the firmware that shipped with the board, an update, or something a bad flash left behind. Answered by hand, each of those is counting offsets against a specification with a dump open in one window and a document in another.
+
+The **tool panel** answers them next to the dump. It opens on the left from the **Tools** menu or the toolbar's wrench, one tool at a time, bound to the pane it was opened for — so in a comparison the panel reads *one* of the two files and says which in its header. A row picked in a tool takes the dump to the bytes behind it and draws that node's extent in the minimap's margin, so the region under investigation stays visible while you work in it. Everything a tool writes goes through the editor's own undo stack: a fix is an edit like any other, and ⌘Z takes it back.
+
+Three tools ship.
+
+### UEFI Structure
+
+The flash image as the tree it actually is: the Intel descriptor and each region it maps, firmware volumes, FFS files and their sections, NVRAM stores with every variable in them, microcode, padding, free space. A node's detail says where it starts, how long its header, body and tail are, what its GUID is — named, when the GUID is a known one — and what its header holds, field by field.
+
+- **The tree is read lazily.** Opening the panel on a 32 MB image is instant: the top level is parsed, and a branch is read when it is opened. One tree serves all three tools and survives switching between them, so the FIT table and the ME Analyzer start from what has already been read rather than parsing the image again.
+- **Checksums are checked as the tree is built**, and a wrong one is flagged on the node that carries it — a volume header, an FFS file, an NVRAM record. **Fix Checksum** writes the value the format asks for, as one undoable edit.
+- **Addresses are the ones the CPU sees.** The image's own reset vector anchors the mapping, so a node's `Address` is where that byte is in the processor's address space, not merely its offset in the file.
+
+### FIT Table
+
+The Firmware Interface Table the CPU reads before any code runs: every entry with its type, version, size and checksum, and **what it points at** — named from the structure tree, so a table of addresses reads as a table of things rather than a column of numbers.
+
+Microcode is the part a bench changes. **Add**, **Replace** and **Remove** work on the table's microcode entries, with the replacement picked from a catalogue of Intel's published microcodes by CPUID, revision and date; the table's own bookkeeping — the entry count, the header checksum — is rewritten with it, and the whole operation is a single undo.
+
+### ME Analyzer
+
+What the Intel ME/CSME region in this dump actually is, in the words the field uses: family and version, SKU, chipset and stepping, release and revision, the date it was built, and whether it is a stock image, an update, or one extracted from a board. Firmware stitched inside an image is analysed in its own right and gets its own table.
+
+The health rows are the ones that say whether a region survived what happened to it — RSA signature, partition tables, the EFS volume and its page bookkeeping, the MFS dictionary, the file-system state — each shown as a plain Yes/No or a coloured word rather than as a hex field to interpret. **Full Tree** opens the same analysis as the structure behind those answers. **Copy** puts the summary on the clipboard as rich text and **Screenshot** as a picture, which is what a ticket, a forum post or a message to another bench actually needs.
+
+## Standing on other people's work
+
+The formats these tools read were not worked out here. The algorithms and the reference data behind the EFI-side tools were **ported from public projects** whose authors did the hard part — years of reading firmware, writing down what is in it, and keeping that current as Intel moved — and what DumpCompare adds is a native Mac interface to their work, beside the dump and inside the editor:
+
+- **[UEFITool](https://github.com/LongSoft/UEFITool)** by **[LongSoft](https://github.com/LongSoft)** — the shape of a UEFI image and how to walk it, the item and section types the tree names, the NVRAM store and variable formats, and the GUID catalogue (`common/guids.csv`) that turns a GUID into the name of a thing.
+- **[MEAnalyzer](https://github.com/platomav/MEAnalyzer)** by **[platomav](https://github.com/platomav)** — the reading of Intel ME/CSME firmware end to end: what identifies a family, where each version keeps its version, what makes an image stock or an update, and the databases a dump is checked against (`MEA.dat`, `Huffman.dat`), fetched as the project publishes them.
+- **[CPUMicrocodes](https://github.com/platomav/CPUMicrocodes)** by **[platomav](https://github.com/platomav)** — the catalogue of Intel microcodes the FIT tool's picker offers, kept current by hand for years.
+
+These projects are why a repair shop can work on modern firmware at all. Between them they turned formats that ship with no documentation into knowledge anyone can use, gave it away, and have maintained it release after release without being paid for it — and an enormous part of what this trade knows about UEFI images and Intel ME firmware exists because those authors chose to publish rather than to keep. Our deepest thanks to them. If these tools are useful to you, the projects above are where the credit belongs; go and star them, and see the About panel for the same links in the app.
 
 ## Features
 
