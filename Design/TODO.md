@@ -288,6 +288,48 @@ from the start because a browser tab reloads far more often than an app launches
 Writing down why the web edition wanted one made it clear the desktop is doing
 without for no reason beyond it never having been asked for.
 
+### Say in the status bar that we are waiting on the network
+
+**What.** The three live sources fetch without telling anyone. The pane already
+has the instrument for this — `OperationStatusView` through
+`FilePaneView.beginOperation(_:)`: a name, a determinate bar and a (×) that
+cancels, used by diff, search and the minimap rebuild. Network fetches do not go
+through it. Route them through it: `Fetching MEA.dat…` against `Content-Length`,
+cancellable.
+
+**Why.** A reported symptom, now explained: a random pause before ME Analyzer
+produces anything. `MEFirmwareAnalyzer.swift` parses stage 1 locally, then stops
+at `let database = try await data.database()` — the live `MEA.dat` — and the
+analysis continues only once 350 KB have arrived over the network (`Huffman.dat`
+after it for some images). It is random because it is the network, and it
+happens once per launch because the actor keeps the result in memory. The same
+wait sits in front of the first UEFI tree (`guids.csv`, 680 KB) and the FIT
+tool's catalogue.
+
+Unannounced, that pause reads as "the tool is slow", and on a bad line it is
+indistinguishable from a hang. The panel's indeterminate spinner says something
+is happening; it does not say the app is waiting on github.com, which is the one
+fact that would let a bench decide whether to wait, cancel, or check the
+network.
+
+**How.** The sources are clean actors with no UI dependency, and that should
+stay true: give each an observation channel — an `AsyncStream` of fetch events,
+or a reporter closure passed at construction — and let the tool-module side
+translate events into `beginOperation`/`endOperation` on the pane the tool is
+bound to. Cancelling cancels the URLSession task and leaves the tool in its
+"databases unavailable" state rather than waiting forever.
+
+Pairs with the cache entry above: the cache removes most of these waits, and
+this entry explains the ones that remain.
+
+**Touches.** `MEAGitHubDataRepository`, `LongSoftGuidsRepository`,
+`MicrocodeSource`, the three tool view controllers, `ToolModuleKit` if the events
+travel through the module contract, `FilePaneView`, and the REQUIREMENTS lines
+about background operations.
+
+**Cost.** 4–6 hours, most of it in routing events from a package that must not
+learn about AppKit.
+
 ## Someday
 
 ### View, interactor, coordinator — reasoning, not an entry
