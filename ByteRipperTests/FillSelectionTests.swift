@@ -11,11 +11,11 @@ final class FillSelectionTests: XCTestCase {
         super.setUp()
         // A fill test that submits a pattern persists it; reset so the default
         // ("FF") and the remembered-pattern assertions stay deterministic.
-        UserDefaults.standard.removeObject(forKey: FillPatternStore.userDefaultsKey)
+        AppDefaults.store.removeObject(forKey: FillPatternStore.userDefaultsKey)
     }
 
     override func tearDown() {
-        UserDefaults.standard.removeObject(forKey: FillPatternStore.userDefaultsKey)
+        AppDefaults.store.removeObject(forKey: FillPatternStore.userDefaultsKey)
         super.tearDown()
     }
 

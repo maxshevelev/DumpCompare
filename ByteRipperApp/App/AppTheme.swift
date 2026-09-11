@@ -22,19 +22,19 @@ enum AppTheme: String, CaseIterable {
 
     /// The currently selected theme, falling back to system.
     static var current: AppTheme {
-        let stored = UserDefaults.standard.string(forKey: userDefaultsKey) ?? system.rawValue
+        let stored = AppDefaults.store.string(forKey: userDefaultsKey) ?? system.rawValue
         return AppTheme(rawValue: stored) ?? .system
     }
 
     /// Persists `theme` and notifies observers to re-apply it.
     static func set(_ theme: AppTheme) {
-        UserDefaults.standard.set(theme.rawValue, forKey: userDefaultsKey)
+        AppDefaults.store.set(theme.rawValue, forKey: userDefaultsKey)
         NotificationCenter.default.post(name: didChangeNotification, object: nil)
     }
 
     /// Restores the built-in default (system) and notifies.
     static func resetToDefaults() {
-        UserDefaults.standard.removeObject(forKey: userDefaultsKey)
+        AppDefaults.store.removeObject(forKey: userDefaultsKey)
         NotificationCenter.default.post(name: didChangeNotification, object: nil)
     }
 

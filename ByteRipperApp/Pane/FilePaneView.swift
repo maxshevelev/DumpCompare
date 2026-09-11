@@ -149,7 +149,7 @@ final class FilePaneView: NSView {
     /// Where the panel height is persisted. Swappable so the suite does not write
     /// the user's real preference: the panel is shown at a legal height by some
     /// twenty tests, and each of those was a write to `UserDefaults.standard`.
-    static var defaults: UserDefaults = .standard
+    static var defaults: UserDefaults = AppDefaults.store
 
     /// `UserDefaults` key for the user's chosen Search All panel height (§11).
     static let searchResultsHeightDefaultsKey = "SearchResultsPanelHeight"

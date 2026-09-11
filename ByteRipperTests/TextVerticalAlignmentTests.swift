@@ -16,7 +16,7 @@ import XCTest
 final class TextVerticalAlignmentTests: XCTestCase {
     override func setUp() {
         super.setUp()
-        UserDefaults.standard.set(1, forKey: WordSize.userDefaultsKey)
+        AppDefaults.store.set(1, forKey: WordSize.userDefaultsKey)
     }
 
     /// A real `HexView` backed by a real `PaneViewModel`, rendered straight to a

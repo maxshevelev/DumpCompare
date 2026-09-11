@@ -34,7 +34,7 @@ final class ComparisonSettingsTests: XCTestCase {
         ComparisonSettings.set(groupingGap: 32)
 
         XCTAssertEqual(ComparisonSettings.groupingGap, 32)
-        XCTAssertEqual(UserDefaults.standard.integer(forKey: ComparisonSettings.groupingGapKey), 32)
+        XCTAssertEqual(AppDefaults.store.integer(forKey: ComparisonSettings.groupingGapKey), 32)
         XCTAssertEqual(notified, 1)
 
         NotificationCenter.default.removeObserver(token)
@@ -43,7 +43,7 @@ final class ComparisonSettingsTests: XCTestCase {
     /// A value the popup no longer offers (an older build, a hand-edited plist)
     /// must not leave navigation grouping by something arbitrary.
     func testAnUnrecognisedStoredValueFallsBackToTheDefault() {
-        UserDefaults.standard.set(7, forKey: ComparisonSettings.groupingGapKey)
+        AppDefaults.store.set(7, forKey: ComparisonSettings.groupingGapKey)
         XCTAssertEqual(ComparisonSettings.groupingGap, ComparisonSettings.defaultGroupingGap)
     }
 

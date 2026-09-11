@@ -18,7 +18,7 @@ import XCTest
 final class SegmentTintRenderTests: XCTestCase {
     override func setUp() {
         super.setUp()
-        UserDefaults.standard.set(1, forKey: WordSize.userDefaultsKey)
+        AppDefaults.store.set(1, forKey: WordSize.userDefaultsKey)
     }
 
     /// A standalone hex view over a real pane, pinned to Aqua. No window, so no

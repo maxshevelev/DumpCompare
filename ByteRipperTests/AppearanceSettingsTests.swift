@@ -30,8 +30,8 @@ final class AppearanceSettingsTests: XCTestCase {
 
         XCTAssertEqual(AppearanceSettings.fontFamily, family)
         XCTAssertEqual(AppearanceSettings.rowHeightScale, 0.9)
-        XCTAssertEqual(UserDefaults.standard.string(forKey: AppearanceSettings.fontFamilyKey), family)
-        XCTAssertEqual(UserDefaults.standard.double(forKey: AppearanceSettings.rowHeightScaleKey), 0.9)
+        XCTAssertEqual(AppDefaults.store.string(forKey: AppearanceSettings.fontFamilyKey), family)
+        XCTAssertEqual(AppDefaults.store.double(forKey: AppearanceSettings.rowHeightScaleKey), 0.9)
         XCTAssertEqual(notified, 1)
 
         NotificationCenter.default.removeObserver(token)
@@ -66,7 +66,7 @@ final class AppearanceSettingsTests: XCTestCase {
                                fontSize: 18)
 
         XCTAssertEqual(AppearanceSettings.fontSize, 18, accuracy: 0.0001)
-        XCTAssertEqual(UserDefaults.standard.double(forKey: AppearanceSettings.fontSizeKey), 18)
+        XCTAssertEqual(AppDefaults.store.double(forKey: AppearanceSettings.fontSizeKey), 18)
         XCTAssertEqual(notified, 1)
 
         NotificationCenter.default.removeObserver(token)

@@ -11,7 +11,7 @@ import XCTest
 final class BookmarkDragTests: XCTestCase {
     override func setUp() {
         super.setUp()
-        UserDefaults.standard.set(1, forKey: WordSize.userDefaultsKey)
+        AppDefaults.store.set(1, forKey: WordSize.userDefaultsKey)
     }
 
     // MARK: - The store's rule (§20.1: one bookmark per row)

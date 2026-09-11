@@ -11,7 +11,7 @@ import XCTest
 final class SegmentsFormTests: XCTestCase {
     override func setUp() {
         super.setUp()
-        UserDefaults.standard.set(1, forKey: WordSize.userDefaultsKey)
+        AppDefaults.store.set(1, forKey: WordSize.userDefaultsKey)
     }
 
     private var windows: [NSWindow] = []

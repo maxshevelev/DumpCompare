@@ -22,7 +22,7 @@ enum FavoritePatternStore {
 
     /// The domain the *bookkeeping* lives in — the device id, and nothing about
     /// the patterns themselves. Swappable for tests, like the history's.
-    static var defaults: UserDefaults = .standard
+    static var defaults: UserDefaults = AppDefaults.store
 
     /// Fired whenever the list changes, so the Find bar's menu and the form
     /// that edits it can re-read. A notification rather than a closure: the

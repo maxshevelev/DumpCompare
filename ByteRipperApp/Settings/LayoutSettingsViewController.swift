@@ -11,11 +11,11 @@ enum LayoutSettings {
 
     /// True = side-by-side (left/right), false = stacked (top/bottom).
     static var isVertical: Bool {
-        UserDefaults.standard.object(forKey: layoutDirectionKey) as? Bool ?? true
+        AppDefaults.store.object(forKey: layoutDirectionKey) as? Bool ?? true
     }
 
     static func set(isVertical: Bool) {
-        UserDefaults.standard.set(isVertical, forKey: layoutDirectionKey)
+        AppDefaults.store.set(isVertical, forKey: layoutDirectionKey)
         NotificationCenter.default.post(name: layoutDirectionDidChangeNotification, object: nil)
     }
 }

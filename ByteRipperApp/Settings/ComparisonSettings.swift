@@ -23,7 +23,7 @@ enum ComparisonSettings {
     /// The configured distance, falling back to the default for an unset or
     /// unrecognised value.
     static var groupingGap: UInt64 {
-        let stored = UserDefaults.standard.integer(forKey: groupingGapKey)
+        let stored = AppDefaults.store.integer(forKey: groupingGapKey)
         guard stored > 0 else { return defaultGroupingGap }
         let value = UInt64(stored)
         return groupingGapChoices.contains(value) ? value : defaultGroupingGap
@@ -31,13 +31,13 @@ enum ComparisonSettings {
 
     /// Persists the distance and notifies observers to re-group (§10.3.1).
     static func set(groupingGap: UInt64) {
-        UserDefaults.standard.set(Int(groupingGap), forKey: groupingGapKey)
+        AppDefaults.store.set(Int(groupingGap), forKey: groupingGapKey)
         NotificationCenter.default.post(name: didChangeNotification, object: nil)
     }
 
     /// Restores the built-in default and notifies (used by tests).
     static func resetToDefaults() {
-        UserDefaults.standard.removeObject(forKey: groupingGapKey)
+        AppDefaults.store.removeObject(forKey: groupingGapKey)
         NotificationCenter.default.post(name: didChangeNotification, object: nil)
     }
 }

@@ -21,16 +21,16 @@ enum EditingSettings {
         // `object(forKey:)` distinguishes "never set" from "set to false":
         // `bool(forKey:)` answers false for both, which would ship the warnings
         // switched off.
-        UserDefaults.standard.object(forKey: warnsBeforeShiftingEditsKey) as? Bool ?? true
+        AppDefaults.store.object(forKey: warnsBeforeShiftingEditsKey) as? Bool ?? true
     }
 
     static func set(warnsBeforeShiftingEdits: Bool) {
-        UserDefaults.standard.set(warnsBeforeShiftingEdits, forKey: warnsBeforeShiftingEditsKey)
+        AppDefaults.store.set(warnsBeforeShiftingEdits, forKey: warnsBeforeShiftingEditsKey)
     }
 
     /// Restores the built-in default (used by tests).
     static func resetToDefaults() {
-        UserDefaults.standard.removeObject(forKey: warnsBeforeShiftingEditsKey)
+        AppDefaults.store.removeObject(forKey: warnsBeforeShiftingEditsKey)
     }
 }
 

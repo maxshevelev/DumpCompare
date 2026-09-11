@@ -126,7 +126,7 @@ final class ZoomToFitTests: XCTestCase {
         let saved = LayoutSettings.isVertical
         defer { LayoutSettings.set(isVertical: saved) }
         LayoutSettings.set(isVertical: true)
-        UserDefaults.standard.removeObject(forKey: "NSWindow Frame MainWindow")
+        AppDefaults.store.removeObject(forKey: "NSWindow Frame MainWindow")
 
         let controller = makeController()
         let window = controller.window!
@@ -301,7 +301,7 @@ final class ZoomToFitTests: XCTestCase {
     /// Side-by-side: the width must fit both grids plus the divider, the height
     /// the taller of the two files.
     func testComparisonVerticalFitsBothPanes() throws {
-        UserDefaults.standard.set(true, forKey: "ComparisonPaneLayoutIsVertical")
+        AppDefaults.store.set(true, forKey: "ComparisonPaneLayoutIsVertical")
         let url1 = try tempFile([UInt8](repeating: 0x41, count: 4096))
         let url2 = try tempFile([UInt8](repeating: 0x42, count: 512))
         let controller = makeController()
@@ -330,7 +330,7 @@ final class ZoomToFitTests: XCTestCase {
     /// Stacked: both panes share the full width, so the width fits the wider
     /// grid; the height still targets the taller file's content.
     func testComparisonStackedFitsBothPanes() throws {
-        UserDefaults.standard.set(false, forKey: "ComparisonPaneLayoutIsVertical")
+        AppDefaults.store.set(false, forKey: "ComparisonPaneLayoutIsVertical")
         let url1 = try tempFile([UInt8](repeating: 0x41, count: 4096))
         let url2 = try tempFile([UInt8](repeating: 0x42, count: 512))
         let controller = makeController()

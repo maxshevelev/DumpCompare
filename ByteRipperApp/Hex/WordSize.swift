@@ -16,7 +16,7 @@ enum WordSize: Int, CaseIterable {
 
     /// The currently selected word size, falling back to one byte.
     static var current: WordSize {
-        WordSize(rawValue: UserDefaults.standard.integer(forKey: userDefaultsKey)) ?? .one
+        WordSize(rawValue: AppDefaults.store.integer(forKey: userDefaultsKey)) ?? .one
     }
 
     /// How the size is named in the View menu and on the toolbar's menu button
@@ -27,7 +27,7 @@ enum WordSize: Int, CaseIterable {
 
     /// Persists `size` and notifies observers to re-lay out (§6).
     static func set(_ size: WordSize) {
-        UserDefaults.standard.set(size.rawValue, forKey: userDefaultsKey)
+        AppDefaults.store.set(size.rawValue, forKey: userDefaultsKey)
         NotificationCenter.default.post(name: didChangeNotification, object: nil)
     }
 }

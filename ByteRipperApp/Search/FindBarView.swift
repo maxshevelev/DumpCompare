@@ -69,7 +69,7 @@ final class FindBarView: NSView, NSSearchFieldDelegate, NSMenuItemValidation {
     /// The defaults domain the case toggle lives in. Swappable so tests run
     /// against an isolated store instead of the real app's `UserDefaults.standard`
     /// (§11).
-    static var defaults: UserDefaults = .standard
+    static var defaults: UserDefaults = AppDefaults.store
 
     /// The pattern field: a search field, whose magnifier drops the menu with
     /// the two lists (§11, `Design/PATTERN_LIBRARY_IDEA.md`). A combo box until

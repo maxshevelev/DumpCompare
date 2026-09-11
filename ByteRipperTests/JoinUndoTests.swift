@@ -12,7 +12,7 @@ import XCTest
 final class JoinUndoTests: XCTestCase {
     override func setUp() {
         super.setUp()
-        UserDefaults.standard.set(1, forKey: WordSize.userDefaultsKey)
+        AppDefaults.store.set(1, forKey: WordSize.userDefaultsKey)
     }
 
     /// A full controller whose active pane is open over `bytes`.

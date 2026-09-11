@@ -20,7 +20,7 @@ enum GoToHistoryStore {
 
     /// The defaults domain the history lives in. Swappable so tests run against
     /// an isolated store instead of the user's own (§11 does the same).
-    static var defaults: UserDefaults = .standard
+    static var defaults: UserDefaults = AppDefaults.store
 
     /// The recorded addresses, most recent first.
     static var recent: [String] {

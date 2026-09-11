@@ -12,7 +12,7 @@ import XCTest
 final class JoinTests: XCTestCase {
     override func setUp() {
         super.setUp()
-        UserDefaults.standard.set(1, forKey: WordSize.userDefaultsKey)
+        AppDefaults.store.set(1, forKey: WordSize.userDefaultsKey)
     }
 
     /// What a join flow leaves behind: the open panel it configured, and the

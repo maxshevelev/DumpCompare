@@ -13,7 +13,7 @@ import XCTest
 final class MouseSelectionTests: XCTestCase {
     override func setUp() {
         super.setUp()
-        UserDefaults.standard.set(1, forKey: WordSize.userDefaultsKey)
+        AppDefaults.store.set(1, forKey: WordSize.userDefaultsKey)
     }
 
     /// A pane hosting a real hex view in a real window. The temp file stays on

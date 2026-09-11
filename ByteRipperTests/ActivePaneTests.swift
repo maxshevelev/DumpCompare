@@ -16,10 +16,10 @@ import XCTest
 final class ActivePaneTests: XCTestCase {
     override func setUp() {
         super.setUp()
-        UserDefaults.standard.set(true, forKey: "ComparisonPaneLayoutIsVertical")
+        AppDefaults.store.set(true, forKey: "ComparisonPaneLayoutIsVertical")
         // The contour-padding rules depend on the word size; pin it so the
         // suite isn't at the mercy of whatever the shared defaults hold.
-        UserDefaults.standard.set(1, forKey: WordSize.userDefaultsKey)
+        AppDefaults.store.set(1, forKey: WordSize.userDefaultsKey)
     }
 
     private func makeComparisonView(bytes1: [UInt8]? = nil, bytes2: [UInt8]? = nil) throws -> (ComparisonView, NSWindow, URL, URL) {
@@ -448,9 +448,9 @@ final class ActivePaneTests: XCTestCase {
     /// ending mid-word stays flush there, since padding would push the line
     /// onto the neighbor glyph. The ASCII column pads only at its outer edges.
     func testMirrorContourPadsOnlyAtWordBoundaries() throws {
-        let previousWordSize = UserDefaults.standard.integer(forKey: WordSize.userDefaultsKey)
-        UserDefaults.standard.set(2, forKey: WordSize.userDefaultsKey)
-        defer { UserDefaults.standard.set(previousWordSize, forKey: WordSize.userDefaultsKey) }
+        let previousWordSize = AppDefaults.store.integer(forKey: WordSize.userDefaultsKey)
+        AppDefaults.store.set(2, forKey: WordSize.userDefaultsKey)
+        defer { AppDefaults.store.set(previousWordSize, forKey: WordSize.userDefaultsKey) }
 
         let (cv, _, url1, url2) = try makeComparisonView()
         defer { try? FileManager.default.removeItem(at: url1); try? FileManager.default.removeItem(at: url2) }

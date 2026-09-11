@@ -31,7 +31,7 @@ final class DividerDragTests: XCTestCase {
     /// in the split view's own coordinates; `windowPoint` converts them for the
     /// synthesized events.
     private func makeComparisonView(vertical: Bool) throws -> (ComparisonView, NSWindow) {
-        UserDefaults.standard.set(vertical, forKey: "ComparisonPaneLayoutIsVertical")
+        AppDefaults.store.set(vertical, forKey: "ComparisonPaneLayoutIsVertical")
         let url1 = try tempFile([UInt8](repeating: 0x41, count: 4096))
         let url2 = try tempFile([UInt8](repeating: 0x42, count: 512))
         let p1 = PaneViewModel()

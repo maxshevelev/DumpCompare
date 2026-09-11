@@ -8,11 +8,11 @@ import XCTest
 final class WordSizeTests: XCTestCase {
     override func setUp() {
         super.setUp()
-        UserDefaults.standard.removeObject(forKey: WordSize.userDefaultsKey)
+        AppDefaults.store.removeObject(forKey: WordSize.userDefaultsKey)
     }
 
     override func tearDown() {
-        UserDefaults.standard.removeObject(forKey: WordSize.userDefaultsKey)
+        AppDefaults.store.removeObject(forKey: WordSize.userDefaultsKey)
         super.tearDown()
     }
 
@@ -30,7 +30,7 @@ final class WordSizeTests: XCTestCase {
         WordSize.set(.four)
 
         XCTAssertEqual(WordSize.current, .four)
-        XCTAssertEqual(UserDefaults.standard.integer(forKey: WordSize.userDefaultsKey), 4)
+        XCTAssertEqual(AppDefaults.store.integer(forKey: WordSize.userDefaultsKey), 4)
         XCTAssertEqual(notified, 1)
 
         NotificationCenter.default.removeObserver(token)
@@ -64,7 +64,7 @@ final class WordSizeTests: XCTestCase {
     /// Word size 1 gives every byte its own word (the most inter-word gaps), so
     /// it is the widest grouping; 8-byte words pack tightest.
     func testWordSizeShrinkThenFitShrinksScrollContent() throws {
-        UserDefaults.standard.set(1, forKey: WordSize.userDefaultsKey)
+        AppDefaults.store.set(1, forKey: WordSize.userDefaultsKey)
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("word-fit-\(UUID().uuidString).bin")
         try Data([UInt8](repeating: 0xAB, count: 64)).write(to: url)
@@ -98,7 +98,7 @@ final class WordSizeTests: XCTestCase {
 
         // Shrink the word size while the window is still wide: the content
         // collapses but the document keeps filling the viewport.
-        UserDefaults.standard.set(8, forKey: WordSize.userDefaultsKey)
+        AppDefaults.store.set(8, forKey: WordSize.userDefaultsKey)
         WordSize.set(.eight)
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
         XCTAssertLessThan(hexView.hexContentWidth, wideViewport,

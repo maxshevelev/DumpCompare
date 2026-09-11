@@ -26,7 +26,7 @@ final class MinimapTests: XCTestCase {
         MainViewController.minimapDefaults = isolatedDefaults
         // Deterministic: clear any autosaved window frame and force the layout
         // start so the window opens at a known size.
-        UserDefaults.standard.removeObject(forKey: "NSWindow Frame MainWindow")
+        AppDefaults.store.removeObject(forKey: "NSWindow Frame MainWindow")
         savedLayoutIsVertical = LayoutSettings.isVertical
     }
 

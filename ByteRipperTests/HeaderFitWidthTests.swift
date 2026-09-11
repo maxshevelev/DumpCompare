@@ -13,7 +13,7 @@ import XCTest
 final class HeaderFitWidthTests: XCTestCase {
     override func setUp() {
         super.setUp()
-        UserDefaults.standard.set(true, forKey: "ComparisonPaneLayoutIsVertical")
+        AppDefaults.store.set(true, forKey: "ComparisonPaneLayoutIsVertical")
     }
 
     override func tearDown() {
@@ -148,7 +148,7 @@ final class HeaderFitWidthTests: XCTestCase {
     /// that passed with `fitPane`'s stacked guard deleted.
     func testHeaderDoubleClickIsANoOpInStackedMode() throws {
         let (cv, window) = try makeComparisonView(width: 400)
-        UserDefaults.standard.set(false, forKey: "ComparisonPaneLayoutIsVertical")
+        AppDefaults.store.set(false, forKey: "ComparisonPaneLayoutIsVertical")
         cv.splitView.isVertical = false
         window.layoutIfNeeded()
         let heightBefore = cv.paneView1.frame.height

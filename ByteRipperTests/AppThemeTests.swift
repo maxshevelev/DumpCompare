@@ -30,7 +30,7 @@ final class AppThemeTests: XCTestCase {
         AppTheme.set(.dark)
 
         XCTAssertEqual(AppTheme.current, .dark)
-        XCTAssertEqual(UserDefaults.standard.string(forKey: AppTheme.userDefaultsKey), "dark")
+        XCTAssertEqual(AppDefaults.store.string(forKey: AppTheme.userDefaultsKey), "dark")
         XCTAssertEqual(notified, 1)
 
         NotificationCenter.default.removeObserver(token)

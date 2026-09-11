@@ -505,12 +505,12 @@ enum FillPatternStore {
     /// The last pattern the user filled with, or `defaultPattern` when none is
     /// saved yet.
     static var last: String {
-        UserDefaults.standard.string(forKey: userDefaultsKey) ?? defaultPattern
+        AppDefaults.store.string(forKey: userDefaultsKey) ?? defaultPattern
     }
 
     /// Persists `pattern` as the value to offer next time.
     static func save(_ pattern: String) {
-        UserDefaults.standard.set(pattern, forKey: userDefaultsKey)
+        AppDefaults.store.set(pattern, forKey: userDefaultsKey)
     }
 }
 
@@ -571,7 +571,7 @@ enum FindHistoryStore {
     /// The defaults domain the history lives in. Swappable so tests run against
     /// an isolated store instead of the real app's `UserDefaults.standard`
     /// (which would otherwise pick up and pollute the user's own searches §11).
-    static var defaults: UserDefaults = .standard
+    static var defaults: UserDefaults = AppDefaults.store
 
     /// A recent search is `SearchPatternEntry` with no name — a favourite is
     /// the same thing named, and one type serves both lists in the bar's menu

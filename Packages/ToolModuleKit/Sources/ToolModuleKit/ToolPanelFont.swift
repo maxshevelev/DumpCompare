@@ -21,6 +21,12 @@ public enum ToolPanelFont {
     /// it — writes the size to.
     public static let zoomSizeKey = "HexFontSize"
 
+    /// Where the size is read from. The app points this at its own
+    /// `AppDefaults.store` at launch, so a test run reads the suite the app
+    /// reads rather than the user's real settings; a package cannot see the
+    /// app, hence the seam rather than the decision being made here.
+    public static var defaults: UserDefaults = .standard
+
     /// Posted after the zoom moves, so a panel on screen re-reads the size.
     public static let zoomDidChangeNotification =
         Notification.Name("AppearanceSettingsDidChange")
@@ -35,7 +41,7 @@ public enum ToolPanelFont {
 
     /// Body text: a table cell, a detail row, the summary and notice lines.
     public static var size: CGFloat {
-        let stored = UserDefaults.standard.double(forKey: zoomSizeKey)
+        let stored = defaults.double(forKey: zoomSizeKey)
         guard stored > 0 else { return defaultSize }
         return min(max(CGFloat(stored), sizeRange.lowerBound), sizeRange.upperBound)
     }

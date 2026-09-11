@@ -13,7 +13,7 @@ import XCTest
 final class SegmentSaveTests: XCTestCase {
     override func setUp() {
         super.setUp()
-        UserDefaults.standard.set(1, forKey: WordSize.userDefaultsKey)
+        AppDefaults.store.set(1, forKey: WordSize.userDefaultsKey)
     }
 
     /// What a save flow leaves behind: the confirmation alert (Save All only),

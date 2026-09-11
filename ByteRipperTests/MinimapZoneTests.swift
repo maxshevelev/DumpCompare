@@ -21,7 +21,7 @@ final class MinimapZoneTests: XCTestCase {
         ToolController.defaults = isolatedStore
         ToolController.changeDelay = 0
         MainViewController.minimapDefaults = isolatedStore
-        UserDefaults.standard.removeObject(forKey: "NSWindow Frame MainWindow")
+        AppDefaults.store.removeObject(forKey: "NSWindow Frame MainWindow")
     }
 
     override func tearDown() {

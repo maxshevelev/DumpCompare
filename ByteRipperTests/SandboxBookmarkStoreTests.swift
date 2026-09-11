@@ -103,7 +103,7 @@ final class SandboxBookmarkStoreTests: XCTestCase {
     func testTheStoreKeepsOutOfTheUsersDomainUnderTest() throws {
         XCTAssertTrue(MainViewController.isRunningTests, "the premise: under XCTest")
         let chosen = try XCTUnwrap(Self.appDomain)
-        XCTAssertFalse(chosen === UserDefaults.standard,
+        XCTAssertFalse(chosen === AppDefaults.store,
                        "under test the store must not be the user's own domain")
     }
 }

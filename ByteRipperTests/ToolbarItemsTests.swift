@@ -16,13 +16,13 @@ final class ToolbarItemsTests: XCTestCase {
 
     override func setUp() {
         super.setUp()
-        UserDefaults.standard.removeObject(forKey: WordSize.userDefaultsKey)
-        UserDefaults.standard.set(true, forKey: LayoutSettings.layoutDirectionKey)
+        AppDefaults.store.removeObject(forKey: WordSize.userDefaultsKey)
+        AppDefaults.store.set(true, forKey: LayoutSettings.layoutDirectionKey)
     }
 
     override func tearDown() {
-        UserDefaults.standard.removeObject(forKey: WordSize.userDefaultsKey)
-        UserDefaults.standard.removeObject(forKey: LayoutSettings.layoutDirectionKey)
+        AppDefaults.store.removeObject(forKey: WordSize.userDefaultsKey)
+        AppDefaults.store.removeObject(forKey: LayoutSettings.layoutDirectionKey)
         for url in tempFiles { try? FileManager.default.removeItem(at: url) }
         tempFiles = []
         super.tearDown()

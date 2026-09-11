@@ -42,12 +42,12 @@ enum AppearanceSettings {
 
     /// The configured font family; empty means the system monospaced font.
     static var fontFamily: String {
-        UserDefaults.standard.string(forKey: fontFamilyKey) ?? systemFontSentinel
+        AppDefaults.store.string(forKey: fontFamilyKey) ?? systemFontSentinel
     }
 
     /// The configured row-height factor, falling back to the built-in default.
     static var rowHeightScale: CGFloat {
-        let stored = UserDefaults.standard.double(forKey: rowHeightScaleKey)
+        let stored = AppDefaults.store.double(forKey: rowHeightScaleKey)
         guard stored > 0 else { return defaultRowHeightScale }
         return CGFloat(stored)
     }
@@ -55,7 +55,7 @@ enum AppearanceSettings {
     /// The configured hex font size in points, falling back to the built-in
     /// default.
     static var fontSize: CGFloat {
-        let stored = UserDefaults.standard.double(forKey: fontSizeKey)
+        let stored = AppDefaults.store.double(forKey: fontSizeKey)
         guard stored > 0 else { return defaultFontSize }
         return CGFloat(stored)
     }
@@ -64,9 +64,9 @@ enum AppearanceSettings {
     /// out (§3.2). `fontSize` defaults to the current value, so a caller that
     /// changes only the family or the row height leaves the size untouched.
     static func set(fontFamily: String, rowHeightScale: CGFloat, fontSize: CGFloat = fontSize) {
-        UserDefaults.standard.set(fontFamily, forKey: fontFamilyKey)
-        UserDefaults.standard.set(rowHeightScale, forKey: rowHeightScaleKey)
-        UserDefaults.standard.set(fontSize, forKey: fontSizeKey)
+        AppDefaults.store.set(fontFamily, forKey: fontFamilyKey)
+        AppDefaults.store.set(rowHeightScale, forKey: rowHeightScaleKey)
+        AppDefaults.store.set(fontSize, forKey: fontSizeKey)
         NotificationCenter.default.post(name: didChangeNotification, object: nil)
     }
 
@@ -96,9 +96,9 @@ enum AppearanceSettings {
     /// Restores the built-in defaults and notifies (used by tests, and by the
     /// Settings UI if it ever gains a "Reset" affordance).
     static func resetToDefaults() {
-        UserDefaults.standard.removeObject(forKey: fontFamilyKey)
-        UserDefaults.standard.removeObject(forKey: rowHeightScaleKey)
-        UserDefaults.standard.removeObject(forKey: fontSizeKey)
+        AppDefaults.store.removeObject(forKey: fontFamilyKey)
+        AppDefaults.store.removeObject(forKey: rowHeightScaleKey)
+        AppDefaults.store.removeObject(forKey: fontSizeKey)
         NotificationCenter.default.post(name: didChangeNotification, object: nil)
     }
 

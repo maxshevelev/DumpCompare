@@ -16,7 +16,7 @@ import XCTest
 final class SegmentCommandsTests: XCTestCase {
     override func setUp() {
         super.setUp()
-        UserDefaults.standard.set(1, forKey: WordSize.userDefaultsKey)
+        AppDefaults.store.set(1, forKey: WordSize.userDefaultsKey)
     }
 
     /// A pane over a real temp file, open and ready to take cuts. The caller

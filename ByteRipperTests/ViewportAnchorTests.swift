@@ -20,7 +20,7 @@ final class ViewportAnchorTests: XCTestCase {
     override func setUp() {
         super.setUp()
         AppearanceSettings.resetToDefaults()
-        UserDefaults.standard.set(1, forKey: WordSize.userDefaultsKey)
+        AppDefaults.store.set(1, forKey: WordSize.userDefaultsKey)
     }
 
     override func tearDown() {

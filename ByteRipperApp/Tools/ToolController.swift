@@ -317,7 +317,7 @@ import ToolModuleKit
     /// a FIT table wants twice what a structure tree does and one shared width
     /// would be wrong for both. Swappable so the suite does not write into the
     /// user's own preferences.
-    static var defaults: UserDefaults = .standard
+    static var defaults: UserDefaults = AppDefaults.store
     static func widthDefaultsKey(for identifier: String) -> String {
         "ToolPanelWidth.\(identifier)"
     }

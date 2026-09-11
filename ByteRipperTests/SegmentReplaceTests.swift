@@ -11,7 +11,7 @@ import XCTest
 final class SegmentReplaceTests: XCTestCase {
     override func setUp() {
         super.setUp()
-        UserDefaults.standard.set(1, forKey: WordSize.userDefaultsKey)
+        AppDefaults.store.set(1, forKey: WordSize.userDefaultsKey)
     }
 
     /// What a replace flow leaves behind: the open panel it configured.

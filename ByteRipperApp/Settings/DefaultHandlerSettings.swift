@@ -18,7 +18,7 @@ enum DefaultHandlerSettings {
 
     /// The defaults domain the list lives in. Swappable for tests (§11 does the
     /// same).
-    static var defaults: UserDefaults = .standard
+    static var defaults: UserDefaults = AppDefaults.store
 
     /// The extensions the tab starts with: the two the app is about (§25.2).
     /// Listed, never pre-registered — the first launch must not quietly take

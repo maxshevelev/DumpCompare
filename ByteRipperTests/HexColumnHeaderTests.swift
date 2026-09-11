@@ -25,7 +25,7 @@ import XCTest
 final class HexColumnHeaderTests: XCTestCase {
     override func setUp() {
         super.setUp()
-        UserDefaults.standard.set(1, forKey: WordSize.userDefaultsKey)
+        AppDefaults.store.set(1, forKey: WordSize.userDefaultsKey)
     }
 
     override func tearDown() {
@@ -290,7 +290,7 @@ final class HexColumnHeaderTests: XCTestCase {
         let (pane, header, _) = try makePane([UInt8](repeating: 0x55, count: 64))
         let before = header.gridRefreshCount
 
-        UserDefaults.standard.set(4, forKey: WordSize.userDefaultsKey)
+        AppDefaults.store.set(4, forKey: WordSize.userDefaultsKey)
         WordSize.set(.four)
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
 
