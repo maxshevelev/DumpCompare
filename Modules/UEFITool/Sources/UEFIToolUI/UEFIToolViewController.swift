@@ -364,7 +364,7 @@ import UEFITool
     /// A line under the splitter — what happened, or what to do next.
     func say(_ text: String, asProblem: Bool = false) {
         noticeLabel.stringValue = text
-        noticeLabel.textColor = asProblem ? .systemRed : .secondaryLabelColor
+        noticeLabel.textColor = asProblem ? SemanticColors.bad : SemanticColors.quiet
     }
 
     /// Everything the panel shows, in one call. `tree` is the pane's shared
@@ -642,7 +642,7 @@ import UEFITool
             // A checksum that does not check out is the one thing in the detail
             // worth colouring red: it is what the Fix Checksum item would write.
             if field.isProblem {
-                value.textColor = .systemRed
+                value.textColor = SemanticColors.bad
             }
             // Selectable, not a dead label: a bench copies an offset or a GUID
             // out of here, and a value it cannot select is one it has to retype.
@@ -686,6 +686,12 @@ import UEFITool
         heading.alignment = .firstBaseline
         heading.spacing = 5
         heading.translatesAutoresizingMaskIntoConstraints = false
+        // Set on whatever comes before rather than after each table, so the
+        // first one is as clear of the rows above it as the next is of the
+        // table above it.
+        if let above = detail.content.arrangedSubviews.last {
+            detail.content.setCustomSpacing(12, after: above)
+        }
         detail.content.addArrangedSubview(heading)
         detail.content.setCustomSpacing(8, after: heading)
 
@@ -716,10 +722,10 @@ import UEFITool
                 case .plain: field.font = ToolPanelFont.body()
                 case .yes:
                     field.font = ToolPanelFont.body(weight: .semibold)
-                    field.textColor = .systemGreen
+                    field.textColor = SemanticColors.good
                 case .no:
                     field.font = ToolPanelFont.body(weight: .semibold)
-                    field.textColor = .systemRed
+                    field.textColor = SemanticColors.bad
                 }
                 field.isSelectable = true
                 return field
@@ -731,7 +737,6 @@ import UEFITool
         grid.trailingAnchor.constraint(
             lessThanOrEqualTo: detail.content.trailingAnchor
         ).isActive = true
-        detail.content.setCustomSpacing(10, after: grid)
     }
 
     /// The title names the image, not a row; the module decides what the fold

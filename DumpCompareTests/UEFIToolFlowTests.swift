@@ -755,8 +755,9 @@ final class UEFIToolFlowTests: XCTestCase {
         let no = cells.filter { $0.stringValue == "No" }
         XCTAssertEqual(yes.count, 3, "Desc: no, BIOS: read+write, ME: read")
         XCTAssertFalse(no.isEmpty)
-        XCTAssertTrue(yes.allSatisfy { $0.textColor == .systemGreen }, "a permission is green")
-        XCTAssertTrue(no.allSatisfy { $0.textColor == .systemRed }, "a refusal is red")
+        XCTAssertTrue(yes.allSatisfy { $0.textColor == SemanticColors.good },
+                      "a permission is the app's green, the one \"Configured\" is drawn in")
+        XCTAssertTrue(no.allSatisfy { $0.textColor == SemanticColors.bad }, "a refusal is red")
 
         // And the chips table is led by an icon, as its heading says it is.
         XCTAssertTrue(

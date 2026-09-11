@@ -599,7 +599,7 @@ final class FITToolFlowTests: XCTestCase {
         let notice = try XCTUnwrap(descendants(of: panel, NSTextField.self).first {
             $0.stringValue.contains("does not start with an Intel microcode header")
         })
-        XCTAssertEqual(notice.textColor, .systemRed)
+        XCTAssertEqual(notice.textColor, SemanticColors.bad)
     }
 
     /// And a note about what did happen is neither.
@@ -671,7 +671,7 @@ final class FITToolFlowTests: XCTestCase {
         let notice = try XCTUnwrap(descendants(of: panel, NSTextField.self).first {
             $0.stringValue.contains("Only a microcode entry can be removed")
         })
-        XCTAssertEqual(notice.textColor, .systemRed)
+        XCTAssertEqual(notice.textColor, SemanticColors.bad)
         XCTAssertEqual(try session().display.rows.count, 3, "the row is still there")
         XCTAssertEqual(try pane.byteStorage?.read(at: 0x2000, length: 4), before,
                        "the microcode is untouched")
@@ -1072,7 +1072,7 @@ final class FITToolFlowTests: XCTestCase {
 
         let mark = try marker(in: typeCell(row: 1))
         XCTAssertFalse(mark.isHidden, "the confirmed-newest row wears its seal")
-        XCTAssertEqual(mark.contentTintColor, .systemGreen)
+        XCTAssertEqual(mark.contentTintColor, SemanticColors.good)
         XCTAssertEqual(mark.toolTip,
                        "Newest revision the catalogue lists for this processor and platform")
     }
@@ -1131,7 +1131,7 @@ final class FITToolFlowTests: XCTestCase {
             fields.first { $0.stringValue.contains("(Invalid") },
             "the header's checksum reads as invalid: \(fields.map(\.stringValue))"
         )
-        XCTAssertEqual(value.textColor, .systemRed)
+        XCTAssertEqual(value.textColor, SemanticColors.bad)
         XCTAssertTrue(value.stringValue.contains("should be 0x"),
                       "and says what the byte should be, not just that it is wrong: "
                       + value.stringValue)

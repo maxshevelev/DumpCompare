@@ -5613,6 +5613,12 @@ final class MainViewController: NSViewController {
         contentTopToView.isActive = false
         contentTopToFindBar.isActive = true
         findBar.isHidden = false
+        // The bar lives in the hierarchy between shows, hidden. A layer colour
+        // is resolved when it is assigned, and what reaches a view that nobody
+        // is drawing is not something to rely on — so the bar re-resolves its
+        // own as it appears, and is never the last theme's white bar over a
+        // dark window.
+        findBar.refreshThemeColors()
         syncFindBarToActivePane()
         view.layoutSubtreeIfNeeded()
         if wasHidden {

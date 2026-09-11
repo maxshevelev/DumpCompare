@@ -571,7 +571,7 @@ import ToolModuleKit
     /// A line under the content — what happened, or what to do next.
     func say(_ text: String, asProblem: Bool = false) {
         noticeLabel.stringValue = text
-        noticeLabel.textColor = asProblem ? .systemRed : .secondaryLabelColor
+        noticeLabel.textColor = asProblem ? SemanticColors.bad : SemanticColors.quiet
     }
 
     /// Show or hide the status row's Try Again, for a failure the user can act
@@ -843,42 +843,18 @@ extension MEAToolViewController: NSOutlineViewDataSource, NSOutlineViewDelegate 
 private final class MEOutlineView: NSOutlineView {}
 
 /// The colour a summary row's value is drawn in, by its `MEASummaryTone`.
-/// The three status tones are resolved per appearance — a saturated but darker
-/// shade in light mode, a lighter pastel in dark — so each stays legible
-/// against the panel background in both themes.
+///
+/// The tones are the app's meanings, so the colours are the app's palette
+/// (`SemanticColors`) rather than three shades mixed here: "Configured" in this
+/// panel and a granted permission in the UEFI one are the same green because
+/// they are the same statement.
 private enum MEASummaryToneColor {
     static func color(for tone: MEASummaryTone) -> NSColor {
         switch tone {
-        case .standard: return .labelColor
-        case .good: return Self.good
-        case .caution: return Self.caution
-        case .bad: return Self.bad
+        case .standard: return SemanticColors.plain
+        case .good: return SemanticColors.good
+        case .caution: return SemanticColors.caution
+        case .bad: return SemanticColors.bad
         }
-    }
-
-    /// A settled File System State — green in both themes.
-    private static let good = NSColor(name: nil) { appearance in
-        Self.isDark(appearance)
-            ? NSColor(srgbRed: 0.55, green: 0.82, blue: 0.40, alpha: 1)
-            : NSColor(srgbRed: 0.07, green: 0.46, blue: 0.12, alpha: 1)
-    }
-
-    /// A mid-lifecycle File System State — brown, brightened to tan in dark
-    /// mode so it does not sink into the background.
-    private static let caution = NSColor(name: nil) { appearance in
-        Self.isDark(appearance)
-            ? NSColor(srgbRed: 0.86, green: 0.66, blue: 0.36, alpha: 1)
-            : NSColor(srgbRed: 0.55, green: 0.34, blue: 0.04, alpha: 1)
-    }
-
-    /// A failed File System State — red in both themes.
-    private static let bad = NSColor(name: nil) { appearance in
-        Self.isDark(appearance)
-            ? NSColor(srgbRed: 1.0, green: 0.42, blue: 0.40, alpha: 1)
-            : NSColor(srgbRed: 0.72, green: 0.12, blue: 0.12, alpha: 1)
-    }
-
-    private static func isDark(_ appearance: NSAppearance) -> Bool {
-        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
     }
 }

@@ -428,7 +428,7 @@ import ToolModuleKit
             // A checksum that does not check out is the one value in here
             // worth colouring red: it is what Fix Checksum would write.
             if field.isProblem {
-                value.textColor = .systemRed
+                value.textColor = SemanticColors.bad
             }
             // Selectable, not a dead label: a bench copies an offset or a CPUID
             // out of here, and a value it cannot select is one it has to retype.
@@ -469,7 +469,7 @@ import ToolModuleKit
     /// a note about what did.
     func say(_ text: String, asProblem: Bool = false) {
         noticeLabel.stringValue = text
-        noticeLabel.textColor = asProblem ? .systemRed : .secondaryLabelColor
+        noticeLabel.textColor = asProblem ? SemanticColors.bad : SemanticColors.quiet
     }
 
     // MARK: - Actions
@@ -576,7 +576,8 @@ extension FITToolViewController: NSTableViewDataSource, NSTableViewDelegate {
             let problem = display.problems[row]
             cell.textField?.stringValue = problem.message
             cell.textField?.font = ToolPanelFont.body()
-            cell.textField?.textColor = problem.severity == .error ? .systemRed : .secondaryLabelColor
+            cell.textField?.textColor = problem.severity == .error
+                ? SemanticColors.bad : SemanticColors.quiet
             return cell
         }
 
@@ -641,7 +642,7 @@ extension FITToolViewController: NSTableViewDataSource, NSTableViewDelegate {
         switch state {
         case .latest:
             ToolPanelTable.setMarker(
-                symbol: "checkmark.seal.fill", tint: .systemGreen,
+                symbol: "checkmark.seal.fill", tint: SemanticColors.good,
                 toolTip: "Newest revision the catalogue lists for this processor and platform",
                 on: cell
             )

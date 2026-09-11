@@ -163,10 +163,14 @@ final class FindBarView: NSView, NSSearchFieldDelegate, NSMenuItemValidation {
         // Background + a 1px separator so the bar reads as a distinct strip
         // between the title bar and the pane content.
         wantsLayer = true
-        layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
         separator.translatesAutoresizingMaskIntoConstraints = false
         separator.wantsLayer = true
-        separator.layer?.backgroundColor = NSColor.separatorColor.cgColor
+        // The colours are resolved against the appearance in force rather than
+        // against whatever happens to be current here: a bar built while some
+        // other view's drawing appearance was current baked *that* one, and
+        // nothing afterwards told it to look again — which is a light bar in a
+        // dark window that no theme switch will correct.
+        refreshThemeColors()
         addSubview(separator)
 
         let findLabel = NSTextField(labelWithString: "Find")
@@ -248,6 +252,23 @@ final class FindBarView: NSView, NSSearchFieldDelegate, NSMenuItemValidation {
     /// the effective appearance is authoritative (§3.1).
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
+        refreshThemeColors()
+    }
+
+    /// Moving into a window is the other way the theme under a layer can change
+    /// without the appearance itself doing so: a view built before its window
+    /// existed resolved its colours against the application's appearance, which
+    /// is not always the window's.
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        refreshThemeColors()
+    }
+
+    /// Re-resolves every dynamic layer colour against the appearance in force
+    /// now. Idempotent and cheap, so it is called from anywhere the bar might
+    /// be wearing another theme's pixels — including the moment it is shown,
+    /// since a hidden view is the one place a stale layer can wait unseen.
+    func refreshThemeColors() {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
             separator.layer?.backgroundColor = NSColor.separatorColor.cgColor

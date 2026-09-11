@@ -654,7 +654,7 @@ final class MEAToolFlowTests: XCTestCase {
             descendants(of: panel, NSTextField.self).first {
                 $0.stringValue.contains("Could not reach the MEAnalyzer repository")
             })
-        XCTAssertEqual(notice.textColor, .systemRed)
+        XCTAssertEqual(notice.textColor, SemanticColors.bad)
         let retry = try XCTUnwrap(
             descendants(of: panel, NSButton.self).first { $0.title == "Try Again" })
         XCTAssertFalse(retry.isHidden)

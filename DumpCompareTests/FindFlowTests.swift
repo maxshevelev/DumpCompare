@@ -92,6 +92,46 @@ final class FindFlowTests: XCTestCase {
         XCTAssertFalse(bar.smartSearchOnForTests, "the premise: the chosen encoding is the search")
     }
 
+    /// A layer colour is resolved against the appearance that is *current*
+    /// when it is assigned, which is not always the view's own: a bar built
+    /// while something else's drawing appearance was in force baked that one,
+    /// and no later theme switch corrects it, because as far as the engine is
+    /// concerned nothing about this view's appearance changed. That is a white
+    /// bar over a dark window, seen once and never reproduced — the kind of
+    /// thing to make impossible rather than to chase.
+    func testTheFindBarWearsItsWindowsThemeWhateverWasCurrentWhenItWasBuilt() throws {
+        let url = try tempFile([UInt8](repeating: 0x41, count: 64))
+        var controller: MainViewController?
+        // Built with the light appearance current, as a view built inside
+        // another one's drawing is.
+        NSAppearance(named: .aqua)?.performAsCurrentDrawingAppearance {
+            controller = MainViewController()
+        }
+        let made = try XCTUnwrap(controller)
+        defer { cleanup(made, url) }
+
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+                              styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.contentViewController = made
+        window.makeKeyAndOrderFront(nil)
+        window.setContentSize(NSSize(width: 800, height: 600))
+        try made.windowModel.pane1.open(url: url)
+        made.apply(mode: .singleFile)
+        window.layoutIfNeeded()
+
+        made.findPattern()
+        window.layoutIfNeeded()
+
+        var wanted: CGColor?
+        NSAppearance(named: .darkAqua)?.performAsCurrentDrawingAppearance {
+            wanted = NSColor.controlBackgroundColor.cgColor
+        }
+        let bar = try findBar(window)
+        XCTAssertEqual(bar.layer?.backgroundColor, wanted,
+                       "the bar is its window's dark, not the light that was current")
+    }
+
     /// The visible find bar in the window.
     private func findBar(_ window: NSWindow) throws -> FindBarView {
         try XCTUnwrap(descendants(of: window.contentView!, FindBarView.self).first { !$0.isHidden },

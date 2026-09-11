@@ -1,5 +1,6 @@
 import AppKit
 import FITTool
+import ToolModuleKit
 
 /// The sheet for adding a microcode: the catalogue from
 /// `github.com/platomav/CPUMicrocodes`, narrowed down.
@@ -188,7 +189,7 @@ import FITTool
     /// under a list they are reading goes unread.
     func say(_ text: String, busy: Bool = false, asProblem: Bool = false) {
         statusLabel.stringValue = text
-        statusLabel.textColor = asProblem ? .systemRed : .secondaryLabelColor
+        statusLabel.textColor = asProblem ? SemanticColors.bad : SemanticColors.quiet
         if busy { progress.startAnimation(nil) } else { progress.stopAnimation(nil) }
     }
 
