@@ -210,40 +210,78 @@ final class MicrocodeCatalogueTests: XCTestCase {
         return try XCTUnwrap(MicrocodeHeader.read(at: 0, in: ImageReader(bytes)))
     }
 
-    /// The fixture tree holds two 906EB updates, one per platform. A header
-    /// matching the newer of its own platform's pair is the latest there is.
-    func testAHeaderMatchingTheNewestRevisionForItsPlatformIsLatest() throws {
-        // plat02 has a single 7C; plat22 has F0.
+    /// The fixture tree holds two 906EB updates: `plat02` at r.7C and `plat22`
+    /// at r.F0. `plat22` is bits 1 and 5, `plat02` is bit 1 — so the `plat22`
+    /// update serves every platform the `plat02` one does, and a board running
+    /// the `plat02` update is served by it whichever platform it is. The
+    /// newest that certainly serves this board is therefore r.F0, and a board
+    /// on r.7C is behind it.
+    func testAnUpdateCoveringThisPlatformSetOutdatesIt() throws {
         let installed = try header(signature: 0x906EB, revision: 0x7C, platform: 0x02)
+
+        XCTAssertEqual(
+            MicrocodeCatalogue.latest(of: installed, in: try entries()),
+            .outdated(newestRevision: 0xF0)
+        )
+    }
+
+    /// The newest of the updates that certainly serve this board is what
+    /// "latest" means — here r.F0, from the covering `plat22` entry.
+    func testAHeaderMatchingTheNewestThatServesItIsLatest() throws {
+        let installed = try header(signature: 0x906EB, revision: 0xF0, platform: 0x02)
 
         XCTAssertEqual(
             MicrocodeCatalogue.latest(of: installed, in: try entries()), .latest
         )
     }
 
-    /// An older revision than the catalogue's newest for the same CPUID and
-    /// platform is outdated, and the verdict names the revision it is behind.
+    /// An older revision than the newest that serves this board is outdated,
+    /// and the verdict names the revision it is behind.
     func testAHeaderBehindTheCataloguesNewestIsOutdated() throws {
         let installed = try header(signature: 0x906EB, revision: 0x50, platform: 0x02)
 
         XCTAssertEqual(
             MicrocodeCatalogue.latest(of: installed, in: try entries()),
-            .outdated(newestRevision: 0x7C)
+            .outdated(newestRevision: 0xF0)
         )
     }
 
-    /// The platform is part of the match, not a refinement of it: a newer
-    /// plat22 update does not outdate a plat02 header, because a plat22 header
-    /// will not load on a plat02 board (§7.1).
-    func testAnotherPlatformsNewerRevisionDoesNotOutdateThisOne() throws {
-        // plat02's newest is 7C, but plat22 carries F0 — neither outdates nor
-        // confirms the other.
-        let installed = try header(signature: 0x906EB, revision: 0xF0, platform: 0x02)
+    /// Platform sets that meet without one covering the other leave the
+    /// question open. The installed update serves platforms 1 and 3; the
+    /// catalogue's newer r.F0 serves 1 and 5. If this board is platform 1 that
+    /// update is newer for it, and if it is platform 3 it is not — and which
+    /// of the two the board is, only `IA32_PLATFORM_ID` says.
+    func testOverlappingPlatformSetsLeaveTheVerdictUndecided() throws {
+        let installed = try header(signature: 0x906EB, revision: 0x50, platform: 0x0A)
 
         XCTAssertEqual(
             MicrocodeCatalogue.latest(of: installed, in: try entries()),
-            .notRated,
-            "the row is newer than anything its own platform lists"
+            .undecided(newestRevision: 0xF0)
+        )
+    }
+
+    /// A doubt about a revision no newer than the installed one is not a
+    /// doubt: whether it serves this board changes nothing either way.
+    func testAnOverlapThatIsNotNewerIsNotADoubt() throws {
+        let installed = try header(signature: 0x906EB, revision: 0x100, platform: 0x0A)
+
+        XCTAssertEqual(
+            MicrocodeCatalogue.latest(of: installed, in: try entries()), .notRated
+        )
+    }
+
+    /// An all-zero mask is Intel's "every platform" (SDM §9.11, and the
+    /// kernel's `if (!pf2) return true`), so such an update serves this board
+    /// whatever it is.
+    func testAnAllPlatformsUpdateServesEveryBoard() throws {
+        let installed = try header(signature: 0x906EB, revision: 0x50, platform: 0x02)
+        let everywhere = try XCTUnwrap(MicrocodeCatalogue.entry(
+            at: "Intel/cpu906EB_plat00_ver00000200_2019-01-01_PRD_5046D998.bin",
+            size: 0x100))
+
+        XCTAssertEqual(
+            MicrocodeCatalogue.latest(of: installed, in: try entries() + [everywhere]),
+            .outdated(newestRevision: 0x200)
         )
     }
 
@@ -257,8 +295,9 @@ final class MicrocodeCatalogueTests: XCTestCase {
         )
     }
 
-    /// A header whose platform the catalogue has no entry for is not rated
-    /// either — the CPUID matches, but the platform does not.
+    /// Platform sets that do not meet at all say nothing about each other: the
+    /// CPUID matches, but every update the catalogue holds for it is for other
+    /// boards. 0x55 is bits 0, 2, 4 and 6; the fixture's are bits 1 and 5.
     func testAPlatformTheCatalogueDoesNotListIsNotRated() throws {
         let installed = try header(signature: 0x906EB, revision: 0x7C, platform: 0x55)
 

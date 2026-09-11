@@ -83,13 +83,21 @@ public struct MicrocodeCatalogueEntry: Equatable, Sendable, Identifiable {
 /// orange where the catalogue has newer — and nothing where there is no basis
 /// for a verdict.
 public enum MicrocodeLatest: Equatable, Sendable {
-    /// The newest revision the catalogue lists for this CPUID and platform.
+    /// The newest revision the catalogue lists among the updates that serve
+    /// this board — whichever platform of the installed update's set it is on.
     case latest
-    /// The catalogue holds a newer one — which, so the pointer can name it.
+    /// The catalogue holds a newer one that serves this board whatever its
+    /// platform — which, so the pointer can name it.
     case outdated(newestRevision: UInt32)
+    /// The catalogue holds a newer revision for this CPUID whose platform set
+    /// *overlaps* the installed update's without covering it, so whether it
+    /// serves this board depends on which platform the board actually is —
+    /// which only the board's own `IA32_PLATFORM_ID` says, and an image does
+    /// not carry it. Named so the pointer can say what the doubt is about.
+    case undecided(newestRevision: UInt32)
     /// No basis for a verdict: no catalogue yet, nothing it holds for this
-    /// CPUID and platform, or a revision newer than any it lists (the
-    /// collection is behind the board).
+    /// CPUID, nothing whose platform set meets this one's, or a revision newer
+    /// than any it lists (the collection is behind the board).
     case notRated
 }
 
@@ -204,12 +212,33 @@ public enum MicrocodeCatalogue {
     /// Whether an installed microcode is the newest the catalogue lists for its
     /// processor and platform.
     ///
-    /// The platform is part of the match, not a refinement of it: two updates
-    /// of one CPUID can serve different platforms (§7.1's platform ids, and the
-    /// `plat02`/`plat22` in the names), and a newer `plat22` revision does not
-    /// outdate a `plat02` update. The platform id is compared exactly as the
-    /// file name writes it, because that is the value an update's own header
-    /// stores (§7.1): `plat22` names an update whose header reads 0x22.
+    /// The platform field is a *set*, and that is what makes this more than a
+    /// comparison of numbers.
+    ///
+    /// A processor has one platform id — three bits of `IA32_PLATFORM_ID`
+    /// (MSR 0x17, bits 52:50). An update's `Processor Flags` is a bit mask of
+    /// the platform ids it serves: "the three platform ID bits … indicate the
+    /// bit position in the microcode update header's processor flags field
+    /// associated with the installed processor", and "each set bit represents
+    /// a different platform ID that the update supports" (Intel SDM Vol. 3A
+    /// §9.11). So an update serves a processor when the processor's one bit is
+    /// in the update's mask — the test Linux writes as `cpu.pf & update.pf`,
+    /// with an all-zero mask meaning every platform.
+    ///
+    /// An image does not carry `IA32_PLATFORM_ID`. All this knows is the mask
+    /// of the update that is *installed*, which the board must be served by —
+    /// so the board's bit is somewhere in that mask, and no narrower than
+    /// that. Three answers follow, and the middle one is the reason this is
+    /// not a two-way decision:
+    ///
+    /// - the candidate's mask covers the whole installed mask (or is the
+    ///   all-platforms zero): it serves this board whichever bit the board is,
+    ///   and its revision counts.
+    /// - the two masks meet but the candidate does not cover: it serves this
+    ///   board only for some of the bits the board might be. A newer revision
+    ///   there is a real possibility, not a verdict — `.undecided`.
+    /// - the masks do not meet at all: that update is for other boards, and
+    ///   its revision says nothing here.
     ///
     /// A revision newer than anything the catalogue lists is not "latest": the
     /// collection is behind the board, and a behind catalogue cannot confirm
@@ -218,15 +247,39 @@ public enum MicrocodeCatalogue {
         of header: MicrocodeHeader,
         in entries: [MicrocodeCatalogueEntry]
     ) -> MicrocodeLatest {
-        let revisions = entries.compactMap { entry -> UInt32? in
-            guard entry.cpuid == header.processorSignature,
-                  entry.platformID == header.platformIDs
-            else { return nil }
-            return entry.revision
+        // Which platform bits the board can be. An installed update that
+        // serves every platform narrows nothing, so the board is any of the
+        // eight a three-bit id can name.
+        let candidates: UInt32 = header.platformIDs == 0 ? 0xFF : header.platformIDs
+
+        var newestCertain: UInt32?
+        var newestPossible: UInt32?
+        for entry in entries where entry.cpuid == header.processorSignature {
+            guard let revision = entry.revision else { continue }
+            let mask = entry.platformID ?? 0
+            if mask == 0 || candidates & ~mask == 0 {
+                newestCertain = max(newestCertain ?? revision, revision)
+            } else if candidates & mask != 0 {
+                newestPossible = max(newestPossible ?? revision, revision)
+            }
         }
-        guard let newest = revisions.max() else { return .notRated }
-        if header.updateRevision > newest { return .notRated }
-        if header.updateRevision == newest { return .latest }
-        return .outdated(newestRevision: newest)
+
+        // A doubt only matters when what is behind it is newer than what is
+        // installed; an older or equal maybe changes nothing.
+        let doubt = newestPossible.flatMap {
+            $0 > header.updateRevision ? MicrocodeLatest.undecided(newestRevision: $0) : nil
+        }
+
+        guard let newestCertain else { return doubt ?? .notRated }
+        if header.updateRevision < newestCertain {
+            return .outdated(newestRevision: newestCertain)
+        }
+        if header.updateRevision == newestCertain {
+            // Newest of the ones that certainly serve this board — but a newer
+            // one that *might* still leaves the question open.
+            return doubt ?? .latest
+        }
+        // Newer than anything the catalogue can confirm for this board.
+        return doubt ?? .notRated
     }
 }

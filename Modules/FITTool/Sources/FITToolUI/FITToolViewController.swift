@@ -635,10 +635,15 @@ extension FITToolViewController: NSTableViewDataSource, NSTableViewDelegate {
 
     /// Dresses the Type column's "latest" marker for one row: the green seal
     /// where the catalogue confirms the installed revision is its newest for
-    /// the row's processor and platform, the orange triangle where it lists a
-    /// newer one (which it names), and nothing where there is no basis for a
-    /// verdict — a row with no verdict is dressed by leaving the slot empty,
-    /// the same way a clean row leaves the warning slot empty.
+    /// this board, the orange triangle where it lists a newer one that serves
+    /// this board (which it names), the orange question mark where the newer
+    /// one it lists might or might not serve it, and nothing where there is no
+    /// basis for a verdict — a row with no verdict is dressed by leaving the
+    /// slot empty, the same way a clean row leaves the warning slot empty.
+    ///
+    /// The two orange states share one colour on purpose: both say the
+    /// installed revision is not confirmed newest, and they differ in how sure
+    /// of it we are, not in what kind of thing it is.
     private func markLatest(_ state: MicrocodeLatest, on cell: NSTableCellView) {
         switch state {
         case .latest:
@@ -649,9 +654,19 @@ extension FITToolViewController: NSTableViewDataSource, NSTableViewDelegate {
             )
         case .outdated(let newestRevision):
             ToolPanelTable.setMarker(
-                symbol: "exclamationmark.triangle", tint: .systemOrange,
+                symbol: "exclamationmark.triangle", tint: SemanticColors.caution,
                 toolTip: "Catalogue lists a newer revision "
                     + "(r.\(String(newestRevision, radix: 16, uppercase: true)))",
+                on: cell
+            )
+        case .undecided(let newestRevision):
+            ToolPanelTable.setMarker(
+                symbol: "questionmark.circle", tint: SemanticColors.caution,
+                toolTip: "Catalogue lists a newer revision "
+                    + "(r.\(String(newestRevision, radix: 16, uppercase: true))) "
+                    + "whose platforms only partly overlap this one's — whether it "
+                    + "serves this board depends on the board's own platform ID, "
+                    + "which the image does not carry",
                 on: cell
             )
         case .notRated:

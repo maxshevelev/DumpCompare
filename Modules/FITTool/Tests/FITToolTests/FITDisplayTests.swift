@@ -387,17 +387,46 @@ final class FITDisplayTests: XCTestCase {
         XCTAssertEqual(shown.rows[1].latestState, .outdated(newestRevision: 0xF0))
     }
 
-    /// The platform is part of the match, not a refinement: an update for one
-    /// platform does not outdate an update for another, no matter how its
-    /// revision compares.
-    func testThePlatformIsPartOfTheMatch() throws {
-        // The catalogue's newest 806EA is for plat02; this row is for plat22.
+    /// An update that is not newer settles nothing, whatever its platforms.
+    /// The row is `plat22` and the catalogue's 806EA is `plat02` — the sets
+    /// meet on bit 1 without either covering the other — but both are r.F0, so
+    /// there is nothing to be in doubt about.
+    func testAnEqualRevisionBehindAPartialOverlapIsNotADoubt() throws {
         var shown = display([microcodeRow], microcodePlatform: 0x22)
         shown = shown.ratingLatest(against: [
             try catalogueEntry(cpuid: 0x0008_06EA, platform: 0x02, revision: 0xF0)
         ])
 
         XCTAssertEqual(shown.rows[1].latestState, .notRated)
+    }
+
+    /// The same two platform sets with a *newer* revision behind them: whether
+    /// that update serves this board depends on which platform the board is,
+    /// and the image does not say. The row wears the doubt rather than a
+    /// verdict.
+    func testANewerRevisionBehindAPartialOverlapIsUndecided() throws {
+        var shown = display([microcodeRow], microcodeRevision: 0x7C,
+                            microcodePlatform: 0x22)
+        shown = shown.ratingLatest(against: [
+            try catalogueEntry(cpuid: 0x0008_06EA, platform: 0x02, revision: 0xF0)
+        ])
+
+        XCTAssertEqual(shown.rows[1].latestState, .undecided(newestRevision: 0xF0))
+    }
+
+    /// A set that covers this row's is a verdict, not a doubt: `plat36` is bits
+    /// 1, 2, 4 and 5, `plat32` is bits 1, 4 and 5, so the `plat36` update
+    /// serves this board whichever of the three it is. This is the shape the
+    /// CSME 16 dump has — B0671 installed as plat32, the catalogue holding
+    /// plat36 — and it reads as behind, not as unrated.
+    func testACoveringSetIsAVerdictNotADoubt() throws {
+        var shown = display([microcodeRow], microcodeRevision: 0x127,
+                            microcodePlatform: 0x32)
+        shown = shown.ratingLatest(against: [
+            try catalogueEntry(cpuid: 0x0008_06EA, platform: 0x36, revision: 0x137)
+        ])
+
+        XCTAssertEqual(shown.rows[1].latestState, .outdated(newestRevision: 0x137))
     }
 
     /// A CPUID the catalogue holds nothing for has no verdict: the collection

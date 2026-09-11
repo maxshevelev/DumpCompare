@@ -1139,8 +1139,31 @@ final class FITToolFlowTests: XCTestCase {
 
         let mark = try marker(in: typeCell(row: 1))
         XCTAssertFalse(mark.isHidden, "the behind row wears its warning")
-        XCTAssertEqual(mark.contentTintColor, .systemOrange)
+        XCTAssertEqual(mark.contentTintColor, SemanticColors.caution)
         XCTAssertEqual(mark.toolTip, "Catalogue lists a newer revision (r.F0)")
+    }
+
+    /// A newer revision whose platforms only partly overlap the row's is a
+    /// doubt, not a verdict: the catalogue lists 806EA `plat02` at r.F0, and a
+    /// board on `plat22` (bits 1 and 5) is served by it only if it is platform
+    /// 1. The row wears the question mark, in the same colour as the triangle
+    /// — both say "not confirmed newest", and differ in how sure of it we are.
+    func testAMicrocodeBehindAPartlyOverlappingPlatformWearsTheQuestionMark() throws {
+        _ = try open(FITTestImage.make(microcodeRevision: 0x7C,
+                                       microcodePlatform: 0x22))
+        try waitForTheCatalogue()
+
+        let mark = try marker(in: typeCell(row: 1))
+        XCTAssertFalse(mark.isHidden, "the undecided row wears its doubt")
+        XCTAssertEqual(mark.contentTintColor, SemanticColors.caution)
+        // The symbol itself is not readable back off an `NSImage` built from a
+        // system symbol name, so what tells the two orange states apart here is
+        // the pointer — which is also what tells them apart for the reader.
+        XCTAssertEqual(
+            mark.toolTip,
+            "Catalogue lists a newer revision (r.F0) whose platforms only partly "
+                + "overlap this one's — whether it serves this board depends on the "
+                + "board's own platform ID, which the image does not carry")
     }
 
     /// A microcode whose platform the catalogue holds no entry for — or whose
