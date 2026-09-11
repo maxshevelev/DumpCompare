@@ -16,9 +16,10 @@
 //
 //  The module fronting this package exposes an async API to the UI and fetches
 //  its firmware databases (MEA.dat / Huffman.dat / FileTable.dat) live from the
-//  MEAnalyzer repo on first use — never storing them. That contract is pinned
-//  in `Skills/sync-mea-engine/reference/async-api.md`, and the UI-facing result
-//  model in `Skills/sync-mea-engine/reference/result-model.md`.
+//  MEAnalyzer repo on first use, holding them in memory for the life of the
+//  process and re-checking them once a day — never storing them on disk. That
+//  contract is pinned in `Skills/sync-mea-engine/reference/async-api.md`, and
+//  the UI-facing result model in `Skills/sync-mea-engine/reference/result-model.md`.
 //
 
 import PackageDescription
@@ -34,8 +35,13 @@ let package = Package(
         // command line and dump the result model as JSON.
         .executable(name: "MEFirmwareCLI", targets: ["MEFirmwareCLI"])
     ],
+    dependencies: [
+        // Holding MEA.dat for the life of the process, and checking it once a
+        // day — see FreshData's own manifest for why that is a package.
+        .package(path: "../FreshData")
+    ],
     targets: [
-        .target(name: "MEFirmware"),
+        .target(name: "MEFirmware", dependencies: ["FreshData"]),
         .testTarget(
             name: "MEFirmwareTests",
             dependencies: ["MEFirmware"]

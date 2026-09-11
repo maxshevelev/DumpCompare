@@ -1,4 +1,5 @@
 import Foundation
+import FreshData
 
 /// The default `MEADataSource`: pulls the three upstream files live from
 /// `raw.githubusercontent.com/platomav/MEAnalyzer/master/`.
@@ -6,83 +7,122 @@ import Foundation
 /// Guarantees, mirroring `LongSoftGuidsRepository` in
 /// `Modules/UEFITool/Sources/UEFIToolUI/GuidsSource.swift`:
 /// - **Lazy** — nothing is fetched at init or app launch.
-/// - **Single-flight** — concurrent first calls share one in-flight `Task`, so
-///   a whole run costs one network round per file, not one per caller.
-/// - **In-memory only** — no disk cache; the next launch re-fetches, which is
-///   exactly what "these databases change every week" wants.
+/// - **Single-flight** — concurrent first calls share one fetch, so a whole
+///   run costs one network round per file, not one per caller.
+/// - **In-memory only** — no disk cache. What is held lives as long as the
+///   process, and a relaunch fetches again.
+/// - **Checked once a day** — after that, the next call that needs the database
+///   presents the stored `ETag`; GitHub answers `304` and the parsed database
+///   is kept, so an unchanged week costs one round trip and no bytes. A check
+///   that cannot be made leaves the held database in place, because a database
+///   from yesterday is what a bench without a network is for.
+///
+/// The rules, and the failure states that go with them, are `Freshened`.
 public actor MEAGitHubDataRepository: MEADataSource {
     private static let baseURL = URL(string: "https://raw.githubusercontent.com/platomav/MEAnalyzer/master/")!
     private static let userAgent = "ByteRipper"
 
     private let session: URLSession
-    private var databaseTask: Task<MEADatabase, Error>?
-    private var huffmanTask: Task<HuffmanDictionaries, Error>?
+    private let databaseData: Freshened<MEADatabase>
+    private let huffmanData: Freshened<HuffmanDictionaries>
 
     public init() {
         self.init(session: MEAGitHubDataRepository.makeSession())
     }
 
-    init(session: URLSession) {
+    /// - Parameters:
+    ///   - ttl: how long a fetched database is used before it is re-checked.
+    ///   - now: the clock, so a test does not have to wait a day.
+    init(
+        session: URLSession,
+        ttl: TimeInterval = 24 * 60 * 60,
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) {
         self.session = session
+        self.databaseData = Freshened(ttl: ttl, now: now)
+        self.huffmanData = Freshened(ttl: ttl, now: now)
     }
 
     public func database() async throws -> MEADatabase {
-        if let cached = databaseTask {
-            return try await cached.value
+        let session = session
+        return try await databaseData.value { validator in
+            try await Self.check(path: "MEA.dat", validator: validator, session: session) { text in
+                // An unparseable revision is not fatal for the spine (no
+                // identification yet) — but a body that is not MEA.dat at all
+                // is worth surfacing.
+                guard !text.isEmpty else { throw MEADataError.malformed(file: "MEA.dat") }
+                return MEADatabase.parse(text)
+            }
         }
-        let task = Task { try await self.fetchDatabase() }
-        databaseTask = task
-        return try await task.value
     }
 
     public func huffmanDictionaries() async throws -> HuffmanDictionaries {
-        if let cached = huffmanTask {
-            return try await cached.value
+        let session = session
+        return try await huffmanData.value { validator in
+            try await Self.check(path: "Huffman.dat", validator: validator, session: session) { text in
+                try HuffmanDictionaries.parse(text)
+            }
         }
-        let task = Task { try await self.fetchHuffmanDictionaries() }
-        huffmanTask = task
-        return try await task.value
+    }
+
+    /// Make the next call re-check both files, whatever the clock says.
+    public func markStale() async {
+        await databaseData.markStale()
+        await huffmanData.markStale()
+    }
+
+    /// When each file last changed and when it was last confirmed current, for
+    /// a panel that says how old its data is.
+    public var freshness: (database: Freshened<MEADatabase>.Status?,
+                           huffman: Freshened<HuffmanDictionaries>.Status?) {
+        get async { (await databaseData.status, await huffmanData.status) }
     }
 
     // FileTable.dat parser is not ported yet; the protocol default throws
     // `.malformed` until the DB layer lands (see MEADataSource.swift).
 
-    private func fetchDatabase() async throws -> MEADatabase {
-        let text = try await fetchText(path: "MEA.dat")
-        let parsed = MEADatabase.parse(text)
-        // An unparseable revision is not fatal for the spine (no identification
-        // yet) — but a body that is not MEA.dat at all is worth surfacing.
-        guard !text.isEmpty else { throw MEADataError.malformed(file: "MEA.dat") }
-        return parsed
-    }
+    /// One conditional request, turned into the answer `Freshened` expects.
+    private static func check<T: Sendable>(
+        path: String,
+        validator: String?,
+        session: URLSession,
+        parse: @Sendable (String) throws -> T
+    ) async throws -> Freshened<T>.Outcome {
+        var request = URLRequest(url: baseURL.appendingPathComponent(path))
+        // The session already ignores the local cache, but the request is
+        // explicit about it: a `URLCache` hit here would answer `200` from
+        // disk and the `304` would never reach us.
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        if let validator {
+            request.setValue(validator, forHTTPHeaderField: "If-None-Match")
+        }
 
-    private func fetchHuffmanDictionaries() async throws -> HuffmanDictionaries {
-        let text = try await fetchText(path: "Huffman.dat")
-        return try HuffmanDictionaries.parse(text)
-    }
-
-    private func fetchText(path: String) async throws -> String {
-        let url = Self.baseURL.appendingPathComponent(path)
+        let data: Data
+        let response: URLResponse
         do {
-            let (data, response) = try await session.data(from: url)
-            if let http = response as? HTTPURLResponse, http.statusCode != 200 {
-                if http.statusCode == 429 { throw MEADataError.rateLimited }
-                throw MEADataError.badResponse(status: http.statusCode)
-            }
-            guard let text = String(data: data, encoding: .utf8) else {
-                throw MEADataError.malformed(file: path)
-            }
-            return text
-        } catch let error as MEADataError {
-            throw error
+            (data, response) = try await session.data(for: request)
         } catch let urlError as URLError {
             throw map(urlError)
         } catch {
             throw MEADataError.offline(underlying: error.localizedDescription)
         }
+
+        let http = response as? HTTPURLResponse
+        if let http {
+            if http.statusCode == 304 { return .unchanged }
+            if http.statusCode == 429 { throw MEADataError.rateLimited }
+            guard http.statusCode == 200 else {
+                throw MEADataError.badResponse(status: http.statusCode)
+            }
+        }
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw MEADataError.malformed(file: path)
+        }
+        let etag = http?.value(forHTTPHeaderField: "ETag")
+        return .fresh(try parse(text), validator: etag)
     }
 
-    private func map(_ error: URLError) -> MEADataError {
+    private static func map(_ error: URLError) -> MEADataError {
         switch error.code {
         case .notConnectedToInternet, .networkConnectionLost,
              .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed:

@@ -36,7 +36,7 @@ The pipeline inside `analyze` is single-pass with a suspended dependency:
 The file is read once; the data is awaited where it is needed. That is the
 "module continues after it has all the data" guarantee.
 
-## Data source — lazy, single-flight, in-memory, no disk
+## Data source — lazy, single-flight, in-memory, checked once a day
 
 Three upstream files are fetched from the MEAnalyzer git repository
 (`master`): `MEA.dat`, `Huffman.dat`, `FileTable.dat`.
@@ -53,10 +53,12 @@ public protocol MEADataSource: Sendable {
     func fileTable() async throws -> FileTable
 }
 
-public struct MEAGitHubDataRepository: MEADataSource {
+public actor MEAGitHubDataRepository: MEADataSource {
     // raw.githubusercontent.com/platomav/MEAnalyzer/master/<MEA.dat|Huffman.dat|FileTable.dat>
     // One shared URLSession like LongSoftGuidsRepository; User-Agent "ByteRipper".
     // No disk cache by design: next app launch fetches fresh.
+    // One `Freshened<Value>` (package `FreshData`) per file holds the parsed
+    // value and owns the rules below.
 }
 ```
 
@@ -64,12 +66,23 @@ Guarantees the provider must uphold:
 
 - **Lazy.** Nothing is fetched at module init or app launch. The first call
   that needs a database triggers the fetch.
-- **Single-flight.** Concurrent first calls share one in-flight `Task`
-  (`private var cached: Task<MEADatabase, Error>?`). One network round for the
-  whole run, not one per call or per pane.
-- **In-memory only.** Cache lives as long as the process; no file is written.
-  A relaunch re-fetches — which is exactly what "these databases change every
-  week" wants.
+- **Single-flight.** Concurrent first calls share one fetch. One network round
+  for the whole run, not one per call or per pane.
+- **In-memory only.** What is held lives as long as the process; no file is
+  written. A relaunch re-fetches.
+- **Checked once a day.** Past that, the next call that needs the file presents
+  the stored `ETag` in `If-None-Match`; a `304` keeps the parsed value and
+  restarts the day, so an unchanged week costs one round trip and no bytes. The
+  request sets `.reloadIgnoringLocalCacheData`, or `URLSession` answers `200`
+  from its own cache and the `304` never arrives.
+- **Yesterday's beats nothing.** A check that fails leaves the held value in
+  place and raises no error, and is not retried for five minutes — a day
+  without a network must not put a connection timeout in front of every file
+  opened.
+- **A failure is not remembered.** When nothing is held, a fetch that fails
+  throws and stores nothing. Memoizing the failed `Task` — which this once did
+  — meant the error outlived the network that caused it, for the rest of the
+  run.
 - **Per-file need.** `database()` is the common one. `huffmanDictionaries()`
   and `fileTable()` are pulled only by unpack/verbose paths, so a plain
   identification fetch stays one file.
