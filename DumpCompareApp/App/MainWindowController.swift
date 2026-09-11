@@ -507,7 +507,7 @@ extension MainWindowController: NSToolbarDelegate {
         case .segments:
             if segmentsItem == nil {
                 segmentsItem = makeCommandItem(.segments,
-                                               symbol: "arrow.up.and.line.horizontal.and.arrow.down",
+                                               symbol: "square.stack.3d.up",
                                                label: "Segments",
                                                toolTip: "The file's cuts and pieces",
                                                action: #selector(MainViewController.showSegments))
