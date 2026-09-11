@@ -1246,6 +1246,15 @@ final class FindFlowTests: XCTestCase {
         let clip = paneView.scrollView.contentView
         XCTAssertTrue(settle(clip, in: window), "the pane stopped resizing before the search")
 
+        // The viewport as the search starts. Settling beforehand is not enough:
+        // the *search itself* changes the bar's height as it reports what it
+        // found — measured, the clip grows by eight points once the result
+        // lands — and the reveal centres against whichever height it sees, on
+        // a pane that is not re-centred afterwards. Checking a scroll made
+        // against 484 points of viewport against 492 points of viewport is off
+        // by half the difference, which is exactly how this failed, and no
+        // amount of waiting fixes it: both events happen inside the one wait.
+        let viewportAtSearch = clip.bounds.height
         try clickFindNext(window)
         XCTAssertTrue(pumpUntil(3) { controller.windowModel.pane1.hexSelection().start == UInt64(250 * 16) })
         XCTAssertTrue(settle(clip, in: window), "the pane stopped moving before it was read")
@@ -1257,20 +1266,30 @@ final class FindFlowTests: XCTestCase {
         let rowFrame = hexView.hexLayout.rowFrame(row: Int(matchStart / 16))
         let maxY = max(0, hexView.bounds.height - clip.bounds.height)
         let expected = min(max(0, rowFrame.midY - clip.bounds.height / 2), maxY)
-        XCTAssertEqual(clip.bounds.origin.y, expected, accuracy: 1.0,
+        // Centred to within half of however much the viewport moved under the
+        // reveal — which is the whole of the uncertainty, since a centre is
+        // half a viewport down. It is a handful of points when the bar changes
+        // height and nothing at all when it does not; a pane that was never
+        // scrolled to the match misses by hundreds either way.
+        let drift = abs(clip.bounds.height - viewportAtSearch)
+        XCTAssertEqual(clip.bounds.origin.y, expected, accuracy: 1 + drift / 2,
                        "the match row must be vertically centred in the pane")
     }
 
     /// Pumps until `clip`'s height and scroll offset are the same over two
     /// consecutive layout passes, so a measurement taken after this is taken
     /// from a layout nothing is still changing.
+    /// Waits until the clip has stopped moving and resizing — three readings
+    /// the same, not two. Two is satisfied trivially by a layout pass that has
+    /// not been scheduled yet, which is how a "settled" pane could still grow a
+    /// moment later.
     private func settle(_ clip: NSClipView, in window: NSWindow) -> Bool {
-        var previous: NSRect?
+        var recent: [NSRect] = []
         return pumpUntil(2) {
             window.layoutIfNeeded()
-            let now = clip.bounds
-            defer { previous = now }
-            return previous == now
+            recent.append(clip.bounds)
+            if recent.count > 3 { recent.removeFirst() }
+            return recent.count == 3 && recent.allSatisfy { $0 == recent[0] }
         }
     }
 
