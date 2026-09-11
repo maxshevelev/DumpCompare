@@ -43,6 +43,8 @@ Three tools ship.
 
 The flash image as the tree it actually is: the Intel descriptor and each region it maps, firmware volumes, FFS files and their sections, NVRAM stores with every variable in them, microcode, padding, free space. A node's detail says where it starts, how long its header, body and tail are, what its GUID is — named, when the GUID is a known one — and what its header holds, field by field.
 
+<img width="1418" height="816" alt="Screenshot 2026-09-11 at 06 57 26" src="https://github.com/user-attachments/assets/956b1703-3dfd-41e6-a18c-d8bcb97c99c0" />
+
 - **The tree is read lazily.** Opening the panel on a 32 MB image is instant: the top level is parsed, and a branch is read when it is opened. One tree serves all three tools and survives switching between them, so the FIT table and the ME Analyzer start from what has already been read rather than parsing the image again.
 - **Checksums are checked as the tree is built**, and a wrong one is flagged on the node that carries it — a volume header, an FFS file, an NVRAM record. **Fix Checksum** writes the value the format asks for, as one undoable edit.
 - **Addresses are the ones the CPU sees.** The image's own reset vector anchors the mapping, so a node's `Address` is where that byte is in the processor's address space, not merely its offset in the file.
@@ -51,11 +53,15 @@ The flash image as the tree it actually is: the Intel descriptor and each region
 
 The Firmware Interface Table the CPU reads before any code runs: every entry with its type, version, size and checksum, and **what it points at** — named from the structure tree, so a table of addresses reads as a table of things rather than a column of numbers.
 
+<img width="1372" height="829" alt="Screenshot 2026-09-11 at 06 58 59" src="https://github.com/user-attachments/assets/3cc9ea74-df66-4104-83e1-62ef91379fe1" />
+
 Microcode is the part a bench changes. **Add**, **Replace** and **Remove** work on the table's microcode entries, with the replacement picked from a catalogue of Intel's published microcodes by CPUID, revision and date; the table's own bookkeeping — the entry count, the header checksum — is rewritten with it, and the whole operation is a single undo.
 
 ### ME Analyzer
 
 What the Intel ME/CSME region in this dump actually is, in the words the field uses: family and version, SKU, chipset and stepping, release and revision, the date it was built, and whether it is a stock image, an update, or one extracted from a board. Firmware stitched inside an image is analysed in its own right and gets its own table.
+
+<img width="1238" height="957" alt="Screenshot 2026-09-11 at 06 59 48" src="https://github.com/user-attachments/assets/ab877f72-5520-4392-81b0-138793893835" />
 
 The health rows are the ones that say whether a region survived what happened to it — RSA signature, partition tables, the EFS volume and its page bookkeeping, the MFS dictionary, the file-system state — each shown as a plain Yes/No or a coloured word rather than as a hex field to interpret. **Full Tree** opens the same analysis as the structure behind those answers. **Copy** puts the summary on the clipboard as rich text and **Screenshot** as a picture, which is what a ticket, a forum post or a message to another bench actually needs.
 
