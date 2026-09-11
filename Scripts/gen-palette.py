@@ -68,13 +68,53 @@ FAMILIES = [
 
 
 def component(value):
-    """One sRGB component as a float, from the two spellings a colour set uses."""
+    """One component as a float, from the spellings a colour set uses."""
     text = str(value).strip()
     if text.startswith("0x"):
         return int(text, 16) / 255.0
     number = float(text)
     # A colour set written in 0-255 rather than 0-1: whole numbers above one.
     return number / 255.0 if number > 1 else number
+
+
+def to_linear(value):
+    """Undo the sRGB transfer function, which Display P3 shares."""
+    return value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
+
+
+def to_gamma(value):
+    """And put it back."""
+    if value <= 0.0031308:
+        return 12.92 * value
+    return 1.055 * (value ** (1 / 2.4)) - 0.055
+
+
+# Display P3 to sRGB, both D65, in linear light.
+P3_TO_SRGB = (
+    (1.2249401, -0.2249404, 0.0000000),
+    (-0.0420569, 1.0420571, 0.0000000),
+    (-0.0196376, -0.0786361, 1.0982735),
+)
+
+
+def as_srgb(rgb, space):
+    """`rgb` in sRGB, whatever colour space the colour set wrote it in.
+
+    Xcode's picker writes Display P3 by default, and the same three numbers
+    mean a different colour there — which is a colour that reads right in the
+    app (the catalogue is converted for us) and wrong in every package test
+    (these numbers are read as sRGB). So the conversion happens here, once.
+    """
+    if space in ("srgb", "extended-srgb", None):
+        return rgb
+    if space in ("display-p3", "extended-display-p3"):
+        linear = [to_linear(c) for c in rgb]
+        out = []
+        for row in P3_TO_SRGB:
+            value = sum(m * c for m, c in zip(row, linear))
+            out.append(to_gamma(min(max(value, 0.0), 1.0)))
+        return tuple(out)
+    raise ValueError("colour space %s" % space)
 
 
 def read_set(path):
@@ -90,12 +130,14 @@ def read_set(path):
         components = colour.get("components", {})
         try:
             rgb = tuple(component(components[key]) for key in ("red", "green", "blue"))
+            rgb = as_srgb(rgb, colour.get("color-space"))
             # A fill is drawn over the dump's own layers, so its alpha is part
             # of the colour rather than a detail of one use of it.
             alpha = float(components.get("alpha", 1))
-        except (KeyError, ValueError):
+        except (KeyError, ValueError) as problem:
+            print("  %s" % problem, file=sys.stderr)
             return None
-        rgb = rgb + (alpha,)
+        rgb = tuple(round(c, 4) for c in rgb) + (alpha,)
         dark = any(a.get("value") == "dark" for a in entry.get("appearances", []))
         shades["dark" if dark else "light"] = rgb
 

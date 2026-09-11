@@ -16,7 +16,7 @@ public extension SemanticColors.Sets {
 
     static let caution = PaletteColor(
         name: "SemanticCaution",
-        light: (0.807, 0.540, 0.161, 1.000),
+        light: (0.853, 0.525, 0.000, 1.000),
         dark: (0.860, 0.660, 0.360, 1.000))
 
     static let good = PaletteColor(
