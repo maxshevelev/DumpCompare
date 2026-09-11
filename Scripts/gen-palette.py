@@ -17,8 +17,22 @@ this repository would otherwise see no colours at all. It is the same numbers,
 readable without a compiled catalogue, and the app suite's `SemanticPaletteTests`
 holds the two to each other.
 
+Run it after picking a colour in Xcode:
+
+    python3 Scripts/gen-palette.py
+
+To change a colour: open the catalogue in Xcode, pick the shade for Any
+Appearance and for Dark, run this, and read the diff. Nothing else needs
+editing — the package's tests pin the palette's rules (both themes present, the
+dark shade the paler of the two, names distinct, every meaning the app names
+backed by a set) rather than any particular shade.
+
+To add one: a colour set named `Semantic<Meaning>`, a run of this, and one line
+in `SemanticColors` giving the meaning a name. The value is the catalogue's; the
+meaning is Swift's.
+
 Run it from anywhere; the repository root is resolved relative to this file
-(the skill lives at <repo>/Skills/update-palette/scripts/), or pass --repo.
+(it lives at <repo>/Scripts/), or pass --repo.
 
 Stdlib only, and the run is a diff to review: it prints every colour it read,
 and writes the file only when something changed.
@@ -73,7 +87,7 @@ def swift(entries):
     lines = [
         "// GENERATED from `Colors.xcassets` beside this file.",
         "//",
-        "// Regenerate with the `update-palette` skill, which re-reads the colour sets",
+        "// Regenerate with `Scripts/gen-palette.py`, which re-reads the colour sets",
         "// and rewrites this one. Do not edit by hand: a colour is picked in Xcode's",
         "// colour editor, and the next regeneration overwrites whatever is typed here.",
         "//",
@@ -108,7 +122,7 @@ def swift(entries):
 
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
-    default_repo = os.path.abspath(os.path.join(here, "..", "..", ".."))
+    default_repo = os.path.abspath(os.path.join(here, ".."))
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", default=default_repo, help="the DumpCompare tree")

@@ -1,6 +1,6 @@
 // GENERATED from `Colors.xcassets` beside this file.
 //
-// Regenerate with the `update-palette` skill, which re-reads the colour sets
+// Regenerate with `Scripts/gen-palette.py`, which re-reads the colour sets
 // and rewrites this one. Do not edit by hand: a colour is picked in Xcode's
 // colour editor, and the next regeneration overwrites whatever is typed here.
 //

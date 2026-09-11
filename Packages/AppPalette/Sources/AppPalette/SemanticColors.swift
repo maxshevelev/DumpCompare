@@ -13,15 +13,15 @@ import AppKit
 /// **Where a colour is chosen:** `Colors.xcassets` beside this file, as a
 /// colour set per meaning, in Xcode's own editor with both appearances side by
 /// side. Nothing here is typed by hand — `Palette+Generated.swift` is read back
-/// out of those colour sets by the `update-palette` skill, and exists only
+/// out of those colour sets by `Scripts/gen-palette.py`, and exists only
 /// because `swift build` copies an `.xcassets` verbatim rather than compiling
 /// it: the app, built by Xcode, reads the catalogue itself, while every package
 /// test in this repository reads the generated numbers. The app suite's
 /// `SemanticPaletteTests` holds the two to each other.
 ///
-/// **Adding one:** a colour set in the catalogue, a run of the skill, and a
-/// line below giving the meaning a name. The value is the catalogue's; the
-/// meaning is Swift's.
+/// **Adding one:** a colour set in the catalogue, a run of
+/// `Scripts/gen-palette.py`, and a line below giving the meaning a name. The
+/// value is the catalogue's; the meaning is Swift's.
 ///
 /// What is *not* here: the dump's own fills. A differing byte's orange and a
 /// modified byte's red are the comparison model's vocabulary rather than a
