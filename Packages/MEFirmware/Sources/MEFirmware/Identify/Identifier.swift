@@ -99,9 +99,10 @@ struct Identifier {
         // The manual CSE cells of the firmware's own database row: the
         // stepping and the PDM token upstream reads there before it looks at
         // anything in the image (`get_cse_db`).
-        let cells = sigHash.flatMap {
-            database.cseCells(matchingSignatureHash: $0, family: family)
-        }
+        // One search of the corpus for the row, then both things read off it:
+        // the cells here and the firmware's database name below.
+        let databaseRow = sigHash.flatMap { database.firmwareRow(matchingSignatureHash: $0) }
+        let cells = databaseRow.flatMap { database.cseCells(in: $0, family: family) }
 
         return Identity(
             family: family,
@@ -119,7 +120,7 @@ struct Identifier {
             // it, and every stitched independent firmware has one. Only the
             // erased word says nothing.
             securityVersion: manifest.svn != 0xFFFF_FFFF ? "\(manifest.svn)" : nil,
-            databaseName: sigHash.flatMap { database.firmwareRow(matchingSignatureHash: $0) },
+            databaseName: databaseRow,
             chipsetStepping: cells?.stepping,
             powerDownMitigation: cells?.pdm,
             identified: identified

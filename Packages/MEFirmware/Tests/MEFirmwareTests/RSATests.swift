@@ -129,6 +129,28 @@ final class RSATests: XCTestCase {
         }
     }
 
+    /// The exponent walk starts at the highest set bit now, so the cases that
+    /// used to be carried by the leading zeros have to be stated.
+    func testPowerModHandlesTheExponentsEdges() {
+        // a^0 = 1, whatever the base; a^1 = a mod n.
+        XCTAssertEqual(BigInt.powerMod(base: [7], exponent: [0], modulus: [17]),
+                       BigInt.trim([1]))
+        XCTAssertEqual(BigInt.powerMod(base: [20], exponent: [1], modulus: [17]),
+                       BigInt.trim([3]))
+        // 0^5 = 0.
+        XCTAssertEqual(BigInt.powerMod(base: [0], exponent: [5], modulus: [17]),
+                       BigInt.trim([0]))
+        // A leading zero limb is not part of the number: same answer as without.
+        XCTAssertEqual(BigInt.powerMod(base: [3], exponent: [4, 0], modulus: [17]),
+                       BigInt.powerMod(base: [3], exponent: [4], modulus: [17]))
+        // A set top bit of the limb is a real bit of the exponent, and the
+        // walk has to start there: the exponent is the number 2^31, and 2 has
+        // order 8 mod 17 (2^8 = 256 = 15·17 + 1), so 2^(2^31) ≡ 1.
+        XCTAssertEqual(BigInt.powerMod(base: [2], exponent: [0x8000_0000],
+                                       modulus: [17]),
+                       BigInt.trim([1]))
+    }
+
     func testPowerModSmallNumbers() {
         // Hand-computed: 3^4 mod 17 = 81 mod 17 = 13; 2^10 mod 999 = 25.
         XCTAssertEqual(BigInt.powerMod(base: [3], exponent: [4],

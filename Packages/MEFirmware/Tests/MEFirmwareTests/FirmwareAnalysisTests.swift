@@ -110,7 +110,7 @@ final class FirmwareAnalysisModelTests: XCTestCase {
     }
 
     func testEngineModelRevisionBumpsWithAdditiveChanges() {
-        XCTAssertEqual(EngineModelRevision.current, 30)
+        XCTAssertEqual(EngineModelRevision.current, 31)
     }
 
     /// Row 18's firmware size is additive too, and it is *not* `sizeBytes`: a
@@ -497,5 +497,38 @@ final class AnalyzerTests: XCTestCase {
 
         let notReady = try await analyzer.analyze(region: bareR1(flags: 0x2), baseOffset: 0)
         XCTAssertEqual(notReady.manifest?.productionReady, false)
+    }
+}
+
+/// `checksums` is the one field `analyze` deliberately leaves for the caller.
+final class RegionChecksumsTests: XCTestCase {
+    private struct StubSource: MEADataSource {
+        func database() async throws -> MEADatabase { MEADatabase() }
+    }
+
+    /// Bytes with no structure in them: enough for a parse to run end to end,
+    /// and every byte distinct enough that a wrong span would change a digest.
+    private static func region() -> Data {
+        Data((0..<0x4000).map { UInt8(($0 &* 31 &+ 7) & 0xFF) })
+    }
+
+    func testAnalyzeLeavesTheRegionChecksumsForTheCallerToAskFor() async throws {
+        let analysis = try await MEFirmwareAnalyzer(data: StubSource())
+            .analyze(region: Self.region())
+        XCTAssertNil(analysis.checksums,
+                     "analyze must not read the whole region three more times")
+    }
+
+    func testAskingForThemGivesTheSameNumbersTheDigestsDo() async {
+        let region = Self.region()
+        let checks = await MEFirmwareAnalyzer.checksums(of: region)
+        XCTAssertEqual(checks.sha256, Digest.sha256Hex(region))
+        XCTAssertEqual(checks.sha384, Digest.sha384Hex(region))
+        XCTAssertEqual(checks.crc32, CRC32.crc32(region))
+    }
+
+    func testAnEmptyRegionHasNothingToMeasure() async {
+        let checks = await MEFirmwareAnalyzer.checksums(of: Data())
+        XCTAssertEqual(checks, Checksums())
     }
 }

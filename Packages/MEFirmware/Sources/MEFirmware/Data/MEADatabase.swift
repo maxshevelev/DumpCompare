@@ -116,6 +116,14 @@ public struct MEADatabase: Sendable, Equatable {
         guard let row = firmwareRow(matchingSignatureHash: signatureHash) else {
             return nil
         }
+        return cseCells(in: row, family: family)
+    }
+
+    /// The same cells, read off a row the caller already has. Identification
+    /// needs both the row itself (as the firmware's database name) and these
+    /// cells, and finding the row is a search of the whole corpus — so it is
+    /// worth doing once.
+    public func cseCells(in row: String, family: FirmwareFamily) -> CSECells? {
         let cells = row.split(separator: "_", omittingEmptySubsequences: false)
             .map(String.init)
         func cell(_ index: Int) -> String? {

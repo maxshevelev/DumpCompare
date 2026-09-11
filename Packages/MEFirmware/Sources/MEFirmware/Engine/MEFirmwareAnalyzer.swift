@@ -496,16 +496,17 @@ public actor MEFirmwareAnalyzer {
                 extensions: extensions)
         }
 
-        // Phase 11: checksums of the region (whole analyzed buffer) plus the
-        // chosen manifest's RSA signature validity. Both model fields are
-        // pre-declared nil, so filling them is not a schema change. The signature
-        // is nil when not checkable — no RSA block decoded, a window that does not
-        // fit the region, or a degenerate modulus (synthetic fixtures) — and that
-        // stays nil rather than raising an issue (upstream's "Empty RSA block"
-        // is reported *valid*, its pow crash is a different, non-real edge).
-        let checksums: Checksums? = region.isEmpty
-            ? nil
-            : await Self.regionChecksums(of: region)
+        // Phase 11: the chosen manifest's RSA signature validity. Nil when not
+        // checkable — no RSA block decoded, a window that does not fit the
+        // region, or a degenerate modulus (synthetic fixtures) — and that stays
+        // nil rather than raising an issue (upstream's "Empty RSA block" is
+        // reported *valid*, its pow crash is a different, non-real edge).
+        //
+        // The region's own SHA-256/SHA-384/CRC-32 are deliberately *not* taken
+        // here: they are three passes over the whole buffer that answer three
+        // detail rows, and they were about two thirds of the work of a parse.
+        // `checksums` therefore comes back nil and the caller asks for it with
+        // `checksums(of:)` when something is actually going to read it.
         let rsaSignatureValid = manifest.flatMap { Self.rsaSignatureValid(for: $0, in: region) }
 
         var issues: [Issue] = []
@@ -535,7 +536,7 @@ public actor MEFirmwareAnalyzer {
                 securityVersion: nil, release: .unknown, type: .region,
                 sku: "", platform: "", manufactureDate: nil,
                 sizeBytes: region.count, databaseName: nil,
-                rsaSignatureValid: nil, checksums: checksums,
+                rsaSignatureValid: nil, checksums: nil,
                 regions: regions, manifest: manifestSummary,
                 codePartition: nil, mfsVolume: mfsVolume,
                 cseLayoutTable: cseLayoutTable, bootPartitions: bootPartitions,
@@ -834,7 +835,7 @@ public actor MEFirmwareAnalyzer {
             firmwareSizeBytes: firmwareSize,
             databaseName: identity.databaseName,
             rsaSignatureValid: rsaSignatureValid,
-            checksums: checksums,
+            checksums: nil,
             regions: regions,
             manifest: manifestSummary,
             codePartition: codePartition,
@@ -966,12 +967,24 @@ public actor MEFirmwareAnalyzer {
     /// decoded, the struct is not fully in the region, or the modulus is
     /// degenerate (RSA.validate returns nil there; a synthetic even modulus is
     /// "not checkable", not "invalid").
-    /// The three whole-region checksums of phase 11, computed side by side.
+    /// The region's own SHA-256, SHA-384 and CRC-32 — what `FirmwareAnalysis`
+    /// carries in `checksums`, and what `analyze` deliberately leaves nil.
     ///
-    /// Each is an independent pass over the same buffer, and together they were
-    /// two thirds of a parse — a 32 MiB region read three times over. As child
-    /// tasks they run on separate cores instead of end to end; the region is
-    /// immutable, so nothing is shared but the read.
+    /// Each is an independent pass over the whole buffer, and together they
+    /// were about two thirds of the work of a parse while answering only three
+    /// detail rows. So they are the caller's to ask for, when something is
+    /// going to read them; the three still run as child tasks side by side, on
+    /// separate cores rather than end to end.
+    ///
+    /// `nonisolated` on purpose: this needs nothing the actor protects, and
+    /// queueing it behind the actor would make a checksum request wait on
+    /// whatever parse is running. An empty region has nothing to measure and
+    /// comes back with every field nil, the way `analyze` used to leave it.
+    public nonisolated static func checksums(of region: Data) async -> Checksums {
+        guard !region.isEmpty else { return Checksums() }
+        return await regionChecksums(of: region)
+    }
+
     private static func regionChecksums(of region: Data) async -> Checksums {
         async let sha256 = Digest.sha256Hex(region)
         async let sha384 = Digest.sha384Hex(region)

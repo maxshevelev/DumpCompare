@@ -30,11 +30,27 @@ struct HuffmanShape: Sendable, Equatable {
 /// (codewords stored descending), so a codeword resolves to
 /// `symbolsByLength[L][maxCodeword - codeword]`. A missing/unknown codeword's
 /// symbol is one-or-more `0x7F` placeholder bytes, exactly as upstream.
+///
+/// Both are plain arrays indexed by length rather than dictionaries keyed by it:
+/// the decoder resolves one of these per output symbol, and a `Dictionary`
+/// lookup plus a `Set<Int>.contains` per symbol made hashing the single most
+/// expensive thing in a CSME 11/12 parse. Rows for lengths the dictionary does
+/// not use are empty.
 struct HuffmanSymbolTable: Sendable, Equatable {
-    let symbolsByLength: [Int: [[UInt8]]]
-    /// Codeword values (per length) whose symbol string was `""`/`??` — the
-    /// placeholders upstream reports as *unknown* and flags `huff_error`.
-    let unknownCodewords: [Int: Set<Int>]
+    let symbolsByLength: [[[UInt8]]]
+    /// Parallel to `symbolsByLength`, index for index: true where the symbol
+    /// string was `""`/`??` — the placeholders upstream reports as *unknown*
+    /// and flags `huff_error`.
+    let unknownByLength: [[Bool]]
+
+    /// The symbol for a codeword of `length`, and whether it is one of the
+    /// unknown placeholders. Out-of-range asks answer like a missing codeword.
+    func symbol(length: Int, index: Int) -> (bytes: [UInt8], unknown: Bool) {
+        guard length >= 0, length < symbolsByLength.count else { return ([0x7F], true) }
+        let row = symbolsByLength[length]
+        guard index >= 0, index < row.count else { return ([0x7F], true) }
+        return (row[index], unknownByLength[length][index])
+    }
 }
 
 /// One parsed dictionary version (`"11"`/`"12"`): the canonical shape (from the
@@ -140,12 +156,13 @@ public struct HuffmanDictionaries: Sendable, Equatable {
     /// are recorded in `unknownCodewords` so the decoder flags them.
     private static func table(from mapping: [String: String],
                               shape: [HuffmanShape]) -> HuffmanSymbolTable {
-        var symbols: [Int: [[UInt8]]] = [:]
-        var unknowns: [Int: Set<Int>] = [:]
+        let rows = (shape.map(\.length).max() ?? 0) + 1
+        var symbols = [[[UInt8]]](repeating: [], count: rows)
+        var unknowns = [[Bool]](repeating: [], count: rows)
         for entry in shape {
             let length = entry.length
             var list: [[UInt8]] = []
-            var unknownSet: Set<Int> = []
+            var unknownFlags: [Bool] = []
             if entry.maxCodeword >= 0 {
                 for codeword in stride(from: entry.maxCodeword, through: 0, by: -1) {
                     // Only codewords within [min, max] are used; pad the rest with
@@ -154,20 +171,19 @@ public struct HuffmanDictionaries: Sendable, Equatable {
                     let padded = String(repeating: "0", count: length - bits.count) + bits
                     if let symbol = mapping[padded] {
                         list.append(Self.symbolBytes(symbol))
-                        if symbol.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                            || symbol.contains("??") {
-                            unknownSet.insert(codeword)
-                        }
+                        unknownFlags.append(
+                            symbol.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                || symbol.contains("??"))
                     } else {
                         list.append([0x7F])
-                        unknownSet.insert(codeword)
+                        unknownFlags.append(true)
                     }
                 }
             }
             symbols[length] = list
-            if !unknownSet.isEmpty { unknowns[length] = unknownSet }
+            unknowns[length] = unknownFlags
         }
-        return HuffmanSymbolTable(symbolsByLength: symbols, unknownCodewords: unknowns)
+        return HuffmanSymbolTable(symbolsByLength: symbols, unknownByLength: unknowns)
     }
 
     /// A symbol string → bytes. `""` and `"??"`-only strings mean unknown
@@ -223,10 +239,10 @@ enum HuffmanDecoder {
         let endOffsets: [Int] = startOffsets.dropFirst()
             + [max(0, bounded - headerSize)]
 
-        let codeSymbols = dictionary.code.symbolsByLength
-        let dataSymbols = dictionary.data.symbolsByLength
-        let codeUnknowns = dictionary.code.unknownCodewords
-        let dataUnknowns = dictionary.data.unknownCodewords
+        // The compressed stream is read a byte at a time in the inner loop;
+        // `Data`'s subscript re-reads its backing offsets on every access, so
+        // the blob is taken as a flat array once.
+        let bytes = [UInt8](module)
 
         var out: [UInt8] = []
         out.reserveCapacity(decompressedSize)
@@ -234,8 +250,7 @@ enum HuffmanDecoder {
 
         for chunk in 0..<chunkCount {
             let usesData = flags[chunk] == 0x60
-            let symbols = usesData ? dataSymbols : codeSymbols
-            let unknowns = usesData ? dataUnknowns : codeUnknowns
+            let table = usesData ? dictionary.data : dictionary.code
             let compressedStart = startOffsets[chunk]
             let compressedEnd = min(endOffsets[chunk], bounded - headerSize)
 
@@ -248,7 +263,7 @@ enum HuffmanDecoder {
             while out.count < decompressedEnd {
                 // Top up the 32-bit window until a codeword is decidable.
                 while availableBits <= 24, read < compressedEnd {
-                    bitBuffer = bitBuffer | (UInt32(module[headerSize + read]) << (24 - availableBits))
+                    bitBuffer = bitBuffer | (UInt32(bytes[headerSize + read]) << (24 - availableBits))
                     read += 1
                     availableBits += 8
                 }
@@ -272,10 +287,10 @@ enum HuffmanDecoder {
                 bitBuffer = (bitBuffer << UInt32(length)) & 0xFFFF_FFFF
                 availableBits -= length
 
-                let symbol = symbols[length]?[baseCodeword - codeword] ?? [0x7F]
-                if decompressedEnd - out.count >= symbol.count {
-                    if unknowns[length]?.contains(codeword) == true { clean = false }
-                    out.append(contentsOf: symbol)
+                let resolved = table.symbol(length: length, index: baseCodeword - codeword)
+                if decompressedEnd - out.count >= resolved.bytes.count {
+                    if resolved.unknown { clean = false }
+                    out.append(contentsOf: resolved.bytes)
                 } else {
                     // Overflowing codeword: pad the chunk tail, stop this chunk.
                     out.append(contentsOf: repeatElement(0x7F,

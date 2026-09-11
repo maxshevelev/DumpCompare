@@ -45,6 +45,10 @@ public struct FirmwareAnalysis: Codable, Sendable, Equatable, Identifiable {
     public var firmwareSizeBytes: Int? = nil
     public var databaseName: String?          // unique name when found in MEA.dat
     public var rsaSignatureValid: Bool?       // nil when not checkable
+    /// The region's own SHA-256/SHA-384/CRC-32. Nil from `analyze`, which
+    /// deliberately does not read the whole buffer three more times for three
+    /// detail rows: ask `MEFirmwareAnalyzer.checksums(of:)` when something is
+    /// going to show them, and set it here.
     public var checksums: Checksums?
     public var regions: [FPTRegion]           // FPT / partition table if present
     public var manifest: ManifestSummary?     // $MN2/$MAN facts + security fields
@@ -856,6 +860,15 @@ public struct Checksums: Codable, Sendable, Equatable {
     public var sha256: String?
     public var sha384: String?
     public var crc32: UInt32?
+
+    /// Public because the values are now the caller's to ask for: a caller that
+    /// could not get them needs to be able to say so with an empty one, and the
+    /// synthesized memberwise init is internal.
+    public init(sha256: String? = nil, sha384: String? = nil, crc32: UInt32? = nil) {
+        self.sha256 = sha256
+        self.sha384 = sha384
+        self.crc32 = crc32
+    }
 }
 
 /// One row of the FTPR `pm` / RBEP `rbe` module "Metadata" table (upstream
@@ -1913,5 +1926,10 @@ public struct Issue: Codable, Sendable, Equatable, Identifiable {
 /// whether to surface the new data (`reference/result-model.md` §Versioning).
 public enum EngineModelRevision {
     /// Current revision of the `FirmwareAnalysis` shape.
-    public static let current = 30
+    ///
+    /// 31 does not grow the shape: `checksums` stops being filled by `analyze`
+    /// and becomes the caller's to ask for with
+    /// `MEFirmwareAnalyzer.checksums(of:)`. A field that used to arrive and now
+    /// arrives nil is exactly the change this number exists to announce.
+    public static let current = 31
 }

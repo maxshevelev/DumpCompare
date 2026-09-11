@@ -419,6 +419,34 @@ final class MEAToolFlowTests: XCTestCase {
         XCTAssertTrue(text.contains("0x800 (2048 bytes)"), "\(text)")
     }
 
+    /// The region's SHA-256/SHA-384/CRC-32 are three passes over the whole
+    /// buffer for three rows, so the engine leaves them out of a parse. The row
+    /// is still there, with placeholders, and looking at it is what asks.
+    func testTheChecksumsRowFillsInWhenItIsLookedAt() throws {
+        _ = try open(METestImage.fptFile())
+        try showFullTree()
+        let tree = try outline()
+
+        let checksumsRow = try XCTUnwrap(row(ofTitle: "Checksums", in: tree))
+        let session = try session()
+
+        // Selecting the row is the request; the digests run off the main actor
+        // and the row fills in when they land.
+        let filled = try waitForDisplay(of: session) {
+            tree.selectRowIndexes(IndexSet(integer: checksumsRow),
+                                  byExtendingSelection: false)
+        }
+        XCTAssertNotNil(filled?.checksums?.crc32)
+
+        // Spelled out rather than read off the curator: this is the panel's
+        // own text, and the pure target is not linked here.
+        let text = descendants(of: try panel(), NSTextField.self).map(\.stringValue)
+        XCTAssertFalse(text.contains("Loading…"),
+                       "the placeholders are gone once the numbers are in: \(text)")
+        let crc = try XCTUnwrap(filled?.checksums?.crc32)
+        XCTAssertTrue(text.contains(String(format: "0x%08X", crc)), "\(text)")
+    }
+
     /// A value too long for the column wraps inside it rather than running off
     /// the side: a manifest's SHA-256 is 64 characters, and there is no
     /// sideways scroller to reach the rest of it with.

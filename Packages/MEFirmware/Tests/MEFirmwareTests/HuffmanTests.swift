@@ -21,15 +21,15 @@ final class HuffmanTests: XCTestCase {
         for codeword in stride(from: 255, through: 0, by: -1) {
             symbols.append([UInt8(codeword)])
         }
-        var unknowns: [Int: Set<Int>] = [:]
-        if !unknown.isEmpty {
-            unknowns[8] = unknown
-            for codeword in unknown {
-                symbols[255 - codeword] = [0x7F]   // unknown codeword -> placeholder
-            }
+        // Rows are indexed by codeword length, so lengths 0–7 are empty here.
+        var unknownFlags = [Bool](repeating: false, count: symbols.count)
+        for codeword in unknown {
+            symbols[255 - codeword] = [0x7F]       // unknown codeword -> placeholder
+            unknownFlags[255 - codeword] = true
         }
-        let table = HuffmanSymbolTable(symbolsByLength: [8: symbols],
-                                       unknownCodewords: unknowns)
+        let table = HuffmanSymbolTable(
+            symbolsByLength: Array(repeating: [], count: 8) + [symbols],
+            unknownByLength: Array(repeating: [], count: 8) + [unknownFlags])
         return HuffmanDictionary(shape: shape, code: table, data: table)
     }
 
@@ -70,15 +70,16 @@ final class HuffmanTests: XCTestCase {
         XCTAssertEqual(v12.shape[1].maxCodeword, 3)
 
         // code table: len-2 symbols indexed (max 3 - codeword): 3->'b', 2/1 gaps, 0->'a'.
-        let symbols2 = try XCTUnwrap(v12.code.symbolsByLength[2])
-        XCTAssertEqual(symbols2[0], [0x62])   // codeword 3 '11'
-        XCTAssertEqual(symbols2[1], [0x7F])   // codeword 2 gap
-        XCTAssertEqual(symbols2[2], [0x7F])   // codeword 1 gap
-        XCTAssertEqual(symbols2[3], [0x61])   // codeword 0 '00'
-        XCTAssertEqual(v12.code.unknownCodewords[2], [1, 2])
-        XCTAssertEqual(try XCTUnwrap(v12.code.symbolsByLength[1])[0], [0x41])
+        XCTAssertEqual(v12.code.symbol(length: 2, index: 0).bytes, [0x62])   // codeword 3 '11'
+        XCTAssertEqual(v12.code.symbol(length: 2, index: 1).bytes, [0x7F])   // codeword 2 gap
+        XCTAssertEqual(v12.code.symbol(length: 2, index: 2).bytes, [0x7F])   // codeword 1 gap
+        XCTAssertEqual(v12.code.symbol(length: 2, index: 3).bytes, [0x61])   // codeword 0 '00'
+        // The gaps are the unknown ones, flagged index for index with the
+        // symbols: codewords 2 and 1 sit at indexes 1 and 2.
+        XCTAssertEqual(v12.code.unknownByLength[2], [false, true, true, false])
+        XCTAssertEqual(v12.code.symbol(length: 1, index: 0).bytes, [0x41])
         // data table built from its own mapping under the *code* shape.
-        XCTAssertEqual(try XCTUnwrap(v12.data.symbolsByLength[1])[0], [0x42])
+        XCTAssertEqual(v12.data.symbol(length: 1, index: 0).bytes, [0x42])
     }
 
     func testParseRejectsMissingCodeTable() {

@@ -18,12 +18,24 @@ enum BigInt {
         return a.isEmpty ? [0] : a
     }
 
+    /// Limbs up to and including the highest non-zero one; 0 for a zero value
+    /// (or an empty array). What `trim` reports, without the copy `trim` makes
+    /// — these run inside the modular-exponentiation loop, where an allocation
+    /// per comparison was most of what RSA validation cost.
+    static func significantCount(_ a: [UInt32]) -> Int {
+        var n = a.count
+        while n > 0, a[n - 1] == 0 { n -= 1 }
+        return n
+    }
+
     /// `a >= b` ?
     static func ge(_ a: [UInt32], _ b: [UInt32]) -> Bool {
-        let a = trim(a), b = trim(b)
-        if a.count != b.count { return a.count > b.count }
-        for i in stride(from: a.count - 1, through: 0, by: -1) where a[i] != b[i] {
-            return a[i] > b[i]
+        let ca = significantCount(a), cb = significantCount(b)
+        if ca != cb { return ca > cb }
+        var i = ca - 1
+        while i >= 0 {
+            if a[i] != b[i] { return a[i] > b[i] }
+            i -= 1
         }
         return true
     }
@@ -48,17 +60,18 @@ enum BigInt {
 
     /// Full schoolbook product `a · b`.
     static func multiplyFull(_ a: [UInt32], _ b: [UInt32]) -> [UInt32] {
-        let a = trim(a), b = trim(b)
-        var result = [UInt32](repeating: 0, count: a.count + b.count)
-        for i in 0..<a.count where a[i] != 0 {
+        let ca = significantCount(a), cb = significantCount(b)
+        guard ca > 0, cb > 0 else { return [0] }
+        var result = [UInt32](repeating: 0, count: ca + cb)
+        for i in 0..<ca where a[i] != 0 {
             let ai = UInt64(a[i])
             var carry: UInt64 = 0
-            for j in 0..<b.count {
+            for j in 0..<cb {
                 let sum = UInt64(result[i + j]) + ai * UInt64(b[j]) + carry
                 result[i + j] = UInt32(sum & 0xFFFF_FFFF)
                 carry = sum >> 32
             }
-            var k = i + b.count
+            var k = i + cb
             while carry != 0 {
                 let sum = UInt64(result[k]) + carry
                 result[k] = UInt32(sum & 0xFFFF_FFFF)
@@ -185,7 +198,15 @@ enum BigInt {
         var accumulator = rMod
         let baseMontgomery = montgomeryProduct(base, r2Mod, n: n, k: k, n0Inv: n0Inv)
 
-        for bit in stride(from: exponent.count * 32 - 1, through: 0, by: -1) {
+        // Start at the exponent's highest set bit. Above it the square-and-
+        // multiply loop only squares the Montgomery form of 1 into itself, and
+        // an RSA public exponent is 0x10001 — seventeen bits in a thirty-two
+        // bit limb, so almost half the squarings were of that kind.
+        var top = exponent.count * 32 - 1
+        while top > 0,
+              exponent[top / 32] & (UInt32(1) << UInt32(top % 32)) == 0 { top -= 1 }
+
+        for bit in stride(from: top, through: 0, by: -1) {
             accumulator = montgomeryProduct(accumulator, accumulator, n: n, k: k, n0Inv: n0Inv)
             if exponent[bit / 32] & (UInt32(1) << UInt32(bit % 32)) != 0 {
                 accumulator = montgomeryProduct(accumulator, baseMontgomery, n: n, k: k, n0Inv: n0Inv)

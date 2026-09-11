@@ -511,14 +511,37 @@ public enum MEACurator {
                        children: children)
     }
 
+    /// What the checksums group is called, and what its rows read before they
+    /// have been computed. One place, because the session finds the group by
+    /// this name to know when to ask the engine for the numbers.
+    public static let checksumsTitle = "Checksums"
+    public static let pendingValue = "Loading…"
+
+    /// The checksums group's position in `roots`, when the tree has one.
+    public static func checksumsPath(in roots: [MEANode]) -> [Int]? {
+        roots.first { $0.title == checksumsTitle }?.path
+    }
+
+    /// The region's own digests — the one group whose values `analyze` does
+    /// not compute, because they are three passes over the whole buffer for
+    /// three rows. The group is still here when they are missing, carrying
+    /// placeholders: selecting the row is what asks for them, so the
+    /// placeholder is only ever on screen while they are genuinely on the way.
     private static func checksumsGroup(_ a: FirmwareAnalysis) -> MEANode? {
-        guard let checks = a.checksums else { return nil }
+        guard let checks = a.checksums else {
+            return MEANode(path: [], title: checksumsTitle,
+                           fields: [MEAField("SHA-256", pendingValue),
+                                    MEAField("SHA-384", pendingValue),
+                                    MEAField("CRC-32", pendingValue)])
+        }
         var fields: [MEAField] = []
         append(&fields, "SHA-256", checks.sha256, dropEmpty: true)
         append(&fields, "SHA-384", checks.sha384, dropEmpty: true)
         if let crc = checks.crc32 { append(&fields, "CRC-32", MEAText.hex32(crc)) }
+        // Asked for and nothing came back — an unreadable file, or a region
+        // with no bytes. The group goes rather than standing there empty.
         guard !fields.isEmpty else { return nil }
-        return MEANode(path: [], title: "Checksums", fields: fields)
+        return MEANode(path: [], title: checksumsTitle, fields: fields)
     }
 
     private static func issuesGroup(_ a: FirmwareAnalysis) -> MEANode? {

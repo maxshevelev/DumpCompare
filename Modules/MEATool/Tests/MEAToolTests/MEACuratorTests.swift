@@ -50,7 +50,10 @@ final class MEACuratorTests: XCTestCase {
             "regions": [regionJSON(name: "FTPR", offset: 0x1000, size: 0x125000)],
         ])
         let roots = MEACurator.present(a)
-        XCTAssertEqual(roots.map(\.title), ["Firmware", "Regions (FPT)"])
+        // Checksums is the exception to "absent groups do not appear": it is
+        // the row a reader selects to ask for the digests, so it is there
+        // before there is anything in it.
+        XCTAssertEqual(roots.map(\.title), ["Firmware", "Regions (FPT)", "Checksums"])
     }
 
     func testStructuralGroupsAppearInFixedOrder() throws {
@@ -64,7 +67,7 @@ final class MEACuratorTests: XCTestCase {
         let roots = MEACurator.present(a)
         XCTAssertEqual(roots.map(\.title),
                        ["Firmware", "Regions (FPT)", "CSE Layout Table",
-                        "Boot Partitions (BPDT)"])
+                        "Boot Partitions (BPDT)", "Checksums"])
     }
 
     func testCodeAndManifestThenMFSThenFactGroupsOrder() throws {
@@ -274,6 +277,35 @@ final class MEACuratorTests: XCTestCase {
 
     // MARK: - Fact groups
 
+    func testTheChecksumsRowWaitsWithPlaceholdersUntilItIsAskedFor() throws {
+        let a = try analysis([:])
+        let roots = MEACurator.present(a)
+        let group = try XCTUnwrap(find("Checksums", in: roots))
+        XCTAssertEqual(group.fields.map(\.label), ["SHA-256", "SHA-384", "CRC-32"])
+        XCTAssertEqual(Set(group.fields.map(\.value)), [MEACurator.pendingValue])
+        // The session finds the row by this path to know what to ask for.
+        XCTAssertEqual(MEACurator.checksumsPath(in: roots), group.path)
+    }
+
+    func testTheChecksumsRowShowsTheNumbersOnceTheyArrive() throws {
+        let a = try analysis(["checksums": ["sha256": "AA", "sha384": "BB",
+                                            "crc32": 0x1234_5678]])
+        let roots = MEACurator.present(a)
+        let group = try XCTUnwrap(find("Checksums", in: roots))
+        XCTAssertEqual(group.fields, [MEAField("SHA-256", "AA"),
+                                      MEAField("SHA-384", "BB"),
+                                      MEAField("CRC-32", "0x12345678")])
+    }
+
+    /// Asked for and unanswerable — an unreadable file — leaves an empty
+    /// `Checksums`, and the row goes rather than promising numbers forever.
+    func testAnAnsweredButEmptyChecksumsDropsTheRow() throws {
+        let a = try analysis(["checksums": [:]])
+        let roots = MEACurator.present(a)
+        XCTAssertNil(find("Checksums", in: roots))
+        XCTAssertNil(MEACurator.checksumsPath(in: roots))
+    }
+
     func testIssuesAndMFSBackupAppearWhenPresent() throws {
         let a = try analysis([
             "issues": [["id": 1, "severity": "error", "message": "checksum mismatch"]],
@@ -291,7 +323,7 @@ final class MEACuratorTests: XCTestCase {
         ])
         let roots = MEACurator.present(a)
         XCTAssertEqual(roots.map(\.title),
-                       ["Firmware", "MFS Backup", "Issues"])
+                       ["Firmware", "MFS Backup", "Checksums", "Issues"])
 
         let issues = try XCTUnwrap(find("Issues", in: roots))
         let issue = try XCTUnwrap(issues.children.first)

@@ -48,6 +48,12 @@ struct MEAParkedState: ToolSessionState {
 
     /// The presented tree of the last successful analysis — the outline's data.
     private var roots: [MEANode] = []
+    /// The analysis those roots were built from, kept so the one group the
+    /// engine does not fill — the region's checksums — can be added to it
+    /// later without a re-parse.
+    private var analysis: FirmwareAnalysis?
+    /// The in-flight checksum request, so selecting the row twice asks once.
+    private var checksumsTask: Task<Void, Never>?
     /// The user's selection as a tree path. Nil before a choice, and after a
     /// re-parse that lost the row.
     private var focusPath: [Int]?
@@ -153,6 +159,11 @@ struct MEAParkedState: ToolSessionState {
 
         generation += 1
         let generation = self.generation
+        // Whatever the last analysis was, and whatever was being computed for
+        // it, belongs to bytes that are no longer the ones on screen.
+        checksumsTask?.cancel()
+        checksumsTask = nil
+        analysis = nil
         controller.say("Reading…")
         // The empty tab is the whole panel until the analysis lands, so it says
         // what is being waited for rather than promising a summary.
@@ -200,21 +211,34 @@ struct MEAParkedState: ToolSessionState {
     ) async -> Result<FirmwareAnalysis, Error> {
         await Task.detached(priority: .userInitiated) {
             do {
-                let data: Data
-                let baseOffset: Int
-                if let meRegion, meRegion.lowerBound < meRegion.upperBound {
-                    data = try MEAToolSession.readRange(snapshot, meRegion)
-                    baseOffset = Int(meRegion.lowerBound)
-                } else {
-                    data = try MEAToolSession.readAll(snapshot)
-                    baseOffset = 0
-                }
+                let data = try MEAToolSession.regionBytes(snapshot, meRegion)
+                let baseOffset = MEAToolSession.regionBase(meRegion)
                 let analysis = try await analyzer.analyze(region: data, baseOffset: baseOffset)
                 return .success(analysis)
             } catch {
                 return .failure(error)
             }
         }.value
+    }
+
+    /// The bytes handed to the engine: the ME region when the shared tree could
+    /// resolve it, the whole file otherwise. Both the parse and the later
+    /// checksum request go through here, so the digests describe the same
+    /// buffer the analysis was made from and not a differently chosen one.
+    private nonisolated static func regionBytes(
+        _ snapshot: any ToolContentReader,
+        _ meRegion: Range<UInt64>?
+    ) throws -> Data {
+        if let meRegion, meRegion.lowerBound < meRegion.upperBound {
+            return try readRange(snapshot, meRegion)
+        }
+        return try readAll(snapshot)
+    }
+
+    /// Where `regionBytes` starts in the open file.
+    private nonisolated static func regionBase(_ meRegion: Range<UInt64>?) -> Int {
+        guard let meRegion, meRegion.lowerBound < meRegion.upperBound else { return 0 }
+        return Int(meRegion.lowerBound)
     }
 
     /// The whole content, as one `Data`. The engine takes a region buffer, so
@@ -254,6 +278,7 @@ struct MEAParkedState: ToolSessionState {
     /// tree and show them, keeping whatever selection still resolves after the
     /// re-parse.
     private func present(_ analysis: FirmwareAnalysis) {
+        self.analysis = analysis
         roots = MEACurator.present(analysis)
         if let path = focusPath, MEATree.node(at: path, in: roots) == nil {
             focusPath = nil
@@ -285,6 +310,57 @@ struct MEAParkedState: ToolSessionState {
             host.reveal(range, select: false)
         }
         show()
+        // Looking at the checksums row is what asks for the checksums: the
+        // engine leaves them out of a parse because they are three passes over
+        // the whole region, and until now nothing was going to read them.
+        if let path, path == MEACurator.checksumsPath(in: roots) {
+            loadChecksums()
+        }
+    }
+
+    /// Compute the region's digests off the main actor and put them into the
+    /// analysis the panel is showing. The bytes are read again rather than kept
+    /// alive between parses — this path runs once per file, if at all, and a
+    /// retained region would cost every open dump the memory for a row most
+    /// readers never open.
+    private func loadChecksums() {
+        guard let analysis, analysis.checksums == nil, checksumsTask == nil,
+              let snapshot = try? host.snapshot() else { return }
+        let meRegion = treeProvider?.uefiTree()?.region(.me)
+        let analysisProvider = self.analysisProvider
+        let generation = self.generation
+        checksumsTask = Task { [weak self] in
+            let checksums = await MEAToolSession.checksums(snapshot, meRegion: meRegion)
+            guard let self, self.generation == generation else { return }
+            self.checksumsTask = nil
+            guard var updated = self.analysis, updated.checksums == nil else { return }
+            updated.checksums = checksums
+            analysisProvider?.setCachedMEAnalysis(updated, meRegion: meRegion)
+            // Re-presenting rebuilds the rows from the fuller analysis; the
+            // selection is kept by path, so the row the reader is looking at
+            // stays where it is and simply fills in.
+            self.present(updated)
+            // The panel is showing this analysis, which is what `onDisplay`
+            // means — and it is the seam a test waits on instead of the clock.
+            self.onDisplay?(updated)
+        }
+    }
+
+    /// Off the main actor: the same region `analyze` was given, digested.
+    /// An unreadable file leaves every field nil, and the group then goes —
+    /// the panel does not stand there promising numbers it cannot get.
+    private nonisolated static func checksums(
+        _ snapshot: any ToolContentReader,
+        meRegion: Range<UInt64>?
+    ) async -> MEFirmware.Checksums {
+        // `Checksums` is spelled out: UEFIImage has one of its own, and this
+        // file can see both.
+        await Task.detached(priority: .userInitiated) {
+            guard let data = try? MEAToolSession.regionBytes(snapshot, meRegion) else {
+                return MEFirmware.Checksums()
+            }
+            return await MEFirmwareAnalyzer.checksums(of: data)
+        }.value
     }
 
     /// The user changed tab. Purely a choice of what to look at — the analysis
