@@ -37,24 +37,31 @@ final class DescriptorDetailTests: XCTestCase {
         XCTAssertNil(field(shown, "GbE region offset"), "a region with no limit is not there")
     }
 
-    /// Each master's masks, in the width the descriptor writes them.
-    func testEachMastersAccessMasksAreARow() {
+    /// Each master's masks, as a grid of its own — three numbers a row, which
+    /// is a table and not a sentence.
+    func testTheMastersMasksAreAGrid() throws {
         let shown = detail(TestUEFI.flashDescriptor())
+        let table = try XCTUnwrap(table(shown, "Region access settings"))
 
-        XCTAssertEqual(field(shown, "BIOS access"), "Read 0xA0 · Write 0x00")
-        XCTAssertEqual(field(shown, "ME access"), "Read 0x40 · Write 0x00")
-        XCTAssertEqual(field(shown, "GbE access"), "Read 0x80 · Write 0x00")
+        XCTAssertEqual(table.symbol, "key")
+        XCTAssertEqual(table.columns, ["Master", "Read", "Write"])
+        XCTAssertEqual(table.rows.map { $0[0].text }, ["BIOS", "ME", "GbE"])
+        XCTAssertEqual(table.rows.map { $0[1].text }, ["0xA0", "0x40", "0x80"])
+        XCTAssertEqual(table.rows.map { $0[2].text }, ["0x00", "0x00", "0x00"])
+        XCTAssertNil(field(shown, "BIOS access"), "and not a row as well")
     }
 
     /// A version 2 descriptor writes twelve bits, so its masks are three digits
     /// wide and it has an EC master the older one does not.
-    func testAVersion2DescriptorWritesThreeDigitMasksAndAnEC() {
+    func testAVersion2DescriptorWritesThreeDigitMasksAndAnEC() throws {
         let shown = detail(TestUEFI.flashDescriptor(
             version1: false,
             masters: [(0xFFF, 0xFFF), (0x0D8, 0x0D8), (0x008, 0x008), (0x100, 0x100)]))
+        let table = try XCTUnwrap(table(shown, "Region access settings"))
 
-        XCTAssertEqual(field(shown, "BIOS access"), "Read 0xFFF · Write 0xFFF")
-        XCTAssertEqual(field(shown, "EC access"), "Read 0x100 · Write 0x100")
+        XCTAssertEqual(table.rows.map { $0[0].text }, ["BIOS", "ME", "GbE", "EC"])
+        XCTAssertEqual(table.rows.first?[1].text, "0xFFF")
+        XCTAssertEqual(table.rows.last?[2].text, "0x100")
     }
 
     /// The access table is a grid, and a permission is a word with a colour:
@@ -95,7 +102,7 @@ final class DescriptorDetailTests: XCTestCase {
         let shown = detail(TestUEFI.flashDescriptor())
         let table = try XCTUnwrap(table(shown, "Flash chips in VSCC table"))
 
-        XCTAssertEqual(table.symbol, "memorychip")
+        XCTAssertEqual(table.symbol, "cpu", "the square chip the ME panel waits under")
         XCTAssertEqual(table.columns, ["JEDEC ID", "Chip"])
         XCTAssertEqual(table.rows.map { $0[0].text }, ["1F4700", "1C7018", "C22019", "EF4019"])
         XCTAssertEqual(table.rows.map { $0[1].text },

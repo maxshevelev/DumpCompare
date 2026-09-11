@@ -692,6 +692,12 @@ import UEFITool
         let grid = NSGridView(numberOfColumns: table.columns.count, rows: 0)
         grid.rowSpacing = 2
         grid.columnSpacing = 14
+        // A table is as wide as what is in it. Left to the list's width, the
+        // columns take the slack and a two-column table of short values ends up
+        // with its second column against the far edge, which reads as two
+        // unrelated columns rather than as a table.
+        grid.xPlacement = .leading
+        grid.setContentHuggingPriority(.required, for: .horizontal)
         grid.translatesAutoresizingMaskIntoConstraints = false
 
         grid.addRow(with: table.columns.map { column in
@@ -720,6 +726,11 @@ import UEFITool
             })
         }
         detail.content.addArrangedSubview(grid)
+        // Inside the list, never past it: a table wider than the panel is
+        // clipped at the edge rather than drawn over the dump.
+        grid.trailingAnchor.constraint(
+            lessThanOrEqualTo: detail.content.trailingAnchor
+        ).isActive = true
         detail.content.setCustomSpacing(10, after: grid)
     }
 

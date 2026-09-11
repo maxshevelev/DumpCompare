@@ -735,7 +735,7 @@ final class UEFIToolFlowTests: XCTestCase {
         let text = descendants(of: panel, NSTextField.self).map(\.stringValue)
         XCTAssertTrue(text.contains("11 00 00 9C 90 02 00 D6 00 00 00 05 FF FF FF FF"),
                       "the reserved vector, as a dump prints it: \(text)")
-        XCTAssertTrue(text.contains("Read 0x06 · Write 0x00"), "the BIOS master's masks: \(text)")
+        XCTAssertTrue(text.contains("Region access settings"), "\(text)")
         XCTAssertTrue(text.contains("BIOS access table"), "\(text)")
         XCTAssertTrue(text.contains("Flash chips in VSCC table"), "\(text)")
         XCTAssertTrue(text.contains("Winbond W25Q256"), "a chip the catalogue names: \(text)")
@@ -744,8 +744,13 @@ final class UEFIToolFlowTests: XCTestCase {
         // Two grids, and the permissions in the first are coloured: the BIOS
         // master reads its own region and the ME one, and writes neither.
         let grids = descendants(of: panel, NSGridView.self)
-        XCTAssertEqual(grids.count, 2, "one grid per table")
-        let cells = descendants(of: try XCTUnwrap(grids.first), NSTextField.self)
+        XCTAssertEqual(grids.count, 3, "one grid per table")
+        // A table is as wide as what is in it, not as wide as the panel: the
+        // chips' two columns belong side by side, not one at either edge.
+        let chips = try XCTUnwrap(grids.last)
+        XCTAssertLessThan(chips.frame.width, panel.bounds.width - 60,
+                          "the chips table is not stretched across the list")
+        let cells = descendants(of: try XCTUnwrap(grids.dropFirst().first), NSTextField.self)
         let yes = cells.filter { $0.stringValue == "Yes" }
         let no = cells.filter { $0.stringValue == "No" }
         XCTAssertEqual(yes.count, 3, "Desc: no, BIOS: read+write, ME: read")

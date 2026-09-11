@@ -420,8 +420,9 @@ public enum UEFIDetail {
 
     // MARK: - What a flash descriptor adds
 
-    /// The rows a descriptor has beyond its header: the vector it opens with,
-    /// where each region it declares begins, and what each master may touch.
+    /// The rows a descriptor has beyond its header: the vector it opens with
+    /// and where each region it declares begins. What the masters may touch is
+    /// a grid, and is in `descriptorTables`.
     ///
     /// The regions are in the tree as well, as this node's siblings — but the
     /// tree shows where a region *is*, and this shows what the descriptor
@@ -434,20 +435,25 @@ public enum UEFIDetail {
         for region in descriptor.regionOffsets where region.type != .descriptor {
             fields.append(.init(region.type.label + " offset", hex(region.offset)))
         }
-        for master in descriptor.masters {
-            fields.append(.init(
-                master.name + " access",
-                "Read \(mask(master.read, digits: descriptor.maskDigits))"
-                    + " · Write \(mask(master.write, digits: descriptor.maskDigits))"
-            ))
-        }
         return fields
     }
 
-    /// The two grids: what the BIOS master may do to each region, and the flash
-    /// chips this firmware was built to drive.
+    /// The three grids: the masks each master carries, what the BIOS master may
+    /// do to each region, and the flash chips this firmware was built to drive.
     private static func descriptorTables(_ descriptor: DescriptorInfo) -> [UEFIDetailTable] {
         var tables: [UEFIDetailTable] = []
+        if !descriptor.masters.isEmpty {
+            tables.append(UEFIDetailTable(
+                title: "Region access settings",
+                symbol: "key",
+                columns: ["Master", "Read", "Write"],
+                rows: descriptor.masters.map { master in
+                    [.init(master.name),
+                     .init(mask(master.read, digits: descriptor.maskDigits)),
+                     .init(mask(master.write, digits: descriptor.maskDigits))]
+                }
+            ))
+        }
         if !descriptor.biosAccess.isEmpty {
             tables.append(UEFIDetailTable(
                 title: "BIOS access table",
@@ -463,7 +469,9 @@ public enum UEFIDetail {
         if !descriptor.chips.isEmpty {
             tables.append(UEFIDetailTable(
                 title: "Flash chips in VSCC table",
-                symbol: "memorychip",
+                // The square chip the ME panel waits under, so the two panels
+                // draw the same thing for the same idea.
+                symbol: "cpu",
                 columns: ["JEDEC ID", "Chip"],
                 rows: descriptor.chips.map { chip in
                     [.init(String(format: "%06X", chip.jedecID)),
