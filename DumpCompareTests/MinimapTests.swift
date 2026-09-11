@@ -261,8 +261,8 @@ final class MinimapTests: XCTestCase {
     /// into the gap and was squeezed back out of it.
     ///
     /// What is asserted is the relation, not the frame count: at every moment
-    /// the window has grown by as much as the panel has taken (to within the
-    /// divider). That holds however few frames the animation gets — the
+    /// the window has grown by as much as the panel and the divider have taken
+    /// between them. That holds however few frames the animation gets — the
     /// animation runs on wall-clock time, so under load it can legitimately
     /// finish in a frame or two — while an instant resize breaks it on the very
     /// first sample, where the window is already fully grown and the panel is
@@ -292,8 +292,25 @@ final class MinimapTests: XCTestCase {
         }
         _ = pumpUntil(2) { !split.isAnimatingDivider }
 
+        // The window grows by the panel's width *plus the divider* — that is
+        // what `minimapWindowResize` is built from, and the settled state shows
+        // it exactly: 121 = 120 + 1. Comparing the growth against the panel
+        // alone left the divider as a standing error and spent the tolerance
+        // on hiding it.
+        //
+        // What is left to allow for is skew, not arithmetic: the two numbers
+        // are read from different places — the window's own frame, and the
+        // pane as the split last laid it out — so a sample can catch the
+        // window moved by a tick the pane has not been laid out for yet. One
+        // tick is the honest allowance, and how much ground a tick covers
+        // depends on how many the animation got: it runs on wall-clock time,
+        // so under load it can be two frames and a long stride each.
+        let stride = zip(samples, samples.dropFirst())
+            .map { abs($1.panel - $0.panel) }
+            .max() ?? 0
+        let allowed = max(1, stride)
         for (grown, panel) in samples {
-            XCTAssertEqual(grown, panel, accuracy: 2,
+            XCTAssertEqual(grown, panel + split.dividerThickness, accuracy: allowed,
                            "the window gained \(grown) while the panel took \(panel)")
         }
         let delta = MainViewController.minimapMinPanelWidth + split.dividerThickness
