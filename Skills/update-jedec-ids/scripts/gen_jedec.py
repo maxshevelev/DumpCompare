@@ -2,7 +2,7 @@
 """Regenerate the SPI flash chip name table from the UEFITool repository.
 
 Fetches common/descriptor.cpp from github.com/LongSoft/UEFITool (branch
-new_engine) and rewrites one file in the DumpCompare tree:
+new_engine) and rewrites one file in the ByteRipper tree:
 
   Packages/UEFIImage/Sources/UEFIImage/JedecIDs.swift
 
@@ -109,7 +109,7 @@ def main():
     default_repo = os.path.abspath(os.path.join(here, "..", "..", ".."))
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo", default=default_repo, help="the DumpCompare tree")
+    parser.add_argument("--repo", default=default_repo, help="the ByteRipper tree")
     parser.add_argument("--source", help="a local descriptor.cpp instead of fetching")
     args = parser.parse_args()
 

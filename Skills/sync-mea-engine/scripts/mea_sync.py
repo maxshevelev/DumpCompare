@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Deterministic drift tool for the `sync-mea-engine` skill.
 
-Compares the Swift ME-firmware port (DumpCompare/Packages/MEFirmware) against
+Compares the Swift ME-firmware port (ByteRipper/Packages/MEFirmware) against
 upstream platomav/MEAnalyzer (a local git clone of the Python parser) and
 classifies every change into data / code-added / code-changed / code-removed /
 noise.
@@ -503,7 +503,7 @@ def cmd_bootstrap(args):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--app-root", default=DEFAULT_APP_ROOT,
-                    help="DumpCompare root (default: resolved next to this script)")
+                    help="ByteRipper root (default: resolved next to this script)")
     ap.add_argument("--source", default=DEFAULT_UPSTREAM,
                     help="upstream MEAnalyzer git clone (default: $MEA_UPSTREAM_PATH or sibling ../MEAnalyzer)")
     ap.add_argument("--pkg", default=DEFAULT_PKG, help="engine package under app root (default: %(default)s)")

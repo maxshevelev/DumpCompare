@@ -200,7 +200,7 @@ def main():
     default_repo = os.path.abspath(os.path.join(here, ".."))
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--repo", default=default_repo, help="the DumpCompare tree")
+    parser.add_argument("--repo", default=default_repo, help="the ByteRipper tree")
     args = parser.parse_args()
 
     catalogue = os.path.join(args.repo, CATALOGUE)

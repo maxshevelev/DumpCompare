@@ -20,7 +20,7 @@ libraries, and syncing the recents (a per-machine cache by design).
 The split follows the project's rule — anything that can be decided without a
 window is decided in the package.
 
-**`DumpCompareCore` (pure, no AppKit):**
+**`ByteRipperCore` (pure, no AppKit):**
 
 | type | what it is |
 |---|---|
@@ -76,8 +76,17 @@ writing it — none of which may stop the Find bar's menu from listing the
 patterns. The app reads and draws the local file; the shared file is how two
 machines tell each other what they know.
 
+> **On the two old names above.** The app was renamed to ByteRipper, but the
+> bundle identifier and the shared files' stem were deliberately left as they
+> were. The identifier is what macOS uses to find this container, its
+> preferences and its bookmarks; the stem is how `SyncFolder` finds every
+> machine's file in a folder shared with installations that have not updated.
+> Both are contracts with data that already exists, not labels. The container's
+> own folder *was* renamed, and `FavoritesFile.directory(in:)` moves the old one
+> across the first time it looks.
+
 ```
-Containers/…/Application Support/DumpCompare/Favorites.json  ← the truth: what the UI reads,
+Containers/…/Application Support/ByteRipper/Favorites.json  ← the truth: what the UI reads,
                                                                 with a base per machine beside it
 iCloud Drive/DumpCompare Patterns (A93F1C0D22B7).json        ← the medium: this Mac's own file
 iCloud Drive/DumpCompare Patterns (5E1C7740B903).json           … and the other machines',
@@ -187,7 +196,7 @@ Each ends with the app working and the suite green.
    written by today's build mints them. Still stored in `UserDefaults`, nothing
    visible, 25 existing tests unchanged.
 2. **The library becomes a file** (4–5 h). `PatternLibrary` + JSON codec;
-   `Application Support/DumpCompare/Favorites.json` in the container becomes the
+   `Application Support/ByteRipper/Favorites.json` in the container becomes the
    truth the app reads and writes; one-time migration off the `FindFavorites`
    key; a corrupt or unreadable file keeps the last good copy and says so rather
    than presenting an empty list.
@@ -283,7 +292,7 @@ So no file is ever written by two machines:
 - It never writes, deletes or renames another machine's file. Adoption's
   "replace what is there" is carried out with tombstones, which is a thing the
   other machines honour, rather than with a write they cannot see coming.
-- Only a machine's own file is a library file. The single `DumpCompare
+- Only a machine's own file is a library file. The single `ByteRipper
   Patterns.json` this branch started with is not read, written or removed — it
   is one more thing in the folder that is not one of these. (It *was* absorbed
   as a peer for a while; both machines have since taken what it held, so the
@@ -335,7 +344,7 @@ because a generic type cannot hold a stored static. And how an item *reads* in
 a question — "name: “pattern”" — is the view's business (`SyncPresentable`),
 beside `SearchEncoding.displayName` rather than in the model.
 
-`DumpCompareTests/GenericSyncTests` carries a second collection of its own — a
+`ByteRipperTests/GenericSyncTests` carries a second collection of its own — a
 note is a line of text — and runs the whole machinery over it: two machines
 exchanging, a deletion travelling, a race asked on both and settled by one
 answer, and two collections sharing one folder without seeing each other. A

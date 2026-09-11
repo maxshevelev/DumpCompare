@@ -7,12 +7,12 @@ there.
 
 ## Feature
 
-A new tab in Settings — **File Types** — that registers DumpCompare as the
-**default** viewer (double-click opens DumpCompare) for a user-managed list of
+A new tab in Settings — **File Types** — that registers ByteRipper as the
+**default** viewer (double-click opens ByteRipper) for a user-managed list of
 file extensions:
 
 - Default list: `.bin`, `.rom` (pre-checked).
-- Per-type checkbox: on → set DumpCompare as the default handler; off → restore
+- Per-type checkbox: on → set ByteRipper as the default handler; off → restore
   the previous handler.
 - `+`/`−` footer buttons (the SegmentsForm idiom) to add/remove types.
 - Adding a type prompts for an extension (NSAlert + text field); the list is
@@ -23,12 +23,12 @@ The approved plan is at
 
 ## What is already done
 
-1. **`DumpCompareApp/DefaultHandlerService.swift`** (NEW, committed nothing yet)
+1. **`ByteRipperApp/DefaultHandlerService.swift`** (NEW, committed nothing yet)
    — thin Launch Services wrapper: `currentHandler(for:)`,
    `setSelfAsDefault(for:)`, `restoreDefault(for:to:)` over
    `LSCopyDefaultRoleHandlerForContentType` / `LSSetDefaultRoleHandlerForContentType`,
    type resolved via `UTType(filenameExtension:)`, role `.viewer`.
-2. **`DumpCompareTests/DefaultHandlerSandboxProbeTests.swift`** (NEW) — hosted
+2. **`ByteRipperTests/DefaultHandlerSandboxProbeTests.swift`** (NEW) — hosted
    test (runs inside the sandboxed app via TEST_HOST) that sets `.bin`'s default,
    asserts noErr, restores.
 3. `xcodegen generate` ran; project builds.
@@ -64,7 +64,7 @@ Three conclusions, and they replace the previous diagnosis:
 3. **Not every extension needs a write at all.** `.bin` resolves to
    `com.apple.macbinary-archive` — a real system type whose default is Archive
    Utility, so "make `.bin` ours" means taking MacBinary away from it. `.rom`
-   resolves to a dynamic `dyn.…` type that nobody else claims, and DumpCompare
+   resolves to a dynamic `dyn.…` type that nobody else claims, and ByteRipper
    already opens it on a double-click from the Info.plist declaration alone. The
    checkbox for an uncontested extension has nothing to do; naming the current
    handler is the useful thing on screen.
@@ -90,7 +90,7 @@ Three conclusions, and they replace the previous diagnosis:
 
 ## Not yet done (all pending — the plan's Steps 2–5 and tests)
 
-- `DumpCompareApp/DefaultHandlerSettings.swift` — model, mirroring
+- `ByteRipperApp/DefaultHandlerSettings.swift` — model, mirroring
   `FindHistoryStore` (SheetControllers.swift:566): static enum, swappable
   `defaults`, `[[String: Any]]` under `"DefaultHandlerFileTypes"`;
   `Entry { ext, enabled, previousHandler }`; defaults `[("bin", true), ("rom", true)]`;
@@ -98,7 +98,7 @@ Three conclusions, and they replace the previous diagnosis:
   normalization (trim, strip leading dot, lowercase, dedup, reject non-alphanumeric).
 - `AppDelegate` — nothing. (The plan's launch-time `applyEnabledDefaults()` is
   dropped; see "Design decisions this changes".)
-- `DumpCompareApp/FileTypesSettingsViewController.swift` — table (checkbox +
+- `ByteRipperApp/FileTypesSettingsViewController.swift` — table (checkbox +
   extension columns), `+`/`−` footer copied from `SegmentsForm.makeFooter()`
   (SegmentsForm.swift:242), add via NSAlert + text field behind a replaceable
   `promptForExtension` closure, service calls behind replaceable closures,
@@ -111,14 +111,14 @@ Three conclusions, and they replace the previous diagnosis:
   service).
 - `Design/REQUIREMENTS.md` — document the tab (§22).
 - Build + full suite into the dedicated DerivedData
-  (`/Users/maxik/.claude/derived-data/dumpcompare`).
+  (`/Users/maxik/.claude/derived-data/byteripper`).
 - **No commit/push until the user says "push".**
 
 ## Files touched so far (uncommitted)
 
-- `DumpCompareApp/DefaultHandlerService.swift` (committed; **to be rewritten on
+- `ByteRipperApp/DefaultHandlerService.swift` (committed; **to be rewritten on
   `NSWorkspace`** — its Launch Services write is the call the sandbox refuses)
-- `DumpCompareTests/DefaultHandlerSandboxProbeTests.swift` — deleted: its premise
+- `ByteRipperTests/DefaultHandlerSandboxProbeTests.swift` — deleted: its premise
   (the sandbox blocks the write) is false for the API the app now uses, and the
   real write cannot be automated cleanly, since handing a type back needs a human
   at the system's confirmation. The measurements it stood for are in §25.1.

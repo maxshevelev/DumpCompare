@@ -51,7 +51,7 @@ template). Caret drawing is `HexView.drawCaret` using `HexTheme.caretColor`
 
 ## Changes
 
-### 1. Menu item — `DumpCompareApp/MainWindowController.swift`
+### 1. Menu item — `ByteRipperApp/MainWindowController.swift`
 In `makeEditMenu()`, add after `Delete Bytes…` (line 292):
 ```swift
 editMenu.addItem(withTitle: "Insert Mode",
@@ -59,7 +59,7 @@ editMenu.addItem(withTitle: "Insert Mode",
                  keyEquivalent: "")
 ```
 
-### 2. Mode state + toggle — `DumpCompareApp/MainViewController.swift`
+### 2. Mode state + toggle — `ByteRipperApp/MainViewController.swift`
 - Stored `var insertMode = false` (session-global; both panes stay in sync).
 - `@objc func toggleInsertMode(_ sender: Any?)`: flips `insertMode`, sets `pane.isInsertMode` on both
   panes, and (idempotently) injects the **one-time warning** closure into each pane, presenting a
@@ -94,7 +94,7 @@ editMenu.addItem(withTitle: "Insert Mode",
       return true
   ```
 
-### 3. Pane-level mode + typing — `DumpCompareApp/PaneViewModel.swift`
+### 3. Pane-level mode + typing — `ByteRipperApp/PaneViewModel.swift`
 - `var isInsertMode = false { didSet { if document != nil { notify(selectionChangedOnly: true) } } }`
   — the `didSet` repaints the caret rows so the caret instantly changes color/shape.
 - Data source: `var hexInsertMode: Bool { isInsertMode }` (add to the `HexViewDataSource` conformance).
@@ -142,7 +142,7 @@ Everything downstream is reused: `notifyAfterEdit` already does a full `notify()
 `notifyCompanionContentFullyChanged()` repaints the companion's diff background (an insert moves every
 offset at/after the caret), and `advanceAfterByte()` advances the caret past the inserted byte.
 
-### 4. Caret — `DumpCompareApp/HexView.swift` + `HexLayout`
+### 4. Caret — `ByteRipperApp/HexView.swift` + `HexLayout`
 - `HexViewDataSource`: add `var hexInsertMode: Bool { get }`.
 - `HexTheme`: add `static let insertCaretColor = NSColor.systemRed`.
 - `drawCaret` (line 1220): when `dataSource?.hexInsertMode ?? false`, draw a 1 pt vertical line at the
@@ -159,7 +159,7 @@ offset at/after the caret), and `advanceAfterByte()` advances the caret past the
   Add `HexTheme.insertCaretColor = NSColor.systemRed`.
 
 ### 5. Tests
-- **`DumpCompareTests/PaneViewModelTests.swift`** (patterns already exist: `openPane`, `typeASCII`,
+- **`ByteRipperTests/PaneViewModelTests.swift`** (patterns already exist: `openPane`, `typeASCII`,
   `typeHexNibble`, `caretOffset`, `fileSize`, `hexByteStates`, `hexCaretNibble`, `undo()`/`redo()`,
   `PaneViewModel.clock`):
   1. `testInsertModeFirstHexNibbleInsertsByteWithEmptyLowNibble` — open 1 byte, set `isInsertMode = true`,
@@ -186,7 +186,7 @@ offset at/after the caret), and `advanceAfterByte()` advances the caret past the
        (already the path covered by tests 1–4, asserted explicitly here).
      - Reset check: with the flag set, `open(url:)` on a fresh file → `typeHexNibble` calls the closure
        again (flag cleared on open).
-- **`DumpCompareTests/CaretPlacementTests.swift`** (or a small new test): render the active pane,
+- **`ByteRipperTests/CaretPlacementTests.swift`** (or a small new test): render the active pane,
   sample pixels via the `sampleRowColours`/brightness helpers from `MinimapTests`:
   - `testInsertModeCaretIsRedVerticalLine` — insert mode on: the pixel at `layout.hexByteX(column:)`
     is red (`red − blue > threshold`); overwrite mode (default): the same x is the accent caret blue.
@@ -194,7 +194,7 @@ offset at/after the caret), and `advanceAfterByte()` advances the caret past the
     (nibble == 1), render: the low-nibble cell (`hexByteX + charWidth`) is **dim/placeholder**
     (muted, near the cell background), not the byte-text/accent color; after `typeHexNibble(0xB)` the
     cell shows the digit `B` at normal byte-text brightness.
-- **`DumpCompareTests/MainWindowMenuTests.swift`**: the Edit menu has an "Insert Mode" item wired to
+- **`ByteRipperTests/MainWindowMenuTests.swift`**: the Edit menu has an "Insert Mode" item wired to
   `#selector(MainViewController.toggleInsertMode)` (follow the existing title-order tests, line 54).
 - **Menu state** (mirror the overview pattern at MinimapTests.swift:1578): fresh controller →
   `validateMenuItem` on a `toggleInsertMode` item leaves `.off`; after `controller.toggleInsertMode(nil)` →
@@ -249,9 +249,9 @@ reasoning.
 
 ## Verification
 
-- Targeted: `xcodebuild -project DumpCompare.xcodeproj -scheme DumpCompare -derivedDataPath
+- Targeted: `xcodebuild -project ByteRipper.xcodeproj -scheme ByteRipper -derivedDataPath
   "$CLAUDE_JOB_DIR/tmp/dd-insert" build-for-testing` then `test-without-building`
-  `-only-testing:DumpCompareTests/PaneViewModelTests` (and the caret + menu suites), logs to files.
+  `-only-testing:ByteRipperTests/PaneViewModelTests` (and the caret + menu suites), logs to files.
 - Manual: toggle Insert Mode in the Edit menu → caret turns into a red vertical line at the boundary;
   **first keystroke** shows the "Insert?" confirm (Insert/Cancel, destructive); Cancel swallows the key,
   Insert proceeds; a later keystroke in the same file does **not** re-warn; re-enabling the mode after

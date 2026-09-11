@@ -564,7 +564,7 @@ app coherent.
 
 ## Verification
 
-- `swift test` in `DumpCompareCore` is untouched: the store holds no bytes and
+- `swift test` in `ByteRipperCore` is untouched: the store holds no bytes and
   lives in the app target. The app suite carries the rest.
 - Manual: bookmark a row in one pane of a comparison and check the other pane's
   gutter marks the same height; ⌘D twice removes it; ⇧⌘D names it; the arrow

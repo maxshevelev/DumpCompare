@@ -1,0 +1,421 @@
+import Cocoa
+import ByteRipperCore
+import ToolModuleKit
+
+/// The tool-module side of one tab: which one is active, and everything that
+/// follows from that (`Design/TOOL_MODULES_PLAN.md`).
+///
+/// It lives here rather than in `MainViewController` for the ordinary reason —
+/// that file is six thousand lines — and for a specific one: a tool-module's
+/// state is a self-contained thing with a lifecycle of its own, and the
+/// controller's part in it is one stored property and two forwarding methods.
+///
+/// One per tab, because one tool-module is active per tab. The session it will
+/// own is bound to a pane but the *choice* belongs to the window, which is why
+/// it is held here and not on `PaneViewModel`: a pane moved to another tab
+/// leaves the panel behind, exactly as it leaves that window's bookmarks behind
+/// (§20).
+@MainActor final class ToolController {
+    /// The tab this belongs to. Weak: the controller owns this, not the other
+    /// way round.
+    weak var owner: MainViewController?
+
+    /// The active tool-module's identifier, or nil for None. Kept as an
+    /// identifier rather than a type so a choice can outlive a build in which
+    /// that tool-module was removed — it resolves through the registry, and an
+    /// identifier nothing answers to reads as None.
+    private(set) var activeIdentifier: String?
+
+    /// The active tool-module, if the registry still holds one by that name.
+    var activeModule: (any ToolModule.Type)? {
+        activeIdentifier.flatMap(ToolRegistry.module(identified:))
+    }
+
+    // MARK: - The session
+
+    /// The running tool-module, or nil when the tab is on None.
+    private(set) var session: (any ToolSession)?
+
+    /// The pane the session reads and writes. Bound when the session starts and
+    /// never re-pointed: clicking the other pane does not re-target a
+    /// tool-module, because what the panel's header names is where its writes
+    /// go, and a map that re-parsed under a click would be a map you cannot
+    /// trust.
+    private(set) weak var boundPane: PaneViewModel?
+
+    private var host: PaneToolHost?
+
+    /// The identifier of the session that is *running*, which is not always
+    /// `activeIdentifier`: the choice is assigned before the old session ends,
+    /// and the state that ends up parked belongs to the old one.
+    private var runningIdentifier: String?
+
+    /// What each tool-module left behind when it stopped being the one on
+    /// screen, so switching the panel between two of them is switching rather
+    /// than starting over (`Design/TOOL_MODULES_PLAN.md`).
+    ///
+    /// The box is opaque — the host stores what a session hands it and never
+    /// looks inside. What it does police is *whose* file the state describes:
+    /// it is kept against the pane the session was bound to, and dropped when
+    /// that pane's content is replaced or the pane goes, because a parked
+    /// selection in a file that has been reverted is a selection in a file that
+    /// no longer exists.
+    private var parked: [String: ParkedSession] = [:]
+
+    private struct ParkedSession {
+        let state: any ToolSessionState
+        weak var pane: PaneViewModel?
+    }
+
+    /// What the session last asked the dump to show. Drawn in stage 5; kept
+    /// here from the start because it is the session's state, not the view's.
+    private(set) var zones: ZoneMap = .empty
+
+    /// How long a change is held before the session hears about it. Typing
+    /// lands one edit per keystroke and a parse per keystroke is not work, it
+    /// is heat — but the wait has to stay below the point where the panel looks
+    /// stale. A `var` so a test does not have to sleep through it.
+    static var changeDelay: TimeInterval = 0.15
+
+    private var pendingChange: ToolContentChange?
+    private var deliveryTask: Task<Void, Never>?
+
+    /// Starts `module` against `pane`: the host, the session, its view in the
+    /// panel, and the first read.
+    ///
+    /// `start()` is called after the view is in the panel rather than inside
+    /// `makeSession`, so a slow first parse runs against a panel the user can
+    /// already see.
+    /// Moves the running tool-module onto `pane` — what dropping a pane on the
+    /// panel means. The same session machinery an activation uses, so the tool
+    /// arrives on the new file exactly as it would have if it had been opened
+    /// there.
+    func rebind(to pane: PaneViewModel) {
+        guard let module = activeModule, pane !== boundPane, pane.isOpen else { return }
+        endSession()
+        startSession(module, on: pane)
+    }
+
+    /// What dropping the pane with `dragID` on the panel would say, or nil for
+    /// one the panel will not take. Its own pane is the one it will not: the
+    /// tool is already reading that file, and a drop that changes nothing is a
+    /// gesture that looks broken.
+    func paneDropTitle(forPaneWith dragID: UUID) -> String? {
+        guard let module = activeModule,
+              let owner,
+              let index = owner.paneIndex(withDragID: dragID)
+        else { return nil }
+        let pane = index == 0 ? owner.windowModel.pane1 : owner.windowModel.pane2
+        guard pane.isOpen, pane !== boundPane else { return nil }
+        return "Show \(module.title) for \(pane.status.fileName)"
+    }
+
+    private func startSession(_ module: any ToolModule.Type, on pane: PaneViewModel) {
+        guard let owner else { return }
+        let host = PaneToolHost(pane: pane, owner: owner, tools: self)
+        let session = module.makeSession(host: host)
+        // Consumed rather than copied: from here the session owns it, and what
+        // comes back next time is whatever this session decides to leave.
+        if let parked = parked.removeValue(forKey: module.identifier), parked.pane === pane {
+            session.restore(parked.state)
+        }
+        self.host = host
+        self.session = session
+        boundPane = pane
+        runningIdentifier = module.identifier
+        zones = .empty
+        panel.setTitle(module.title, fileName: pane.status.fileName)
+        panel.setContent(session.viewController.view)
+        owner.addChild(session.viewController)
+        session.start()
+    }
+
+    /// Ends the running session, whatever ended it — another tool-module, None,
+    /// the file closing, the pane leaving, the tab going.
+    private func endSession() {
+        deliveryTask?.cancel()
+        deliveryTask = nil
+        pendingChange = nil
+        // Before `stop()`, so a session that lets go of its model there still
+        // hands back something whole. A file that is closing parks nothing —
+        // not by a check here, but because the close drops it again a moment
+        // later, which is one rule instead of two saying the same thing.
+        if let identifier = runningIdentifier, let pane = boundPane,
+           let state = session?.parkedState {
+            parked[identifier] = ParkedSession(state: state, pane: pane)
+        }
+        runningIdentifier = nil
+        session?.stop()
+        if let controller = session?.viewController {
+            controller.view.removeFromSuperview()
+            controller.removeFromParent()
+        }
+        panel.setContent(nil)
+        // The map goes with the session that authored it: nothing else draws
+        // zones, so a dump left carrying them would be showing a tool-module's
+        // reading of a file after that tool-module has gone.
+        boundPane?.setZones(ZoneMap.empty)
+        owner?.toolZonesChanged()
+        session = nil
+        host = nil
+        boundPane = nil
+        zones = .empty
+    }
+
+    /// What the dump should draw, from the session that is running now. A
+    /// publish from a host that has been replaced is dropped rather than
+    /// applied: a parse finishing after its session ended must not repaint the
+    /// dump for a tool-module that is no longer open.
+    func publish(_ map: ZoneMap, from host: PaneToolHost) {
+        guard host === self.host else { return }
+        let previousFocus = zones.focus
+        zones = map.normalized(contentSize: host.contentSize)
+        boundPane?.setZones(zones)
+        // The dump repaints from the pane's own hook; everything else that
+        // draws the map — the minimap's gutter (§19.4.5) — hears about it here.
+        owner?.toolZonesChanged()
+        // A zone the tool-module has just put in focus is a zone the user is
+        // being shown, so the dump goes to it — the scroll only, and only when
+        // it is not on screen already. Every tool-module gets this rather than
+        // each remembering to ask, and a republish that focuses the same zone
+        // scrolls nothing.
+        guard let focus = zones.focus, focus != previousFocus,
+              let zone = zones.zones.first(where: { $0.id == focus }),
+              let pane = boundPane else { return }
+        owner?.showZoneStartForTool(zone.range.lowerBound, in: pane)
+    }
+
+    /// The user picked a zone in the dump. The bytes are the host's to select;
+    /// this is the other half — telling the tool-module, which is the only side
+    /// that knows what the zone stands for.
+    ///
+    /// Only for the pane the session is bound to: a zone map belongs to one
+    /// pane, and a right-click in the other one is about somebody else's bytes.
+    func zoneSelected(_ id: Zone.ID, in pane: PaneViewModel) {
+        guard let session, pane === boundPane else { return }
+        session.zoneSelected(id)
+    }
+
+    // MARK: - What happens to the session
+
+    /// An edit landed in some pane. The session hears about it only for its own
+    /// pane, and only after the changes stop coming.
+    func paneEdited(_ pane: PaneViewModel, _ edit: DiffEdit) {
+        guard pane === boundPane else { return }
+        let change: ToolContentChange
+        switch edit {
+        case .overwrite(let range):
+            change = .edited(range, sizeDelta: 0)
+        case .insert(let at, let length):
+            change = .edited(at..<(at &+ length), sizeDelta: Int64(length))
+        case .delete(let range):
+            change = .edited(range.lowerBound..<range.lowerBound,
+                             sizeDelta: -Int64(range.count))
+        }
+        schedule(change)
+    }
+
+    /// The content was replaced under the session: a revert, a change made
+    /// outside the app, a file joined on.
+    func paneReloaded(_ pane: PaneViewModel) {
+        // Whatever any tool-module parked against this pane described the file
+        // as it was. The running one is told and re-reads; the parked ones have
+        // no way to hear it, so they go.
+        discardParkedState(for: pane)
+        guard pane === boundPane else { return }
+        schedule(.reloaded)
+    }
+
+    /// The bound file was closed: there is nothing left for the tool-module to
+    /// work on, so the session ends and the panel closes.
+    func paneClosed(_ pane: PaneViewModel) {
+        if pane === boundPane { activate(nil) }
+        discardParkedState(for: pane)
+    }
+
+    /// The bound pane left this tab. The session belongs to the window — the
+    /// same side of the line as bookmarks (§20) — so it stays behind and ends,
+    /// and the destination keeps whatever it had.
+    func paneLeft(_ pane: PaneViewModel) {
+        if pane === boundPane { activate(nil) }
+        discardParkedState(for: pane)
+    }
+
+    /// Forgets what every tool-module parked against `pane`, and prunes what
+    /// was parked against panes that have since gone. Called after the session
+    /// has ended rather than before, so the one that is stopping cannot park
+    /// the state we are here to drop.
+    private func discardParkedState(for pane: PaneViewModel) {
+        parked = parked.filter { $0.value.pane != nil && $0.value.pane !== pane }
+    }
+
+    /// Which tool-modules have something parked, for a test that would
+    /// otherwise have to reopen a file to find out.
+    var parkedModuleIdentifiers: Set<String> {
+        Set(parked.filter { $0.value.pane != nil }.keys)
+    }
+
+    /// Holds `change` briefly, merging it with whatever was already waiting,
+    /// then hands the one change to the session.
+    private func schedule(_ change: ToolContentChange) {
+        pendingChange = pendingChange.map { $0.merged(with: change) } ?? change
+        deliveryTask?.cancel()
+        // A reload is not a keystroke: a file has just been opened or replaced
+        // under the session, there is nothing coming behind it to coalesce
+        // with, and holding it back is the panel sitting blank — no notice, no
+        // bar — for the length of the window. It goes straight through.
+        if pendingChange == .reloaded {
+            deliveryTask = nil
+            deliverPendingChange()
+            return
+        }
+        let delay = Self.changeDelay
+        deliveryTask = Task { [weak self] in
+            if delay > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+            guard !Task.isCancelled else { return }
+            self?.deliverPendingChange()
+        }
+    }
+
+    /// Hands the held change over, and refreshes the header — a Save As or a
+    /// rename changes what the file is called under a running session.
+    private func deliverPendingChange() {
+        guard let change = pendingChange, let session else { return }
+        pendingChange = nil
+        deliveryTask = nil
+        if let module = activeModule, let pane = boundPane {
+            panel.setTitle(module.title, fileName: pane.status.fileName)
+        }
+        session.contentChanged(change)
+    }
+
+    /// Delivers anything held, now. The seam a test uses instead of sleeping
+    /// through `changeDelay`.
+    func flushPendingChangeForTesting() {
+        deliveryTask?.cancel()
+        deliveryTask = nil
+        deliverPendingChange()
+    }
+
+    // MARK: - The panel
+
+    /// The panel itself — the split's leading pane, present from the start and
+    /// collapsed to zero width, exactly as the minimap panel is (§19.1). A
+    /// pane that exists only when it is shown would have to be added to the
+    /// split mid-life, which is the one thing that makes the divider indices
+    /// move under everything that holds one.
+    let panel = ToolPanelView()
+
+    /// Whether the panel is open. Drives the divider clamp: while it is closed
+    /// the divider is pinned to the leading edge, so a drag cannot open a panel
+    /// that has no tool-module in it.
+    private(set) var isPanelVisible = false
+
+    /// Where the panel's width is remembered — one key per tool-module, since
+    /// a FIT table wants twice what a structure tree does and one shared width
+    /// would be wrong for both. Swappable so the suite does not write into the
+    /// user's own preferences.
+    static var defaults: UserDefaults = .standard
+    static func widthDefaultsKey(for identifier: String) -> String {
+        "ToolPanelWidth.\(identifier)"
+    }
+
+    /// The panel is never narrower than this: below it a table of offsets and
+    /// names stops being readable and starts being a column of ellipses.
+    static let minPanelWidth: CGFloat = 220
+    /// Nor wider than this — it is a panel beside the dump, not a second
+    /// document.
+    static let maxPanelWidth: CGFloat = 720
+    /// What the dump keeps whatever the panel asks for. The panel gives way
+    /// first: the file is what the window is for.
+    static let minContentWidth: CGFloat = 320
+
+    /// The width the panel opens at for `module`: the user's own, if they have
+    /// dragged one for this tool-module, else what the tool-module asked for —
+    /// clamped either way, so a stored width from a wider window or a silly
+    /// `preferredPanelWidth` cannot open a panel that swallows the dump.
+    func preferredWidth(for module: any ToolModule.Type) -> CGFloat {
+        let stored = Self.defaults.object(forKey: Self.widthDefaultsKey(for: module.identifier))
+        let width = (stored as? NSNumber).map { CGFloat($0.doubleValue) } ?? module.preferredPanelWidth
+        return min(max(width, Self.minPanelWidth), Self.maxPanelWidth)
+    }
+
+    /// Where the divider between the panel and the dump may land, in the
+    /// split's own leading-edge coordinates — which for the first divider is
+    /// the panel's width.
+    ///
+    /// Closed, it is pinned to zero: only the menu opens the panel, never a
+    /// drag on the seam of something that is not there. Open, it stays between
+    /// the panel's minimum and the point where the dump would fall below its
+    /// own — so on a narrow window the panel stops growing rather than the dump
+    /// disappearing.
+    func clampPanelDivider(_ position: CGFloat, total: CGFloat, dividers: CGFloat,
+                           minimapWidth: CGFloat) -> CGFloat {
+        guard isPanelVisible else { return 0 }
+        let roomForPanel = max(0, total - dividers - minimapWidth - Self.minContentWidth)
+        let upper = min(Self.maxPanelWidth, roomForPanel)
+        return min(max(position, min(Self.minPanelWidth, upper)), max(0, upper))
+    }
+
+    /// Remembers the panel's width for the tool-module that is open, so the
+    /// next time that one is picked it opens where the user left it. Only while
+    /// the panel is shown and only a width inside the legal band: a transient
+    /// layout mid-animation would otherwise poison the next reveal.
+    func persistPanelWidth(_ width: CGFloat) {
+        guard isPanelVisible, let identifier = activeIdentifier else { return }
+        guard width >= Self.minPanelWidth, width <= Self.maxPanelWidth else { return }
+        Self.defaults.set(width, forKey: Self.widthDefaultsKey(for: identifier))
+    }
+
+    /// Makes `identifier` the tab's tool-module, or closes the current one when
+    /// it is nil. Picking the one already active is not a toggle: the menu is a
+    /// radio group, and choosing the checked row means "yes, this one".
+    func activate(_ identifier: String?, animated: Bool = true) {
+        let resolved = identifier.flatMap { ToolRegistry.module(identified: $0) == nil ? nil : $0 }
+        guard resolved != activeIdentifier else { return }
+        activeIdentifier = resolved
+        endSession()
+        guard let module = activeModule, let pane = owner?.windowModel.activePane, pane.isOpen else {
+            activeIdentifier = nil
+            setPanelVisible(false, animated: animated)
+            return
+        }
+        startSession(module, on: pane)
+        isPanelVisible = true
+        setPanelWidth(preferredWidth(for: module), animated: animated)
+    }
+
+    /// Opens or closes the panel, moving the window's leading edge with it so
+    /// the dump keeps the width it had — the mirror of what showing the minimap
+    /// does on the trailing edge (§19).
+    func setPanelVisible(_ visible: Bool, animated: Bool = true, width: CGFloat? = nil) {
+        guard isPanelVisible != visible else { return }
+        isPanelVisible = visible
+        setPanelWidth(visible ? (width ?? Self.minPanelWidth) : 0, animated: animated)
+    }
+
+    /// Takes the panel to `width`, moving the window's leading edge by exactly
+    /// what the panel gained or gave up.
+    ///
+    /// One path for all three ways the width changes — opening, closing, and
+    /// switching to a tool-module that wants a different width — so the dump
+    /// keeps the width it had in every one of them rather than in the case
+    /// somebody remembered to write.
+    private func setPanelWidth(_ width: CGFloat, animated: Bool) {
+        guard let owner else { return }
+        let current = owner.toolPanelWidth()
+        owner.setToolPanelWidth(width, animated: animated,
+                                windowResize: owner.toolPanelWindowResize(delta: width - current))
+    }
+
+    /// Whether the menu item for `identifier` should be available, and with
+    /// which mark. A tool-module reads and writes the open file, so it needs
+    /// one; None stays available always, since it is how the panel is closed
+    /// and closing it must never be the thing that is greyed out.
+    func menuState(for identifier: String?, fileIsOpen: Bool) -> (enabled: Bool, state: NSControl.StateValue) {
+        (enabled: identifier == nil || fileIsOpen,
+         state: identifier == activeIdentifier ? .on : .off)
+    }
+}

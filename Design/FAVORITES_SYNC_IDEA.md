@@ -92,7 +92,7 @@ small.
 
 Two locations, and they answer different questions.
 
-**The app's own copy: the container.** `Application Support/DumpCompare/Favorites.json`,
+**The app's own copy: the container.** `Application Support/ByteRipper/Favorites.json`,
 reached the ordinary way — `FileManager.default.url(for: .applicationSupportDirectory,
 in: .userDomainMask)`, which inside a sandboxed app already resolves to
 `~/Library/Containers/dev.maxik.DumpCompare/Data/Library/Application Support`.
@@ -291,7 +291,7 @@ skipped: a library that silently loses the pattern you named on Tuesday is
 worse than one that lives on a single machine. The consolation is that all of
 it is testable without a window and without a network — a base, two lists, a
 merge function, and a table of cases — which is where this app puts its
-confidence anyway (`DumpCompareCore`).
+confidence anyway (`ByteRipperCore`).
 
 ## What the model would have to change
 

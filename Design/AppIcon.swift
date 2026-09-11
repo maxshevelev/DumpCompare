@@ -1,10 +1,10 @@
 import AppKit
 
 // Renders the 1024 pt master for the app icon. `Design/render-appicon.sh` runs
-// it and slices the result into DumpCompareApp/Assets.xcassets/AppIcon.appiconset,
+// it and slices the result into ByteRipperApp/Assets.xcassets/AppIcon.appiconset,
 // so the icon is reproducible: edit the drawing here, run the script, rebuild.
 //
-// DumpCompare app icon: a black flash chip seen from above, free-standing on a
+// ByteRipper app icon: a black flash chip seen from above, free-standing on a
 // transparent background — no plate, so the package itself is the icon's shape.
 // The body is a wide rectangle spanning the full width, with one row of five
 // polished leads above and one below, and it carries two hex bytes big enough to

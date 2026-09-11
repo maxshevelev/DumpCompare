@@ -2,7 +2,7 @@
 """Regenerate the NVRAM GUID classifier from the UEFITool repository.
 
 Fetches common/nvram.h and common/nvram.cpp from github.com/LongSoft/UEFITool
-(branch new_engine) and rewrites one file in the DumpCompare tree:
+(branch new_engine) and rewrites one file in the ByteRipper tree:
 
   Packages/UEFIImage/Sources/UEFIImage/NvramGuids.swift
 
@@ -47,7 +47,7 @@ def fetch(url, dest_dir, name):
     Always downloads: this is an update, and a cached copy is a stale answer.
     """
     print(f"  fetching {url}")
-    request = urllib.request.Request(url, headers={"User-Agent": "DumpCompare"})
+    request = urllib.request.Request(url, headers={"User-Agent": "ByteRipper"})
     with urllib.request.urlopen(request, timeout=30) as response:
         data = response.read()
     path = os.path.join(dest_dir, name)

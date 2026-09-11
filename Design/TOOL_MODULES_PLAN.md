@@ -26,7 +26,7 @@ Settled before writing this, and the reasoning belongs with each.
 |---|---|
 | **Packaging** | one SPM package per tool-module, in this repository, linked statically and listed in `project.yml`. No bundle loading at runtime: every module ships with the app, so a loader would buy nothing and cost signing, versioning and a failure mode per launch. |
 | **UI** | the tool-module vends its own `NSViewController`, with a pure logic target underneath it in the same package. The controller is thin; what can be decided without a window is decided in the pure target and tested by `swift test`. |
-| **Dependencies** | a tool-module depends on `ToolModuleKit` and on domain packages (`UEFIImage`). It depends on neither `DumpCompareApp` nor `DumpCompareCore` — making `DumpCompareCore` a public API is a price with no return. |
+| **Dependencies** | a tool-module depends on `ToolModuleKit` and on domain packages (`UEFIImage`). It depends on neither `ByteRipperApp` nor `ByteRipperCore` — making `ByteRipperCore` a public API is a price with no return. |
 | **Zones** | defined by the tool-module only. Read-only for the user: shown and navigated, never created or edited. The tool-module publishes a **slice** — what it wants seen — not its tree. |
 | **Zone lifetime** | zones live with the session. Nothing else authors them, so closing the tool-module takes the map with it. |
 | **Zone anchoring** | none. After an edit the map is rebuilt by re-reading, not shifted by `DiffEdit` — which removes the anchoring machinery `Design/ZONES_IDEA.md` budgeted for. |
@@ -48,7 +48,7 @@ pure logic target can depend on it without dragging a window in.
 `Design/UEFI/UEFI_IMAGE_FORMAT.md` and both parsing passes. **Not a
 tool-module** — no UI, not in the Tools menu. Several tool-modules stand on it: one showing the structure with
 export and body replacement, one working the FIT table. Pure Swift, no AppKit,
-no dependency on `DumpCompareCore` or `ToolModuleKit`: it takes bytes through
+no dependency on `ByteRipperCore` or `ToolModuleKit`: it takes bytes through
 its own minimal reader protocol, so it runs in `swift test` over fixture files.
 
 Two things belong to it rather than to the tool-modules that use it:

@@ -178,7 +178,7 @@ Not the app's name, which says nothing about one window in particular, and not
 `Untitled`, which already means a New File that has never been saved — an empty
 tab and a fresh document must not read alike.
 
-The name is `window.title`, which is currently the constant `"DumpCompare"` with
+The name is `window.title`, which is currently the constant `"ByteRipper"` with
 `titleVisibility = .hidden` because the toolbar occupies the whole title bar.
 
 ## Two things to settle by experiment, not at the desk

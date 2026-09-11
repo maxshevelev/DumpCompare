@@ -1,0 +1,544 @@
+import XCTest
+@testable import ByteRipperCore
+
+final class BinaryDocumentTests: XCTestCase {
+    private func makeDocument(_ bytes: [UInt8]) throws -> (BinaryDocument, URL) {
+        let url = try TestSupport.makeTempFile(contents: Data(bytes))
+        return (try BinaryDocument(url: url), url)
+    }
+
+    private func readAll(_ doc: BinaryDocument) throws -> [UInt8] {
+        var result: [UInt8] = []
+        var offset: UInt64 = 0
+        while offset < doc.size {
+            let bytes = try doc.read(at: offset, length: 64 * 1024)
+            guard !bytes.isEmpty else { break }
+            result.append(contentsOf: bytes)
+            offset += UInt64(bytes.count)
+        }
+        return result
+    }
+
+    func testOpenExposesSizeAndIdentity() throws {
+        let url = try TestSupport.makeTempFile(contents: Data([0x01, 0x02, 0x03]))
+        let doc = try BinaryDocument(url: url)
+        XCTAssertEqual(doc.size, 3)
+        XCTAssertEqual(doc.identity, FileIdentity(url: url))
+        XCTAssertFalse(doc.readOnly)
+        XCTAssertFalse(doc.isDirty)
+        XCTAssertFalse(doc.canUndo)
+        XCTAssertFalse(doc.canRedo)
+    }
+
+    /// Each mutation is one undoable transaction: it changes the content, marks
+    /// the document dirty, and a single undo takes the file back to exactly what
+    /// it was opened with — with nothing left to undo behind it.
+    func testMutationUndoRedo() throws {
+        let cases: [(name: String, initial: [UInt8],
+                     mutate: (BinaryDocument) throws -> Void, edited: [UInt8])] = [
+            ("overwrite", [0x00, 0x01, 0x02, 0x03],
+             { try $0.overwrite(range: 1..<2, with: [0xAA]) },
+             [0x00, 0xAA, 0x02, 0x03]),
+            ("insert", [0x00, 0x01, 0x02, 0x03],
+             { try $0.insert(at: 2, bytes: [0xFF, 0xFE]) },
+             [0x00, 0x01, 0xFF, 0xFE, 0x02, 0x03]),
+            ("delete", [0x00, 0x01, 0x02, 0x03, 0x04],
+             { try $0.delete(range: 1..<3) },
+             [0x00, 0x03, 0x04]),
+        ]
+        for testCase in cases {
+            let (doc, _) = try makeDocument(testCase.initial)
+            try testCase.mutate(doc)
+            XCTAssertEqual(try readAll(doc), testCase.edited, "\(testCase.name): after the edit")
+            XCTAssertTrue(doc.isDirty, "\(testCase.name): the edit is unsaved")
+
+            try doc.undo()
+            XCTAssertEqual(try readAll(doc), testCase.initial, "\(testCase.name): after undo")
+            XCTAssertFalse(doc.canUndo, "\(testCase.name): one edit, one undo")
+
+            try doc.redo()
+            XCTAssertEqual(try readAll(doc), testCase.edited, "\(testCase.name): after redo")
+            XCTAssertTrue(doc.canUndo, "\(testCase.name): the redone edit is undoable again")
+        }
+    }
+
+    /// A fill repeats its pattern across the range, truncating it at the range's
+    /// end and clamping the range at EOF. An empty pattern writes nothing at all.
+    func testFill() throws {
+        let cases: [(name: String, initial: [UInt8], pattern: [UInt8],
+                     range: Range<UInt64>, expected: [UInt8])] = [
+            ("the pattern repeats and is cut off at the range's end",
+             [0x01, 0x02, 0x03, 0x04, 0x05, 0x06], [0xDE, 0xAD], 1..<6,
+             [0x01, 0xDE, 0xAD, 0xDE, 0xAD, 0xDE]),
+            ("a pattern longer than the range is truncated",
+             [0x01, 0x02, 0x03], [0xAA, 0xBB, 0xCC, 0xDD], 1..<3,
+             [0x01, 0xAA, 0xBB]),
+            ("a range past EOF is clamped, and the file does not grow",
+             [0x01, 0x02, 0x03], [0xFF], 1..<10,
+             [0x01, 0xFF, 0xFF]),
+            ("an empty pattern is a no-op",
+             [0x01, 0x02, 0x03], [], 0..<2,
+             [0x01, 0x02, 0x03]),
+        ]
+        for testCase in cases {
+            let (doc, _) = try makeDocument(testCase.initial)
+            try doc.fill(pattern: testCase.pattern, in: testCase.range)
+            XCTAssertEqual(try readAll(doc), testCase.expected, testCase.name)
+            XCTAssertEqual(doc.isDirty, testCase.expected != testCase.initial,
+                           "\(testCase.name): dirty only if something was written")
+        }
+    }
+
+    /// A fill is one transaction, whichever entry point wrote it — the pattern
+    /// fill or the `fillZero` wrapper the Fill dialog's zero button calls.
+    func testFillUndoRedo() throws {
+        let (doc, _) = try makeDocument([0x01, 0x02, 0x03, 0x04])
+        try doc.fill(pattern: [0xDE, 0xAD], in: 0..<4)
+        XCTAssertEqual(try readAll(doc), [0xDE, 0xAD, 0xDE, 0xAD])
+
+        try doc.undo()
+        XCTAssertEqual(try readAll(doc), [0x01, 0x02, 0x03, 0x04])
+
+        try doc.redo()
+        XCTAssertEqual(try readAll(doc), [0xDE, 0xAD, 0xDE, 0xAD])
+
+        let (zeroed, _) = try makeDocument([0x00, 0x01, 0x02, 0x03])
+        try zeroed.fillZero(in: 1..<3)
+        XCTAssertEqual(try readAll(zeroed), [0x00, 0x00, 0x00, 0x03])
+
+        try zeroed.undo()
+        XCTAssertEqual(try readAll(zeroed), [0x00, 0x01, 0x02, 0x03])
+    }
+
+    func testOverwritePastEOFUndoShrinks() throws {
+        let (doc, _) = try makeDocument([0x00, 0x01])
+        try doc.overwrite(range: 1..<1, with: [0xAA, 0xBB])
+        XCTAssertEqual(try readAll(doc), [0x00, 0xAA, 0xBB])
+        XCTAssertEqual(doc.size, 3)
+
+        try doc.undo()
+        XCTAssertEqual(try readAll(doc), [0x00, 0x01])
+        XCTAssertEqual(doc.size, 2)
+
+        try doc.redo()
+        XCTAssertEqual(try readAll(doc), [0x00, 0xAA, 0xBB])
+    }
+
+    func testReplaceShorterDeletesLeftover() throws {
+        let (doc, _) = try makeDocument([0x00, 0x01, 0x02, 0x03])
+        try doc.replace(range: 1..<3, with: [0xFF])
+        XCTAssertEqual(try readAll(doc), [0x00, 0xFF, 0x03])
+
+        try doc.undo()
+        XCTAssertEqual(try readAll(doc), [0x00, 0x01, 0x02, 0x03])
+
+        try doc.redo()
+        XCTAssertEqual(try readAll(doc), [0x00, 0xFF, 0x03])
+    }
+
+    func testDirtyLifecycleThroughSave() throws {
+        let (doc, _) = try makeDocument([0x00, 0x01])
+        XCTAssertFalse(doc.isDirty)
+
+        try doc.overwrite(range: 0..<1, with: [0xAA])
+        XCTAssertTrue(doc.isDirty)
+
+        try doc.save()
+        XCTAssertFalse(doc.isDirty)
+
+        try doc.overwrite(range: 1..<2, with: [0xBB])
+        XCTAssertTrue(doc.isDirty)
+
+        try doc.undo()                        // back to the saved state
+        XCTAssertFalse(doc.isDirty)
+        XCTAssertEqual(try readAll(doc), [0xAA, 0x01])
+
+        try doc.redo()                        // past the saved state
+        XCTAssertTrue(doc.isDirty)
+        XCTAssertEqual(try readAll(doc), [0xAA, 0xBB])
+    }
+
+    func testUndoGroupCoalesces() throws {
+        let (doc, _) = try makeDocument([0x00, 0x01])
+        doc.beginEditGroup()
+        try doc.overwrite(range: 0..<1, with: [0xAA])
+        try doc.overwrite(range: 1..<2, with: [0xBB])
+        doc.endEditGroup()
+
+        XCTAssertEqual(try readAll(doc), [0xAA, 0xBB])
+        XCTAssertEqual(doc.undoHistory.undoDepth, 1)
+
+        try doc.undo()                        // one undo reverts the whole session
+        XCTAssertEqual(try readAll(doc), [0x00, 0x01])
+    }
+
+    func testUndoRestoresCaretBeforeRedoRestoresCaretAfter() throws {
+        let (doc, _) = try makeDocument([0x00, 0x01, 0x02, 0x03, 0x04])
+        doc.setSelection(SelectionModel.empty(at: 3, fileSize: doc.size))
+        try doc.overwrite(range: 3..<4, with: [0xFF])
+
+        try doc.undo()
+        XCTAssertEqual(doc.selection.start, 3, "undo returns the caret to where the edit began")
+
+        try doc.redo()
+        XCTAssertEqual(doc.selection.start, 4, "redo lands the caret where the edit left it")
+    }
+
+    func testUndoRedoInsertCaret() throws {
+        let (doc, _) = try makeDocument([0x00, 0x01, 0x02])
+        doc.setSelection(SelectionModel.empty(at: 1, fileSize: doc.size))
+        try doc.insert(at: 1, bytes: [0xAA, 0xBB])
+        XCTAssertEqual(doc.selection.start, 1)  // insert doesn't move the caret
+
+        try doc.undo()
+        XCTAssertEqual(doc.selection.start, 1, "undo returns to the insert point")
+
+        try doc.redo()
+        XCTAssertEqual(doc.selection.start, 3, "redo restores the post-insert caret (at+count)")
+    }
+
+    func testUndoRestoresTheSelectionTheEditStartedFrom() throws {
+        let (doc, _) = try makeDocument([0x00, 0x01, 0x02, 0x03, 0x04])
+        doc.setSelection(SelectionModel(start: 1, end: 4, fileSize: doc.size))
+        try doc.overwrite(range: 1..<2, with: [0xFF])
+
+        try doc.undo()
+        XCTAssertEqual(doc.selection, SelectionModel(start: 1, end: 4, fileSize: doc.size),
+                       "undo restores the whole selection, not just its caret")
+    }
+
+    func testRedoRestoresTheSelectionTheCommandLeft() throws {
+        let (doc, _) = try makeDocument([0x00, 0x01, 0x02, 0x03, 0x04])
+        doc.setSelection(SelectionModel(start: 1, end: 4, fileSize: doc.size))
+        try doc.overwrite(range: 1..<2, with: [0xFF])
+        // What typing into a selection leaves: the unconsumed remainder.
+        doc.setSelection(SelectionModel(start: 2, end: 4, fileSize: doc.size))
+        doc.noteSelectionAfterEdit()
+
+        try doc.undo()
+        try doc.redo()
+        XCTAssertEqual(doc.selection, SelectionModel(start: 2, end: 4, fileSize: doc.size),
+                       "redo returns to the state the command left, remainder included")
+    }
+
+    func testANoteAfterAnUndoDoesNotTouchTheOlderTransaction() throws {
+        let (doc, _) = try makeDocument([0x00, 0x01, 0x02, 0x03])
+        try doc.overwrite(range: 0..<1, with: [0xAA])
+        try doc.overwrite(range: 1..<2, with: [0xBB])
+        try doc.undo()   // the second edit is now on the redo stack
+
+        // A stray note (a selection change after the undo) must not be attached
+        // to the first edit as if it were its outcome.
+        doc.setSelection(SelectionModel(start: 3, end: 4, fileSize: doc.size))
+        doc.noteSelectionAfterEdit()
+
+        try doc.undo()
+        try doc.redo()
+        XCTAssertEqual(doc.selection, SelectionModel.empty(at: 1, fileSize: doc.size),
+                       "the first edit still redoes to its own end")
+    }
+
+    func testUndoOfACoalescedTypingGroupRestoresTheSelectionAtItsStart() throws {
+        let (doc, _) = try makeDocument([0x00, 0x01, 0x02, 0x03, 0x04])
+        doc.setSelection(SelectionModel(start: 2, end: 5, fileSize: doc.size))
+        doc.beginEditGroup()
+        try doc.overwrite(range: 2..<3, with: [0xF0])
+        try doc.overwrite(range: 2..<3, with: [0xFF])   // the second nibble
+        doc.endEditGroup()
+
+        try doc.undo()
+        XCTAssertEqual(doc.selection, SelectionModel(start: 2, end: 5, fileSize: doc.size),
+                       "the group's whole selection comes back, not the caret alone")
+    }
+
+    // MARK: - Cancelling an edit group (a half-typed insert-mode byte)
+
+    /// Cancelling a group undoes every op it collected, so the file is
+    /// byte-identical to before the group opened — including the tail an insert
+    /// shifted. The ops must be reverted newest first: reverting them in
+    /// recording order would make the second insert's inverse delete a byte that
+    /// has already moved.
+    func testCancellingAnEditGroupRestoresEveryByteItTouched() throws {
+        let (doc, _) = try makeDocument([0x00, 0x01, 0x02, 0x03, 0x04])
+        doc.beginEditGroup()
+        try doc.insert(at: 1, bytes: [0xAA])
+        try doc.insert(at: 3, bytes: [0xBB])
+        try doc.overwrite(range: 0..<1, with: [0x99])
+        XCTAssertEqual(try readAll(doc), [0x99, 0xAA, 0x01, 0xBB, 0x02, 0x03, 0x04],
+                       "the group really did make three edits to undo")
+
+        try doc.cancelEditGroup()
+        XCTAssertEqual(try readAll(doc), [0x00, 0x01, 0x02, 0x03, 0x04])
+        XCTAssertEqual(doc.size, 5)
+    }
+
+    /// A cancelled group never happened as far as undo is concerned: nothing is
+    /// recorded, the stack is exactly as deep as before the group opened, the
+    /// redo stack is untouched, and the selection is the one the group began
+    /// with — not whatever the abandoned edits left behind.
+    func testCancellingAnEditGroupRecordsNothingAndRestoresItsStartSelection() throws {
+        let (doc, _) = try makeDocument([0x00, 0x01, 0x02, 0x03, 0x04])
+        try doc.overwrite(range: 4..<5, with: [0x44])   // one committed edit behind the group
+        XCTAssertEqual(doc.undoHistory.undoDepth, 1, "there is a stack to leave alone")
+
+        doc.setSelection(SelectionModel(start: 2, end: 4, fileSize: doc.size))
+        doc.beginEditGroup()
+        try doc.insert(at: 2, bytes: [0xF0])
+        doc.setSelection(SelectionModel.empty(at: 3, fileSize: doc.size))
+        try doc.cancelEditGroup()
+
+        XCTAssertEqual(doc.undoHistory.undoDepth, 1, "the cancelled group recorded no transaction")
+        XCTAssertFalse(doc.canRedo)
+        XCTAssertEqual(doc.selection, SelectionModel(start: 2, end: 4, fileSize: 5),
+                       "the selection the group started from comes back whole")
+
+        // And the one undo left on the stack is the edit from before the group.
+        try doc.undo()
+        XCTAssertEqual(try readAll(doc), [0x00, 0x01, 0x02, 0x03, 0x04])
+        XCTAssertFalse(doc.canUndo)
+    }
+
+    // MARK: - Typing series (segmented undo, Variant B)
+
+    func testTypingSeriesUndoByteThenBatch() throws {
+        let (doc, _) = try makeDocument([0x00, 0x01, 0x02, 0x03])
+        doc.beginSeries(1)
+        // The caret advances between bytes, as the view model does.
+        try doc.overwrite(range: 0..<1, with: [0xA0])
+        doc.setSelection(SelectionModel.empty(at: 1, fileSize: doc.size))
+        try doc.overwrite(range: 1..<2, with: [0xA1])
+        doc.setSelection(SelectionModel.empty(at: 2, fileSize: doc.size))
+        try doc.overwrite(range: 2..<3, with: [0xA2])
+        doc.setSelection(SelectionModel.empty(at: 3, fileSize: doc.size))
+        doc.endSeries()
+
+        // The first undo removes only the last byte of the series.
+        try doc.undo(batch: false)
+        XCTAssertEqual(try readAll(doc), [0xA0, 0xA1, 0x02, 0x03])
+        XCTAssertEqual(doc.selection.start, 2, "caret lands where the removed byte was")
+
+        // A fast second undo removes the rest of the series in one step.
+        try doc.undo(batch: true)
+        XCTAssertEqual(try readAll(doc), [0x00, 0x01, 0x02, 0x03])
+        XCTAssertEqual(doc.selection.start, 0, "caret at the start of the series")
+        XCTAssertFalse(doc.canUndo)
+
+        // Redo is symmetric: the batch comes back in one press (caret at the
+        // batch's end), then the single byte (caret at the series' end).
+        try doc.redo()
+        XCTAssertEqual(try readAll(doc), [0xA0, 0xA1, 0x02, 0x03])
+        XCTAssertEqual(doc.selection.start, 2)
+        try doc.redo()
+        XCTAssertEqual(try readAll(doc), [0xA0, 0xA1, 0xA2, 0x03])
+        XCTAssertEqual(doc.selection.start, 3)
+    }
+
+    func testTypingSeriesBatchUndoRestoresTheConsumedSelection() throws {
+        let (doc, _) = try makeDocument([0x00, 0x01, 0x02, 0x03, 0x04])
+        doc.setSelection(SelectionModel(start: 2, end: 5, fileSize: doc.size))
+        doc.beginSeries(1)
+        // Typing into a selection consumes it byte by byte.
+        try doc.replace(range: 2..<3, with: [0xF0])
+        doc.setSelection(SelectionModel(start: 3, end: 5, fileSize: doc.size))
+        doc.noteSelectionAfterEdit()
+        try doc.replace(range: 3..<4, with: [0xF1])
+        doc.setSelection(SelectionModel(start: 4, end: 5, fileSize: doc.size))
+        doc.noteSelectionAfterEdit()
+        try doc.replace(range: 4..<5, with: [0xF2])
+        doc.setSelection(SelectionModel.empty(at: 5, fileSize: doc.size))
+        doc.noteSelectionAfterEdit()
+        doc.endSeries()
+
+        try doc.undo(batch: false)
+        XCTAssertEqual(doc.selection, SelectionModel(start: 4, end: 5, fileSize: doc.size),
+                       "the last byte's consumed selection comes back with it")
+
+        try doc.undo(batch: true)
+        XCTAssertEqual(doc.selection, SelectionModel(start: 2, end: 5, fileSize: doc.size),
+                       "the batch restores the full selection the series started from")
+
+        try doc.redo()
+        XCTAssertEqual(doc.selection, SelectionModel(start: 4, end: 5, fileSize: doc.size),
+                       "the batch redo returns to the state after its last byte")
+        try doc.redo()
+        XCTAssertEqual(doc.selection, SelectionModel.empty(at: 5, fileSize: doc.size))
+    }
+
+    func testFillCaretOverrideUsedOnUndoRedo() throws {
+        let (doc, _) = try makeDocument([0x00, 0x01, 0x02, 0x03])
+        doc.setSelection(SelectionModel(start: 1, end: 3, fileSize: doc.size))
+        try doc.fill(pattern: [0xFF], in: 1..<3, caretAfter: 1)
+
+        try doc.undo()
+        XCTAssertEqual(doc.selection.start, 1, "caretBefore = the selection start")
+
+        try doc.redo()
+        XCTAssertEqual(doc.selection.start, 1, "a fill leaves the caret at the range start (override)")
+    }
+
+    /// A save, an undo, then a *different* edit: the document differs from the
+    /// file on disk, so it must report itself dirty (§7.5). It used to compare
+    /// the number of edits standing, call that the saved state, and let the
+    /// change be closed away without a prompt.
+    func testADifferentEditAfterUndoLeavesTheDocumentDirty() throws {
+        let (doc, url) = try makeDocument([0x00, 0x00, 0x00])
+        try doc.overwrite(range: 0..<1, with: [0x11])
+        try doc.overwrite(range: 1..<2, with: [0xBB])
+        try doc.save()
+        XCTAssertFalse(doc.isDirty)
+        XCTAssertEqual(try Data(contentsOf: url), Data([0x11, 0xBB, 0x00]))
+
+        try doc.undo()
+        XCTAssertTrue(doc.isDirty, "one edit short of what was written")
+
+        try doc.overwrite(range: 1..<2, with: [0xCC])
+        XCTAssertEqual(try readAll(doc), [0x11, 0xCC, 0x00])
+        XCTAssertTrue(doc.isDirty, "the file on disk holds BB there, not CC")
+
+        // And a save of that state is clean again, byte for byte.
+        try doc.save()
+        XCTAssertFalse(doc.isDirty)
+        XCTAssertEqual(try Data(contentsOf: url), Data([0x11, 0xCC, 0x00]))
+    }
+
+    func testRedoStackClearedOnNewEdit() throws {
+        let (doc, _) = try makeDocument([0x00])
+        try doc.overwrite(range: 0..<1, with: [0xAA])
+        try doc.undo()
+        XCTAssertTrue(doc.canRedo)
+
+        try doc.overwrite(range: 0..<1, with: [0xBB])
+        XCTAssertFalse(doc.canRedo)
+        XCTAssertEqual(try readAll(doc), [0xBB])
+
+        try doc.undo()
+        XCTAssertEqual(try readAll(doc), [0x00])
+        XCTAssertNil(try doc.undo())            // nothing left before the first edit
+    }
+
+    func testSaveAsWritesNewFileAndUpdatesURL() throws {
+        let url = try TestSupport.makeTempFile(contents: Data([0x00, 0x01]))
+        let doc = try BinaryDocument(url: url)
+        try doc.overwrite(range: 0..<1, with: [0xAA])
+        try doc.insert(at: 2, bytes: [0xFF])   // length change forces a rewrite
+        XCTAssertEqual(try readAll(doc), [0xAA, 0x01, 0xFF])
+
+        let target = url.deletingLastPathComponent()
+            .appendingPathComponent("saved-\(UUID().uuidString).bin")
+        try doc.save(to: target)
+
+        XCTAssertEqual(try TestSupport.readAll(target), Data([0xAA, 0x01, 0xFF]))
+        XCTAssertEqual(doc.url, target)
+        XCTAssertFalse(doc.isDirty)
+        XCTAssertFalse(doc.readOnly)
+    }
+
+    /// After a Save As the document's storage belongs to the new file, so the
+    /// next overwrite-only save must patch *that* file in place instead of
+    /// rewriting it whole. Patching keeps the file itself (§5.2: "preserving
+    /// every untouched byte and the file identity"); the atomic rewrite swaps a
+    /// fresh file over it, so the inode is the evidence of which path ran.
+    func testSaveAfterSaveAsPatchesTheNewFileInPlace() throws {
+        let url = try TestSupport.makeTempFile(contents: Data([0x00, 0x01, 0x02, 0x03]))
+        let doc = try BinaryDocument(url: url)
+        try doc.overwrite(range: 0..<1, with: [0xAA])
+
+        let target = url.deletingLastPathComponent()
+            .appendingPathComponent("saved-as-\(UUID().uuidString).bin")
+        try doc.save(to: target)
+        XCTAssertEqual(try TestSupport.readAll(target), Data([0xAA, 0x01, 0x02, 0x03]))
+        let inodeAfterSaveAs = try inode(of: target)
+
+        // An overwrite-only edit, then a plain save to the same file.
+        try doc.overwrite(range: 2..<3, with: [0xCC])
+        XCTAssertTrue((doc.storage as? EditOverlayStorage)?.canPatchInPlace == true,
+                      "nothing has shifted an offset, so patching is even possible")
+        try doc.save()
+
+        XCTAssertEqual(try inode(of: target), inodeAfterSaveAs,
+                       "the save patched the file rather than swapping a rewrite over it")
+        XCTAssertEqual(try TestSupport.readAll(target), Data([0xAA, 0x01, 0xCC, 0x03]))
+        XCTAssertFalse(doc.isDirty)
+    }
+
+    private func inode(of url: URL) throws -> Int? {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        let number = attributes[.systemFileNumber] as? Int
+        XCTAssertNotNil(number, "no inode for \(url.lastPathComponent)")
+        return number
+    }
+
+    func testRevertDiscardsEdits() throws {
+        let url = try TestSupport.makeTempFile(contents: Data([0x00, 0x01, 0x02]))
+        let doc = try BinaryDocument(url: url)
+        try doc.overwrite(range: 0..<1, with: [0xAA])
+        try doc.insert(at: 1, bytes: [0xFF])
+        XCTAssertTrue(doc.isDirty)
+        XCTAssertEqual(try readAll(doc), [0xAA, 0xFF, 0x01, 0x02])
+
+        try doc.revert()
+        XCTAssertFalse(doc.isDirty)
+        XCTAssertEqual(try readAll(doc), [0x00, 0x01, 0x02])
+    }
+
+    func testReadOnlyFileSaveThrowsAndSaveAsWorks() throws {
+        let url = try TestSupport.makeTempFile(contents: Data([0x01, 0x02, 0x03]))
+        try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: url.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path)
+        }
+
+        let doc = try BinaryDocument(url: url)
+        XCTAssertTrue(doc.readOnly)
+
+        try doc.overwrite(range: 0..<1, with: [0xAA])
+        XCTAssertTrue(doc.isDirty)
+
+        XCTAssertThrowsError(try doc.save()) { error in
+            XCTAssertEqual(error as? DocumentError, .fileIsReadOnly)
+        }
+
+        let target = url.deletingLastPathComponent()
+            .appendingPathComponent("copy-\(UUID().uuidString).bin")
+        try doc.save(to: target)
+        XCTAssertEqual(try TestSupport.readAll(target), Data([0xAA, 0x02, 0x03]))
+        XCTAssertFalse(doc.isDirty)
+        XCTAssertEqual(doc.url, target)
+    }
+
+    func testInMemoryDocumentWithReadOnlyOverrideCanSave() throws {
+        // The untitled "New File" pattern: a placeholder URL with no file on
+        // disk, an in-memory base, and an explicit writable override.
+        let doc = BinaryDocument(
+            storage: EditOverlayStorage(base: MemoryBackedStorage()),
+            url: FileManager.default.temporaryDirectory.appendingPathComponent("placeholder-\(UUID().uuidString).bin"),
+            readOnly: false
+        )
+        XCTAssertFalse(doc.readOnly)
+        XCTAssertFalse(doc.isDirty)
+        XCTAssertEqual(doc.size, 0)
+
+        try doc.overwrite(range: 0..<0, with: [0xCA, 0xFE])
+        XCTAssertEqual(doc.size, 2)
+        XCTAssertTrue(doc.isDirty)
+
+        let target = FileManager.default.temporaryDirectory
+            .appendingPathComponent("untitled-saved-\(UUID().uuidString).bin")
+        try doc.save(to: target)
+        XCTAssertEqual(try TestSupport.readAll(target), Data([0xCA, 0xFE]))
+        XCTAssertFalse(doc.isDirty)
+        XCTAssertEqual(doc.url, target)
+    }
+
+    func testSelectionClampedAfterSizeChange() throws {
+        let (doc, _) = try makeDocument([0x00, 0x01, 0x02, 0x03])
+        doc.setSelection(SelectionModel(start: 1, length: 3, fileSize: doc.size))
+        XCTAssertEqual(doc.selection, SelectionModel(start: 1, end: 4, fileSize: 4))
+
+        try doc.delete(range: 1..<3)
+        // File shrank to 2 bytes; selection must clamp, never point past EOF.
+        XCTAssertEqual(doc.size, 2)
+        XCTAssertEqual(doc.selection.fileSize, 2)
+        XCTAssertEqual(doc.selection.end, 2)
+    }
+}

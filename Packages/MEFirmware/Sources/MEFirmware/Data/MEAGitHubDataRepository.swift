@@ -12,7 +12,7 @@ import Foundation
 ///   exactly what "these databases change every week" wants.
 public actor MEAGitHubDataRepository: MEADataSource {
     private static let baseURL = URL(string: "https://raw.githubusercontent.com/platomav/MEAnalyzer/master/")!
-    private static let userAgent = "DumpCompare"
+    private static let userAgent = "ByteRipper"
 
     private let session: URLSession
     private var databaseTask: Task<MEADatabase, Error>?

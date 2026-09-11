@@ -1,4 +1,4 @@
-name: DumpCompare
+name: ByteRipper
 options:
   bundleIdPrefix: dev.maxik
   deploymentTarget:
@@ -28,8 +28,8 @@ fileGroups:
 # that module's own manifest and build them either way, but a package Xcode
 # cannot see is one nobody edits in the project they have open.
 packages:
-  DumpCompareCore:
-    path: Packages/DumpCompareCore
+  ByteRipperCore:
+    path: Packages/ByteRipperCore
   ALSplitView:
     path: Packages/ALSplitView
   ToolModuleKit:
@@ -65,16 +65,16 @@ packages:
     path: Modules/MEATool
 
 targets:
-  DumpCompare:
+  ByteRipper:
     type: application
     platform: macOS
     configFiles:
       Debug: Signing.xcconfig
       Release: Signing.xcconfig
     sources:
-      - path: DumpCompareApp
+      - path: ByteRipperApp
     dependencies:
-      - package: DumpCompareCore
+      - package: ByteRipperCore
       - package: ALSplitView
       # What a tool-module and the app agree on (Design/TOOL_MODULES_PLAN.md).
       # The app links it; each tool-module package links it too, and that is the
@@ -104,7 +104,7 @@ targets:
       - package: MEATool
         product: MEAToolUI
     entitlements:
-      path: DumpCompareApp/DumpCompare.entitlements
+      path: ByteRipperApp/ByteRipper.entitlements
       properties:
         com.apple.security.app-sandbox: true
         com.apple.security.files.user-selected.read-write: true
@@ -119,10 +119,10 @@ targets:
     # the app can declare CFBundleDocumentTypes (.bin/.rom) for "Open with" — a
     # complex nested key that scalar INFOPLIST_KEY_* settings can't express.
     info:
-      path: DumpCompareApp/Info.plist
+      path: ByteRipperApp/Info.plist
       properties:
         CFBundleDevelopmentRegion: $(DEVELOPMENT_LANGUAGE)
-        CFBundleDisplayName: DumpCompare
+        CFBundleDisplayName: ByteRipper
         CFBundleExecutable: $(EXECUTABLE_NAME)
         CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
         CFBundleInfoDictionaryVersion: "6.0"
@@ -173,8 +173,15 @@ targets:
             LSHandlerRank: Alternate
     settings:
       base:
+        # Deliberately still the old name. The bundle identifier is what macOS
+        # uses to find the sandbox container, the preferences domain, the
+        # security-scoped bookmarks and the file-type associations — so changing
+        # it with the marketing name would hand every existing user an empty
+        # app: no settings, no pattern library, no access to the files they had
+        # open, and two copies in /Applications. An identifier is not a name,
+        # and this one never changes.
         PRODUCT_BUNDLE_IDENTIFIER: dev.maxik.DumpCompare
-        PRODUCT_NAME: DumpCompare
+        PRODUCT_NAME: ByteRipper
         MARKETING_VERSION: "0.8.1"
         CURRENT_PROJECT_VERSION: "13"
         # The icon lives in Assets.xcassets; Design/render-appicon.sh regenerates
@@ -188,20 +195,20 @@ targets:
         # Without that file the build falls back to ad-hoc signing — it runs,
         # but a folder the user grants stops surviving rebuilds (§11).
 
-  DumpCompareTests:
+  ByteRipperTests:
     type: bundle.unit-test
     platform: macOS
     configFiles:
       Debug: Signing.xcconfig
       Release: Signing.xcconfig
     sources:
-      - path: DumpCompareTests
+      - path: ByteRipperTests
     # Every product the suite imports, declared here rather than borrowed from
     # the host app's own links: a test that compiles only because the app
     # happens to link something is a test that breaks when the app stops.
     dependencies:
-      - target: DumpCompare
-      - package: DumpCompareCore
+      - target: ByteRipper
+      - package: ByteRipperCore
       - package: ALSplitView
       - package: ToolModuleKit
       - package: AppPalette
@@ -220,7 +227,7 @@ targets:
         product: MEAToolUI
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.maxik.DumpCompareTests
+        PRODUCT_BUNDLE_IDENTIFIER: dev.maxik.ByteRipperTests
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: "5.9"
         MACOSX_DEPLOYMENT_TARGET: "14.0"
@@ -229,16 +236,16 @@ targets:
         # is not signed at all") if the bundle is signed differently.
 
 schemes:
-  DumpCompare:
+  ByteRipper:
     build:
       targets:
-        DumpCompare: all
+        ByteRipper: all
     run:
       config: Debug
     test:
       config: Debug
       targets:
-        - DumpCompareTests
+        - ByteRipperTests
     profile:
       config: Release
     analyze:

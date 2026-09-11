@@ -1,4 +1,4 @@
-# DumpCompare — Implementation Plan
+# ByteRipper — Implementation Plan
 
 Step-by-step plan to build the macOS hex editor / binary comparator described in `REQUIREMENTS.md`.
 Every step cites the requirement sections it satisfies, and each milestone ends with a testable "definition of done".
@@ -44,7 +44,7 @@ Concurrency rules (§14.4):
 
 | # | Decision | Rationale |
 |---|----------|-----------|
-| D1 | **Core as a local Swift Package** `DumpCompareCore` (storage + model). The Xcode app target depends on it. | Enforces the "no AppKit in model/storage" rule at the compiler level; makes unit tests run fast and headless (§14.1/14.2, §17). |
+| D1 | **Core as a local Swift Package** `ByteRipperCore` (storage + model). The Xcode app target depends on it. | Enforces the "no AppKit in model/storage" rule at the compiler level; makes unit tests run fast and headless (§14.1/14.2, §17). |
 | D2 | **Xcode project generated with XcodeGen** from a checked-in `project.yml`; the generated `.xcodeproj` is also checked in. | **Confirmed by user (XcodeGen).** Hand-writing `project.pbxproj` for a growing multi-target project is error-prone. XcodeGen is a build-time tool only (not a runtime/third-party library dependency). |
 | D3 | **Storage model = read-only base + overwrite overlay.** Base comes from the file through a bounded LRU chunk cache. Edits are recorded as overwrite ranges in the overlay. Length-changing ops (insert/delete/append) **materialize** the overlay into a temporary file (copy-on-write) and reset the overlay. | Keeps the overlay trivially simple (overwrites only), so visible-region diff and search stay fast. Length changes are rare and user-confirmed (§5.2, §7, §13). |
 | D4 | **Custom per-document `UndoHistory`** in core (op stack with old/new byte ranges and length changes), grouping a typing sequence / paste / delete into one op. Dirty tracking via a monotonically increasing op index checkpointed at save. | Model layer must not depend on AppKit; a custom stack gives grouped edits, length-change support, and precise "undo back to saved state clears dirty" (§5.1, §7.5). |
@@ -79,19 +79,19 @@ M1 → M2 → M3 are pure Swift and test-first. M4+ are AppKit and depend on the
 **Goal:** an empty app that builds and runs, with the core package and test targets wired.
 
 1. Create repository layout:
-   - `Packages/DumpCompareCore/` — Swift package (storage + model), with `Tests/`.
-   - `DumpCompareApp/` — AppKit sources (entry point, window, views).
+   - `Packages/ByteRipperCore/` — Swift package (storage + model), with `Tests/`.
+   - `ByteRipperApp/` — AppKit sources (entry point, window, views).
    - `project.yml` (XcodeGen) — app target, core package dependency, unit-test targets.
-2. Generate `DumpCompare.xcodeproj` (decision D2); verify `xcodebuild build` and `xcodebuild test` work.
+2. Generate `ByteRipper.xcodeproj` (decision D2); verify `xcodebuild build` and `xcodebuild test` work.
 3. Minimal app shell:
    - `@main struct` / `NSApplicationDelegate` (`AppDelegate`).
-   - Main `NSWindowController` + `NSWindow`; window sizing, title "DumpCompare".
+   - Main `NSWindowController` + `NSWindow`; window sizing, title "ByteRipper".
    - `WindowMode` enum: `.empty`, `.singleFile`, `.comparison`.
    - Empty-mode placeholder view: "Open File" button (opens panel) + "Drag and drop files here" hint (§3.1).
    - `File > Open…` menu item wired (Cmd+O) — opening is a stub for now.
 4. Empty-mode smoke test (manual): app launches, placeholder shows, dark/light both render.
 
-**Definition of done:** builds clean; `DumpCompareCoreTests` runs; empty mode visible; no crash on quit.
+**Definition of done:** builds clean; `ByteRipperCoreTests` runs; empty mode visible; no crash on quit.
 
 ---
 
@@ -185,8 +185,8 @@ Requirement sections: §8, §11, §12, §13; tests §17.4/17.5/17.6.
 > - `HexView` is virtualized: `draw(_:)` iterates only `visibleRowRange`, and the frame height is `rowCount × rowHeight`, so multi-GB files scroll without materializing rows. `rowCount` appends a trailing placeholder row when the length is a multiple of 16 so the caret-at-EOF position is on the grid.
 > - A typed hex byte (two nibbles) coalesces into **one** undo step via `BinaryDocument.beginEditGroup`/`endEditGroup`. The group is closed on every path that leaves the mid-byte state (navigation, delete, ASCII, paste, …), so a half-typed byte never swallows a later unrelated edit.
 > - Menu commands target `MainViewController` directly (responder chain); AppKit routes key equivalents before `HexView.keyDown`, which returns early on command/control-modified keys so Cmd+Z/C/V/G/A/F work while the hex view has focus.
-> - Clipboard: raw bytes on a custom type `dev.maxik.DumpCompare.rawBytes` plus hex text on `.string`; Paste Write prefers raw bytes and falls back to decoding hex text (§12.1).
-> - Test bundle `DumpCompareTests` (unit-test, hosted by the app): 13 HexLayout + 23 PaneViewModel tests, all green via `xcodebuild test`.
+> - Clipboard: raw bytes on a custom type `dev.maxik.ByteRipper.rawBytes` plus hex text on `.string`; Paste Write prefers raw bytes and falls back to decoding hex text (§12.1).
+> - Test bundle `ByteRipperTests` (unit-test, hosted by the app): 13 HexLayout + 23 PaneViewModel tests, all green via `xcodebuild test`.
 
 Requirement sections: §3, §6, §7, §10.1, §10.2, §12, §15; acceptance §18.1/18.2.
 
@@ -333,10 +333,10 @@ confirm; window close aborts if any save fails.
 xcodegen generate
 
 # Build the app
-xcodebuild -project DumpCompare.xcodeproj -scheme DumpCompare build
+xcodebuild -project ByteRipper.xcodeproj -scheme ByteRipper build
 
-# Core unit tests (local Swift package; also runnable by opening DumpCompareCore in Xcode)
-swift test --package-path DumpCompareCore
+# Core unit tests (local Swift package; also runnable by opening ByteRipperCore in Xcode)
+swift test --package-path ByteRipperCore
 ```
 
 No third-party runtime dependencies. XcodeGen (if used) is a build-time tool only.

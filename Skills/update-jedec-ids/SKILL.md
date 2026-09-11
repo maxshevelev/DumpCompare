@@ -34,8 +34,8 @@ committed.
 # a local checkout instead of the network
 python3 Skills/update-jedec-ids/scripts/gen_jedec.py --source ../UEFITool/common/descriptor.cpp
 
-# a DumpCompare tree somewhere else
-python3 Skills/update-jedec-ids/scripts/gen_jedec.py --repo /path/to/DumpCompare
+# a ByteRipper tree somewhere else
+python3 Skills/update-jedec-ids/scripts/gen_jedec.py --repo /path/to/ByteRipper
 ```
 
 ## After a run

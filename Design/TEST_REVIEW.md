@@ -55,7 +55,7 @@ at all. They pass now that they run.
   `PaneViewModel.find` was deleted outright with its three tests — the Find bar
   calls `SearchEngine` itself, off the main thread, with cancellation and
   progress.
-- *Assertions about Swift rather than DumpCompare.* `testContextMenuOffsetIsNilByDefault`
+- *Assertions about Swift rather than ByteRipper.* `testContextMenuOffsetIsNilByDefault`
   asserted the default of an uninitialised `UInt64?`. `testCoreModuleLoads` was
   `XCTAssertTrue(true)`.
 - *Over-specified UI trivia with no rule behind it.* An arbitrary 46 pt ceiling
@@ -209,7 +209,7 @@ never delete their files (the host is sandboxed, so they accumulate in its
 container). A draft `TestSupport.swift` exists in the job's scratch directory
 with all four as an `XCTestCase` extension plus `addTeardownBlock` cleanup.
 
-Done: `DumpCompareTests/TestSupport.swift` holds all four, 477 lines of
+Done: `ByteRipperTests/TestSupport.swift` holds all four, 477 lines of
 duplication removed across 37 files, and `tempFile` now registers its own
 teardown so nothing is left in the host's container.
 

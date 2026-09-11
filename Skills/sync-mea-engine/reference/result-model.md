@@ -1,7 +1,7 @@
 # UI-facing result model — `FirmwareAnalysis`
 
 The whole point of the Swift engine is one typed, `Codable` result tree that
-DumpCompare's UI renders after it analyses an ME/engine region of a dump. It is
+ByteRipper's UI renders after it analyses an ME/engine region of a dump. It is
 the "structured output for UI": no parser writes text tables (as MEA.py does
 for a console); every decoder and the pipeline feed this model. The pipeline
 is reached through the module's async API and awaits its (live-fetched, never

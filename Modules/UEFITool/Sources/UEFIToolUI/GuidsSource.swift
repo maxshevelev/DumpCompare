@@ -56,7 +56,7 @@ public struct LongSoftGuidsRepository: GuidsSource {
         request.timeoutInterval = 20
         // GitHub asks for one, and an anonymous request without it is answered
         // less kindly.
-        request.setValue("DumpCompare", forHTTPHeaderField: "User-Agent")
+        request.setValue("ByteRipper", forHTTPHeaderField: "User-Agent")
         let data: Data
         let response: URLResponse
         do {

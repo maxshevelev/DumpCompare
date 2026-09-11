@@ -14,7 +14,7 @@ xcuserdata/
 # and after adding a file. Keeping it out also keeps out what Xcode writes into
 # it — the signing team it resolves, which belongs to a person rather than to
 # the project.
-DumpCompare.xcodeproj/
+ByteRipper.xcodeproj/
 
 # macOS
 .DS_Store

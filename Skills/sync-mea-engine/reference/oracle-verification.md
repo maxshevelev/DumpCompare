@@ -226,7 +226,7 @@ The rows not ported are deferred on one of four grounds, none of which is
 1. **DB-text naming / display** — excluded by the standing result-model rule
    (the UI model never carries DB-derived display text): EFS/FTBL file names,
    FITC config records, `get_fw_ver`, `chk_iup_size`, `fovd_clean`, row 96.
-2. **Extraction/repair writers** — DumpCompare output features, not analysis:
+2. **Extraction/repair writers** — ByteRipper output features, not analysis:
    `cse_unpack`, `MFS_Backup` restore writer.
 3. **Thin orchestration loops** whose facts already live in ported rows:
    the IUP `_parse` loops, the per-family pipeline driver.

@@ -25,11 +25,11 @@ Packages:
 - `Modules/<Name>` — a tool-module: two targets, `<Name>` (pure, no AppKit) and
   `<Name>UI` (the view controller and the `ToolModule` conformance), and a
   product for each. The tests cover the pure target; the host is tried in the
-  app suite. Also wire it into `DumpCompareApp/Tools/ToolRegistry.swift`.
+  app suite. Also wire it into `ByteRipperApp/Tools/ToolRegistry.swift`.
 - A target declares every product it imports. Linking something because the
   host app happens to link it too compiles until the app stops.
 - A tool-module depends on `ToolModuleKit` and on shared packages. Never on
-  `DumpCompareApp`, never on `DumpCompareCore`, never on another tool-module.
+  `ByteRipperApp`, never on `ByteRipperCore`, never on another tool-module.
 - Code two tool-modules both need moves to a shared package under `Packages/`.
 - Every package: `swift-tools-version: 5.9`, `platforms: [.macOS(.v14)]`, and a
   header comment saying what it is and why it is a package of its own.

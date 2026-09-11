@@ -1,8 +1,8 @@
-# DumpCompare
+# ByteRipper
 
 A macOS hex editor and binary-file comparator, written in Swift/AppKit for macOS 14+. Compare two files byte by byte — by absolute offset, no alignment tricks — and edit either one in place. No third-party dependencies.
 
-DumpCompare grew out of bench work on BIOS and EC dumps, so the comparison model stays deliberately simple: a byte at offset N is compared to the byte at offset N, nothing more. That is exactly the question a repair bench asks — *is this chip's content the same as the one that works?* — and the app is built around answering it fast, on files of the size a programmer clip actually pulls off a board.
+ByteRipper grew out of bench work on BIOS and EC dumps, so the comparison model stays deliberately simple: a byte at offset N is compared to the byte at offset N, nothing more. That is exactly the question a repair bench asks — *is this chip's content the same as the one that works?* — and the app is built around answering it fast, on files of the size a programmer clip actually pulls off a board.
 
 Beside the dump there is a **tool panel**: the same image read as the structure it is — the UEFI tree, the FIT table, the Intel ME region — so the other half of a bench's questions can be answered without leaving the editor. See [The tool panel](#the-tool-panel).
 
@@ -11,12 +11,12 @@ Beside the dump there is a **tool panel**: the same image read as the structure 
 
 ## Download
 
-[**DumpCompare 0.8**](https://github.com/maxshevelev/DumpCompare/releases/latest) — a universal `.dmg` (Apple silicon and Intel), macOS 14 or later.
+[**ByteRipper 0.8**](https://github.com/maxshevelev/ByteRipper/releases/latest) — a universal `.dmg` (Apple silicon and Intel), macOS 14 or later.
 
 The build is ad-hoc signed and not notarized, so Gatekeeper stops the first launch: right-click the app and choose **Open**, or clear the quarantine flag once.
 
 ```sh
-xattr -dr com.apple.quarantine /Applications/DumpCompare.app
+xattr -dr com.apple.quarantine /Applications/ByteRipper.app
 ```
 
 ## On the bench
@@ -67,7 +67,7 @@ The health rows are the ones that say whether a region survived what happened to
 
 ## Standing on other people's work
 
-The formats these tools read were not worked out here. The algorithms and the reference data behind the EFI-side tools were **ported from public projects** whose authors did the hard part — years of reading firmware, writing down what is in it, and keeping that current as Intel moved — and what DumpCompare adds is a native Mac interface to their work, beside the dump and inside the editor:
+The formats these tools read were not worked out here. The algorithms and the reference data behind the EFI-side tools were **ported from public projects** whose authors did the hard part — years of reading firmware, writing down what is in it, and keeping that current as Intel moved — and what ByteRipper adds is a native Mac interface to their work, beside the dump and inside the editor:
 
 - **[UEFITool](https://github.com/LongSoft/UEFITool)** by **[LongSoft](https://github.com/LongSoft)** — the shape of a UEFI image and how to walk it, the item and section types the tree names, the NVRAM store and variable formats, and the GUID catalogue (`common/guids.csv`) that turns a GUID into the name of a thing.
 - **[MEAnalyzer](https://github.com/platomav/MEAnalyzer)** by **[platomav](https://github.com/platomav)** — the reading of Intel ME/CSME firmware end to end: what identifies a family, where each version keeps its version, what makes an image stock or an update, and the databases a dump is checked against (`MEA.dat`, `Huffman.dat`), fetched as the project publishes them.
@@ -151,7 +151,7 @@ These projects are why a repair shop can work on modern firmware at all. Between
 - **The library can live in a folder your Mac syncs.** Point **Move…** at one — iCloud Drive, Google Drive, Dropbox all work the same way, because the app asks for the folder rather than for an entitlement — and the patterns are on your other machines. Choosing a folder that already holds a library is joining it: twelve patterns on one Mac and three on the other make fifteen.
 - **One file per machine.** Each Mac writes exactly one file there and reads everyone else's, so no file has two writers and a sync provider never has to choose between two versions of one. What it holds is merged rather than overwritten: entries carry an identity, so a rename is a rename; deletions travel as deletions; a line removed from the file by hand comes back, because absence with nothing to say it was deleted is not evidence.
 - **What a rule must not decide is asked.** The same entry changed differently on both machines, one edited here and deleted there, one search kept under two names: the tab says how many questions there are, and a sheet puts them one to a row with both sides in full. Both machines are asked, and an answer on one settles the other. Nothing else makes the library read-only.
-- The library is JSON on purpose — `Application Support/DumpCompare/Favorites.json` — so it can be read, diffed and edited; a pattern typed into it with a text editor arrives like one made on another Mac.
+- The library is JSON on purpose — `Application Support/ByteRipper/Favorites.json` — so it can be read, diffed and edited; a pattern typed into it with a text editor arrives like one made on another Mac.
 
 ### Toolbar
 
@@ -165,7 +165,7 @@ These projects are why a repair shop can work on modern firmware at all. Between
 
 ### File types
 
-- **Settings ▸ File Types** registers DumpCompare as the app that opens a dump on a double-click. `.bin` and `.rom` are listed to start with — ticked by you, not by the app — and any extension you keep dumps under can be added: macOS confirms the change once and remembers it. Each row names the app that opens that type *now*, read from the system rather than from anything the app stored, so a default changed in Finder shows here too. `.rom`, `.dump` and `.bin` files get a DumpCompare document icon; the app stays sandboxed throughout.
+- **Settings ▸ File Types** registers ByteRipper as the app that opens a dump on a double-click. `.bin` and `.rom` are listed to start with — ticked by you, not by the app — and any extension you keep dumps under can be added: macOS confirms the change once and remembers it. Each row names the app that opens that type *now*, read from the system rather than from anything the app stored, so a default changed in Finder shows here too. `.rom`, `.dump` and `.bin` files get a ByteRipper document icon; the app stays sandboxed throughout.
 
 ### Large files, and the rest
 
@@ -183,12 +183,12 @@ These projects are why a repair shop can work on modern firmware at all. Between
 
 The Xcode project is **generated**, not committed: the repository keeps
 `project.yml` and [XcodeGen](https://github.com/yonaskolb/XcodeGen) makes
-`DumpCompare.xcodeproj` from it. Run it after cloning, and again after adding a
+`ByteRipper.xcodeproj` from it. Run it after cloning, and again after adding a
 source file:
 
 ```sh
 xcodegen generate
-xcodebuild build -project DumpCompare.xcodeproj -scheme DumpCompare -destination 'platform=macOS'
+xcodebuild build -project ByteRipper.xcodeproj -scheme ByteRipper -destination 'platform=macOS'
 ```
 
 ### Signing
@@ -228,7 +228,7 @@ carries that person's name and team inside the binary, which is not what to hand
 to strangers.
 
 ```sh
-xcodebuild build -project DumpCompare.xcodeproj -scheme DumpCompare \
+xcodebuild build -project ByteRipper.xcodeproj -scheme ByteRipper \
   -configuration Release ARCHS="arm64 x86_64" ONLY_ACTIVE_ARCH=NO \
   CODE_SIGN_IDENTITY="-" CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=""
 ```
@@ -254,4 +254,4 @@ and what that produces reads exactly like a real bug.
 
 ## Architecture
 
-Storage layer (`DumpCompareCore`) → model (`BinaryDocument`, diff, search, undo) → view-models (`PaneViewModel`, `WindowModel`) → AppKit views (`HexView`, `FilePaneView`, `ComparisonView`, `MinimapView`). Domain code is pure Swift and unit-tested; all UI runs on the main actor, and long-running work (diff, search, the overview map) runs in background tasks. The behaviour is specified in `Design/REQUIREMENTS.md`, and the design documents beside it record why each feature came out the way it did.
+Storage layer (`ByteRipperCore`) → model (`BinaryDocument`, diff, search, undo) → view-models (`PaneViewModel`, `WindowModel`) → AppKit views (`HexView`, `FilePaneView`, `ComparisonView`, `MinimapView`). Domain code is pure Swift and unit-tested; all UI runs on the main actor, and long-running work (diff, search, the overview map) runs in background tasks. The behaviour is specified in `Design/REQUIREMENTS.md`, and the design documents beside it record why each feature came out the way it did.

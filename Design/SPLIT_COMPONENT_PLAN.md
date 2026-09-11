@@ -305,16 +305,16 @@ refusal the default implementation would have given. It now guards on
   — the framework was doing the engine bookkeeping that the plain-`NSView` port
   had to take over.
 - **Core file:** `Packages/ALSplitView/Sources/ALSplitView/ALSplitView.swift`.
-- **App sites:** `DumpCompareApp/ComparisonView.swift` (outer split),
-  `DumpCompareApp/FilePaneView.swift` (inner results split),
-  `DumpCompareApp/MainViewController.swift` (minimap split).
-- **Pane wrapper:** `DumpCompareApp/DropBands.swift` — `PaneDropBandsView` wraps
+- **App sites:** `ByteRipperApp/ComparisonView.swift` (outer split),
+  `ByteRipperApp/FilePaneView.swift` (inner results split),
+  `ByteRipperApp/MainViewController.swift` (minimap split).
+- **Pane wrapper:** `ByteRipperApp/DropBands.swift` — `PaneDropBandsView` wraps
   each `FilePaneView`, pinning it to the band's 4 edges with low horizontal
   hugging/compression resistance so a collapsed band can squeeze the pane.
 - **Tests:** `Packages/ALSplitView/Tests/ALSplitViewTests/ALSplitViewTests.swift`;
-  `DumpCompareTests/ComparisonResizeTests.swift`, `DividerDragTests.swift`,
+  `ByteRipperTests/ComparisonResizeTests.swift`, `DividerDragTests.swift`,
   `LayoutToggleTests.swift`, `ReparentPaneReproTests.swift`, `MinimapTests.swift`,
   `HexColumnHeaderTests.swift` (the header clip, §1 above),
   `MinimapTests.swift` (the collapsed-panel clip, §2 above).
 - **Build/test:** package — `cd ALSplitView && swift test`. App — `xcodebuild
-  test … -derivedDataPath "$DUMPCOMPARE_DD"` (never Xcode's shared DerivedData).
+  test … -derivedDataPath "$BYTERIPPER_DD"` (never Xcode's shared DerivedData).

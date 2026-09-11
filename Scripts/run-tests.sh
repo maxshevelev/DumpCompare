@@ -41,7 +41,9 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-derived="${DUMPCOMPARE_DD:-$PWD/.build/xcode}"
+# $DUMPCOMPARE_DD is the name this variable had before the rename; a shell
+# that still exports it keeps working.
+derived="${BYTERIPPER_DD:-${DUMPCOMPARE_DD:-$PWD/.build/xcode}}"
 failed=0
 
 report() {   # keeps the counts and the failures, drops the rest
@@ -57,7 +59,7 @@ if [ "$packages" = yes ] && [ -z "$only" ]; then
     done
 fi
 
-classes=$(grep -h "^final class .*: XCTestCase" DumpCompareTests/*.swift \
+classes=$(grep -h "^final class .*: XCTestCase" ByteRipperTests/*.swift \
     | sed 's/final class \([A-Za-z0-9_]*\).*/\1/' | sort)
 if [ -n "$only" ]; then
     classes=$(echo "$classes" | grep -E -- "$only")
@@ -75,7 +77,7 @@ run_group() {
     [ -z "$args" ] && return
     echo "── group $group: $first … $last"
     # shellcheck disable=SC2086
-    xcodebuild -project DumpCompare.xcodeproj -scheme DumpCompare \
+    xcodebuild -project ByteRipper.xcodeproj -scheme ByteRipper \
         -derivedDataPath "$derived" -parallel-testing-enabled NO \
         $args test 2>&1 | report
     status=${PIPESTATUS[0]}
@@ -86,7 +88,7 @@ run_group() {
 }
 
 for class in $classes; do
-    args="$args -only-testing:DumpCompareTests/$class"
+    args="$args -only-testing:ByteRipperTests/$class"
     [ -z "$first" ] && first="$class"
     last="$class"
     index=$((index + 1))

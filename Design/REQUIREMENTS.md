@@ -1489,7 +1489,7 @@ Where the library lives, and carrying it between machines
   their own for exactly this reason: a claim about generality that nothing
   exercises is a claim.
 - The favourites are a **file**, not a preference:
-  `Application Support/DumpCompare/Favorites.json` inside the app's container,
+  `Application Support/ByteRipper/Favorites.json` inside the app's container,
   which a sandboxed app may write without asking anyone. The key they were
   first kept under migrates on the first launch that finds it and is then
   gone — two stores on one machine is the syncing problem indoors. The file
@@ -3711,12 +3711,12 @@ A **document icon comes from declaring a type, not from handling it** (measured:
 `.rom`, which the app declares, shows a document icon generated from the app
 icon; `.dump` bound to the app but undeclared shows the generic page). Info.plist
 is static and signed, so an extension the user adds at runtime cannot be
-declared: it opens in DumpCompare, and keeps the generic page icon. The
+declared: it opens in ByteRipper, and keeps the generic page icon. The
 extensions listed in the table above are declared for exactly this reason.
 
 25.3 The tab
 
-A table of extensions, each row: a checkbox for "open with DumpCompare", the
+A table of extensions, each row: a checkbox for "open with ByteRipper", the
 extension, and the name of the app that opens it **now**.
 
 - The checkbox is a **reading of the system**, not a stored preference. Nothing
@@ -3758,4 +3758,4 @@ up; a click while the app is running opens into the window already on screen.
 | The user removed a row whose type is still this app's | Said plainly, with what to do about it |
 | The same extension added twice | The existing row is selected, not duplicated |
 | A build tree copy of the app | Associations resolve to the registered (installed) copy, so a new declaration takes effect only once that copy is replaced (§25.1) |
-| A user-added extension | Opens in DumpCompare; keeps the generic document icon (§25.2) |
+| A user-added extension | Opens in ByteRipper; keeps the generic document icon (§25.2) |

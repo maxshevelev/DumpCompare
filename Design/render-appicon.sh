@@ -4,7 +4,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-set="$root/DumpCompareApp/Assets.xcassets/AppIcon.appiconset"
+set="$root/ByteRipperApp/Assets.xcassets/AppIcon.appiconset"
 master="$(mktemp -t appicon).png"
 trap 'rm -f "$master"' EXIT
 

@@ -1,6 +1,6 @@
 # Module contract — async external API + live data
 
-This file pins the boundary between `Packages/MEFirmware` and DumpCompare's
+This file pins the boundary between `Packages/MEFirmware` and ByteRipper's
 UI, and how the module gets its firmware databases. It mirrors the app's
 existing runtime-fetch pattern (`GuidsSource` / `LongSoftGuidsRepository` in
 `Modules/UEFITool/Sources/UEFIToolUI/GuidsSource.swift`) on purpose, so a
@@ -55,7 +55,7 @@ public protocol MEADataSource: Sendable {
 
 public struct MEAGitHubDataRepository: MEADataSource {
     // raw.githubusercontent.com/platomav/MEAnalyzer/master/<MEA.dat|Huffman.dat|FileTable.dat>
-    // One shared URLSession like LongSoftGuidsRepository; User-Agent "DumpCompare".
+    // One shared URLSession like LongSoftGuidsRepository; User-Agent "ByteRipper".
     // No disk cache by design: next app launch fetches fresh.
 }
 ```

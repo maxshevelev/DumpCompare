@@ -1,0 +1,6896 @@
+import Cocoa
+import UniformTypeIdentifiers
+import ByteRipperCore
+import ToolModuleKit
+import ALSplitView
+
+/// Whether each diff-navigation action currently has a block to go to (§10.3).
+/// A false value means the command is disabled — wrong mode, index still
+/// building, or the block doesn't exist in that direction from the caret.
+struct DiffNavigationState: Equatable {
+    var previousDifference = false
+    var nextDifference = false
+    var previousSameBlock = false
+    var nextSameBlock = false
+}
+
+final class MainViewController: NSViewController {
+    private(set) var mode: WindowMode = .empty
+    /// Whether a toolbar sync is already queued for the next run-loop turn.
+    private var diffToolbarSyncScheduled = false
+
+    /// Current diff-navigation availability. Recomputed on every mode, index,
+    /// and caret change; the menu items read it via `validateMenuItem` (§10.3).
+    private(set) var diffNavigationState = DiffNavigationState()
+    let windowModel = WindowViewModel()
+
+    /// Every window's controller, so "is this file already open?" can be asked
+    /// of the whole application rather than of this window's two panes (§4.1
+    /// rule 6).
+    ///
+    /// Nil in a controller built on its own — which every test does — and the
+    /// rule then falls back to this window's own panes, exactly as it has always
+    /// worked. Weak: the registry outlives no window, and this is a back
+    /// reference to something the app owns.
+    weak var openDocuments: OpenDocumentRegistry?
+
+    /// What to do about a file that is already open in another window or tab.
+    private enum AlreadyOpenChoice {
+        /// Bring that window forward with the file's pane active.
+        case show
+        /// Move that pane into this window, where the user asked for it.
+        case move
+        case cancel
+    }
+
+    private func askAboutFileOpenElsewhere(named name: String) -> AlreadyOpenChoice {
+        let alert = NSAlert()
+        alert.messageText = "“\(name)” is already open"
+        alert.informativeText = "A file is open in one place at a time, so it cannot be opened "
+            + "here as well. Show it where it is, or move that pane into this tab."
+        alert.addButton(withTitle: "Show in Its Tab")
+        alert.addButton(withTitle: "Move to This Tab")
+        // AppKit gives a button titled "Cancel" the Escape key.
+        alert.addButton(withTitle: "Cancel")
+        switch Self.presentModal(alert, defaultInTest: .alertFirstButtonReturn) {
+        case .alertFirstButtonReturn: return .show
+        case .alertSecondButtonReturn: return .move
+        default: return .cancel
+        }
+    }
+
+    /// Moves the pane holding a file out of `holder` and into this window's pane
+    /// `index` — the answer to "open it here" that actually opens it here.
+    ///
+    /// The document is moved rather than re-opened, for the same reason the
+    /// tear-off moves it: the file stays open exactly once, and the unsaved
+    /// edits, undo history and segments travel with it.
+    ///
+    /// The marks do not. Bookmarks belong to a window (§20), and this window has
+    /// its own list already — merging two would be merging two windows' notes on
+    /// one row. A pane joins the list of the window it lands in. (The tear-off
+    /// copies its list instead, because the tab it makes starts with none.)
+    @discardableResult
+    private func movePaneHere(from holder: MainViewController, at holdingPane: Int,
+                              into index: Int,
+                              onSaved: @escaping () -> Void) -> Bool {
+        let target = index == 0 ? windowModel.pane1 : windowModel.pane2
+        // The pane being displaced gets the ordinary prompt; a dirty untitled one
+        // saves first and whatever asked for the move runs again from the top.
+        guard confirmReplaceDirtyPane(target, onSaved: onSaved) else { return false }
+        let moved = holder.releasePane(at: holdingPane)
+        if target !== moved {
+            paneViews.removeValue(forKey: ObjectIdentifier(target))?
+                .searchResults.removeFromParent()
+            target.close()
+        }
+        windowModel.adopt(moved, at: index)
+        // Applied rather than refreshed: replacing one pane with another leaves
+        // the open-pane count alone, and `refreshMode` skips a mode that has not
+        // changed — which would leave the old pane's view on screen.
+        apply(mode: windowModel.openPaneCount >= 2 ? .comparison : .singleFile)
+        return true
+    }
+
+    /// Takes the pane at `index` out of this window and hands it over, leaving
+    /// the window to re-render with one pane fewer. The shared half of both
+    /// moves: tearing a pane off into a new tab, and giving it up to a window
+    /// that asked to open its file.
+    func releasePane(at index: Int) -> PaneViewModel {
+        // The comparison ends here, so the two panes must stop holding each
+        // other as companions before one of them leaves.
+        if mode == .comparison { unwireComparison() }
+        let pane = windowModel.detachPane(index)
+        // The tool panel belongs to this window, the way its bookmarks do
+        // (§20), so a pane that leaves does not take it along: the session ends
+        // here (Design/TOOL_MODULES_PLAN.md).
+        tools.paneLeft(pane)
+        // The view bound to it belongs to this window; wherever it lands builds
+        // its own from the model.
+        paneViews.removeValue(forKey: ObjectIdentifier(pane))?
+            .searchResults.removeFromParent()
+        refreshMode()
+        return pane
+    }
+
+    /// Makes a tab beside this window and hands back the controller that runs
+    /// it. Set by the app delegate, which owns the windows; nil in a controller
+    /// built on its own, where there is no window to put a tab beside and the
+    /// command that needs one is disabled.
+    var makeSiblingTab: (() -> MainViewController?)?
+
+    /// File ▸ New Tab (⌘T): an empty tab beside this window.
+    ///
+    /// It lands on the key window's controller, which is the window the tab
+    /// should join — the reason this is a controller command rather than the app
+    /// delegate's, which has no window in mind.
+    @objc func newTab(_ sender: Any?) {
+        _ = makeSiblingTab?()
+    }
+
+    /// Pane menu ▸ Open in New Tab: this pane's document leaves for a tab of its
+    /// own, and the window it left keeps the other file on its own.
+    ///
+    /// The document is **moved**, not opened again: re-opening the URL would put
+    /// two live documents over one file, which is exactly what §4.1 rule 6
+    /// exists to prevent, and the unsaved edits, the undo history, the segments
+    /// and the change watcher would all be left behind. Moving the pane object
+    /// takes every one of them along by construction.
+    @objc func openPaneInNewTab(_ sender: Any?) {
+        guard let pane = (sender as? NSMenuItem)?.representedObject as? PaneViewModel else { return }
+        movePaneToNewTab(at: paneIndex(pane))
+    }
+
+    private func movePaneToNewTab(at index: Int) {
+        guard mode == .comparison else { return }
+        tearOff(paneAt: index, into: self)
+    }
+
+    /// Moves `index`'s pane out of this window and into a tab `host` makes
+    /// beside itself.
+    ///
+    /// `host` is the window the gesture was aimed at, which is not always this
+    /// one: a pane dragged onto another window's New Tab strip belongs in a tab
+    /// beside *that* window. The marks are this window's, because they are the
+    /// ones the pane was read under.
+    private func tearOff(paneAt index: Int, into host: MainViewController) {
+        guard let tab = host.makeSiblingTab?() else { return }
+        let marks = windowModel.bookmarkStore.bookmarks
+        // Read before the pane goes: releasing it ends the session bound to it.
+        let toolFollowing = tools.boundPane === (index == 0 ? windowModel.pane1 : windowModel.pane2)
+            ? tools.activeIdentifier : nil
+        tab.adoptPane(releasePane(at: index), bookmarks: marks)
+        // A tab made for this pane starts with nothing in it, so there is
+        // nothing for its tool-module to conflict with — the same reason the
+        // marks are copied rather than dropped. The session itself does not
+        // travel; the tool-module is opened again there and reads afresh.
+        if let toolFollowing { tab.tools.activate(toolFollowing, animated: false) }
+    }
+
+    /// A pane let go on this window's New Tab strip: it leaves for a tab of its
+    /// own beside this window, wherever it came from.
+    func tearOffPaneToNewTab(draggedPaneID: UUID, copying: Bool = false) {
+        guard let origin = paneLocation(ofPaneWith: draggedPaneID) else { return }
+        guard copying else {
+            origin.controller.tearOff(paneAt: origin.paneIndex, into: self)
+            return
+        }
+        // Copied rather than moved: the pane stays where it is and a duplicate
+        // of it opens in the new tab, the way Option means everywhere else.
+        let source = origin.paneIndex == 0
+            ? origin.controller.windowModel.pane1
+            : origin.controller.windowModel.pane2
+        guard source.isOpen, source.fileSize > 0, let tab = makeSiblingTab?() else { return }
+        do {
+            try tab.windowModel.pane1.openDuplicate(of: source,
+                                                    named: unsavedName(for: source))
+        } catch {
+            presentFileError("Could not duplicate the pane.", error, url: nil)
+            return
+        }
+        tab.windowModel.bookmarkStore.seed(origin.controller.windowModel.bookmarkStore.bookmarks)
+        tab.apply(mode: .singleFile)
+    }
+
+    /// Copies `source` into this window's pane `index`, replacing whatever is
+    /// there — the cross-window form of Duplicate, which `File ▸ Duplicate`
+    /// itself never needs because it only ever copies within one window.
+    private func copyPane(_ source: PaneViewModel, into index: Int) {
+        let target = index == 0 ? windowModel.pane1 : windowModel.pane2
+        guard confirmReplaceDirtyPane(target) else { return }
+        do {
+            try target.openDuplicate(of: source, named: unsavedName(for: source))
+        } catch {
+            presentFileError("Could not duplicate the pane.", error, url: nil)
+            return
+        }
+        windowModel.setActivePane(index)
+        apply(mode: windowModel.openPaneCount >= 2 ? .comparison : .singleFile)
+    }
+
+    /// Takes a pane torn off another window, with a copy of that window's marks.
+    ///
+    /// The marks are copied rather than shared or dropped: they were made
+    /// against absolute offsets, and those offsets mean the same thing in the
+    /// file that just arrived. From here the two lists are independent — a mark
+    /// added in one window does not appear in the other.
+    func adoptPane(_ pane: PaneViewModel, bookmarks: [Bookmark]) {
+        windowModel.bookmarkStore.seed(bookmarks)
+        windowModel.adopt(pane)
+        apply(mode: .singleFile)
+    }
+
+    /// Brings this window to the front and makes `paneIndex` its active pane —
+    /// what happens instead of a refusal when the file someone asked to open is
+    /// already open in another window or tab (§4.1 rule 6).
+    func revealOpenFile(inPane paneIndex: Int) {
+        if mode == .comparison, paneIndex != windowModel.activePaneIndex {
+            activatePane(at: paneIndex)
+        }
+        viewIfLoaded?.window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// What letting the dragged pane go on this window's pane `index` would do
+    /// (`Design/PANE_DRAG_PLAN.md`).
+    ///
+    /// The decision itself is `PaneDrop`'s and is pure; all this adds is finding
+    /// where the dragged pane currently lives. A pane whose window has gone
+    /// resolves to nothing, and the drop is refused.
+    /// Which pane a single-file window's drop zone stands for, and in which
+    /// band. The far half is the free second pane; the three bands are the one
+    /// that is already open.
+    static func singleFilePaneDrop(_ target: SingleFileDropTarget)
+    -> (index: Int, band: SingleFileDropTarget) {
+        target == .addSecond ? (1, .addSecond) : (0, target)
+    }
+
+    func paneDropOutcome(draggedPaneID: UUID, onPaneAt index: Int,
+                         band: SingleFileDropTarget = .replace,
+                         copying: Bool = false) -> PaneDrop.Outcome {
+        guard let origin = paneLocation(ofPaneWith: draggedPaneID) else { return .none }
+        let outcome = PaneDrop.outcome(
+            draggingPaneAt: origin.paneIndex,
+            onto: .pane(index: index, inOriginWindow: origin.controller === self, band: band),
+            copying: copying)
+        // A join needs both panes to hold something; the target's own emptiness
+        // is the only case the pure rule cannot see.
+        if case .join = outcome {
+            let target = index == 0 ? windowModel.pane1 : windowModel.pane2
+            guard target.isOpen else { return .none }
+        }
+        // A copy needs bytes to copy, and that is all it needs: where it lands
+        // is the drop's business. `canDuplicate` is deliberately not asked here
+        // — it speaks for the menu command, whose copy has to find a *free*
+        // pane, while a drop names the pane itself and may replace an occupied
+        // one, near or far, the way a move does.
+        if case .duplicate = outcome {
+            let source = origin.paneIndex == 0
+                ? origin.controller.windowModel.pane1
+                : origin.controller.windowModel.pane2
+            guard source.isOpen, source.fileSize > 0 else { return .none }
+            // One exception to "where it lands is the drop's business": the
+            // `.addSecond` band *is* the free half of a single-file window's
+            // zone. If that pane is not free the band is not on screen, and a
+            // copy aimed at it has nowhere to go — unlike the middle band, which
+            // names a pane outright and may replace it.
+            if band == .addSecond {
+                let target = index == 0 ? windowModel.pane1 : windowModel.pane2
+                guard !target.isOpen else { return .none }
+            }
+        }
+        return outcome
+    }
+
+    /// Performs whatever the drop means. Nothing here is a new operation —
+    /// each case is a command that already exists.
+    func performPaneDrop(draggedPaneID: UUID, onPaneAt index: Int,
+                         band: SingleFileDropTarget = .replace,
+                         copying: Bool = false) {
+        switch paneDropOutcome(draggedPaneID: draggedPaneID, onPaneAt: index,
+                               band: band, copying: copying) {
+        case .swap:
+            swapPanes()
+        case .join(let intoPane, let position):
+            guard let origin = paneLocation(ofPaneWith: draggedPaneID) else { return }
+            let source = origin.paneIndex == 0
+                ? origin.controller.windowModel.pane1
+                : origin.controller.windowModel.pane2
+            join(pane: source, at: position,
+                 into: intoPane == 0 ? windowModel.pane1 : windowModel.pane2)
+            refreshMode()
+        case .move(let intoPane):
+            guard let origin = paneLocation(ofPaneWith: draggedPaneID) else { return }
+            movePaneHere(from: origin.controller, at: origin.paneIndex, into: intoPane,
+                         onSaved: { [weak self] in
+                             // Re-resolved rather than captured: the pane may
+                             // have moved again while the save panel was up.
+                             self?.performPaneDrop(draggedPaneID: draggedPaneID,
+                                                   onPaneAt: intoPane)
+                         })
+        case .duplicate(let intoPane):
+            guard let origin = paneLocation(ofPaneWith: draggedPaneID) else { return }
+            let source = origin.paneIndex == 0
+                ? origin.controller.windowModel.pane1
+                : origin.controller.windowModel.pane2
+            let target = intoPane == 0 ? windowModel.pane1 : windowModel.pane2
+            // What decides is whether the slot is free, not which window it is
+            // in. Into this window's free pane nothing new happens: it is `File
+            // ▸ Duplicate`, which already reports itself and re-applies the
+            // mode. Any occupied pane — this window's other one included — is
+            // the replacing form, which asks before discarding unsaved work.
+            if origin.controller === self, !target.isOpen {
+                duplicate(from: source)
+            } else {
+                copyPane(source, into: intoPane)
+            }
+        case .none, .tearOff:
+            // A tear-off never lands on a pane; the strip owns that one.
+            break
+        }
+    }
+
+    /// Where the pane with `dragID` is, asked of the whole app when there is a
+    /// registry and of this window alone when there is not — the same fallback
+    /// the already-open rule uses, and for the same reason: a controller built
+    /// on its own must still answer for itself.
+    private func paneLocation(ofPaneWith dragID: UUID)
+    -> (controller: MainViewController, paneIndex: Int)? {
+        if let openDocuments {
+            return openDocuments.location(ofPaneWith: dragID)
+        }
+        return paneIndex(withDragID: dragID).map { (self, $0) }
+    }
+
+    /// The name an unsaved image made from `source` should wear (§23): a copy of
+    /// it (§23), or `source` itself once a join has detached it (§22.2). Both
+    /// are the pane's content plus or minus something, and both take the pane's
+    /// name with the next free series suffix.
+    ///
+    /// Every name on screen anywhere in the app is off limits, not just this
+    /// window's: two tabs each showing a `bios-2.bin` would be the confusion
+    /// this naming exists to remove, only harder to spot.
+    ///
+    /// What decides is whether the source has a name, not whether it has a file.
+    /// A copy is untitled from the moment it is made, so copying a copy has to
+    /// read the name it is wearing: `bios-2.bin` gives `bios-3.bin` though
+    /// neither is on disk yet. Only a document with no name of its own — `File ▸
+    /// New File`, or a join — has nothing to be named after, and its copy stays
+    /// untitled.
+    func unsavedName(for source: PaneViewModel) -> String? {
+        guard !source.isUntitled || source.untitledName != nil else { return nil }
+        let controllers = openDocuments?.controllers ?? [self]
+        let taken = Set(controllers.flatMap { controller in
+            [controller.windowModel.pane1, controller.windowModel.pane2]
+                .filter(\.isOpen)
+                .map { $0.status.fileName }
+        })
+        return DuplicateName.next(after: source.status.fileName, taken: taken)
+    }
+
+    /// Which of this window's two panes this is. Pane 2 only when it *is* pane
+    /// 2; anything else is pane 1, which is the one a single-file window has.
+    func paneIndex(of pane: PaneViewModel) -> Int {
+        pane === windowModel.pane2 ? 1 : 0
+    }
+
+    /// The index of this window's pane with `dragID`, if either has it — the
+    /// pane half of the registry's question, beside the file half below.
+    /// Internal so the registry can ask it of every window.
+    func paneIndex(withDragID dragID: UUID) -> Int? {
+        [windowModel.pane1, windowModel.pane2].firstIndex { $0.dragID == dragID }
+    }
+
+    /// The index of this window's pane holding `identity`, if either does.
+    /// `excluding` skips one pane — the target of an open, which is never its
+    /// own obstacle. Internal so the registry can ask it of every window.
+    func paneIndex(holding identity: FileIdentity, excluding: Int?) -> Int? {
+        for (index, pane) in [windowModel.pane1, windowModel.pane2].enumerated()
+        where index != excluding {
+            if pane.isOpen, pane.document?.identity == identity { return index }
+        }
+        return nil
+    }
+
+    /// Where the file at `url` is already open, skipping the pane an open is
+    /// aimed at. Answered by the registry when the app has installed one, and by
+    /// this window alone otherwise.
+    private func documentLocation(of url: URL, excluding paneIndex: Int)
+    -> (controller: MainViewController, paneIndex: Int)? {
+        if let openDocuments {
+            return openDocuments.location(of: url, excluding: (self, paneIndex))
+        }
+        return self.paneIndex(holding: FileIdentity(url: url), excluding: paneIndex)
+            .map { (self, $0) }
+    }
+    private weak var activeFilePane: FilePaneView?
+    private weak var comparisonView: ComparisonView?
+
+    /// The pane views, keyed by the model they display. A view is created once
+    /// and reused for its model's whole life — across mode changes, file
+    /// changes (a data change the view already reloads, not a view change), and
+    /// pane re-ordering (swap, close-promotion) (§3.3). Reusing it is what keeps
+    /// a pane's scroll and focus from shifting when the other pane opens or
+    /// closes: the old design rebuilt every pane on each `apply`, and the fresh
+    /// view's init followed the caret to the top.
+    private var paneViews: [ObjectIdentifier: FilePaneView] = [:]
+
+    /// The non-modal Find bar shown at the top on Cmd+F (§11). It lives above
+    /// the content area and pushes it down while visible; when hidden the
+    /// content fills the window again.
+    private let findBar = FindBarView()
+    /// Host for the mode content (`setContentView` swaps what's inside).
+    private let contentContainer = NSView()
+    /// The left pane of the minimap split — the mode's content lives here, so
+    /// the minimap panel can share the content area to its right (§19).
+    let contentHost = NSView()
+
+    /// The window-level drop target under the tab bar: a file let go there opens
+    /// in a tab of its own (`Design/PANE_DRAG_PLAN.md`).
+    ///
+    /// It sits above everything the window shows — both panes and the minimap —
+    /// and takes its own height while a drag is in flight rather than lying over
+    /// the content. Overlaying was tried and looked wrong: the strip covered the
+    /// pane headers and the top of the column headers, and the bands below it no
+    /// longer lined up with the dump they were describing.
+    ///
+    /// Moving the content is safe *because* the strip's visibility follows the
+    /// drag session rather than which view the pointer is over. Tied to the
+    /// pointer it would be a loop, and was: leaving the panes hid the strip, the
+    /// content rose, the pointer was over a pane again, the strip came back.
+    ///
+    /// A `.bottom` titlebar accessory was tried first, to keep the strip out of
+    /// the content entirely. AppKit places one **above** the tab bar, between it
+    /// and the toolbar, where the pointer cannot reach it without crossing the
+    /// bar. Nothing public places a view below the bar, and nothing public makes
+    /// the bar itself a target.
+    private let newTabDropStrip = NewTabDropStrip()
+
+    /// The strip's height: zero between drags, `NewTabDropStrip.height` while
+    /// one is in flight. Animated, so the content glides down rather than being
+    /// snatched.
+    private var newTabDropStripHeight: NSLayoutConstraint?
+
+    /// The single-file mode's drop container, held so its bands can be inset by
+    /// the strip's share the way the comparison's are. Nil in the other modes.
+    private weak var singleFileDropView: SingleFileDropView?
+
+    /// The empty mode's placeholder, held so the bookmark list it shows can be
+    /// kept current. Nil in the other modes.
+    private weak var emptyStateView: EmptyStateView?
+
+    /// Re-reads the marks into the empty window's list and its title.
+    private func refreshEmptyStateBookmarks() {
+        guard mode == .empty else { return }
+        emptyStateView?.setBookmarks(windowModel.bookmarkStore.bookmarks)
+        updateWindowTitle()
+    }
+    /// The tab's tool-module: which one is active, and the panel and session
+    /// that follow from it (`Design/TOOL_MODULES_PLAN.md`). One per tab.
+    ///
+    /// Lazy so it can be handed its tab at birth rather than in `viewDidLoad`:
+    /// a tab made for a pane torn off into it is asked to open a tool-module
+    /// before anything has made it load its view, and a controller that does
+    /// not know its own window cannot open a panel in it.
+    private(set) lazy var tools: ToolController = {
+        let controller = ToolController()
+        controller.owner = self
+        // The panel's ✕ is Tools ▸ None by another route.
+        controller.panel.onClose = { [weak self] in self?.tools.activate(nil) }
+        // A file dropped on the panel replaces the file the panel is reading —
+        // the same thing, through the same door, as dropping it on that pane's
+        // Replace Current File band.
+        controller.panel.onDropFiles = { [weak self] urls in
+            guard let self, let pane = self.tools.boundPane else { return }
+            self.openFiles(into: self.paneIndex(of: pane), urls: urls)
+        }
+        // A pane dropped on the panel moves the tool onto it.
+        controller.panel.onDropPane = { [weak self] dragID in
+            guard let self, let index = self.paneIndex(withDragID: dragID) else { return }
+            self.tools.rebind(to: index == 0 ? self.windowModel.pane1 : self.windowModel.pane2)
+        }
+        controller.panel.paneDropTitle = { [weak self] dragID in
+            self?.tools.paneDropTitle(forPaneWith: dragID)
+        }
+        return controller
+    }()
+
+    /// The right-hand minimap panel (hidden by default, toggled by the toolbar
+    /// button). Internal so tests can assert its visibility (§19).
+    let minimapView = MinimapView()
+
+    /// The map plus its chrome — the header's mode switch and the status bar's
+    /// rebuild progress (§19.2).
+    private(set) lazy var minimapPanel = MinimapPanelView(mapView: minimapView)
+    /// The vertical split sharing the content area between the panes and the
+    /// minimap. The panes are the `.fill` pane and the minimap a `.fixed` one,
+    /// so the minimap keeps the width the user chose while the panes absorb
+    /// window resizes; hidden just means the minimap is fixed at zero width.
+    /// Internal so tests can toggle it and drive the divider (§19).
+    let panelSplit = ALSplitView()
+
+    /// Whether the minimap panel is shown. Drives the split's divider clamp:
+    /// while hidden, the clamp pins the divider to the right edge so the panel
+    /// sits at zero width and the hex panes reclaim the content area (§19).
+    private(set) var minimapPanelVisible = false
+
+    /// Where the minimap panel width is persisted. Swappable so the suite does
+    /// not write the user's real preference.
+    static var minimapDefaults: UserDefaults = .standard
+    /// `UserDefaults` key for the user's chosen minimap width (§19).
+    static let minimapWidthDefaultsKey = "MinimapPanelWidth"
+    /// The minimap keeps at least this width when shown (§19).
+    static let minimapMinPanelWidth: CGFloat = 120
+    /// The minimap never grows beyond this width (§19), so it stays a compact
+    /// overview column beside the hex panes no matter how wide the window gets.
+    static let minimapMaxPanelWidth: CGFloat = 240
+
+    /// The panel width the user last chose (or the built-in minimum), clamped
+    /// to the legal [min, max] band. The caller is responsible for clamping to
+    /// what the split can actually hold (`setMinimapPanelWidth` already does),
+    /// so this also serves zoom-to-fit, which wants the preferred width
+    /// regardless of how small the window is right now.
+    var minimapPreferredPanelWidth: CGFloat {
+        let stored = Self.minimapDefaults.object(forKey: Self.minimapWidthDefaultsKey) as? NSNumber
+        let preferred = stored.map { CGFloat($0.doubleValue) } ?? Self.minimapMinPanelWidth
+        return min(max(preferred, Self.minimapMinPanelWidth), Self.minimapMaxPanelWidth)
+    }
+    private var contentTopToView: NSLayoutConstraint!
+    private var contentTopToFindBar: NSLayoutConstraint!
+    private var findTask: Task<Void, Never>?
+    /// The active search operation, surfaced in the active pane's status bar
+    /// while a search runs (§14.4).
+    private var findOperation: BackgroundOperation?
+    /// The background index of every occurrence, and the operation that shows
+    /// its progress. Separate from `findTask` on purpose: a press of ‹ › while
+    /// the index is still building runs its own scan, and cancelling the index
+    /// to do so would mean it never finished (§11).
+    private var indexTask: Task<Void, Never>?
+    private var indexOperation: BackgroundOperation?
+    /// The attempts a Smart Search is working through, while it is (§11). A
+    /// second press of Enter during a pass has nothing to add: the pass *is*
+    /// the answer to it, and starting another would only cancel this one.
+    private var smartPassInFlight: [SmartSearch.Attempt]?
+
+    /// Stops whatever find is in flight — a navigation scan or a Smart Search
+    /// pass — and takes its operation off the status bar.
+    private func cancelFind() {
+        findTask?.cancel()
+        findTask = nil
+        findOperation?.finish()
+        findOperation = nil
+        smartPassInFlight = nil
+    }
+    /// The in-flight segment write (Save All / Save Segment, §21.5), surfaced in
+    /// the active pane's status bar while it runs, like a search (§14.4).
+    private var segmentWriteTask: Task<Void, Never>?
+    private var segmentWriteOperation: BackgroundOperation?
+
+    // MARK: - Segment save seams (§21.5)
+
+    /// Where the Save All directory panel goes, so a test can drive it instead:
+    /// a modal panel has no one to click it under XCTest. Called with the panel
+    /// (already configured for directory mode); returns the chosen directory or
+    /// nil when the user cancelled.
+    var segmentDirectoryPanel: ((NSOpenPanel) -> URL?)?
+    /// Where the Save Segment panel goes; the same shape, for one file.
+    var segmentSavePanel: ((NSSavePanel) -> URL?)?
+    /// Where the Replace Segment from File… open panel goes; the same shape as
+    /// the save panel, for one file (§21.6).
+    var segmentOpenPanel: ((NSOpenPanel) -> URL?)?
+    /// Where the join's open panel goes (Append File… / Insert File at Start…,
+    /// §22); the same shape as the replace panel, for one file.
+    var joinOpenPanel: ((NSOpenPanel) -> URL?)?
+    /// Where a tool-module's open panel goes (`ToolHost.requestFile`), the same
+    /// shape as the join's and the segment panels': a modal panel has no one to
+    /// click it under XCTest (Design/TOOL_MODULES_PLAN.md).
+    var toolOpenPanel: ((NSOpenPanel) -> URL?)?
+    /// Where a tool-module's save panel goes (`ToolHost.exportFile`).
+    var toolSavePanel: ((NSSavePanel) -> URL?)?
+    /// Where the context menu's Save Selection as… panel goes; the same shape
+    /// as the tool save panel's, for the right-clicked pane's selected bytes.
+    var selectionSavePanel: ((NSSavePanel) -> URL?)?
+    /// Where the join's dirty-pane confirmation goes: the test captures the
+    /// alert (its title and its two buttons — the operation's verb and Cancel)
+    /// and decides. Returns the alert's response (§22.2).
+    var joinConfirm: ((NSAlert) -> NSApplication.ModalResponse)?
+    /// Where the Save All confirmation goes: the test captures the alert (its
+    /// preview names every part, and it names every file that would be replaced)
+    /// and decides. Returns the alert's response.
+    var segmentWriteConfirm: ((NSAlert) -> NSApplication.ModalResponse)?
+    /// How the write runs. In production it is a background Task with a
+    /// `BackgroundOperation` (status-bar progress and cancel, §14.4); a test
+    /// replaces it with an inline run so it can assert on the written bytes
+    /// without waiting on a task.
+    var segmentWriteRunner: (([SegmentWriter.Part], any ByteStorage, URL) -> Void)?
+    /// Monotonic token identifying the current Search All. Each new search
+    /// bumps it; a running search compares its captured token against the live
+    /// one before touching the results panel, so a superseded search can never
+    /// clobber the results of a newer one (§11).
+    private var searchAllGeneration = 0
+    /// The pane the in-flight Search All targets — the owner of the panel whose
+    /// × must stop that search. Nil once the Search All task ends, so closing a
+    /// stale panel (an already-completed search, or the other pane's) never
+    /// cancels an unrelated search (§11).
+    /// Reacts to the Layout settings tab changing the default direction: an open
+    /// comparison re-lays out live, like the Word Size/Appearance settings (§6).
+    private var layoutSettingsObserver: NSObjectProtocol?
+    private var comparisonSettingsObserver: NSObjectProtocol?
+    /// Keeps the toolbar's word-size radio on the value in force when it is
+    /// changed from somewhere else — the View menu, or the Layout settings tab
+    /// (§24.2). The hex views have their own observers for the re-layout.
+    private var wordSizeObserver: NSObjectProtocol?
+
+    /// Builds the background block index for comparison mode. The provider
+    /// returns the current storages on every start/rebuild, so a revert that
+    /// swaps a document's storage is always re-read.
+    private lazy var comparisonCoordinator: ComparisonCoordinator = {
+        ComparisonCoordinator { [weak self] in
+            guard let self, self.mode == .comparison else { return nil }
+            guard let left = self.windowModel.pane1.byteStorage,
+                  let right = self.windowModel.pane2.byteStorage else { return nil }
+            return (left, right)
+        }
+    }()
+
+    override func loadView() {
+        view = NSView()
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        wireExternalChangeDetection()
+        // A bookmark changed: the panes have already repainted their row, and
+        // what is left for the window is the edit popover, which must not
+        // outlive the mark it is editing (§20.3), the open form's list, which has
+        // to show what the store holds (§20.5), and the minimap's margins, where
+        // the same list is marked (§19.4.3).
+        windowModel.onBookmarksChanged = { [weak self] row in
+            self?.dismissEditPopoverIfItsMarkIsGone(row: row)
+            self?.openGoToForm?.reloadBookmarks()
+            self?.syncMinimapBookmarks()
+            // The empty window shows the list too, and it is the only thing it
+            // shows — so a mark added or removed while no file is open has to
+            // reach it, and the title that counts them (§3.1, §20).
+            self?.refreshEmptyStateBookmarks()
+        }
+        // Apply the Layout settings tab's direction change to an open comparison
+        // immediately; outside comparison mode the value is stored and the next
+        // comparison opens with it (§6).
+        layoutSettingsObserver = NotificationCenter.default.addObserver(
+            forName: LayoutSettings.layoutDirectionDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            // The toolbar's layout icon names the arrangement the click will
+            // produce, so it follows the direction wherever it was changed
+            // (§24.3) — including outside comparison mode, where the value is
+            // only stored.
+            self.revalidateToolbar()
+            guard self.mode == .comparison else { return }
+            self.comparisonView?.setLayout(vertical: LayoutSettings.isVertical)
+            // The pane arrangement changed (View menu or the Settings tab), so
+            // the minimap's internal split flips with it (§19).
+            self.updateMinimapLayout()
+        }
+        wordSizeObserver = NotificationCenter.default.addObserver(
+            forName: WordSize.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.revalidateToolbar() }
+        }
+        // The Comparison settings tab's grouping distance decides what counts as
+        // one change for diff navigation (§10.3.1). Applied live: the coordinator
+        // re-groups the blocks it already has, without rescanning the files.
+        comparisonSettingsObserver = NotificationCenter.default.addObserver(
+            forName: ComparisonSettings.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            // The observer runs on the main queue, but the closure is not
+            // statically main-actor isolated.
+            MainActor.assumeIsolated {
+                self?.comparisonCoordinator.groupingGap = ComparisonSettings.groupingGap
+            }
+        }
+        // Re-evaluate navigation availability on every index-state transition
+        // (build starts/completes/cancels/stops, edits applied) (§10.3). The
+        // minimap is not in this path: it reads difference state per byte from
+        // the panes, the same live comparison they paint with, so the background
+        // index never feeds it (§19).
+        comparisonCoordinator.onStateChanged = { [weak self] in
+            self?.refreshDiffNavigation()
+            // Latch the badge decision to the latest DETERMINED outcome before
+            // the toolbar sync reads it: while a build is in flight the outcome
+            // is undetermined and the plaque must keep what it last showed, not
+            // fall back to the arrows (§10.3).
+            self?.updateIdenticalBadgeState()
+            // The "Files are identical" badge is index-driven, not caret-driven:
+            // it must swap in/out on every index transition, not only on mode
+            // changes. The sync is coalesced and deferred a run-loop turn.
+            self?.syncDiffNavigationToolbarItem()
+            // Detail reads difference state per byte from the panes, but the
+            // overview takes it from this index — one query per block beats
+            // re-reading both files (§19.4).
+            self?.overviewFollowIndexChange()
+        }
+
+        findBar.translatesAutoresizingMaskIntoConstraints = false
+        findBar.isHidden = true  // shown by Cmd+F (§11)
+        findBar.onSearch = { [weak self] request, direction in
+            self?.runSearch(request, direction: direction)
+        }
+        findBar.onSearchAll = { [weak self] request in
+            self?.toggleSearchResults(request)
+        }
+        findBar.onError = { [weak self] message in
+            self?.showFindMessage(message)
+        }
+        findBar.onClose = { [weak self] in
+            self?.hideFindBar()
+        }
+        // A pattern being typed describes no search yet, so the one that was
+        // running stops being shown — count and greys together (§11). Its set
+        // stays: the file has not moved under it, so a results panel listing it
+        // is still telling the truth, until the next search replaces it.
+        findBar.onPatternEdited = { [weak self] in
+            self?.activePane.endMatchHighlighting()
+        }
+        // Keeping a pattern needs the one thing the bar has not got — a name —
+        // so the bar hands over what the field describes and a sheet asks for
+        // the rest (§11).
+        findBar.onAddToFavorites = { [weak self] entry in
+            self?.askToKeepPattern(entry)
+        }
+        findBar.onManageFavorites = {
+            (NSApp.delegate as? AppDelegate)?.showFavoritePatternSettings()
+        }
+        view.addSubview(findBar)
+
+        contentContainer.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(contentContainer)
+
+        contentTopToView = contentContainer.topAnchor.constraint(equalTo: view.topAnchor)
+        contentTopToFindBar = contentContainer.topAnchor.constraint(equalTo: findBar.bottomAnchor)
+        NSLayoutConstraint.activate([
+            findBar.topAnchor.constraint(equalTo: view.topAnchor),
+            findBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            findBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            contentContainer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            contentContainer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            contentContainer.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            contentTopToView,
+        ])
+
+        // The panel split fills the content container: the tool-module's panel
+        // on the left (Design/TOOL_MODULES_PLAN.md), the mode content in the
+        // middle, the minimap panel on the right. Both side panels start
+        // collapsed — neither is shown on launch — and each is opened by its
+        // own command. The clamp owns each divider's legal range, and a divider
+        // move persists that panel's width.
+        //
+        // Both panels are in the split from the start rather than added when
+        // shown: a pane added mid-life moves every divider index under
+        // everything that holds one.
+        panelSplit.translatesAutoresizingMaskIntoConstraints = false
+        panelSplit.isVertical = true
+        panelSplit.dividerThickness = 1
+        contentHost.translatesAutoresizingMaskIntoConstraints = false
+        minimapPanel.translatesAutoresizingMaskIntoConstraints = false
+        panelSplit.addPane(tools.panel)
+        panelSplit.addPane(contentHost)
+        // The panel, not the bare map: its header carries the mode switch and
+        // its status bar the rebuild's progress, and together they align the map
+        // with the dump beside it (§19.2).
+        panelSplit.addPane(minimapPanel)
+        // The panes fill whatever the panel doesn't take; the panel starts
+        // collapsed at zero width, so the hex panes get the whole content area
+        // until the minimap is shown (§19). A show that landed before the view
+        // loaded found no panes to park a policy in (`setPaneLayout` is a
+        // no-op on an empty split), so the initial policy reads the visibility
+        // flag and opens the panel at its width on the first layout.
+        panelSplit.setPaneLayout(.fixed(0), at: Self.toolPaneIndex)
+        panelSplit.setPaneLayout(.fill, at: Self.contentPaneIndex)
+        panelSplit.setPaneLayout(.fixed(minimapPanelVisible ? minimapPreferredPanelWidth : 0),
+                                 at: Self.minimapPaneIndex)
+        // The clamp owns the divider's legal range (§19). While the panel is
+        // shown, a drag never shrinks the minimap below its minimum nor grows
+        // it past its maximum. While it is hidden and no show/hide animation is
+        // gliding, the clamp pins the divider to the trailing edge: the panel
+        // stays collapsed at zero width, and a drag on the divider cannot open
+        // it (only the toolbar/menu toggle can). The animation is exempt — it
+        // needs the full range to glide the divider to the edge on a hide.
+        panelSplit.clampDividerPosition = { [weak self] index, position in
+            guard let self else { return position }
+            guard !self.panelSplit.isAnimatingDivider else { return position }
+            let total = self.panelSplit.bounds.width
+            let thickness = self.panelSplit.dividerThickness
+            if index == Self.toolDividerIndex {
+                // The tool panel's own rule, and it needs to know what the
+                // minimap is taking: the dump's minimum is what the panel may
+                // not eat into, and the minimap has already taken its share.
+                return self.tools.clampPanelDivider(position, total: total,
+                                                    dividers: thickness * 2,
+                                                    minimapWidth: self.currentMinimapWidth())
+            }
+            guard self.minimapPanelVisible else {
+                // Pinned flat against the trailing edge: a hidden panel is a
+                // pane of zero width, and the position that leaves nothing
+                // below this divider is not the free axis once the tool
+                // panel's divider sits above it.
+                return self.panelSplit.maximumDividerPosition(at: index)
+            }
+            // The minimap is the last pane, so its width is what is left after
+            // this divider whatever precedes it — the same arithmetic as when
+            // it was the only panel.
+            let maxPanel = min(MainViewController.minimapMaxPanelWidth, max(0, total - thickness))
+            let minPosition = max(0, total - maxPanel - thickness)
+            let maxPosition = max(0, total - MainViewController.minimapMinPanelWidth - thickness)
+            return min(max(position, minPosition), maxPosition)
+        }
+        // A divider move — a drag or a programmatic sizing — makes that panel's
+        // new width the user's preferred width for its next show (§19,
+        // Design/TOOL_MODULES_PLAN.md).
+        panelSplit.onDividerMoved = { [weak self] index, position in
+            guard let self else { return }
+            if index == Self.toolDividerIndex {
+                self.tools.persistPanelWidth(position)
+            } else {
+                self.persistMinimapPanelWidth(position: position)
+            }
+        }
+        newTabDropStrip.translatesAutoresizingMaskIntoConstraints = false
+        newTabDropStrip.onDropFiles = { [weak self] urls in
+            self?.openFilesInNewTab(urls)
+        }
+        newTabDropStrip.onCopyModifierChanged = { [weak self] copying in
+            self?.setPaneDragCopyingEverywhere(copying)
+        }
+        newTabDropStrip.onPaneDropped = { [weak self] paneID, copying in
+            self?.tearOffPaneToNewTab(draggedPaneID: paneID, copying: copying)
+        }
+        contentContainer.addSubview(newTabDropStrip)
+        let stripHeight = newTabDropStrip.heightAnchor.constraint(equalToConstant: 0)
+        newTabDropStripHeight = stripHeight
+        contentContainer.addSubview(panelSplit)
+        NSLayoutConstraint.activate([
+            // Above everything, across the whole window: the strip is about the
+            // window's tabs, so it spans the minimap as well as the panes.
+            newTabDropStrip.topAnchor.constraint(equalTo: contentContainer.topAnchor),
+            newTabDropStrip.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor),
+            newTabDropStrip.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
+            stripHeight,
+            panelSplit.topAnchor.constraint(equalTo: newTabDropStrip.bottomAnchor),
+            panelSplit.bottomAnchor.constraint(equalTo: contentContainer.bottomAnchor),
+            panelSplit.leadingAnchor.constraint(equalTo: contentContainer.leadingAnchor),
+            panelSplit.trailingAnchor.constraint(equalTo: contentContainer.trailingAnchor),
+        ])
+        // The map is virtualized: it pulls the bytes of its visible window as it
+        // draws, and a drag or a wheel over it scrolls the panes (§19).
+        minimapView.byteStates = { [weak self] mapIndex, range in
+            self?.minimapByteStates(mapIndex: mapIndex, range: range) ?? []
+        }
+        minimapView.matchRanges = { [weak self] mapIndex, range in
+            self?.minimapMatchRanges(mapIndex: mapIndex, range: range) ?? []
+        }
+        minimapView.currentMatchRange = { [weak self] mapIndex in
+            self?.minimapCurrentMatch(mapIndex: mapIndex)
+        }
+        minimapView.onScrollToOffset = { [weak self] offset in
+            self?.scrollPanesToOffset(offset)
+        }
+        minimapView.onSelectOffset = { [weak self] mapIndex, offset in
+            self?.selectMinimapOffset(mapIndex: mapIndex, offset: offset)
+        }
+        // The segment strip's legend answers (§19.4.4, §21.3): the piece's
+        // current name (asked for at hover time, since the store fires no
+        // invalidation for a rename), and the right-click menu that acts on the
+        // piece under the pointer — the same menu the form's row offers.
+        minimapView.segmentPieceName = { [weak self] mapIndex, pieceIndex in
+            self?.minimapSegmentName(mapIndex: mapIndex, pieceIndex: pieceIndex) ?? ""
+        }
+        minimapView.segmentStripMenu = { [weak self] mapIndex, pieceIndex, point in
+            self?.makeMinimapSegmentMenu(mapIndex: mapIndex, pieceIndex: pieceIndex, point: point)
+        }
+        // And the zone gutter's, on the other side of each map (§19.4.5): the
+        // commands that act on the zone under the pointer. Its name and range
+        // are the bracket's own — a tool-module republishes its whole map
+        // whenever anything about it changes, so there is nothing to ask for
+        // live the way a segment's name has to be.
+        minimapView.zoneBracketMenu = { [weak self] mapIndex, zoneID in
+            self?.makeMinimapZoneMenu(mapIndex: mapIndex, zoneID: zoneID)
+        }
+        // The overview bins the file into one row per pixel, so a resize changes
+        // the bins and the summary has to be recomputed (§19.4).
+        minimapView.onOverviewRowCountChanged = { [weak self] in
+            self?.scheduleOverviewRebuild()
+        }
+        // A panel tall enough to magnify the open file takes the Overview choice
+        // away, and gives it back when it shrinks again (§19.4).
+        minimapView.onOverviewUsefulnessChanged = { [weak self] in
+            self?.updateOverviewAvailability()
+        }
+        minimapPanel.onModeChange = { [weak self] mode in
+            self?.setMinimapRenderMode(mode)
+        }
+        // The panel aligns its own chrome with the dump, and asks where the dump
+        // is on every layout pass (§19.2).
+        minimapPanel.dumpAreaInWindow = { [weak self] in
+            guard let self else { return nil }
+            let panes: [FilePaneView]
+            if let comparison = self.comparisonView {
+                panes = [comparison.paneView1, comparison.paneView2]
+            } else if let pane = self.activeFilePane {
+                panes = [pane]
+            } else {
+                panes = []
+            }
+            let areas = panes.compactMap(\.dumpAreaInWindow)
+            guard let first = areas.first else { return nil }
+            // The maps span every dump: stacked panes (§3.3) put one above the
+            // other, and the panel's two maps cover both, so the span the chrome
+            // has to match is their union — not the first pane's dump, which
+            // ends halfway down the window.
+            return areas.dropFirst().reduce(first) { $0.union($1) }
+        }
+        apply(mode: .empty)
+    }
+
+    /// Swaps the content area for the given window mode (§3 of REQUIREMENTS.md).
+    func apply(mode: WindowMode) {
+        let wasComparison = self.mode == .comparison
+        self.mode = mode
+        if mode == .comparison && !wasComparison {
+            // A fresh comparison, not a rebuild of the running one: no index
+            // for this file pair exists yet, so the plaque starts on the
+            // (disabled) arrows rather than a badge a previous comparison left
+            // latched — "Files are identical" must never show before its own
+            // index confirms it. A rebuild (revert, a replaced file) keeps the
+            // latch and shows its last determined state while it runs.
+            showsIdenticalBadge = false
+        }
+        syncDiffNavigationToolbarItem()
+        unwireComparison()
+        // The strip beside each map mirrors the pane's partition (§19.4.4): a
+        // cut, a removal, a moved cut, or a content edit that shifts one all
+        // repaint it. The pane fires this on every partition change, so it is
+        // set here — once per mode apply, on both panes — rather than where the
+        // form happens to be open. It reloads the form when it is open and syncs
+        // the strip whether or not it is.
+        windowModel.pane1.onSegmentsChanged = { [weak self] in
+            self?.openSegmentsForm?.reloadSegments()
+            self?.syncMinimapSegments()
+        }
+        windowModel.pane2.onSegmentsChanged = { [weak self] in
+            self?.openSegmentsForm?.reloadSegments()
+            self?.syncMinimapSegments()
+        }
+        // The panes are about to be rebuilt, so a scan in flight would land its
+        // set in a pane that is going away.
+        cancelFind()
+        endIndexing()
+        // Panes are rebuilt on every apply, so the viewport mirrors must start
+        // empty and fill in as the new panes report their visible ranges (§19).
+        minimapViewports.removeAll()
+        minimapView.setViewports([])
+
+        switch mode {
+        case .empty:
+            activeFilePane = nil
+            comparisonView = nil
+            comparisonCoordinator.stop()
+            // Returning to the launch state must also dismiss the find bar —
+            // nothing is left to search (§11).
+            hideFindBar()
+            let emptyView = EmptyStateView()
+            emptyStateView = emptyView
+            emptyView.setBookmarks(windowModel.bookmarkStore.bookmarks)
+            emptyView.onOpenFiles = { [weak self] urls in
+                self?.handleEmptyDrop(urls)
+            }
+            // An empty window is the most obvious place to put a pane, and it
+            // has only the first one to put it in.
+            emptyView.paneDropOutcome = { [weak self] paneID, copying in
+                guard let self,
+                      self.paneLocation(ofPaneWith: paneID)?.controller !== self
+                else { return .none }
+                return self.paneDropOutcome(draggedPaneID: paneID, onPaneAt: 0,
+                                            copying: copying)
+            }
+            emptyView.onPaneDropped = { [weak self] paneID, copying in
+                self?.performPaneDrop(draggedPaneID: paneID, onPaneAt: 0, copying: copying)
+            }
+            emptyView.onCopyModifierChanged = { [weak self] copying in
+                self?.setPaneDragCopyingEverywhere(copying)
+            }
+            setContentView(emptyView)
+
+        case .singleFile:
+            let paneModel = windowModel.pane1
+            // Reuse the pane's view if it exists (closing the second pane
+            // returns here with the same first file): only a first-ever open
+            // builds it. Re-parenting it into the drop view keeps its scroll.
+            let pane = paneView(for: paneModel)
+            // Header right-click menu: acts on THIS pane (§4/§5).
+            pane.paneMenu = makePaneMenu(for: paneModel)
+            // Offset-column right-click menu ("Select Block from Here at «address»", §10.2).
+            pane.offsetMenuProvider = { [weak self] offset in
+                self?.makeOffsetMenu(for: paneModel, offset: offset) ?? NSMenu()
+            }
+            wireBookmarkDoubleClick(pane, for: paneModel)
+            // Close button: closing the last file returns to empty mode (§3.5).
+            pane.onClose = { [weak self] in self?.closePane(at: 0) }
+            // The panel closed itself; the bar's toggle follows (§11).
+            pane.onSearchResultsClose = { [weak self] _ in
+                self?.syncFindBarToActivePane()
+            }
+            pane.onMatchesChanged = { [weak self] in
+                self?.searchAppearanceChanged()
+            }
+            // The minimap's single map mirrors this pane: edits rebuild its
+            // cells, a moved caret moves the selection overlay, and scrolling
+            // moves the viewport rectangle (§19).
+            trackMinimapViewport(for: pane)
+            paneModel.onEdit = { [weak self] edit in
+                self?.repaintMinimap(after: edit, mapIndex: 0)
+                self?.invalidateMatches(in: paneModel)
+                self?.tools.paneEdited(paneModel, edit)
+            }
+            paneModel.onFullInvalidation = { [weak self] in
+                self?.tools.paneReloaded(paneModel)
+                self?.minimapView.invalidateCells()
+                self?.refreshMinimapMaps()
+                self?.invalidateMatches(in: paneModel)
+            }
+            // A save moves the on-disk reference, so the map's red cells have to
+            // clear even though no byte changed (§19).
+            paneModel.onSavedStateChanged = { [weak self] in
+                self?.minimapView.invalidateCells()
+                self?.refreshMinimapMaps()
+            }
+            paneModel.onCaretChanged = { [weak self] in
+                self?.updateMinimapSelections()
+            }
+            // Wrap in the drop-target split view (§4.3 single-file mode). The
+            // pane itself is NOT drop-registered here so the outer view wins.
+            let dropView = SingleFileDropView(paneView: pane)
+            singleFileDropView = dropView
+            dropView.onDragSessionChanged = { [weak self] active in
+                self?.setNewTabStripVisible(active)
+            }
+            dropView.onCopyModifierChanged = { [weak self] copying in
+                self?.setPaneDragCopyingEverywhere(copying)
+            }
+            // A dragged pane gets the same four zones a file gets, and they
+            // mean the same four things: the far half opens it as the second
+            // pane, and the three bands over this file join it at either end or
+            // put it in this pane's place.
+            //
+            // Which of those a pane from *this* window may do is `PaneDrop`'s to
+            // say, not a blanket refusal here: its own pane can still be joined
+            // to itself at either end, and only the middle band and the second
+            // half are meaningless for it.
+            dropView.paneDropOutcome = { [weak self] paneID, target, copying in
+                guard let self else { return .none }
+                let (index, band) = Self.singleFilePaneDrop(target)
+                return self.paneDropOutcome(draggedPaneID: paneID, onPaneAt: index,
+                                            band: band, copying: copying)
+            }
+            dropView.onPaneDropped = { [weak self] paneID, target, copying in
+                let (index, band) = Self.singleFilePaneDrop(target)
+                self?.performPaneDrop(draggedPaneID: paneID, onPaneAt: index,
+                                      band: band, copying: copying)
+            }
+            dropView.onDrop = { [weak self] target, urls in
+                self?.handleSingleFileDrop(target: target, urls: urls)
+            }
+            activeFilePane = pane
+            comparisonView = nil
+            comparisonCoordinator.stop()
+            setContentView(dropView)
+            pane.focusHexView()
+
+        case .comparison:
+            wireComparison()
+            let pane1 = windowModel.pane1
+            let pane2 = windowModel.pane2
+            // Reuse each pane's view where it exists: opening the second file
+            // comes here with the first pane already built, so only pane2 is
+            // first-ever. Re-parenting the first view into the splitter keeps
+            // its scroll and focus instead of resetting them (§3.3).
+            let pane1View = paneView(for: pane1)
+            let pane2View = paneView(for: pane2)
+            // Header right-click menus act on their own pane (§4/§5).
+            pane1View.paneMenu = makePaneMenu(for: pane1)
+            pane2View.paneMenu = makePaneMenu(for: pane2)
+            // Offset-column right-click menus ("Select Block from Here at «address»", §10.2).
+            pane1View.offsetMenuProvider = { [weak self] offset in
+                self?.makeOffsetMenu(for: pane1, offset: offset) ?? NSMenu()
+            }
+            pane2View.offsetMenuProvider = { [weak self] offset in
+                self?.makeOffsetMenu(for: pane2, offset: offset) ?? NSMenu()
+            }
+            // A double click on an address marks that row, in whichever pane
+            // was clicked (§20.3).
+            wireBookmarkDoubleClick(pane1View, for: pane1)
+            wireBookmarkDoubleClick(pane2View, for: pane2)
+            // Each map's viewport rectangle mirrors its pane's visible slice (§19).
+            trackMinimapViewport(for: pane1View)
+            trackMinimapViewport(for: pane2View)
+            let view = ComparisonView(
+                coordinator: comparisonCoordinator,
+                paneView1: pane1View,
+                paneView2: pane2View
+            )
+            view.onPaneActivated = { [weak self] index in
+                self?.activatePane(at: index)
+            }
+            // Comparison-mode drops target the hovered pane's bands (§22.4):
+            // the three bands (insert / replace / append) are the drop targets,
+            // so the panes themselves are not drop-registered.
+            view.bands1.onDrop = { [weak self] target, urls in
+                self?.handleComparisonBandDrop(targetPane: 0, target: target, urls: urls)
+            }
+            view.bands2.onDrop = { [weak self] target, urls in
+                self?.handleComparisonBandDrop(targetPane: 1, target: target, urls: urls)
+            }
+            // The same overlays take a dragged pane, in the same three bands: a
+            // pane holds a dump, so the ends mean what they mean for a file —
+            // join this at the front, join it at the back — and only the middle
+            // differs (`Design/PANE_DRAG_PLAN.md`).
+            for (index, bands) in [(0, view.bands1!), (1, view.bands2!)] {
+                bands.paneDropOutcome = { [weak self] paneID, band, copying in
+                    self?.paneDropOutcome(draggedPaneID: paneID, onPaneAt: index,
+                                          band: band, copying: copying) ?? .none
+                }
+                bands.onPaneDropped = { [weak self] paneID, band, copying in
+                    self?.performPaneDrop(draggedPaneID: paneID, onPaneAt: index,
+                                          band: band, copying: copying)
+                }
+                // A drag entering either pane raises the strip, so it is on
+                // screen before the pointer could reach it.
+                bands.onDragSessionChanged = { [weak self] active in
+                    self?.setNewTabStripVisible(active)
+                }
+                bands.onCopyModifierChanged = { [weak self] copying in
+                    self?.setPaneDragCopyingEverywhere(copying)
+                }
+            }
+            pane1View.onClose = { [weak self] in self?.closePane(at: 0) }
+            pane2View.onClose = { [weak self] in self?.closePane(at: 1) }
+            // Closing a pane's Search All panel stops that search (§11). The
+            // bar's toggle is re-read rather than turned off: in comparison
+            // mode the panel that closed may be the *other* pane's, and the
+            // button describes the active one.
+            pane1View.onSearchResultsClose = { [weak self] _ in
+                self?.syncFindBarToActivePane()
+            }
+            pane2View.onSearchResultsClose = { [weak self] _ in
+                self?.syncFindBarToActivePane()
+            }
+            pane1View.onMatchesChanged = { [weak self] in
+                self?.searchAppearanceChanged()
+            }
+            pane2View.onMatchesChanged = { [weak self] in
+                self?.searchAppearanceChanged()
+            }
+
+            activeFilePane = windowModel.activePaneIndex == 0 ? pane1View : pane2View
+            comparisonView = view
+            setContentView(view)
+            view.setActive(windowModel.activePaneIndex)
+            // The minimap's stacked divider mirrors the panes' divider position,
+            // so keep it glued whenever the panes' divider moves (§19).
+            view.onFractionChanged = { [weak self] in
+                self?.updateMinimapLayout()
+            }
+            comparisonCoordinator.start()
+            activeFilePane?.focusHexView()
+        }
+        updateMinimapLayout()
+        refreshMinimapMaps()
+        // A different file can call for a different mode — a dump too large for
+        // the detail window opens in overview (§19.4).
+        applyPreferredMinimapMode()
+        refreshDiffNavigation()
+        // The empty state has no pane view to report a header, so the title is
+        // set here too; with panes open this is the first of many, and the pane
+        // views keep it current from then on.
+        updateWindowTitle()
+        // The panes were just rebuilt — new views, no results panels, and
+        // possibly another active pane — so the bar is re-read rather than
+        // left describing the panes that went away (§11).
+        syncFindBarToActivePane()
+    }
+
+    /// Wires companion panes and coordinator callbacks for comparison mode.
+    /// Runs on every comparison apply — pane objects are swapped by Swap Panels
+    /// and close-promotion, so the callbacks must target the CURRENT panes.
+    private func wireComparison() {
+        windowModel.pane1.companion = windowModel.pane2
+        windowModel.pane2.companion = windowModel.pane1
+        windowModel.pane1.onEdit = { [weak self] edit in
+            self?.comparisonCoordinator.record(edit: edit)
+            self?.repaintMinimap(after: edit, mapIndex: 0)
+            self?.invalidateMatches(in: self?.windowModel.pane1)
+            self.map { $0.tools.paneEdited($0.windowModel.pane1, edit) }
+        }
+        windowModel.pane2.onEdit = { [weak self] edit in
+            self?.comparisonCoordinator.record(edit: edit)
+            self?.repaintMinimap(after: edit, mapIndex: 1)
+            self?.invalidateMatches(in: self?.windowModel.pane2)
+            self.map { $0.tools.paneEdited($0.windowModel.pane2, edit) }
+        }
+        // The tool-module hears first. It is the one that answers with a
+        // progress bar, and everything else here either schedules its work or
+        // only marks something dirty — so putting it last was the panel
+        // waiting on a queue of things that were not waiting on it.
+        windowModel.pane1.onFullInvalidation = { [weak self] in
+            self.map { $0.tools.paneReloaded($0.windowModel.pane1) }
+            self?.comparisonCoordinator.rebuild()
+            self?.minimapView.invalidateCells()
+            self?.refreshMinimapMaps()
+            self?.invalidateMatches(in: self?.windowModel.pane1)
+        }
+        windowModel.pane2.onFullInvalidation = { [weak self] in
+            self.map { $0.tools.paneReloaded($0.windowModel.pane2) }
+            self?.comparisonCoordinator.rebuild()
+            self?.minimapView.invalidateCells()
+            self?.refreshMinimapMaps()
+            self?.invalidateMatches(in: self?.windowModel.pane2)
+        }
+        // A save clears modified state without changing a byte, so the minimap's
+        // red cells have to go even though the bytes stayed put (§19).
+        windowModel.pane1.onSavedStateChanged = { [weak self] in
+            self?.minimapView.invalidateCells()
+            self?.refreshMinimapMaps()
+        }
+        windowModel.pane2.onSavedStateChanged = { [weak self] in
+            self?.minimapView.invalidateCells()
+            self?.refreshMinimapMaps()
+        }
+        // A moved caret changes whether a next/previous block still exists from
+        // the new position, so navigation enablement follows it (§10.3); the
+        // selection overlay on the minimap follows the caret too (§19).
+        windowModel.pane1.onCaretChanged = { [weak self] in
+            self?.refreshDiffNavigation()
+            self?.updateMinimapSelections()
+        }
+        windowModel.pane2.onCaretChanged = { [weak self] in
+            self?.refreshDiffNavigation()
+            self?.updateMinimapSelections()
+        }
+    }
+
+    private func unwireComparison() {
+        windowModel.pane1.companion = nil
+        windowModel.pane2.companion = nil
+        windowModel.pane1.onEdit = nil
+        windowModel.pane2.onEdit = nil
+        windowModel.pane1.onFullInvalidation = nil
+        windowModel.pane2.onFullInvalidation = nil
+        windowModel.pane1.onSavedStateChanged = nil
+        windowModel.pane2.onSavedStateChanged = nil
+    }
+
+    /// The `FilePaneView` for `model`, created on first use and reused
+    /// thereafter — the view follows its model, so a mode change or pane
+    /// re-ordering re-parents the same view instead of rebuilding it (§3.3).
+    private func paneView(for model: PaneViewModel) -> FilePaneView {
+        let key = ObjectIdentifier(model)
+        if let existing = paneViews[key] { return existing }
+        let view = FilePaneView(viewModel: model)
+        // A pane drag raises every window's strip, since any of them could take
+        // the pane, and lowers them all when the session ends.
+        view.onDragSessionChanged = { [weak self] active in
+            self?.setNewTabStripVisibleEverywhere(active)
+        }
+        // The window is named after the files its panes hold, so the title
+        // follows the very signal the pane headers follow — a file opened,
+        // saved under a new name, reverted or detached by a join moves both at
+        // once, and there is no second list of places to remember.
+        view.onHeaderChanged = { [weak self] in self?.updateWindowTitle() }
+        // The results panel is a child controller of this one: containment is
+        // what makes its appear/disappear callbacks fire, and it is what will
+        // let the same panel be presented some other way later. Its *view*
+        // stays where the pane puts it — `addChild` does not care where a
+        // child's view is installed, only who owns the child.
+        addChild(view.searchResults)
+        paneViews[key] = view
+        return view
+    }
+
+    /// What the window (and so its tab) is called: the files it holds.
+    ///
+    /// A tab bar with nothing to read on it is not worth having, and the Window
+    /// menu listing the app's name three times is no better. A window holding
+    /// nothing says so — "Empty", which is what it is. Not the app's name, which
+    /// says nothing about this window in particular, and not "Untitled", which
+    /// already means a New File that has never been saved and would make an
+    /// empty tab and a fresh document read alike.
+    var windowTitle: String {
+        switch mode {
+        case .empty:
+            // A window with no file is not necessarily a window with nothing in
+            // it: the marks are the window's, not the file's (§20), so a window
+            // kept open for them says how many it is keeping.
+            let marks = windowModel.bookmarkStore.bookmarks.count
+            guard marks > 0 else { return "Empty" }
+            return marks == 1 ? "Empty (1 Bookmark)" : "Empty (\(marks) Bookmarks)"
+        case .singleFile:
+            return windowModel.pane1.status.fileName
+        case .comparison:
+            return "\(windowModel.pane1.status.fileName) ↔ \(windowModel.pane2.status.fileName)"
+        }
+    }
+
+    private func updateWindowTitle() {
+        viewIfLoaded?.window?.title = windowTitle
+    }
+
+    private func setContentView(_ newView: NSView) {
+        contentHost.subviews.forEach { $0.removeFromSuperview() }
+        newView.translatesAutoresizingMaskIntoConstraints = false
+        contentHost.addSubview(newView)
+        NSLayoutConstraint.activate([
+            newView.topAnchor.constraint(equalTo: contentHost.topAnchor),
+            newView.bottomAnchor.constraint(equalTo: contentHost.bottomAnchor),
+            newView.leadingAnchor.constraint(equalTo: contentHost.leadingAnchor),
+            newView.trailingAnchor.constraint(equalTo: contentHost.trailingAnchor),
+        ])
+    }
+
+    /// Opens the strip for a drag's lifetime, or closes it when the drag is over.
+    ///
+    /// Never in the empty mode: a window holding nothing has no reason to send a
+    /// file somewhere else.
+    ///
+    /// The panes move down to make room rather than being covered, so the bands
+    /// keep describing the dump they are drawn over — an overlay left them
+    /// offset from the content by the strip's height, and hid the pane headers
+    /// besides.
+    /// Raises or lowers the strip in every open window.
+    ///
+    /// A file drag belongs to the window it is over, but a pane drag belongs to
+    /// the app: the pane can land in any window, so every window has to offer
+    /// somewhere to put it. With no registry — a controller built on its own —
+    /// this window is the whole app.
+    private func setNewTabStripVisibleEverywhere(_ visible: Bool) {
+        for controller in openDocuments?.controllers ?? [self] {
+            controller.setNewTabStripVisible(visible, forPane: true)
+        }
+    }
+
+    /// Passes an Option press or release on to every drop zone the drag has put
+    /// on screen, in this window and the others.
+    ///
+    /// Only the zone under the pointer hears the modifier: AppKit sends
+    /// `draggingUpdated` to the destination the pointer is in and to no other,
+    /// so the band being hovered re-labelled itself while the New Tab strip
+    /// above it went on reading "Move to New Tab" until the pointer reached it.
+    /// The zones are all promises about the same drop, and one of them saying
+    /// "move" while another says "duplicate" means at least one is lying — so
+    /// the news travels the same road the strip's own raising does.
+    private func setPaneDragCopyingEverywhere(_ copying: Bool) {
+        for controller in openDocuments?.controllers ?? [self] {
+            controller.setPaneDragCopying(copying)
+        }
+    }
+
+    /// This window's New Tab strip and its comparison overlays, so a test can
+    /// read what every zone on screen is promising at once — which is the whole
+    /// question the broadcast above answers.
+    var newTabStripForTesting: NewTabDropStrip { newTabDropStrip }
+    var comparisonBandsForTesting: (PaneDropBandsView, PaneDropBandsView)? {
+        guard let view = comparisonView else { return nil }
+        return (view.bands1, view.bands2)
+    }
+
+    /// Re-captions this window's zones for the modifier. Each one ignores it
+    /// unless it has a pane in flight, so the mode's unused zones stay as they
+    /// are, and none of them reports the change back — it came from a zone that
+    /// already knows, and answering would be a loop.
+    func setPaneDragCopying(_ copying: Bool) {
+        newTabDropStrip.setPaneDragCopying(copying)
+        singleFileDropView?.setPaneDragCopying(copying)
+        comparisonView?.bands1.setPaneDragCopying(copying)
+        comparisonView?.bands2.setPaneDragCopying(copying)
+    }
+
+    private func setNewTabStripVisible(_ visible: Bool, forPane isPane: Bool = false) {
+        let wanted = visible && mode != .empty
+        guard let stripHeight = newTabDropStripHeight else { return }
+        let target: CGFloat = wanted ? NewTabDropStrip.height : 0
+        guard stripHeight.constant != target else { return }
+        newTabDropStrip.setDragActive(wanted, forPane: isPane)
+        NSAnimationContext.runAnimationGroup { context in
+            // Slightly quicker on the way out than in. It cannot beat a
+            // cancelled drag's pill home — `endedAt` only arrives once the
+            // pill has landed — so this is about the panes not dawdling once
+            // the drag is over, nothing more.
+            context.duration = wanted ? 0.12 : 0.10
+            context.allowsImplicitAnimation = true
+            stripHeight.animator().constant = target
+            contentContainer.layoutSubtreeIfNeeded()
+        }
+    }
+
+    /// Opens files in a tab of their own — the strip's whole purpose.
+    func openFilesInNewTab(_ urls: [URL]) {
+        guard let tab = makeSiblingTab?() else { return }
+        tab.openFiles(urls)
+    }
+
+    /// How much of a pane overlay's top the strip covers, so its bands can start
+    /// below it.
+    ///
+    /// **Zero in the arrangement that shipped**, where the strip takes its own
+    /// height above everything and covers nothing. Kept, and kept measured, for
+    /// the reason it was written: where the strip goes has already moved three
+    /// times, and AppKit resolves a drop destination by frame among registered
+    /// views rather than by hit-testing (`PaneDropBandsView` records a file
+    /// silently discarded to that once). A geometric answer cannot disagree with
+    /// where the strip actually is; a constant would, quietly, the next time it
+    /// moves.
+    private func dropStripInset(for overlay: NSView) -> CGFloat {
+        guard newTabDropStrip.superview != nil, overlay.window != nil else { return 0 }
+        let stripBottom = newTabDropStrip.convert(NSPoint(x: 0, y: newTabDropStrip.bounds.minY),
+                                                  to: nil).y
+        let overlayTop = overlay.convert(NSPoint(x: 0, y: overlay.bounds.maxY), to: nil).y
+        return max(0, min(overlay.bounds.height, overlayTop - stripBottom))
+    }
+
+    /// Re-measures the strip's share of each pane overlay after a layout pass.
+    private func updateDropStripInsets() {
+        let overlays = [comparisonView?.bands1, comparisonView?.bands2,
+                        singleFileDropView?.thisFileBands].compactMap { $0 }
+        for bands in overlays {
+            bands.topInset = dropStripInset(for: bands)
+        }
+    }
+
+    // MARK: - Tools (Design/TOOL_MODULES_PLAN.md)
+
+    /// Where each panel sits in `panelSplit`, and which divider borders it.
+    /// Named rather than written as 0/1/2 at a dozen call sites: the split gained
+    /// a third pane once already, and every index in this file moved with it.
+    static let toolPaneIndex = 0
+    static let contentPaneIndex = 1
+    static let minimapPaneIndex = 2
+    /// The divider at `i` is between panes `i` and `i + 1`.
+    static let toolDividerIndex = 0
+    static let minimapDividerIndex = 1
+
+    /// How much of the dump's spare width each side panel is borrowing right
+    /// now: the room it opened into instead of pushing the window's edge out.
+    /// Kept so the way out mirrors the way in — a panel gives back what it
+    /// borrowed before the window gives up anything.
+    private var borrowedByToolPanel: CGFloat = 0
+    private var borrowedByMinimap: CGFloat = 0
+
+    /// The dump area's spare width: how much wider it is than the hex grid it
+    /// is showing. A window the user has dragged wider than its content has
+    /// room in it, and a side panel opens into that room before it costs the
+    /// window anything.
+    ///
+    /// Zero when there is no content to measure (the empty state, or a layout
+    /// that has not happened yet) and when the dump is already narrower than
+    /// its grid — there the panel costs the window its full width, as it
+    /// always did.
+    ///
+    /// Internal rather than private so the suite can set a window up with a
+    /// known amount of room, or none.
+    func dumpAreaSlack() -> CGFloat {
+        let needed = standardContentWidth()
+        guard needed > 0 else { return 0 }
+        return max(0, contentHost.frame.width - needed)
+    }
+
+    /// What the window's width must change by for a side panel gaining or
+    /// giving up `delta` points, and the borrow that goes with it.
+    ///
+    /// Growing, the panel spends the dump's spare width first and asks the
+    /// window only for what is left over. Shrinking, it hands that spare width
+    /// back before the window gives up anything: a panel that cost the window
+    /// nothing to open must cost it nothing to close, or the window would end
+    /// up narrower than it was before the panel was ever shown.
+    private func windowDelta(forPanel delta: CGFloat, borrowed: inout CGFloat) -> CGFloat {
+        if delta > 0 {
+            let borrow = min(delta, dumpAreaSlack())
+            borrowed += borrow
+            return delta - borrow
+        }
+        let given = min(-delta, borrowed)
+        borrowed -= given
+        return delta + given
+    }
+
+    /// The minimap panel's width as the split currently has it — what the tool
+    /// panel's clamp has to leave alone.
+    private func currentMinimapWidth() -> CGFloat {
+        let total = panelSplit.bounds.width
+        guard total > 0 else { return 0 }
+        return max(0, total - panelSplit.dividerPosition(at: Self.minimapDividerIndex)
+                   - panelSplit.dividerThickness)
+    }
+
+    /// The tool panel's width as the split currently has it.
+    func toolPanelWidth() -> CGFloat {
+        guard panelSplit.bounds.width > 0 else { return 0 }
+        return panelSplit.dividerPosition(at: Self.toolDividerIndex)
+    }
+
+    /// Moves the first divider so the tool panel gets `width` points, animating
+    /// unless reduced motion or a snap. `windowResize` is the window move that
+    /// belongs to this change, driven by the panel animation's own tick so the
+    /// window edge and the panel edge move as one thing (§19).
+    func setToolPanelWidth(_ width: CGFloat, animated: Bool,
+                           windowResize: ((CGFloat) -> Void)? = nil) {
+        let total = panelSplit.bounds.width
+        guard total > 0 else {
+            // No bounds yet: park the width in the pane's policy and let the
+            // first layout place the divider from it.
+            panelSplit.setPaneLayout(.fixed(max(0, width)), at: Self.toolPaneIndex)
+            windowResize?(1)
+            return
+        }
+        let target = max(0, min(width, panelSplit.axisAvailable()))
+        if animated {
+            panelSplit.animateLeadingPaneSize(to: target, onTick: windowResize)
+        } else {
+            panelSplit.setDividerPosition(target, at: Self.toolDividerIndex)
+            windowResize?(1)
+        }
+    }
+
+    /// The window move that goes with opening or closing the tool panel: the
+    /// window grows or shrinks by whatever the dump's own spare width cannot
+    /// absorb, so the dump keeps the width its content needs. The mirror of the
+    /// minimap's, and mirrored in the literal sense — the window's LEADING edge
+    /// moves and the trailing one stays put, because the panel opens on the
+    /// left.
+    func toolPanelWindowResize(delta: CGFloat) -> ((CGFloat) -> Void)? {
+        guard let window = view.window, delta != 0 else { return nil }
+        // The split keeps its dividers whether a pane is 400 points wide or
+        // none at all, so no seam appears or goes with the panel and the
+        // panel's change is the width alone.
+        let move = windowDelta(forPanel: delta, borrowed: &borrowedByToolPanel)
+        guard move != 0 else { return nil }
+        let start = window.frame
+        let targetWidth = max(0, start.width + move)
+        return { [weak window] progress in
+            guard let window else { return }
+            var frame = start
+            frame.size.width = start.width + (targetWidth - start.width) * progress
+            // The right edge stays where it is, so the left one carries the
+            // whole change.
+            frame.origin.x = start.maxX - frame.size.width
+            if let visibleFrame = window.screen?.visibleFrame {
+                frame.origin.x = min(max(frame.origin.x, visibleFrame.minX),
+                                     visibleFrame.maxX - frame.size.width)
+            }
+            window.setFrame(frame, display: true, animate: false)
+        }
+    }
+
+    /// Tools ▸ ⟨module⟩ and Tools ▸ None. The item carries the tool-module's
+    /// identifier in `representedObject`, and None carries nothing, so one
+    /// action serves every row.
+    @objc func activateTool(_ sender: NSMenuItem) {
+        tools.activate(sender.representedObject as? String)
+    }
+
+    // MARK: - Files, for a tool-module (Design/TOOL_MODULES_PLAN.md)
+
+    /// The largest file a tool-module may be handed. A component to place
+    /// inside a dump is measured in kilobytes; the cap is here so a mistaken
+    /// pick — a disk image, a video — is refused with a sentence rather than
+    /// read into memory whole.
+    static let toolFileSizeLimit: UInt64 = 64 * 1024 * 1024
+    /// The cap in force, so a test can move it under a small file instead of
+    /// writing a 64 MiB fixture.
+    static var toolFileSizeLimitForTesting: UInt64 = toolFileSizeLimit
+
+    /// Asks the user for a file and hands back its bytes, for
+    /// `ToolHost.requestFile`.
+    ///
+    /// The panel is the app's, deliberately: what the user picks is reachable
+    /// because *this process* was granted it, and a tool-module never has to be
+    /// given a URL or a security scope of its own. It gets bytes.
+    func requestFileForTool(kinds: [String], message: String?) -> ToolFile? {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        if let message { panel.message = message }
+        panel.allowedContentTypes = kinds.compactMap { UTType(filenameExtension: $0) }
+        let url: URL?
+        if let toolOpenPanel {
+            url = toolOpenPanel(panel)
+        } else {
+            url = panel.runModal() == .OK ? panel.url : nil
+        }
+        guard let url else { return nil }
+        do {
+            let size = (try url.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(UInt64.init) ?? 0
+            guard size <= Self.toolFileSizeLimitForTesting else {
+                presentAlert(title: "That file is too large",
+                             message: "“\(url.lastPathComponent)” is \(size) bytes. "
+                                + "A tool can be handed at most "
+                                + "\(Self.toolFileSizeLimitForTesting) bytes.")
+                return nil
+            }
+            return ToolFile(name: url.lastPathComponent, bytes: [UInt8](try Data(contentsOf: url)))
+        } catch {
+            presentFileError("Could not read the file.", error, url: url)
+            return nil
+        }
+    }
+
+    /// Offers bytes to the user as a file to save, for `ToolHost.exportFile`.
+    func exportFileForTool(_ bytes: [UInt8], suggestedName: String) -> Bool {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = suggestedName
+        panel.canCreateDirectories = true
+        let url: URL?
+        if let toolSavePanel {
+            url = toolSavePanel(panel)
+        } else {
+            url = panel.runModal() == .OK ? panel.url : nil
+        }
+        guard let url else { return false }
+        do {
+            try Data(bytes).write(to: url, options: .atomic)
+            return true
+        } catch {
+            presentFileError("Could not write the file.", error, url: url)
+            return false
+        }
+    }
+
+    /// Takes the dump to `range` for a tool-module — the same reveal a bookmark
+    /// or a search result gets, in the pane the session is bound to rather than
+    /// in the active one.
+    func revealForTool(_ range: Range<UInt64>, in pane: PaneViewModel, select: Bool) {
+        guard pane.isOpen else { return }
+        if select, !range.isEmpty {
+            pane.select(range: range)
+        } else {
+            pane.moveCaret(to: range.lowerBound)
+        }
+        filePaneView(for: pane)?.revealOffsetCentered(range.lowerBound)
+    }
+
+    /// Brings the start of the zone a tool-module has just focused into view:
+    /// the scroll alone, and only when it is not on screen already.
+    ///
+    /// The caret and the selection are left where they are, deliberately.
+    /// Picking a row in a tool-module's list is looking, not going — and the
+    /// user may well be part-way through something in the dump. Going is the
+    /// tool-module's own `reveal`, which centres and can select.
+    func showZoneStartForTool(_ offset: UInt64, in pane: PaneViewModel) {
+        guard pane.isOpen else { return }
+        filePaneView(for: pane)?.revealOffsetIfOffScreen(offset)
+    }
+
+    /// The published zone map changed — a publish, a focus moving, or a session
+    /// ending and taking the map with it. The dump repaints from the pane's own
+    /// hook (`PaneViewModel.onFullInvalidationOfZones`); the minimap's gutters
+    /// are handed the map from here (§19.4.5).
+    func toolZonesChanged() {
+        syncMinimapZones()
+    }
+
+    // MARK: - Minimap (§19)
+
+    /// Toggles the right-hand minimap panel (the toolbar button). The panel is
+    /// hidden by default and animated in/out; the split's divider keeps the
+    /// user's chosen width between shows.
+    @objc func toggleMinimap() {
+        toggleMinimapPanel(animated: true)
+    }
+
+    /// Shows or hides the panel, animating the divider unless the user prefers
+    /// reduced motion (then it snaps).
+    func setMinimapPanelVisible(_ visible: Bool, animated: Bool = true) {
+        let changed = minimapPanelVisible != visible
+        minimapPanelVisible = visible
+        // The window grows or shrinks by the panel's width so the hex content
+        // area keeps its width (§19). It is handed to the panel's animation
+        // rather than run beside it: one clock and one curve, so the window
+        // edge and the panel edge move as a single thing. Evaluated here,
+        // before the width changes, because it captures the window's start.
+        setMinimapPanelWidth(visible ? minimapPreferredPanelWidth : 0, animated: animated,
+                             windowResize: changed ? minimapWindowResize(visible: visible) : nil)
+        if changed { minimapPanelVisibilityChanged(visible) }
+    }
+
+    /// Toggles the panel's visibility (§19).
+    func toggleMinimapPanel(animated: Bool = true) {
+        setMinimapPanelVisible(!minimapPanelVisible, animated: animated)
+    }
+
+    /// Moves the divider so the panel gets `width` points (clamped to the
+    /// split's room and the legal band by the split's divider clamp),
+    /// animating unless reduced motion or the distance is a snap.
+    /// `windowResize`, when given, is the window move that belongs to this width
+    /// change — the growth or shrink that keeps the hex content area's width
+    /// (§19). It takes a progress in 0…1 and is driven by the panel animation's
+    /// own tick, so the two never drift apart; unanimated, it is called with 1.
+    func setMinimapPanelWidth(_ width: CGFloat, animated: Bool = false,
+                              windowResize: ((CGFloat) -> Void)? = nil) {
+        let total = panelSplit.bounds.width
+        guard total > 0 else {
+            // No bounds yet: park the width in the panel's policy; the first
+            // layout places the divider from it.
+            panelSplit.setPaneLayout(.fixed(max(0, width)), at: 1)
+            windowResize?(1)
+            return
+        }
+        let thickness = panelSplit.dividerThickness
+        let target = max(0, min(width, total - thickness))
+        if animated {
+            // The divider is eased by the panel's WIDTH — the position is
+            // re-derived from the live bounds on every step, the way the
+            // divider drag does it — which is what lets the window grow
+            // underneath the animation without the panel losing its place.
+            panelSplit.animateTrailingPaneSize(to: target, onTick: windowResize)
+        } else {
+            panelSplit.setDividerPosition(total - target - thickness, at: Self.minimapDividerIndex)
+            windowResize?(1)
+        }
+    }
+
+    /// A panel-visibility change: while hidden the maps and viewport are stale
+    /// (nothing was drawn), so a show refreshes them (§19).
+    private func minimapPanelVisibilityChanged(_ visible: Bool) {
+        if visible {
+            updateMinimapLayout()
+            refreshMinimapMaps()
+            // The mode was decided when the file opened, panel or no panel
+            // (§19.4) — showing the panel must not undo a choice made in it,
+            // only settle whether overview is on offer now that it has a height.
+            updateOverviewAvailability()
+            updateMinimapViewports()
+            rebuildOverview()
+            // The search's marks were not computed while the panel was closed
+            // (§11).
+            scheduleMinimapMatchSync()
+        }
+    }
+
+    /// Persists the panel's current width as the user's preferred width for the
+    /// next show. Only while the panel is shown and within the legal range: a
+    /// transient layout (e.g. mid-animation) whose panel width is absurd would
+    /// poison the next reveal if persisted.
+    private func persistMinimapPanelWidth(position: CGFloat) {
+        guard minimapPanelVisible else { return }
+        let split = panelSplit
+        let panelWidth = split.bounds.width - position - split.dividerThickness
+        guard panelWidth >= Self.minimapMinPanelWidth,
+              panelWidth <= Self.minimapMaxPanelWidth else { return }
+        Self.minimapDefaults.set(panelWidth, forKey: Self.minimapWidthDefaultsKey)
+    }
+
+    /// The window move that goes with showing or hiding the minimap: growing or
+    /// shrinking by whatever the dump's own spare width cannot absorb, so the
+    /// hex content area keeps the width its grid needs (§19). The window grows
+    /// or shrinks from the right edge; the left edge stays put.
+    ///
+    /// Returns a function of progress rather than doing the move, so the panel's
+    /// animation can drive it frame by frame on its own eased clock — a window
+    /// that jumped to its new width while the panel glided in is what this
+    /// replaces. Called with 1 it lands the window exactly where the instant
+    /// version put it. Nil when there is no window to move.
+    ///
+    /// Every step is computed from the frame captured here rather than from the
+    /// window's current one, so the on-screen clamp cannot accumulate across
+    /// the steps.
+    private func minimapWindowResize(visible: Bool) -> ((CGFloat) -> Void)? {
+        guard let window = view.window else { return nil }
+        let width = minimapPreferredPanelWidth + panelSplit.dividerThickness
+        let move = windowDelta(forPanel: visible ? width : -width,
+                               borrowed: &borrowedByMinimap)
+        guard move != 0 else { return nil }
+        let start = window.frame
+        let targetWidth = max(0, start.width + move)
+        return { [weak window] progress in
+            guard let window else { return }
+            var frame = start
+            frame.size.width = start.width + (targetWidth - start.width) * progress
+            // Keep the window on the visible screen: when growing, the right
+            // edge must not run off-screen; when shrinking, the left edge stays
+            // put.
+            if let visibleFrame = window.screen?.visibleFrame {
+                frame.origin.x = min(max(frame.origin.x, visibleFrame.minX),
+                                     visibleFrame.maxX - frame.size.width)
+            }
+            window.setFrame(frame, display: true, animate: false)
+        }
+    }
+
+    /// Recomputes the minimap's internal map split from the current window mode
+    /// and pane arrangement (§19): one map in single-file mode, two maps with a
+    /// centered vertical line for side-by-side panes, two maps with a
+    /// horizontal line mirroring the panes' divider for stacked panes.
+    private func updateMinimapLayout() {
+        switch mode {
+        case .empty, .singleFile:
+            minimapView.setMapLayout(.single)
+        case .comparison:
+            guard let comparisonView else { return }
+            if comparisonView.splitView.isVertical {
+                minimapView.setMapLayout(.sideBySide)
+            } else {
+                minimapView.setMapLayout(.stacked(fraction: comparisonView.currentFraction))
+            }
+        }
+    }
+
+    /// Makes pane `index` the active one: the window model, the active-pane
+    /// pointer, the comparison view's chrome, and the focus all follow (§3.3).
+    /// Driven by a header click and by a click on that pane's minimap.
+    private func activatePane(at index: Int) {
+        guard let comparisonView else { return }
+        windowModel.setActivePane(index)
+        activeFilePane = index == 0 ? comparisonView.paneView1 : comparisonView.paneView2
+        comparisonView.setActive(index)
+        // Focus follows activation (e.g. a header click), so typing and the
+        // active-pane pointer stay aligned (§3.3).
+        activeFilePane?.focusHexView()
+        // Navigation anchors on the active pane's caret — a pane switch can
+        // change whether a next/previous block exists (§10.3).
+        refreshDiffNavigation()
+        // The count describes the active pane's search, and the search belongs
+        // to the pane that was searched (§11).
+        syncFindBarToActivePane()
+        // The typing mode is per pane (§7.6), so the toolbar's toggle follows
+        // the pane the keys now go to (§24.2).
+        revalidateToolbar()
+    }
+
+    // MARK: - Minimap overview (§19.4)
+
+    /// The debounce waiting to start a pass, and the pass itself. Separate
+    /// handles because they are cancelled for different reasons: a request that
+    /// arrives while a pass runs must not kill it (see `scheduleOverviewRebuild`).
+    private var overviewDebounceTask: Task<Void, Never>?
+    private var overviewPassTask: Task<Void, Never>?
+    /// The row count the running pass is binning for — a diagnostic seam for the
+    /// tests, and what a future decision about a pass's usefulness would read.
+    private(set) var overviewPassRowCount = 0
+    /// Edited ranges whose difference marks are still waiting for the comparison
+    /// index to absorb them (§19.9).
+    private var overviewRowsAwaitingIndex: [Range<UInt64>] = []
+    /// The index build this controller's overview was derived from.
+    private var overviewIndexBuildCount = 0
+    /// How many full overview passes and how many row patches have run — the
+    /// seam for "an edit does not walk the file" (§19.9).
+    private(set) var overviewRebuilds = 0
+    private(set) var overviewPatches = 0
+    /// Full passes that finished and published their picture.
+    private(set) var overviewRebuildsCompleted = 0
+
+    /// One pane's inputs for an overview summary, snapshotted on the main thread
+    /// before the background pass reads anything. Internal so a test can drive
+    /// the row engine directly.
+    struct OverviewSource: Sendable {
+        let storage: (any ByteStorage)?
+        let saved: (any ByteStorage)?
+        let size: UInt64
+        /// Where the edit overlay has written — the only offsets a modified byte
+        /// can sit at.
+        let edited: [Range<UInt64>]
+        let isUntitled: Bool
+        /// The comparison index, kept whole rather than flattened into a list of
+        /// differing ranges: the rows being computed ask it for the blocks in
+        /// their own window (§8). Flattening it here walked every block in the
+        /// index on every keystroke — a third of the main thread on a 16 MB
+        /// comparison, and the sticking that came with it. Nil in single-file
+        /// mode and before the first index lands.
+        let differences: DiffBlockIndex?
+    }
+
+    /// The mode the file(s) now open call for: detail for a file small enough
+    /// that it is the more informative view, overview for a dump detail could
+    /// only ever show a sliver of (§19.4). Nothing is remembered — every open
+    /// decides afresh, because the answer is a property of the file, not a
+    /// preference; a toggle by the user holds only until the open files change.
+    private func preferredMinimapMode() -> MinimapView.RenderMode {
+        let size = [windowModel.pane1, windowModel.pane2]
+            .compactMap { $0.isOpen ? $0.status.fileSize : nil }
+            .max() ?? 0
+        return size <= MinimapView.detailPreferredMaxSize ? .detail : .overview
+    }
+
+    /// Puts the minimap in the mode the current file calls for. Called whenever
+    /// the open files change.
+    private func applyPreferredMinimapMode() {
+        setMinimapRenderMode(preferredMinimapMode())
+        updateOverviewAvailability()
+    }
+
+    /// Keeps the Overview control in step with what the overview could say about
+    /// the open file, and leaves the mode if it has nothing left to say — the
+    /// panel is never parked in a view its own switch refuses to offer (§19.4).
+    private func updateOverviewAvailability() {
+        let available = minimapView.overviewIsInformative()
+        minimapPanel.setOverviewAvailable(available)
+        if !available, minimapView.renderMode == .overview {
+            setMinimapRenderMode(.detail)
+        }
+    }
+
+    /// Switches the minimap's mode and reflects it in the header switch.
+    private func setMinimapRenderMode(_ mode: MinimapView.RenderMode) {
+        // The switch reflects the map's state whatever changed it — the menu
+        // item (§15), a file that calls for overview, or the switch itself.
+        minimapPanel.showMode(mode)
+        guard minimapView.renderMode != mode else { return }
+        minimapView.setRenderMode(mode)
+        if mode == .overview {
+            scheduleOverviewRebuild()
+        } else {
+            cancelOverviewWork()
+            reportOverviewProgress(nil)
+        }
+    }
+
+    /// Runs a full overview pass now, so a test can compare a patched picture
+    /// against the one a full pass builds.
+    func rebuildOverviewForTesting() {
+        rebuildOverview()
+    }
+
+    /// Puts the minimap in `mode`, the way the header switch does. Exposed
+    /// (internal) so tests can exercise a mode directly.
+    func setMinimapRenderModeForTesting(_ mode: MinimapView.RenderMode) {
+        setMinimapRenderMode(mode)
+    }
+
+    /// Toggles between the whole-file overview and the detail window. The choice
+    /// holds until the open files change, which decides afresh (§19.4).
+    @objc func toggleMinimapOverview() {
+        guard minimapView.renderMode == .overview || minimapView.overviewIsInformative() else { return }
+        setMinimapRenderMode(minimapView.renderMode == .overview ? .detail : .overview)
+    }
+
+    /// Recomputes the overview after a change that alters what it shows. Every
+    /// row of an overview is on screen at once, so unlike the detail window it
+    /// cannot be pulled per repaint — it is computed in the background and
+    /// debounced, so a burst of edits costs one pass (§19.4).
+    /// The pass waits for the edits to stop: each request restarts the delay, so
+    /// a burst of keystrokes — auto-repeat is thirty a second — costs one pass
+    /// after it, not one per keystroke. A pass over two 16 MB dumps reads both
+    /// files whole; doing that thirty times a second starves the main thread of
+    /// the very cache it draws from, which is felt as the typing sticking.
+    ///
+    /// Waiting is only acceptable because the map does not go silent while it
+    /// waits: a shifting edit marks its tail immediately and for free
+    /// (`markShiftedTailModified`), and the picture in hand is stretched rather
+    /// than dropped. What the pass adds is exactness.
+    ///
+    /// A pass in flight is cancelled: something changed under it, so whatever it
+    /// is halfway through computing is already the wrong picture, and finishing
+    /// it costs the reads that make the typing stick. The request that cancelled
+    /// it starts the wait again.
+    private func scheduleOverviewRebuild() {
+        guard minimapPanelVisible, minimapView.renderMode == .overview else { return }
+        overviewPassTask?.cancel()
+        overviewPassTask = nil
+        reportOverviewProgress(nil)
+        overviewDebounceTask?.cancel()
+        overviewDebounceTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            self?.overviewDebounceTask = nil
+            self?.rebuildOverview()
+        }
+    }
+
+    /// Cancels whatever the overview has in flight — a waiting debounce and a
+    /// running pass — and forgets any queued request.
+    private func cancelOverviewWork() {
+        overviewDebounceTask?.cancel()
+        overviewDebounceTask = nil
+        overviewPassTask?.cancel()
+        overviewPassTask = nil
+    }
+
+    private func rebuildOverview() {
+        guard minimapPanelVisible, minimapView.renderMode == .overview else { return }
+        let rowCount = minimapView.overviewRowCount()
+        let sources = overviewSources()
+        let extent = sources.map(\.size).max() ?? 0
+        guard rowCount > 0, extent > 0, !sources.isEmpty else {
+            minimapView.setOverviewSummaries([])
+            return
+        }
+        overviewPassTask?.cancel()
+        overviewPassRowCount = rowCount
+        overviewRebuilds += 1
+        beginOverviewProgress()
+        let progress = OverviewProgressSink(total: rowCount * sources.count) { [weak self] fraction in
+            self?.reportOverviewProgress(fraction)
+        }
+        // Deliberately below the interface's priority: the picture is worth
+        // waiting a little longer for, and nothing about it is worth competing
+        // with the keystroke being typed. The two files are independent passes
+        // and run together, which halves the wait on a comparison.
+        overviewPassTask = Task.detached(priority: .utility) { [weak self] in
+            let summaries = await withTaskGroup(
+                of: (Int, MinimapView.OverviewSummary).self
+            ) { group -> [MinimapView.OverviewSummary] in
+                for (index, source) in sources.enumerated() {
+                    group.addTask {
+                        (index, Self.overviewSummary(source: source, extent: extent,
+                                                     rowCount: rowCount,
+                                                     shouldCancel: { Task.isCancelled },
+                                                     rowsDone: { progress.advance($0) }))
+                    }
+                }
+                var built: [(Int, MinimapView.OverviewSummary)] = []
+                for await pair in group { built.append(pair) }
+                return built.sorted { $0.0 < $1.0 }.map(\.1)
+            }
+            guard !Task.isCancelled else { return }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.reportOverviewProgress(nil)
+                self.overviewPassTask = nil
+                guard !Task.isCancelled, self.minimapView.renderMode == .overview else { return }
+                self.minimapView.setOverviewSummaries(summaries)
+                // The row count the picture was built for is now the panel's,
+                // so the match bits are re-binned to match it (§11).
+                self.scheduleMinimapMatchSync()
+                self.overviewRebuildsCompleted += 1
+            }
+        }
+    }
+
+    /// Adds up what the concurrent passes have finished and reports it to the
+    /// panel's status bar, in twentieths: a progress bar told about every one of
+    /// a thousand rows would cost more than the pass it measures.
+    private final class OverviewProgressSink: @unchecked Sendable {
+        private let lock = NSLock()
+        private let total: Int
+        private var done = 0
+        private var reportedStep = -1
+        // The callback is always invoked on the main actor — `advance` hops there
+        // before firing it — so it is declared main-actor isolated; otherwise a
+        // caller updating the panel from it would warn.
+        private let onChange: @Sendable @MainActor (Double) -> Void
+
+        init(total: Int, onChange: @escaping @Sendable @MainActor (Double) -> Void) {
+            self.total = max(1, total)
+            self.onChange = onChange
+        }
+
+        func advance(_ rows: Int) {
+            lock.lock()
+            done += rows
+            let fraction = min(1, Double(done) / Double(total))
+            let step = Int(fraction * 20)
+            let changed = step != reportedStep
+            if changed { reportedStep = step }
+            lock.unlock()
+            guard changed else { return }
+            Task { @MainActor in onChange(fraction) }
+        }
+    }
+
+    /// How long a rebuild has to run before its progress is worth showing. A
+    /// small dump is binned in a few milliseconds, and a bar that appeared for
+    /// one frame would read as a glitch rather than as progress.
+    /// Injectable so a test can pin the policy instead of racing a real pass.
+    static var overviewProgressDelay: Duration = .milliseconds(80)
+
+    /// Once the bar is up it stays up this long, even if the pass finishes
+    /// first. Binning two 16 MB dumps takes ~150 ms, so hiding the bar the
+    /// instant the pass ended made it flash for a few frames — visible as a
+    /// flicker, unreadable as progress.
+    static var overviewProgressMinimumVisible: Duration = .milliseconds(300)
+
+    /// The rebuild's latest progress, or nil when nothing is running.
+    private var overviewProgress: Double?
+    private var overviewProgressReveal: Task<Void, Never>?
+    private var overviewProgressHide: Task<Void, Never>?
+    private var overviewProgressShown: ContinuousClock.Instant?
+
+    /// Starts watching a rebuild: the bar appears only if the pass is still
+    /// going when the delay is up.
+    private func beginOverviewProgress() {
+        overviewProgress = 0
+        overviewProgressHide?.cancel()
+        overviewProgressHide = nil
+        overviewProgressReveal?.cancel()
+        overviewProgressReveal = Task { [weak self] in
+            try? await Task.sleep(for: Self.overviewProgressDelay)
+            guard !Task.isCancelled, let self, let fraction = self.overviewProgress else { return }
+            self.overviewProgressShown = .now
+            self.minimapPanel.setRebuildProgress(fraction)
+        }
+    }
+
+    /// Moves the bar, or clears the status bar when the rebuild is over (nil).
+    private func reportOverviewProgress(_ fraction: Double?) {
+        overviewProgress = fraction
+        guard let fraction else {
+            overviewProgressReveal?.cancel()
+            overviewProgressReveal = nil
+            hideOverviewProgress()
+            return
+        }
+        // Only move a bar that is already up; whether it appears at all is the
+        // reveal task's decision.
+        guard !minimapPanel.progressBar.isHidden else { return }
+        minimapPanel.setRebuildProgress(fraction)
+    }
+
+    /// Takes the bar down, holding it for the rest of its minimum showing.
+    private func hideOverviewProgress() {
+        guard let shown = overviewProgressShown else {
+            minimapPanel.setRebuildProgress(nil)
+            return
+        }
+        let remaining = Self.overviewProgressMinimumVisible - shown.duration(to: .now)
+        guard remaining > .zero else {
+            overviewProgressShown = nil
+            minimapPanel.setRebuildProgress(nil)
+            return
+        }
+        // Finish the bar off at 100 % while it waits out its minimum.
+        minimapPanel.setRebuildProgress(1)
+        overviewProgressHide?.cancel()
+        overviewProgressHide = Task { [weak self] in
+            try? await Task.sleep(for: remaining)
+            guard !Task.isCancelled, let self else { return }
+            self.overviewProgressShown = nil
+            self.overviewProgressHide = nil
+            self.minimapPanel.setRebuildProgress(nil)
+        }
+    }
+
+    /// Re-aligns the panel's chrome with the dump (§19.2). The panel measures the
+    /// dump itself on every layout pass; this is for the changes that move the
+    /// bytes without touching the panel's own frame — a new pane layout, an
+    /// opened Find bar (§11), a taller row (§6).
+    private func updateMinimapChrome() {
+        minimapPanel.needsLayout = true
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        updateMinimapChrome()
+        updateDropStripInsets()
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        // The toolbar can only be reconfigured once it is up, which is not the
+        // case while the window controller is still building (§10.3).
+        syncDiffNavigationToolbarItem()
+    }
+
+    private func overviewSource(_ pane: PaneViewModel) -> OverviewSource {
+        OverviewSource(storage: pane.byteStorage, saved: pane.savedStorage, size: pane.fileSize,
+                       edited: pane.editedRanges, isUntitled: pane.isUntitled,
+                       differences: comparisonCoordinator.index)
+    }
+
+    /// How many of `buffer[from..<to]` are neither 0x00 nor 0xFF — how "full"
+    /// a cell's slice of the file is.
+    ///
+    /// The pass walks the whole file — every byte of a 16 MB dump, twice over for
+    /// a comparison — so it counts eight bytes at a time instead of one, over a
+    /// raw buffer. Through `Array`'s bounds-checked subscript, one byte at a
+    /// time, this took 1.9 s per file in a debug build: the overview arrived
+    /// seconds after it was asked for.
+    nonisolated static func significantByteCount(
+        _ buffer: UnsafeBufferPointer<UInt8>, from: Int, to: Int
+    ) -> Int {
+        guard let base = buffer.baseAddress else { return 0 }
+        let word = 8
+        var index = from
+        var count = 0
+        while index + word <= to {
+            let bits = UnsafeRawPointer(base + index).loadUnaligned(as: UInt64.self)
+            count += word - fillByteFlags(bits).nonzeroBitCount
+            index += word
+        }
+        while index < to {
+            if base[index] != 0x00, base[index] != 0xFF { count += 1 }
+            index += 1
+        }
+        return count
+    }
+
+    /// One bit per byte of `word` that is a 0x00/0xFF fill — the byte's high bit,
+    /// so `nonzeroBitCount` is the number of fill bytes in the word.
+    ///
+    /// `(b & 0x7F) + 0x7F` sets a byte's high bit exactly when `b` has any low bit
+    /// set, and cannot carry into the next byte (0x7F + 0x7F = 0xFE); OR-ing `b`
+    /// back in contributes its own high bit. So the high bit of each byte of that
+    /// expression is set iff the byte is non-zero — inverted, iff it is 0x00. The
+    /// same test on `~word` finds the 0xFF bytes, and no byte can be both.
+    nonisolated private static func fillByteFlags(_ word: UInt64) -> UInt64 {
+        let low: UInt64 = 0x7F7F_7F7F_7F7F_7F7F
+        let high: UInt64 = 0x8080_8080_8080_8080
+        let zeros = ~(((word & low) &+ low) | word) & high
+        let inverted = ~word
+        let ones = ~(((inverted & low) &+ low) | inverted) & high
+        return zeros | ones
+    }
+
+    /// Bins one file into `rowCount` rows of 16 cells: how full each cell's slice
+    /// of bytes is, and which cells hold a modified or differing byte.
+    ///
+    /// Rows are binned over `extent` — the longest open file — so the same row
+    /// means the same absolute offset on both maps (§9); rows past this file's
+    /// own end stay empty. One read per row keeps the pass sequential and bounded
+    /// by the file's size.
+    nonisolated private static func overviewSummary(
+        source: OverviewSource, extent: UInt64, rowCount: Int,
+        shouldCancel: () -> Bool,
+        rowsDone: (Int) -> Void = { _ in }
+    ) -> MinimapView.OverviewSummary {
+        let columns = Int(MinimapView.bytesPerRow)
+        let rows = max(0, rowCount)
+        let empty = MinimapView.OverviewSummary(
+            extent: extent, rowCount: rowCount,
+            density: [UInt8](repeating: 0, count: rows * columns),
+            modified: [UInt16](repeating: 0, count: rows),
+            different: [UInt16](repeating: 0, count: rows)
+        )
+        guard rowCount > 0, extent > 0,
+              let all = overviewRows(source: source, extent: extent, rowCount: rowCount,
+                                     rows: 0...(rowCount - 1),
+                                     shouldCancel: shouldCancel, rowsDone: rowsDone)
+        else { return empty }
+        return MinimapView.OverviewSummary(extent: extent, rowCount: rowCount,
+                                          density: all.density, modified: all.modified,
+                                          different: all.different)
+    }
+
+    /// The overview's values for `rows` alone: the density of their cells and
+    /// their modified/difference bits. A whole picture is this over every row; a
+    /// byte edit is this over the one or two rows it lands in, which is why the
+    /// engine takes a row range rather than always walking the file (§19.9).
+    ///
+    /// Returns nil when cancelled or when `rows` is not inside the picture.
+    nonisolated static func overviewRows(
+        source: OverviewSource, extent: UInt64, rowCount: Int, rows: ClosedRange<Int>,
+        shouldCancel: () -> Bool = { false },
+        rowsDone: (Int) -> Void = { _ in }
+    ) -> (density: [UInt8], modified: [UInt16], different: [UInt16])? {
+        let columns = Int(MinimapView.bytesPerRow)
+        guard rowCount > 0, extent > 0, rows.lowerBound >= 0, rows.upperBound < rowCount else {
+            return nil
+        }
+        var density = [UInt8](repeating: 0, count: rows.count * columns)
+        var modified = [UInt16](repeating: 0, count: rows.count)
+        var different = [UInt16](repeating: 0, count: rows.count)
+        guard let storage = source.storage else { return (density, modified, different) }
+
+        // One mapping, shared with the search's match overlay: the two must
+        // land on the same cells or the map contradicts itself (§19.4.2).
+        let binning = OverviewBinning(extent: extent, rowCount: rowCount)
+
+        /// The first byte of a row's slice of the file.
+        func start(ofRow row: Int) -> UInt64 { binning.start(ofRow: row) }
+
+        /// The cells one byte of a row's slice occupies, when the slice is
+        /// thinner than the row's 16 cells: the byte is stretched over the cells
+        /// it covers, so `index` 0 of a one-byte slice fills the row.
+        ///
+        /// A row covers fewer bytes than it has cells whenever the file is
+        /// smaller than 16 bytes per pixel row — under ~25 KB on a full-height
+        /// panel — and covers a *fraction* of a byte once the file is smaller
+        /// than the panel has rows. Slicing per cell there gave every cell but
+        /// the last an empty byte range: the picture came out a pale field with
+        /// the whole file collapsed into a stripe down its right edge (§19.4.2).
+        func stretchedColumns(forByteAt index: UInt64, ofSpan span: UInt64) -> ClosedRange<Int> {
+            binning.stretchedColumns(forByteAt: index, ofSpan: span)
+        }
+
+        /// The row a byte offset falls in, and the cells it occupies there.
+        func cells(of offset: UInt64) -> (row: Int, columns: ClosedRange<Int>)? {
+            binning.cells(of: offset, within: rows)
+        }
+
+        // The byte range these rows cover, so the passes below read and scan
+        // only what belongs to them.
+        let windowStart = start(ofRow: rows.lowerBound)
+        let windowEnd = start(ofRow: rows.upperBound + 1)
+
+        // Density: one read per row, counting the bytes that are not a fill.
+        // Progress is reported in blocks of rows, which is granular enough for a
+        // bar and rare enough not to matter to the pass.
+        var reportedRow = rows.lowerBound
+        for row in rows {
+            if shouldCancel() { return nil }
+            if row - reportedRow >= 64 {
+                rowsDone(row - reportedRow)
+                reportedRow = row
+            }
+            let rowStart = start(ofRow: row)
+            let rowEnd = start(ofRow: row + 1)
+            let span = rowEnd - rowStart
+            // A row whose slice is thinner than a byte still stands for the byte
+            // its position falls in — read that one, rather than leaving the row
+            // blank as it used to be.
+            let readEnd = min(max(rowEnd, rowStart + 1), source.size)
+            guard rowStart < readEnd else { continue }
+            guard let bytes = try? storage.read(at: rowStart, length: Int(readEnd - rowStart)),
+                  !bytes.isEmpty else { continue }
+            let base = (row - rows.lowerBound) * columns
+            bytes.withUnsafeBufferPointer { buffer in
+                guard span >= UInt64(columns) else {
+                    // Fewer bytes than cells: each byte fills the cells it
+                    // covers, so the row reads as a coarse picture of those
+                    // bytes instead of one inked cell at its right edge.
+                    let count = min(buffer.count, Int(max(span, 1)))
+                    for index in 0..<count {
+                        guard significantByteCount(buffer, from: index, to: index + 1) > 0 else { continue }
+                        for column in stretchedColumns(forByteAt: UInt64(index), ofSpan: span) {
+                            density[base + column] = 255
+                        }
+                    }
+                    return
+                }
+                for column in 0..<columns {
+                    let sliceStart = rowStart + span * UInt64(column) / UInt64(columns)
+                    let sliceEnd = rowStart + span * UInt64(column + 1) / UInt64(columns)
+                    let from = Int(sliceStart - rowStart)
+                    let to = Int(min(sliceEnd, readEnd) - rowStart)
+                    guard from < to, to <= buffer.count else { continue }
+                    let significant = significantByteCount(buffer, from: from, to: to)
+                    guard significant > 0 else { continue }
+                    density[base + column] =
+                        UInt8(min(255, max(1, significant * 255 / (to - from))))
+                }
+            }
+        }
+
+        rowsDone(rows.upperBound + 1 - reportedRow)
+
+        // Modified: where the byte differs from the saved copy — the same rule
+        // the panes paint by — inside the rows an edit can have reached.
+        //
+        // Row by row, cell by cell, comparing whole slices rather than bytes: an
+        // insert or a delete shifts every byte after it, so `source.edited`
+        // covers the file's whole tail and a per-byte loop over it took seconds.
+        // Bytes outside the edited ranges cannot differ from the saved copy, so
+        // comparing a cell whole is safe: the untouched part of it compares
+        // equal and contributes nothing.
+        if !source.isUntitled, !source.edited.isEmpty {
+            let savedSize = source.saved?.size ?? 0
+            for row in rows {
+                if shouldCancel() { return nil }
+                let rowStart = start(ofRow: row)
+                let rowEnd = start(ofRow: row + 1)
+                let span = rowEnd - rowStart
+                let readEnd = min(max(rowEnd, rowStart + 1), source.size)
+                guard rowStart < readEnd else { continue }
+                // Rows no edit can have reached are skipped, so a clean file
+                // costs nothing here and a small edit costs one row.
+                guard source.edited.contains(where: {
+                    $0.lowerBound < readEnd && $0.upperBound > rowStart
+                }) else { continue }
+                guard let bytes = try? storage.read(at: rowStart, length: Int(readEnd - rowStart)),
+                      !bytes.isEmpty else { continue }
+                let savedBytes = source.saved
+                    .flatMap { try? $0.read(at: rowStart, length: Int(readEnd - rowStart)) } ?? []
+                let index = row - rows.lowerBound
+
+                guard span >= UInt64(columns) else {
+                    // Fewer bytes than cells: compare the handful of bytes and
+                    // stretch each one over the cells it covers.
+                    for offsetInRow in 0..<bytes.count {
+                        let absolute = rowStart + UInt64(offsetInRow)
+                        let changed = absolute >= savedSize
+                            || (savedBytes.indices.contains(offsetInRow)
+                                ? savedBytes[offsetInRow] != bytes[offsetInRow] : true)
+                        guard changed else { continue }
+                        for column in stretchedColumns(forByteAt: UInt64(offsetInRow), ofSpan: span) {
+                            modified[index] |= UInt16(1) << UInt16(column)
+                        }
+                    }
+                    continue
+                }
+
+                for column in 0..<columns {
+                    let sliceStart = rowStart + span * UInt64(column) / UInt64(columns)
+                    let sliceEnd = rowStart + span * UInt64(column + 1) / UInt64(columns)
+                    let from = Int(sliceStart - rowStart)
+                    let to = Int(min(sliceEnd, readEnd) - rowStart)
+                    guard from < to, to <= bytes.count else { continue }
+                    // Bytes past the saved file's end are new by definition.
+                    if sliceStart + UInt64(to - from) > savedSize {
+                        modified[index] |= UInt16(1) << UInt16(column)
+                        continue
+                    }
+                    guard savedBytes.count >= to else {
+                        modified[index] |= UInt16(1) << UInt16(column)
+                        continue
+                    }
+                    let differs = bytes.withUnsafeBufferPointer { current in
+                        savedBytes.withUnsafeBufferPointer { saved in
+                            memcmp(current.baseAddress! + from, saved.baseAddress! + from, to - from) != 0
+                        }
+                    }
+                    if differs { modified[index] |= UInt16(1) << UInt16(column) }
+                }
+            }
+        }
+
+        // Differences: the index's differing blocks that touch these rows, found
+        // by binary search rather than by flattening the index. A block spanning
+        // whole rows marks every column of them.
+        for block in source.differences?.blocks(in: windowStart..<windowEnd) ?? []
+        where block.kind == .different {
+            if shouldCancel() { return nil }
+            binning.mark(block.range, rows: rows, into: &different)
+        }
+
+        // A cell past this file's own end holds none of its bytes, so it can
+        // neither differ nor be modified — whatever the comparison index says.
+        // The index is built over the *union* of the two files (§9), so every
+        // byte past the shorter file's end counts as a difference there; drawn
+        // as such it painted the shorter map's empty tail solid. The tail is
+        // empty, exactly as it is in detail mode.
+        for row in rows {
+            let slot = row - rows.lowerBound
+            guard modified[slot] != 0 || different[slot] != 0 else { continue }
+            var covered: UInt16 = 0
+            let rowStart = start(ofRow: row)
+            let span = start(ofRow: row + 1) - rowStart
+            for column in 0..<columns
+            where rowStart + span * UInt64(column) / UInt64(columns) < source.size {
+                covered |= UInt16(1) << UInt16(column)
+            }
+            modified[slot] &= covered
+            different[slot] &= covered
+        }
+
+        return (density, modified, different)
+    }
+
+    // MARK: - Minimap data (§19)
+
+    /// Feeds the minimap the per-byte state of the rows it is showing.
+    ///
+    /// The map is virtualized: it asks for the byte range of its visible window
+    /// on each repaint and stores nothing, so this reads a couple of thousand
+    /// bytes however large the file is. It is also the very call the panes make
+    /// to paint their own rows, which is what keeps the map's colours — modified,
+    /// difference — identical to theirs instead of a background approximation
+    /// that lags behind them.
+    private func minimapByteStates(mapIndex: Int, range: Range<UInt64>) -> [HexByteState] {
+        let pane: PaneViewModel?
+        switch mode {
+        case .singleFile:
+            pane = mapIndex == 0 ? windowModel.pane1 : nil
+        case .comparison:
+            pane = mapIndex == 0 ? windowModel.pane1 : (mapIndex == 1 ? windowModel.pane2 : nil)
+        case .empty:
+            pane = nil
+        }
+        return pane?.hexByteStates(in: range) ?? []
+    }
+
+    /// Feeds the minimap the active search's matches for the rows it is
+    /// showing (§11), from the same set the dump paints from — the map cannot
+    /// disagree with the dump for the same reason its byte states cannot.
+    private func minimapMatchRanges(mapIndex: Int, range: Range<UInt64>) -> [Range<UInt64>] {
+        minimapPane(at: mapIndex)?.matchRanges(intersecting: range) ?? []
+    }
+
+    private func minimapCurrentMatch(mapIndex: Int) -> Range<UInt64>? {
+        minimapPane(at: mapIndex)?.currentMatchRange
+    }
+
+    /// Hands the minimap the window's bookmarks (§19.4.3). The store is the one
+    /// list both maps mark, so this is a straight copy — which rows a given map
+    /// actually shows is the minimap's own geometry to decide, and the names come
+    /// along because hovering a mark names it.
+    private func syncMinimapBookmarks() {
+        minimapView.setBookmarks(windowModel.bookmarkStore.bookmarks)
+    }
+
+    /// Hands the minimap the search's matches for the overview (§11).
+    ///
+    /// Derived from the pane's match set with the overview's own binning — the
+    /// same arithmetic the density picture uses, so a match lands on the cell
+    /// its bytes land in — and cheap enough to do on the main actor: a couple of
+    /// hundred bytes per map, no file read.
+    /// Asks for the map's match marks, later.
+    ///
+    /// The map is never on the critical path of a search: showing the match the
+    /// user asked for is the dump's job and the reveal's, and the marks beside
+    /// it are a summary that may as well arrive a frame afterwards. So this
+    /// only schedules — coalescing a burst of presses into one sync — and the
+    /// walk itself runs off the main thread (§11, §19).
+    private func scheduleMinimapMatchSync() {
+        // Nothing on the map is drawn while the panel is closed, so nothing is
+        // computed for it. Showing the panel is what asks
+        // (`minimapPanelVisibilityChanged`), and the forgotten picture makes
+        // that ask rebuild rather than trust what it last saw (§19).
+        guard minimapPanelVisible else {
+            syncedMatchPicture = nil
+            return
+        }
+        guard !minimapMatchSyncScheduled else { return }
+        minimapMatchSyncScheduled = true
+        Task { @MainActor [weak self] in
+            self?.minimapMatchSyncScheduled = false
+            await self?.syncMinimapMatchOverlays()
+        }
+    }
+
+    /// Hands the minimap the search's matches for the overview (§11).
+    ///
+    /// The state is read here, on the actor that owns it; the row walk that
+    /// turns a set into marks is pure arithmetic over `Sendable` values, so it
+    /// runs on a detached task and the result is installed on return. A picture
+    /// that has been overtaken while that ran is dropped: a newer sync is
+    /// already on its way.
+    private func syncMinimapMatchOverlays() async {
+        guard minimapPanelVisible else {
+            syncedMatchPicture = nil
+            return
+        }
+        let rowCount = minimapView.overviewRowCount()
+        let extent = currentFileSizes().max() ?? 0
+        let panes: [PaneViewModel?]
+        switch mode {
+        case .empty:
+            panes = []
+        case .singleFile:
+            panes = [windowModel.pane1]
+        case .comparison:
+            panes = [windowModel.pane1, windowModel.pane2]
+        }
+        guard rowCount > 0, extent > 0, !panes.isEmpty else {
+            minimapView.setMatchOverlays([])
+            syncedMatchPicture = nil
+            return
+        }
+        let binning = OverviewBinning(extent: extent, rowCount: rowCount)
+        let picture = MatchPicture(rowCount: rowCount, extent: extent,
+                                   sets: panes.map { MatchPicture.Marks($0?.highlightedMatchSet) })
+        if picture == syncedMatchPicture, minimapView.matchOverlays.count == panes.count {
+            // The same occurrences over the same geometry are the same strokes.
+            // Only the plate can have moved, and re-marking one range is the
+            // whole of that — this is the path a press of ‹ › takes, and it
+            // used to walk every row of the map instead (§11).
+            minimapView.setMatchOverlays(zip(minimapView.matchOverlays, panes).map { overlay, pane in
+                var moved = overlay
+                moved.current = Self.currentMatchMarks(pane?.currentMatchRange, binning: binning,
+                                                       rowCount: rowCount)
+                return moved
+            })
+            return
+        }
+        // The sets and the plates as values, so the walk needs nothing from the
+        // main actor.
+        let sets = panes.map { pane -> MatchSet? in
+            guard let pane, pane.isOpen else { return nil }
+            return pane.highlightedMatchSet
+        }
+        let currents = panes.map { $0?.currentMatchRange }
+        let generation = minimapMatchSyncGeneration + 1
+        minimapMatchSyncGeneration = generation
+        matchOverlayWalksForTesting += 1
+        let overlays = await Task.detached(priority: .utility) {
+            zip(sets, currents).map {
+                Self.matchOverlay(for: $0, current: $1, binning: binning,
+                                  rowCount: rowCount, extent: extent)
+            }
+        }.value
+        guard generation == minimapMatchSyncGeneration else { return }
+        syncedMatchPicture = picture
+        minimapView.setMatchOverlays(overlays)
+    }
+
+    /// What the overview's match strokes were last computed from: the geometry,
+    /// and each pane's set as far as the strokes can tell two sets apart.
+    ///
+    /// The set is not compared byte for byte — it is compared by the things the
+    /// picture is made of. Two sets with the same pattern, the same folding and
+    /// the same count over the same extent mark the same rows, so there is
+    /// nothing to redo; and while a search is being indexed the count is what
+    /// grows, so a batch still reads as a new picture.
+    private struct MatchPicture: Equatable {
+        struct Marks: Equatable {
+            let pattern: SearchPattern
+            let folding: CaseFolding
+            let total: Int
+
+            init?(_ set: MatchSet?) {
+                guard let set else { return nil }
+                pattern = set.pattern
+                folding = set.folding
+                total = set.total
+            }
+        }
+
+        let rowCount: Int
+        let extent: UInt64
+        let sets: [Marks?]
+    }
+
+    private var syncedMatchPicture: MatchPicture?
+
+    /// Whether a match sync is already queued for the next turn, so a run of
+    /// presses costs one walk rather than one per press.
+    private var minimapMatchSyncScheduled = false
+    /// Which sync is current: a walk that finished after a newer one started
+    /// has nothing to install.
+    private var minimapMatchSyncGeneration = 0
+
+    /// How many times the strokes have actually been walked. The point of the
+    /// picture check above is that this does not climb while the set stands
+    /// still, which is only observable as a count (§11).
+    private(set) var matchOverlayWalksForTesting = 0
+
+    /// One map's worth of match bits.
+    ///
+    /// Walks the **rows**, not the matches: a two-byte pattern in a dump has
+    /// hundreds of thousands of occurrences and the overview has a couple of
+    /// thousand rows, so per-match work would be the wrong way round. Each row
+    /// stops early once every column is marked or after `perRowMarkLimit`
+    /// matches — by then the row says all it can say at this scale.
+    private static func matchOverlay(for set: MatchSet?, current: Range<UInt64>?,
+                                     binning: OverviewBinning,
+                                     rowCount: Int, extent: UInt64) -> MinimapView.MatchOverlay {
+        guard let set, set.isHighlightable else { return .empty }
+        let perRowMarkLimit = 32
+        let rows = 0...(rowCount - 1)
+        let reach = UInt64(max(set.patternLength - 1, 0))
+        var matched = [UInt16](repeating: 0, count: rowCount)
+
+        for row in rows {
+            let rowStart = binning.start(ofRow: row)
+            let rowEnd = binning.start(ofRow: row + 1)
+            guard rowEnd > rowStart else { continue }
+            // A match starting just above the row can still reach into it.
+            let from = rowStart > reach ? rowStart - reach : 0
+            var index = set.index(atOrAfter: from)
+            var marks = 0
+            while let i = index, marks < perRowMarkLimit, matched[row] != .max {
+                guard let start = set.start(at: i), start < rowEnd else { break }
+                // The whole row range, not this one row: the marking indexes
+                // the bits from the range's start, and the masks are absolute.
+                binning.markHexColumns(start..<start + UInt64(set.patternLength),
+                                       rows: rows, into: &matched)
+                marks += 1
+                index = i + 1 < set.total ? i + 1 : nil
+            }
+        }
+        return MinimapView.MatchOverlay(
+            extent: extent, rowCount: rowCount, matched: matched,
+            current: currentMatchMarks(current, binning: binning, rowCount: rowCount))
+    }
+
+    /// The row bits for the find indicator alone — one range, so this is what a
+    /// step of ‹ › costs on the map.
+    private static func currentMatchMarks(_ range: Range<UInt64>?, binning: OverviewBinning,
+                                          rowCount: Int) -> [UInt16] {
+        var marks = [UInt16](repeating: 0, count: rowCount)
+        guard rowCount > 0, let range else { return marks }
+        binning.markHexColumns(range, rows: 0...(rowCount - 1), into: &marks)
+        return marks
+    }
+
+    /// Hands the minimap the open panes' segment partitions, so the strip beside
+    /// each map paints the dump's pieces (§19.4.4). The tint is by *position* —
+    /// the piece's index into the partition — the same rule the dump's row tint
+    /// uses, so the strip and the dump are one legend. A pane with a single piece
+    /// hands its lone block; the minimap draws no strip for it, and the strip
+    /// appears the moment a cut makes a second piece.
+    private func syncMinimapSegments() {
+        let panes: [PaneViewModel?]
+        switch mode {
+        case .empty:
+            panes = []
+        case .singleFile:
+            panes = [windowModel.pane1]
+        case .comparison:
+            panes = [windowModel.pane1, windowModel.pane2]
+        }
+        let blocks: [[MinimapView.SegmentBlock]] = panes.map { pane in
+            guard let pane, pane.isOpen else { return [] }
+            return pane.segmentStore.segments.map {
+                MinimapView.SegmentBlock(range: $0.range,
+                                         colorIndex: $0.index % HexTheme.segmentTints.count)
+            }
+        }
+        minimapView.setSegmentBlocks(blocks)
+    }
+
+    /// Hands the minimap the panes' published zone maps, so the gutter left of
+    /// each map brackets what a tool-module found in that file (§19.4.5).
+    ///
+    /// Read from the panes rather than from the `ToolController`: the pane is
+    /// where the map lands once it has been clamped to the file's own size
+    /// (`ZoneMap.normalized`), so the gutter and the dump bracket exactly the
+    /// same bytes. It also means this needs no idea of which pane a session is
+    /// bound to — the other pane's map is simply empty.
+    private func syncMinimapZones() {
+        let count: Int
+        switch mode {
+        case .empty: count = 0
+        case .singleFile: count = 1
+        case .comparison: count = 2
+        }
+        minimapView.setZoneMaps((0..<count).map { index in
+            guard let pane = minimapPane(at: index), pane.isOpen else { return ZoneMap.empty }
+            return pane.zones
+        })
+    }
+
+    /// Hands the minimap the open files' sizes. That is all it needs to lay its
+    /// maps out — everything it draws it pulls per repaint.
+    private func refreshMinimapMaps() {
+        minimapView.setMaps(currentFileSizes().map { MinimapView.Map(fileSize: $0) })
+        updateMinimapSelections()
+        // The maps were just rebuilt, so the marks have to be handed over again
+        // — and a file that grew or shrank changes which of them are drawn (§9).
+        syncMinimapBookmarks()
+        // A content edit moves the cuts with the bytes (§21.2), so the strip's
+        // partition follows — and a file that opened or closed changes which
+        // panes have a partition at all.
+        syncMinimapSegments()
+        // The same goes for the zones a tool-module published: a file that
+        // opened, closed or changed length changes which of them there are to
+        // bracket (§19.4.5).
+        syncMinimapZones()
+        // The overview's match bits are binned over the extent, so a file that
+        // grew or shrank re-bins them too (§11).
+        scheduleMinimapMatchSync()
+        // An insert or a delete can carry the file across the line where the
+        // overview stops magnifying it, so the offer follows the size as well as
+        // the panel's height (§19.4). The *mode* is deliberately not re-decided
+        // here: this runs on every edit, and the choice belongs where the open
+        // files change.
+        updateOverviewAvailability()
+        // The bytes moved, so an overview summary of them is stale.
+        scheduleOverviewRebuild()
+    }
+
+    /// The bytes under the maps changed. An overwrite names a bounded range, so
+    /// both modes update in place and at once: detail repaints the rows that draw
+    /// it (its cells are pulled from the panes as it draws), and overview
+    /// recomputes those rows of its picture instead of walking the file again —
+    /// a typed byte moves one row of a thousand (§19.9).
+    ///
+    /// Both maps, because a byte edited in one file changes the difference state
+    /// the other one paints at that same offset (§9).
+    /// `mapIndex` is the map of the pane the edit happened in — the maps mirror
+    /// the panes (§19). Only that map's rows can have moved: a shift in one file
+    /// says nothing about the other, which is what painting both of them red
+    /// wrongly claimed.
+    private func repaintMinimap(after edit: DiffEdit, mapIndex: Int) {
+        switch edit {
+        case .overwrite(let range):
+            // Typing past EOF grows the file, which re-bins the overview: that is
+            // a new picture, not a patch.
+            guard minimapView.maps.map(\.fileSize) == currentFileSizes() else {
+                minimapView.invalidateCells()
+                refreshMinimapMaps()
+                return
+            }
+            minimapView.invalidateBytes(in: range)
+            patchOverviewRows(covering: range)
+            // The difference marks come from the comparison index, which absorbs
+            // the edit in the background: these rows are patched again when it
+            // does, instead of the whole picture being rebuilt (§19.9).
+            if mode == .comparison { overviewRowsAwaitingIndex.append(range) }
+        case .insert, .delete:
+            // Every byte after the change moved, so no range describes it: the
+            // exact picture is a full pass, and that pass waits for the typing to
+            // settle. Until it lands the map keeps the picture it has — a byte
+            // or two out of date, which at a row per 13 KB is invisible.
+            //
+            // Marking the shifted tail red in the meantime was tried and is
+            // wrong: from an edit near the start of a file that paints the whole
+            // map red, which is not "the old picture, slightly stale" but a new
+            // and much worse one.
+            minimapView.invalidateCells()
+            refreshMinimapMaps()
+        }
+    }
+
+    /// Recomputes the overview rows that `range` falls in, on every map, and
+    /// leaves the rest of the picture untouched. Falls back to a full rebuild
+    /// when the picture on screen was binned differently from what these rows
+    /// would be (a resize or a new file landed in between).
+    private func patchOverviewRows(covering range: Range<UInt64>) {
+        guard minimapPanelVisible, minimapView.renderMode == .overview else { return }
+        let summaries = minimapView.overviewSummaries
+        let sources = overviewSources()
+        guard !summaries.isEmpty, summaries.count == sources.count,
+              let extent = summaries.first?.extent, extent > 0,
+              let rowCount = summaries.first?.rowCount, rowCount > 0,
+              summaries.allSatisfy({ $0.extent == extent && $0.rowCount == rowCount }),
+              rowCount == minimapView.overviewRowCount(),
+              extent == sources.map(\.size).max() ?? 0 else {
+            scheduleOverviewRebuild()
+            return
+        }
+        let last = min(range.upperBound &- 1, extent - 1)
+        guard range.lowerBound <= last else { return }
+        let firstRow = Int(range.lowerBound * UInt64(rowCount) / extent)
+        let lastRow = min(rowCount - 1, Int(last * UInt64(rowCount) / extent))
+        guard firstRow <= lastRow else { return }
+        let rows = firstRow...lastRow
+        for (index, source) in sources.enumerated() {
+            guard let patch = Self.overviewRows(source: source, extent: extent,
+                                                rowCount: rowCount, rows: rows) else { continue }
+            minimapView.updateOverviewRows(rows, density: patch.density, modified: patch.modified,
+                                           different: patch.different, forMapAt: index)
+        }
+        overviewPatches += 1
+    }
+
+    /// The open files' sizes, in map order.
+    private func currentFileSizes() -> [UInt64] {
+        switch mode {
+        case .singleFile: return [windowModel.pane1.fileSize]
+        case .comparison: return [windowModel.pane1.fileSize, windowModel.pane2.fileSize]
+        case .empty: return []
+        }
+    }
+
+    /// One snapshot per map, in map order.
+    private func overviewSources() -> [OverviewSource] {
+        switch mode {
+        case .singleFile: return [overviewSource(windowModel.pane1)]
+        case .comparison: return [overviewSource(windowModel.pane1), overviewSource(windowModel.pane2)]
+        case .empty: return []
+        }
+    }
+
+    /// The comparison index changed. When what changed is the edits this
+    /// controller recorded, the overview patches their rows; anything else — a
+    /// fresh index, a build starting, a cancel — means the derived picture is
+    /// stale as a whole and is rebuilt (§19.9).
+    private func overviewFollowIndexChange() {
+        guard minimapPanelVisible, minimapView.renderMode == .overview else {
+            overviewRowsAwaitingIndex.removeAll()
+            return
+        }
+        let build = comparisonCoordinator.indexBuildCount
+        guard build == overviewIndexBuildCount else {
+            overviewIndexBuildCount = build
+            overviewRowsAwaitingIndex.removeAll()
+            scheduleOverviewRebuild()
+            return
+        }
+        guard !overviewRowsAwaitingIndex.isEmpty else {
+            scheduleOverviewRebuild()
+            return
+        }
+        let ranges = overviewRowsAwaitingIndex
+        overviewRowsAwaitingIndex.removeAll()
+        for range in ranges { patchOverviewRows(covering: range) }
+    }
+
+    /// Centres the pane on the byte clicked on a map, moving the viewport
+    /// without touching the caret or the selection — a minimap click navigates
+    /// the view, it does not edit the caret's position. In comparison mode the
+    /// click also makes that pane active, so the keyboard and the navigation
+    /// commands act on the pane the user just pointed at.
+    private func selectMinimapOffset(mapIndex: Int, offset: UInt64) {
+        let pane: PaneViewModel
+        switch mode {
+        case .empty:
+            return
+        case .singleFile:
+            guard mapIndex == 0 else { return }
+            pane = windowModel.pane1
+        case .comparison:
+            guard mapIndex == 0 || mapIndex == 1 else { return }
+            if mapIndex != windowModel.activePaneIndex { activatePane(at: mapIndex) }
+            pane = mapIndex == 0 ? windowModel.pane1 : windowModel.pane2
+        }
+        guard pane.isOpen else { return }
+        filePaneView(for: pane)?.revealOffsetCentered(offset)
+    }
+
+    // MARK: - The segment strip's legend (§19.4.4, §21.3)
+
+    /// The pane a minimap map stands for, by map index — the strip's menu and
+    /// hover both act through it. Nil in empty mode or for an index the mode
+    /// does not use.
+    private func minimapPane(at mapIndex: Int) -> PaneViewModel? {
+        switch mode {
+        case .empty:
+            return nil
+        case .singleFile:
+            return mapIndex == 0 ? windowModel.pane1 : nil
+        case .comparison:
+            return mapIndex == 0 ? windowModel.pane1 : (mapIndex == 1 ? windowModel.pane2 : nil)
+        }
+    }
+
+    /// The current name of the piece the strip's hover text names — asked for at
+    /// hover time, not stored, because the store fires no invalidation for a
+    /// rename (§21.3).
+    private func minimapSegmentName(mapIndex: Int, pieceIndex: Int) -> String {
+        guard let pane = minimapPane(at: mapIndex), pane.isOpen,
+              pieceIndex < pane.segmentStore.segments.count else { return "" }
+        return pane.segmentStore.segments[pieceIndex].name
+    }
+
+    /// The piece a strip-menu item acts on, carried in the item's
+    /// `representedObject` — the way the offset menu carries its target.
+    /// Internal so a test can verify the piece an item carries.
+    final class SegmentMenuTarget: NSObject {
+        let mapIndex: Int
+        let pieceIndex: Int
+        /// The pointer's own spot on the strip when the menu was opened, in the
+        /// minimap's coordinates — the anchor the Edit popover points at, so it
+        /// opens where the menu did rather than at the piece's whole block
+        /// (§21.4).
+        let point: NSPoint
+        init(mapIndex: Int, pieceIndex: Int, point: NSPoint) {
+            self.mapIndex = mapIndex
+            self.pieceIndex = pieceIndex
+            self.point = point
+        }
+    }
+
+    /// The right-click menu the segment strip offers for a piece: what acts on
+    /// the piece under the pointer (§21.3) — the form's row menu with the strip's
+    /// own Select. Each item carries the piece it acts on in its
+    /// `representedObject`, the way the offset menu carries its target.
+    private func makeMinimapSegmentMenu(mapIndex: Int, pieceIndex: Int, point: NSPoint) -> NSMenu? {
+        guard let pane = minimapPane(at: mapIndex), pane.isOpen,
+              pieceIndex < pane.segmentStore.segments.count else { return nil }
+        let target = SegmentMenuTarget(mapIndex: mapIndex, pieceIndex: pieceIndex, point: point)
+        // The piece's label names it in every item, so the menu says what it will
+        // act on — "Select Segment S1", not a bare "Select Segment" (§21.3).
+        let label = pane.segmentStore.segments[pieceIndex].label
+        let menu = NSMenu()
+
+        // Save Segment… writes one piece to a file (§21.5).
+        let save = menu.addItem(withTitle: "Save Segment \(label)…",
+                                action: #selector(minimapMenuSaveSegment(_:)), keyEquivalent: "")
+        save.target = self
+        save.representedObject = target
+
+        // Replace Segment from File… reads one piece from a file (§21.6): the
+        // donor-region swap, the inverse of Save Segment.
+        let replace = menu.addItem(withTitle: "Replace Segment \(label) from File…",
+                                   action: #selector(minimapMenuReplaceSegment(_:)), keyEquivalent: "")
+        replace.target = self
+        replace.representedObject = target
+
+        menu.addItem(.separator())
+
+        // Select Segment: the whole piece is selected — its full range, not a
+        // caret at its start (§21.3).
+        let select = menu.addItem(withTitle: "Select Segment \(label)",
+                                  action: #selector(minimapMenuSelectSegment(_:)), keyEquivalent: "")
+        select.target = self
+        select.representedObject = target
+
+        // Edit Segment: the popover that edits this piece — its offset and its
+        // name — anchored where the menu opened, not the form with the table of
+        // all segments (§21.4).
+        let edit = menu.addItem(withTitle: "Edit Segment \(label)",
+                                action: #selector(minimapMenuEditSegment(_:)), keyEquivalent: "")
+        edit.target = self
+        edit.representedObject = target
+
+        // Merge: the piece's bytes merge into a neighbour that keeps its name
+        // (§21.3) — the same act as the form's row menu. The title names both
+        // the piece and the neighbour it merges into, so the menu says what it
+        // will do without a second look.
+        let remove = menu.addItem(withTitle: Segment.mergeTitle(for: pieceIndex),
+                                  action: #selector(minimapMenuRemoveSegment(_:)), keyEquivalent: "")
+        remove.target = self
+        remove.representedObject = target
+        return menu
+    }
+
+    // MARK: - The zone gutter's menu (§19.4.5)
+
+    /// The zone a gutter-menu item acts on, carried in the item's
+    /// `representedObject` — the way the strip's menu carries its piece.
+    ///
+    /// The *id* rather than the zone: a tool-module can republish between the
+    /// menu opening and the item being picked, and the id is what survives that
+    /// (a tool-module keeps its ids across a rebuild, `Zone.id`). The action
+    /// looks the zone up again, so it acts on the file as it is now or on
+    /// nothing at all.
+    final class ZoneMenuTarget: NSObject {
+        let mapIndex: Int
+        let zoneID: Zone.ID
+        init(mapIndex: Int, zoneID: Zone.ID) {
+            self.mapIndex = mapIndex
+            self.zoneID = zoneID
+        }
+    }
+
+    /// The right-click menu the zone gutter offers for a bracket: what acts on
+    /// the zone under the pointer (§19.4.5).
+    ///
+    /// The same two things the dump's own zone menu offers, because the reader
+    /// asking from the gutter is asking about the same zone: select it, or take
+    /// it out into a tab of its own. What is left of `Design/ZONES_IDEA.md` —
+    /// replacing a zone from a file, and the rest — belongs to the tool-module
+    /// that knows what the zone *is*, and wants a tool-module with something to
+    /// say first (`Zone.kind`).
+    private func makeMinimapZoneMenu(mapIndex: Int, zoneID: Zone.ID) -> NSMenu? {
+        guard let pane = minimapPane(at: mapIndex), pane.isOpen,
+              let zone = pane.zones.zones.first(where: { $0.id == zoneID }) else { return nil }
+        let menu = NSMenu()
+        // The zone's name is in each title, so the menu says what it will act on
+        // — the same rule the strip's items follow with their labels (§21.3). An
+        // unnamed zone is named by where it starts, which is all there is.
+        let named = zone.name.isEmpty
+            ? "at \(zone.range.lowerBound.bareAddress)"
+            : "“\(zone.name)”"
+
+        func item(_ title: String, _ action: Selector) -> NSMenuItem {
+            let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.representedObject = ZoneMenuTarget(mapIndex: mapIndex, zoneID: zoneID)
+            return item
+        }
+        _ = item("Select Zone \(named)", #selector(minimapMenuSelectZone(_:)))
+        _ = item("Open Zone \(named) in a New Tab",
+                 #selector(minimapMenuOpenZoneInNewTab(_:)))
+        return menu
+    }
+
+    /// Open in a New Tab from the gutter's menu: the same act the dump's own
+    /// menu performs, on the zone looked up again — a tool-module may have
+    /// republished between the menu opening and the item being picked.
+    @objc private func minimapMenuOpenZoneInNewTab(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? ZoneMenuTarget,
+              let pane = minimapPane(at: target.mapIndex),
+              let zone = pane.zones.zones.first(where: { $0.id == target.zoneID })
+        else { return }
+        openZone(zone, of: pane)
+    }
+
+    /// Select from the gutter's menu: the zone's whole range is selected and the
+    /// tool-module that published it is told, which is the same pair of acts the
+    /// dump's own zone menu performs (`selectZone`) — the bytes are the pane's
+    /// to select, and what the zone *stands for* only the tool-module knows.
+    @objc private func minimapMenuSelectZone(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? ZoneMenuTarget,
+              let pane = minimapPane(at: target.mapIndex), pane.isOpen,
+              let zone = pane.zones.zones.first(where: { $0.id == target.zoneID }) else { return }
+        pane.select(range: zone.range)
+        filePaneView(for: pane)?.revealOffsetCentered(zone.range.lowerBound)
+        tools.zoneSelected(zone.id, in: pane)
+    }
+
+    /// Save Segment… from the strip's menu: the piece under the click, written to
+    /// a file (§21.5) — the same act as the form's row menu.
+    @objc private func minimapMenuSaveSegment(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? SegmentMenuTarget,
+              let pane = minimapPane(at: target.mapIndex), pane.isOpen,
+              target.pieceIndex < pane.segmentStore.segments.count else { return }
+        // The Bool says whether the write actually started — the Segments form
+        // reads it to decide whether to close itself (§21.5). A strip menu has
+        // nothing to close, so it is deliberately dropped.
+        _ = savePiece(pane.segmentStore.segments[target.pieceIndex], of: pane)
+    }
+
+    /// Replace Segment from File… from the strip's menu (§21.6): the piece under
+    /// the click, its bytes replaced from a file — the same act as the form's row
+    /// menu.
+    @objc private func minimapMenuReplaceSegment(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? SegmentMenuTarget,
+              let pane = minimapPane(at: target.mapIndex), pane.isOpen,
+              target.pieceIndex < pane.segmentStore.segments.count else { return }
+        // Dropped for the same reason as in `minimapMenuSaveSegment`.
+        _ = replacePiece(pane.segmentStore.segments[target.pieceIndex], of: pane)
+    }
+
+    /// Select Segment from the strip's menu: the whole piece is selected — its
+    /// full range, not a caret at its start (§21.3). The reveal puts the
+    /// selection's start in view so the selection is seen to begin.
+    @objc private func minimapMenuSelectSegment(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? SegmentMenuTarget,
+              let pane = minimapPane(at: target.mapIndex), pane.isOpen,
+              target.pieceIndex < pane.segmentStore.segments.count else { return }
+        let piece = pane.segmentStore.segments[target.pieceIndex]
+        pane.select(range: piece.range)
+        filePaneView(for: pane)?.revealOffsetCentered(piece.range.lowerBound)
+    }
+
+    /// Edit… from the strip's menu: the popover that edits this piece — its
+    /// offset (movable within the interval the cut bounds, locked to 0 for S0)
+    /// and its name — anchored to the piece's own block on the strip (§21.4).
+    /// Not the form with the table of all segments.
+    @objc private func minimapMenuEditSegment(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? SegmentMenuTarget,
+              let pane = minimapPane(at: target.mapIndex), pane.isOpen,
+              target.pieceIndex < pane.segmentStore.segments.count else { return }
+        let index = target.pieceIndex
+        let segment = pane.segmentStore.segments[index]
+        let store = pane.segmentStore
+        let validate: (UInt64) -> Bool
+        if index == 0 {
+            // S0 has no cut to move: the offset is the file start, locked to 0,
+            // so the editor renames the piece and nothing else.
+            validate = { $0 == 0 }
+        } else {
+            // The cut at the piece's start bounds (the previous cut, the next cut
+            // or the file's end); moving inside it keeps the partition whole
+            // (§21.2). The current offset is legal, so the field opens not red.
+            let lower = store.segments[index - 1].range.lowerBound
+            let upper = index + 1 < store.segments.count
+                ? store.segments[index + 1].range.lowerBound
+                : store.contentSize
+            validate = { offset in offset > lower && offset < upper }
+        }
+        let from = segment.range.lowerBound
+        // The piece's label and range, above the two fields — "S1: 0001000-0600000"
+        // — so the popover says what it is for before the offset is read (§21.4).
+        let header = "\(segment.label): \(segment.range.lowerBound.bareAddress)-\(segment.range.lastByte.bareAddress)"
+        let controller = CutEditPopoverController(
+            prefillOffset: from, validate: validate,
+            // The piece's current name, so editing a named piece opens with the
+            // name to be changed rather than blank (§21.4).
+            prefillDescription: segment.name,
+            header: header,
+            onCommit: { [weak pane] offset, name in
+                guard let pane else { return }
+                // Moving the cut and renaming the piece are one act: the piece
+                // that opened at `from` is the one the description names, and its
+                // name travels with the boundary (§21.2).
+                if offset != from {
+                    pane.segmentStore.moveCut(from: from, to: offset)
+                }
+                pane.segmentStore.rename(index, to: name)
+            },
+            onCancel: nil
+        )
+        // Anchor the popover at the pointer's own spot on the strip, so it opens
+        // where the menu was opened — not at the piece's whole block (§21.4).
+        // The point was captured when the menu was built and stored in the
+        // target, so it is still here when the action fires.
+        let anchor = NSRect(origin: target.point, size: .init(width: 0.1, height: 0.1))
+        controller.show(relativeTo: anchor, of: self.minimapView)
+    }
+
+    /// Merge from the strip's menu: the piece's bytes merge into a neighbour
+    /// that keeps its name (§21.3) — the same act as the form's row menu, on
+    /// the piece under the pointer.
+    @objc private func minimapMenuRemoveSegment(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? SegmentMenuTarget,
+              let pane = minimapPane(at: target.mapIndex), pane.isOpen,
+              target.pieceIndex < pane.segmentStore.segments.count else { return }
+        pane.segmentStore.removePiece(at: target.pieceIndex)
+    }
+
+    /// Scrolls the panes so `offset`'s hex row sits at the top of the pane —
+    /// what the minimap's drag and wheel ask for. In comparison mode scrolling
+    /// one pane syncs the other (§9), so driving the active pane is enough.
+    private func scrollPanesToOffset(_ offset: UInt64) {
+        switch mode {
+        case .empty:
+            break
+        case .singleFile:
+            activeFilePane?.scrollRowToTop(containing: offset)
+        case .comparison:
+            (activeFilePane ?? comparisonView?.paneView1)?.scrollRowToTop(containing: offset)
+        }
+    }
+
+    /// Moves each map's selection overlay to its pane's current selection.
+    /// Cheap (an overlay repaint), so it rides the caret-changed callbacks.
+    private func updateMinimapSelections() {
+        let selections: [Range<UInt64>?]
+        switch mode {
+        case .singleFile:
+            selections = [minimapSelectionRange(windowModel.pane1)]
+        case .comparison:
+            selections = [minimapSelectionRange(windowModel.pane1),
+                          minimapSelectionRange(windowModel.pane2)]
+        case .empty:
+            selections = []
+        }
+        for (index, selection) in selections.enumerated() {
+            minimapView.updateSelection(selection, forMapAt: index)
+        }
+    }
+
+    private func minimapSelectionRange(_ pane: PaneViewModel) -> Range<UInt64>? {
+        let selection = pane.hexSelection()
+        guard !selection.isEmpty else { return nil }
+        return selection.start..<selection.end
+    }
+
+    /// The panes' latest visible byte ranges, keyed by pane identity, so a
+    /// scroll in either pane rebuilds the minimap's viewport array without
+    /// waiting for the other pane to re-report. Cleared on every apply(mode:) —
+    /// panes are rebuilt and re-keyed.
+    private var minimapViewports: [ObjectIdentifier: Range<UInt64>] = [:]
+
+    /// Wires a pane's viewport scrolls into the minimap: every visible-range
+    /// change moves the grey viewport band and slides the map's own window,
+    /// since the window is derived from the panes (§19).
+    private func trackMinimapViewport(for pane: FilePaneView) {
+        pane.onHexViewportChanged = { [weak self, weak pane] range in
+            guard let self, let pane else { return }
+            self.minimapViewports[ObjectIdentifier(pane)] = range
+            self.updateMinimapViewports()
+        }
+    }
+
+    /// Moves each map's viewport band to its pane's visible byte range, which
+    /// also re-derives the shared window. Cheap — no file pass — so it rides the
+    /// scroll and resize notifications.
+    private func updateMinimapViewports() {
+        let viewports: [Range<UInt64>?]
+        switch mode {
+        case .singleFile:
+            if let pane = activeFilePane {
+                viewports = [minimapViewports[ObjectIdentifier(pane)]]
+            } else {
+                viewports = []
+            }
+        case .comparison:
+            let pane1 = comparisonView?.paneView1
+            let pane2 = comparisonView?.paneView2
+            viewports = [pane1.flatMap { minimapViewports[ObjectIdentifier($0)] },
+                         pane2.flatMap { minimapViewports[ObjectIdentifier($0)] }]
+        case .empty:
+            viewports = []
+        }
+        minimapView.setViewports(viewports)
+    }
+
+    // MARK: - Helpers
+
+    private var activePane: PaneViewModel { windowModel.activePane }
+
+    private func focusActiveHexView() {
+        activeFilePane?.focusHexView()
+    }
+
+    private func refreshMode() {
+        let mode: WindowMode = windowModel.openPaneCount == 0 ? .empty : (windowModel.openPaneCount == 1 ? .singleFile : .comparison)
+        // A drop that joins into the current pane (append / insert at start)
+        // does not change the mode, and the join has already refreshed the pane
+        // and centred the seam (§10.4, §22.5). Re-applying the same mode would
+        // rebuild the pane from scratch, and the new pane's init follows the
+        // caret to the top of the viewport, undoing the centring. Skip the
+        // rebuild when the mode is unchanged: the operation that triggered this
+        // has already updated the pane through its own channels.
+        guard mode != self.mode else { return }
+        apply(mode: mode)
+    }
+
+    // MARK: - File > Open (§4.1)
+
+    @objc func presentOpenPanel() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.treatsFilePackagesAsDirectories = false
+        panel.begin { [weak self] response in
+            guard response == .OK, let self else { return }
+            self.openFiles(panel.urls)
+        }
+    }
+
+    /// Opens the given URLs into panes. Internal so the app's open entry points
+    /// share one pipeline: the Open panel, drops, and Launch Services
+    /// "Open with" (AppDelegate.application(_:open:)) all land here.
+    func openFiles(_ urls: [URL]) {
+        let files = openableFiles(from: urls)
+        guard let first = files.first else { return }
+
+        // §4.1 rules 1–3, decided against the pre-open occupancy.
+        let pane1WasOpen = windowModel.pane1.isOpen
+        let pane2WasOpen = windowModel.pane2.isOpen
+        let plan = OpenPlacement.plan(
+            activePaneIndex: windowModel.activePaneIndex,
+            pane1Open: pane1WasOpen,
+            pane2Open: pane2WasOpen,
+            fileCount: files.count
+        )
+
+        if let target = plan.firstFilePane {
+            guard openIntoPane(index: target, url: first) else { return }
+        }
+        if plan.openSecond, files.count >= 2 {
+            _ = openIntoPane(index: 1, url: files[1])
+        }
+
+        // Active pane follows the rule that decided placement.
+        if !pane1WasOpen {
+            windowModel.setActivePane(0)
+        } else if !pane2WasOpen {
+            windowModel.setActivePane(1)
+        }
+
+        if plan.ignoredCount > 0 {
+            notifyIgnored(count: plan.ignoredCount)
+        }
+        refreshMode()
+    }
+
+    // MARK: - Drop handlers (§4.3)
+
+    /// Empty-mode drop: first two files → panes 1/2, extras ignored (§4.3).
+    private func handleEmptyDrop(_ urls: [URL]) {
+        let files = openableFiles(from: urls)
+        guard let first = files.first else { return }
+        guard openIntoPane(index: 0, url: first) else { return }
+        if files.count >= 2 {
+            _ = openIntoPane(index: 1, url: files[1])
+        }
+        windowModel.setActivePane(0)
+        let ignored = max(0, files.count - 2)
+        if ignored > 0 { notifyIgnored(count: ignored) }
+        refreshMode()
+    }
+
+    /// Comparison-mode drop: first file → hovered pane; second file → other pane
+    /// only if that pane is empty; extras (and an unplaceable second) ignored.
+    private func handleComparisonDrop(targetPane: Int, urls: [URL]) {
+        let files = openableFiles(from: urls)
+        guard let first = files.first else { return }
+        guard openIntoPane(index: targetPane, url: first) else { return }
+
+        let otherIndex = 1 - targetPane
+        let otherPane = otherIndex == 0 ? windowModel.pane1 : windowModel.pane2
+        var ignored = max(0, files.count - 2)
+        if files.count >= 2 {
+            if otherPane.isOpen {
+                ignored += 1  // the second file can't open — treated as ignored
+            } else {
+                _ = openIntoPane(index: otherIndex, url: files[1])
+            }
+        }
+        windowModel.setActivePane(targetPane)
+        if ignored > 0 { notifyIgnored(count: ignored) }
+        refreshMode()
+    }
+
+    /// Comparison-mode drop onto one of a pane's three bands (§22.4): the
+    /// replace band uses the existing comparison replace behaviour, and the two
+    /// join bands join the first file into that pane (the rest ignored).
+    /// Internal (not private) so a test can drive the routing directly.
+    func handleComparisonBandDrop(targetPane: Int, target: SingleFileDropTarget, urls: [URL]) {
+        switch target {
+        case .replace, .addSecond:
+            // The replace band (and the defensive addSecond — comparison mode
+            // has no second-file target) use the existing replace behaviour.
+            handleComparisonDrop(targetPane: targetPane, urls: urls)
+        case .insertAtStart, .appendAtEnd:
+            let files = openableFiles(from: urls)
+            guard let first = files.first else { return }
+            let pane = targetPane == 0 ? windowModel.pane1 : windowModel.pane2
+            let position: JoinPosition = (target == .insertAtStart) ? .start : .end
+            join(url: first, at: position, in: pane)
+            let ignored = max(0, files.count - 1)
+            if ignored > 0 { notifyJoinIgnored(count: ignored) }
+            refreshMode()
+        }
+    }
+
+    /// Single-file-mode drop onto one of the targets or bands (§4.3, §22.4).
+    /// Internal (not private) so a test can drive the routing directly.
+    func handleSingleFileDrop(target: SingleFileDropTarget, urls: [URL]) {
+        let files = openableFiles(from: urls)
+        guard let first = files.first else { return }
+        switch target {
+        case .replace:
+            // First replaces the current file; a second (if any) opens as pane 2.
+            guard openIntoPane(index: 0, url: first) else { return }
+            if files.count >= 2 {
+                _ = openIntoPane(index: 1, url: files[1])
+            }
+            windowModel.setActivePane(0)
+            let ignored = max(0, files.count - 2)
+            if ignored > 0 { notifyIgnored(count: ignored) }
+        case .addSecond:
+            // First opens as pane 2; all additional files are ignored.
+            guard openIntoPane(index: 1, url: first) else { return }
+            windowModel.setActivePane(1)
+            let ignored = max(0, files.count - 1)
+            if ignored > 0 { notifyIgnored(count: ignored) }
+        case .insertAtStart, .appendAtEnd:
+            // First joins into the "this file" pane (pane 0 in single-file
+            // mode); the rest are ignored — joining a list in one gesture is
+            // deliberately not this (§22.4).
+            let position: JoinPosition = (target == .insertAtStart) ? .start : .end
+            join(url: first, at: position, in: windowModel.pane1)
+            let ignored = max(0, files.count - 1)
+            if ignored > 0 { notifyJoinIgnored(count: ignored) }
+        }
+        refreshMode()
+    }
+
+    private func openableFiles(from urls: [URL]) -> [URL] {
+        let files = urls.filter(isOpenableFile)
+        if files.count < urls.count {
+            presentAlert(title: "Some files could not be opened",
+                         message: "Directories and packages are not supported.")
+        }
+        return files
+    }
+
+    private func notifyIgnored(count: Int) {
+        let noun = count == 1 ? "file was" : "files were"
+        presentAlert(title: "Additional files ignored",
+                     message: "\(count) \(noun) not opened because only two files can be compared at once.")
+    }
+
+    /// The join-band variant of the ignored-files notice (§22.4): a join takes
+    /// one file, so the extras are not joined, not opened.
+    private func notifyJoinIgnored(count: Int) {
+        let noun = count == 1 ? "file was" : "files were"
+        presentAlert(title: "Additional files ignored",
+                     message: "\(count) \(noun) not joined because only one file can be joined at a time.")
+    }
+
+    /// Opens `url` into the pane at `index`, enforcing §4.1 rules 4–6 (dirty
+    /// replacement confirmation, same-file reload, no same file in both panes).
+    /// Returns false when the open was refused or failed.
+    private func openIntoPane(index: Int, url: URL) -> Bool {
+        let pane = index == 0 ? windowModel.pane1 : windowModel.pane2
+
+        // Rule 6: the same file is already open somewhere else.
+        if let (holder, holdingPane) = documentLocation(of: url, excluding: index) {
+            if holder === self {
+                // The other pane of this window. There is nowhere to send the
+                // user that they are not already looking at, so the refusal is
+                // the whole answer.
+                presentAlert(title: "File already open",
+                             message: "“\(url.lastPathComponent)” is already open in the other pane and cannot be opened twice.")
+            } else {
+                // Another window or tab has it. "Cannot be opened twice" is true
+                // but useless there — the file is on screen — and so is silently
+                // jumping to it: the user asked to work on it *here*, and being
+                // moved somewhere else without a word is its own surprise. Both
+                // useful answers are offered instead.
+                switch askAboutFileOpenElsewhere(named: url.lastPathComponent) {
+                case .show:
+                    holder.revealOpenFile(inPane: holdingPane)
+                case .move:
+                    return movePaneHere(from: holder, at: holdingPane, into: index,
+                                        onSaved: { [weak self] in
+                                            _ = self?.openIntoPane(index: index, url: url)
+                                        })
+                case .cancel:
+                    break
+                }
+            }
+            return false
+        }
+
+        // Rule 5: same file already open in the target pane → reload/no-op.
+        if pane.isOpen, FileIdentity(url: url) == pane.document?.identity {
+            if pane.status.isDirty {
+                let response = confirmAlert(title: "Reload file?",
+                                            message: "“\(url.lastPathComponent)” has unsaved changes. Reload and discard them?",
+                                            confirmTitle: "Reload",
+                                            destructive: true)
+                guard response == .alertFirstButtonReturn else { return false }
+            }
+            do {
+                // The same `open` every other route takes: the pane knows this
+                // is the file it already holds and reloads it. The question
+                // above is this route's own — asking is the controller's job,
+                // doing is the pane's.
+                try pane.open(url: url)
+                return true
+            } catch {
+                presentError("Could not reload file.", error)
+                return false
+            }
+        }
+
+        // Rule 4: replacing a dirty pane requires confirmation. A dirty
+        // untitled pane has no file yet, so Save As runs first and the open
+        // re-continues once it completes.
+        guard confirmReplaceDirtyPane(pane, onSaved: { [weak self] in
+            _ = self?.openIntoPane(index: index, url: url)
+        }) else { return false }
+
+        do {
+            try pane.open(url: url)
+            SandboxBookmarkStore.shared.record(url)
+            return true
+        } catch {
+            presentFileError("Could not open file.", error, url: url)
+            return false
+        }
+    }
+
+    /// §4.1 rule 4: replacing a dirty pane requires confirmation. Returns true
+    /// when the replacement may proceed (the pane was saved or its changes were
+    /// discarded). A dirty untitled pane cannot save inline — Save As runs as a
+    /// sheet and `onSaved` is called when it completes, with false returned so
+    /// the pending replacement re-runs via the callback.
+    private func confirmReplaceDirtyPane(_ pane: PaneViewModel, onSaved: (() -> Void)? = nil) -> Bool {
+        guard pane.isOpen, pane.status.isDirty else { return true }
+        let alert = NSAlert()
+        alert.messageText = "Replace unsaved changes?"
+        alert.informativeText = "“\(pane.status.fileName)” has unsaved changes. Save and replace, or replace without saving?"
+        alert.addButton(withTitle: "Save and Replace")
+        alert.addButton(withTitle: "Replace Without Saving")
+        alert.addButton(withTitle: "Cancel")
+        switch Self.presentModal(alert, defaultInTest: .alertThirdButtonReturn) {  // Cancel in tests
+        case .alertFirstButtonReturn:  // Save and Replace
+            if pane.isUntitled {
+                presentSaveAs(for: pane, onSaved: onSaved)
+                return false
+            }
+            do {
+                try pane.save()
+                return true
+            } catch {
+                presentError("Save failed.", error)
+                return false
+            }
+        case .alertSecondButtonReturn:  // Replace Without Saving
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func isOpenableFile(_ url: URL) -> Bool {
+        let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey])
+        return values?.isDirectory == false && values?.isPackage != true
+    }
+
+    // MARK: - File > Append File… / Insert File at Start… (§22)
+
+    /// File > Append File…: joins the chosen file's bytes after the active
+    /// pane's content (§22.1).
+    @objc func appendFile() {
+        joinFile(at: .end, in: activePane)
+    }
+
+    /// File > Insert File at Start…: joins the chosen file's bytes before the
+    /// active pane's content (§22.1).
+    @objc func insertFileAtStart() {
+        joinFile(at: .start, in: activePane)
+    }
+
+    /// The pane-menu twins: the same join, acting on the pane the menu was built
+    /// for (§22.1) rather than the active one.
+    @objc func appendFileInPane(_ sender: Any?) {
+        guard let pane = pane(from: sender) else { return }
+        joinFile(at: .end, in: pane)
+    }
+
+    @objc func insertFileAtStartInPane(_ sender: Any?) {
+        guard let pane = pane(from: sender) else { return }
+        joinFile(at: .start, in: pane)
+    }
+
+    /// The join command, shared by the File-menu and pane-menu items (§22).
+    /// Opens the one file, then joins it.
+    private func joinFile(at position: JoinPosition, in pane: PaneViewModel) {
+        guard pane.isOpen else { return }
+        let verb = (position == .start) ? "Insert" : "Append"
+
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = verb
+        panel.message = "Choose the file to \(position == .start ? "insert at the start of" : "append to") the pane's content."
+        let url: URL?
+        if let joinOpenPanel {
+            url = joinOpenPanel(panel)
+        } else {
+            url = panel.runModal() == .OK ? panel.url : nil
+        }
+        guard let url else { return }
+        join(url: url, at: position, in: pane)
+    }
+
+    /// Joins the file at `url` into `pane`: the dirty-pane warning (Cancel and
+    /// the operation's verb — §22.2), the join, and the transient status line.
+    /// Shared by the menu commands (after the open panel) and the drop bands
+    /// (§22.4), which already have the URL. An untitled dirty pane is joined
+    /// without a warning: there is no saved state to diverge from.
+    /// A file joined into the pane that already holds it doubles its content.
+    ///
+    /// Not refused: a join copies bytes, so none of the hazards §4.1 rule 6
+    /// guards against apply — there is no second live document, no second
+    /// watcher, and no piece table whose base moves underneath it. The result is
+    /// one document that happens to be the dump twice, which is a thing someone
+    /// could mean.
+    ///
+    /// But on a bench it is far more often a slip: the file was dragged onto the
+    /// pane it is already open in. So it asks, and the default is to do nothing.
+    private func confirmSelfJoin(url: URL, into pane: PaneViewModel, verb: String) -> Bool {
+        guard let identity = pane.document?.identity, identity == FileIdentity(url: url) else {
+            return true
+        }
+        return confirmJoinToItself(named: url.lastPathComponent, verb: verb)
+    }
+
+    /// The question itself, asked of a file dropped on the pane that already
+    /// holds it and of a pane dropped on its own bands alike — it is the same
+    /// act and deserves the same words.
+    private func confirmJoinToItself(named name: String, verb: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = "Join “\(name)” to itself?"
+        alert.informativeText = "This doubles the content: the same bytes twice, one copy "
+            + "after the other."
+        alert.addButton(withTitle: verb)
+        alert.addButton(withTitle: "Cancel")
+        // Cancel in tests, and Cancel is where the Escape key lands.
+        return Self.presentModal(alert, defaultInTest: .alertSecondButtonReturn)
+            == .alertFirstButtonReturn
+    }
+
+    /// §22.2: a dirty pane is warned about before a join, with two buttons —
+    /// Cancel and the operation's verb. An untitled dirty pane gets no alert:
+    /// there is no saved state for the join to diverge from.
+    private func confirmJoinWithUnsavedChanges(_ pane: PaneViewModel, verb: String) -> Bool {
+        guard pane.status.isDirty, !pane.isUntitled else { return true }
+        let alert = NSAlert()
+        alert.messageText = "Join with unsaved changes?"
+        alert.informativeText = "“\(pane.status.fileName)” has unsaved changes. They travel into the joined image; the file on disk keeps its saved bytes."
+        alert.addButton(withTitle: verb)
+        alert.addButton(withTitle: "Cancel")
+        if let joinConfirm {
+            return joinConfirm(alert) == .alertFirstButtonReturn
+        }
+        // Cancel in tests.
+        return Self.presentModal(alert, defaultInTest: .alertSecondButtonReturn)
+            == .alertFirstButtonReturn
+    }
+
+    private func join(url: URL, at position: JoinPosition, in pane: PaneViewModel) {
+        guard pane.isOpen else { return }
+        let verb = (position == .start) ? "Insert" : "Append"
+
+        // Asked before anything else, because it is the question of whether the
+        // join was meant at all; the unsaved-changes prompt below is about the
+        // consequences of one already decided on.
+        guard confirmSelfJoin(url: url, into: pane, verb: verb) else { return }
+        guard confirmJoinWithUnsavedChanges(pane, verb: verb) else { return }
+
+        // The name the pane's content carries now, remembered before the join
+        // detaches the document — the status line names both sources (§22.2).
+        let originalName = pane.status.fileName
+        // What the detached image will be called (§22.2). Derived here, where
+        // the names in use across the app can be seen, and only for a pane that
+        // still has a file: one that is already untitled keeps its name.
+        let joinedName = pane.isUntitled ? nil : unsavedName(for: pane)
+
+        do {
+            try pane.join(contentsOf: url, at: position, becoming: joinedName)
+        } catch let error as JoinError {
+            switch error {
+            case .emptySource:
+                presentAlert(title: "File is empty",
+                             message: "“\(url.lastPathComponent)” has no bytes to join.")
+            }
+            return
+        } catch {
+            presentFileError("Could not join file.", error, url: url)
+            return
+        }
+
+        // The seam (the caret, at the start of the added part) is centred in the
+        // pane by the join's own `notify(centerCaret: true)` (§10.4, §22.5).
+
+        // §22.2: the transient status line names both sources and the total
+        // size, the way the app reports a search result, then yields back.
+        let total = pane.fileSize
+        let size = ByteCountFormatter.string(fromByteCount: Int64(total), countStyle: .file)
+        activateJoinedPane(pane)
+
+        let message = (position == .start)
+            ? "Inserted \(url.lastPathComponent) before \(originalName). Total: \(size)."
+            : "Appended \(url.lastPathComponent) after \(originalName). Total: \(size)."
+        filePaneView(for: pane)?.showTransientMessage(message)
+    }
+
+    /// Makes the pane that just received a join the active one.
+    ///
+    /// The join leaves the caret at its seam and centres it there (§22.5), so
+    /// the eyes have already been sent to this pane; leaving the keys pointed at
+    /// the other one splits the two. A no-op outside comparison mode, where
+    /// there is only one pane to be active.
+    private func activateJoinedPane(_ pane: PaneViewModel) {
+        activatePane(at: paneIndex(pane))
+    }
+
+    /// Joins one open pane's bytes into another, at one end or the other — the
+    /// same operation `join(url:at:in:)` performs, sourced from a pane instead
+    /// of a file (`Design/PANE_DRAG_PLAN.md`).
+    ///
+    /// The source pane is left exactly as it was. A join **copies**: dropping a
+    /// file to append it does not consume the file, and dropping a pane does not
+    /// consume the pane. Its unsaved edits travel, because the bytes are read
+    /// from the pane's live storage rather than from the disk underneath it.
+    private func join(pane source: PaneViewModel, at position: JoinPosition,
+                      into pane: PaneViewModel) {
+        guard pane.isOpen, source.isOpen,
+              let sourceStorage = source.byteStorage else { return }
+        let verb = (position == .start) ? "Insert" : "Append"
+        // A pane joined to itself is allowed, and asked about: the document
+        // streams from its own storage, which `BinaryDocument.join` handles by
+        // taking the source's size once and following the bytes as an insert at
+        // the start moves them.
+        if source === pane {
+            guard confirmJoinToItself(named: pane.status.fileName, verb: verb) else { return }
+        }
+        guard confirmJoinWithUnsavedChanges(pane, verb: verb) else { return }
+
+        let originalName = pane.status.fileName
+        let sourceName = source.status.fileName
+        // The detached image's name, for the reason the file join gives.
+        let joinedName = pane.isUntitled ? nil : unsavedName(for: pane)
+        do {
+            try pane.join(contentsOf: sourceStorage, named: sourceName,
+                          at: position, becoming: joinedName)
+        } catch let error as JoinError {
+            switch error {
+            case .emptySource:
+                presentAlert(title: "Pane is empty",
+                             message: "“\(sourceName)” has no bytes to join.")
+            }
+            return
+        } catch {
+            presentError("Could not join the pane.", error)
+            return
+        }
+
+        activateJoinedPane(pane)
+
+        let size = ByteCountFormatter.string(fromByteCount: Int64(pane.fileSize), countStyle: .file)
+        let message = (position == .start)
+            ? "Inserted \(sourceName) before \(originalName). Total: \(size)."
+            : "Appended \(sourceName) after \(originalName). Total: \(size)."
+        filePaneView(for: pane)?.showTransientMessage(message)
+    }
+
+    // MARK: - File > Duplicate (§23)
+
+    /// File ▸ Duplicate: the active pane's content is copied into the free pane
+    /// as an untitled, never-saved document (§23). Single-file mode only — the
+    /// copy needs a pane to land in.
+    @objc func duplicateDocument() {
+        duplicate(from: activePane)
+    }
+
+    /// Rename from the pane's header menu (§23): the title turns into a field in
+    /// the header, so the name is typed where it is read rather than in a sheet
+    /// raised to hold one short string.
+    ///
+    /// Only an unsaved document has a name to change this way — the item is
+    /// disabled otherwise — and the pane view owns the editing, since the field
+    /// belongs to the header it stands in.
+    @objc func renamePaneDocument(_ sender: Any?) {
+        guard let pane = pane(from: sender), pane.canRename else { return }
+        filePaneView(for: pane)?.beginRenaming()
+    }
+
+    /// The pane-menu twin: duplicates the pane the menu was built for rather
+    /// than the active one (§23). In single-file mode they are the same pane;
+    /// the item exists so the header carries every file-scoped command.
+    @objc func duplicatePaneDocument(_ sender: Any?) {
+        guard let pane = pane(from: sender) else { return }
+        duplicate(from: pane)
+    }
+
+    /// The duplicate command (§23), shared by the File-menu and pane-menu items.
+    ///
+    /// The copy lands in the other pane and becomes active — it is what the user
+    /// just made, and it is the side they are about to edit — so the window
+    /// switches to comparison mode with the copy on the right. No confirmation:
+    /// nothing is replaced (the target pane is empty by the time this runs) and
+    /// the source is not touched.
+    func duplicate(from source: PaneViewModel) {
+        guard canDuplicate(source) else { return }
+        let targetIndex = paneIndex(source) == 0 ? 1 : 0
+        let target = targetIndex == 0 ? windowModel.pane1 : windowModel.pane2
+        // The name the source carries now, so the line below can name both ends
+        // of the copy (§23).
+        let sourceName = source.status.fileName
+
+        do {
+            try target.openDuplicate(of: source, named: unsavedName(for: source))
+        } catch {
+            presentFileError("Could not duplicate the file.", error, url: nil)
+            return
+        }
+
+        windowModel.setActivePane(targetIndex)
+        refreshMode()
+
+        // §23: the transient line names the source and the size, the way a join
+        // reports its result (§22.2), then yields the stats back. Set after the
+        // mode apply, which rebuilds the pane views.
+        let size = ByteCountFormatter.string(fromByteCount: Int64(target.fileSize), countStyle: .file)
+        filePaneView(for: target)?.showTransientMessage(
+            "Duplicated \(sourceName) as \(target.status.fileName). Size: \(size).")
+    }
+
+    /// Whether Duplicate can act on `pane` (§23): the copy needs a free pane to
+    /// land in, so exactly one pane may be open, and an empty pane has nothing to
+    /// copy.
+    private func canDuplicate(_ pane: PaneViewModel) -> Bool {
+        windowModel.openPaneCount == 1 && pane.isOpen && pane.fileSize > 0
+    }
+
+    // MARK: - File > New File
+
+    /// File > New File (Cmd+N): opens a brand-new, empty document in memory into
+    /// a pane, using the same placement rules as Open (§4.1) — an empty pane
+    /// first, otherwise the active pane, with the standard dirty-replacement
+    /// confirmation. Nothing is written to disk until the first Save / Save As;
+    /// the pane header shows "Untitled" with a plus-badge glyph until then.
+    @objc func newDocument() {
+        newUntitledDocument()
+    }
+
+    /// Creates an untitled in-memory document and places it into a pane
+    /// following the Open placement rules (§4.1). Split from `newDocument()` so
+    /// tests can drive the whole flow without the menu.
+    func newUntitledDocument() {
+        let pane1WasOpen = windowModel.pane1.isOpen
+        let pane2WasOpen = windowModel.pane2.isOpen
+        let plan = OpenPlacement.plan(
+            activePaneIndex: windowModel.activePaneIndex,
+            pane1Open: pane1WasOpen,
+            pane2Open: pane2WasOpen,
+            fileCount: 1
+        )
+        guard let target = plan.firstFilePane else { return }
+        guard newUntitledIntoPane(index: target) else { return }
+
+        // Active pane follows the rule that decided placement.
+        if !pane1WasOpen {
+            windowModel.setActivePane(0)
+        } else if !pane2WasOpen {
+            windowModel.setActivePane(1)
+        }
+        refreshMode()
+    }
+
+    /// Opens an untitled document into the pane at `index`, applying §4.1 rule 4
+    /// (dirty-replacement confirmation). Returns false when refused.
+    private func newUntitledIntoPane(index: Int) -> Bool {
+        let pane = index == 0 ? windowModel.pane1 : windowModel.pane2
+        guard confirmReplaceDirtyPane(pane, onSaved: { [weak self] in
+            _ = self?.newUntitledIntoPane(index: index)
+        }) else { return false }
+        pane.openUntitled()
+        return true
+    }
+
+    // MARK: - Save / Save As / Revert (§5)
+
+    @objc func saveDocument() {
+        saveDocumentOfPane(activePane)
+    }
+
+    /// Saves the pane that owns the menu item — the header context menu's Save
+    /// routes here so it always targets its own pane, never the active one
+    /// (§4/§5). Both the menu bar and the context menu share
+    /// `saveDocumentOfPane(_:)`.
+    @objc func savePaneDocument(_ sender: Any?) {
+        guard let pane = pane(from: sender) else { return }
+        saveDocumentOfPane(pane)
+    }
+
+    private func saveDocumentOfPane(_ pane: PaneViewModel) {
+        guard pane.isOpen else { return }
+        // An untitled document has no file to save to — Cmd+S is a Save As.
+        if pane.isUntitled {
+            presentSaveAs(for: pane)
+            return
+        }
+        do {
+            try pane.save()
+        } catch DocumentError.fileIsReadOnly {
+            presentSaveAs(for: pane)  // §5.4: read-only file auto-redirects to Save As
+        } catch {
+            presentFileError("Save failed.", error, url: pane.document?.url)
+        }
+    }
+
+    @objc func saveDocumentAs() {
+        presentSaveAs(for: activePane)
+    }
+
+    @objc func savePaneDocumentAs(_ sender: Any?) {
+        guard let pane = pane(from: sender) else { return }
+        presentSaveAs(for: pane)
+    }
+
+    /// Runs a Save As sheet for the given pane (active pane, or a specific pane
+    /// from an external-change conflict or a deferred untitled save, §5.5).
+    /// `onSaved` fires after a successful save — it continues a flow that had
+    /// to wait for the untitled document to get a location.
+    private func presentSaveAs(for pane: PaneViewModel, onSaved: (() -> Void)? = nil) {
+        guard pane.isOpen else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = pane.status.fileName
+        panel.allowedContentTypes = []
+        panel.canCreateDirectories = true
+        panel.beginSheetModal(for: view.window ?? NSWindow()) { [weak self] response in
+            guard response == .OK, let url = panel.url, let self else { return }
+            do {
+                try pane.saveAs(to: url)
+                SandboxBookmarkStore.shared.record(url)
+                onSaved?()
+            } catch {
+                self.presentFileError("Save As failed.", error, url: url)
+            }
+        }
+    }
+
+    /// Saves `pane` to disk, routing untitled documents (which have no file
+    /// yet) through a Save As sheet. Returns true when the save happened inline
+    /// (and `onSaved` has run); false when it is deferred to a sheet (the
+    /// completion will call `onSaved`) or failed (error already shown).
+    @discardableResult
+    private func savePane(_ pane: PaneViewModel, onSaved: @escaping () -> Void) -> Bool {
+        if pane.isUntitled {
+            presentSaveAs(for: pane, onSaved: onSaved)
+            return false
+        }
+        do {
+            try pane.save()
+            onSaved()
+            return true
+        } catch {
+            presentFileError("Save failed.", error, url: pane.document?.url)
+            return false
+        }
+    }
+
+    /// Saves `panes` one at a time; each untitled pane goes through its own Save
+    /// As sheet, then the next saves, then `then` runs. Stops on the first
+    /// failure (the error has already been shown).
+    private func saveAllThen(_ panes: [PaneViewModel], then: @escaping () -> Void) {
+        guard let first = panes.first else { then(); return }
+        savePane(first, onSaved: { [weak self] in
+            self?.saveAllThen(Array(panes.dropFirst()), then: then)
+        })
+    }
+
+    @objc func revertDocument() {
+        revertDocumentOfPane(activePane)
+    }
+
+    /// Reverts the pane that owns the menu item — the header context menu's
+    /// Revert routes here so it always targets its own pane (§4/§5). Both the
+    /// menu bar and the context menu share `revertDocumentOfPane(_:)`.
+    @objc func revertPaneDocument(_ sender: Any?) {
+        guard let pane = pane(from: sender) else { return }
+        revertDocumentOfPane(pane)
+    }
+
+    private func revertDocumentOfPane(_ pane: PaneViewModel) {
+        guard pane.isOpen, !pane.isUntitled else { return }  // nothing on disk to revert to
+        if pane.status.isDirty {
+            let response = confirmAlert(
+                title: "Revert to saved version?",
+                message: "All unsaved changes will be discarded.",
+                confirmTitle: "Revert",
+                destructive: true
+            )
+            guard response == .alertFirstButtonReturn else { return }
+        }
+        do {
+            try pane.revert()
+        } catch {
+            presentFileError("Revert failed.", error, url: pane.document?.url)
+        }
+    }
+
+    /// Reveals the right-clicked pane's file in the Finder (header context
+    /// menu). Resolves the pane the menu item was built for — so it shows the
+    /// file even when another pane is active — and needs a real file on disk:
+    /// an empty pane has nothing, and an untitled document has no URL to reveal.
+    @objc func showPaneInFinder(_ sender: Any?) {
+        guard let pane = pane(from: sender),
+              pane.isOpen,
+              !pane.isUntitled,
+              let url = pane.document?.url else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    /// The on-disk URL behind the pane a header context-menu item was built for,
+    /// when there is one to copy. Empty panes have nothing, and an untitled
+    /// document's only URL is a placeholder with no file behind it — both need
+    /// the menu item to stay disabled (validation), so nil here is unreachable
+    /// for an enabled item and merely makes the action a no-op.
+    private func copyableURL(from sender: Any?) -> URL? {
+        guard let pane = pane(from: sender), pane.isOpen, !pane.isUntitled else { return nil }
+        return pane.document?.url
+    }
+
+    /// Header context menu > Copy File Name: copies just the right-clicked
+    /// pane's file name ("bios.bin", no directory) to the clipboard. Resolves
+    /// the pane the item was built for, so it copies that pane's file even when
+    /// another pane is active.
+    @objc func copyPaneFileName(_ sender: Any?) {
+        guard let url = copyableURL(from: sender) else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(url.lastPathComponent, forType: .string)
+    }
+
+    /// Header context menu > Copy Full Path: copies the right-clicked pane's
+    /// file's full POSIX path ("/Users/…/bios.bin") to the clipboard. Like Copy
+    /// File Name it resolves the item's own pane, never the active pane.
+    @objc func copyPaneFullPath(_ sender: Any?) {
+        guard let url = copyableURL(from: sender) else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(url.path, forType: .string)
+    }
+
+    // MARK: - External change detection (§5.5)
+
+    /// Wires each pane's watcher to the conflict prompt. Closures capture the
+    /// specific pane objects, not indices, because closing pane 1 swaps the
+    /// pane1/pane2 objects in WindowViewModel.
+    private func wireExternalChangeDetection() {
+        let pane1 = windowModel.pane1
+        let pane2 = windowModel.pane2
+        // Capture the pane objects weakly: the closures live on the panes, so a
+        // strong capture would be a retain cycle. Weak keeps them equal-lifetime.
+        pane1.onExternalChange = { [weak self, weak pane1] in
+            guard let pane1 else { return }
+            self?.presentExternalChange(for: pane1)
+        }
+        pane2.onExternalChange = { [weak self, weak pane2] in
+            guard let pane2 else { return }
+            self?.presentExternalChange(for: pane2)
+        }
+    }
+
+    /// Prompt for a file that changed on disk (§5.5): reload/keep when clean;
+    /// reload-and-discard / keep / save-as when dirty. In test mode the prompt
+    /// resolves to "keep" (never reload) so a stray watcher event cannot mutate
+    /// a pane mid-test. Exposed (internal) so tests can pin that contract.
+    func presentExternalChange(for pane: PaneViewModel) {
+        guard pane.isOpen else { return }
+        let name = pane.status.fileName
+        if pane.status.isDirty {
+            let alert = NSAlert()
+            alert.messageText = "File changed on disk"
+            alert.informativeText = "“\(name)” has been changed by another program and has unsaved local changes."
+            alert.addButton(withTitle: "Reload and Discard Changes")
+            alert.addButton(withTitle: "Keep Local Changes")
+            alert.addButton(withTitle: "Save As…")
+            switch Self.presentModal(alert, defaultInTest: .alertSecondButtonReturn) {  // Keep Local Changes in tests
+            case .alertFirstButtonReturn:
+                do {
+                    try pane.revert()
+                } catch {
+                    presentFileError("Reload failed.", error, url: pane.document?.url)
+                }
+            case .alertThirdButtonReturn:
+                presentSaveAs(for: pane)
+            default:
+                break  // keep local changes
+            }
+        } else {
+            let alert = NSAlert()
+            alert.messageText = "File changed on disk"
+            alert.informativeText = "“\(name)” has been changed by another program. Reload to see the latest version?"
+            alert.addButton(withTitle: "Reload")
+            alert.addButton(withTitle: "Keep Current Contents")
+            if Self.presentModal(alert, defaultInTest: .alertSecondButtonReturn) == .alertFirstButtonReturn {  // Keep in tests
+                do {
+                    try pane.revert()
+                } catch {
+                    presentFileError("Reload failed.", error, url: pane.document?.url)
+                }
+            }
+        }
+    }
+
+    // MARK: - Pane / window closing (§3.5/3.6)
+
+    /// File > Close (Cmd+W, "close document"): the active pane is the
+    /// document, so it closes — in comparison mode this returns to single-file
+    /// mode (with pane 2 promoted when pane 1 closes); closing the last pane
+    /// returns to empty mode. With no panes open there is nothing to close, so
+    /// the window closes instead.
+    @objc func closeDocument() {
+        guard windowModel.hasOpenFile else {
+            view.window?.performClose(nil)
+            return
+        }
+        closePane(at: windowModel.activePaneIndex)
+    }
+
+    /// File ▸ Close Window (⇧⌘W): this window and every tab in it.
+    ///
+    /// ⌘W is the step-at-a-time version — the active pane, then the tab once no
+    /// pane is left, then the window once no tab is — which needed no change for
+    /// tabs: closing a window that is a tab closes that tab, and closing the last
+    /// tab closes the window. This is the one gesture that skips to the end.
+    ///
+    /// Each tab is asked to close in the ordinary way, so each still puts up its
+    /// own unsaved-changes prompt; a tab whose prompt is cancelled stays, and the
+    /// window stays with it.
+    @objc func closeWindow(_ sender: Any?) {
+        guard let window = view.window else { return }
+        for tab in window.tabGroup?.windows ?? [window] {
+            tab.performClose(nil)
+        }
+    }
+
+    /// Closes the pane at `index` after the standard dirty prompt. An untitled
+    /// pane's "Save" picks a location first (Save As sheet); the pane closes
+    /// once that completes.
+    func closePane(at index: Int) {
+        let pane = index == 0 ? windowModel.pane1 : windowModel.pane2
+        guard pane.isOpen else { return }
+        if pane.status.isDirty {
+            switch confirmSaveDiscardCancel() {
+            case .alertFirstButtonReturn:  // Save
+                savePane(pane, onSaved: { [weak self] in
+                    self?.performClosePane(at: index)
+                })
+                return  // closes now or after the Save As sheet
+            case .alertSecondButtonReturn:  // Don't Save
+                break
+            default:  // Cancel
+                return
+            }
+        }
+        performClosePane(at: index)
+    }
+
+    /// Performs the pane close after the dirty prompt succeeded.
+    private func performClosePane(at index: Int) {
+        // Before the model forgets which pane this was: a session bound to it
+        // has nothing left to read (Design/TOOL_MODULES_PLAN.md).
+        tools.paneClosed(index == 0 ? windowModel.pane1 : windowModel.pane2)
+        windowModel.closePane(index)
+        refreshMode()
+        if mode == .singleFile {
+            activeFilePane?.focusHexView()
+        }
+    }
+
+    // MARK: - Pane header context menu (§4/§5)
+
+    /// Builds the right-click menu for a pane's header. It carries the same
+    /// items as the menu bar's File submenu (plus the header-only Copy File
+    /// Name / Copy Full Path and Show in Finder), and every item's action
+    /// resolves the pane captured here (via `representedObject`) — so New,
+    /// Open, Save and Close always act on the header that was right-clicked,
+    /// even when another pane is active or only one pane is open. A final
+    /// separate block holds Swap Panels, which is mode-scoped (comparison only)
+    /// and so carries no `representedObject`.
+    func makePaneMenu(for pane: PaneViewModel) -> NSMenu {
+        let menu = NSMenu(title: "File")
+        func add(_ title: String, _ action: Selector, _ key: String) {
+            let item = menu.addItem(withTitle: title, action: action, keyEquivalent: key)
+            item.target = self
+            item.representedObject = pane
+        }
+        add("New File", #selector(newDocumentInPane(_:)), "n")
+        add("Open…", #selector(openInPane(_:)), "o")
+        menu.addItem(.separator())
+        add("Save", #selector(savePaneDocument(_:)), "s")
+        add("Save As…", #selector(savePaneDocumentAs(_:)), "S")
+        // Rename (§23) sits with the two Saves because it is the third thing
+        // that decides what this document is called — and the only one of them
+        // that writes nothing. Enabled for an unsaved document alone; a file's
+        // name is its file's.
+        add("Rename", #selector(renamePaneDocument(_:)), "")
+        add("Revert to Saved", #selector(revertPaneDocument(_:)), "")
+        menu.addItem(.separator())
+        // The join twins (§22.1): beside the file-scoped commands, acting on
+        // THIS pane (the menu's representedObject) rather than the active one.
+        // Insert (at the start) is grouped with the edit commands above;
+        // Append (at the end) sits in its own block — the menu bar's File
+        // submenu's order, mirrored here.
+        add("Insert File at Start…", #selector(insertFileAtStartInPane(_:)), "")
+        add("Append File…", #selector(appendFileInPane(_:)), "")
+        menu.addItem(.separator())
+        // Duplicate (§23): the other direction from the joins — this pane's
+        // content goes out into the free pane, rather than a file coming in. Its
+        // own block, because it is the only item here that is about the window's
+        // second pane.
+        add("Duplicate", #selector(duplicatePaneDocument(_:)), "")
+        // Open in New Tab: the same subject as Duplicate — where this document
+        // lives — pointing the other way. Duplicate sends a copy into the free
+        // pane; this sends the document itself out to a tab of its own, leaving
+        // the comparison behind as a single file (`Design/TABS_PLAN.md`).
+        add("Open in New Tab", #selector(openPaneInNewTab(_:)), "")
+        menu.addItem(.separator())
+        // Copy File Name / Copy Full Path are header-only, like Show in Finder
+        // below: they put THIS pane's file's name (or its whole path) on the
+        // clipboard, which is a per-pane act, so the menu bar's File submenu
+        // (active-pane) doesn't duplicate them. They need a real file to copy —
+        // nothing for an empty pane, no name or path for an untitled document —
+        // so validation disables them there, the same rule as Show in Finder.
+        add("Copy File Name", #selector(copyPaneFileName(_:)), "")
+        add("Copy Full Path", #selector(copyPaneFullPath(_:)), "")
+        menu.addItem(.separator())
+        // Show in Finder is header-only: it reveals THIS pane's file in the
+        // Finder, which is a per-pane act, so the menu bar's File submenu
+        // (active-pane) doesn't duplicate it. It keeps its own block between
+        // the two join commands.
+        add("Show in Finder", #selector(showPaneInFinder(_:)), "")
+        add("Close", #selector(closePaneDocument(_:)), "w")
+        // Swap Panels is a comparison-mode command, not a per-pane File action,
+        // so it gets its own block and targets `swapPanes` directly.
+        menu.addItem(.separator())
+        let swapItem = menu.addItem(withTitle: "Swap Panels",
+                                    action: #selector(swapPanes),
+                                    keyEquivalent: "")
+        swapItem.target = self
+        return menu
+    }
+
+    /// Builds the context menu for a right-clicked address in the Offset column:
+    /// "Copy offset" (copies the hex offset to the clipboard), then "Select Block
+    /// from Here at «address»", both resolving THIS pane (the header-menu pattern of
+    /// §4/§5) and the clicked offset (§10.2). When the clicked byte lies inside
+    /// the pane's current selection, the menu instead leads with selection-scoped
+    /// actions — Copy, Fill Selection with…, Delete Bytes — that act on the
+    /// right-clicked pane's selection, never the active pane's (§10.2).
+    func makeOffsetMenu(for pane: PaneViewModel, offset: UInt64) -> NSMenu {
+        let menu = NSMenu(title: "Offset")
+        let selection = pane.hexSelection()
+        if !selection.isEmpty, offset >= selection.start, offset < selection.end {
+            addSelectionMenuItems(to: menu, for: pane, offset: offset)
+            menu.addItem(.separator())
+        }
+        let copy = menu.addItem(withTitle: "Copy offset",
+                                action: #selector(copyOffset(_:)),
+                                keyEquivalent: "")
+        copy.target = self
+        copy.representedObject = OffsetContextTarget(pane: pane, offset: offset)
+        menu.addItem(.separator())
+        let select = menu.addItem(withTitle: "Select Block from Here at \(offset.bareAddress)",
+                                  action: #selector(selectBlockFromHere(_:)),
+                                  keyEquivalent: "")
+        select.target = self
+        select.representedObject = OffsetContextTarget(pane: pane, offset: offset)
+        addZoneMenuItems(to: menu, for: pane, offset: offset)
+        // The segment block (§21.3): the commands that shape the file's
+        // partition, set off from the address-scoped commands above and the
+        // bookmark commands below by their own separators.
+        menu.addItem(.separator())
+        addSegmentMenuItems(to: menu, for: pane, offset: offset)
+        menu.addItem(.separator())
+        addBookmarkMenuItems(to: menu, for: pane, offset: offset)
+        return menu
+    }
+
+    /// The zone block: a right-click inside a zone a tool-module published
+    /// offers that zone by name (`Design/TOOL_MODULES_PLAN.md`). Nothing at all
+    /// where there are no zones — which is most files, most of the time.
+    ///
+    /// Zones nest, so a byte is often inside several: the FIT table, the row in
+    /// it, the microcode a row points at. All of them are offered, innermost
+    /// first, because the smallest zone under the pointer is the one being
+    /// aimed at.
+    private func addZoneMenuItems(to menu: NSMenu, for pane: PaneViewModel, offset: UInt64) {
+        let zones = pane.zones.zones(containing: offset).reversed().map { $0 }
+        guard !zones.isEmpty else { return }
+        menu.addItem(.separator())
+
+        func item(_ title: String, _ action: Selector, _ zone: Zone) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.representedObject = ZoneContextTarget(pane: pane, zone: zone)
+            return item
+        }
+        // One zone is a single named item — there is nothing to choose between —
+        // and several become a submenu, innermost first, listing every zone.
+        if zones.count > 1 {
+            let parent = menu.addItem(withTitle: "Select Zone", action: nil, keyEquivalent: "")
+            let submenu = NSMenu(title: "Select Zone")
+            for zone in zones { submenu.addItem(item(zone.name, #selector(selectZone(_:)), zone)) }
+            parent.submenu = submenu
+        } else {
+            menu.addItem(item("Select Zone “\(zones[0].name)”", #selector(selectZone(_:)), zones[0]))
+        }
+        // Open in a New Tab mirrors the choice, taking the picked zone's bytes
+        // out into a document of their own.
+        if zones.count > 1 {
+            let parent = menu.addItem(withTitle: "Open Zone in a New Tab",
+                                      action: nil, keyEquivalent: "")
+            let submenu = NSMenu(title: "Open Zone in a New Tab")
+            for zone in zones {
+                submenu.addItem(item(zone.name, #selector(openZoneInNewTab(_:)), zone))
+            }
+            parent.submenu = submenu
+        } else {
+            menu.addItem(item("Open Zone “\(zones[0].name)” in a New Tab",
+                              #selector(openZoneInNewTab(_:)), zones[0]))
+        }
+        // Save Zone as… mirrors the choice, writing the picked zone's bytes out.
+        if zones.count > 1 {
+            let parent = menu.addItem(withTitle: "Save Zone as…", action: nil, keyEquivalent: "")
+            let submenu = NSMenu(title: "Save Zone as…")
+            for zone in zones { submenu.addItem(item(zone.name, #selector(saveZone(_:)), zone)) }
+            parent.submenu = submenu
+        } else {
+            menu.addItem(item("Save Zone “\(zones[0].name)” as…", #selector(saveZone(_:)), zones[0]))
+        }
+    }
+
+    /// Selects a zone's bytes, and tells the tool-module that published it —
+    /// the panel is where the zone means something, and the row it stands for
+    /// should come to the front there.
+    @objc func selectZone(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? ZoneContextTarget else { return }
+        target.pane.select(range: target.zone.range)
+        tools.zoneSelected(target.zone.id, in: target.pane)
+    }
+
+    /// The segment block of the offset context menu (§21.3): *Split Here at «address»* opens
+    /// the Add Cut popover pre-filled with the right-clicked byte or address,
+    /// and *Merge* merges the piece that position sits into its neighbour. Both
+    /// act on the right-clicked position — the thing the menu was opened on.
+    /// The Merge item's title is renamed by validation to name the piece and its
+    /// neighbour ("Merge S1 into S0").
+    private func addSegmentMenuItems(to menu: NSMenu, for pane: PaneViewModel, offset: UInt64) {
+        let target = OffsetContextTarget(pane: pane, offset: offset)
+        func add(_ title: String, _ action: Selector) {
+            let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.representedObject = target
+        }
+        add("Split Here at \(offset.bareAddress)", #selector(splitHere(_:)))
+        add("Merge", #selector(removeSegment(_:)))
+    }
+
+    /// The bookmark block of the offset context menu (§20.3). One item marks and
+    /// unmarks — *Toggle Bookmark at «address»*, the same command ⌘D is, so there
+    /// is one thing to learn — and a marked row is offered *Edit Bookmark…*
+    /// besides. The address is the ROW's, not the clicked byte's: a right-click on
+    /// a byte marks its row (§20.1), and the title is what says so.
+    private func addBookmarkMenuItems(to menu: NSMenu, for pane: PaneViewModel, offset: UInt64) {
+        let target = OffsetContextTarget(pane: pane, offset: offset)
+        let address = BookmarkStore.row(containing: offset).bareAddress
+        func add(_ title: String, _ action: Selector) {
+            let item = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.representedObject = target
+        }
+        add("Toggle Bookmark at \(address)", #selector(toggleBookmarkAtOffset(_:)))
+        if windowModel.bookmarkStore.bookmark(atRowContaining: offset) != nil {
+            add("Edit Bookmark…", #selector(editBookmarkAtOffset(_:)))
+        }
+    }
+
+    /// The three selection-scoped context-menu items (§10.2). Each carries the
+    /// right-clicked pane (plus offset) so its action resolves THIS pane's
+    /// selection, exactly as the offset items below resolve the pane.
+    private func addSelectionMenuItems(to menu: NSMenu, for pane: PaneViewModel, offset: UInt64) {
+        let target = OffsetContextTarget(pane: pane, offset: offset)
+        let copy = menu.addItem(withTitle: "Copy",
+                                action: #selector(copyPaneSelection(_:)),
+                                keyEquivalent: "")
+        copy.target = self
+        copy.representedObject = target
+        let save = menu.addItem(withTitle: "Save Selection as…",
+                                action: #selector(savePaneSelectionAs(_:)),
+                                keyEquivalent: "")
+        save.target = self
+        save.representedObject = target
+        let fill = menu.addItem(withTitle: "Fill Selection with…",
+                                action: #selector(fillPaneSelection(_:)),
+                                keyEquivalent: "")
+        fill.target = self
+        fill.representedObject = target
+        let delete = menu.addItem(withTitle: "Delete Bytes…",
+                                  action: #selector(deletePaneSelection(_:)),
+                                  keyEquivalent: "")
+        delete.target = self
+        delete.representedObject = target
+    }
+
+    /// The pane carried by a context-menu item (`representedObject`), or nil for
+    /// menu-bar items, which act on the active pane instead.
+    private func pane(from sender: Any?) -> PaneViewModel? {
+        (sender as? NSMenuItem)?.representedObject as? PaneViewModel
+    }
+
+    /// The offset-context target carried by a right-click menu item, or nil.
+    private func offsetContextTarget(from sender: Any?) -> OffsetContextTarget? {
+        (sender as? NSMenuItem)?.representedObject as? OffsetContextTarget
+    }
+
+    /// The window-model index of `pane` (0 or 1). The pane objects are swapped
+    /// by Swap Panels / pane-1 close promotion, so the comparison is by identity
+    /// at action time, never a captured index.
+    private func paneIndex(_ pane: PaneViewModel) -> Int {
+        pane === windowModel.pane1 ? 0 : 1
+    }
+
+    /// The `FilePaneView` hosting `pane`, or nil when the pane has no view right
+    /// now. Used to scroll the right-clicked pane's dump, which may not be the
+    /// active one (§10.2).
+    func filePaneView(for pane: PaneViewModel) -> FilePaneView? {
+        if pane === windowModel.pane1 { return comparisonView?.paneView1 ?? activeFilePane }
+        return comparisonView?.paneView2
+    }
+
+    /// Offset context menu > Select Block from Here at «address»: opens the Select Block
+    /// sheet for the pane that was right-clicked — Start pre-filled with the
+    /// clicked address, the Length option active, and the cursor in the Length
+    /// field (§10.2).
+    @objc func selectBlockFromHere(_ sender: Any?) {
+        guard let target = (sender as? NSMenuItem)?.representedObject as? OffsetContextTarget,
+              target.pane.isOpen else { return }
+        let pane = target.pane
+        let sheet = SelectBlockSheetController(fileSize: pane.fileSize, presetStart: target.offset) { [weak self] selection in
+            pane.setSelection(selection)
+            // §10.2: show the block's START mid-pane — in the pane that was
+            // right-clicked, not the active one.
+            self?.filePaneView(for: pane)?.revealOffsetCentered(selection.start)
+        }
+        presentAsSheet(sheet)
+    }
+
+    /// Offset context menu > Copy offset: copies the right-clicked offset to
+    /// the clipboard as bare hex digits ("10", not "0x10"). The offset fields
+    /// already carry a "0x" prefix with the caret right after it, so pasting a
+    /// prefixed value would double it ("0x0x10"); bare digits paste straight
+    /// into Go To Position / Select Block / Find (§10.2).
+    @objc func copyOffset(_ sender: Any?) {
+        guard let target = (sender as? NSMenuItem)?.representedObject as? OffsetContextTarget else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(String(format: "%X", target.offset), forType: .string)
+    }
+
+    /// Header context menu > New File: a brand-new untitled document lands in
+    /// THIS pane — not a placement-chosen one — and the pane becomes active.
+    @objc func newDocumentInPane(_ sender: Any?) {
+        guard let pane = pane(from: sender) else { return }
+        let index = paneIndex(pane)
+        guard newUntitledIntoPane(index: index) else { return }
+        // The pane that received the new file becomes active, so focus follows
+        // (§3.3). A dirty pane defers through its Save As sheet and re-enters
+        // `newUntitledIntoPane` once that completes.
+        windowModel.setActivePane(index)
+        refreshMode()
+    }
+
+    /// Header context menu > Open…: opens into THIS pane, even when only one
+    /// pane is open (single-file mode replaces the current file).
+    @objc func openInPane(_ sender: Any?) {
+        guard let pane = pane(from: sender) else { return }
+        let index = paneIndex(pane)
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.treatsFilePackagesAsDirectories = false
+        panel.begin { [weak self] response in
+            guard response == .OK, let self else { return }
+            self.openFiles(into: index, urls: panel.urls)
+        }
+    }
+
+    /// Opens the first chosen file into the pane at `index` (its header's pane),
+    /// a second into the other pane only when that one is empty; extras (and an
+    /// unplaceable second) are ignored. Mirrors the drop rules of §4.3.
+    /// Internal (not private) so a test can drive this route the way it drives
+    /// the others — every entry point deserves the same proof.
+    func openFiles(into index: Int, urls: [URL]) {
+        let files = openableFiles(from: urls)
+        guard let first = files.first else { return }
+        guard openIntoPane(index: index, url: first) else { return }
+
+        let otherIndex = 1 - index
+        let otherPane = otherIndex == 0 ? windowModel.pane1 : windowModel.pane2
+        var ignored = max(0, files.count - 2)
+        if files.count >= 2 {
+            if otherPane.isOpen {
+                ignored += 1  // the second file can't open — treated as ignored
+            } else {
+                _ = openIntoPane(index: otherIndex, url: files[1])
+            }
+        }
+        windowModel.setActivePane(index)
+        if ignored > 0 { notifyIgnored(count: ignored) }
+        refreshMode()
+    }
+
+    /// Header context menu > Close: closes THIS pane (the active-pane Close in
+    /// the menu bar keeps its own behavior).
+    @objc func closePaneDocument(_ sender: Any?) {
+        guard let pane = pane(from: sender), pane.isOpen else { return }
+        closePane(at: paneIndex(pane))
+    }
+
+    // MARK: - Edit commands (§7, §12)
+
+    @objc func undoEdit() {
+        _ = try? activePane.undo()
+    }
+
+    @objc func redoEdit() {
+        _ = try? activePane.redo()
+    }
+
+    @objc func selectAllBytes() {
+        activePane.selectAll()
+        focusActiveHexView()
+    }
+
+    /// Edit > Copy (⌘C): copies the ACTIVE pane's selection.
+    @objc func copySelection() {
+        copySelectionBytes(of: activePane)
+    }
+
+    /// Context menu > Copy: copies the RIGHT-CLICKED pane's selection (§10.2).
+    @objc func copyPaneSelection(_ sender: Any?) {
+        guard let target = offsetContextTarget(from: sender), target.pane.isOpen else { return }
+        copySelectionBytes(of: target.pane)
+    }
+
+    /// Copies `pane`'s selection to the clipboard: raw bytes (primary, §12.1)
+    /// plus uppercase hex text.
+    private func copySelectionBytes(of pane: PaneViewModel) {
+        guard let doc = pane.document, !doc.selection.isEmpty else { return }
+        let range = doc.selection.start..<doc.selection.end
+        guard let bytes = try? doc.read(at: range.lowerBound, length: Int(range.count)) else { return }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setData(Data(bytes), forType: .rawBytes)  // raw bytes: primary (§12.1)
+        pasteboard.setString(ClipboardCodec.hexText(from: bytes), forType: .string)
+    }
+
+    /// Context menu > Save Selection as…: writes the RIGHT-CLICKED pane's
+    /// selected bytes to a file the user names (§10.2). A read of the selection
+    /// only — the source file is never written by this command, so it is offered
+    /// whether or not the pane is writable, and what is saved is what is shown,
+    /// edits and all.
+    @objc func savePaneSelectionAs(_ sender: Any?) {
+        guard let target = offsetContextTarget(from: sender), target.pane.isOpen else { return }
+        guard let doc = target.pane.document, !doc.selection.isEmpty else { return }
+        let range = doc.selection.start..<doc.selection.end
+        saveRange(range, of: target.pane,
+                  suggestedName: exportName(fileName: target.pane.status.fileName, range: range),
+                  purpose: "the selection")
+    }
+
+    /// Context menu > Save Zone as…: writes a zone a tool-module published to a
+    /// file the user names. The same read-only export as Save Selection as…: the
+    /// pane's source is never written, and the bytes saved are what is on
+    /// screen, edits and all. The name leads with the zone's own name — that is
+    /// what the user is looking for — over the offsets.
+    @objc func saveZone(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? ZoneContextTarget, target.pane.isOpen else { return }
+        let zone = target.zone
+        saveRange(zone.range, of: target.pane,
+                  suggestedName: zoneExportName(fileName: target.pane.status.fileName,
+                                                zoneName: zone.name, range: zone.range),
+                  purpose: "the zone")
+    }
+
+    /// Takes a zone's bytes out into a tab of their own.
+    ///
+    /// A zone is a structure somebody found in the file — a volume, a FIT table,
+    /// a microcode — and the way to study one is often to look at it as a file
+    /// rather than at its offsets inside a bigger one. The tab holds a copy: it
+    /// is untitled and unsaved, so editing it cannot reach back into the dump it
+    /// was taken from, and Save routes through Save As.
+    @objc func openZoneInNewTab(_ sender: NSMenuItem) {
+        guard let target = sender.representedObject as? ZoneContextTarget else { return }
+        openZone(target.zone, of: target.pane)
+    }
+
+    /// The act both zone menus perform — the dump's and the minimap gutter's.
+    /// One reading of the bytes, one tab, one set of rules about what the copy
+    /// is, wherever the reader asked from.
+    private func openZone(_ zone: Zone, of pane: PaneViewModel) {
+        guard pane.isOpen, let doc = pane.document else { return }
+        let bytes: [UInt8]
+        do {
+            bytes = try doc.read(at: zone.range.lowerBound, length: Int(zone.range.count))
+        } catch {
+            presentFileError("Could not read the zone.", error, url: doc.url)
+            return
+        }
+        guard let tab = makeSiblingTab?() else { return }
+        tab.windowModel.pane1.openBytes(
+            bytes,
+            named: zoneExportName(fileName: pane.status.fileName,
+                                  zoneName: zone.name, range: zone.range)
+        )
+        tab.windowModel.bookmarkStore.seed(windowModel.bookmarkStore.bookmarks)
+        tab.apply(mode: .singleFile)
+    }
+
+    /// The tail shared by Save Selection as… and Save Zone as…: reads `range`
+    /// out of `pane`'s document and offers the bytes as a file to save. `purpose`
+    /// names the range in the error strings ("the selection", "the zone").
+    private func saveRange(_ range: Range<UInt64>, of pane: PaneViewModel,
+                           suggestedName: String, purpose: String) {
+        guard let doc = pane.document else { return }
+        let bytes: [UInt8]
+        do {
+            bytes = try doc.read(at: range.lowerBound, length: Int(range.count))
+        } catch {
+            presentFileError("Could not read \(purpose).", error, url: doc.url)
+            return
+        }
+
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = suggestedName
+        panel.canCreateDirectories = true
+        let url: URL?
+        if let selectionSavePanel {
+            url = selectionSavePanel(panel)
+        } else {
+            url = panel.runModal() == .OK ? panel.url : nil
+        }
+        guard let url else { return }
+        do {
+            try Data(bytes).write(to: url, options: .atomic)
+        } catch {
+            presentFileError("Could not save \(purpose).", error, url: url)
+        }
+    }
+
+    /// The name the Save panel suggests for a saved selection: the source file's
+    /// name with the exported range appended, so a save of even the whole file
+    /// cannot silently land on the file that is open.
+    private func exportName(fileName: String, range: Range<UInt64>) -> String {
+        let stem = (fileName as NSString).deletingPathExtension
+        let bounds = "\(range.lowerBound.bareAddress)-\(range.upperBound.bareAddress)"
+        return "\(stem)_\(bounds).bin"
+    }
+
+    /// The name the Save panel suggests for a saved zone: the source file's name
+    /// with the zone's own name appended. A nameless zone falls back to its
+    /// range, so the export still cannot silently land on the file that is open.
+    private func zoneExportName(fileName: String, zoneName: String,
+                                range: Range<UInt64>) -> String {
+        guard !zoneName.isEmpty else { return exportName(fileName: fileName, range: range) }
+        let stem = (fileName as NSString).deletingPathExtension
+        return "\(stem)_\(zoneName).bin"
+    }
+
+    /// The standard "Paste" menu item (⌘V → `paste:`) dispatches through the
+    /// responder chain (§11). A focused text field's editor implements
+    /// `paste:` and pastes text, so the message only reaches this controller
+    /// when the first responder has no text-paste of its own — i.e. the hex
+    /// view. Paste-write into the dump therefore happens only while a hex
+    /// pane holds focus; everywhere else ⌘V is the standard system paste.
+    @objc func paste(_ sender: Any?) {
+        guard view.window?.firstResponder is HexView, activePane.isOpen else { return }
+        pasteWrite()
+    }
+
+    @objc func pasteWrite() {
+        let pane = activePane
+        guard pane.isOpen else { return }
+        do {
+            let bytes = try pasteboardBytes()
+            try pane.pasteWrite(bytes)
+        } catch {
+            presentError("Paste", error)
+        }
+    }
+
+    @objc func pasteInsert() {
+        let pane = activePane
+        guard pane.isOpen else { return }
+        let bytes: [UInt8]
+        do {
+            bytes = try pasteboardBytes()
+        } catch {
+            presentError("Paste Insert", error)
+            return
+        }
+        guard !bytes.isEmpty else { return }
+        let offset = pane.caretOffset
+        let response = confirmAlert(
+            title: "Paste Insert?",
+            message: "Insert \(bytes.count) byte(s) at offset \(String(format: "0x%X", offset)). Existing bytes from this offset on will shift.",
+            confirmTitle: "Insert",
+            destructive: true,
+            suppressible: true
+        )
+        guard response == .alertFirstButtonReturn else { return }
+        do {
+            try pane.pasteInsert(bytes)
+        } catch {
+            presentError("Paste Insert failed.", error)
+        }
+    }
+
+    /// Edit > Fill Selection with…: fills the ACTIVE pane's selection.
+    @objc func fillSelectionWithBytes() {
+        presentFillSheet(for: activePane)
+    }
+
+    /// Context menu > Fill Selection with…: fills the RIGHT-CLICKED pane's
+    /// selection (§10.2). The sheet's completion captures that pane directly, so
+    /// a selection in a non-active pane is still the one that gets filled.
+    @objc func fillPaneSelection(_ sender: Any?) {
+        guard let target = offsetContextTarget(from: sender), target.pane.isOpen else { return }
+        presentFillSheet(for: target.pane)
+    }
+
+    private func presentFillSheet(for pane: PaneViewModel) {
+        guard pane.isOpen, !pane.hexSelection().isEmpty else { return }
+        let sheet = FillSheetController(selectionCount: pane.hexSelection().count) { pattern in
+            pane.fillSelection(with: pattern)
+        }
+        presentAsSheet(sheet)
+    }
+
+    /// Edit > Delete Bytes…: deletes the ACTIVE pane's selection, or the caret
+    /// byte when the selection is empty.
+    @objc func deleteBytes() {
+        deleteSelectionOrCaret(in: activePane)
+    }
+
+    /// Context menu > Delete Bytes…: deletes the RIGHT-CLICKED pane's selection
+    /// (§10.2). Only offered when the selection is non-empty, so the single-byte
+    /// caret fallback never applies here.
+    @objc func deletePaneSelection(_ sender: Any?) {
+        guard let target = offsetContextTarget(from: sender), target.pane.isOpen else { return }
+        deleteSelectionOrCaret(in: target.pane)
+    }
+
+    private func deleteSelectionOrCaret(in pane: PaneViewModel) {
+        guard pane.isOpen else { return }
+        let selection = pane.hexSelection()
+        let start = selection.start
+        let count = selection.isEmpty ? 1 : selection.count
+        let response = confirmAlert(
+            title: "Delete \(count) byte(s)?",
+            message: "Bytes from offset \(String(format: "0x%X", start)) will be removed. Subsequent offsets will shift — the file structure may be affected.",
+            confirmTitle: "Delete",
+            destructive: true,
+            suppressible: true
+        )
+        guard response == .alertFirstButtonReturn else { return }
+        do {
+            try pane.deleteBytes(in: start..<(start + count))
+        } catch {
+            presentError("Delete failed.", error)
+        }
+    }
+
+    /// Edit > Insert Mode: flips the typing mode of the ACTIVE pane. The mode is
+    /// per pane and never persisted — one file can be typed into while the other
+    /// is being read, and each pane's status bar says which mode it is in (§7.6).
+    ///
+    /// When on, typing inserts a byte at the caret and shifts the tail right; the
+    /// caret becomes a red vertical line at the byte boundary. The one-time
+    /// "this shifts the file" warning is injected here rather than at pane
+    /// creation, which guarantees the callback exists before any insert-mode
+    /// keystroke; it is mode-independent, so re-enabling after a toggle-off never
+    /// re-arms it within the same file.
+    @objc func toggleInsertMode(_ sender: Any?) {
+        let pane = activePane
+        pane.isInsertMode.toggle()
+        // The toolbar's toggle carries the mode, and the keyboard path (⌥⌘I) has
+        // to light it without waiting for AppKit's idle pass (§24.2).
+        revalidateToolbar()
+        pane.confirmInsertModeWarning = { [weak self, weak pane] in
+            guard let self, let pane else { return true }
+            let offset = pane.caretOffset
+            let response = self.confirmAlert(
+                title: "Insert?",
+                message: "Inserting at offset \(String(format: "0x%X", offset)) shifts every byte from here on — the file structure may be affected.",
+                confirmTitle: "Insert",
+                destructive: true,
+                suppressible: true
+            )
+            return response == .alertFirstButtonReturn
+        }
+    }
+
+    /// Adds or removes the toolbar's Prev/Next Difference block to match the
+    /// mode. Difference navigation exists only with two files open, and a block
+    /// of buttons that can never do anything is worse than no block: disabled
+    /// they still read as something the window offers (§10.3). The menu items
+    /// stay, disabled — a menu is a list of what exists, and it says why.
+    ///
+    /// Called on every mode change and once the toolbar exists (the window
+    /// controller builds it after the view is loaded).
+    func syncDiffNavigationToolbarItem() {
+        // Deferred by a run-loop turn, and coalesced. Called from `apply(mode:)`
+        // this would land while AppKit is still reconfiguring the toolbar from
+        // the previous change, and mutating it then raises on the item index.
+        guard !diffToolbarSyncScheduled else { return }
+        diffToolbarSyncScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            self?.diffToolbarSyncScheduled = false
+            self?.applyDiffNavigationToolbarItem()
+        }
+    }
+
+    private func applyDiffNavigationToolbarItem() {
+        // Only a toolbar on screen can be reconfigured: before the window is
+        // shown, `items` reports the configured identifiers while the toolbar's
+        // own list is still empty. A window that appears later syncs from
+        // `viewDidAppear`.
+        guard let window = viewIfLoaded?.window, window.isVisible,
+              let toolbar = window.toolbar else { return }
+        // Exactly one of the two occupies the slot: the Prev/Next Difference
+        // block, or — when the comparison holds no differences at all — the
+        // "Files are identical" badge in its place (§10.3).
+        let wanted: NSToolbarItem.Identifier? =
+            mode == .comparison ? (showsIdenticalBadge ? .filesIdentical : .diffNavigation) : nil
+        // Insert the wanted item first, then drop the other. Inserting before
+        // removing keeps every mutation on a toolbar that still carries its
+        // full item set, which is the order NSToolbar's internal item indexing
+        // tolerates: removing first and then inserting in the same pass leaves
+        // a stale index and raises in -[_itemAtIndex:].
+        if let wanted,
+           !toolbar.items.contains(where: { $0.itemIdentifier == wanted }) {
+            // Right after the flexible space, which is where the plaque's slot
+            // is (§24): the left-hand group has a standard space of its own, so
+            // anchoring on the first `.space` would drop the block in there.
+            let insertAt = toolbar.items.firstIndex { $0.itemIdentifier == .flexibleSpace }
+                .map { $0 + 1 } ?? toolbar.items.count
+            toolbar.insertItem(withItemIdentifier: wanted, at: insertAt)
+        }
+        for identifier in [NSToolbarItem.Identifier.diffNavigation, .filesIdentical]
+        where identifier != wanted {
+            if let i = toolbar.items.firstIndex(where: { $0.itemIdentifier == identifier }) {
+                toolbar.removeItem(at: i)
+            }
+        }
+        // A freshly inserted item starts enabled — AppKit's default validation
+        // only asks whether the target responds to the action — so it would
+        // offer a live-looking Prev Diff until the next validation pass (§10.3).
+        toolbar.validateVisibleItems()
+    }
+
+    /// Whether the toolbar shows the "Files are identical" badge instead of the
+    /// Prev/Next Difference arrows — the last DETERMINED comparison outcome:
+    /// the index built and reported no differences.
+    ///
+    /// Stored, not computed: while the index is building the outcome is
+    /// undetermined, and a computed `!isBuilding && …` would drop the plaque
+    /// back to the arrows on every rebuild — which is what made the buttons
+    /// flicker while typing, each edit re-running the comparison. The plaque
+    /// therefore keeps its last determined state through a build and changes
+    /// only when a new one lands: differences (arrows), no differences (badge),
+    /// or the mode leaving comparison (no block at all).
+    private var showsIdenticalBadge = false
+
+    /// Moves `showsIdenticalBadge` to the current outcome, but only when that
+    /// outcome is determined — comparison mode, index built, build finished.
+    /// Fired from the coordinator's state hook, which also covers the
+    /// incremental applies that land an edited index without a full build.
+    private func updateIdenticalBadgeState() {
+        guard mode == .comparison,
+              !comparisonCoordinator.isBuilding,
+              let index = comparisonCoordinator.index else { return }
+        showsIdenticalBadge = !index.hasDifferences
+    }
+
+    // MARK: - Comparison navigation (§10.3)
+
+    @objc func nextDifference() { navigateBlock(kind: .different, direction: .forward) }
+    @objc func previousDifference() { navigateBlock(kind: .different, direction: .backward) }
+    @objc func nextSameBlock() { navigateBlock(kind: .same, direction: .forward) }
+    @objc func previousSameBlock() { navigateBlock(kind: .same, direction: .backward) }
+
+    /// Recomputes `diffNavigationState` from the current mode, index build
+    /// state, and active caret — the same `from` and search rules
+    /// `navigateBlock` uses, so a menu item is enabled exactly when the action
+    /// would find a block. Fired on mode changes, index transitions, pane
+    /// switches, and caret moves; the menu items read the result via
+    /// `validateMenuItem` (§10.3).
+    private func refreshDiffNavigation() {
+        var state = DiffNavigationState()
+        if mode == .comparison, !comparisonCoordinator.isBuilding {
+            // Ask through the coordinator, so enablement and the action itself
+            // agree on the unit they step by — grouped hunks (§10.3.1).
+            let from = windowModel.activePane.caretOffset
+            func exists(_ kind: DiffBlock.Kind, _ direction: SearchDirection) -> Bool {
+                comparisonCoordinator.findBlock(kind: kind, direction: direction, from: from) != nil
+            }
+            state.previousDifference = exists(.different, .backward)
+            state.nextDifference = exists(.different, .forward)
+            state.previousSameBlock = exists(.same, .backward)
+            state.nextSameBlock = exists(.same, .forward)
+        }
+        guard state != diffNavigationState else { return }
+        diffNavigationState = state
+        // Menu items are validated when the menu opens, but the toolbar's arrows
+        // are on screen the whole time: AppKit revalidates them on its own idle
+        // schedule, so ask for it here and they follow the caret at once (§10.3).
+        viewIfLoaded?.window?.toolbar?.validateVisibleItems()
+    }
+
+    private func navigateBlock(kind: DiffBlock.Kind, direction: SearchDirection) {
+        guard mode == .comparison else { return }
+        let from = windowModel.activePane.caretOffset
+        Task {
+            guard let block = comparisonCoordinator.findBlock(kind: kind, direction: direction, from: from) else {
+                let what = kind == .different ? "difference" : "same block"
+                NSSound.beep()
+                comparisonView?.showNavigationMessage("No more \(what)")
+                return
+            }
+            // Forward navigation lands on the block start; backward navigation
+            // lands on the block's LAST byte (not the byte past it), so a
+            // repeated previous press skips the current block and finds the one
+            // before it — landing past the block would re-find it (§10.3).
+            let target = direction == .backward ? block.range.upperBound - 1 : block.range.lowerBound
+            windowModel.pane1.moveCaret(to: target)
+            windowModel.pane2.moveCaret(to: target)
+            comparisonView?.refreshComparisonInfo()
+            // Show the block start mid-pane, the way the Find bar centres a
+            // match; the panes' synchronized scroll (§9) centres both (§10.3).
+            activeFilePane?.revealSelectionCentered()
+            focusActiveHexView()
+        }
+    }
+
+    /// View > Toggle Pane Layout (§3.3).
+    @objc func togglePaneLayout() {
+        guard mode == .comparison else { return }
+        comparisonView?.toggleLayout()
+        // `setLayout` persists the direction, which the layout observer picks up
+        // and revalidates on — but only for a change that actually landed. Ask
+        // here too, so the toolbar's icon flips with the click (§24.3).
+        revalidateToolbar()
+    }
+
+    /// View > Swap Panels: exchanges pane 1 and pane 2 (comparison mode). The
+    /// active pane follows its document, so the file the user was working on
+    /// stays active. Re-applying the mode re-points the panes (which follow
+    /// their models) to the swapped positions and rebuilds the diff index
+    /// against the swapped storages.
+    @objc func swapPanes() {
+        guard mode == .comparison else { return }
+        windowModel.swapPanes()
+        // Swap exchanges the models in position but leaves the mode unchanged,
+        // so `refreshMode()`'s skip-when-unchanged guard would not re-apply —
+        // and the panes would stay put while the model→position mapping
+        // changes, desyncing every position-based operation (a drop onto the
+        // right pane would hit the model now in the left). Re-apply directly
+        // so the views follow the swapped models (§3.3).
+        apply(mode: .comparison)
+    }
+
+    /// View > Word Size (§6): re-groups the hex dump into words of this size.
+    /// The size travels as the sender's tag, from the menu item or from the
+    /// toolbar's menu button (§24.2) — one action for both.
+    @objc func setWordSize(_ sender: Any?) {
+        let tag: Int?
+        switch sender {
+        case let menuItem as NSMenuItem: tag = menuItem.tag
+        case let button as NSPopUpButton: tag = button.selectedTag()
+        default: tag = nil
+        }
+        guard let size = tag.flatMap({ WordSize(rawValue: $0) }) else { return }
+        WordSize.set(size)
+    }
+
+    // MARK: - Bookmarks (§20)
+
+    /// Edit > Toggle Bookmark (⌘D), and the offset menu's item: toggles the mark
+    /// on `pane`'s row containing `offset` (§20.3). A bookmark marks a row, not a
+    /// byte — the offset is rounded down to its row — and the list is shared by
+    /// both panes, so the same row is marked in both panes of a comparison.
+    ///
+    /// Marking a row opens the naming popover on the new mark: Return saves it
+    /// (unnamed if nothing was typed), Esc removes it again. That is what makes
+    /// **⌘D, Return** the whole gesture for "mark this row" and ⌘D, a name,
+    /// Return the one for "mark it and call it this". A row that is already
+    /// marked is unmarked on the spot, with no popover to dismiss.
+    private func toggleBookmarkInPane(_ pane: PaneViewModel, rowContaining offset: UInt64) {
+        guard pane.isOpen else { return }
+        if windowModel.bookmarkStore.remove(rowContaining: offset) { return }
+        markAndNameBookmark(in: pane, rowContaining: offset)
+    }
+
+    /// Marks the row containing `offset` and opens the naming popover on the new
+    /// mark. The mark is made first, so it is visible while its name is typed —
+    /// and `existingName: nil` is what tells the popover it is naming a mark that
+    /// was just made, so its Esc removes it rather than keeping a name (§20.3).
+    ///
+    /// The caret and the viewport are not moved here: the popover is about to
+    /// take the focus, so a caret move now would be hidden behind it and lost.
+    /// They land on the new mark only once the naming is committed — see
+    /// `onCommit` below, which acts on the row the popover settled on.
+    private func markAndNameBookmark(in pane: PaneViewModel, rowContaining offset: UInt64) {
+        let store = windowModel.bookmarkStore
+        let row = BookmarkStore.row(containing: offset)
+        store.add(rowContaining: row)
+        presentBookmarkEditPopover(
+            in: pane, row: row, existingName: nil,
+            onCommit: { [weak self] target, name in
+                self?.applyBookmarkEdit(from: row, to: target, name: name)
+                self?.revealBookmark(at: target, in: pane)
+            },
+            onCancel: { store.remove(rowContaining: row) }
+        )
+    }
+
+    /// Lands the caret on a just-created bookmark and reveals it — centred when
+    /// it fell off-screen, left in place when it is already on the user's eye
+    /// (`moveCaret`'s centred reveal). Done on the commit, once the naming
+    /// popover has released the focus: a bookmark is made on a row, and that row
+    /// is where the user's eye should land now that the act is done.
+    private func revealBookmark(at row: UInt64, in pane: PaneViewModel) {
+        pane.moveCaret(to: row)
+    }
+
+    /// A double click on an address opens the edit popover on that row: it marks
+    /// the row first when it carries no mark, so the gesture is ⌘D's with the
+    /// mouse, and it edits the mark that is there otherwise — a double click on
+    /// a mark is how a mark is opened everywhere else in the app (§20.5's list
+    /// does the same on a name).
+    ///
+    /// What it never does is unmark: the pointer covers the mark it is aimed at,
+    /// so a toggle here would silently take an existing bookmark away on a click
+    /// landing a row off.
+    func handleOffsetDoubleClick(in pane: PaneViewModel, rowContaining offset: UInt64) {
+        guard pane.isOpen else { return }
+        if windowModel.bookmarkStore.bookmark(atRowContaining: offset) != nil {
+            editBookmarkInPane(pane, rowContaining: offset)
+        } else {
+            markAndNameBookmark(in: pane, rowContaining: offset)
+        }
+    }
+
+    /// Wires a pane view's Offset-column double click to the bookmark gesture, so
+    /// it resolves THIS pane even when it is not the active one (§20.3).
+    func wireBookmarkDoubleClick(_ paneView: FilePaneView, for pane: PaneViewModel) {
+        paneView.onOffsetDoubleClick = { [weak self] offset in
+            self?.handleOffsetDoubleClick(in: pane, rowContaining: offset)
+        }
+    }
+
+    /// Edits the mark on `pane`'s row containing `offset` — its address and its
+    /// name — in the same popover (§20.3). Only for a row that carries one: Esc
+    /// leaves the bookmark exactly as it was.
+    private func editBookmarkInPane(_ pane: PaneViewModel, rowContaining offset: UInt64) {
+        guard pane.isOpen,
+              let existing = windowModel.bookmarkStore.bookmark(atRowContaining: offset) else { return }
+        let store = windowModel.bookmarkStore
+        presentBookmarkEditPopover(
+            in: pane, row: existing.row, existingName: existing.name,
+            onCommit: { [weak self] target, name in
+                self?.applyBookmarkEdit(from: existing.row, to: target, name: name)
+            },
+            onCancel: {},
+            // Removing is offered only here, on a bookmark that already exists:
+            // a mark still being named is taken away by its Esc (§20.3).
+            onDelete: { store.remove(rowContaining: existing.row) }
+        )
+    }
+
+    /// Applies what the popover was edited to: the name, and the address when it
+    /// changed. A moved bookmark is the same bookmark — it leaves the old row and
+    /// arrives on the new one named, rather than being removed and re-made, so
+    /// nothing in between sees a bookmark without its name (§20.3).
+    private func applyBookmarkEdit(from row: UInt64, to target: UInt64, name: String) {
+        windowModel.bookmarkStore.edit(rowContaining: row, to: target, name: name)
+    }
+
+    /// A request to edit a bookmark: which row, in which pane, the name it
+    /// starts with (nil when the mark was just created, which is what makes Esc
+    /// remove it), and what the two keys do. `commit` takes the row the popover
+    /// was edited to, which is not always the row it opened on (§20.3).
+    struct BookmarkEditRequest {
+        let pane: PaneViewModel
+        let row: UInt64
+        let existingName: String?
+        let commit: (UInt64, String) -> Void
+        let cancel: () -> Void
+        /// Removes the bookmark — nil for a mark that was just made, whose Esc
+        /// already does that (§20.3).
+        let delete: (() -> Void)?
+    }
+
+    /// Where an edit request goes, returning how to dismiss what it presented.
+    /// Nil means the real popover on the pane's mark; a test replaces it to
+    /// capture the request instead, because a popover anchored in a window that
+    /// is never on screen closes the instant it opens — the commands' own
+    /// behaviour is what those tests are about.
+    var bookmarkEditPresenter: ((BookmarkEditRequest) -> () -> Void)?
+
+    /// The editing session on screen: the row it is about, and how to close it
+    /// without saving. Held because it must not outlive its mark (§20.3).
+    private var openEditing: (row: UInt64, dismiss: () -> Void)?
+
+    /// The row an edit popover is open for, if any.
+    var editingRow: UInt64? { openEditing?.row }
+
+    /// Presents the edit popover on `pane`'s mark (§20.3), replacing any session
+    /// already on screen — ⌘D on another row while one is open would otherwise
+    /// leave two panels up, one of them about a row the user has moved on from.
+    private func presentBookmarkEditPopover(
+        in pane: PaneViewModel, row: UInt64, existingName: String?,
+        onCommit: @escaping (UInt64, String) -> Void, onCancel: @escaping () -> Void,
+        onDelete: (() -> Void)? = nil
+    ) {
+        openEditing?.dismiss()
+        openEditing = nil
+        let request = BookmarkEditRequest(
+            pane: pane, row: row, existingName: existingName,
+            commit: { [weak self] target, name in
+                self?.openEditing = nil
+                onCommit(target, name)
+            },
+            cancel: { [weak self] in
+                self?.openEditing = nil
+                onCancel()
+            },
+            delete: onDelete.map { delete in
+                { [weak self] in
+                    self?.openEditing = nil
+                    delete()
+                }
+            }
+        )
+        if let bookmarkEditPresenter {
+            openEditing = (row, bookmarkEditPresenter(request))
+            return
+        }
+        guard let paneView = filePaneView(for: pane) else { return }
+        let store = windowModel.bookmarkStore
+        let controller = paneView.presentBookmarkEditPopover(
+            rowContaining: row, existingName: existingName,
+            // One row holds one bookmark (§20.1), so an address already marked is
+            // not an address this bookmark can be given.
+            rowIsFree: { store.bookmark(atRowContaining: $0) == nil },
+            onCommit: request.commit, onCancel: request.cancel, onDelete: request.delete
+        )
+        openEditing = (row, { controller.abandon() })
+    }
+
+    /// Closes the edit popover when the mark it is editing disappears. Every
+    /// removal arrives here through the window's bookmark signal — ⌘D (whose key
+    /// equivalent reaches the menu through an open popover), the context menu,
+    /// and the form's list — so no removal path has to remember to do this
+    /// (§20.3).
+    private func dismissEditPopoverIfItsMarkIsGone(row: UInt64) {
+        guard let openEditing, openEditing.row == row,
+              windowModel.bookmarkStore.bookmark(atRowContaining: row) == nil else { return }
+        self.openEditing = nil
+        openEditing.dismiss()
+    }
+
+    /// ⌘D: the active pane's caret row.
+    @objc func toggleBookmark() {
+        toggleBookmarkInPane(activePane, rowContaining: activePane.hexSelection().start)
+    }
+
+    /// ⇧⌘D: edits the mark on the active pane's caret row — its address and its
+    /// name. Enabled only when that row carries one: ⌘D is how a mark is made,
+    /// and it opens the same popover, so this command only ever edits (§20.3).
+    @objc func editBookmark() {
+        editBookmarkInPane(activePane, rowContaining: activePane.hexSelection().start)
+    }
+
+    /// Offset context menu > Toggle Bookmark: the same act on the row that was
+    /// right-clicked rather than the caret's, in the pane that was right-clicked.
+    @objc func toggleBookmarkAtOffset(_ sender: Any?) {
+        guard let target = offsetContextTarget(from: sender) else { return }
+        toggleBookmarkInPane(target.pane, rowContaining: target.offset)
+    }
+
+    /// Offset context menu > Edit Bookmark…: the edit popover for the
+    /// right-clicked row's existing mark.
+    @objc func editBookmarkAtOffset(_ sender: Any?) {
+        guard let target = offsetContextTarget(from: sender) else { return }
+        editBookmarkInPane(target.pane, rowContaining: target.offset)
+    }
+
+    // MARK: - Segments (§21)
+
+    /// The cut edit request: the pane, the offset the field starts at, where the
+    /// popover anchors, and what committing means.
+    struct CutEditRequest {
+        let pane: PaneViewModel
+        let prefillOffset: UInt64
+        let anchoredToOffset: Bool
+        let commit: (UInt64, String) -> Void
+    }
+
+    /// Where a cut edit request goes. Nil means the real popover on the caret's
+    /// cell; a test replaces it to capture the request instead, because a
+    /// popover anchored in a window that is never on screen closes the instant
+    /// it opens — the commands' own behaviour is what those tests are about.
+    var cutEditPresenter: ((CutEditRequest) -> Void)?
+
+    /// Edit ▸ Add Cut…: the caret's offset, in a popover with a description —
+    /// the cut for an offset you know as a number rather than as a position
+    /// (§21.3). No key equivalent: a deliberate act reached from the menu. The
+    /// popover is centred in the pane, not anchored to the caret: it is a dialog
+    /// pre-filled with a number, not a pointer at a byte.
+    @objc func addCut() {
+        let pane = activePane
+        presentCutEditPopover(in: pane, prefill: pane.caretOffset, anchoredToOffset: false)
+    }
+
+    /// Merge: merges the piece a position sits in into its neighbour (§21.3). It
+    /// acts on a position *inside* a piece — the caret's, from the Edit menu; the
+    /// right-clicked byte or address, from the context menu — not on a cut point.
+    /// The bytes are untouched: merging a piece changes how the file is read, not
+    /// the file. The menu title names the piece and the neighbour it merges into
+    /// ("Merge S1 into S0"), so it is never confused with deleting data.
+    @objc func removeSegment(_ sender: Any?) {
+        let (pane, position): (PaneViewModel, UInt64)
+        if let target = offsetContextTarget(from: sender) {
+            (pane, position) = (target.pane, target.offset)
+        } else {
+            pane = activePane
+            position = pane.caretOffset
+        }
+        guard let piece = pane.segmentStore.segment(containing: position) else { return }
+        pane.segmentStore.removePiece(at: piece.index)
+    }
+
+    /// Offset context menu ▸ Split Here at «address»: the Add Cut popover, opened on the
+    /// right-clicked byte or address and pre-filled with it (§21.3) — the same
+    /// dialog as Edit ▸ Add Cut…, so a cut made from the menu and one made from
+    /// the bar are the same act. This is how a cut normally gets made.
+    @objc func splitHere(_ sender: Any?) {
+        guard let target = offsetContextTarget(from: sender) else { return }
+        presentCutEditPopover(in: target.pane, prefill: target.offset)
+    }
+
+    /// Presents the cut popover for `pane` (§21.3). The offset starts at
+    /// `prefill` (the caret's, or the right-clicked byte's) and is validated as
+    /// it is typed; committing makes the cut and names the piece that starts
+    /// there. With `anchoredToOffset` the popover hangs off that byte; without
+    /// it (Add Cut…) it is centred in the pane's visible area.
+    private func presentCutEditPopover(in pane: PaneViewModel, prefill: UInt64,
+                                       anchoredToOffset: Bool = true) {
+        let request = CutEditRequest(
+            pane: pane, prefillOffset: prefill, anchoredToOffset: anchoredToOffset,
+            commit: { offset, name in
+                guard pane.segmentStore.addCut(at: offset) else { return }
+                // The cut splits the piece at `offset`; the new piece is the one
+                // that *starts* there, so it is the one the description names.
+                if let piece = pane.segmentStore.segment(containing: offset) {
+                    pane.segmentStore.rename(piece.index, to: name)
+                }
+            }
+        )
+        if let cutEditPresenter {
+            cutEditPresenter(request)
+            return
+        }
+        guard let paneView = filePaneView(for: pane) else { return }
+        paneView.presentCutEditPopover(
+            prefillOffset: prefill, fileSize: pane.fileSize,
+            isAlreadyACut: { pane.segmentStore.cuts.contains($0) },
+            onCommit: request.commit, anchoredToOffset: anchoredToOffset
+        )
+    }
+
+    // MARK: - Dialogs (§10)
+
+    /// ⌘L: the Go To / Bookmarks form with the offset field focused — the fast
+    /// path is unchanged, ⌘L, type, Return (§10.1). Tab moves the keyboard to
+    /// the bookmark list, the other half of the same window (§20.5).
+    @objc func goToPosition() {
+        presentGoToForm(focus: .offsetField)
+    }
+
+    /// Where the form goes, so a test can drive it instead: it is presented in a
+    /// modal window, and a modal window has no one to dismiss it under XCTest.
+    var goToFormPresenter: ((GoToBookmarksController) -> Void)?
+
+    /// The form on screen, so a bookmark changed under it (from its own list, or
+    /// from anywhere the store is touched) refreshes what it shows (§20.2).
+    private weak var openGoToForm: GoToBookmarksController?
+
+    private func presentGoToForm(focus: GoToBookmarksController.Focus) {
+        guard activePane.isOpen else { return }
+        let form = GoToBookmarksController(
+            store: windowModel.bookmarkStore, focus: focus,
+            rowBytes: { [weak self] row in self?.bookmarkRowBytes(row) },
+            onGo: { [weak self] offset in self?.goTo(offset: offset) }
+        )
+        openGoToForm = form
+        if let goToFormPresenter {
+            goToFormPresenter(form)
+            return
+        }
+        // A window, not a sheet: it holds a list the user manages, and it is
+        // centred over the window it navigates.
+        presentAsModalWindow(form)
+    }
+
+    /// Segments…: the partition's own form — the pieces in a table with a row
+    /// editor, a +/− footer, and the Save All button (§21.4). Presented like
+    /// the Go To form: a modal window that follows the pane's store, so a cut
+    /// made under it from the dump's own context menu is seen in the list.
+    @objc func showSegments() {
+        presentSegmentsForm()
+    }
+
+    /// Where the form goes, so a test can drive it instead: it is presented in
+    /// a modal window, and a modal window has no one to dismiss it under XCTest.
+    var segmentsFormPresenter: ((SegmentsFormController) -> Void)?
+
+    /// The form on screen, so a cut made under it (from the dump's context
+    /// menu, or from the form's own +/−) refreshes what it shows (§21.4).
+    private weak var openSegmentsForm: SegmentsFormController?
+
+    private func presentSegmentsForm(pane: PaneViewModel? = nil, selecting pieceIndex: Int? = nil) {
+        let pane = pane ?? activePane
+        guard pane.isOpen else { return }
+        let form = SegmentsFormController(
+            pane: pane,
+            // The app's own jump (§10.1): both panes in comparison mode, the
+            // row revealed, the hex view focused — the same act as the Go To
+            // form's Return.
+            onGo: { [weak self] offset in self?.goTo(offset: offset) }
+        )
+        // The save actions live here, not in the form (§21.5): the form is
+        // modal and has no status bar of its own, so the panels, the overwrite
+        // confirmation and the write's progress all run from the window.
+        form.saveAll = { [weak self] in self?.saveAllPieces(of: pane) ?? false }
+        form.savePiece = { [weak self] piece in self?.savePiece(piece, of: pane) ?? false }
+        form.replacePiece = { [weak self] piece in self?.replacePiece(piece, of: pane) ?? false }
+        // The pane's `onSegmentsChanged` is set once per mode apply (§19.4.4):
+        // it reloads this form when it is open and syncs the minimap's strip
+        // whether or not it is, so a cut made here repaints the legend too.
+        openSegmentsForm = form
+        if let segmentsFormPresenter {
+            segmentsFormPresenter(form)
+        } else {
+            // A window, not a sheet: it holds a list the user manages, and it is
+            // centred over the window it edits.
+            presentAsModalWindow(form)
+        }
+        // The strip's Edit… opens the form on the piece under the pointer.
+        if let pieceIndex {
+            form.selectSegment(atIndex: pieceIndex)
+        }
+    }
+
+    // MARK: - Writing pieces out (§21.5)
+
+    /// Save All as Separate Files…: writes the whole partition out as its pieces.
+    /// The directory is chosen in directory mode (a save panel grants access to
+    /// one file and this writes N — the sandbox would refuse the rest), the base
+    /// name comes from the document, and one confirmation previews what will be
+    /// written and names every file that would be replaced, before anything is
+    /// written. Returns whether the write actually started — the form closes on
+    /// true and stays open when the user cancelled a panel.
+    private func saveAllPieces(of pane: PaneViewModel) -> Bool {
+        guard pane.isOpen, let storage = pane.byteStorage else { return false }
+        let segments = pane.segmentStore.segments
+        guard !segments.isEmpty else { return false }
+
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Choose"
+        panel.message = "Choose the folder the segments will be written to."
+        let directory: URL?
+        if let segmentDirectoryPanel {
+            directory = segmentDirectoryPanel(panel)
+        } else {
+            directory = panel.runModal() == .OK ? panel.url : nil
+        }
+        guard let directory else { return false }
+
+        // One file per piece, named for the document: `bios_S0.bin`, `bios_S1.bin`, …
+        // The name the header shows, not the document's URL: an unsaved document
+        // has no URL worth reading (it points at a temporary file called
+        // "Untitled"), and its name is the label — which the user can set, and
+        // for this above all, since a directory is the only other thing this
+        // command asks for (§23).
+        let baseName = pane.status.fileName
+        let parts = segments.map {
+            SegmentWriter.Part(range: $0.range, name: "\(baseName)_\($0.label).bin")
+        }
+
+        guard confirmSegmentWrite(parts: parts, in: directory) else { return false }
+        runSegmentWrite(parts: parts, from: storage, to: directory)
+        return true
+    }
+
+    /// Save Segment…: writes the one piece under the click to a file — the
+    /// ordinary save panel, one file. The panel's own replace confirmation covers
+    /// the overwrite, so there is no separate one here. Returns whether the write
+    /// actually started.
+    private func savePiece(_ piece: Segment, of pane: PaneViewModel) -> Bool {
+        guard pane.isOpen, let storage = pane.byteStorage else { return false }
+        // The header's name, for the reason `saveAllPieces` gives.
+        let baseName = pane.status.fileName
+
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "\(baseName)_\(piece.label).bin"
+        panel.allowedContentTypes = []
+        panel.canCreateDirectories = true
+        let url: URL?
+        if let segmentSavePanel {
+            url = segmentSavePanel(panel)
+        } else {
+            url = panel.runModal() == .OK ? panel.url : nil
+        }
+        guard let url else { return false }
+
+        let part = SegmentWriter.Part(range: piece.range, name: url.lastPathComponent)
+        runSegmentWrite(parts: [part], from: storage, to: url.deletingLastPathComponent())
+        return true
+    }
+
+    /// Replace Segment from File…: reads the one piece under the click from a
+    /// file (§21.6) — the ordinary open panel, one file, replacing the piece's
+    /// bytes. The file must match the piece's length; a mismatch is refused with
+    /// both sizes named, because making it an insert-and-shift is a decision, not
+    /// a default. Returns whether the swap actually started.
+    private func replacePiece(_ piece: Segment, of pane: PaneViewModel) -> Bool {
+        guard pane.isOpen else { return false }
+
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Replace"
+        panel.message = "Choose the file whose bytes replace \(piece.label)."
+        let url: URL?
+        if let segmentOpenPanel {
+            url = segmentOpenPanel(panel)
+        } else {
+            url = panel.runModal() == .OK ? panel.url : nil
+        }
+        guard let url else { return false }
+
+        do {
+            try pane.replaceSegment(piece, withContentsOf: url)
+            return true
+        } catch let error as SegmentReplaceError {
+            switch error {
+            case .lengthMismatch(let pieceLength, let donorLength):
+                presentAlert(
+                    title: "File size does not match the segment",
+                    message: "\(piece.label) is \(FilePaneView.friendlySize(pieceLength)) bytes, "
+                        + "but the file is \(FilePaneView.friendlySize(donorLength)). "
+                        + "The file must be exactly the same length to replace the piece."
+                )
+            }
+            return false
+        } catch {
+            presentFileError("Replacing the segment failed.", error, url: url)
+            return false
+        }
+    }
+
+    /// The one confirmation before a Save All writes (§21.5): a preview of every
+    /// part — `S0 → bios_S0.bin (4 MB)` — and, when any of the target files
+    /// already exist, the names of the ones that would be replaced. Shown before
+    /// anything is written.
+    private func confirmSegmentWrite(parts: [SegmentWriter.Part], in directory: URL) -> Bool {
+        let fileManager = FileManager.default
+        // The parts are in file order (S0, S1, …), so the position is the label.
+        let lines = parts.enumerated().map { index, part in
+            "\(Segment.label(for: index)) → \(part.name) (\(FilePaneView.friendlySize(UInt64(part.range.count))))"
+        }
+        let existing = parts.filter {
+            fileManager.fileExists(atPath: directory.appendingPathComponent($0.name).path)
+        }
+        let alert = NSAlert()
+        alert.messageText = "Save \(parts.count) Segment\(parts.count == 1 ? "" : "s")?"
+        var informative = lines.joined(separator: "\n")
+        if !existing.isEmpty {
+            informative += "\n\nThese files will be replaced:\n"
+                + existing.map(\.name).joined(separator: "\n")
+        }
+        alert.informativeText = informative
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        let response: NSApplication.ModalResponse
+        if let segmentWriteConfirm {
+            response = segmentWriteConfirm(alert)
+        } else {
+            response = Self.presentModal(alert, defaultInTest: .alertSecondButtonReturn)  // Cancel in tests
+        }
+        return response == .alertFirstButtonReturn
+    }
+
+    /// Runs the write off the main thread, with the name, progress and (×) in the
+    /// active pane's status bar while it runs (§14.4). A new write cancels any
+    /// in-flight one. The write is all or nothing (§21.5): a failure or a cancel
+    /// publishes nothing and leaves the directory as it was.
+    private func runSegmentWrite(parts: [SegmentWriter.Part], from storage: any ByteStorage,
+                                 to directory: URL) {
+        if let segmentWriteRunner {
+            segmentWriteRunner(parts, storage, directory)
+            return
+        }
+        segmentWriteTask?.cancel()
+        segmentWriteOperation?.finish()
+        let operation = BackgroundOperation(name: "Writing \(parts.count) segment\(parts.count == 1 ? "" : "s")…") { [weak self] in
+            self?.segmentWriteTask?.cancel()
+        }
+        segmentWriteOperation = operation
+        activeFilePane?.beginOperation(operation)
+        segmentWriteTask = Task { [weak self] in
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try SegmentWriter.write(
+                        parts, from: storage, to: directory,
+                        shouldCancel: { Task.isCancelled },
+                        progress: { operation.report($0) }
+                    )
+                }.value
+                operation.finish()
+            } catch is CancellationError {
+                operation.finish()
+            } catch {
+                operation.finish()
+                self?.presentFileError("Saving segments failed.", error, url: directory)
+            }
+        }
+    }
+
+    /// The bytes on a bookmarked row of the ACTIVE pane, for the list to show
+    /// where an unnamed bookmark's name would be (§20.5). Nil when the row is
+    /// past that pane's end: a bookmark is an absolute address and stays in the
+    /// list even where the file does not reach (§9). Read live, per row, so the
+    /// list shows the pane's current content, edits included.
+    private func bookmarkRowBytes(_ row: UInt64) -> [UInt8]? {
+        let pane = activePane
+        guard pane.isOpen, row < pane.fileSize, let storage = pane.byteStorage else { return nil }
+        let length = Int(min(UInt64(HexLayout.bytesPerRow), pane.fileSize - row))
+        return (try? storage.read(at: row, length: length)) ?? []
+    }
+
+    /// The jump itself (§10.1) — the same act whether the offset was typed or
+    /// picked from the bookmark list.
+    private func goTo(offset: UInt64) {
+        let largerSize = max(windowModel.pane1.fileSize, windowModel.pane2.fileSize)
+        if offset > largerSize {
+            presentAlert(
+                title: "Offset beyond end of file",
+                message: "Offset \(String(format: "0x%X", offset)) is beyond the end of the file(s) (\(String(format: "0x%X", largerSize)) bytes). Moved to the end."
+            )
+        }
+        let target = min(offset, largerSize)
+        if mode == .comparison {
+            // §10.1: move both panes; each clamps to its own EOF.
+            windowModel.pane1.moveCaret(to: target)
+            windowModel.pane2.moveCaret(to: target)
+        } else {
+            activePane.moveCaret(to: target)
+        }
+        // The row has to be where the user is looking, not wherever it happened
+        // to be before the jump (§10.1).
+        activeFilePane?.revealOffsetCentered(target)
+        focusActiveHexView()
+    }
+
+    @objc func selectBlock() {
+        let pane = activePane
+        guard pane.isOpen else { return }
+        let sheet = SelectBlockSheetController(fileSize: pane.fileSize) { [weak self] selection in
+            pane.setSelection(selection)
+            // §10.2: show the block's START mid-pane, the way the Find bar
+            // centres a match — the block begins where the user looks.
+            self?.activeFilePane?.revealOffsetCentered(selection.start)
+        }
+        presentAsSheet(sheet)
+    }
+
+    /// Edit > Find (Cmd+F): shows the non-modal Find bar at the top of the
+    /// window (§11).
+    @objc func findPattern() {
+        let pane = activePane
+        guard pane.isOpen else { return }
+        showFindBar()
+    }
+
+    /// The toolbar's Find button, which is a switch rather than a command: it
+    /// is a thing on screen that is either pressed or not, and pressing it
+    /// again is Done.
+    ///
+    /// ⌘F deliberately does not do this. On an open bar it means "take me to
+    /// the field" — the keystroke a reader presses to get back to a pattern
+    /// they are editing — and a ⌘F that closed the bar instead would make the
+    /// second press undo the first.
+    @objc func toggleFindBar() {
+        let pane = activePane
+        guard pane.isOpen else { return }
+        if findBar.isHidden {
+            showFindBar()
+        } else {
+            hideFindBar()
+        }
+    }
+
+    /// ⌘F (§11). On a bar that is already open it focuses the field and selects
+    /// what is in it — it does **not** prefill.
+    ///
+    /// Prefilling from the history belongs to *opening* the bar. Doing it on
+    /// every ⌘F threw away the pattern the user had come back to fix: a search
+    /// that found nothing records nothing (there is no encoding to record it
+    /// under), so "the last search" was an older, successful one, and it
+    /// replaced what was in the field.
+    private func showFindBar() {
+        let wasHidden = findBar.isHidden
+        contentTopToView.isActive = false
+        contentTopToFindBar.isActive = true
+        findBar.isHidden = false
+        // The bar lives in the hierarchy between shows, hidden. A layer colour
+        // is resolved when it is assigned, and what reaches a view that nobody
+        // is drawing is not something to rely on — so the bar re-resolves its
+        // own as it appears, and is never the last theme's white bar over a
+        // dark window.
+        findBar.refreshThemeColors()
+        syncFindBarToActivePane()
+        view.layoutSubtreeIfNeeded()
+        if wasHidden {
+            findBar.prepareForShow()
+        } else {
+            findBar.focusForEditing()
+        }
+    }
+
+    private func hideFindBar() {
+        // A plate reporting a search outlives the bar it was about by four
+        // seconds otherwise (§11).
+        notices.dismiss()
+        findBar.isHidden = true
+        contentTopToFindBar.isActive = false
+        contentTopToView.isActive = true
+        cancelFind()
+        endIndexing()
+        // The highlighting ends with the bar, always: Done and Esc mean "I am
+        // finished searching", and greys left on the dump after that claim a
+        // search is still running. The *set* survives, so an open results panel
+        // goes on listing the search that was actually run — its offsets are
+        // still true — until an edit invalidates it or a new search replaces it
+        // (§11).
+        for pane in [windowModel.pane1, windowModel.pane2] {
+            pane.endMatchHighlighting()
+        }
+        focusActiveHexView()
+    }
+
+    /// Escape pressed while the dump has the focus — not the pattern field — is
+    /// the same "I am done searching" as Escape in the bar: it closes the bar
+    /// and ends the highlighting, but the set, and a results panel listing it,
+    /// survive, exactly as `Done` and the bar's own Escape leave them (§11).
+    ///
+    /// The pattern field is the one place Escape must NOT close the bar: there
+    /// it is the field's own key (it clears the field, which ends the search as
+    /// a text change). The field sits in the bar's subtree, so its Escape is
+    /// consumed before it climbs to here; this only ever sees the Escape the
+    /// dump lets through. With no bar up, Escape has nothing to dismiss, so it
+    /// passes on untouched.
+    override func cancelOperation(_ sender: Any?) {
+        if !findBar.isHidden {
+            hideFindBar()
+        } else {
+            super.cancelOperation(sender)
+        }
+    }
+
+    /// A press of Find Next / Find Previous (§11).
+    ///
+    /// There are two ways to find the next occurrence, and the model owns both:
+    /// a **step** through a finished index (`MatchSet.step`), which is instant,
+    /// and a **pass** of scans (`SmartSearch.firstMatch`), which is what runs
+    /// when there is no index to step through yet. Each handles both directions
+    /// and each says whether it had to come round the end of the file, so
+    /// nothing here has to work that out — or work it out twice.
+    private func runSearch(_ request: FindBarView.Request, direction: SearchDirection) {
+        let pane = activePane
+        guard pane.isOpen, let attempts = attempts(for: request) else { return }
+        // A pass already looking for exactly this is the answer to this press.
+        guard smartPassInFlight != attempts else { return }
+        // A search already running here is stepped rather than started again —
+        // including the one a Smart Search settled on, whose attempt is
+        // usually not the first (the popup names it).
+        if steppable(attempts, of: request)
+            .contains(where: { pane.hasMatches(for: $0.pattern, folding: $0.folding) }) {
+            stepMatch(direction: direction, in: pane)
+            return
+        }
+        beginPass(attempts: attempts, direction: direction, goal: .showTheMatch, in: pane)
+    }
+
+    /// Which of the attempts a press may *step* through rather than scan for:
+    /// all of them, or — where the user has named an encoding — only that one.
+    ///
+    /// Switching the popup to UTF-16 while standing on an ASCII match means
+    /// "find this as UTF-16", not "the next ASCII one". A session in another
+    /// encoding is no answer to a press that named this one, however well
+    /// indexed it is (§11).
+    private func steppable(_ attempts: [SmartSearch.Attempt],
+                           of request: FindBarView.Request) -> [SmartSearch.Attempt] {
+        guard case .smart(_, _, let preferred) = request, let preferred,
+              let first = attempts.first, first.encoding == preferred else {
+            return attempts
+        }
+        return [first]
+    }
+
+    /// What the field is asking for, as things to look for: one attempt for a
+    /// chosen encoding, Smart Search's list otherwise (§11). Nil when there is
+    /// nothing to look for at all, which the bar reports where the count goes.
+    private func attempts(for request: FindBarView.Request) -> [SmartSearch.Attempt]? {
+        switch request {
+        case .pattern(let pattern, let folding):
+            return [SmartSearch.Attempt(pattern: pattern, folding: folding,
+                                        encodings: [pattern.encoding])]
+        case .smart(let text, let caseSensitive, let preferred):
+            let attempts = SmartSearch.attempts(for: text, caseSensitive: caseSensitive,
+                                                preferring: preferred)
+            guard !attempts.isEmpty else {
+                findBar.reportNoUsablePattern()
+                return nil
+            }
+            return attempts
+        }
+    }
+
+    /// What a pass does once it knows which encoding to use.
+    private enum SearchPassGoal {
+        /// A press of Enter or ‹ ›: put the user on the match.
+        case showTheMatch
+        /// A press of the results button: list them, and leave the caret alone.
+        case listTheMatches
+    }
+
+    /// Scans for the attempts in order until one of them finds something (§11).
+    ///
+    /// One entry point for every search that has to scan: a chosen encoding is
+    /// a pass of one attempt, and Smart Search is a pass of several. The pass
+    /// itself is the model's — the order, the two scans per attempt, the wrap
+    /// and the progress accounting — and what is left here is what to do with
+    /// its answer.
+    ///
+    /// The whole pass is one operation in the status bar, with its progress and
+    /// its (×): a scan of the file is a wait worth being able to stop, and a
+    /// wrong guess about an encoding costs one each (§14.4).
+    private func beginPass(attempts: [SmartSearch.Attempt], direction: SearchDirection,
+                           goal: SearchPassGoal, in pane: PaneViewModel) {
+        guard let first = attempts.first, let storage = pane.document?.storage else { return }
+        // Whatever a plate is saying is about the search before this one (§11).
+        notices.dismiss()
+        cancelFind()
+        endIndexing()
+        // A session that is looking rather than one that has found: the dump
+        // greys nothing, the bar counts nothing, and the results panel says
+        // "searching" instead of going on listing the pattern before this one.
+        // It stands in the first attempt's name until an attempt wins, and it
+        // is what makes a second press find a search already under way.
+        pane.setMatches(MatchSet(pattern: first.pattern, folding: first.folding,
+                                 extent: pane.fileSize, starts: [], indexedUpTo: 0))
+        let operation = BackgroundOperation(name: "Searching…") { [weak self] in
+            self?.cancelFind()
+        }
+        findOperation = operation
+        smartPassInFlight = attempts
+        filePaneView(for: pane)?.beginOperation(operation)
+        let anchor = searchAnchor(in: pane, direction: direction)
+        let chunkSize = Self.searchChunkSize
+        findTask = Task { [weak self] in
+            guard let self else { return }
+            let scan = Task.detached(priority: .userInitiated) {
+                try? SmartSearch.firstMatch(among: attempts, in: storage, from: anchor,
+                                            direction: direction, chunkSize: chunkSize,
+                                            shouldCancel: { Task.isCancelled },
+                                            progress: { operation.report($0) })
+            }
+            let outcome = await withTaskCancellationHandler(
+                operation: { await scan.value },
+                onCancel: { scan.cancel() }
+            )
+            operation.finish()
+            self.smartPassInFlight = nil
+            guard !Task.isCancelled, pane.isOpen else { return }
+            switch outcome {
+            case .found(let attempt, let range, let wrapped):
+                self.adopt(attempt: attempt, foundAt: range, wrapped: wrapped,
+                           direction: direction, goal: goal, in: pane)
+            default:
+                self.reportNothingFound(attempts: attempts, goal: goal, in: pane)
+            }
+        }
+    }
+
+    /// Where a search starts from: the caret, or the edge of the selection it
+    /// would otherwise find again (§11).
+    private func searchAnchor(in pane: PaneViewModel, direction: SearchDirection) -> UInt64 {
+        let selection = pane.hexSelection()
+        return selection.isEmpty ? pane.caretOffset
+            : direction == .forward ? selection.end : selection.start
+    }
+
+    /// Makes the attempt that found something *the* search: the session is its
+    /// pattern's from here on, the bar's popup says which encoding it was, and
+    /// the index of every other occurrence starts behind it (§11).
+    private func adopt(attempt: SmartSearch.Attempt, foundAt range: Range<UInt64>,
+                       wrapped: Bool, direction: SearchDirection, goal: SearchPassGoal,
+                       in pane: PaneViewModel) {
+        pane.setMatches(MatchSet(pattern: attempt.pattern, folding: attempt.folding,
+                                 extent: pane.fileSize, starts: [], indexedUpTo: 0))
+        findBar.adopt(encoding: attempt.encoding)
+        // A match in hand is the strongest answer there is, so the search goes
+        // into the history here (§11).
+        findBar.recordFoundSearch(encoding: attempt.encoding)
+        switch goal {
+        case .showTheMatch:
+            show(match: range, in: pane)
+            if wrapped { showWrapNotice(direction: direction) }
+        case .listTheMatches:
+            // The results button is not a Find Next: the caret stays where it
+            // is, and the panel opens on the index as it fills (§11).
+            presentSearchResults(for: pane)
+        }
+        startIndexing(pattern: attempt.pattern, folding: attempt.folding, in: pane)
+        handOffFocusAfterFind()
+    }
+
+    /// A pass where every attempt came back empty (§11).
+    ///
+    /// The session becomes a *finished* search with no matches, so the bar says
+    /// `Not found` and the panel `No matches.` — both true of every attempt.
+    /// Where there was a choice of encodings, a plate says which ones were
+    /// tried, because that answer is about the pass and not about any one of
+    /// its scans.
+    private func reportNothingFound(attempts: [SmartSearch.Attempt], goal: SearchPassGoal,
+                                    in pane: PaneViewModel) {
+        if let last = attempts.last {
+            pane.setMatches(MatchSet(pattern: last.pattern, folding: last.folding,
+                                     extent: pane.fileSize, starts: []))
+        }
+        // The button opens the panel whatever the search has to say (§11) —
+        // here, that nothing came back.
+        if goal == .listTheMatches { presentSearchResults(for: pane) }
+        if attempts.count > 1 {
+            showNotice(symbol: "wand.and.sparkles",
+                       lines: ["Smart search."]
+                           + attempts.map { "\($0.label) — no results." })
+        }
+        handOffFocusAfterFind()
+    }
+    /// Starts a search's index without going anywhere: what the results button
+    /// asks for. Pressing it is not a Find Next, so the caret stays where it is
+    /// and the panel opens on the rows as they arrive (§11).
+    /// An index that turned up matches is a search that found something, so it
+    /// is remembered (§11).
+    ///
+    /// This is the results button's own case: with one thing to look for it
+    /// starts an index and no first-hit scan, so nothing else is in a position
+    /// to say the search succeeded. A no-op once the search has been recorded,
+    /// and for a pattern that occurs nowhere it never fires at all — which is
+    /// the point.
+    private func noteIndexFound(_ pattern: SearchPattern, in pane: PaneViewModel) {
+        guard pane.matchSet?.isEmpty == false else { return }
+        findBar.recordFoundSearch(encoding: pattern.encoding)
+    }
+
+    private func beginIndexing(pattern: SearchPattern, folding: CaseFolding,
+                               in pane: PaneViewModel) {
+        notices.dismiss()
+        cancelFind()
+        // An index covering nothing yet, so the session exists from this
+        // instant: a second press finds a search already under way and steps
+        // within it instead of starting another.
+        pane.setMatches(MatchSet(pattern: pattern, folding: folding,
+                                 extent: pane.fileSize, starts: [], indexedUpTo: 0))
+        startIndexing(pattern: pattern, folding: folding, in: pane)
+    }
+
+    /// Builds the index of every occurrence behind the answer, publishing it as
+    /// it fills (§11).
+    ///
+    /// Each instalment is a stretch of file the scan has covered: the greys for
+    /// it are exact, so the dump can paint them (and repaints only the rows the
+    /// user is actually looking at), the panel lists them, and the map marks
+    /// them. What waits for the end is everything that is about the *whole*
+    /// file — the count, the wrap, an ordinal, and stepping by index.
+    private func startIndexing(pattern: SearchPattern, folding: CaseFolding,
+                               in pane: PaneViewModel) {
+        endIndexing()
+        guard let storage = pane.document?.storage else { return }
+        // The one operation a search shows (§14.4). The first-hit scan runs
+        // without one: it is a millisecond on a dump this side of a gigabyte,
+        // and where it is not, this covers the same ground and reports the same
+        // progress. Cancelling it stops both.
+        let operation = BackgroundOperation(name: "Searching…") { [weak self] in
+            self?.indexTask?.cancel()
+            self?.findTask?.cancel()
+        }
+        indexOperation = operation
+        filePaneView(for: pane)?.beginOperation(operation)
+        let extent = storage.size
+        let chunkSize = Self.searchChunkSize
+        indexTask = Task { [weak self] in
+            let stream = SearchEngine.matchStartsStream(
+                pattern: pattern.bytes, in: storage, folding: folding, chunkSize: chunkSize,
+                shouldCancel: { Task.isCancelled },
+                progress: { operation.report($0) })
+            var builder = MatchSetBuilder(pattern: pattern, folding: folding, extent: extent)
+            var publishedUpTo: UInt64 = 0
+            var lastPublish = Date.distantPast
+            do {
+                for try await batch in stream {
+                    builder.add(batch.starts)
+                    // On a cadence, not per instalment: a common byte yields
+                    // thousands of them, and each publish copies the index's
+                    // representation.
+                    guard Date().timeIntervalSince(lastPublish) >= Self.indexPublishInterval,
+                          batch.scannedUpTo > publishedUpTo else { continue }
+                    let filled = publishedUpTo..<batch.scannedUpTo
+                    let snapshot = builder.snapshot(indexedUpTo: batch.scannedUpTo)
+                    publishedUpTo = batch.scannedUpTo
+                    lastPublish = Date()
+                    await MainActor.run { [weak self] in
+                        pane.fillMatches(snapshot, filled: filled)
+                        self?.noteIndexFound(pattern, in: pane)
+                    }
+                }
+            } catch {
+                // A failed read leaves the index where it got to: the search
+                // itself already answered, and the greys that landed are true.
+            }
+            let complete = !Task.isCancelled
+            await MainActor.run { [weak self] in
+                operation.finish()
+                self?.indexOperation = nil
+                self?.indexTask = nil
+                guard complete, pane.isOpen else { return }
+                pane.fillMatches(builder.finish(), filled: publishedUpTo..<max(publishedUpTo, extent))
+                self?.noteIndexFound(pattern, in: pane)
+            }
+        }
+    }
+
+    /// Stops an index in flight — a new search, an edit, a closed bar.
+    private func endIndexing() {
+        indexTask?.cancel()
+        indexTask = nil
+        indexOperation?.finish()
+        indexOperation = nil
+    }
+
+    /// How often a half-built index is published. Often enough that the greys
+    /// follow the scan visibly, rarely enough that the copy each publish costs
+    /// stays a rounding error next to the scan itself.
+    static let indexPublishInterval: TimeInterval = 0.1
+
+    /// Moves to the next or previous match (§11).
+    ///
+    /// Answered from the **index** wherever the index can answer: that is a
+    /// rank/select step, so it is instant, it leaves the greys and the count
+    /// alone, and it costs the file nothing. `MatchSet.step` owns both
+    /// directions and the wrap.
+    ///
+    /// A half-built index answers for the part of the file it has covered —
+    /// every match below `indexedUpTo` is exact — so stepping through the
+    /// beginning of a big dump works while the rest of it is still being
+    /// indexed. Only a step it *cannot* answer is scanned for: nothing found
+    /// ahead in what is covered, or a set past the ceiling where positions
+    /// were never kept.
+    private func stepMatch(direction: SearchDirection, in pane: PaneViewModel) {
+        guard let set = pane.matchSet else { return }
+        let anchor = searchAnchor(in: pane, direction: direction)
+        if set.isHighlightable, let step = set.step(direction, from: anchor),
+           // A wrap is only true when the index is finished: while it is still
+           // filling, "nothing ahead" may mean "not found yet".
+           !step.wrapped || set.isComplete {
+            land(step, direction: direction, in: pane)
+            return
+        }
+        // A finished index with nothing in it has nothing to step to, and the
+        // bar already says so.
+        guard !set.isComplete || !set.isHighlightable else { return }
+        scanForStep(in: pane, direction: direction)
+    }
+
+    /// Puts the user on a step the index answered.
+    private func land(_ step: MatchSet.Step, direction: SearchDirection,
+                      in pane: PaneViewModel) {
+        pane.select(range: step.range)
+        // A step is a search being shown again, which it may not have been: the
+        // set outlives its highlighting, so `Done` then Enter steps through the
+        // set the pane still holds and lights it back up (§11).
+        pane.highlightMatches(current: step.index)
+        // A match already on screen moves the highlight, not the page; one off
+        // screen is centred. The caret's own rule (§10.4) — and the reason a
+        // walk through a cluster of matches no longer jerks the view a row at a
+        // time.
+        filePaneView(for: pane)?.revealSelectionCenteredIfNeeded()
+        // The pop answers the key press — including when a lone match wraps
+        // onto itself, where no index changed (§11). Started *after* the
+        // reveal, so its first frame is never drawn into a pass a scroll is
+        // still rearranging.
+        filePaneView(for: pane)?.bounceFindIndicator()
+        // Said after the move, not instead of it: the plate is the answer and
+        // this is the footnote (§11).
+        if step.wrapped { showWrapNotice(direction: direction) }
+        handOffFocusAfterFind()
+    }
+
+    /// A step the index could not answer: one scan for the search's own
+    /// pattern, wrapping, and nothing else touched (§11).
+    ///
+    /// Deliberately *not* a pass. A pass activates a search: it replaces the
+    /// session with one that is still looking, which puts every grey out and
+    /// back, and it stops the index being built. Navigating inside a search
+    /// that already exists must do neither — the index still filling behind
+    /// this press is the same search's, and killing it on every ‹ › meant a
+    /// common pattern in a large dump never finished indexing and every press
+    /// looked like a fresh search.
+    private func scanForStep(in pane: PaneViewModel, direction: SearchDirection) {
+        guard let set = pane.matchSet, let storage = pane.document?.storage else { return }
+        let attempt = SmartSearch.Attempt(pattern: set.pattern, folding: set.folding,
+                                          encodings: [set.pattern.encoding])
+        // Only the navigation task: `endIndexing()` is not called here, and
+        // that is the point.
+        cancelFind()
+        let operation = BackgroundOperation(name: "Searching…") { [weak self] in
+            self?.cancelFind()
+        }
+        findOperation = operation
+        filePaneView(for: pane)?.beginOperation(operation)
+        let anchor = searchAnchor(in: pane, direction: direction)
+        let chunkSize = Self.searchChunkSize
+        findTask = Task { [weak self] in
+            guard let self else { return }
+            let scan = Task.detached(priority: .userInitiated) {
+                try? SmartSearch.firstMatch(of: attempt, in: storage, from: anchor,
+                                            direction: direction, chunkSize: chunkSize,
+                                            shouldCancel: { Task.isCancelled },
+                                            progress: { operation.report($0) })
+            }
+            let outcome = await withTaskCancellationHandler(
+                operation: { await scan.value },
+                onCancel: { scan.cancel() }
+            )
+            operation.finish()
+            guard !Task.isCancelled, pane.isOpen else { return }
+            guard case .found(_, let range, let wrapped) = outcome else {
+                self.showFindMessage("Not found.")
+                return
+            }
+            self.show(match: range, in: pane)
+            if wrapped { self.showWrapNotice(direction: direction) }
+            self.handOffFocusAfterFind()
+        }
+    }
+
+
+    /// Puts the user on a match a scan found: selected, revealed, and under the
+    /// plate — the answer looks the same whether or not the index behind it
+    /// exists yet (§11).
+    private func show(match range: Range<UInt64>, in pane: PaneViewModel) {
+        pane.select(range: range)
+        pane.highlightMatches(onMatch: range)
+        filePaneView(for: pane)?.revealSelectionCenteredIfNeeded()
+        filePaneView(for: pane)?.bounceFindIndicator()
+    }
+
+    /// A search launched from the find bar leaves focus in the pattern field so
+    /// a subsequent Enter re-searches; only when the bar is hidden does the
+    /// search hand focus to the hex view.
+    private func handOffFocusAfterFind() {
+        if findBar.isHidden {
+            focusActiveHexView()
+        } else {
+            findBar.focusPatternField()
+        }
+    }
+
+    /// Hands the Find bar the active pane's session: "3 of 128", "Not found",
+    /// or nothing at all (§11). Driven by every change to the set or the
+    /// current match, and by the bar opening.
+    /// Something about how the search *looks* changed — a set arrived or went,
+    /// the highlighting came or ended, the indicator stepped. The count is
+    /// re-read and the map re-marked; the dump repaints itself, through the
+    /// pane's own view (§11).
+    ///
+    /// Everything here is skipped while the minimap panel is closed: it paints
+    /// nothing, and a press of ‹ › used to invalidate its cells and rebuild its
+    /// overlay regardless.
+    private func searchAppearanceChanged() {
+        syncFindBarToActivePane()
+        guard minimapPanelVisible else { return }
+        // No byte range describes a set arriving or a plate moving to another
+        // part of the file, so in detail mode every cell it draws is suspect.
+        minimapView.invalidateCells()
+        scheduleMinimapMatchSync()
+    }
+
+    /// Points the Find bar at the active pane (§11).
+    ///
+    /// The bar is one strip serving whichever pane is in front, so everything
+    /// on it that describes a search — the count, and whether that pane's
+    /// results panel is up — is read off that pane, here, in one place. Called
+    /// wherever the active pane changes, wherever its search changes, and when
+    /// the bar opens; every reading is derived on the spot rather than
+    /// remembered, so there is no second copy to fall behind.
+    ///
+    /// That is what the results button had done: it kept whatever the last
+    /// press had set, so moving to a pane whose list was already up left the
+    /// bar offering to *show* what was on screen — and pressing it closed the
+    /// list. A per-reading refresher would have fixed that one button and left
+    /// the next reading to be forgotten in the same places.
+    private func syncFindBarToActivePane() {
+        let pane = activePane
+        findBar.apply(FindBarView.PaneContext(
+            count: FindCount.reading(of: pane.highlightedMatchSet,
+                                     current: pane.currentMatchIndex),
+            resultsShown: filePaneView(for: pane)?.searchResultsPanelVisible == true))
+    }
+
+    /// Drops a pane's match set: the bytes under it moved, so every offset in it
+    /// is a guess. The greys go rather than shift — a grey in the wrong place is
+    /// worse than no grey — and the next press of Find Next scans afresh.
+    ///
+    /// An overwrite could in principle be patched in place (`MatchSet.splice`),
+    /// which is what the plan's edit stage is for; until then any edit ends the
+    /// session — and takes an open results panel with it, since the pane's view
+    /// follows the set it is listing (§11).
+    private func invalidateMatches(in pane: PaneViewModel?) {
+        // An index still being built is being built over bytes that just
+        // moved, so it stops rather than finishing into a file it no longer
+        // describes (§11).
+        endIndexing()
+        pane?.clearMatches()
+    }
+
+    /// The Find bar's results button (§11): shows or hides the pane's results
+    /// panel.
+    ///
+    /// It is no longer a search. Activating a search already started the index
+    /// — the same one that feeds the dump's highlighting — so this presents
+    /// what that index holds, and goes on presenting it as the index fills.
+    /// When the field holds a pattern nothing has looked for yet, the search
+    /// starts here and the panel opens on it.
+    private func toggleSearchResults(_ request: FindBarView.Request) {
+        let pane = activePane
+        guard pane.isOpen, let paneView = filePaneView(for: pane) else { return }
+        if paneView.searchResultsPanelVisible {
+            paneView.hideSearchResults()
+            syncFindBarToActivePane()
+            return
+        }
+        // The button also *activates* the pattern in the field: a pattern
+        // typed but not yet searched by Enter or ‹ › is searched here, so the
+        // panel is never a list of the previous pattern's matches (§11).
+        guard let attempts = attempts(for: request) else { return }
+        // The same rule as a press of ‹ ›: a named encoding is what to list,
+        // even where another one's index is the one already in hand (§11).
+        if steppable(attempts, of: request)
+            .contains(where: { pane.hasMatches(for: $0.pattern, folding: $0.folding) }) {
+            presentSearchResults(for: pane)
+            return
+        }
+        guard attempts.count > 1 else {
+            // One thing to look for needs no scan to pick it: the index itself
+            // finds every occurrence, and the panel fills as it does.
+            beginIndexing(pattern: attempts[0].pattern, folding: attempts[0].folding, in: pane)
+            findBar.adopt(encoding: attempts[0].encoding)
+            presentSearchResults(for: pane)
+            return
+        }
+        // Which encoding to list is the same question Smart Search answers for
+        // a jump, so it is answered the same way — and the panel opens on the
+        // encoding that turned out to occur (§11).
+        beginPass(attempts: attempts, direction: .forward, goal: .listTheMatches, in: pane)
+    }
+
+    /// Opens the pane's results panel on its current set: the matches as rows,
+    /// or — past the listing limit — the count and the reason there are no rows
+    /// (§11).
+    ///
+    /// The button opens the panel, whatever the search has to say. One still
+    /// running opens on what it has and fills as the index does; one that found
+    /// nothing opens saying so, where the rows would have been. Refusing to
+    /// open would leave the press with no effect at all, which reads as a
+    /// broken button.
+    private func presentSearchResults(for pane: PaneViewModel) {
+        guard let paneView = filePaneView(for: pane), pane.matchSet != nil else { return }
+        // Nothing is handed over: the panel lists the pane's own set, and stays
+        // level with it from then on — a new search rewrites its rows, and an
+        // invalidation takes it down (§11).
+        paneView.showSearchResults()
+        syncFindBarToActivePane()
+    }
+
+    /// Says that a search came round the end of the file: one large glyph
+    /// turning the way the search was going, and nothing to read (§11).
+    ///
+    /// Wrapping is the one thing about a step that the dump cannot show. The
+    /// plate moves and the page moves, exactly as they do for the next match
+    /// in line, so without this the difference between "the next one" and "the
+    /// first one, again" is invisible. Turning back to the top of a file is
+    /// what a circular arrow means everywhere else on the platform.
+    func showWrapNotice(direction: SearchDirection) {
+        notices.show(glyph: direction == .forward
+            ? Self.wrapForwardGlyph : Self.wrapBackwardGlyph)
+    }
+
+    /// The plate a wrapped search shows: an arrow round a capsule, whose head
+    /// says which end the search came round — top right for one that ran off
+    /// the end, bottom left for one that ran off the start. The plain circular
+    /// arrows stand in on a macOS that does not have them: the glyphs arrived
+    /// in SF Symbols 6, and the app runs on 14.
+    static let wrapForwardGlyph = symbolName(
+        "arrow.trianglehead.topright.capsulepath.clockwise", or: "arrow.clockwise")
+    static let wrapBackwardGlyph = symbolName(
+        "arrow.trianglehead.bottomleft.capsulepath.clockwise", or: "arrow.counterclockwise")
+
+    /// `preferred` where this system draws it, `fallback` where it does not.
+    private static func symbolName(_ preferred: String, or fallback: String) -> String {
+        NSImage(systemSymbolName: preferred, accessibilityDescription: nil) != nil
+            ? preferred : fallback
+    }
+
+    /// Shows a transient notice over the window (§11) — a report about an
+    /// operation the window ran, rather than about the place the user is
+    /// looking. Where it goes and how it comes and goes is the presenter's, so
+    /// every plate of the kind behaves the same.
+    ///
+    /// It belongs to the window rather than to a pane: in comparison mode a
+    /// pane-owned plate would have to pick which pane the answer was about.
+    func showNotice(symbol: String, lines: [String]) {
+        notices.show(symbol: symbol, lines: lines)
+    }
+
+    /// The window's notices, one at a time.
+    private(set) lazy var notices = TransientNoticePresenter(host: view)
+
+    /// The notice on screen, if any — for tests.
+    var transientNotice: TransientNoticeView? { notices.current }
+
+    private func showFindMessage(_ message: String) {
+        NSSound.beep()
+        activeFilePane?.showTransientMessage(message)
+    }
+
+    /// Keeps the pattern in the Find bar under a name (§11).
+    ///
+    /// The sheet does the asking and the checking — including the one refusal
+    /// that matters, the same search kept twice — so what is left here is the
+    /// keeping itself and saying it happened, in the same plate the searches
+    /// answer in.
+    private func askToKeepPattern(_ entry: SearchPatternEntry) {
+        let sheet = NamePatternSheetController(entry: entry) { [weak self] kept in
+            guard FavoritePatternStore.add(kept) else { return }
+            self?.showNotice(symbol: "star.fill", lines: ["Added to Favorites", kept.name])
+        }
+        presentAsSheet(sheet)
+    }
+
+    // MARK: - Test mode
+
+    /// True when the app runs inside the XCTest runner (a test host). A modal
+    /// alert has no human to click it there, so every blocking prompt must
+    /// short-circuit to a conservative default — otherwise a stray prompt (the
+    /// file-changed Reload/Keep alert, an error) hangs the test suite forever.
+    static var isRunningTests: Bool {
+        let environment = ProcessInfo.processInfo.environment
+        return environment["XCTestConfigurationFilePath"] != nil
+            || environment["XCTestBundlePath"] != nil
+    }
+
+    /// Answers alerts in place of the user, so a test can choose a specific
+    /// button rather than living with the call site's default — needed wherever
+    /// the buttons do three different things and each has to be covered.
+    ///
+    /// Consulted only under test, so it can never intercept a real alert.
+    static var modalResponder: ((NSAlert) -> NSApplication.ModalResponse)?
+
+    /// Presents `alert` modally, or returns `defaultInTest` immediately when
+    /// running under XCTest. Callers pick a response that leaves the document
+    /// untouched (Cancel / Keep Current Contents) so a stray alert can never
+    /// discard edits or reload a file mid-test. Exposed (internal) so a test
+    /// can pin the suppression contract.
+    @discardableResult
+    static func presentModal(_ alert: NSAlert, defaultInTest: NSApplication.ModalResponse) -> NSApplication.ModalResponse {
+        guard !isRunningTests else { return modalResponder?(alert) ?? defaultInTest }
+        return alert.runModal()
+    }
+
+    // MARK: - Alerts
+
+    @discardableResult
+    private func confirmAlert(title: String, message: String, confirmTitle: String,
+                              destructive: Bool = false,
+                              suppressible: Bool = false) -> NSApplication.ModalResponse {
+        // A suppressible confirmation is one of the §7.2 shifting-edit warnings.
+        // With the warnings switched off it does not appear at all and the edit
+        // proceeds: the user has said, once, that they know what these edits do.
+        if suppressible, !EditingSettings.warnsBeforeShiftingEdits {
+            return .alertFirstButtonReturn
+        }
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: confirmTitle)
+        alert.addButton(withTitle: "Cancel")
+        if destructive {
+            alert.buttons.first?.hasDestructiveAction = true
+        }
+        if suppressible {
+            alert.showsSuppressionButton = true
+            alert.suppressionButton?.title = "Do not ask again"
+        }
+        let response = Self.presentModal(alert, defaultInTest: .alertSecondButtonReturn)  // Cancel in tests
+        if suppressible { Self.applySuppression(of: alert) }
+        return response
+    }
+
+    /// Honours an alert's "Do not ask again" checkbox by switching the
+    /// shifting-edit warnings off — the same switch as Settings ▸ Editing.
+    /// Whichever button dismissed the alert: ticking the box and then cancelling
+    /// still means "stop asking me". Internal so a test can pin the wiring,
+    /// which is otherwise unreachable (a test never shows the alert).
+    static func applySuppression(of alert: NSAlert) {
+        guard alert.suppressionButton?.state == .on else { return }
+        EditingSettings.set(warnsBeforeShiftingEdits: false)
+    }
+
+    @discardableResult
+    private func confirmSaveDiscardCancel() -> NSApplication.ModalResponse {
+        let alert = NSAlert()
+        alert.messageText = "Save changes before closing?"
+        alert.informativeText = "Do you want to save the changes you made?"
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Don't Save")
+        alert.addButton(withTitle: "Cancel")
+        return Self.presentModal(alert, defaultInTest: .alertThirdButtonReturn)  // Cancel in tests
+    }
+
+    /// The title of the last informational alert. A modal alert is
+    /// short-circuited under XCTest (see `presentModal`), so this is the only
+    /// trace it leaves — and some of it is behaviour worth pinning, like the
+    /// past-EOF warning a Go To leaves behind (§10.1).
+    private(set) var lastAlertTitle: String?
+
+    private func presentAlert(title: String, message: String) {
+        lastAlertTitle = title
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .informational
+        Self.presentModal(alert, defaultInTest: .alertFirstButtonReturn)  // OK in tests, result ignored
+    }
+
+    private func presentError(_ title: String, _ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = error.localizedDescription
+        alert.alertStyle = .critical
+        Self.presentModal(alert, defaultInTest: .alertFirstButtonReturn)  // OK in tests, result ignored
+    }
+
+    /// Shows a file-operation error, upgrading sandbox/permission denials to a
+    /// clear "grant access" prompt (§16 sandbox access denied).
+    func presentFileError(_ title: String, _ error: Error, url: URL?) {
+        if isSandboxAccessDenied(error) {
+            let name = url?.lastPathComponent ?? "the file"
+            presentAlert(title: "Access denied",
+                         message: "ByteRipper cannot access “\(name)”. Choose it again with File > Open to grant access.")
+        } else {
+            presentError(title, error)
+        }
+    }
+
+    private func isSandboxAccessDenied(_ error: Error) -> Bool {
+        let ns = error as NSError
+        if ns.domain == NSCocoaErrorDomain, ns.code == NSFileReadNoPermissionError {
+            return true
+        }
+        if ns.domain == NSPOSIXErrorDomain, ns.code == EACCES {
+            return true
+        }
+        return false
+    }
+
+    /// How much of the file one scan step reads (§11). The default is the
+    /// engine's own; a `var` so a test can make a search take a while without
+    /// writing a gigabyte to disk to do it — the property under test is that a
+    /// long scan keeps the main thread responsive, and chunk count is what makes
+    /// a scan long.
+    static var searchChunkSize = SearchEngine.defaultChunkSize
+
+    // MARK: - Zoom-to-fit (§3.1)
+
+    /// The content width the launch window fits to (§3.1): **one** hex grid at
+    /// the saved word size, whatever the saved pane arrangement. The window
+    /// opens empty, and it opens on one file far more often than on two, so
+    /// fitting two grids would make every single-file session start too wide;
+    /// opening a second file is what asks for the extra width, and Window > Zoom
+    /// gives it from the real content. No file is open yet at launch, so the
+    /// offset column uses its default width. The window controller uses this for
+    /// the launch frame.
+    ///
+    /// Never narrower than the toolbar, though: see `toolbarFitWidth`.
+    static func launchContentWidth() -> CGFloat {
+        let font = AppearanceSettings.font()
+        let charWidth = AppearanceSettings.charWidth(for: font)
+        let layout = HexLayout(charWidth: charWidth, rowHeight: 0, wordSize: WordSize.current.rawValue)
+        return max(layout.contentWidth + FilePaneView.contentFitSlack, toolbarFitWidth)
+    }
+
+    /// The width the toolbar needs before AppKit starts moving its trailing
+    /// items into the overflow menu: both groups, the difference block included
+    /// (§24.4). A floor under the launch width — a window that opens with its
+    /// own minimap toggle already hidden behind a chevron reads as a bug, and a
+    /// large word size makes the hex grid narrow enough for that to happen.
+    ///
+    /// Measured, not computed: the items' widths are AppKit's, and they differ
+    /// between releases. 600 pt clears the measured threshold (570 pt on macOS
+    /// 26, less on 14, where the toolbar metrics are tighter) with a margin.
+    static let toolbarFitWidth: CGFloat = 600
+
+    /// Ideal content width the window should be when zoomed (double-click on the
+    /// title bar / Window > Zoom): the hex grid width for a single pane, or
+    /// both grids plus the splitter divider for a left/right comparison. A
+    /// stacked comparison keeps the wider of the two panes' grids.
+    private func standardContentWidth() -> CGFloat {
+        switch mode {
+        case .singleFile:
+            return activeFilePane?.contentFitWidth ?? 0
+        case .comparison:
+            guard let comparisonView else { return 0 }
+            let w1 = comparisonView.paneView1.contentFitWidth
+            let w2 = comparisonView.paneView2.contentFitWidth
+            // Same source of truth as ComparisonView's layout toggle (§3.3).
+            let isVertical = LayoutSettings.isVertical
+            return isVertical ? w1 + w2 + comparisonView.splitView.dividerThickness : max(w1, w2)
+        case .empty:
+            return 0
+        }
+    }
+
+    /// What the tool panel claims of a zoomed window's content width: its own
+    /// width plus the divider, or nothing at all when no tool-module is open
+    /// (§3.1, `Design/TOOL_MODULES_PLAN.md`).
+    ///
+    /// The width it *has*, not the width it would open at: zoom fits the window
+    /// around what is on screen, and the user may well have dragged the panel
+    /// wider than the tool-module asked for. Before the first layout the
+    /// divider has no position to read, so the width the panel will open at
+    /// stands in — which is what it is about to become.
+    private func toolPanelFitWidth() -> CGFloat {
+        guard tools.isPanelVisible else { return 0 }
+        let live = toolPanelWidth()
+        let width = live > 0
+            ? live
+            : (tools.activeModule.map { tools.preferredWidth(for: $0) } ?? 0)
+        guard width > 0 else { return 0 }
+        return width + panelSplit.dividerThickness
+    }
+
+    /// Ideal content height the window should be when zoomed (double-click on
+    /// the title bar / Window > Zoom): the taller pane's full hex content plus
+    /// its header and status bar — the height needed to show the biggest loaded
+    /// file without scrolling. The empty state has no content, so the default
+    /// zoom frame is kept.
+    private func standardContentHeight() -> CGFloat {
+        switch mode {
+        case .singleFile:
+            return activeFilePane?.contentFitHeight ?? 0
+        case .comparison:
+            guard let comparisonView else { return 0 }
+            return max(comparisonView.paneView1.contentFitHeight,
+                       comparisonView.paneView2.contentFitHeight)
+        case .empty:
+            return 0
+        }
+    }
+}
+
+// MARK: - Window closing (§3.6)
+
+extension MainViewController: NSWindowDelegate {
+    /// Double-click on the title bar / Window > Zoom sizes the window to the
+    /// hex content instead of the default zoom-to-max: the width fits the hex
+    /// grid(s), and the height stretches to show the taller loaded file's hex
+    /// grid without scrolling — both capped at the screen's visible size when
+    /// the content is larger (§3.1). The top edge stays put so the window grows
+    /// or shrinks from the bottom. In the empty state there is no hex content,
+    /// so the default zoom frame is kept.
+    func windowWillUseStandardFrame(_ window: NSWindow, defaultFrame: NSRect) -> NSRect {
+        let contentWidth = standardContentWidth()
+        let contentHeight = standardContentHeight()
+        guard contentWidth > 0, contentHeight > 0 else { return defaultFrame }
+
+        // A visible minimap panel shares the content area, so the fitted window
+        // must make room for it on top of the hex grids: the hex panes keep
+        // their fitted width and the panel takes its preferred width (plus the
+        // divider) beside them. A hidden panel adds nothing.
+        let minimapWidth = minimapPanelVisible
+            ? minimapPreferredPanelWidth + panelSplit.dividerThickness
+            : 0
+        // The tool panel is the same claim on the leading edge
+        // (`Design/TOOL_MODULES_PLAN.md`), so it is added the same way — the
+        // fit is about the whole content area, and a panel left out of it is a
+        // window that zooms to a width the dump does not actually get.
+        let fitWidth = contentWidth + minimapWidth + toolPanelFitWidth()
+
+        var frame = window.frame
+        let oldTop = frame.origin.y + frame.height
+        let screen = window.screen ?? NSScreen.main
+        // Convert the needed content height to a window-frame height (adds the
+        // title bar, the only chrome outside the pane itself).
+        let frameHeight = window.frameRect(forContentRect: NSRect(x: 0, y: 0, width: 0, height: contentHeight)).height
+        frame.size.width = min(fitWidth, screen?.visibleFrame.width ?? fitWidth)
+        frame.size.height = min(frameHeight, screen?.visibleFrame.height ?? frameHeight)
+        // Anchor the top edge and keep the window fully on the visible screen.
+        frame.origin.y = oldTop - frame.size.height
+        if let screen {
+            frame.origin.y = min(max(frame.origin.y, screen.visibleFrame.minY),
+                                 screen.visibleFrame.maxY - frame.size.height)
+        }
+        return frame
+    }
+
+    /// Combined dirty prompt on window close: list every modified file, offer
+    /// Save / Don't Save / Cancel. Aborts the close when a save fails so no
+    /// change is ever lost silently.
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        let panes = [windowModel.pane1, windowModel.pane2]
+        let dirty = panes.filter { $0.isOpen && $0.status.isDirty }
+        guard !dirty.isEmpty else { return true }
+
+        let names = dirty.map { "“\($0.status.fileName)”" }.joined(separator: ", ")
+        let alert = NSAlert()
+        alert.messageText = "Save changes before closing?"
+        alert.informativeText = "The following files have unsaved changes: \(names)."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Don't Save")
+        alert.addButton(withTitle: "Cancel")
+        switch Self.presentModal(alert, defaultInTest: .alertThirdButtonReturn) {  // Cancel in tests (abort close)
+        case .alertFirstButtonReturn:
+            // Untitled panes have no file yet, so their "Save" runs a Save As
+            // sheet; the window closes once every pane is on disk. When every
+            // save can happen inline, close right away.
+            if dirty.contains(where: { $0.isUntitled }) {
+                saveAllThen(dirty, then: { [weak sender] in sender?.close() })
+                return false
+            }
+            for pane in dirty {
+                do {
+                    try pane.save()
+                } catch {
+                    presentFileError("Could not save “\(pane.status.fileName)”.", error, url: pane.document?.url)
+                    return false
+                }
+            }
+            return true
+        case .alertSecondButtonReturn:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+// MARK: - Toolbar validation
+
+extension MainViewController: NSToolbarItemValidation {
+    /// Asks AppKit to revalidate the toolbar now instead of on its own idle
+    /// schedule. Called wherever something a toolbar item reports has changed:
+    /// enablement, and the state the stateful items show (§24).
+    func revalidateToolbar() {
+        viewIfLoaded?.window?.toolbar?.validateVisibleItems()
+    }
+
+    /// The toolbar's items follow the menu items they mirror (§10.3, §24), and
+    /// the two that carry a state — the insert-mode toggle and the word-size
+    /// radio — are pushed to it here.
+    ///
+    /// Pushing `isEnabled` onto the items from our own state does not work:
+    /// AppKit revalidates every visible item on each run-loop pass, and the
+    /// default validation sets the state back to "the target responds to the
+    /// action" — always true here. The state has to be answered where validation
+    /// asks for it. That makes this the natural place for the state a control
+    /// displays as well, the way `validateMenuItem` sets the checkmarks.
+    func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
+        switch item.action {
+        case #selector(nextDifference):
+            return diffNavigationState.nextDifference
+        case #selector(previousDifference):
+            return diffNavigationState.previousDifference
+        case #selector(goToPosition),
+             #selector(findPattern),
+             #selector(toggleFindBar),
+             #selector(showSegments):
+            // The document commands need a dump to act on, exactly like the menu
+            // items they mirror (§24.1).
+            return activePane.isOpen
+        case #selector(toggleInsertMode(_:)):
+            // The button holds the ACTIVE pane's mode: it is per pane (§7.6), so
+            // the toggle follows the pane the keys go to. Always enabled — a
+            // typing mode is meaningful with no file open, and the pane's status
+            // bar says OVR/INS either way (§24.2).
+            (item.view as? NSButton)?.state = activePane.isInsertMode ? .on : .off
+            return true
+        case #selector(activateTool(_:)):
+            // The pull-down's first row is what it displays, so the name of the
+            // tool-module in force is written there rather than selected
+            // (Design/TOOL_MODULES_PLAN.md). Re-sized when it changes: the
+            // toolbar lays a view-backed item out at the view's own width.
+            if let button = item.view as? NSPopUpButton, let title = button.menu?.items.first {
+                let name = tools.activeModule?.title ?? MainWindowController.noToolTitle
+                if title.title != name {
+                    title.title = name
+                    button.sizeToFit()
+                    button.invalidateIntrinsicContentSize()
+                }
+            }
+            return activePane.isOpen
+        case #selector(setWordSize(_:)):
+            // The button names the size in force, the way the View > Word Size
+            // items carry the radio check (§6). Always enabled: a view setting,
+            // not something done to a file (§24.2).
+            (item.view as? NSPopUpButton)?.selectItem(withTag: WordSize.current.rawValue)
+            return true
+        case #selector(togglePaneLayout):
+            // The icon names the arrangement the click will produce, the way the
+            // Show/Hide Minimap item's title names its act (§24.3): stacked
+            // panes while they are side by side, side by side while stacked. The
+            // tooltip says it in words.
+            let offersStacked = LayoutSettings.isVertical
+            item.image = NSImage(systemSymbolName: offersStacked ? "square.split.1x2" : "square.split.2x1",
+                                 accessibilityDescription: offersStacked ? "Stack Panes" : "Side-by-Side Panes")
+            item.toolTip = offersStacked ? "Stack the panes" : "Place the panes side by side"
+            return mode == .comparison
+        default:
+            return true
+        }
+    }
+}
+
+// MARK: - Menu validation
+
+extension MainViewController: NSMenuItemValidation {
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        switch menuItem.action {
+        case #selector(activateTool(_:)):
+            // A radio group: the active tool-module is checked, and a
+            // tool-module needs a file to work on. None is always available —
+            // it is how the panel is closed.
+            let (enabled, state) = tools.menuState(for: menuItem.representedObject as? String,
+                                                   fileIsOpen: activePane.isOpen)
+            menuItem.state = state
+            return enabled
+        case #selector(toggleMinimapOverview):
+            // A check, because both modes are a minimap. Disabled for a file the
+            // overview could only magnify — the same rule that greys out the
+            // header switch's Overview half (§19.4).
+            menuItem.state = minimapView.renderMode == .overview ? .on : .off
+            return minimapView.renderMode == .overview || minimapView.overviewIsInformative()
+        case #selector(toggleMinimap):
+            // A Show/Hide item names what it will do, so the title flips with
+            // the panel's state (§19). Always enabled: the minimap works with
+            // no file open too (it just has nothing to draw).
+            menuItem.title = minimapPanelVisible ? "Hide Minimap" : "Show Minimap"
+            return true
+        case #selector(toggleInsertMode):
+            // A checked toggle reading the ACTIVE pane's mode: the mode is per
+            // pane (§7.6), so the checkmark follows the pane the keys go to.
+            // Always enabled — it is a mode switch, meaningful even with no file
+            // open.
+            menuItem.state = activePane.isInsertMode ? .on : .off
+            return true
+        case #selector(undoEdit):
+            // A step made on the user's behalf by something with a name of its
+            // own says what it was — "Undo Add Microcode" (§26). Ordinary
+            // editing has no name, and the item stays the bare verb.
+            menuItem.title = activePane.undoLabel.map { "Undo \($0)" } ?? "Undo"
+            return activePane.isOpen
+        case #selector(redoEdit):
+            menuItem.title = activePane.redoLabel.map { "Redo \($0)" } ?? "Redo"
+            return activePane.isOpen
+        case #selector(saveDocument),
+             #selector(saveDocumentAs),
+             #selector(pasteInsert),
+             #selector(deleteBytes),
+             #selector(selectBlock),
+             #selector(goToPosition),
+             #selector(findPattern),
+             #selector(selectAllBytes),
+             #selector(toggleBookmark):
+            return activePane.isOpen
+        case #selector(editBookmark):
+            // There is nothing to edit on a row that carries no mark, and ⌘D is
+            // what makes one (§20.3).
+            return activePane.isOpen
+                && windowModel.bookmarkStore.bookmark(atRowContaining: activePane.hexSelection().start) != nil
+        case #selector(addCut):
+            // A cut needs bytes to split: an empty pane has none (§21.3).
+            return activePane.isOpen && activePane.fileSize > 0
+        case #selector(removeSegment(_:)):
+            // A piece can be removed only when there is a neighbour to merge it
+            // into (§21.3) — the first piece into the one below, any other into
+            // the one above. The position is the right-clicked one from the
+            // context menu, or the caret from the Edit menu.
+            let (pane, position): (PaneViewModel, UInt64)
+            if let target = menuItem.representedObject as? OffsetContextTarget {
+                (pane, position) = (target.pane, target.offset)
+            } else {
+                pane = activePane
+                position = pane.caretOffset
+            }
+            guard pane.isOpen else { return false }
+            let piece = pane.segmentStore.segment(containing: position)
+            // Name the piece and the neighbour it merges into, so the menu says
+            // what it will do (§21.3) — "Merge S1 into S0", not a bare "Merge".
+            menuItem.title = piece.map { $0.mergeTitle } ?? "Merge"
+            return piece != nil && pane.segmentStore.current.pieces.count > 1
+        case #selector(revertDocument):
+            // Nothing on disk to revert an untitled document to.
+            return activePane.isOpen && !activePane.isUntitled
+        case #selector(appendFile),
+             #selector(insertFileAtStart):
+            // A join needs content to join into: an empty pane has nothing
+            // (§22.1). The File-menu items act on the active pane.
+            return activePane.isOpen
+        case #selector(appendFileInPane(_:)),
+             #selector(insertFileAtStartInPane(_:)):
+            // Context-menu items act on the pane they were built for.
+            return pane(from: menuItem)?.isOpen ?? false
+        case #selector(duplicateDocument):
+            // The copy needs a free pane and bytes to copy (§23).
+            return canDuplicate(activePane)
+        case #selector(duplicatePaneDocument(_:)):
+            guard let pane = pane(from: menuItem) else { return false }
+            return canDuplicate(pane)
+        case #selector(renamePaneDocument(_:)):
+            // A saved document's name belongs to its file; only the label of an
+            // unsaved one is the app's to change (§23).
+            return pane(from: menuItem)?.canRename ?? false
+        case #selector(openPaneInNewTab(_:)):
+            // Only a comparison has a pane to spare. In single-file mode the
+            // command would move the window's only document into a new tab and
+            // leave an empty window behind — a move that separates nothing.
+            // `makeSiblingTab` is nil in a controller with no window to put a
+            // tab beside.
+            guard let pane = pane(from: menuItem), makeSiblingTab != nil else { return false }
+            return mode == .comparison && pane.isOpen
+        case #selector(savePaneDocument(_:)),
+             #selector(savePaneDocumentAs(_:)):
+            // Context-menu items act on the pane they were built for.
+            return pane(from: menuItem)?.isOpen ?? false
+        case #selector(revertPaneDocument(_:)):
+            guard let pane = pane(from: menuItem) else { return false }
+            return pane.isOpen && !pane.isUntitled
+        case #selector(showPaneInFinder(_:)):
+            // A file must be on disk to reveal it in the Finder — an empty pane
+            // has nothing, and an untitled document has no URL.
+            guard let pane = pane(from: menuItem) else { return false }
+            return pane.isOpen && !pane.isUntitled
+        case #selector(copyPaneFileName(_:)),
+             #selector(copyPaneFullPath(_:)):
+            // A file must be on disk to have a name or a path to copy — an
+            // empty pane has nothing, and an untitled document has no file.
+            // The same rule as Show in Finder, for the same reason.
+            guard let pane = pane(from: menuItem) else { return false }
+            return pane.isOpen && !pane.isUntitled
+        case #selector(copyPaneSelection(_:)),
+             #selector(savePaneSelectionAs(_:)),
+             #selector(fillPaneSelection(_:)),
+             #selector(deletePaneSelection(_:)):
+            // Right-click selection actions act on the pane they were built for.
+            return (menuItem.representedObject as? OffsetContextTarget)?.pane.isOpen ?? false
+        case #selector(splitHere(_:)):
+            // Split Here at «address» opens the Add Cut popover pre-filled with the
+            // right-clicked offset; the popover validates the offset as it is
+            // typed, so a file is all the menu item needs (§21.3).
+            guard let target = menuItem.representedObject as? OffsetContextTarget,
+                  target.pane.isOpen else { return false }
+            return target.pane.fileSize > 0
+        case #selector(fillSelectionWithBytes):
+            let pane = activePane
+            return pane.isOpen && !pane.hexSelection().isEmpty
+        case #selector(copySelection):
+            let pane = activePane
+            return pane.isOpen && !pane.hexSelection().isEmpty
+        case #selector(NSText.paste(_:)):
+            // ⌘V pastes text into a focused field editor (standard system
+            // paste) or, when the hex dump holds focus, writes bytes into
+            // the active pane via HexView.paste(_:) (§11). Everywhere else
+            // the item is disabled, so paste never fires on the wrong target.
+            if viewIfLoaded?.window?.firstResponder is NSTextView { return true }
+            if viewIfLoaded?.window?.firstResponder is HexView { return activePane.isOpen }
+            return false
+        case #selector(nextDifference):
+            return diffNavigationState.nextDifference
+        case #selector(previousDifference):
+            return diffNavigationState.previousDifference
+        case #selector(nextSameBlock):
+            return diffNavigationState.nextSameBlock
+        case #selector(previousSameBlock):
+            return diffNavigationState.previousSameBlock
+        case #selector(togglePaneLayout),
+             #selector(swapPanes):
+            // Layout and swap depend only on comparison mode, not the index.
+            return mode == .comparison
+        case #selector(setWordSize(_:)):
+            // Radio state: check the item matching the current word size (§6).
+            menuItem.state = menuItem.tag == WordSize.current.rawValue ? .on : .off
+            return true
+        default:
+            return true
+        }
+    }
+}
+
+// MARK: - Clipboard
+
+enum PasteError: LocalizedError {
+    case noClipboardData
+
+    var errorDescription: String? {
+        switch self {
+        case .noClipboardData:
+            return "The clipboard does not contain raw bytes or a valid hex byte sequence."
+        }
+    }
+}
+
+/// Custom pasteboard type carrying raw bytes (§12.1). `public.data` is not a
+/// defined PasteboardType member, and system types like `public.utf8-plain-text`
+/// are interpreted by other apps as text, not bytes.
+extension NSPasteboard.PasteboardType {
+    static let rawBytes = NSPasteboard.PasteboardType("dev.maxik.ByteRipper.rawBytes")
+}
+
+private func pasteboardBytes() throws -> [UInt8] {
+    let pasteboard = NSPasteboard.general
+    if let data = pasteboard.data(forType: .rawBytes) {
+        return [UInt8](data)
+    }
+    if let text = pasteboard.string(forType: .string) {
+        return try ClipboardCodec.bytes(fromHexText: text)
+    }
+    throw PasteError.noClipboardData
+}
+
+/// Boxes the pane and clicked offset carried by a "Select Block from Here at «address»"
+/// menu item — `NSMenuItem.representedObject` can't hold a tuple (§10.2).
+/// What a zone menu item carries: the pane it was opened in, and the zone.
+private final class ZoneContextTarget: NSObject {
+    let pane: PaneViewModel
+    let zone: Zone
+
+    init(pane: PaneViewModel, zone: Zone) {
+        self.pane = pane
+        self.zone = zone
+    }
+}
+
+private final class OffsetContextTarget: NSObject {
+    let pane: PaneViewModel
+    let offset: UInt64
+
+    init(pane: PaneViewModel, offset: UInt64) {
+        self.pane = pane
+        self.offset = offset
+    }
+}
+

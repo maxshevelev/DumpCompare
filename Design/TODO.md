@@ -262,7 +262,7 @@ re-downloading about 1.2 MB on every launch of the app.
 **How.** A decorator, not three changes: all three sources are already protocols
 behind which a test installs its own, so one cache type wraps any of them. Body
 plus `fetchedAt` plus the response's `ETag` in
-`Application Support/DumpCompare/Cache/`; on expiry, a conditional request with
+`Application Support/ByteRipper/Cache/`; on expiry, a conditional request with
 `If-None-Match` — GitHub answers `304` with an empty body, so the common case
 costs one round trip and no bytes. `URLCache` is not enough on its own: it has no
 TTL of ours, and serving a stale body when the network is down means

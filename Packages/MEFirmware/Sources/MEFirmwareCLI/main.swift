@@ -9,7 +9,7 @@ import MEFirmware
 /// renders, so a parse can be eyeballed without a window.
 ///
 /// Best input is an engine region whose bytes start at `$FPT` (e.g. the ME
-/// partition a tool like DumpCompare extracted); partition offsets are then
+/// partition a tool like ByteRipper extracted); partition offsets are then
 /// relative to that region. Pass the region's offset inside a larger dump as
 /// the second argument and reported offsets are shifted by it.
 ///

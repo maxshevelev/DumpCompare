@@ -19,7 +19,7 @@ workflow is:
 4. come back with the processed image and **split** it at the same boundary;
 5. flash each half back to its own chip.
 
-Steps 2 and 4 are the ones DumpCompare cannot do today, and they are the reason
+Steps 2 and 4 are the ones ByteRipper cannot do today, and they are the reason
 the whole round trip currently happens in `dd` and a notebook page of offsets.
 Everything between them — comparing, searching, patching — the app already does
 better than the alternatives.
@@ -101,7 +101,7 @@ recording so it is not re-invented:
   already paid for.
 - **It almost never fires.** A dump off a programmer is
   `W25Q128FV_20260821_1a2b3c4d.bin`; two of those share no stem. The only case it
-  served was re-joining files DumpCompare itself wrote — where the user knows the
+  served was re-joining files ByteRipper itself wrote — where the user knows the
   name they gave them.
 
 So the save panel offers what an untitled document always offers, and the user

@@ -5,7 +5,7 @@ description: Keep the Swift ME-firmware engine (Packages/MEFirmware) in step wit
 
 # Sync ME Analyzer Engine
 
-DumpCompare's ME-firmware analysis lives in `Packages/MEFirmware`: a Swift
+ByteRipper's ME-firmware analysis lives in `Packages/MEFirmware`: a Swift
 port of the parsing that upstream
 [platomav/MEAnalyzer](https://github.com/platomav/MEAnalyzer) does in a single
 ~14k-line `MEA.py`, fronted by an **async API the UI calls**. This skill is
@@ -101,7 +101,7 @@ python3 Skills/sync-mea-engine/scripts/mea_sync.py baseline --sha <upstream-sha>
 
 Flags: `--no-fetch` (work offline against the local clone; accepted on either
 side of the subcommand), `--source <path>`
-and `--app-root <path>` override the resolved upstream clone and DumpCompare
+and `--app-root <path>` override the resolved upstream clone and ByteRipper
 root, `--pkg <path>` overrides the engine package. The script is stdlib-only
 and deterministic; run it yourself (python3 is allowed in this project).
 
@@ -170,7 +170,7 @@ Conversion rules that keep a port cheap and faithful:
   upstream class, fields in order. Keep upstream's hex offsets in comments —
   they are the cross-check when a revision bumps a layout.
 - **Container finders.** Upstream regex-anchors (`$FPT`, `$CPD`, `$MN2`,
-  BPDT, PCIR …) locate structures inside a region. DumpCompare already has a
+  BPDT, PCIR …) locate structures inside a region. ByteRipper already has a
   UEFI/IFWI tree — reuse its region offsets where the region is a BIOS/IFWI
   container, and only fall back to pattern scanning inside a raw ME region.
 - **Identification.** Family/variant is decided in `MEA.py` `get_variant`:
@@ -185,7 +185,7 @@ Conversion rules that keep a port cheap and faithful:
   (Huffman *dictionaries* are data, fetched live in `Huffman.dat`). Port once,
   test against known vectors.
 - **UI/CLI code in MEA.py** (`mea_*`, `mass_scan`, parameter handling) is
-  replaced by DumpCompare's own UI. Do not port it.
+  replaced by ByteRipper's own UI. Do not port it.
 
 **Result-model stability.** The UI binds to
 `Models/FirmwareAnalysis.swift` (reference/result-model.md). A sync may add

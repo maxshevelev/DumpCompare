@@ -355,7 +355,7 @@ without XCUITest, and this app does — all 969 of its tests are that kind. So t
 choice is not "unit tests or screen-scraping"; it is "unit tests or in-process view
 tests". What the second costs, in this suite:
 
-| | pure logic (`DumpCompareCore`) | view-bound (app suite) |
+| | pure logic (`ByteRipperCore`) | view-bound (app suite) |
 |---|---|---|
 | tests | 264 | 969 |
 | wall clock | **3.1 s** | **~100 s** |
@@ -539,7 +539,7 @@ directions:
 - **The view imports no domain module.**
 
 Two greps, and neither is a matter of opinion. Where this app stands today: 16 of
-50 files in the app target import `DumpCompareCore`, and **12 of those 16 are the
+50 files in the app target import `ByteRipperCore`, and **12 of those 16 are the
 view layer** — the hex view, the find bar, the results panel, the segments form,
 the bookmark and cut popovers, the comparison view, a settings pane, the sheet
 controllers, the drag-and-drop glue, and the window's controller. Only four are
@@ -556,7 +556,7 @@ a view. Today it holds:
 | `fileSizeProvider: () -> UInt64` | clamps excerpt windows to the file's end |
 | `excerptPadding = 8`, `matchLength` | decides *what an excerpt is* |
 | `pane: PaneViewModel` | the model object itself |
-| `import DumpCompareCore` | the domain module, in a view file |
+| `import ByteRipperCore` | the domain module, in a view file |
 
 After the change it holds `[ResultRow]` — an offset already formatted, a hex
 preview, a text preview — and imports `Cocoa` only. Which relocates three

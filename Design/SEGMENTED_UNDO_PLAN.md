@@ -265,12 +265,12 @@ result), but run all `PaneViewModelTests`/`BinaryDocumentTests` and substitute `
 ## Verification
 
 - Targeted runs (fresh `-derivedDataPath` in `$CLAUDE_JOB_DIR/tmp`, log to a file):
-  - core: `cd DumpCompareCore && swift test` (or targeted via `--filter`).
-  - app: `xcodebuild test -scheme DumpCompare -destination 'platform=macOS' -derivedDataPath ... -only-testing:DumpCompareTests/UndoHistoryTests`
+  - core: `cd ByteRipperCore && swift test` (or targeted via `--filter`).
+  - app: `xcodebuild test -scheme ByteRipper -destination 'platform=macOS' -derivedDataPath ... -only-testing:ByteRipperTests/UndoHistoryTests`
     and similarly `BinaryDocumentTests`, `PaneViewModelTests`, `SelectionRedrawTests`, `ContentRedrawTests`.
 - Full run — the user before committing (project rule).
 - If xcodebuild rewrote the shared xcscheme —
-  `git checkout -- DumpCompare.xcodeproj/xcshareddata/xcschemes/DumpCompare.xcscheme`.
+  `git checkout -- ByteRipper.xcodeproj/xcshareddata/xcschemes/ByteRipper.xcscheme`.
 - Manual check: (1) quickly type 20+ bytes → Cmd+Z removes the last byte, a fast second Cmd+Z —
   the whole series; after a pause — again a byte; (2) hold Cmd+Z — byte, batch, then one each;
   (3) Cmd+Shift+Z restores everything a batch removed with one press; (4) arrow/click/hex↔ASCII

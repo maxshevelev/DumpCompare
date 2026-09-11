@@ -15,7 +15,7 @@ Status: `—` not yet ported · `ported` done · `n/a` deliberately not ported.
 
 ## Container finders (module-load regexes → anchors)
 
-Upstream anchors locate structures inside a region. DumpCompare already has a
+Upstream anchors locate structures inside a region. ByteRipper already has a
 UEFI/IFWI tree, so prefer reusing its region offsets; scan only inside a raw
 ME region. Swift home: `Anchors.swift` (byte-pattern scans) + reuse of
 `UEFIImage` region results.
@@ -138,8 +138,8 @@ phase needs it.)
 
 `mea_help`, `mea_hdr`, `mea_hdr_init`, `mea_exit`, `mea_upd_check`,
 `mass_scan`, `MEA_Param`, `input_col`, `copy_on_msg`, `show_exception_and_exit`,
-colour/CLI helpers → replaced by DumpCompare's UI. `Thread_With_Result` →
-DumpCompare's own concurrency.
+colour/CLI helpers → replaced by ByteRipper's UI. `Thread_With_Result` →
+ByteRipper's own concurrency.
 
 ## Data files consumed (not code)
 

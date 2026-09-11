@@ -1,7 +1,7 @@
 import Foundation
 
 /// The UI-facing result of an ME/engine analysis — the single typed, `Codable`
-/// tree DumpCompare renders after the module analyses a region. This is the
+/// tree ByteRipper renders after the module analyses a region. This is the
 /// "structured output for UI" of the `sync-mea-engine` skill; its contract
 /// (`Skills/sync-mea-engine/reference/result-model.md`) must not be broken:
 ///

@@ -558,7 +558,7 @@ the form, and the form never disagrees with the dump.
 **Delivers:** the operation the whole feature exists for — a dump written out as
 its pieces.
 
-- `SegmentWriter` in `DumpCompareCore`: chunked, cancellable, and **all or
+- `SegmentWriter` in `ByteRipperCore`: chunked, cancellable, and **all or
   nothing** — each part to a temporary name in the target directory, fsynced, all
   renamed into place at the end; a failure removes the temporaries and publishes
   nothing (§5.2, and the lesson behind `5bbef2a`).
@@ -681,7 +681,7 @@ edit path. Join (`JOIN_SPLIT_PLAN.md`) needs 1 and 2, and reaches "split" throug
 
 ## Verification
 
-- `swift test` in `DumpCompareCore` covers `SegmentWriter` only; the store and
+- `swift test` in `ByteRipperCore` covers `SegmentWriter` only; the store and
   everything visible live in the app suite, as `BookmarkStore` does.
 - Manual, once stages 1–4 are in: open an 8 MB dump, cut it at 0x400000, check the
   rule in the offset column and the readout in the status bar; type a byte before

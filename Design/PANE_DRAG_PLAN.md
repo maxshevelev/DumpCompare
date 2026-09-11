@@ -53,7 +53,7 @@ reach the same four verbs, not a second implementation of them.
 ## What travels on the pasteboard
 
 Not the bytes, and not a file URL: a pane is not a file, and a URL would invite
-every other app to accept the drag. A private type — `dev.maxik.DumpCompare.pane`
+every other app to accept the drag. A private type — `dev.maxik.ByteRipper.pane`
 — carrying the dragged pane's identifier, which makes the drag meaningless
 outside this process and refused by Finder for free.
 

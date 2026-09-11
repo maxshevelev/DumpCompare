@@ -163,7 +163,7 @@ A 4 KB window read after that run costs 0.158 ms, cold cache included.
 
 ## Verification
 
-- `swift test` in `DumpCompareCore` (the storage suite is there), then the app
+- `swift test` in `ByteRipperCore` (the storage suite is there), then the app
   suite for the editing paths.
 - The measurement from the top of this file, repeated: insert cost must become
   independent of file size, and the temp directory must hold at most one copy.
