@@ -223,7 +223,13 @@ struct FITParkedState: ToolSessionState {
             guard self.generation == generation else { return }
             let named = await FITToolSession.read(tree.imageReader, image: tree.image())
             guard self.generation == generation else { return }
-            self.show(FITPresenter.display(named, focus: self.focus))
+            // Rated like the first show. This display replaces that one, and a
+            // fresh `FITPresenter.display` starts every microcode row back at
+            // `.notRated` — so leaving it unrated here is the verdict icons
+            // appearing when the table is first drawn and going again the
+            // moment the names land.
+            self.show(FITPresenter.display(named, focus: self.focus)
+                .ratingLatest(against: self.catalogue))
             self.onTargetsNamed?()
         }
     }

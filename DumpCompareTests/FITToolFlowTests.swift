@@ -170,6 +170,46 @@ final class FITToolFlowTests: XCTestCase {
         XCTAssertTrue(display.problems.filter { $0.severity == .error }.isEmpty)
     }
 
+    /// The naming re-read replaces the table, and a freshly built display
+    /// starts every microcode row unrated — so the verdict has to be applied
+    /// to it too. Left off, the icons were drawn when the table went up and
+    /// went again a moment later, when the names arrived.
+    func testTheLatestVerdictSurvivesTheTargetNaming() throws {
+        let url = try tempFile(FITTestImage.make(microcodePlatform: 2,
+                                                 acmInsideAVolume: true))
+        files.append(url)
+        let controller = MainViewController()
+        self.controller = controller
+        let window = makeTestWindow(width: 1200, height: 700)
+        self.window = window
+        window.contentViewController = controller
+        window.setContentSize(NSSize(width: 1200, height: 700))
+        try controller.windowModel.pane1.open(url: url)
+        controller.apply(mode: .singleFile)
+        window.layoutIfNeeded()
+        controller.tools.activate(FITToolModule.identifier, animated: false)
+        window.layoutIfNeeded()
+
+        let session = try session()
+        let shown = expectation(description: "the table is up")
+        let rated = expectation(description: "the catalogue has landed")
+        let named = expectation(description: "the Points-at column is filled in")
+        session.onDisplay = { _ in shown.fulfill() }
+        session.onCatalogueLoaded = { _ in rated.fulfill() }
+        session.onTargetsNamed = { named.fulfill() }
+        wait(for: [shown, rated, named], timeout: 5)
+        session.onDisplay = nil
+        session.onCatalogueLoaded = nil
+        session.onTargetsNamed = nil
+
+        let verdicts = session.display.rows
+            .filter { $0.typeText == "Microcode" }
+            .map(\.latestState)
+        XCTAssertEqual(verdicts, [.latest],
+                       "the row the catalogue calls newest keeps saying so "
+                        + "after the names land")
+    }
+
     /// A row's target name comes *after* the table, never before it.
     ///
     /// Naming what a row points into means opening the branch its address
