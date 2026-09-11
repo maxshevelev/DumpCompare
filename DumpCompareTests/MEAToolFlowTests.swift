@@ -304,17 +304,20 @@ final class MEAToolFlowTests: XCTestCase {
             "no button called \"\(name)\" in the panel")
     }
 
-    /// "Reading…" is the line under the panel while a parse runs — and only
+    /// "Reading ME…" is the line under the panel while a parse runs — and only
     /// while it runs. Once the analysis lands the line returns to empty, as the
     /// other panels' do, so the busy reading is not mistaken for a result that
     /// is still coming.
-    func testTheReadingNoticeIsClearedOnceTheAnalysisLands() throws {
-        _ = try open(METestImage.fptFile())
+    func testTheReadingNoticeNamesWhatItReadsAndGoesWhenTheAnalysisLands() throws {
+        _ = try openWithoutWaiting(METestImage.fptFile())
+        let running = descendants(of: try panel(), NSTextField.self).map(\.stringValue)
+        XCTAssertTrue(running.contains("Reading ME…"),
+                      "a running analysis says what it is reading: \(running)")
 
-        let panel = try panel()
-        let text = descendants(of: panel, NSTextField.self).map(\.stringValue)
-        XCTAssertFalse(text.contains("Reading…"),
-                       "a finished analysis is not still 'Reading…': \(text)")
+        _ = try waitForDisplay(of: try session())
+        let finished = descendants(of: try panel(), NSTextField.self).map(\.stringValue)
+        XCTAssertFalse(finished.contains("Reading ME…"),
+                       "a finished analysis is not still reading: \(finished)")
     }
 
     /// The wait belongs to whichever tab is open, not to Summary alone: on Full
@@ -445,6 +448,35 @@ final class MEAToolFlowTests: XCTestCase {
                        "the placeholders are gone once the numbers are in: \(text)")
         let crc = try XCTUnwrap(filled?.checksums?.crc32)
         XCTAssertTrue(text.contains(String(format: "0x%08X", crc)), "\(text)")
+    }
+
+    /// A revert replaces the bytes wholesale, so the analysis cached against
+    /// the pane describes a file that is gone — and the reload has to be
+    /// announced with that cache already dropped, or the tool-module re-reads
+    /// and finds the stale analysis waiting for it.
+    ///
+    /// Every other path that replaces the storage — an open, a reload from
+    /// disk — drops it first. `revert` alone dropped it afterwards, and only
+    /// got away with it because the announcement used to sit in the
+    /// coalescing window while the rest of `revert` finished.
+    func testARevertDropsTheCachedAnalysisBeforeAnnouncingTheReload() throws {
+        let controller = try open(METestImage.fptFile())
+        let pane = controller.windowModel.pane1
+        XCTAssertNotNil(pane.uefiState.cachedMEAnalysis(),
+                        "the analysis that just landed is cached against the pane")
+
+        var cachedWhenAnnounced: Bool?
+        let announce = pane.onFullInvalidation
+        pane.onFullInvalidation = {
+            cachedWhenAnnounced = pane.uefiState.cachedMEAnalysis() != nil
+            announce?()
+        }
+        defer { pane.onFullInvalidation = announce }
+
+        try pane.revert()
+
+        XCTAssertEqual(cachedWhenAnnounced, false,
+                       "the reload is announced with nothing stale left to answer with")
     }
 
     /// A value too long for the column wraps inside it rather than running off

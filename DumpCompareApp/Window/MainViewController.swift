@@ -1038,10 +1038,10 @@ final class MainViewController: NSViewController {
                 self?.tools.paneEdited(paneModel, edit)
             }
             paneModel.onFullInvalidation = { [weak self] in
+                self?.tools.paneReloaded(paneModel)
                 self?.minimapView.invalidateCells()
                 self?.refreshMinimapMaps()
                 self?.invalidateMatches(in: paneModel)
-                self?.tools.paneReloaded(paneModel)
             }
             // A save moves the on-disk reference, so the map's red cells have to
             // clear even though no byte changed (§19).
@@ -1222,19 +1222,23 @@ final class MainViewController: NSViewController {
             self?.invalidateMatches(in: self?.windowModel.pane2)
             self.map { $0.tools.paneEdited($0.windowModel.pane2, edit) }
         }
+        // The tool-module hears first. It is the one that answers with a
+        // progress bar, and everything else here either schedules its work or
+        // only marks something dirty — so putting it last was the panel
+        // waiting on a queue of things that were not waiting on it.
         windowModel.pane1.onFullInvalidation = { [weak self] in
+            self.map { $0.tools.paneReloaded($0.windowModel.pane1) }
             self?.comparisonCoordinator.rebuild()
             self?.minimapView.invalidateCells()
             self?.refreshMinimapMaps()
             self?.invalidateMatches(in: self?.windowModel.pane1)
-            self.map { $0.tools.paneReloaded($0.windowModel.pane1) }
         }
         windowModel.pane2.onFullInvalidation = { [weak self] in
+            self.map { $0.tools.paneReloaded($0.windowModel.pane2) }
             self?.comparisonCoordinator.rebuild()
             self?.minimapView.invalidateCells()
             self?.refreshMinimapMaps()
             self?.invalidateMatches(in: self?.windowModel.pane2)
-            self.map { $0.tools.paneReloaded($0.windowModel.pane2) }
         }
         // A save clears modified state without changing a byte, so the minimap's
         // red cells have to go even though the bytes stayed put (§19).

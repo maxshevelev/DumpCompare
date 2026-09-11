@@ -812,8 +812,6 @@ final class PaneViewModel: HexViewDataSource {
         refreshSavedStorage()
         resetEditingState()
         rearmWatcher()
-        // Revert replaces the storage wholesale; the comparison must re-read.
-        onFullInvalidation?()
         // The partition survives the revert, re-based onto the saved size (§21.2)
         // — the cuts and names the user set up are kept, not reset to one piece.
         preserveSegments(for: doc)
@@ -821,7 +819,15 @@ final class PaneViewModel: HexViewDataSource {
         clearMatches()
         // Nor does the lazy tree/MEA cache: a revert replaces the storage
         // wholesale, exactly like an open.
+        //
+        // Dropped *before* the announcement, as every other path that replaces
+        // the storage does it (`open`, the disk-change reload): the
+        // announcement is what tells a tool-module to re-read, and a
+        // tool-module that re-reads while the old analysis is still cached
+        // shows the file as it was before the revert.
         uefiState.reset()
+        // Revert replaces the storage wholesale; the comparison must re-read.
+        onFullInvalidation?()
         doc.setSelection(.empty(at: min(caret, doc.size), fileSize: doc.size))
         // Without scrolling. A reload is not a navigation — the reader asked
         // for the bytes back, not to be taken somewhere — so the viewport stays

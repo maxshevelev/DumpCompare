@@ -227,7 +227,7 @@ private struct ChecksumPass: Sendable {
         // it is a signature scan of the whole file, and until it lands there
         // is nothing to draw. An Intel image is there before the bar is drawn.
         if !tree.isReady, !noticeAnswersTheUser {
-            controller.say("Reading…")
+            controller.say("Reading UEFI…")
             controller.showBusy()
         }
         show(publish: true, rowsChanged: true)

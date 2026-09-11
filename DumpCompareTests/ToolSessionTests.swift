@@ -148,6 +148,20 @@ final class ToolSessionTests: XCTestCase {
         XCTAssertEqual(StubToolA.log.changes, [.reloaded])
     }
 
+    /// A reload does not wait in the coalescing window. That window exists so
+    /// typing does not mean a parse per keystroke; a file that has just been
+    /// opened or replaced has nothing coming behind it to merge with, and
+    /// holding it back is the panel sitting blank for the length of the wait.
+    func testAReloadReachesTheSessionWithoutWaiting() throws {
+        let controller = try makeController()
+        activate(StubToolA.self, in: controller)
+
+        controller.windowModel.pane1.onFullInvalidation?()
+
+        XCTAssertEqual(StubToolA.log.changes, [.reloaded],
+                       "no flush: the reload should already be there")
+    }
+
     /// A reload swallows an edit that was still waiting: there is nothing left
     /// to be precise about.
     func testAReloadSwallowsAnEditStillWaiting() throws {

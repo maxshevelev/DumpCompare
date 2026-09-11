@@ -260,6 +260,15 @@ import ToolModuleKit
     private func schedule(_ change: ToolContentChange) {
         pendingChange = pendingChange.map { $0.merged(with: change) } ?? change
         deliveryTask?.cancel()
+        // A reload is not a keystroke: a file has just been opened or replaced
+        // under the session, there is nothing coming behind it to coalesce
+        // with, and holding it back is the panel sitting blank — no notice, no
+        // bar — for the length of the window. It goes straight through.
+        if pendingChange == .reloaded {
+            deliveryTask = nil
+            deliverPendingChange()
+            return
+        }
         let delay = Self.changeDelay
         deliveryTask = Task { [weak self] in
             if delay > 0 {

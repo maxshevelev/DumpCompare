@@ -164,7 +164,9 @@ struct MEAParkedState: ToolSessionState {
         checksumsTask?.cancel()
         checksumsTask = nil
         analysis = nil
-        controller.say("Reading…")
+        // Named, not just "Reading…": three panels can be the one on screen and
+        // each reads something different, so the line says which this is.
+        controller.say("Reading ME…")
         // The empty tab is the whole panel until the analysis lands, so it says
         // what is being waited for rather than promising a summary.
         controller.setPlaceholder(.waiting)
