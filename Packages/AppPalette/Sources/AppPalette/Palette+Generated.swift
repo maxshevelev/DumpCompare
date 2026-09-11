@@ -10,17 +10,17 @@
 public extension SemanticColors.Definition {
     static let bad = SemanticColors.Definition(
         name: "SemanticBad",
-        light: (0.720, 0.120, 0.120),
+        light: (0.893, 0.120, 0.120),
         dark: (1.000, 0.420, 0.400))
 
     static let caution = SemanticColors.Definition(
         name: "SemanticCaution",
-        light: (0.550, 0.340, 0.040),
+        light: (0.807, 0.540, 0.161),
         dark: (0.860, 0.660, 0.360))
 
     static let good = SemanticColors.Definition(
         name: "SemanticGood",
-        light: (0.070, 0.460, 0.120),
+        light: (0.070, 0.686, 0.120),
         dark: (0.550, 0.820, 0.400))
 
     /// Every colour set in the catalogue, in the order it names them.
