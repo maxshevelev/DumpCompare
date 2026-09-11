@@ -1,3 +1,4 @@
+import AppPalette
 import Cocoa
 import DumpCompareCore
 
@@ -475,7 +476,7 @@ final class FindBarView: NSView, NSSearchFieldDelegate, NSMenuItemValidation {
         // is no search for something that is not a pattern.
         if let patternError {
             countLabel.stringValue = patternError.label
-            countLabel.textColor = .systemRed
+            countLabel.textColor = SemanticColors.bad
             countLabel.toolTip = patternError.detail
             countLabel.isHidden = false
             warningView.isHidden = true
@@ -754,7 +755,7 @@ final class FindBarView: NSView, NSSearchFieldDelegate, NSMenuItemValidation {
         title.append(NSAttributedString(
             string: "  \(problem)",
             attributes: [.font: NSFont.systemFont(ofSize: Self.menuFlagSize),
-                         .foregroundColor: NSColor.systemRed]))
+                         .foregroundColor: SemanticColors.bad]))
         item.attributedTitle = title
         item.image = NSImage(systemSymbolName: "exclamationmark.triangle",
                              accessibilityDescription: problem)

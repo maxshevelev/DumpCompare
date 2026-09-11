@@ -1,3 +1,4 @@
+import AppPalette
 import Cocoa
 import DumpCompareCore
 
@@ -90,7 +91,7 @@ class SheetViewController: NSViewController {
         // the sheet (§10).
         errorLabel = NSTextField(labelWithString: "")
         errorLabel.font = .systemFont(ofSize: 11)
-        errorLabel.textColor = .systemRed
+        errorLabel.textColor = SemanticColors.bad
         let errorIndent = NSView()
         errorIndent.translatesAutoresizingMaskIntoConstraints = false
         errorIndent.widthAnchor.constraint(equalToConstant: Self.fieldLabelWidth).isActive = true

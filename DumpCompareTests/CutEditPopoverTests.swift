@@ -1,3 +1,4 @@
+import AppPalette
 import DumpCompareCore
 import XCTest
 @testable import DumpCompare
@@ -187,7 +188,7 @@ final class CutEditPopoverTests: XCTestCase {
         // Typing 0 makes it red.
         controller.offsetField.stringValue = "0"
         controller.controlTextDidChange(Notification(name: .init("typed"), object: controller.offsetField))
-        XCTAssertTrue(controller.offsetField.textColor == .systemRed, "an illegal offset is red")
+        XCTAssertTrue(controller.offsetField.textColor == SemanticColors.bad, "an illegal offset is red")
 
         // Typing a legal offset clears the red.
         controller.offsetField.stringValue = "0x08"

@@ -1,3 +1,4 @@
+import AppPalette
 import DumpCompareCore
 import XCTest
 @testable import DumpCompare
@@ -305,7 +306,7 @@ final class LibraryLocationTests: XCTestCase {
         XCTAssertNotNil(FavoritePatternStore.publishError)
         XCTAssertTrue(tab.locationLabel.stringValue.contains("Move…"),
                       tab.locationLabel.stringValue)
-        XCTAssertEqual(tab.locationLabel.textColor, .systemRed)
+        XCTAssertEqual(tab.locationLabel.textColor, SemanticColors.bad)
     }
 
     /// And the list itself is untouched by it: the truth is this machine's, and

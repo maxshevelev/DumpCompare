@@ -1,3 +1,4 @@
+import AppPalette
 import Cocoa
 import DumpCompareCore
 
@@ -34,7 +35,7 @@ final class TextDecodingSettingsViewController: NSViewController {
         placeholderField.widthAnchor.constraint(equalToConstant: 48).isActive = true
         placeholderField.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         validationLabel.font = .systemFont(ofSize: 11)
-        validationLabel.textColor = .systemRed
+        validationLabel.textColor = SemanticColors.bad
         validationLabel.isHidden = true
 
         let placeholderRow = NSStackView()

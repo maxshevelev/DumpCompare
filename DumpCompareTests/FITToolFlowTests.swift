@@ -1,4 +1,5 @@
 import XCTest
+import AppPalette
 import ALSplitView
 import FITTool
 import FITToolUI

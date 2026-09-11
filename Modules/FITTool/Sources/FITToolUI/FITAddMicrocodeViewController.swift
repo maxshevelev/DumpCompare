@@ -1,4 +1,5 @@
 import AppKit
+import AppPalette
 import FITTool
 import ToolModuleKit
 

@@ -1,3 +1,4 @@
+import AppPalette
 import DumpCompareCore
 import XCTest
 @testable import DumpCompare
@@ -570,7 +571,7 @@ final class FindFlowTests: XCTestCase {
 
         XCTAssertEqual(bar.countTextForTests, "Invalid pattern")
         XCTAssertTrue(bar.countShownForTests, "and it claims its place in the bar")
-        XCTAssertEqual(bar.countColorForTests, .systemRed, "in red")
+        XCTAssertEqual(bar.countColorForTests, SemanticColors.bad, "in red")
         XCTAssertEqual(bar.countTooltipForTests,
                        "Invalid hex — use pairs like DE AD BE EF.",
                        "with the whole sentence a bar has no room for as its tooltip")

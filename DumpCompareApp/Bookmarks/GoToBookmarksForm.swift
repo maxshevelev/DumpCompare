@@ -1,3 +1,4 @@
+import AppPalette
 import Cocoa
 import DumpCompareCore
 
@@ -144,7 +145,7 @@ final class GoToBookmarksController: NSViewController, NSTableViewDataSource, NS
         // reads as that field's message rather than as a line of the form (§10).
         errorLabel = NSTextField(labelWithString: "")
         errorLabel.font = .systemFont(ofSize: 11)
-        errorLabel.textColor = .systemRed
+        errorLabel.textColor = SemanticColors.bad
         // Its own row, so it can start at the field's left edge rather than the
         // form's: the message belongs to the field above it.
         errorLabel.translatesAutoresizingMaskIntoConstraints = false

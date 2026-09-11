@@ -1,3 +1,4 @@
+import AppPalette
 import XCTest
 @testable import DumpCompare
 
@@ -741,7 +742,7 @@ final class BookmarkTests: XCTestCase {
         controller.offsetField.stringValue = "0xZZ"
         controller.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification,
                                                      object: controller.offsetField))
-        XCTAssertEqual(controller.offsetField.textColor, .systemRed)
+        XCTAssertEqual(controller.offsetField.textColor, SemanticColors.bad)
         XCTAssertNil(controller.editedRow)
 
         controller.commit()

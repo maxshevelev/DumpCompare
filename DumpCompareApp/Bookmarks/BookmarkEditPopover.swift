@@ -1,3 +1,4 @@
+import AppPalette
 import Cocoa
 import DumpCompareCore
 
@@ -197,7 +198,7 @@ final class BookmarkEditPopoverController: NSViewController, NSTextFieldDelegate
     /// this small has no room for a sentence, and red digits in a field of digits
     /// say the same thing. Return refuses while they are red.
     private func updateOffsetValidation() {
-        offsetField.textColor = editedRow == nil ? .systemRed : .labelColor
+        offsetField.textColor = editedRow == nil ? SemanticColors.bad : .labelColor
     }
 
     func controlTextDidChange(_ obj: Notification) {

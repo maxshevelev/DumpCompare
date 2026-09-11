@@ -1,3 +1,4 @@
+import AppPalette
 import DumpCompareCore
 import XCTest
 @testable import DumpCompare
@@ -134,7 +135,7 @@ final class LibraryConflictTests: XCTestCase {
         XCTAssertFalse(tab.resolveButton.isHidden)
         XCTAssertTrue(tab.locationLabel.stringValue.contains("conflicting change"),
                       tab.locationLabel.stringValue)
-        XCTAssertEqual(tab.locationLabel.textColor, .systemRed,
+        XCTAssertEqual(tab.locationLabel.textColor, SemanticColors.bad,
                        "it asks for something only the user can settle")
     }
 
@@ -166,7 +167,7 @@ final class LibraryConflictTests: XCTestCase {
         tab.reload()
         XCTAssertTrue(tab.locationLabel.stringValue.contains("cannot be published"),
                       tab.locationLabel.stringValue)
-        XCTAssertEqual(tab.locationLabel.textColor, .systemRed)
+        XCTAssertEqual(tab.locationLabel.textColor, SemanticColors.bad)
     }
 
     /// And the library is read-only while the question stands: nothing may be
@@ -217,7 +218,7 @@ final class LibraryConflictTests: XCTestCase {
             value, _, _ in
             if let colour = value as? NSColor { colours.append(colour) }
         }
-        XCTAssertTrue(colours.contains(.systemRed), "the problem is red")
+        XCTAssertTrue(colours.contains(SemanticColors.bad), "the problem is red")
 
         // Answered, and the row goes back to being a plain command.
         FavoritePatternStore.resolve([FavoritePatternStore.conflicts[0].id: .keepOurs])

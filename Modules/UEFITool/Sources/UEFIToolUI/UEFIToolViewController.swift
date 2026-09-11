@@ -1,5 +1,6 @@
 import ALSplitView
 import AppKit
+import AppPalette
 import ToolModuleKit
 import UEFIImage
 import UEFITool

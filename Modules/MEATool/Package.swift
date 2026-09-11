@@ -27,15 +27,17 @@ let package = Package(
     dependencies: [
         .package(path: "../../Packages/ALSplitView"),
         .package(path: "../../Packages/ToolModuleKit"),
+        .package(path: "../../Packages/AppPalette"),
         .package(path: "../../Packages/MEFirmware"),
         .package(path: "../../Packages/UEFIImage")
     ],
     targets: [
         .target(name: "MEATool", dependencies: [
             .product(name: "MEFirmware", package: "MEFirmware"),
-            .product(name: "ToolModuleKit", package: "ToolModuleKit")
+            .product(name: "ToolModuleKit", package: "ToolModuleKit"),
         ]),
         .target(name: "MEAToolUI", dependencies: [
+            .product(name: "AppPalette", package: "AppPalette"),
             "MEATool",
             .product(name: "MEFirmware", package: "MEFirmware"),
             .product(name: "ALSplitView", package: "ALSplitView"),

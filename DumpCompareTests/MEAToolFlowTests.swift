@@ -1,4 +1,5 @@
 import AppKit
+import AppPalette
 import XCTest
 import MEFirmware
 import MEAToolUI

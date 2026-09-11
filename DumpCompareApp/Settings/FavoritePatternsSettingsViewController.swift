@@ -1,3 +1,4 @@
+import AppPalette
 import Cocoa
 import DumpCompareCore
 
@@ -85,7 +86,7 @@ final class FavoritePatternsSettingsViewController: NSViewController,
 
         let message = NSTextField(labelWithString: "")
         message.font = .systemFont(ofSize: 11)
-        message.textColor = .systemRed
+        message.textColor = SemanticColors.bad
         message.lineBreakMode = .byTruncatingTail
         messageLabel = message
 
@@ -315,7 +316,7 @@ final class FavoritePatternsSettingsViewController: NSViewController,
             // about the library, it is something only the user can settle, and
             // in the secondary grey the rest of the line uses it read as
             // furniture.
-            locationLabel.textColor = .systemRed
+            locationLabel.textColor = SemanticColors.bad
             let problem = FavoritePatternStore.syncProblem ?? "conflicting changes"
             var text = conflicts.count == 1
                 ? "\(problem) — the library is read-only until it is answered"
@@ -356,7 +357,7 @@ final class FavoritePatternsSettingsViewController: NSViewController,
                 // to do about it, because there is exactly one.
                 text += " — macOS is no longer letting the app write there; "
                     + "choose the folder again with Move…"
-                locationLabel.textColor = .systemRed
+                locationLabel.textColor = SemanticColors.bad
                 locationLabel.toolTip = url.path
             } else if let failure = FavoritePatternStore.publishError {
                 // The system's own words, not a paraphrase: when publishing
@@ -370,7 +371,7 @@ final class FavoritePatternsSettingsViewController: NSViewController,
                     text += " (last published \(Self.times.string(from: published)))"
                 }
                 locationLabel.toolTip = "\(url.path)\n\n\(failure)"
-                locationLabel.textColor = .systemRed
+                locationLabel.textColor = SemanticColors.bad
             } else {
                 locationLabel.textColor = .secondaryLabelColor
                 text += FavoritePatternStore.lastPublished.map {

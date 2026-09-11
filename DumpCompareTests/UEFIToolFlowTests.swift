@@ -1,5 +1,6 @@
 import XCTest
 import ALSplitView
+import AppPalette
 import FITToolUI
 import ToolModuleKit
 import UEFIImage

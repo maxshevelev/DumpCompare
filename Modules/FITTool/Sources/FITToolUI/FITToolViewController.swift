@@ -1,4 +1,5 @@
 import ALSplitView
+import AppPalette
 import AppKit
 import FITTool
 import ToolModuleKit

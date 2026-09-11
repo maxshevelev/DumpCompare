@@ -34,6 +34,10 @@ packages:
     path: Packages/ALSplitView
   ToolModuleKit:
     path: Packages/ToolModuleKit
+  # The app's colours. Everything that draws links it; it links nothing — see
+  # its own manifest for why it is not a file inside ToolModuleKit.
+  AppPalette:
+    path: Packages/AppPalette
   # The shared parser. The tool-modules depend on it transitively, but the app's
   # flow tests build a UEFI image by hand and so import it directly.
   UEFIImage:
@@ -76,6 +80,8 @@ targets:
       # The app links it; each tool-module package links it too, and that is the
       # whole of what the two sides share.
       - package: ToolModuleKit
+      # The app's colour palette: what a colour in this app is allowed to mean.
+      - package: AppPalette
       # The shared, per-pane lazy UEFI tree (`PaneUEFIState`) and its
       # `ByteSource` adapter over the document's live storage
       # (`PaneToolHost`'s `UEFITreeProviding` conformance) — both live in the
@@ -198,6 +204,7 @@ targets:
       - package: DumpCompareCore
       - package: ALSplitView
       - package: ToolModuleKit
+      - package: AppPalette
       - package: UEFIImage
       - package: ZoneSketch
         product: ZoneSketchUI

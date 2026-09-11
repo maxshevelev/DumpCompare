@@ -1,3 +1,4 @@
+import AppPalette
 import Cocoa
 import DumpCompareCore
 
@@ -267,7 +268,7 @@ final class CutEditPopoverController: NSViewController, NSTextFieldDelegate {
     /// this small has no room for a sentence, and red digits in a field of digits
     /// say the same thing. Return refuses while they are red.
     private func updateOffsetValidation() {
-        offsetField.textColor = editedOffset == nil ? .systemRed : .labelColor
+        offsetField.textColor = editedOffset == nil ? SemanticColors.bad : .labelColor
     }
 
     func controlTextDidChange(_ obj: Notification) {

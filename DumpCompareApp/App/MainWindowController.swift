@@ -1,3 +1,4 @@
+import AppPalette
 import Cocoa
 
 final class MainWindowController: NSWindowController {
@@ -232,7 +233,7 @@ final class MainWindowController: NSWindowController {
         icon.translatesAutoresizingMaskIntoConstraints = false
         icon.image = NSImage(systemSymbolName: "checkmark.circle.fill",
                              accessibilityDescription: "Files are identical")
-        icon.contentTintColor = .systemGreen
+        icon.contentTintColor = SemanticColors.good
         icon.imageScaling = .scaleProportionallyUpOrDown
 
         let label = NSTextField(labelWithString: "Files are identical")
