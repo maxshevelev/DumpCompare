@@ -10,20 +10,18 @@ import AppKit
 /// so the choice is made once and a caller picks a meaning rather than a
 /// colour.
 ///
-/// **Where the values live.** Twice, deliberately, and a test keeps the two
-/// honest:
+/// **Where a colour is chosen:** `Colors.xcassets` beside this file, as a
+/// colour set per meaning, in Xcode's own editor with both appearances side by
+/// side. Nothing here is typed by hand — `Palette+Generated.swift` is read back
+/// out of those colour sets by the `update-palette` skill, and exists only
+/// because `swift build` copies an `.xcassets` verbatim rather than compiling
+/// it: the app, built by Xcode, reads the catalogue itself, while every package
+/// test in this repository reads the generated numbers. The app suite's
+/// `SemanticPaletteTests` holds the two to each other.
 ///
-/// - `Colors.xcassets` beside this file is where a colour is *edited* — Xcode's
-///   own colour editor, both appearances side by side, which is where picking a
-///   colour belongs. Xcode compiles it into the bundle this reads.
-/// - The numbers below are the same colours as code, and they are what a build
-///   without a compiled catalogue sees. `swift build` copies an `.xcassets`
-///   verbatim rather than compiling it, so every package test in this repository
-///   runs on these; the app, built by Xcode, runs on the catalogue.
-///
-/// `SemanticColorsTests` pins what the code says; the app suite's
-/// `SemanticPaletteTests` pins that the catalogue says the same thing. Editing
-/// one without the other fails.
+/// **Adding one:** a colour set in the catalogue, a run of the skill, and a
+/// line below giving the meaning a name. The value is the catalogue's; the
+/// meaning is Swift's.
 ///
 /// What is *not* here: the dump's own fills. A differing byte's orange and a
 /// modified byte's red are the comparison model's vocabulary rather than a
@@ -32,15 +30,15 @@ import AppKit
 public enum SemanticColors {
     /// A state that is as it should be: a check that passed, a permission that
     /// is granted, a firmware that is configured.
-    public static let good = colour(Definition.good)
+    public static let good = colour(.good)
 
     /// A state that is neither right nor wrong: something mid-flight, or a
     /// value that wants a second look before it is trusted.
-    public static let caution = colour(Definition.caution)
+    public static let caution = colour(.caution)
 
     /// A state that is wrong: a checksum that does not check out, a permission
     /// that is refused, a read that failed.
-    public static let bad = colour(Definition.bad)
+    public static let bad = colour(.bad)
 
     /// A value that says nothing about itself — the ordinary case, and what
     /// most values should be. The system's own, so it follows the accessibility
@@ -51,27 +49,22 @@ public enum SemanticColors {
     /// second.
     public static let quiet = NSColor.secondaryLabelColor
 
-    /// One palette entry: its name in the catalogue and its two shades. Public
-    /// because the test that the catalogue agrees with the code needs both
-    /// halves, and because a reader asking "what *is* our green" should find a
-    /// number rather than a picker.
+    /// One colour set: its name in the catalogue and its two shades. The values
+    /// come from `Palette+Generated.swift`, which is the catalogue read back.
     public struct Definition: Sendable {
         public let name: String
         public let light: (red: CGFloat, green: CGFloat, blue: CGFloat)
         public let dark: (red: CGFloat, green: CGFloat, blue: CGFloat)
 
-        public static let good = Definition(
-            name: "SemanticGood",
-            light: (0.07, 0.46, 0.12), dark: (0.55, 0.82, 0.40))
-        public static let caution = Definition(
-            name: "SemanticCaution",
-            light: (0.55, 0.34, 0.04), dark: (0.86, 0.66, 0.36))
-        public static let bad = Definition(
-            name: "SemanticBad",
-            light: (0.72, 0.12, 0.12), dark: (1.00, 0.42, 0.40))
+        public init(name: String,
+                    light: (red: CGFloat, green: CGFloat, blue: CGFloat),
+                    dark: (red: CGFloat, green: CGFloat, blue: CGFloat)) {
+            self.name = name
+            self.light = light
+            self.dark = dark
+        }
 
-        public static let all = [good, caution, bad]
-
+        /// The shade for one theme, as the colour it is.
         public func shade(dark: Bool) -> NSColor {
             let it = dark ? self.dark : light
             return NSColor(srgbRed: it.red, green: it.green, blue: it.blue, alpha: 1)
@@ -79,18 +72,19 @@ public enum SemanticColors {
     }
 
     /// Whether this build is reading the compiled catalogue rather than the
-    /// numbers above. True in the app, false under `swift test`.
+    /// numbers read back out of it. True in the app, false under `swift test`.
     public static var isFromCatalogue: Bool {
-        NSColor(named: Definition.good.name, bundle: .module) != nil
+        catalogued(.good) != nil
     }
 
-    /// What the catalogue holds for `definition`, or nil where there is no
-    /// compiled catalogue to ask.
+    /// What the compiled catalogue holds for `definition`, or nil where there
+    /// is no compiled catalogue to ask.
     public static func catalogued(_ definition: Definition) -> NSColor? {
         NSColor(named: definition.name, bundle: .module)
     }
 
-    /// The catalogue's colour, or the same colour built from the numbers above.
+    /// The catalogue's colour, or the same colour built from what was read out
+    /// of it.
     private static func colour(_ definition: Definition) -> NSColor {
         if let fromCatalogue = catalogued(definition) { return fromCatalogue }
         return NSColor(name: nil) { appearance in
