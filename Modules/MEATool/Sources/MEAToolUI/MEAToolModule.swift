@@ -48,6 +48,9 @@ struct MEAParkedState: ToolSessionState {
 
     /// The presented tree of the last successful analysis — the outline's data.
     private var roots: [MEANode] = []
+
+    /// Listening for a newer `MEA.dat`. Cancelled in `stop()`.
+    private var databaseWatch: Task<Void, Never>?
     /// The analysis those roots were built from, kept so the one group the
     /// engine does not fill — the region's checksums — can be added to it
     /// later without a re-parse.
@@ -86,7 +89,29 @@ struct MEAParkedState: ToolSessionState {
     public var viewController: NSViewController { controller }
 
     public func start() {
+        watchTheDatabase()
         reparse()
+    }
+
+    /// `MEA.dat` is re-checked once a day, behind whatever is being read at the
+    /// time — so an analysis can be finished against a database that has since
+    /// been superseded. When a newer one lands, the reading is done again
+    /// against it: the identification, the SKU, the known-bad hashes all come
+    /// out of that file, and an answer from last week's copy is exactly what
+    /// the check was for.
+    private func watchTheDatabase() {
+        guard databaseWatch == nil else { return }
+        let source = Self.dataSource
+        databaseWatch = Task { [weak self] in
+            for await _ in await source.databaseChanges() {
+                guard let self else { return }
+                // The pane's cached analysis was read against the database that
+                // has just been replaced, so it is the first thing that is out
+                // of date — and `reparse()` would otherwise present it.
+                self.analysisProvider?.setCachedMEAnalysis(nil, meRegion: nil)
+                self.reparse()
+            }
+        }
     }
 
     /// Any change is a reason to read again. The analysis is cheap to rebuild
@@ -97,7 +122,10 @@ struct MEAParkedState: ToolSessionState {
         reparse()
     }
 
-    public func stop() {}
+    public func stop() {
+        databaseWatch?.cancel()
+        databaseWatch = nil
+    }
 
     public var parkedState: (any ToolSessionState)? {
         MEAParkedState(tabIndex: tabIndex, focusPath: focusPath)

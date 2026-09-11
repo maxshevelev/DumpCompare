@@ -12,6 +12,18 @@ public protocol MicrocodeSource: Sendable {
     func catalogue() async throws -> [MicrocodeCatalogueEntry]
     /// One file's bytes.
     func download(_ entry: MicrocodeCatalogueEntry) async throws -> [UInt8]
+
+    /// Emits when a background check has replaced the listing with a newer
+    /// one, so a table's "latest" verdicts can be settled again against what
+    /// actually exists now. A source that never changes its mind never emits.
+    func catalogueChanges() async -> AsyncStream<[MicrocodeCatalogueEntry]>
+}
+
+extension MicrocodeSource {
+    /// A source with nothing to announce — a stub in a test, a local folder.
+    public func catalogueChanges() async -> AsyncStream<[MicrocodeCatalogueEntry]> {
+        AsyncStream { $0.finish() }
+    }
 }
 
 /// What went wrong on the way to the catalogue, in words a bench can act on.
@@ -100,6 +112,16 @@ public struct CPUMicrocodesRepository: MicrocodeSource {
             else { throw error }
             return entries
         }
+    }
+
+    public func catalogueChanges() async -> AsyncStream<[MicrocodeCatalogueEntry]> {
+        await held.changes()
+    }
+
+    /// Wait for a check running behind an answer — for tests, which must not
+    /// race one.
+    func settle() async {
+        await held.settle()
     }
 
     /// Make the next `catalogue()` re-check, whatever the clock says.

@@ -117,6 +117,9 @@ private struct ChecksumPass: Sendable {
     /// Which catalogue download is the current one, so a slow one does not
     /// overwrite a fresh one.
     private var guidsGeneration = 0
+
+    /// Listening for a newer `guids.csv`. Cancelled in `stop()`.
+    private var guidsWatch: Task<Void, Never>?
     /// Whether the line under the tree is an answer to something the user asked
     /// for — a fix that wrote, or a refusal. Such a line survives the re-read
     /// its own write caused and is wiped by the next re-read that is not its
@@ -156,6 +159,24 @@ private struct ChecksumPass: Sendable {
     public func start() {
         bind()
         refreshGuids()
+        watchTheGuids()
+    }
+
+    /// `guids.csv` is re-checked once a day, behind whatever is being read at
+    /// the time, so the names a tree is drawn with can be superseded while it
+    /// is on screen. When that happens the tree is drawn again — the same thing
+    /// `refreshGuids` does when the first download lands, and for the same
+    /// reason: a better name is worth showing the moment it exists.
+    private func watchTheGuids() {
+        guard guidsWatch == nil else { return }
+        let source = Self.guidsSource
+        guidsWatch = Task { [weak self] in
+            for await fresh in await source.guidsChanges() {
+                guard let self else { return }
+                self.guids = fresh
+                self.show()
+            }
+        }
     }
 
     /// Any change is a reason to read again — but not to read the file again.
@@ -174,6 +195,8 @@ private struct ChecksumPass: Sendable {
     public func stop() {
         if let tree, let observation { tree.removeObserver(observation) }
         observation = nil
+        guidsWatch?.cancel()
+        guidsWatch = nil
     }
 
     public var parkedState: (any ToolSessionState)? { UEFIParkedState(focus: focus) }

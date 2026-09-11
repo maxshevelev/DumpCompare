@@ -10,6 +10,18 @@ import UEFIImage
 public protocol GuidsSource: Sendable {
     /// The fresh catalogue, parsed from `common/guids.csv`.
     func guids() async throws -> GuidsCatalogue
+
+    /// Emits when a background check has replaced the catalogue with a newer
+    /// one, so the tree can be drawn again with the names that just arrived. A
+    /// source that never changes its mind never emits.
+    func guidsChanges() async -> AsyncStream<GuidsCatalogue>
+}
+
+extension GuidsSource {
+    /// A source with nothing to announce — a stub in a test, a fixed list.
+    public func guidsChanges() async -> AsyncStream<GuidsCatalogue> {
+        AsyncStream { $0.finish() }
+    }
 }
 
 /// What went wrong on the way to the catalogue, in words a bench can act on.
@@ -76,6 +88,16 @@ public struct LongSoftGuidsRepository: GuidsSource {
                 return .fresh(GuidsCatalogue.parse(data), validator: etag)
             }
         }
+    }
+
+    public func guidsChanges() async -> AsyncStream<GuidsCatalogue> {
+        await held.changes()
+    }
+
+    /// Wait for a check running behind an answer — for tests, which must not
+    /// race one.
+    func settle() async {
+        await held.settle()
     }
 
     /// Make the next `guids()` re-check, whatever the clock says.

@@ -65,10 +65,31 @@ public actor MEAGitHubDataRepository: MEADataSource {
         }
     }
 
+    /// Emits when a check behind someone's back found a newer `MEA.dat`.
+    public func databaseChanges() async -> AsyncStream<Void> {
+        let replacements = await databaseData.changes()
+        let (stream, continuation) = AsyncStream<Void>.makeStream()
+        // The database itself is not carried across: whoever is listening asks
+        // this repository for it again, and gets the one now held.
+        let pump = Task {
+            for await _ in replacements { continuation.yield(()) }
+            continuation.finish()
+        }
+        continuation.onTermination = { _ in pump.cancel() }
+        return stream
+    }
+
     /// Make the next call re-check both files, whatever the clock says.
     public func markStale() async {
         await databaseData.markStale()
         await huffmanData.markStale()
+    }
+
+    /// Wait for a check running behind an answer — for tests, which must not
+    /// race one.
+    func settle() async {
+        await databaseData.settle()
+        await huffmanData.settle()
     }
 
     /// When each file last changed and when it was last confirmed current, for

@@ -125,9 +125,32 @@ final class LiveSourceFreshnessTests: XCTestCase {
         let first = try await repository.guids()
         ticker.advance(day + 1)
         let second = try await repository.guids()
+        await repository.settle()
 
         XCTAssertEqual(second.names, first.names)
         XCTAssertEqual(script.asked, [nil, "guids-1"])
+    }
+
+    /// A tree is drawn from the names in hand and never waits on the check —
+    /// and when better names arrive behind it, the source says so, which is
+    /// what has the tree drawn again.
+    func testFresherNamesArriveBehindTheTreeAndAreAnnounced() async throws {
+        script.queue(ok(csv, etag: "guids-1"))
+        script.queue(ok(csv + "B0B1C2D3-E4F5-6789-ABCD-EF0123456789,AnotherDriver\n",
+                        etag: "guids-2"))
+        let ticker = self.ticker!
+        let repository = LongSoftGuidsRepository(session: makeSession(), ttl: day,
+                                                 now: { ticker.now })
+        var changes = await repository.guidsChanges().makeAsyncIterator()
+
+        _ = try await repository.guids()
+        ticker.advance(day + 1)
+        let answered = try await repository.guids()
+        XCTAssertEqual(answered.names.count, 1, "answered from what is held")
+
+        await repository.settle()
+        let announced = await changes.next()
+        XCTAssertEqual(announced?.names.count, 2, "the tree can be drawn again with these")
     }
 
     func testGuidsSurviveACheckThatCouldNotBeMade() async throws {
@@ -140,6 +163,7 @@ final class LiveSourceFreshnessTests: XCTestCase {
         let first = try await repository.guids()
         ticker.advance(day + 1)
         let second = try await repository.guids()
+        await repository.settle()
 
         XCTAssertEqual(second.names, first.names, "the names do not disappear with the network")
     }
@@ -176,9 +200,35 @@ final class LiveSourceFreshnessTests: XCTestCase {
         let first = try await repository.catalogue()
         ticker.advance(day + 1)
         let second = try await repository.catalogue()
+        await repository.settle()
 
         XCTAssertEqual(second, first)
         XCTAssertEqual(script.asked, [nil, "tree-1"])
+    }
+
+    /// A "latest there is" verdict belongs to a particular listing, so a newer
+    /// one is announced and the table is rated again.
+    func testAFresherListingIsAnnounced() async throws {
+        let grown = "{\"tree\":[" +
+            "{\"path\":\"Intel/cpu806EA_plat02_ver000000F0_2019-07-15_PRD_11223344.bin\","
+            + "\"type\":\"blob\",\"size\":100},"
+            + "{\"path\":\"Intel/cpu806EA_plat02_ver000000F2_2020-01-01_PRD_55667788.bin\","
+            + "\"type\":\"blob\",\"size\":100}]}"
+        script.queue(ok(tree, etag: "tree-1"))
+        script.queue(ok(grown, etag: "tree-2"))
+        let ticker = self.ticker!
+        let repository = CPUMicrocodesRepository(session: makeSession(), ttl: day,
+                                                 now: { ticker.now })
+        var changes = await repository.catalogueChanges().makeAsyncIterator()
+
+        _ = try await repository.catalogue()
+        ticker.advance(day + 1)
+        let answered = try await repository.catalogue()
+        XCTAssertEqual(answered.count, 1, "answered from what is held")
+
+        await repository.settle()
+        let announced = await changes.next()
+        XCTAssertEqual(announced?.count, 2)
     }
 
     func testWithNothingHeldTheTreeStillFallsBackToTheFileOnDisk() async throws {

@@ -21,8 +21,12 @@ import Foundation
 ///   the same error after plugging the cable back in.
 /// - **Held and younger than `ttl`.** The closure is not called at all. This is
 ///   the case that matters: the second, third and fourth file opened in a run.
-/// - **Held and older than `ttl`.** Check. `unchanged` keeps the value and
-///   restarts the clock — no bytes, no re-parse. A new value replaces it.
+/// - **Held and older than `ttl`.** The held value is returned *at once* and
+///   the check runs behind it, so no reader ever waits on the network for
+///   something already in hand. `unchanged` keeps the value and restarts the
+///   clock — no bytes, no re-parse. A new value replaces it and is announced
+///   through `changes()`, which is how a consumer knows to do its work again
+///   against the database that has just arrived.
 /// - **A check that could not be made.** The held value is returned and no
 ///   error is raised: a database from yesterday is what the tool is for. The
 ///   failure is remembered for `retryInterval` only, so a day without a network
@@ -68,6 +72,7 @@ public actor Freshened<Value: Sendable> {
     private var held: Held?
     private var checkFailedAt: Date?
     private var inFlight: Task<Value, Error>?
+    private var observers: [UUID: AsyncStream<Value>.Continuation] = [:]
 
     /// - Parameters:
     ///   - ttl: how long a value is used without asking the source. A day, for
@@ -84,23 +89,53 @@ public actor Freshened<Value: Sendable> {
         self.now = now
     }
 
-    /// The held value, or the result of a fetch or a check, by the rules above.
+    /// The held value, or the result of a fetch, by the rules above.
+    ///
+    /// This waits only when there is nothing to answer with. Once something is
+    /// held it returns immediately, every time — a check that has come due runs
+    /// behind the answer, and what it finds arrives through `changes()`.
     public func value(
         _ check: @escaping @Sendable (_ validator: String?) async throws -> Outcome
     ) async throws -> Value {
-        if let held, !isDue(held) { return held.value }
+        if let held {
+            if isDue(held), inFlight == nil {
+                // Not awaited on purpose. With a value in hand `run` does not
+                // throw — a check it cannot make is recorded, not raised.
+                inFlight = Task { try await self.run(check) }
+            }
+            return held.value
+        }
         if let inFlight { return try await inFlight.value }
 
         let task = Task { try await self.run(check) }
         inFlight = task
-        do {
-            let value = try await task.value
-            inFlight = nil
-            return value
-        } catch {
-            inFlight = nil
-            throw error
+        return try await task.value
+    }
+
+    /// Every value that *replaced* one already held — a background check that
+    /// found something new. The first fetch is not announced here: it is the
+    /// return of `value(_:)`, and a consumer that acted on both would do its
+    /// work twice.
+    public func changes() -> AsyncStream<Value> {
+        let (stream, continuation) = AsyncStream<Value>.makeStream()
+        let id = UUID()
+        observers[id] = continuation
+        continuation.onTermination = { [weak self] _ in
+            Task { await self?.stopObserving(id) }
         }
+        return stream
+    }
+
+    /// Wait for a check that is running behind an answer — for tests, which
+    /// must not race it.
+    public func settle() async {
+        while let task = inFlight {
+            _ = try? await task.value
+        }
+    }
+
+    private func stopObserving(_ id: UUID) {
+        observers[id] = nil
     }
 
     /// What is held and how old it is, or `nil` if nothing has been fetched.
@@ -126,6 +161,7 @@ public actor Freshened<Value: Sendable> {
     private func run(
         _ check: @Sendable (_ validator: String?) async throws -> Outcome
     ) async throws -> Value {
+        defer { inFlight = nil }
         let outcome: Outcome
         do {
             outcome = try await check(held?.validator)
@@ -144,7 +180,11 @@ public actor Freshened<Value: Sendable> {
             self.held = held
             return held.value
         case .fresh(let value, let validator):
+            let replacing = held != nil
             held = Held(value: value, validator: validator, changedAt: t, checkedAt: t)
+            if replacing {
+                for continuation in observers.values { continuation.yield(value) }
+            }
             return value
         }
     }

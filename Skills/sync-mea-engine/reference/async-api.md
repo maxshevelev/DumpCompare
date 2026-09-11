@@ -51,6 +51,9 @@ public protocol MEADataSource: Sendable {
     func huffmanDictionaries() async throws -> HuffmanDictionaries
     /// FileTable.dat module-name/version map for the VFS walk.
     func fileTable() async throws -> FileTable
+    /// Emits when a background check replaced MEA.dat with a newer one.
+    /// Default implementation: a stream that finishes at once.
+    func databaseChanges() async -> AsyncStream<Void>
 }
 
 public actor MEAGitHubDataRepository: MEADataSource {
@@ -75,6 +78,14 @@ Guarantees the provider must uphold:
   restarts the day, so an unchanged week costs one round trip and no bytes. The
   request sets `.reloadIgnoringLocalCacheData`, or `URLSession` answers `200`
   from its own cache and the `304` never arrives.
+- **The check runs behind the reading.** Once a database is held, `database()`
+  returns it at once and the check due today runs behind that answer — an
+  analysis never stops for the network on a file it can already identify. Only
+  the first call of a run, with nothing held, waits.
+- **A newer database is announced.** The analysis that has just been made was
+  made against the database that was replaced, so `databaseChanges()` emits and
+  the module analyses again — dropping the pane's cached analysis first, since
+  that was read against the same superseded file.
 - **Yesterday's beats nothing.** A check that fails leaves the held value in
   place and raises no error, and is not retried for five minutes — a day
   without a network must not put a connection timeout in front of every file

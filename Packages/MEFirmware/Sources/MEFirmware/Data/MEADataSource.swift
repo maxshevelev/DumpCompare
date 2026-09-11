@@ -17,6 +17,15 @@ public protocol MEADataSource: Sendable {
 
     /// FileTable.dat module-name/version map for the VFS walk.
     func fileTable() async throws -> FileTable
+
+    /// Emits when a background check has replaced `MEA.dat` with a newer one.
+    ///
+    /// A source holds its database for the life of the process and re-checks it
+    /// once a day, behind whatever is being read at the time — so an analysis
+    /// can be finished against a database that has since been superseded. This
+    /// is how the module hears about it and analyses again, against what has
+    /// just arrived. A source that never changes its mind never emits.
+    func databaseChanges() async -> AsyncStream<Void>
 }
 
 /// Typed fetch/parse failures, mirroring `GuidsSourceError` in
@@ -52,6 +61,11 @@ public struct FileTable: Sendable, Equatable {
 }
 
 extension MEADataSource {
+    /// A source with nothing to announce — a stub in a test, a local file.
+    public func databaseChanges() async -> AsyncStream<Void> {
+        AsyncStream { $0.finish() }
+    }
+
     /// Default: no dictionaries available — the caller decides whether that is
     /// fatal. `MEAGitHubDataRepository` overrides this with a live single-flight
     /// fetch of `Huffman.dat`; test stubs that only need `database()` inherit it.

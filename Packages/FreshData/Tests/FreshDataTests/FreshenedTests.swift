@@ -133,6 +133,7 @@ final class FreshenedTests: XCTestCase {
             return .unchanged
         }
         XCTAssertEqual(value, "database")
+        await cache.settle()
         let asked = await checks.validators
         XCTAssertEqual(asked, ["etag-1"], "the check presents what was stored")
 
@@ -145,20 +146,92 @@ final class FreshenedTests: XCTestCase {
         }
     }
 
-    func testAfterADayFreshReplacesTheValue() async throws {
+    func testAfterADayFreshReplacesTheValueForTheNextReader() async throws {
         let clock = TestClock()
         let cache = Freshened<String>(now: { clock.now })
 
         _ = try await cache.value { _ in .fresh("old", validator: "etag-1") }
         clock.advance(day + 1)
+
+        // This reader is answered from what is held; the new database arrives
+        // behind it, for whoever asks next.
         let value = try await cache.value { _ in .fresh("new", validator: "etag-2") }
-        XCTAssertEqual(value, "new")
+        XCTAssertEqual(value, "old")
+        await cache.settle()
+
+        let next = try await cache.value { _ in
+            XCTFail("checked a moment ago; nothing to ask")
+            return .unchanged
+        }
+        XCTAssertEqual(next, "new")
 
         clock.advance(day + 1)
         _ = try await cache.value { validator in
             XCTAssertEqual(validator, "etag-2", "the new validator is the one presented next")
             return .unchanged
         }
+        await cache.settle()
+    }
+
+    // MARK: Nobody waits on a check
+
+    func testAReaderIsAnsweredWhileTheCheckIsStillOpen() async throws {
+        let clock = TestClock()
+        let cache = Freshened<String>(now: { clock.now })
+        let release = Gate()
+        let entered = Gate()
+
+        _ = try await cache.value { _ in .fresh("yesterday", validator: "etag-1") }
+        clock.advance(day + 1)
+
+        let value = try await cache.value { _ in
+            await entered.open()
+            await release.wait()
+            return .fresh("today", validator: "etag-2")
+        }
+        // The check has not answered and cannot have: nothing has let it go.
+        XCTAssertEqual(value, "yesterday", "a reader never waits on the network for what is in hand")
+
+        await entered.wait()
+        await release.open()
+        await cache.settle()
+        let next = try await cache.value { _ in .unchanged }
+        XCTAssertEqual(next, "today")
+    }
+
+    // MARK: What a background check found
+
+    func testANewDatabaseIsAnnounced() async throws {
+        let clock = TestClock()
+        let cache = Freshened<String>(now: { clock.now })
+        var announcements = await cache.changes().makeAsyncIterator()
+
+        _ = try await cache.value { _ in .fresh("old", validator: "etag-1") }
+        clock.advance(day + 1)
+        _ = try await cache.value { _ in .fresh("new", validator: "etag-2") }
+        await cache.settle()
+
+        let announced = await announcements.next()
+        XCTAssertEqual(announced, "new", "the work done against the old one can be done again")
+    }
+
+    func testTheFirstFetchIsNotAnnounced() async throws {
+        let clock = TestClock()
+        let cache = Freshened<String>(now: { clock.now })
+        var announcements = await cache.changes().makeAsyncIterator()
+
+        // The first fetch is the return of `value(_:)`. Announcing it as well
+        // would have the consumer do its work twice for one database.
+        _ = try await cache.value { _ in .fresh("database", validator: "etag-1") }
+        clock.advance(day + 1)
+        _ = try await cache.value { _ in .unchanged }
+        await cache.settle()
+
+        let finished = Task { await announcements.next() }
+        try await Task.sleep(nanoseconds: 20_000_000)
+        finished.cancel()
+        let announced = await finished.value
+        XCTAssertNil(announced, "one fetch, one piece of work")
     }
 
     // MARK: A check that could not be made
@@ -173,6 +246,7 @@ final class FreshenedTests: XCTestCase {
 
         let value = try await cache.value { _ in throw Offline() }
         XCTAssertEqual(value, "yesterday", "a database from yesterday is what the tool is for")
+        await cache.settle()
     }
 
     func testAFailedCheckIsNotRepeatedUntilTheRetryIntervalHasPassed() async throws {
@@ -184,6 +258,7 @@ final class FreshenedTests: XCTestCase {
         _ = try await cache.value { _ in .fresh("yesterday", validator: "etag-1") }
         clock.advance(day + 1)
         _ = try await cache.value { _ in throw Offline() }
+        await cache.settle()
 
         // Every file opened in the next five minutes would otherwise wait out
         // a connection timeout of its own.
@@ -192,6 +267,7 @@ final class FreshenedTests: XCTestCase {
             await checks.record(validator)
             return .unchanged
         }
+        await cache.settle()
         var count = await checks.count
         XCTAssertEqual(count, 0)
 
@@ -200,6 +276,7 @@ final class FreshenedTests: XCTestCase {
             await checks.record(validator)
             return .unchanged
         }
+        await cache.settle()
         count = await checks.count
         XCTAssertEqual(count, 1)
     }
@@ -212,8 +289,10 @@ final class FreshenedTests: XCTestCase {
         _ = try await cache.value { _ in .fresh("old", validator: "etag-1") }
         clock.advance(day + 1)
         _ = try await cache.value { _ in throw Offline() }
+        await cache.settle()
         clock.advance(5 * 60 + 1)
         _ = try await cache.value { _ in .fresh("new", validator: "etag-2") }
+        await cache.settle()
 
         // Back on the ordinary schedule: a day from the fetch, not five
         // minutes from the failure.
@@ -265,6 +344,7 @@ final class FreshenedTests: XCTestCase {
 
         let value = try await cache.value { _ in throw Offline() }
         XCTAssertEqual(value, "database", "Refresh on a bench with no network must not empty the panel")
+        await cache.settle()
     }
 
     func testStatusReportsWhenTheBodyChangedNotWhenItWasChecked() async throws {
@@ -275,6 +355,7 @@ final class FreshenedTests: XCTestCase {
         _ = try await cache.value { _ in .fresh("database", validator: "etag-1") }
         clock.advance(day + 1)
         _ = try await cache.value { _ in .unchanged }
+        await cache.settle()
 
         let status = await cache.status
         XCTAssertEqual(status?.changedAt, start, "a 304 today does not make last week's database fresher")

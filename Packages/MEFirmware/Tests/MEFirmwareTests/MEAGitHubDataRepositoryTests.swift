@@ -122,6 +122,7 @@ final class MEAGitHubDataRepositoryTests: XCTestCase {
         _ = try await repository.database()
         ticker.advance(24 * 60 * 60 + 1)
         _ = try await repository.database()
+        await repository.settle()
 
         XCTAssertEqual(script.count, 2)
         XCTAssertNil(script.asked[0].ifNoneMatch, "nothing held, nothing to present")
@@ -137,10 +138,48 @@ final class MEAGitHubDataRepositoryTests: XCTestCase {
         ticker.advance(24 * 60 * 60 + 1)
         let second = try await repository.database()
         XCTAssertEqual(first.revision, second.revision)
+        await repository.settle()
 
         ticker.advance(23 * 60 * 60)
         _ = try await repository.database()
         XCTAssertEqual(script.count, 2, "the day runs from the check, not from the fetch")
+    }
+
+    /// The reading does not stop for a check: what is held answers at once and
+    /// the check runs behind it. This is the pause a bench used to blame on the
+    /// tool being slow — it was 350 KB arriving over somebody's hotel wifi.
+    func testAnAnalysisDoesNotWaitForTheDailyCheck() async throws {
+        script.queue(.ok(body, etag: "etag-1"))
+        script.queue(.ok("Revision r400\n", etag: "etag-2"))
+        let repository = makeRepository()
+
+        _ = try await repository.database()
+        ticker.advance(24 * 60 * 60 + 1)
+
+        let answered = try await repository.database()
+        XCTAssertEqual(answered.revision, 300, "answered from what is held, not from the network")
+
+        // And the newer one is what the next reading gets.
+        await repository.settle()
+        let next = try await repository.database()
+        XCTAssertEqual(next.revision, 400)
+    }
+
+    /// Which is only honest if the module is told, so it can read again against
+    /// the database that has just arrived.
+    func testANewerDatabaseIsAnnounced() async throws {
+        script.queue(.ok(body, etag: "etag-1"))
+        script.queue(.ok("Revision r400\n", etag: "etag-2"))
+        let repository = makeRepository()
+        var changes = await repository.databaseChanges().makeAsyncIterator()
+
+        _ = try await repository.database()
+        ticker.advance(24 * 60 * 60 + 1)
+        _ = try await repository.database()
+        await repository.settle()
+
+        let announced = await changes.next()
+        XCTAssertNotNil(announced, "the analysis was made against the database before this one")
     }
 
     func testACheckThatCannotBeMadeKeepsYesterdaysDatabase() async throws {
@@ -151,6 +190,7 @@ final class MEAGitHubDataRepositoryTests: XCTestCase {
         let first = try await repository.database()
         ticker.advance(24 * 60 * 60 + 1)
         let second = try await repository.database()
+        await repository.settle()
 
         XCTAssertEqual(first.revision, second.revision,
                        "no network is not a reason to lose what the tool already has")

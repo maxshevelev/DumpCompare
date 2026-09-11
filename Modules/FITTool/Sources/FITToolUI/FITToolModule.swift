@@ -90,6 +90,9 @@ struct FITParkedState: ToolSessionState {
     /// than starting a second fetch. Nil once a read has finished.
     private var catalogueLoad: Task<Void, Never>?
 
+    /// Listening for a newer listing. Cancelled in `stop()`.
+    private var catalogueWatch: Task<Void, Never>?
+
     /// Which reading is the current one. A file edited twice in quick
     /// succession starts two, and the one that finishes second is not
     /// necessarily the one that read the newer bytes.
@@ -125,7 +128,23 @@ struct FITParkedState: ToolSessionState {
         // add form's list are answered from this one fetch, cached for the
         // session, not fetched again for every sheet.
         loadCatalogue()
+        watchTheCatalogue()
         reparse()
+    }
+
+    /// The listing is re-checked once a day, behind whatever is being read at
+    /// the time, so a table can be rated against a listing that has since been
+    /// superseded — and "this microcode is the latest there is" is a verdict
+    /// about exactly that listing. When a newer one lands the table is rated
+    /// again, the same way the first fetch rates it.
+    private func watchTheCatalogue() {
+        guard catalogueWatch == nil else { return }
+        let source = FITToolSession.microcodeSource
+        catalogueWatch = Task { [weak self] in
+            for await entries in await source.catalogueChanges() {
+                self?.catalogueReady(entries)
+            }
+        }
     }
 
     /// Any change is a reason to read again. The table is 128 bytes and the
@@ -140,7 +159,10 @@ struct FITParkedState: ToolSessionState {
         reparse()
     }
 
-    public func stop() {}
+    public func stop() {
+        catalogueWatch?.cancel()
+        catalogueWatch = nil
+    }
 
     public var parkedState: (any ToolSessionState)? { FITParkedState(focus: focus) }
 
