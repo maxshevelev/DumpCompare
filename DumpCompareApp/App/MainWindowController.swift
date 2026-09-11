@@ -499,9 +499,11 @@ extension MainWindowController: NSToolbarDelegate {
             return goToItem
         case .find:
             if findItem == nil {
+                // The button is a switch, not the menu's command: pressing it
+                // again closes the bar, the way Done does.
                 findItem = makeCommandItem(.find, symbol: "magnifyingglass", label: "Find",
                                            toolTip: "Find a byte pattern",
-                                           action: #selector(MainViewController.findPattern))
+                                           action: #selector(MainViewController.toggleFindBar))
             }
             return findItem
         case .segments:

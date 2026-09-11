@@ -5604,6 +5604,24 @@ final class MainViewController: NSViewController {
         showFindBar()
     }
 
+    /// The toolbar's Find button, which is a switch rather than a command: it
+    /// is a thing on screen that is either pressed or not, and pressing it
+    /// again is Done.
+    ///
+    /// ⌘F deliberately does not do this. On an open bar it means "take me to
+    /// the field" — the keystroke a reader presses to get back to a pattern
+    /// they are editing — and a ⌘F that closed the bar instead would make the
+    /// second press undo the first.
+    @objc func toggleFindBar() {
+        let pane = activePane
+        guard pane.isOpen else { return }
+        if findBar.isHidden {
+            showFindBar()
+        } else {
+            hideFindBar()
+        }
+    }
+
     /// ⌘F (§11). On a bar that is already open it focuses the field and selects
     /// what is in it — it does **not** prefill.
     ///
@@ -6599,6 +6617,7 @@ extension MainViewController: NSToolbarItemValidation {
             return diffNavigationState.previousDifference
         case #selector(goToPosition),
              #selector(findPattern),
+             #selector(toggleFindBar),
              #selector(showSegments):
             // The document commands need a dump to act on, exactly like the menu
             // items they mirror (§24.1).

@@ -88,7 +88,7 @@ final class ToolbarItemsTests: XCTestCase {
         defer { wc.close() }
         let expected: [(NSToolbarItem.Identifier, Selector)] = [
             (.goTo, #selector(MainViewController.goToPosition)),
-            (.find, #selector(MainViewController.findPattern)),
+            (.find, #selector(MainViewController.toggleFindBar)),
             (.segments, #selector(MainViewController.showSegments)),
             (.insertMode, #selector(MainViewController.toggleInsertMode(_:))),
             (.wordSize, #selector(MainViewController.setWordSize(_:))),

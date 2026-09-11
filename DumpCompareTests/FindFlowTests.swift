@@ -139,6 +139,14 @@ final class FindFlowTests: XCTestCase {
                       "the find bar must be visible")
     }
 
+    /// The bar whether or not it is showing. `findBar` wants a visible one —
+    /// which is what every test that drives the controls needs — so a test
+    /// about the bar being *closed* asks for it this way instead.
+    private func findBarEvenIfHidden(_ window: NSWindow) throws -> FindBarView {
+        try XCTUnwrap(descendants(of: window.contentView!, FindBarView.self).first,
+                      "the bar lives in the hierarchy between shows")
+    }
+
     /// The bar's controls: (pattern field, encoding popup, Done, Aa case
     /// toggle). Navigation is two joined buttons, driven via `clickFindNext` /
     /// `clickFindPrevious`.
@@ -269,6 +277,35 @@ final class FindFlowTests: XCTestCase {
         XCTAssertEqual(controller.windowModel.pane1.hexSelection().end, 6)
         XCTAssertFalse(try findBar(window).isHidden,
                        "the find bar must stay open after a successful search")
+    }
+
+    /// The toolbar's Find is a switch: it opens the bar, and pressing it again
+    /// closes it, the way Done does.
+    func testTheToolbarsFindButtonTogglesTheBar() throws {
+        let (controller, window, url) = try makeController([0x41, 0x42, 0x43])
+        defer { cleanup(controller, url) }
+
+        controller.toggleFindBar()
+        XCTAssertFalse(try findBarEvenIfHidden(window).isHidden, "the first press opens it")
+
+        controller.toggleFindBar()
+        XCTAssertTrue(try findBarEvenIfHidden(window).isHidden, "the second press is Done")
+
+        controller.toggleFindBar()
+        XCTAssertFalse(try findBarEvenIfHidden(window).isHidden, "and it opens again")
+    }
+
+    /// ⌘F is not the switch. On an open bar it means "take me to the field", so
+    /// a second ⌘F leaves the bar where it is rather than undoing the first.
+    func testCommandFOnAnOpenBarKeepsItOpen() throws {
+        let (controller, window, url) = try makeController([0x41, 0x42, 0x43])
+        defer { cleanup(controller, url) }
+
+        controller.findPattern()
+        controller.findPattern()
+
+        XCTAssertFalse(try findBar(window).isHidden,
+                       "a second Cmd+F focuses the field, it does not close the bar")
     }
 
     /// Find Previous from the caret finds the last match ending at/before the
