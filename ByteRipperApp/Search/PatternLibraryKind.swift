@@ -35,13 +35,18 @@ protocol SyncedCollectionKind {
 enum PatternLibraryKind: SyncedCollectionKind {
     typealias Item = SearchPatternEntry
 
-    /// Deliberately still the old name. This stem names the files in the
-    /// user's synced folder and is how `SyncFolder` finds every machine's file
-    /// in it. Renaming it would hide every library file already there —
-    /// including this Mac's own — and split a pair of machines the moment one
-    /// of them updated. The name in a folder shared with other installations is
-    /// a format, not a label.
-    static let fileStem = "DumpCompare Patterns"
+    /// This stem names the files in the user's synced folder and is how
+    /// `SyncFolder` finds every machine's file in it, so it is closer to a
+    /// format than to a label: a machine that changes it stops seeing every
+    /// file already in the folder — including its own — and writes a new one
+    /// beside them.
+    ///
+    /// It was renamed with the app all the same. Nobody is synchronising a pair
+    /// of machines through this yet, so the cost is a file that has to be
+    /// published again rather than a library that goes quiet; the old
+    /// `DumpCompare Patterns (…).json` is simply left where it is. Past this
+    /// point the argument above holds and the stem does not move again.
+    static let fileStem = "ByteRipper Patterns"
     static let folderBookmarkKey = "LibraryFolderBookmark"
     static let folderPathKey = "LibraryFolderPath"
     static let legacyBookmarkKey = "LibraryPublishedBookmark"
@@ -49,5 +54,5 @@ enum PatternLibraryKind: SyncedCollectionKind {
     static var defaults: UserDefaults { FavoritePatternStore.defaults }
 }
 
-/// The pattern library's folder, under the name the app has always used for it.
+/// The pattern library's folder.
 typealias LibraryLocation = SyncFolder<PatternLibraryKind>
