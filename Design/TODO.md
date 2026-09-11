@@ -241,52 +241,118 @@ is decided about the rest.
 
 ---
 
-### Cache the fetched databases, so a bench without network still has yesterday's
+### Fetch each database once a run, and check it once a day
 
-**What.** The three live sources — `MEAGitHubDataRepository` (`MEA.dat`,
-`Huffman.dat`), `LongSoftGuidsRepository` (`guids.csv`) and `MicrocodeSource`
-(the CPUMicrocodes tree) — keep nothing between launches; the repository says so
-outright: *in-memory only, no disk cache; the next launch re-fetches*. Give them
-a disk cache with a one-day TTL: fresher than a day is used without touching the
-network, older is re-fetched, and a re-fetch that fails leaves the old body in
-place with its date shown in the tool's header.
+**What.** The parsed databases held for the life of the process and shared by
+every tool-module instance, with a one-day freshness check in front of them.
+Opening a tool for a second file then costs nothing. When the held copy is more
+than a day old the next parse checks it — a conditional request, so an unchanged
+database costs one round trip and no bytes — and if github.com cannot be
+reached, the held copy is used as it is.
 
-**Why.** Today, no network means no ME Analyzer, no GUID names and no microcode
-catalogue — and that is precisely the bench the tools were built for: a call-out,
-a shop on a bad line, a laptop at the stand. The trade the no-cache rule was
-chosen for still holds — these databases change weekly and a copy goes stale —
-but staleness is only a problem when it is invisible. Yesterday's database with
-`MEA.dat · 10 Sep` in the header beats a tool that will not open. It also stops
-re-downloading about 1.2 MB on every launch of the app.
+**Why.** One of the three sources does this already; the other two pay full
+price per file.
 
-**How.** A decorator, not three changes: all three sources are already protocols
-behind which a test installs its own, so one cache type wraps any of them. Body
-plus `fetchedAt` plus the response's `ETag` in
-`Application Support/ByteRipper/Cache/`; on expiry, a conditional request with
-`If-None-Match` — GitHub answers `304` with an empty body, so the common case
-costs one round trip and no bytes. `URLCache` is not enough on its own: it has no
-TTL of ours, and serving a stale body when the network is down means
-`.returnCacheDataDontLoad`, which then cannot tell "stale" from "never fetched".
+- `MEAGitHubDataRepository` is an actor kept in `MEAToolSession.dataSource`, and
+  every `MEFirmwareAnalyzer` is built on that one instance, so `MEA.dat` is
+  fetched once per launch. It is never re-checked, and — worse — a *failed*
+  fetch is memoized along with everything else: the `Task` is stored before it
+  is awaited and never cleared. A bench that opened the tool while offline goes
+  on getting that same error after the network comes back, until the app is
+  restarted.
+- `LongSoftGuidsRepository` is a stateless struct. `guids()` downloads 680 KB
+  and re-parses the CSV on every call, and the call is per module instance
+  (`guidsGeneration` is a field of `UEFIToolModule`). Second file, second
+  download.
+- `CPUMicrocodesRepository` is the same shape: `catalogue()` always goes to the
+  network, and the `catalogueLoad == nil` guard belongs to one session. Its disk
+  file is a fallback for the error path and does not touch the successful one.
 
-Two visible pieces go with it: the date of the data in each tool panel's header,
-and a **Refresh** control for the bench that knows an update landed this morning.
+So the third file opened in a run is the third download of the same bytes, in
+front of the user, on the bench's line — and the parse waits for it.
 
-**Touches.** A new shared package — the cache is wanted by `UEFITool`, `FITTool`
-and `MEFirmware` alike, and by the rule in `CLAUDE.md` that puts what two
-tool-modules share under `Packages/`. Then the three call sites
+**How.** One actor in a shared package, one instance per *resource* rather than
+per repository: `MEA.dat` and `Huffman.dat` have separate ETags and separate
+clocks. It holds the parsed value, not the body — re-parsing 680 KB of CSV per
+file is the same waste as re-downloading it — and it takes a closure that turns
+the stored ETag into an outcome, which keeps HTTP outside the type and lets the
+whole thing be tested without a network and without the wall clock:
+
+```swift
+actor Freshened<Value: Sendable> {
+    enum Outcome { case unchanged, fresh(Value, etag: String?) }
+
+    func value(_ check: @Sendable (_ etag: String?) async throws -> Outcome) async throws -> Value
+}
+```
+
+The branches it has to tell apart are also the list of tests: nothing held, so
+fetch; nothing held and the network is down, so throw **and remember nothing**;
+held and younger than a day, so no request at all; held and expired with a
+`304`, so the same value, the clock reset and no re-parse; expired with a `200`,
+so a new value and a new ETag; expired and unreachable, so the old value and no
+error; and two callers at once, so one request.
+
+The flag is not a timer — it is `now - checkedAt > 24h`, evaluated when someone
+asks. A Mac that slept for two days misses a timer and gets this right, and
+there is no wake-up that throws away a database nobody is asking for.
+
+The check is `If-None-Match`. Both hosts answer it: `raw.githubusercontent.com`
+for the two `.dat` files and `guids.csv`, `api.github.com` for the tree listing,
+where a `304` is also not counted against the rate limit. The request needs
+`.reloadIgnoringLocalCacheData`, or `URLSession` serves its own `URLCache` copy
+and the `304` never reaches us.
+
+Neither repository has to become an actor: the cache is a reference held inside
+the struct, so no call site and no signature changes.
+
+**Two questions are open.**
+
+- **Does the parse wait for the check?** "Check at the next parse" taken
+  literally stops the parse for a round trip — 100 ms on a good line, up to the
+  20 s timeout on a bad one, which is the pause the entry below is about. The
+  alternative is to serve the held copy at once and check in the background:
+  this file is read against yesterday's database and the update reaches the next
+  one. It fits `guids` exactly, where `refreshGuids` is already built that way
+  (fresh names arrive, the tree is redrawn); it is harder for MEA, where the
+  analysis depends on the database and a mid-flight replacement means either
+  re-running it or saying nothing. Given that these databases change weekly, the
+  answer to try first is background for both, blocking only when nothing is held.
+- **What happens after a check that failed?** If the flag stays up, every parse
+  on an offline bench goes to the network again and waits out the timeout again.
+  A failed check needs a retry interval of its own — five minutes — or a day
+  without network becomes 20 s of pause per file opened.
+
+**And a small one that the header settles.** After a `304` the content is still
+last week's even though it was checked today, so the date shown is the date of
+the *body*: that is the one that answers "how old is this".
+
+**Touches.** A new shared package for the actor — wanted by `MEATool`,
+`UEFITool` and `FITTool` alike, which is what `CLAUDE.md` means by putting what
+two tool-modules share under `Packages/`. Then the three repositories
 (`Packages/MEFirmware/Sources/MEFirmware/Data/MEAGitHubDataRepository.swift`,
 `Modules/UEFITool/Sources/UEFIToolUI/GuidsSource.swift`,
 `Modules/FITTool/Sources/FITToolUI/MicrocodeSource.swift`), the tool panel
-headers, and the REQUIREMENTS lines that describe the data sources.
+headers for the date, and the REQUIREMENTS lines that describe the data sources.
 
-**Cost.** 5–8 hours. The cache and its tests are straightforward; the judgement
-is in the failure states — expired and offline, never fetched and offline,
-fetched but unparseable — and that is where the tests belong.
+**Cost.** 4–6 hours: the actor and its tests are about three, wiring the three
+repositories two, the date in the headers one. The judgement is in the two open
+questions, and that is where the tests belong.
 
-**Where it came from.** Planning ByteRipperWeb, where the cache is in the design
-from the start because a browser tab reloads far more often than an app launches.
-Writing down why the web edition wanted one made it clear the desktop is doing
-without for no reason beyond it never having been asked for.
+**What it deliberately does not do.** Nothing survives a relaunch, so a bench
+that starts the app without a network still has no ME Analyzer. That is the disk
+cache, and it is a separate idea: it needs a place in the container, a decision
+about `Caches` (which the system may purge, which is exactly what an offline
+bench does not want) against `Application Support`, and a story for the guids
+baseline shipped in the build, which today is the offline answer. Worth writing
+up separately if it is ever wanted; this entry is the cheap half, and it is the
+half that removes a wait the user actually sees.
+
+**Where it came from.** Planning ByteRipperWeb, where a cache was in the design
+from the start because a browser tab reloads far more often than an app
+launches. Written up for disk first; re-read against the three sources on
+2026-09-11, which showed that the repeat downloads inside a single run were the
+bigger and cheaper half of it.
 
 ### Say in the status bar that we are waiting on the network
 
@@ -319,8 +385,9 @@ translate events into `beginOperation`/`endOperation` on the pane the tool is
 bound to. Cancelling cancels the URLSession task and leaves the tool in its
 "databases unavailable" state rather than waiting forever.
 
-Pairs with the cache entry above: the cache removes most of these waits, and
-this entry explains the ones that remain.
+Pairs with the entry above: memoizing the databases removes every wait after
+the first one in a run, and this entry explains the first one — which is the one
+that cannot be removed, only named.
 
 **Touches.** `MEAGitHubDataRepository`, `LongSoftGuidsRepository`,
 `MicrocodeSource`, the three tool view controllers, `ToolModuleKit` if the events
