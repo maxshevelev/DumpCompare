@@ -310,10 +310,19 @@ enum TestImage {
 
     /// An Intel flash descriptor: `0x1000` bytes, the signature at `0x10`, and
     /// a region section at `RegionBase << 4`.
+    ///
+    /// The master section and the VSCC table are written only when a test asks
+    /// for them: what they say is the descriptor's *detail*, not its map, and
+    /// the parse tests that use this fixture do not read either.
     static func descriptor(
         regions: [(type: FlashRegionType, range: Range<UInt64>)],
         regionBase: UInt32 = 0x04,
-        version1: Bool = false
+        version1: Bool = false,
+        reservedVector: [UInt8]? = nil,
+        masterBase: UInt32 = 0x0A,
+        masters: [(read: UInt32, write: UInt32)] = [],
+        vsccBase: UInt32 = 0x10,
+        chips: [UInt32] = []
     ) -> [UInt8] {
         var bytes = [UInt8](repeating: 0xFF, count: Int(Descriptor.size))
         func put(_ value: UInt32, at offset: Int) {
@@ -338,6 +347,45 @@ enum TestImage {
             }
             put(UInt16(region.range.lowerBound >> 12), at: entry)
             put(UInt16((region.range.upperBound - 1) >> 12), at: entry + 2)
+        }
+
+        if let reservedVector {
+            bytes.replaceSubrange(0..<reservedVector.count, with: reservedVector)
+        }
+
+        if !masters.isEmpty {
+            put(masterBase, at: 0x18)
+            let base = Int(masterBase) << 4
+            for (index, master) in masters.enumerated() {
+                if version1 {
+                    // id, read, write — four bytes a master.
+                    put(UInt16(0), at: base + index * 4)
+                    bytes[base + index * 4 + 2] = UInt8(truncatingIfNeeded: master.read)
+                    bytes[base + index * 4 + 3] = UInt8(truncatingIfNeeded: master.write)
+                } else {
+                    // One dword: eight reserved bits, twelve of read, twelve of
+                    // write — and EC's is a dword past a reserved one.
+                    let offsets = [0, 4, 8, 16]
+                    guard index < offsets.count else { break }
+                    put((master.read & 0xFFF) << 8 | (master.write & 0xFFF) << 20,
+                        at: base + offsets[index])
+                }
+            }
+        }
+
+        if !chips.isEmpty {
+            // The upper map: where the VSCC table is, and its length in dwords.
+            put(UInt16(truncatingIfNeeded: UInt32(chips.count) * 2 << 8 | vsccBase),
+                at: 0x0EFC)
+            let base = Int(vsccBase) << 4
+            for (index, id) in chips.enumerated() {
+                let entry = base + index * 8
+                bytes[entry] = UInt8(truncatingIfNeeded: id >> 16)
+                bytes[entry + 1] = UInt8(truncatingIfNeeded: id >> 8)
+                bytes[entry + 2] = UInt8(truncatingIfNeeded: id)
+                bytes[entry + 3] = 0
+                put(UInt32(0x2005), at: entry + 4)
+            }
         }
         return bytes
     }

@@ -7,6 +7,8 @@ enum Descriptor {
     static let size: UInt64 = 0x1000
     /// `FLASH_DESCRIPTOR_MAP`, straight after the header.
     static let mapOffset: UInt64 = 0x14
+    /// Its second word, which carries the master section's base.
+    static let map1Offset: UInt64 = 0x18
     static let versionOffset: UInt64 = 0x20
     /// Every `*Base` field holds bits [11:4] of a real offset, so the real one
     /// is `base << 4` and anything above this is a broken descriptor.

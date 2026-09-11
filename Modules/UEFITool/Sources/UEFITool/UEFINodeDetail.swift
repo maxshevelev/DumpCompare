@@ -23,6 +23,46 @@ public struct UEFIDetailField: Equatable, Sendable {
     }
 }
 
+/// A block of the detail that is a table rather than a row: a heading with an
+/// icon, a header line, and cells under it.
+///
+/// Some of what a node says is a grid and reads as nonsense in a column of
+/// label/value rows — which of five regions the BIOS master may read and write,
+/// the flash chips a descriptor's VSCC table lists. The reference parser prints
+/// those as fixed-width text inside one field; a panel can draw the table.
+public struct UEFIDetailTable: Equatable, Sendable {
+    /// A cell, and whether it is an answer worth colouring. A permission is the
+    /// one thing here a bench reads by colour rather than by word.
+    public struct Cell: Equatable, Sendable {
+        public enum Tone: Equatable, Sendable { case plain, yes, no }
+        public var text: String
+        public var tone: Tone
+
+        public init(_ text: String, tone: Tone = .plain) {
+            self.text = text
+            self.tone = tone
+        }
+
+        /// A permission, as the word and the colour that go with it.
+        public static func permission(_ allowed: Bool) -> Cell {
+            Cell(allowed ? "Yes" : "No", tone: allowed ? .yes : .no)
+        }
+    }
+
+    public var title: String
+    /// The system symbol drawn before the heading.
+    public var symbol: String
+    public var columns: [String]
+    public var rows: [[Cell]]
+
+    public init(title: String, symbol: String, columns: [String], rows: [[Cell]]) {
+        self.title = title
+        self.symbol = symbol
+        self.columns = columns
+        self.rows = rows
+    }
+}
+
 /// What the panel says about the selected node, by its type
 /// (`Design/UEFI_STRUCTURE_TOOL.md`).
 ///
@@ -32,6 +72,15 @@ public struct UEFINodeDetail: Equatable, Sendable {
     /// The node's name, or its kind when the name is empty.
     public var title: String
     public var fields: [UEFIDetailField]
+    /// The blocks that follow the rows. Empty for every node but a descriptor.
+    public var tables: [UEFIDetailTable]
+
+    public init(title: String, fields: [UEFIDetailField],
+                tables: [UEFIDetailTable] = []) {
+        self.title = title
+        self.fields = fields
+        self.tables = tables
+    }
 
     public static let empty = UEFINodeDetail(title: "", fields: [])
 }
@@ -57,7 +106,15 @@ public enum UEFIDetail {
         var fields = commonFields(for: node, image: image)
         fields += headerFields(for: node, reader: reader, repairs: repairs)
         let title = node.name.isEmpty ? kindLabel(node.kind) : node.name
-        return UEFINodeDetail(title: title, fields: fields)
+
+        // A descriptor says more about itself than a header's worth of fields,
+        // and two of the things it says are grids.
+        guard node.kind == .flashDescriptor,
+              let descriptor = DescriptorInfo.read(at: node.header.lowerBound, in: reader)
+        else { return UEFINodeDetail(title: title, fields: fields) }
+        fields += descriptorFields(descriptor)
+        return UEFINodeDetail(title: title, fields: fields,
+                              tables: descriptorTables(descriptor))
     }
 
     // MARK: - The fields every node has
@@ -359,6 +416,73 @@ public enum UEFIDetail {
             break
         }
         return fields
+    }
+
+    // MARK: - What a flash descriptor adds
+
+    /// The rows a descriptor has beyond its header: the vector it opens with,
+    /// where each region it declares begins, and what each master may touch.
+    ///
+    /// The regions are in the tree as well, as this node's siblings — but the
+    /// tree shows where a region *is*, and this shows what the descriptor
+    /// *says*, which is the thing being checked when the two disagree.
+    private static func descriptorFields(_ descriptor: DescriptorInfo) -> [UEFIDetailField] {
+        var fields: [UEFIDetailField] = []
+        if !descriptor.reservedVector.isEmpty {
+            fields.append(.init("Reserved vector", hexBytes(descriptor.reservedVector)))
+        }
+        for region in descriptor.regionOffsets where region.type != .descriptor {
+            fields.append(.init(region.type.label + " offset", hex(region.offset)))
+        }
+        for master in descriptor.masters {
+            fields.append(.init(
+                master.name + " access",
+                "Read \(mask(master.read, digits: descriptor.maskDigits))"
+                    + " · Write \(mask(master.write, digits: descriptor.maskDigits))"
+            ))
+        }
+        return fields
+    }
+
+    /// The two grids: what the BIOS master may do to each region, and the flash
+    /// chips this firmware was built to drive.
+    private static func descriptorTables(_ descriptor: DescriptorInfo) -> [UEFIDetailTable] {
+        var tables: [UEFIDetailTable] = []
+        if !descriptor.biosAccess.isEmpty {
+            tables.append(UEFIDetailTable(
+                title: "BIOS access table",
+                symbol: "lock.shield",
+                columns: ["Region", "Read", "Write"],
+                rows: descriptor.biosAccess.map { access in
+                    [.init(access.region),
+                     .permission(access.read),
+                     .permission(access.write)]
+                }
+            ))
+        }
+        if !descriptor.chips.isEmpty {
+            tables.append(UEFIDetailTable(
+                title: "Flash chips in VSCC table",
+                symbol: "memorychip",
+                columns: ["JEDEC ID", "Chip"],
+                rows: descriptor.chips.map { chip in
+                    [.init(String(format: "%06X", chip.jedecID)),
+                     .init(chip.name ?? "Unknown")]
+                }
+            ))
+        }
+        return tables
+    }
+
+    /// A mask as the descriptor writes it: a byte on an old one, twelve bits on
+    /// a new one, and the width is the difference a reader can see.
+    private static func mask(_ value: UInt32, digits: Int) -> String {
+        "0x" + String(format: "%0\(digits)X", value)
+    }
+
+    /// Bytes as a dump prints them, so a vector can be read against the hex.
+    private static func hexBytes(_ bytes: [UInt8]) -> String {
+        bytes.map { String(format: "%02X", $0) }.joined(separator: " ")
     }
 
     // MARK: - NVRAM header helpers

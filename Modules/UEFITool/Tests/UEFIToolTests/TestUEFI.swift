@@ -221,6 +221,84 @@ enum TestUEFI {
         )
     }
 
+    /// A flash descriptor with everything a descriptor's detail reads: the
+    /// reserved vector, a region table, a master section and a VSCC table. The
+    /// defaults are the board in `Design/UEFI_STRUCTURE_TOOL.md`'s example — a
+    /// version 1 descriptor whose BIOS master may read the ME region and write
+    /// nothing but its own.
+    static func flashDescriptor(
+        reservedVector: [UInt8] = [0x11, 0x00, 0x00, 0x9C, 0x90, 0x02, 0x00, 0xD6,
+                                   0x00, 0x00, 0x00, 0x05, 0xFF, 0xFF, 0xFF, 0xFF],
+        regions: [(index: Int, first: UInt16, last: UInt16)] = [
+            (2, 0x0001, 0x05FF),        // ME  at 0x1000
+            (1, 0x0600, 0x0FFF),        // BIOS at 0x600000
+        ],
+        version1: Bool = true,
+        masters: [(read: UInt32, write: UInt32)] = [(0xA0, 0x00), (0x40, 0x00), (0x80, 0x00)],
+        chips: [UInt32] = [0x1F4700, 0x1C7018, 0xC22019, 0xEF4019],
+        totalSize: UInt64 = 0x1000
+    ) -> Built {
+        var bytes = [UInt8](repeating: 0xFF, count: Int(totalSize))
+        func put(_ value: UInt32, at offset: Int) {
+            for index in 0..<4 { bytes[offset + index] = UInt8(truncatingIfNeeded: value >> (8 * index)) }
+        }
+        func put16(_ value: UInt16, at offset: Int) {
+            bytes[offset] = UInt8(truncatingIfNeeded: value)
+            bytes[offset + 1] = UInt8(truncatingIfNeeded: value >> 8)
+        }
+
+        bytes.replaceSubrange(0..<reservedVector.count, with: reservedVector)
+        put(0x0FF0_A55A, at: 0x10)
+        let regionBase: UInt32 = 0x04, masterBase: UInt32 = 0x0A, vsccBase: UInt32 = 0x10
+        put(regionBase << 16, at: 0x14)                 // FLMAP0: RegionBase
+        put(masterBase, at: 0x18)                       // FLMAP1: MasterBase
+        put(version1 ? 0xFFFF_FFFF : 0x0020_0000, at: 0x20)
+
+        for index in 0..<16 {                           // every region absent…
+            put16(0, at: Int(regionBase) << 4 | index * 4)
+            put16(0, at: (Int(regionBase) << 4 | index * 4) + 2)
+        }
+        for region in regions {                         // …but the ones asked for
+            put16(region.first, at: Int(regionBase) << 4 | region.index * 4)
+            put16(region.last, at: (Int(regionBase) << 4 | region.index * 4) + 2)
+        }
+
+        for (index, master) in masters.enumerated() {
+            let base = Int(masterBase) << 4
+            if version1 {
+                bytes[base + index * 4 + 2] = UInt8(truncatingIfNeeded: master.read)
+                bytes[base + index * 4 + 3] = UInt8(truncatingIfNeeded: master.write)
+            } else {
+                let offsets = [0, 4, 8, 16]
+                guard index < offsets.count else { break }
+                put((master.read & 0xFFF) << 8 | (master.write & 0xFFF) << 20,
+                    at: base + offsets[index])
+            }
+        }
+
+        put16(UInt16(truncatingIfNeeded: UInt32(chips.count) * 2 << 8 | vsccBase), at: 0x0EFC)
+        for (index, id) in chips.enumerated() {
+            let entry = Int(vsccBase) << 4 | index * 8
+            bytes[entry] = UInt8(truncatingIfNeeded: id >> 16)
+            bytes[entry + 1] = UInt8(truncatingIfNeeded: id >> 8)
+            bytes[entry + 2] = UInt8(truncatingIfNeeded: id)
+            bytes[entry + 3] = 0
+            put(0x2005, at: entry + 4)
+        }
+
+        let node = UEFINode(
+            id: .root.child(0),
+            kind: .flashDescriptor,
+            subtype: UInt8(FlashRegionType.descriptor.rawValue),
+            name: FlashRegionType.descriptor.label,
+            header: 0..<0x14,
+            body: 0x14..<totalSize,
+            isFixed: true
+        )
+        return Built(bytes: bytes, node: node,
+                     image: image(node, totalSize: totalSize, addressDiff: nil))
+    }
+
     // MARK: - NVRAM stores and entries
 
     /// A VSS store's 16-byte header: the `$VSS` signature, size, the format and

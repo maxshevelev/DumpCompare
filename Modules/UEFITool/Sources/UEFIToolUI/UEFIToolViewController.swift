@@ -660,6 +660,67 @@ import UEFITool
                 equalTo: detail.content.widthAnchor
             ).isActive = true
         }
+
+        for table in node.tables { addTable(table) }
+    }
+
+    /// A table block under the rows: an icon and a heading, a header line, and
+    /// the cells. Laid out as a grid so the columns line up whatever is in
+    /// them, rather than as fixed-width text pretending to be a table.
+    private func addTable(_ table: UEFIDetailTable) {
+        let icon = NSImageView()
+        icon.image = NSImage(systemSymbolName: table.symbol,
+                             accessibilityDescription: table.title)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(
+                pointSize: ToolPanelFont.size, weight: .regular))
+        icon.contentTintColor = .secondaryLabelColor
+        icon.isHidden = icon.image == nil
+        icon.translatesAutoresizingMaskIntoConstraints = false
+
+        let title = NSTextField(labelWithString: table.title)
+        title.font = ToolPanelFont.body(weight: .semibold)
+        title.translatesAutoresizingMaskIntoConstraints = false
+
+        let heading = NSStackView(views: [icon, title])
+        heading.orientation = .horizontal
+        heading.alignment = .firstBaseline
+        heading.spacing = 5
+        heading.translatesAutoresizingMaskIntoConstraints = false
+        detail.content.addArrangedSubview(heading)
+        detail.content.setCustomSpacing(8, after: heading)
+
+        let grid = NSGridView(numberOfColumns: table.columns.count, rows: 0)
+        grid.rowSpacing = 2
+        grid.columnSpacing = 14
+        grid.translatesAutoresizingMaskIntoConstraints = false
+
+        grid.addRow(with: table.columns.map { column in
+            let cell = NSTextField(labelWithString: column)
+            cell.font = ToolPanelFont.body()
+            cell.textColor = .secondaryLabelColor
+            return cell
+        })
+        for row in table.rows {
+            grid.addRow(with: row.map { cell in
+                let field = NSTextField(labelWithString: cell.text)
+                // A permission is read by its colour as much as by its word,
+                // which is the whole point of drawing this as a table: a column
+                // of green with one red in it answers at a glance.
+                switch cell.tone {
+                case .plain: field.font = ToolPanelFont.body()
+                case .yes:
+                    field.font = ToolPanelFont.body(weight: .semibold)
+                    field.textColor = .systemGreen
+                case .no:
+                    field.font = ToolPanelFont.body(weight: .semibold)
+                    field.textColor = .systemRed
+                }
+                field.isSelectable = true
+                return field
+            })
+        }
+        detail.content.addArrangedSubview(grid)
+        detail.content.setCustomSpacing(10, after: grid)
     }
 
     /// The title names the image, not a row; the module decides what the fold

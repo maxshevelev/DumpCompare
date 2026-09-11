@@ -715,6 +715,52 @@ final class UEFIToolFlowTests: XCTestCase {
                        "no view in the panel is left without a size the engine can solve")
     }
 
+    /// A descriptor says more about itself than a header's worth of rows, and
+    /// two of the things it says are grids: what the BIOS master may do to each
+    /// region, and the flash chips this firmware was built to drive. Both are
+    /// drawn as tables under the rows, with a permission read by its colour.
+    func testTheDescriptorsDetailDrawsItsTwoTables() throws {
+        let controller = try open(UEFITestImage.intelImage())
+        let outline = try outline()
+        let panel = try XCTUnwrap(controller.tools.panel)
+
+        // The descriptor is the first row under the image root.
+        _ = try expandRow(0)
+        let row = try XCTUnwrap(
+            (0..<outline.numberOfRows).first { (try? node(atRow: $0).kind) == .flashDescriptor },
+            "the dump opens with a descriptor region")
+        outline.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+        window?.layoutIfNeeded()
+
+        let text = descendants(of: panel, NSTextField.self).map(\.stringValue)
+        XCTAssertTrue(text.contains("11 00 00 9C 90 02 00 D6 00 00 00 05 FF FF FF FF"),
+                      "the reserved vector, as a dump prints it: \(text)")
+        XCTAssertTrue(text.contains("Read 0x06 · Write 0x00"), "the BIOS master's masks: \(text)")
+        XCTAssertTrue(text.contains("BIOS access table"), "\(text)")
+        XCTAssertTrue(text.contains("Flash chips in VSCC table"), "\(text)")
+        XCTAssertTrue(text.contains("Winbond W25Q256"), "a chip the catalogue names: \(text)")
+        XCTAssertTrue(text.contains("Unknown"), "and one it does not: \(text)")
+
+        // Two grids, and the permissions in the first are coloured: the BIOS
+        // master reads its own region and the ME one, and writes neither.
+        let grids = descendants(of: panel, NSGridView.self)
+        XCTAssertEqual(grids.count, 2, "one grid per table")
+        let cells = descendants(of: try XCTUnwrap(grids.first), NSTextField.self)
+        let yes = cells.filter { $0.stringValue == "Yes" }
+        let no = cells.filter { $0.stringValue == "No" }
+        XCTAssertEqual(yes.count, 3, "Desc: no, BIOS: read+write, ME: read")
+        XCTAssertFalse(no.isEmpty)
+        XCTAssertTrue(yes.allSatisfy { $0.textColor == .systemGreen }, "a permission is green")
+        XCTAssertTrue(no.allSatisfy { $0.textColor == .systemRed }, "a refusal is red")
+
+        // And the chips table is led by an icon, as its heading says it is.
+        XCTAssertTrue(
+            descendants(of: panel, NSImageView.self).contains {
+                $0.image?.accessibilityDescription == "Flash chips in VSCC table"
+            },
+            "the chip symbol before the heading")
+    }
+
     func testTheDetailSaysWhatTheNodeIs() throws {
         let controller = try open(UEFITestImage.make())
         let outline = try outline()
@@ -797,6 +843,53 @@ enum UEFITestImage {
     /// Two volumes back to back: two branches a reader can open at once.
     static func withTwoVolumes() -> [UInt8] {
         make() + make()
+    }
+
+    /// A whole SPI dump: a flash descriptor with a master section and a VSCC
+    /// table, a BIOS region holding the volume above, and nothing else. What
+    /// the descriptor's own detail is read from.
+    static func intelImage() -> [UInt8] {
+        let biosAt = 0x1000
+        var image = [UInt8](repeating: 0xFF, count: 0x2000)
+        func put(_ value: UInt32, at offset: Int) {
+            for index in 0..<4 { image[offset + index] = UInt8(truncatingIfNeeded: value >> (8 * index)) }
+        }
+        func put16(_ value: UInt16, at offset: Int) {
+            image[offset] = UInt8(truncatingIfNeeded: value)
+            image[offset + 1] = UInt8(truncatingIfNeeded: value >> 8)
+        }
+
+        // The vector, the signature, and a map naming the three sections.
+        image.replaceSubrange(0..<16, with: [0x11, 0x00, 0x00, 0x9C, 0x90, 0x02, 0x00, 0xD6,
+                                             0x00, 0x00, 0x00, 0x05, 0xFF, 0xFF, 0xFF, 0xFF])
+        put(0x0FF0_A55A, at: 0x10)
+        put(0x0004_0000, at: 0x14)          // RegionBase 0x04
+        put(0x0000_000A, at: 0x18)          // MasterBase 0x0A
+        put(0xFFFF_FFFF, at: 0x20)          // a version 1 descriptor
+
+        for index in 0..<16 {               // every region absent…
+            put16(0, at: 0x40 + index * 4)
+            put16(0, at: 0x40 + index * 4 + 2)
+        }
+        put16(UInt16(biosAt >> 12), at: 0x44)                 // …but BIOS,
+        put16(UInt16((image.count - 1) >> 12), at: 0x46)      // which is the rest
+
+        // The BIOS master: reads its own region and the ME one, writes neither.
+        image[0xA2] = 0x06
+        image[0xA3] = 0x00
+
+        // Two chips in the VSCC table: one the catalogue knows, one it does not.
+        put16(0x0410, at: 0x0EFC)           // base 0x10, two entries (four dwords)
+        for (index, id) in [0xEF4019, 0x0A0B0C].enumerated() {
+            let entry = 0x100 + index * 8
+            image[entry] = UInt8(truncatingIfNeeded: id >> 16)
+            image[entry + 1] = UInt8(truncatingIfNeeded: id >> 8)
+            image[entry + 2] = UInt8(truncatingIfNeeded: id)
+            put(0x2005, at: entry + 4)
+        }
+
+        image.replaceSubrange(biosAt..<(biosAt + 0x1000), with: make())
+        return image
     }
 
     /// The one file in the volume: a 0x44-byte driver whose body is a name
