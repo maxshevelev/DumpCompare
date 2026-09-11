@@ -22,10 +22,16 @@ final class SemanticPaletteTests: XCTestCase {
                       "Colors.xcassets did not reach the app bundle")
     }
 
-    /// And it says the same as the code, in both themes. A colour picked in
-    /// Xcode without the numbers being updated fails here, and so does the
-    /// reverse.
-    func testTheCatalogueAndTheCodeAgree() throws {
+    /// And it says the same as the read-back, in both themes.
+    ///
+    /// This pins no colour: both sides are the same choice, and picking a new
+    /// one moves them together — a shade edited in Xcode and regenerated passes
+    /// here whatever it is. What it catches is the two coming apart: a colour
+    /// picked and not regenerated, and the bug that arrived with the first
+    /// colour ever picked here — Xcode's picker writes Display P3, so the same
+    /// three numbers read as sRGB are a different colour in every build that
+    /// has no compiled catalogue.
+    func testTheCatalogueAndTheReadBackAgree() throws {
         for definition in SemanticColors.everySet {
             let entry = try XCTUnwrap(definition.catalogued,
                                       "\(definition.name) is not in the catalogue")

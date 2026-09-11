@@ -1,3 +1,4 @@
+import AppPalette
 import XCTest
 import ToolModuleKit
 @testable import DumpCompare
@@ -163,19 +164,26 @@ final class ToolZonesTests: XCTestCase {
     }
 
     /// Focused and plain zones are drawn as the same line — the tool-module has
-    /// already said which zone the user is looking at, so a plain zone's
-    /// outline is a fixed khaki yellow (#DAD554) rather than the focused teal
-    /// at half strength: the pair are told apart by hue and by the wash.
-    func testAPlainZoneIsOutlinedInItsOwnFixedYellow() throws {
+    /// already said which zone the user is looking at — so what tells the pair
+    /// apart is the colour, and the dump takes both of them from the palette.
+    ///
+    /// Which colours those are is not this test's business: they are colour
+    /// sets, picked by eye in Xcode, and a test that spelled one out would mean
+    /// a code change every time somebody tried a better yellow. What must hold
+    /// is that the two are not the same line.
+    func testAPlainZoneIsOutlinedInADifferentColourFromTheFocusedOne() throws {
+        XCTAssertEqual(HexTheme.zoneFrame, ZoneColors.focused, "the palette's, not the dump's own")
+        XCTAssertEqual(HexTheme.zoneFrameInactive, ZoneColors.other)
+
         // A catalogue colour has no components until it is resolved into a
         // colour space — which is what drawing it does, and what a test that
         // reads it must do too.
         let plain = try XCTUnwrap(HexTheme.zoneFrameInactive.usingColorSpace(.sRGB))
-        XCTAssertEqual(plain.redComponent, 0xDA / 0xFF, accuracy: 0.005)
-        XCTAssertEqual(plain.greenComponent, 0xD5 / 0xFF, accuracy: 0.005)
-        XCTAssertEqual(plain.blueComponent, 0x54 / 0xFF, accuracy: 0.005)
         let focused = try XCTUnwrap(HexTheme.zoneFrame.usingColorSpace(.sRGB))
-        XCTAssertGreaterThan(abs(plain.redComponent - focused.redComponent), 0.2,
+        let apart = abs(plain.redComponent - focused.redComponent)
+            + abs(plain.greenComponent - focused.greenComponent)
+            + abs(plain.blueComponent - focused.blueComponent)
+        XCTAssertGreaterThan(apart, 0.3,
                              "a plain zone is never mistaken for the focused one")
     }
 
