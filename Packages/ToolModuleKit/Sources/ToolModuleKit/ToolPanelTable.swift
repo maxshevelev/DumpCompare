@@ -1,4 +1,5 @@
 import AppKit
+import AppPalette
 
 /// A table in a tool-module's panel, drawn at the panel's size
 /// (`ToolPanelFont`) rather than at one of AppKit's three fixed row styles.
@@ -162,17 +163,20 @@ import AppKit
     /// re-wrap and spill out of its row (measured: the name broke across two
     /// lines and the triangle drew above the text as a red stub).
     ///
-    /// The outlined triangle rather than the filled one: a solid red block
-    /// beside a value is louder than the one row it marks.
+    /// The filled octagon: this marks a value that is *wrong* — a checksum that
+    /// does not check out — rather than something to look at twice, and the
+    /// octagon is the shape the app gives an error. A triangle is left to the
+    /// states that are not errors, like a microcode the catalogue has a newer
+    /// revision for.
     private static func makeWarning() -> NSImageView {
         let warning = NSImageView()
         let symbol = NSImage(
-            systemSymbolName: "exclamationmark.triangle",
+            systemSymbolName: "exclamationmark.octagon.fill",
             accessibilityDescription: "Invalid"
         )
         symbol?.isTemplate = true
         warning.image = symbol
-        warning.contentTintColor = .systemRed
+        warning.contentTintColor = SemanticColors.bad
         warning.imageScaling = .scaleProportionallyUpOrDown
         warning.setContentCompressionResistancePriority(.required, for: .horizontal)
         warning.translatesAutoresizingMaskIntoConstraints = false

@@ -92,7 +92,7 @@ import ToolModuleKit
             switch self {
             case .waiting: return "cpu"
             case .empty: return "questionmark.circle"
-            case .failed: return "exclamationmark.triangle"
+            case .failed: return "exclamationmark.octagon.fill"
             }
         }
 

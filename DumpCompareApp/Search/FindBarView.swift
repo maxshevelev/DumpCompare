@@ -757,7 +757,7 @@ final class FindBarView: NSView, NSSearchFieldDelegate, NSMenuItemValidation {
             attributes: [.font: NSFont.systemFont(ofSize: Self.menuFlagSize),
                          .foregroundColor: SemanticColors.bad]))
         item.attributedTitle = title
-        item.image = NSImage(systemSymbolName: "exclamationmark.triangle",
+        item.image = NSImage(systemSymbolName: "exclamationmark.octagon.fill",
                              accessibilityDescription: problem)
         return item
     }
@@ -810,7 +810,7 @@ final class FindBarView: NSView, NSSearchFieldDelegate, NSMenuItemValidation {
             // A pattern that no longer parses can only have been hand-edited
             // into the store. It stays pickable — the pick puts it in the field
             // and the bar says what is wrong with it (§11) — and says so here.
-            item.image = NSImage(systemSymbolName: "exclamationmark.triangle",
+            item.image = NSImage(systemSymbolName: "exclamationmark.octagon.fill",
                                  accessibilityDescription: "Invalid pattern")
         }
         return item

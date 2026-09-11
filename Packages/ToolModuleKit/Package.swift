@@ -18,8 +18,15 @@ let package = Package(
     products: [
         .library(name: "ToolModuleKit", targets: ["ToolModuleKit"])
     ],
+    // The app's colours. This draws — the tables here put a marker beside a
+    // value — and a marker's colour is a meaning, so it comes from the palette
+    // rather than from a system colour picked by hand.
+    dependencies: [
+        .package(path: "../AppPalette")
+    ],
     targets: [
-        .target(name: "ToolModuleKit"),
+        .target(name: "ToolModuleKit",
+                dependencies: [.product(name: "AppPalette", package: "AppPalette")]),
         .testTarget(
             name: "ToolModuleKitTests",
             dependencies: ["ToolModuleKit"]
