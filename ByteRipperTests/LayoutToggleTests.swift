@@ -18,7 +18,10 @@ final class LayoutToggleTests: XCTestCase {
     override func setUp() {
         super.setUp()
         // Deterministic: clear any autosaved window frame and force vertical start.
-        AppDefaults.store.removeObject(forKey: "NSWindow Frame MainWindow")
+        // AppKit saves a window's frame into `UserDefaults.standard` itself,
+        // so this one key is not the app's to redirect — clearing it in the
+        // test suite would leave the real saved frame to be restored.
+        UserDefaults.standard.removeObject(forKey: "NSWindow Frame MainWindow")
         AppDefaults.store.set(true, forKey: "ComparisonPaneLayoutIsVertical")
     }
 

@@ -26,7 +26,10 @@ final class MinimapTests: XCTestCase {
         MainViewController.minimapDefaults = isolatedDefaults
         // Deterministic: clear any autosaved window frame and force the layout
         // start so the window opens at a known size.
-        AppDefaults.store.removeObject(forKey: "NSWindow Frame MainWindow")
+        // AppKit saves a window's frame into `UserDefaults.standard` itself,
+        // so this one key is not the app's to redirect — clearing it in the
+        // test suite would leave the real saved frame to be restored.
+        UserDefaults.standard.removeObject(forKey: "NSWindow Frame MainWindow")
         savedLayoutIsVertical = LayoutSettings.isVertical
     }
 

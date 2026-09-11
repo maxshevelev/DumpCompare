@@ -31,4 +31,9 @@ enum AppDefaults {
         suite.removePersistentDomain(forName: testSuiteName)
         return suite
     }()
+
+    /// Whether this process is running the test suite — the same question that
+    /// decides `store` above, asked by the few places that have to behave
+    /// differently under test for a reason other than a stored value.
+    static var isUnderTest: Bool { store !== UserDefaults.standard }
 }

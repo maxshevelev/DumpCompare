@@ -126,7 +126,10 @@ final class ZoomToFitTests: XCTestCase {
         let saved = LayoutSettings.isVertical
         defer { LayoutSettings.set(isVertical: saved) }
         LayoutSettings.set(isVertical: true)
-        AppDefaults.store.removeObject(forKey: "NSWindow Frame MainWindow")
+        // AppKit saves a window's frame into `UserDefaults.standard` itself,
+        // so this one key is not the app's to redirect — clearing it in the
+        // test suite would leave the real saved frame to be restored.
+        UserDefaults.standard.removeObject(forKey: "NSWindow Frame MainWindow")
 
         let controller = makeController()
         let window = controller.window!

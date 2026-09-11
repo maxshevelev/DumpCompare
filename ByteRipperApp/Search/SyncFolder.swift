@@ -128,6 +128,13 @@ enum SyncFolder<Kind: SyncedCollectionKind> {
         hasAccess = false
         // The path is the last resort, and the only road on which a protected
         // folder makes the system ask again.
+        //
+        // A test run does not take it. The app is ad-hoc signed, so a bookmark
+        // does not survive the rebuild each run starts with; the run would fall
+        // to the path every time, and a path in ~/Documents is the system's
+        // consent panel in front of the suite, over and over. A run that has a
+        // folder of its own has a live bookmark to it and never reaches here.
+        guard !AppDefaults.isUnderTest else { return nil }
         return defaults.string(forKey: folderPathKey).map { URL(fileURLWithPath: $0, isDirectory: true) }
     }
 
@@ -150,6 +157,9 @@ enum SyncFolder<Kind: SyncedCollectionKind> {
                 return folder
             }
         }
+        // Same reasoning as in `resolveFolder`: a bare path is a road only a
+        // real run takes.
+        guard !AppDefaults.isUnderTest else { return nil }
         let folder = URL(fileURLWithPath: path).deletingLastPathComponent()
         remember(folder)
         return folder
