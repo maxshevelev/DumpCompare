@@ -1725,15 +1725,23 @@ final class FindFlowTests: XCTestCase {
         XCTAssertTrue(pumpUntil(2) { pane.currentMatch == 0..<2 }, "round to the first")
         let forward = try XCTUnwrap(controller.transientNotice, "a wrap is said")
         XCTAssertTrue(forward.lines.isEmpty, "with no text — it is a sign, not a report")
-        XCTAssertEqual(forward.accessibilityLabel(), "arrow.clockwise",
+        XCTAssertEqual(forward.accessibilityLabel(), MainViewController.wrapForwardGlyph,
                        "turning the way the search was going")
+        XCTAssertNotNil(forward.symbolImageForTests,
+                        "and it is a glyph this system has: "
+                            + MainViewController.wrapForwardGlyph)
         XCTAssertTrue(pumpUntil(2) { forward.superview == nil }, "and it leaves on its own")
 
         // And backwards, off the front of the file.
         try clickFindPrevious(window)
         XCTAssertTrue(pumpUntil(2) { pane.currentMatch == 3..<5 }, "round to the last")
         let backward = try XCTUnwrap(controller.transientNotice)
-        XCTAssertEqual(backward.accessibilityLabel(), "arrow.counterclockwise")
+        XCTAssertEqual(backward.accessibilityLabel(), MainViewController.wrapBackwardGlyph)
+        XCTAssertNotNil(backward.symbolImageForTests,
+                        "drawn too: " + MainViewController.wrapBackwardGlyph)
+        XCTAssertNotEqual(MainViewController.wrapForwardGlyph,
+                          MainViewController.wrapBackwardGlyph,
+                          "the two ends are told apart by the glyph")
     }
 
     /// The search that *starts* a session wraps too — its scan begins at the
@@ -1756,7 +1764,8 @@ final class FindFlowTests: XCTestCase {
 
         XCTAssertTrue(pumpUntil(3) { pane.currentMatch == 0..<2 },
                       "the only match is behind the caret")
-        XCTAssertEqual(controller.transientNotice?.accessibilityLabel(), "arrow.clockwise")
+        XCTAssertEqual(controller.transientNotice?.accessibilityLabel(),
+                       MainViewController.wrapForwardGlyph)
     }
 
     // MARK: - The answer comes before the index (§11)

@@ -38,6 +38,10 @@ final class TransientNoticeView: NSVisualEffectView {
     /// What the plate says, for tests.
     private(set) var lines: [String] = []
 
+    /// The glyph the plate actually drew, for the test that a symbol named in
+    /// code is one this system has.
+    var symbolImageForTests: NSImage? { symbolView.image }
+
     /// A plate that is one large glyph and nothing else — a sign rather than a
     /// report (§11: a search that wrapped).
     convenience init(glyph symbol: String) {

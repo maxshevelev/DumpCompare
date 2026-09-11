@@ -6198,7 +6198,24 @@ final class MainViewController: NSViewController {
     /// first one, again" is invisible. Turning back to the top of a file is
     /// what a circular arrow means everywhere else on the platform.
     func showWrapNotice(direction: SearchDirection) {
-        notices.show(glyph: direction == .forward ? "arrow.clockwise" : "arrow.counterclockwise")
+        notices.show(glyph: direction == .forward
+            ? Self.wrapForwardGlyph : Self.wrapBackwardGlyph)
+    }
+
+    /// The plate a wrapped search shows: an arrow round a capsule, whose head
+    /// says which end the search came round — top right for one that ran off
+    /// the end, bottom left for one that ran off the start. The plain circular
+    /// arrows stand in on a macOS that does not have them: the glyphs arrived
+    /// in SF Symbols 6, and the app runs on 14.
+    static let wrapForwardGlyph = symbolName(
+        "arrow.trianglehead.topright.capsulepath.clockwise", or: "arrow.clockwise")
+    static let wrapBackwardGlyph = symbolName(
+        "arrow.trianglehead.bottomleft.capsulepath.clockwise", or: "arrow.counterclockwise")
+
+    /// `preferred` where this system draws it, `fallback` where it does not.
+    private static func symbolName(_ preferred: String, or fallback: String) -> String {
+        NSImage(systemSymbolName: preferred, accessibilityDescription: nil) != nil
+            ? preferred : fallback
     }
 
     /// Shows a transient notice over the window (§11) — a report about an
