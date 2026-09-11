@@ -17,19 +17,30 @@ this repository would otherwise see no colours at all. It is the same numbers,
 readable without a compiled catalogue, and the app suite's `SemanticPaletteTests`
 holds the two to each other.
 
+A set's name says which family it belongs to, and the family decides what the
+colour is *for*:
+
+  Semantic<Meaning>   a state a value can be in: good, caution, bad
+  Zone<Which>         a tool-module's zone outline over the dump
+  Segment<N>          the tint of the Nth piece of a partition
+  Difference<What>    the comparison's own fills — a byte that differs
+
+Each family's colours land in that family's `Sets` namespace, and the family
+itself gives them the names callers use — `SemanticColors.Sets.good` is the
+colour set, `SemanticColors.good` is the `NSColor` a view draws with.
+
 Run it after picking a colour in Xcode:
 
     python3 Scripts/gen-palette.py
 
 To change a colour: open the catalogue in Xcode, pick the shade for Any
 Appearance and for Dark, run this, and read the diff. Nothing else needs
-editing — the package's tests pin the palette's rules (both themes present, the
-dark shade the paler of the two, names distinct, every meaning the app names
-backed by a set) rather than any particular shade.
+editing — the package's tests pin each family's rules rather than any
+particular shade.
 
-To add one: a colour set named `Semantic<Meaning>`, a run of this, and one line
-in `SemanticColors` giving the meaning a name. The value is the catalogue's; the
-meaning is Swift's.
+To add one: a colour set named for its family, a run of this, and one line in
+the family's facade (`SemanticColors`, `ZoneColors`, `SegmentTints`) giving it a
+name. The value is the catalogue's; the meaning is Swift's.
 
 Run it from anywhere; the repository root is resolved relative to this file
 (it lives at <repo>/Scripts/), or pass --repo.
@@ -41,10 +52,19 @@ and writes the file only when something changed.
 import argparse
 import json
 import os
+import re
 import sys
 
 CATALOGUE = "Packages/AppPalette/Sources/AppPalette/Resources/Colors.xcassets"
 OUTPUT = "Packages/AppPalette/Sources/AppPalette/Palette+Generated.swift"
+
+# Each family's prefix, and the Swift type its colours are hung on.
+FAMILIES = [
+    ("Semantic", "SemanticColors"),
+    ("Zone", "ZoneColors"),
+    ("Segment", "SegmentTints"),
+    ("Difference", "DifferenceColors"),
+]
 
 
 def component(value):
@@ -58,7 +78,7 @@ def component(value):
 
 
 def read_set(path):
-    """(light, dark) as (r, g, b) triples, or None for a set we cannot read."""
+    """(light, dark) as (r, g, b, a) tuples, or None for a set we cannot read."""
     with open(os.path.join(path, "Contents.json"), encoding="utf-8") as file:
         contents = json.load(file)
 
@@ -70,10 +90,13 @@ def read_set(path):
         components = colour.get("components", {})
         try:
             rgb = tuple(component(components[key]) for key in ("red", "green", "blue"))
+            # A fill is drawn over the dump's own layers, so its alpha is part
+            # of the colour rather than a detail of one use of it.
+            alpha = float(components.get("alpha", 1))
         except (KeyError, ValueError):
             return None
-        appearances = entry.get("appearances", [])
-        dark = any(a.get("value") == "dark" for a in appearances)
+        rgb = rgb + (alpha,)
+        dark = any(a.get("value") == "dark" for a in entry.get("appearances", []))
         shades["dark" if dark else "light"] = rgb
 
     if "light" not in shades:
@@ -83,7 +106,19 @@ def read_set(path):
     return shades["light"], shades.get("dark", shades["light"])
 
 
-def swift(entries):
+def member(name, prefix):
+    """The Swift name a set is reached by: its name without the family's."""
+    stem = name[len(prefix):] if name.startswith(prefix) else name
+    if not stem:
+        stem = name
+    # A trailing number keeps its prefix, so Segment0 is `segment0` rather than
+    # a member that starts with a digit.
+    if re.fullmatch(r"\d+", stem):
+        stem = prefix + stem
+    return stem[0].lower() + stem[1:]
+
+
+def swift(by_family):
     lines = [
         "// GENERATED from `Colors.xcassets` beside this file.",
         "//",
@@ -94,29 +129,27 @@ def swift(entries):
         "// Why it exists at all: `swift build` copies an `.xcassets` verbatim instead",
         "// of compiling it — only Xcode runs `actool` — so a package test would see no",
         "// colours. These are the same numbers, readable without a compiled catalogue.",
-        "public extension SemanticColors.Definition {",
     ]
-    for name, (light, dark) in entries:
-        member = name[0].lower() + name[1:]
-        member = member[len("semantic"):] if member.startswith("semantic") else member
-        member = member[0].lower() + member[1:]
+    for prefix, type_name in FAMILIES:
+        entries = by_family.get(prefix, [])
+        if not entries:
+            continue
+        lines += ["", "public extension %s.Sets {" % type_name]
+        for name, (light, dark) in entries:
+            lines += [
+                "    static let %s = PaletteColor(" % member(name, prefix),
+                '        name: "%s",' % name,
+                "        light: (%.3f, %.3f, %.3f, %.3f)," % light,
+                "        dark: (%.3f, %.3f, %.3f, %.3f))" % dark,
+                "",
+            ]
+        members = [member(name, prefix) for name, _ in entries]
         lines += [
-            "    static let %s = SemanticColors.Definition(" % member,
-            '        name: "%s",' % name,
-            "        light: (%.3f, %.3f, %.3f)," % light,
-            "        dark: (%.3f, %.3f, %.3f))" % dark,
-            "",
+            "    /// Every %s colour set in the catalogue, in its own order." % prefix.lower(),
+            "    static let all = [" + ", ".join(members) + "]",
+            "}",
         ]
-    members = [
-        (n[len("Semantic"):] if n.startswith("Semantic") else n) for n, _ in entries
-    ]
-    members = [m[0].lower() + m[1:] for m in members]
-    lines += [
-        "    /// Every colour set in the catalogue, in the order it names them.",
-        "    static let all = [" + ", ".join(members) + "]",
-        "}",
-        "",
-    ]
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -133,29 +166,40 @@ def main():
         print("no catalogue at %s" % catalogue, file=sys.stderr)
         return 1
 
-    entries = []
+    by_family = {}
+    stray = []
     for name in sorted(os.listdir(catalogue)):
         if not name.endswith(".colorset"):
             continue
-        shades = read_set(os.path.join(catalogue, name))
         stem = name[: -len(".colorset")]
+        shades = read_set(os.path.join(catalogue, name))
         if shades is None:
             print("skipped %s — not an sRGB colour set with a light variant" % stem,
                   file=sys.stderr)
             continue
-        entries.append((stem, shades))
+        family = next((p for p, _ in FAMILIES if stem.startswith(p)), None)
+        if family is None:
+            stray.append(stem)
+            continue
+        by_family.setdefault(family, []).append((stem, shades))
         light, dark = shades
-        print("%-18s light %s  dark %s"
-              % (stem,
+        print("%-11s %-18s light %s  dark %s"
+              % (family, stem,
                  " ".join("%.3f" % c for c in light),
                  " ".join("%.3f" % c for c in dark)))
 
-    if not entries:
+    if stray:
+        print("colour sets in no family, so in no Swift: %s" % ", ".join(stray),
+              file=sys.stderr)
+        print("name them for a family (%s) and run again"
+              % ", ".join(p for p, _ in FAMILIES), file=sys.stderr)
+        return 1
+    if not by_family:
         print("no colour sets read", file=sys.stderr)
         return 1
 
     path = os.path.join(args.repo, OUTPUT)
-    rendered = swift(entries)
+    rendered = swift(by_family)
     if os.path.exists(path) and open(path, encoding="utf-8").read() == rendered:
         print("%s is already up to date" % OUTPUT)
         return 0

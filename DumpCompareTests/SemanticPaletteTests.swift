@@ -26,8 +26,8 @@ final class SemanticPaletteTests: XCTestCase {
     /// Xcode without the numbers being updated fails here, and so does the
     /// reverse.
     func testTheCatalogueAndTheCodeAgree() throws {
-        for definition in SemanticColors.Definition.all {
-            let entry = try XCTUnwrap(SemanticColors.catalogued(definition),
+        for definition in SemanticColors.everySet {
+            let entry = try XCTUnwrap(definition.catalogued,
                                       "\(definition.name) is not in the catalogue")
             for dark in [false, true] {
                 let appearance = try XCTUnwrap(NSAppearance(named: dark ? .darkAqua : .aqua))
@@ -44,6 +44,8 @@ final class SemanticPaletteTests: XCTestCase {
                                "\(definition.name) green, \(theme)")
                 XCTAssertEqual(drawn.blueComponent, wanted.blueComponent, accuracy: 0.01,
                                "\(definition.name) blue, \(theme)")
+                XCTAssertEqual(drawn.alphaComponent, wanted.alphaComponent, accuracy: 0.01,
+                               "\(definition.name) alpha, \(theme)")
             }
         }
     }

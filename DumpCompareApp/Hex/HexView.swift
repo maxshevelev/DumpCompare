@@ -1,4 +1,4 @@
-import Cocoa
+import AppPalette
 import Cocoa
 import DumpCompareCore
 
@@ -3362,11 +3362,10 @@ enum HexTheme {
         return byteText
     }
 
-    static let differenceFill = NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            ? NSColor.systemOrange.withAlphaComponent(0.45)
-            : NSColor.systemOrange.withAlphaComponent(0.35)
-    }
+    /// A byte that differs from the other pane's (§6). The palette's own: a
+    /// wash whose alpha is part of the colour, since the byte's text and the
+    /// piece's tint stay readable under it.
+    static let differenceFill = DifferenceColors.fill
 
     /// Every occurrence of the current search pattern (§11): the platform's own
     /// unfocused-selection grey — what a selection looks like in a view that
@@ -3432,67 +3431,23 @@ enum HexTheme {
     /// accent already means "this is where you are" — the caret's link, the
     /// mirror of the other pane — and a zone is something the file *has*, not
     /// something the user is doing.
-    static let zoneFrame = NSColor.systemTeal
+    static let zoneFrame = ZoneColors.focused
 
     /// The outline of a published zone that is not the one in focus — the rest
-    /// of the map around the focused zone. A fixed khaki yellow (#DAD554), the
-    /// mirror image of the focus's teal: teal says "this is the node you are
-    /// looking at", this says "still part of the same map". Fixed rather than
-    /// theme-adaptive, because it is drawn over whatever the dump's own layers
-    /// painted — the same reasoning as `findIndicatorFill`'s fixed yellow.
-    static let zoneFrameInactive = NSColor(
-        srgbRed: 0xDA / 0xFF, green: 0xD5 / 0xFF, blue: 0x54 / 0xFF, alpha: 1)
+    /// of the map around the focused zone. The mirror image of the focus's
+    /// teal: teal says "this is the node you are looking at", this says "still
+    /// part of the same map". The same shade in both themes, because it is
+    /// drawn over whatever the dump's own layers painted — the same reasoning
+    /// as `findIndicatorFill`'s fixed yellow.
+    static let zoneFrameInactive = ZoneColors.other
 
-    /// The six segment tints, cycled by label (§21.3): S0 light green, S1 light
-    /// pink, S2 pale blue, S3 pale yellow, S4 lavender, S5 peach. A small set of
-    /// pastels — enough colour to tell one piece from the next, never enough to
-    /// draw the eye — in the spirit of how Fusion 360 tints components.
-    ///
-    /// Two sets, one order: the light-theme set sits barely off the paper, the
-    /// dark-theme set is the same hues at the other end of the lightness range,
-    /// so S1 is "the pink one" in both. Each set is checked by test against the
-    /// three rules that make a tint a tint rather than a state: it stays
-    /// legible under the muted `0x00`/`0xFF` fill, neighbours are plainly
+    /// The segment tints, cycled by label (§21.3) — the palette's own, so the
+    /// dump's rows, the minimap's strip and the Segments form all tint S1 the
+    /// same pink. What they have to be true of is the palette's test: each
+    /// stays legible under the muted `0x00`/`0xFF` fill, neighbours are plainly
     /// different (that is what draws the boundary), and nothing is mistakable
     /// for the orange difference, the accent selection, or the bookmark purple.
-    static let segmentTints: [NSColor] = [
-        // S0 — light green
-        NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0.16, green: 0.25, blue: 0.17, alpha: 1)
-                : NSColor(srgbRed: 0.84, green: 0.94, blue: 0.84, alpha: 1)
-        },
-        // S1 — light pink
-        NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0.29, green: 0.17, blue: 0.21, alpha: 1)
-                : NSColor(srgbRed: 0.97, green: 0.85, blue: 0.88, alpha: 1)
-        },
-        // S2 — pale blue
-        NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0.16, green: 0.22, blue: 0.30, alpha: 1)
-                : NSColor(srgbRed: 0.84, green: 0.90, blue: 0.98, alpha: 1)
-        },
-        // S3 — pale yellow
-        NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0.29, green: 0.27, blue: 0.15, alpha: 1)
-                : NSColor(srgbRed: 0.98, green: 0.95, blue: 0.80, alpha: 1)
-        },
-        // S4 — lavender
-        NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0.23, green: 0.19, blue: 0.31, alpha: 1)
-                : NSColor(srgbRed: 0.89, green: 0.85, blue: 0.97, alpha: 1)
-        },
-        // S5 — peach
-        NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-                ? NSColor(srgbRed: 0.31, green: 0.23, blue: 0.16, alpha: 1)
-                : NSColor(srgbRed: 0.99, green: 0.89, blue: 0.82, alpha: 1)
-        },
-    ]
+    static let segmentTints: [NSColor] = SegmentTints.all
 
     /// The colour a hovered strip block is painted in — the same hue as the
     /// piece's tint, but louder, so the piece under the cursor stands out

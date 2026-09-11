@@ -167,11 +167,14 @@ final class ToolZonesTests: XCTestCase {
     /// outline is a fixed khaki yellow (#DAD554) rather than the focused teal
     /// at half strength: the pair are told apart by hue and by the wash.
     func testAPlainZoneIsOutlinedInItsOwnFixedYellow() throws {
-        let plain = HexTheme.zoneFrameInactive
-        XCTAssertEqual(plain.redComponent, 0xDA / 0xFF, accuracy: 0.001)
-        XCTAssertEqual(plain.greenComponent, 0xD5 / 0xFF, accuracy: 0.001)
-        XCTAssertEqual(plain.blueComponent, 0x54 / 0xFF, accuracy: 0.001)
-        let focused = try XCTUnwrap(HexTheme.zoneFrame.usingColorSpace(.deviceRGB))
+        // A catalogue colour has no components until it is resolved into a
+        // colour space — which is what drawing it does, and what a test that
+        // reads it must do too.
+        let plain = try XCTUnwrap(HexTheme.zoneFrameInactive.usingColorSpace(.sRGB))
+        XCTAssertEqual(plain.redComponent, 0xDA / 0xFF, accuracy: 0.005)
+        XCTAssertEqual(plain.greenComponent, 0xD5 / 0xFF, accuracy: 0.005)
+        XCTAssertEqual(plain.blueComponent, 0x54 / 0xFF, accuracy: 0.005)
+        let focused = try XCTUnwrap(HexTheme.zoneFrame.usingColorSpace(.sRGB))
         XCTAssertGreaterThan(abs(plain.redComponent - focused.redComponent), 0.2,
                              "a plain zone is never mistaken for the focused one")
     }

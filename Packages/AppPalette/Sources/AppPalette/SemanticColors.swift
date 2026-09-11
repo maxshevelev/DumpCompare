@@ -12,33 +12,28 @@ import AppKit
 ///
 /// **Where a colour is chosen:** `Colors.xcassets` beside this file, as a
 /// colour set per meaning, in Xcode's own editor with both appearances side by
-/// side. Nothing here is typed by hand — `Palette+Generated.swift` is read back
-/// out of those colour sets by `Scripts/gen-palette.py`, and exists only
-/// because `swift build` copies an `.xcassets` verbatim rather than compiling
-/// it: the app, built by Xcode, reads the catalogue itself, while every package
-/// test in this repository reads the generated numbers. The app suite's
-/// `SemanticPaletteTests` holds the two to each other.
+/// side. Nothing here is a number — `Sets` is those colour sets read back out
+/// by `Scripts/gen-palette.py`, and each line below gives one of them the name
+/// a caller uses. The value is the catalogue's; the meaning is Swift's.
 ///
-/// **Adding one:** a colour set in the catalogue, a run of
-/// `Scripts/gen-palette.py`, and a line below giving the meaning a name. The
-/// value is the catalogue's; the meaning is Swift's.
-///
-/// What is *not* here: the dump's own fills. A differing byte's orange and a
-/// modified byte's red are the comparison model's vocabulary rather than a
-/// state of some value, they are backgrounds rather than text, and they are
-/// built from system colours the platform tunes per release (`HexView.Colors`).
+/// The other families are the same arrangement for colours that are not states:
+/// `ZoneColors`, `SegmentTints` and `DifferenceColors`.
 public enum SemanticColors {
+    /// The colour sets, generated. `SemanticColors.Sets.good` is the set;
+    /// `SemanticColors.good` is the colour a view draws with.
+    public enum Sets {}
+
     /// A state that is as it should be: a check that passed, a permission that
     /// is granted, a firmware that is configured.
-    public static let good = colour(.good)
+    public static let good = Sets.good.color
 
     /// A state that is neither right nor wrong: something mid-flight, or a
     /// value that wants a second look before it is trusted.
-    public static let caution = colour(.caution)
+    public static let caution = Sets.caution.color
 
     /// A state that is wrong: a checksum that does not check out, a permission
     /// that is refused, a read that failed.
-    public static let bad = colour(.bad)
+    public static let bad = Sets.bad.color
 
     /// A value that says nothing about itself — the ordinary case, and what
     /// most values should be. The system's own, so it follows the accessibility
@@ -49,46 +44,65 @@ public enum SemanticColors {
     /// second.
     public static let quiet = NSColor.secondaryLabelColor
 
-    /// One colour set: its name in the catalogue and its two shades. The values
-    /// come from `Palette+Generated.swift`, which is the catalogue read back.
-    public struct Definition: Sendable {
-        public let name: String
-        public let light: (red: CGFloat, green: CGFloat, blue: CGFloat)
-        public let dark: (red: CGFloat, green: CGFloat, blue: CGFloat)
-
-        public init(name: String,
-                    light: (red: CGFloat, green: CGFloat, blue: CGFloat),
-                    dark: (red: CGFloat, green: CGFloat, blue: CGFloat)) {
-            self.name = name
-            self.light = light
-            self.dark = dark
-        }
-
-        /// The shade for one theme, as the colour it is.
-        public func shade(dark: Bool) -> NSColor {
-            let it = dark ? self.dark : light
-            return NSColor(srgbRed: it.red, green: it.green, blue: it.blue, alpha: 1)
-        }
-    }
-
     /// Whether this build is reading the compiled catalogue rather than the
     /// numbers read back out of it. True in the app, false under `swift test`.
-    public static var isFromCatalogue: Bool {
-        catalogued(.good) != nil
-    }
+    public static var isFromCatalogue: Bool { Sets.good.catalogued != nil }
 
-    /// What the compiled catalogue holds for `definition`, or nil where there
-    /// is no compiled catalogue to ask.
-    public static func catalogued(_ definition: Definition) -> NSColor? {
-        NSColor(named: definition.name, bundle: .module)
+    /// Every colour set the palette holds, whatever family it is in — what the
+    /// app suite checks the catalogue against.
+    public static var everySet: [PaletteColor] {
+        Sets.all + ZoneColors.Sets.all + SegmentTints.Sets.all + DifferenceColors.Sets.all
     }
+}
 
-    /// The catalogue's colour, or the same colour built from what was read out
-    /// of it.
-    private static func colour(_ definition: Definition) -> NSColor {
-        if let fromCatalogue = catalogued(definition) { return fromCatalogue }
-        return NSColor(name: nil) { appearance in
-            definition.shade(dark: appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua)
-        }
+/// The outlines a tool-module's zones are drawn with over the dump
+/// (`Design/TOOL_MODULES_PLAN.md`).
+///
+/// Deliberately not the accent colour: the accent already means "this is where
+/// you are" — the caret's link, the mirror of the other pane — and a zone is
+/// something the file *has*, not something the user is doing.
+public enum ZoneColors {
+    public enum Sets {}
+
+    /// The zone in focus: the node the panel is showing.
+    public static let focused = Sets.focused.color
+
+    /// The rest of the map around it — still part of the same structure. Its
+    /// colour set carries the same shade in both themes on purpose: it is drawn
+    /// over whatever the dump's own layers painted, so it answers to the bytes
+    /// under it rather than to the window's theme.
+    public static let other = Sets.other.color
+}
+
+/// The tints a partition's pieces are drawn in, cycled by label (§21.3): S0,
+/// S1, S2… A small set of pastels — enough colour to tell one piece from the
+/// next, never enough to draw the eye.
+///
+/// One order, two sets: the light-theme shades sit barely off the paper and the
+/// dark-theme ones are the same hues at the other end of the lightness range,
+/// so S1 is "the pink one" in both. They are backgrounds rather than text,
+/// which is why their dark shades are the *darker* ones — the opposite of a
+/// semantic colour's.
+public enum SegmentTints {
+    public enum Sets {}
+
+    /// The tints in label order.
+    public static let all = Sets.all.map(\.color)
+
+    /// The tint for the piece at `index`, wrapping when a partition has more
+    /// pieces than the palette has tints.
+    public static func tint(at index: Int) -> NSColor {
+        all[((index % all.count) + all.count) % all.count]
     }
+}
+
+/// The comparison's own fills: what the app paints on a byte because of what
+/// the *other* file says about it (§6).
+public enum DifferenceColors {
+    public enum Sets {}
+
+    /// A byte that differs from the other pane's. A wash rather than a solid:
+    /// its alpha is part of the colour, because the byte's own text and the
+    /// piece's tint have to stay readable under it.
+    public static let fill = Sets.fill.color
 }
