@@ -241,6 +241,53 @@ is decided about the rest.
 
 ---
 
+### Cache the fetched databases, so a bench without network still has yesterday's
+
+**What.** The three live sources — `MEAGitHubDataRepository` (`MEA.dat`,
+`Huffman.dat`), `LongSoftGuidsRepository` (`guids.csv`) and `MicrocodeSource`
+(the CPUMicrocodes tree) — keep nothing between launches; the repository says so
+outright: *in-memory only, no disk cache; the next launch re-fetches*. Give them
+a disk cache with a one-day TTL: fresher than a day is used without touching the
+network, older is re-fetched, and a re-fetch that fails leaves the old body in
+place with its date shown in the tool's header.
+
+**Why.** Today, no network means no ME Analyzer, no GUID names and no microcode
+catalogue — and that is precisely the bench the tools were built for: a call-out,
+a shop on a bad line, a laptop at the stand. The trade the no-cache rule was
+chosen for still holds — these databases change weekly and a copy goes stale —
+but staleness is only a problem when it is invisible. Yesterday's database with
+`MEA.dat · 10 Sep` in the header beats a tool that will not open. It also stops
+re-downloading about 1.2 MB on every launch of the app.
+
+**How.** A decorator, not three changes: all three sources are already protocols
+behind which a test installs its own, so one cache type wraps any of them. Body
+plus `fetchedAt` plus the response's `ETag` in
+`Application Support/DumpCompare/Cache/`; on expiry, a conditional request with
+`If-None-Match` — GitHub answers `304` with an empty body, so the common case
+costs one round trip and no bytes. `URLCache` is not enough on its own: it has no
+TTL of ours, and serving a stale body when the network is down means
+`.returnCacheDataDontLoad`, which then cannot tell "stale" from "never fetched".
+
+Two visible pieces go with it: the date of the data in each tool panel's header,
+and a **Refresh** control for the bench that knows an update landed this morning.
+
+**Touches.** A new shared package — the cache is wanted by `UEFITool`, `FITTool`
+and `MEFirmware` alike, and by the rule in `CLAUDE.md` that puts what two
+tool-modules share under `Packages/`. Then the three call sites
+(`Packages/MEFirmware/Sources/MEFirmware/Data/MEAGitHubDataRepository.swift`,
+`Modules/UEFITool/Sources/UEFIToolUI/GuidsSource.swift`,
+`Modules/FITTool/Sources/FITToolUI/MicrocodeSource.swift`), the tool panel
+headers, and the REQUIREMENTS lines that describe the data sources.
+
+**Cost.** 5–8 hours. The cache and its tests are straightforward; the judgement
+is in the failure states — expired and offline, never fetched and offline,
+fetched but unparseable — and that is where the tests belong.
+
+**Where it came from.** Planning ByteRipperWeb, where the cache is in the design
+from the start because a browser tab reloads far more often than an app launches.
+Writing down why the web edition wanted one made it clear the desktop is doing
+without for no reason beyond it never having been asked for.
+
 ## Someday
 
 ### View, interactor, coordinator — reasoning, not an entry
