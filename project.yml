@@ -46,15 +46,14 @@ packages:
   # install a stub `MEADataSource` and so import it directly.
   MEFirmware:
     path: Packages/MEFirmware
+  # Fetched once, checked once a day. All three live sources hold their parsed
+  # database in one of these; no target here links it directly.
+  FreshData:
+    path: Packages/FreshData
   # The introduction between the seam's reader and the parser's `ByteSource`,
   # which both firmware tool-modules link and no target here depends on.
   UEFIContentSource:
     path: Packages/UEFIContentSource
-  # The ME/CSME/TXE/SPS/GSC parser (Swift port of platomav/MEAnalyzer). No
-  # tool-module fronts it yet, so nothing here links it — listing it is what
-  # makes Xcode able to see and edit it.
-  MEFirmware:
-    path: Packages/MEFirmware
   ZoneSketch:
     path: Modules/ZoneSketch
   FITTool:
